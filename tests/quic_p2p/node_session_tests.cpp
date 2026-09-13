@@ -90,6 +90,7 @@ import forge.net.yamux.session;
 
 #include "../../libraries/net/p2p/details/direct_transport.hxx"
 #include "../../libraries/net/p2p/details/cancellation_latch.hxx"
+#include "../../libraries/net/p2p/details/lifecycle_wakeup.hxx"
 #include "../../libraries/net/p2p/details/node_impl.hxx"
 #include "../../libraries/net/p2p/details/node_impl_autonat_operation.hxx"
 #include "../../libraries/net/p2p/details/observed_address_manager.hxx"
@@ -562,6 +563,194 @@ struct node_session_fixture {
       BOOST_TEST(owner.reachability_status().confirmed_addresses.empty());
       BOOST_CHECK_THROW(static_cast<void>(self->reachability_manager_value->set_addresses({})), exceptions::closed);
       BOOST_TEST(owner.metrics().path_direct_attempts == 0U);
+   }
+
+   static boost::asio::awaitable<void> periodic_worker_wakeup_rounds(
+       std::shared_ptr<node::impl> self, bool relay, peer_id stale_peer) {
+      constexpr auto period = std::chrono::milliseconds{400};
+      const auto executor = co_await boost::asio::this_coro::executor;
+      auto earliest_start = std::chrono::steady_clock::now();
+      for (auto round = 0; round != 2; ++round) {
+         auto refreshes = std::uint64_t{};
+         {
+            const auto lock = std::scoped_lock{self->mutex};
+            refreshes = self->metrics_value.relay_discovery_refreshes;
+            if (!relay) {
+               // No message dispatch: only the actual heartbeat may prune this
+               // stale mesh member from the fixture's subscribed topic.
+               self->pubsub_value.handlers.try_emplace("periodic-wakeup");
+               self->pubsub_value.mesh["periodic-wakeup"].insert(stale_peer);
+            }
+         }
+         if (round == 0) {
+            earliest_start = std::chrono::steady_clock::now();
+            if (relay) { self->launch_relay_discovery_maintenance(); }
+            else { self->launch_pubsub_heartbeat(); }
+         }
+         auto last_pending = earliest_start;
+         auto ran = false;
+         const auto limit = std::chrono::steady_clock::now() + period * 2;
+         while (std::chrono::steady_clock::now() < limit) {
+            // These are the same unrelated epochs broadcast by session admission.
+            // Keep broadcasting past the original deadline to detect starvation
+            // if an implementation incorrectly restarts its timer on every wake.
+            self->lifecycle_wakeup->notify();
+            auto timer = boost::asio::steady_timer{executor};
+            timer.expires_after(std::chrono::milliseconds{10});
+            co_await timer.async_wait(boost::asio::use_awaitable);
+            auto sampled = std::chrono::steady_clock::time_point{};
+            {
+               const auto lock = std::scoped_lock{self->mutex};
+               ran = relay ? self->metrics_value.relay_discovery_refreshes > refreshes
+                           : !self->pubsub_value.mesh.at("periodic-wakeup").contains(stale_peer);
+               sampled = std::chrono::steady_clock::now();
+            }
+            if (ran) {
+               BOOST_CHECK_MESSAGE(sampled >= earliest_start + period,
+                   "unrelated admission epoch accelerated periodic work, round " << round);
+               // The actual previous tick is bracketed by the two observations.
+               // Use its lower bound, not detection time, for the next interval.
+               earliest_start = last_pending;
+               break;
+            }
+            last_pending = sampled;
+         }
+         BOOST_CHECK_MESSAGE(ran, "unrelated admission epochs starved periodic work, round " << round);
+      }
+      if (!relay) {
+         const auto lock = std::scoped_lock{self->mutex};
+         self->pubsub_value.mesh["periodic-wakeup"].insert(stale_peer);
+      }
+   }
+
+   static void periodic_worker_ignores_unrelated_epochs(bool relay) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = passive_reachability_options("periodic-wakeup-owner");
+      options.capabilities.bits |= capabilities::pubsub;
+      options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{400};
+      options.limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{400};
+      options.limits.topology.refresh_interval = std::chrono::milliseconds{400};
+      options.relay_policy.client_enabled = true;
+      options.relay_policy.auto_discovery_enabled = true;
+      auto owner = node{runtime, std::move(options)};
+      const auto self = owner.impl_;
+      const auto stale_peer = make_peer_id(public_key{public_key::type::ed25519, std::vector<std::uint8_t>(32, 59)});
+      auto joined = std::future<void>{};
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         // On RED, stop()'s existing stopped predicate releases the old loops.
+         try { forge::asio::blocking::run(runtime, owner.async_stop()); }
+         catch (...) { BOOST_ERROR("periodic worker node cleanup failed"); }
+         try { if (joined.valid()) { joined.get(); } }
+         catch (...) { BOOST_ERROR("periodic worker lifecycle join failed"); }
+      }};
+      bounded_result(runtime, periodic_worker_wakeup_rounds(self, relay, stale_peer));
+      const auto refreshes = owner.metrics().relay_discovery_refreshes;
+      owner.request_stop();
+      joined = boost::asio::co_spawn(runtime.context(), self->lifecycle.wait(), boost::asio::use_future);
+      BOOST_CHECK_MESSAGE(joined.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
+                          "periodic worker did not exit on lifecycle stop");
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         if (relay) {
+            BOOST_TEST(self->metrics_value.relay_discovery_refreshes == refreshes);
+         } else {
+            BOOST_CHECK_MESSAGE(self->pubsub_value.mesh.at("periodic-wakeup").contains(stale_peer),
+                                "lifecycle stop triggered an extra heartbeat");
+         }
+      }
+   }
+
+   static boost::asio::awaitable<bool> dcutr_direct_wait_owned(
+       std::shared_ptr<node::impl> self, detail::lifecycle_tracker::operation ticket,
+       peer_id peer, std::shared_ptr<close_barrier> barrier, bool stop_before_wait) {
+      static_cast<void>(ticket);
+      const auto executor = co_await boost::asio::this_coro::executor;
+      // The posted marker runs on the same strand after this coroutine suspends.
+      // In the second case that suspension is inside the actual fallback wait.
+      boost::asio::post(executor, [barrier] { barrier->entered = true; });
+      if (stop_before_wait) {
+         for (;;) {
+            const auto observed = barrier->changed.epoch();
+            if (barrier->released.load()) { break; }
+            co_await barrier->changed.async_wait(observed);
+         }
+      }
+      co_return co_await self->wait_for_direct_session(peer, std::chrono::seconds{5});
+   }
+
+   static void dcutr_direct_wait_releases_lifecycle_on_stop(bool stop_before_wait) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto owner = node{runtime, passive_reachability_options("dcutr-direct-wait-stop")};
+      const auto self = owner.impl_;
+      const auto peer = make_peer_id(public_key{public_key::type::ed25519, std::vector<std::uint8_t>(32, 57)});
+      auto barrier = std::make_shared<close_barrier>();
+      auto worker = std::future<bool>{};
+      auto stopped = std::future<void>{};
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         owner.request_stop();
+         barrier->released = true;
+         barrier->changed.notify();
+         // Even on RED, join the old five-second wait rather than abandoning it.
+         try { if (worker.valid()) { static_cast<void>(worker.get()); } }
+         catch (...) { BOOST_ERROR("DCUtR fallback worker cleanup failed"); }
+         try {
+            if (stopped.valid()) { stopped.get(); }
+            else { forge::asio::blocking::run(runtime, owner.async_stop()); }
+         } catch (...) { BOOST_ERROR("DCUtR fallback node cleanup failed"); }
+      }};
+      auto ticket = self->lifecycle.track();
+      BOOST_REQUIRE(ticket.active());
+      const auto executor = ticket.executor();
+      worker = boost::asio::co_spawn(executor,
+          dcutr_direct_wait_owned(self, std::move(ticket), peer, barrier, stop_before_wait),
+          boost::asio::use_future);
+      auto context = boost::asio::io_context{};
+      BOOST_REQUIRE(drive_until(context, [&] { return barrier->entered.load(); }));
+      BOOST_CHECK(worker.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+      owner.request_stop();
+      barrier->released = true;
+      barrier->changed.notify();
+      stopped = boost::asio::co_spawn(runtime.context(), owner.async_stop(), boost::asio::use_future);
+      BOOST_CHECK_MESSAGE(worker.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
+                          "DCUtR fallback retained its lifecycle ticket after stop");
+      BOOST_CHECK_MESSAGE(stopped.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
+                          "node shutdown waited for the DCUtR fallback timeout");
+      BOOST_CHECK(!worker.get());
+      BOOST_CHECK_NO_THROW(stopped.get());
+   }
+
+   static void dcutr_direct_wait_observes_quic_admission() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      auto server = node{runtime, passive_reachability_options("dcutr-direct-wait-server")};
+      auto client = node{runtime, passive_reachability_options("dcutr-direct-wait-client")};
+      const auto self = server.impl_;
+      auto worker = std::future<bool>{};
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         server.request_stop();
+         try { if (worker.valid()) { static_cast<void>(worker.get()); } }
+         catch (...) { BOOST_ERROR("DCUtR admission waiter cleanup failed"); }
+         for (auto* owner : {&client, &server}) {
+            try { forge::asio::blocking::run(runtime, owner->async_stop()); }
+            catch (...) { BOOST_ERROR("DCUtR admission node cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/udp/0/quic-v1")));
+      const auto address = server.local_endpoint();
+      BOOST_REQUIRE(address);
+      auto barrier = std::make_shared<close_barrier>();
+      auto ticket = self->lifecycle.track();
+      BOOST_REQUIRE(ticket.active());
+      const auto executor = ticket.executor();
+      worker = boost::asio::co_spawn(executor,
+          dcutr_direct_wait_owned(self, std::move(ticket), client.local_peer(), barrier, false),
+          boost::asio::use_future);
+      auto context = boost::asio::io_context{};
+      BOOST_REQUIRE(drive_until(context, [&] { return barrier->entered.load(); }));
+      BOOST_CHECK(worker.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+      bounded_result(runtime, client.async_connect(*address));
+      BOOST_CHECK_MESSAGE(worker.wait_for(std::chrono::seconds{1}) == std::future_status::ready,
+                          "committed direct session did not wake the DCUtR fallback");
+      BOOST_CHECK(worker.get());
    }
 
    static void graceful_quic_shutdown_closes_sessions_before_listener(bool fail_close) {
@@ -1093,6 +1282,26 @@ BOOST_AUTO_TEST_CASE(p2p_background_reachability_reuses_sessions_without_redial_
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_joins_retiring_sessions_before_listener_stop) {
    node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dcutr_direct_wait_after_stop_does_not_hold_lifecycle) {
+   node_session_fixture::dcutr_direct_wait_releases_lifecycle_on_stop(true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dcutr_direct_wait_is_interrupted_by_stop) {
+   node_session_fixture::dcutr_direct_wait_releases_lifecycle_on_stop(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dcutr_direct_wait_observes_quic_session_admission) {
+   node_session_fixture::dcutr_direct_wait_observes_quic_admission();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_pubsub_heartbeat_ignores_unrelated_wakeup_epochs) {
+   node_session_fixture::periodic_worker_ignores_unrelated_epochs(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_discovery_ignores_unrelated_wakeup_epochs) {
+   node_session_fixture::periodic_worker_ignores_unrelated_epochs(true);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_preserves_close_error_after_joined_cleanup) {

@@ -78,6 +78,7 @@ import forge.net.yamux.session;
 
 #include "details/direct_transport.hxx"
 #include "details/cancellation_latch.hxx"
+#include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
 #include "details/owner_cancellation.hxx"
 #include "details/path_selector.hxx"
@@ -447,6 +448,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                             rejection_reason.empty() ? "P2P session admission rejected" : rejection_reason);
    }
 
+   lifecycle_wakeup->notify();
    co_return;
 }
 

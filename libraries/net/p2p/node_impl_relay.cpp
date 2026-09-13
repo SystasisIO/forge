@@ -594,11 +594,14 @@ void node::impl::launch_relay_discovery_maintenance() {
           const auto wakeup = self->lifecycle_wakeup;
           auto observed = wakeup->epoch();
           while (true) {
+             const auto deadline = std::chrono::steady_clock::now() + self->options.limits.topology.refresh_interval;
+             // Keep this period fixed across unrelated admission notifications.
+             while (!self->lifecycle.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+                observed = co_await wakeup->async_wait_until(observed, deadline);
+             }
              if (self->lifecycle.stop_requested()) {
                 co_return;
              }
-             observed = co_await wakeup->async_wait_until(observed, std::chrono::steady_clock::now() +
-                                                                        self->options.limits.topology.refresh_interval);
              {
                 auto lock = std::scoped_lock{self->mutex};
                 if (self->stopped) {
@@ -1041,17 +1044,15 @@ boost::asio::awaitable<bool> node::impl::wait_for_direct_session(const peer_id& 
                                                                  std::chrono::milliseconds timeout) {
    const auto started = std::chrono::steady_clock::now();
    while (std::chrono::steady_clock::now() - started < timeout) {
+      const auto observed = lifecycle_wakeup->epoch();
+      if (lifecycle.stop_requested()) {
+         co_return false;
+      }
       if (session_for_path(peer, path::kind::direct)) {
-         co_return true;
+         co_return !lifecycle.stop_requested();
       }
-      auto remaining =
-          timeout - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-      if (remaining <= std::chrono::milliseconds{0}) {
-         break;
-      }
-      auto timer = asio::steady_timer{runtime.context()};
-      timer.expires_after(std::min(remaining, std::chrono::milliseconds{50}));
-      co_await timer.async_wait(asio::use_awaitable);
+      // Session admission and lifecycle stop both notify this sticky epoch.
+      co_await lifecycle_wakeup->async_wait_until(observed, started + timeout);
    }
    co_return false;
 }
@@ -1087,6 +1088,9 @@ node::impl::run_dcutr_initiator(const peer_id& peer, const std::shared_ptr<sessi
          co_await timer.async_wait(asio::use_awaitable);
       }
       for (const auto& candidate : response.observed_endpoints) {
+         if (lifecycle.stop_requested()) {
+            co_return hole_punch::status::failed;
+         }
          try {
             (void)co_await connect_direct(candidate, node::connect_options{
                                                          .expected_peer = peer,
@@ -1096,10 +1100,16 @@ node::impl::run_dcutr_initiator(const peer_id& peer, const std::shared_ptr<sessi
             record_hole_punch_result(hole_punch::status::succeeded);
             co_return hole_punch::status::succeeded;
          } catch (const forge::exceptions::base& error) {
+            if (lifecycle.stop_requested() || p2p_code(error) == exceptions::code::canceled) {
+               co_return hole_punch::status::failed;
+            }
             if (detail::remote_peer_attributable_failure(p2p_code(error), false)) {
                record_direct_failure(peer);
             }
          } catch (...) {
+            if (lifecycle.stop_requested()) {
+               co_return hole_punch::status::failed;
+            }
             record_direct_failure(peer);
          }
       }
@@ -1109,7 +1119,9 @@ node::impl::run_dcutr_initiator(const peer_id& peer, const std::shared_ptr<sessi
       }
    } catch (...) {
    }
-   record_hole_punch_result(hole_punch::status::failed);
+   if (!lifecycle.stop_requested()) {
+      record_hole_punch_result(hole_punch::status::failed);
+   }
    co_return hole_punch::status::failed;
 }
 
