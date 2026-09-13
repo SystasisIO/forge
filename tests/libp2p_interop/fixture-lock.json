@@ -39,13 +39,13 @@
     "go_fixture/upgrade_observer_test.go": "a558f3121dda57aa8327d5827d4c184c761108ab713dc72a3fa5ebf19cd4c7c3",
     "rust_fixture/Cargo.lock": "501dc3cff4cf92cbd7661f97a2929631ed2f12e0531a704bf8445e83572cfd39",
     "rust_fixture/Cargo.toml": "b1ef4619348a572799788aa3bc814e68dd96d46bc589624f7848e0002b47848d",
-    "rust_fixture/application_observer.rs": "022c40d3d961272a3fcf44b90dac5b249bd75c9ec9e80702f2be169ee44475f7",
+    "rust_fixture/application_observer.rs": "4c1d10b497648e80b45f533cc4ae33dd60db979c70ccc30fc280047e45e41e53",
     "rust_fixture/autonat.rs": "f03829c7f97f94eee625a90def197f12fb6a2f3016ea5c2810bd2d68c29d289b",
-    "rust_fixture/main.rs": "0c40eeb7d718a8f422d1a4d35627273b47dcbd6bc846e67d404d5eef713ce862",
+    "rust_fixture/main.rs": "4cf58e892aecf86c3fdaf770b8c084b8b1e6319168b8a033414cc4e63dace0e6",
     "rust_fixture/provider.rs": "b1feb9223c6ccd2b8435de3b54f7660d8381217788e1dfd4f166f2bdaf7ab618",
     "rust_fixture/rust-toolchain.toml": "32d99b8237d5832435d362c395422d69f52348a9fd1a154f70336d2991403064",
     "rust_fixture/task_owner.rs": "98ad462a07f1a72c9011ce15f87b477a959560bac502df7e79b7bd9df5eb703e",
-    "rust_fixture/upgrade_observer.rs": "60fef914510f80c6e90c1a9d8eddad032d02836d7c9b425a5462c2e408e488f2"
+    "rust_fixture/upgrade_observer.rs": "3635fc046c8a32e86f5b3fd6127e107a887d2deb4c5ca364d78eef74e28db71b"
   },
   "runtime_artifact_sources": {
     "../CMakeLists.txt": "b84e6d49467b248ba7f39e4712ea5b3b8feb0c66176bf20556b0341cf5f5ad74",

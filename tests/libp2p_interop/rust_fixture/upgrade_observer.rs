@@ -90,16 +90,12 @@ impl Trace {
                     connection.events.push(event);
                 }
             }
+            connection.milestones(phase);
         });
     }
 
     fn io_error(&self, phase: usize, operation: &str, error: &io::Error) {
-        self.update(|connection| {
-            if let Some(selection) = connection.phases.get_mut(phase) {
-                selection.io_failed = true;
-            }
-            connection.event(phase, operation, json!({"error": bounded_error(error)}));
-        });
+        self.update(|connection| connection.failure(phase, operation, error));
     }
 
     fn substream(&self, outbound: bool) -> usize {
@@ -142,6 +138,74 @@ fn stream_id(phase: usize) -> Option<usize> {
 }
 
 impl Connection {
+    fn failure(&mut self, phase: usize, kind: &str, error: impl std::fmt::Display) {
+        let upgrade_phase = phase.min(1);
+        let stage = if self.phases[upgrade_phase].upgrade_complete() {
+            "post_upgrade"
+        } else {
+            "pre_upgrade"
+        };
+        if let Some(selection) = self.phases.get_mut(phase) {
+            selection.io_failed = true;
+        }
+        self.event(
+            phase,
+            kind,
+            json!({"error": bounded_error(error), "failure_stage": stage}),
+        );
+    }
+
+    fn milestones(&mut self, phase: usize) {
+        if self.overflow || phase >= self.phases.len() {
+            return;
+        }
+        let selection = &self.phases[phase];
+        let connection_failed = self
+            .phases
+            .iter()
+            .take(2)
+            .any(|p| p.io_failed || p.error.is_some());
+        let upgrade = phase < 2
+            && selection.upgrade_completed_sequence.is_none()
+            && selection.delegate_complete
+            && selection.selected.is_some()
+            && selection.selected == selection.delegate_protocol
+            && self
+                .phases
+                .iter()
+                .take(phase + 1)
+                .all(|p| !p.io_failed && p.error.is_none());
+        let response = phase >= 2
+            && selection.response_completed_sequence.is_none()
+            && selection.selected.is_some()
+            && selection.error.is_none()
+            && !selection.io_failed
+            && !connection_failed
+            && selection.write_closed
+            && selection.bodies[1].complete();
+        if !upgrade && !response {
+            return;
+        }
+        if self.events.len() == EVENT_LIMIT {
+            self.overflow = true;
+            return;
+        }
+        let sequence = self.events.len() + 1;
+        let protocol = selection.selected.clone();
+        if upgrade {
+            self.event(phase, "upgrade_completed", json!({"protocol": protocol}));
+            self.phases[phase].upgrade_completed_sequence = Some(sequence);
+        } else {
+            let write = selection.bodies[1].snapshot();
+            self.event(
+                phase,
+                "response_completion",
+                json!({"protocol": protocol, "write": write}),
+            );
+            self.phases[phase].response_completed_sequence = Some(sequence);
+        }
+    }
+
     fn event(&mut self, phase: usize, kind: &str, detail: Value) {
         if self.events.len() == EVENT_LIMIT {
             self.overflow = true;
@@ -181,7 +245,11 @@ impl Connection {
 }
 
 impl Observer {
-    pub(crate) fn application(&self, peer: PeerId, protocol: &'static str) -> super::application_observer::Attempt {
+    pub(crate) fn application(
+        &self,
+        peer: PeerId,
+        protocol: &'static str,
+    ) -> super::application_observer::Attempt {
         self.1.begin(peer, protocol, &self.snapshot())
     }
 
@@ -371,6 +439,8 @@ struct Selection {
     write_closed: bool,
     read_eof: bool,
     drop_observed: bool,
+    upgrade_completed_sequence: Option<usize>,
+    response_completed_sequence: Option<usize>,
 }
 
 impl Selection {
@@ -392,6 +462,8 @@ impl Selection {
             write_closed: false,
             read_eof: false,
             drop_observed: false,
+            upgrade_completed_sequence: None,
+            response_completed_sequence: None,
         }
     }
 
@@ -524,11 +596,7 @@ impl Selection {
     }
 
     fn upgrade_complete(&self) -> bool {
-        self.delegate_complete
-            && self.selected.is_some()
-            && self.selected == self.delegate_protocol
-            && self.error.is_none()
-            && !self.io_failed
+        self.upgrade_completed_sequence.is_some()
     }
 
     fn snapshot(&self) -> Value {
@@ -536,6 +604,8 @@ impl Selection {
             "proposed_protocol": self.proposal,
             "parser_error": self.error, "io_failed": self.io_failed,
             "drop_observed": self.drop_observed,
+            "upgrade_completed_sequence": self.upgrade_completed_sequence,
+            "response_completed_sequence": self.response_completed_sequence,
             "read_eof": self.read_eof, "write_close_returned": self.write_closed,
             "response_write_complete": self.application && self.selected.is_some() && self.error.is_none()
                 && !self.io_failed && self.write_closed && self.bodies[1].complete(),
@@ -665,6 +735,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for ObservedIo<T> {
                 if let Some(phase) = connection.phases.get_mut(this.phase) {
                     phase.write_closed = true;
                 }
+                connection.milestones(this.phase);
             }),
             Poll::Ready(Err(error)) => this.trace.io_error(this.phase, "close_error", error),
             _ => {}
@@ -736,6 +807,7 @@ where
             connection.phases[phase].delegate_protocol = Some(protocol.clone());
             connection.phases[phase].delegate_complete = true;
             connection.event(phase, "delegate_completed", json!({"protocol": protocol}));
+            connection.milestones(phase);
         });
         Ok(output)
     }
@@ -827,8 +899,7 @@ impl<M: StreamMuxer> ObservedMuxer<M> {
     fn record_error<T>(&self, kind: &str, result: &Poll<Result<T, M::Error>>) {
         if let Poll::Ready(Err(error)) = result {
             self.trace.update(|connection| {
-                connection.phases[1].io_failed = true;
-                connection.event(1, kind, json!({"error": bounded_error(error)}));
+                connection.failure(1, kind, error);
             });
         }
     }
@@ -1153,6 +1224,9 @@ mod tests {
         fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
             self.check_unlocked();
             self.state.lock().unwrap().closes += 1;
+            if self.fail {
+                return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+            }
             Poll::Ready(Ok(()))
         }
     }
@@ -1568,6 +1642,133 @@ mod tests {
             assert!(self.trace.0.as_ref().unwrap().try_lock().is_ok());
             self.calls.lock().unwrap().push("poll");
             Poll::Ready(Err(io::Error::from(io::ErrorKind::ConnectionReset)))
+        }
+    }
+
+    #[test]
+    fn upgrade_completion_is_sticky_and_late_failure_remains_ordered() {
+        let (observer, trace) = fixture_trace();
+        let input = [frame(HEADER.as_bytes()), frame(b"/noise\n"), vec![42]].concat();
+        futures::executor::block_on(apply(
+            ScriptIo::new(input, trace.clone()),
+            Delegate {
+                mode: Mode::Success,
+                calls: Default::default(),
+            },
+            false,
+            trace.clone(),
+            0,
+        ))
+        .unwrap();
+        trace.io_error(0, "read_error", &io::Error::other("arbitrary late error"));
+        let snapshot = observer.snapshot();
+        let c = &snapshot["connections"][0];
+        assert_eq!(c["security_complete"], true);
+        assert_eq!(c["negotiations"][0]["io_failed"], true);
+        let events = c["events"].as_array().unwrap();
+        let completed = events
+            .iter()
+            .filter(|e| e["kind"] == "upgrade_completed")
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 1);
+        let error = events.last().unwrap();
+        assert_eq!(error["detail"]["failure_stage"], "post_upgrade");
+        assert!(completed[0]["sequence"].as_u64().unwrap() < error["sequence"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn upgrade_lazy_completion_requires_observed_selection_and_no_prior_error() {
+        for failed in [false, true] {
+            let (observer, trace) = fixture_trace();
+            trace.update(|c| c.phases[1] = Selection::new(true, false));
+            if failed {
+                trace.io_error(1, "read_error", &io::Error::other("before selection"));
+            }
+            futures::executor::block_on(apply(
+                ScriptIo::new(Vec::new(), trace.clone()),
+                Delegate {
+                    mode: Mode::LocalConstruction,
+                    calls: Default::default(),
+                },
+                true,
+                trace.clone(),
+                1,
+            ))
+            .unwrap();
+            assert_eq!(
+                observer.snapshot()["connections"][0]["muxer_complete"],
+                false
+            );
+            for direction in 0..2 {
+                feed(&trace, 1, direction, &frame(HEADER.as_bytes()), 1);
+                feed(&trace, 1, direction, &frame(b"/noise\n"), 1);
+            }
+            let snapshot = observer.snapshot();
+            let c = &snapshot["connections"][0];
+            assert_eq!(c["muxer_complete"], !failed);
+            let completed = c["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["kind"] == "upgrade_completed")
+                .count();
+            assert_eq!(completed, usize::from(!failed));
+            if failed {
+                assert_eq!(c["events"][0]["detail"]["failure_stage"], "pre_upgrade");
+            }
+        }
+    }
+
+    #[test]
+    fn upgrade_response_marker_requires_actual_close_and_preserves_late_error() {
+        for (fail_before_close, fail_close) in [(false, false), (true, false), (false, true)] {
+            let (observer, trace) = fixture_trace();
+            let phase = trace.substream(false);
+            let input = [frame(HEADER.as_bytes()), frame(b"/ipfs/id/1.0.0\n")].concat();
+            let mut stream = ObservedIo {
+                inner: ScriptIo::new(input, trace.clone()),
+                trace: trace.clone(),
+                phase,
+            };
+            futures::executor::block_on(async {
+                let mut request = Vec::new();
+                stream.read_to_end(&mut request).await.unwrap();
+                stream.write_all(&frame(HEADER.as_bytes())).await.unwrap();
+                stream.write_all(&frame(b"/ipfs/id/1.0.0\n")).await.unwrap();
+                stream.write_all(&frame(b"bounded body")).await.unwrap();
+                assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
+                if fail_before_close {
+                    trace.io_error(
+                        1,
+                        "muxer_poll_error",
+                        &io::Error::other("before response close"),
+                    );
+                }
+                stream.inner.fail = fail_close;
+                assert_eq!(stream.close().await.is_err(), fail_close);
+            });
+            trace.io_error(
+                1,
+                "muxer_poll_error",
+                &io::Error::other("after response close"),
+            );
+            let snapshot = observer.snapshot();
+            let events = snapshot["connections"][0]["events"].as_array().unwrap();
+            let completed = events
+                .iter()
+                .filter(|e| e["kind"] == "response_completion")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                completed.len(),
+                usize::from(!fail_before_close && !fail_close)
+            );
+            if !fail_before_close && !fail_close {
+                assert!(
+                    completed[0]["sequence"].as_u64().unwrap()
+                        < events.last().unwrap()["sequence"].as_u64().unwrap()
+                );
+                assert_eq!(completed[0]["detail"]["write"]["frames"], 1);
+            }
         }
     }
 

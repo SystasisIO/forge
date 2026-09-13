@@ -453,6 +453,79 @@ pub(crate) fn finalize(mut raw: Value, joined: bool) -> Value {
     raw
 }
 
+// The future is not polled unless the independently captured Identify was verified.
+pub(crate) async fn after_verified_identify<T>(
+    identify: &Value,
+    echo: impl std::future::Future<Output = Result<T, Box<dyn std::error::Error>>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    if identify["status"] != "verified" || identify["signed_peer_record_verified"] != true {
+        return Err("raw Identify verification failed; echo was not started".into());
+    }
+    echo.await
+}
+
+pub(crate) fn require_identify_echo_pair(raw: &mut Value) -> Result<(), &'static str> {
+    if let Some(object) = raw.as_object_mut() {
+        object.remove("application_pair_binding");
+    }
+    let result = identify_echo_pair(raw);
+    match result {
+        Ok(pair) => {
+            raw["application_pair_binding"] = pair;
+            Ok(())
+        }
+        Err(error) => {
+            raw["complete"] = json!(false);
+            raw["application_pair_binding_error"] = json!(error);
+            Err(error)
+        }
+    }
+}
+
+fn identify_echo_pair(raw: &Value) -> Result<Value, &'static str> {
+    if raw["complete"] != true || raw["fixture_owned_tasks_joined"] != true {
+        return Err("Identify/echo pair is not finalized and joined");
+    }
+    let attempts = raw["applications"]["attempts"]
+        .as_array()
+        .ok_or("missing application pair")?;
+    let [identify, echo] = attempts.as_slice() else {
+        return Err("expected exactly one Identify then one echo");
+    };
+    if identify["protocol"] != IDENTIFY || echo["protocol"] != ECHO {
+        return Err("application pair is not Identify then echo");
+    }
+    let first = &identify["binding"];
+    let second = &echo["binding"];
+    for key in [
+        "basis",
+        "connection_trace_id",
+        "swarm_connection_id",
+        "local_address",
+        "remote_address",
+        "authenticated_local_peer_id",
+        "authenticated_remote_peer_id",
+    ] {
+        if first[key].is_null() || first[key] != second[key] {
+            return Err("Identify and echo used different authenticated connections");
+        }
+    }
+    let first_stream = first["stream_trace_id"]
+        .as_u64()
+        .ok_or("missing Identify stream binding")?;
+    let second_stream = second["stream_trace_id"]
+        .as_u64()
+        .ok_or("missing echo stream binding")?;
+    if first_stream == second_stream {
+        return Err("Identify and echo did not use distinct streams");
+    }
+    Ok(
+        json!({"basis": first["basis"], "connection_trace_id": first["connection_trace_id"],
+        "swarm_connection_id": first["swarm_connection_id"],
+        "identify_stream_trace_id": first_stream, "echo_stream_trace_id": second_stream}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,6 +763,67 @@ mod tests {
         assert_eq!(snapshot["attempts"][0]["attempt_ended"], true);
         assert_eq!(snapshot["attempts"][0]["errors"], json!(["write"]));
         assert_eq!(snapshot["attempts"][0]["read"], body(&[3, 7, 8, 9]));
+    }
+
+    #[test]
+    fn application_pair_rejects_reconnect_duplicate_or_unjoined_bindings() {
+        let mut raw = finalize(fixture(), true);
+        let mut echo = raw["applications"]["attempts"][0].clone();
+        echo["protocol"] = json!(ECHO);
+        echo["binding"]["stream_trace_id"] = json!(20);
+        raw["applications"]["attempts"]
+            .as_array_mut()
+            .unwrap()
+            .push(echo);
+        assert!(require_identify_echo_pair(&mut raw).is_ok());
+        assert_eq!(
+            raw["application_pair_binding"]["identify_stream_trace_id"],
+            19
+        );
+        for key in [
+            "connection_trace_id",
+            "swarm_connection_id",
+            "local_address",
+            "remote_address",
+            "authenticated_local_peer_id",
+            "authenticated_remote_peer_id",
+            "stream_trace_id",
+        ] {
+            let mut changed = raw.clone();
+            changed["applications"]["attempts"][1]["binding"][key] = if key == "stream_trace_id" {
+                json!(19)
+            } else {
+                json!("different")
+            };
+            assert!(require_identify_echo_pair(&mut changed).is_err(), "{key}");
+            assert_eq!(changed["complete"], false);
+        }
+        raw["fixture_owned_tasks_joined"] = json!(false);
+        assert!(require_identify_echo_pair(&mut raw).is_err());
+    }
+
+    #[test]
+    fn application_failed_identify_never_polls_echo_or_changes_behaviour_flag() {
+        for verified in [false, true] {
+            let mut result = json!({"signed_peer_record": false, "protocol_count": 4});
+            result["raw_identify_exchange"] = json!({"status": if verified { "verified" } else { "failed" },
+                "signed_peer_record_verified": verified, "raw_protobuf_hex": "retained-test-capture"});
+            let called = std::cell::Cell::new(false);
+            let outcome = futures::executor::block_on(after_verified_identify(
+                &result["raw_identify_exchange"],
+                async {
+                    called.set(true);
+                    Ok::<_, Box<dyn std::error::Error>>(42)
+                },
+            ));
+            assert_eq!(called.get(), verified);
+            assert_eq!(outcome.is_ok(), verified);
+            assert_eq!(result["signed_peer_record"], false);
+            assert_eq!(
+                result["raw_identify_exchange"]["raw_protobuf_hex"],
+                "retained-test-capture"
+            );
+        }
     }
 
     #[test]

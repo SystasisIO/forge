@@ -245,10 +245,20 @@ I/O, bounded negotiation frames and application counts/hashes; they do not
 retain application bodies or invent wire phases from configured protocols.
 The fixture explicitly owns and joins tasks submitted through its public Swarm
 executor and echo handler. That receipt does not claim ownership of hidden
-transport-internal DNS or Quinn tasks. Exact Rust application/substream
-correlation remains a separate gate; capture-layer unit and live tests alone
-cannot promote the ordered-upgrade capability. Final exact-head acceptance
-still requires both implementations and the independent review gate.
+transport-internal DNS or Quinn tasks. Application streams are correlated by
+the unique authenticated connection, their causal open boundary, and counts
+and hashes of actual framed I/O. Native echo first performs the separate verified
+Identify exchange; the two bindings must use different streams on the same
+connection. The original Identify behaviour flag is not overwritten.
+
+Completed upgrade and response-write milestones are sticky, ordered observations.
+Lazy delegate completion alone is insufficient: the actual negotiation selection
+must also have occurred. Later connection errors remain in the event history and
+do not erase an earlier milestone. A response-write milestone is not remote receipt;
+paired evidence must still establish the receiver's independent successful read.
+Rust acceptance validation remains a separate gate; capture-layer unit and live
+tests alone cannot promote the ordered-upgrade capability. Final exact-head
+acceptance still requires both implementations and the independent review gate.
 
 Positive exchanges use isolated Linux network namespaces with public-classified
 numeric addresses, no external interface and no default route. This exercises

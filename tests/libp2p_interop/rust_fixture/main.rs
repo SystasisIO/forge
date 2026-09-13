@@ -2152,6 +2152,8 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut swarm = new_swarm(&opts).await?;
     let remote_peer: PeerId = opts.peer_id.parse()?;
     let remote: Multiaddr = opts.addr.parse()?;
+    let native_echo = matches!(opts.transport.as_str(), "tcp" | "tcp-tls")
+        && matches!(opts.scenario.as_str(), "echo" | "echo_large");
     let dns_root = remote
         .iter()
         .any(|protocol| matches!(protocol, Protocol::Dnsaddr(_)));
@@ -2214,7 +2216,10 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut negotiated_transport = None;
     let mut tcp_upgrade_observation = None;
     while started.elapsed() < Duration::from_secs(20) {
-        let event = swarm.select_next_some().await;
+        let event = if native_echo {
+            tokio::time::timeout(Duration::from_secs(20).saturating_sub(started.elapsed()), swarm.select_next_some())
+                .await.map_err(|_| "timed out awaiting Behaviour Identify before native echo")?
+        } else { swarm.select_next_some().await };
         if let SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } = &event {
             opts.upgrade_observer.established(connection_id, *peer_id, endpoint);
         }
@@ -2244,7 +2249,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                     .behaviour_mut()
                     .kad
                     .add_address(&remote_peer, transport_addr(remote.clone()));
-                if opts.scenario != "ping" && opts.scenario != "identify" && opts.scenario != "pnet"
+                if opts.scenario != "ping" && opts.scenario != "identify" && opts.scenario != "pnet" && !native_echo
                 {
                     break;
                 }
@@ -2272,7 +2277,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                 if opts.scenario == "pnet" {
                     pnet_observation.identify_streams += 1;
                 }
-                if opts.scenario == "identify" || opts.scenario == "pnet" {
+                if opts.scenario == "identify" || opts.scenario == "pnet" || native_echo {
                     break;
                 }
             }
@@ -2361,6 +2366,34 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         "echo" | "echo_large" => {
+            if native_echo && identify_count == 0 {
+                return Err("Behaviour Identify did not complete before native echo".into());
+            }
+            let mut result = json!({
+                "implementation": "rust", "role": "dialer", "scenario": opts.scenario,
+                "status": "pending", "protocol": "/forge/interop/relay-echo/1", "echo_ok": false,
+            });
+            if native_echo {
+                result["local_peer_id"] = json!(swarm.local_peer_id().to_string());
+                result["authenticated_remote_peer_id"] = json!(authenticated_remote_peer_id);
+                result["connection_remote_addr"] = json!(connection_remote_addr);
+                result["negotiated_transport"] = json!("tcp");
+                result["protocol_count"] = json!(identify_count);
+                // Preserve the Behaviour result, even when the separate raw proof succeeds.
+                result["signed_peer_record"] = json!(identify_signed_record);
+                match exchange_raw_identify(&mut swarm, remote_peer, &opts.upgrade_observer).await {
+                    Ok(evidence) => result["raw_identify_exchange"] = evidence,
+                    Err(error) => {
+                        result["status"] = json!("failed");
+                        result["raw_identify_exchange"] = json!({"status": "failed",
+                            "signed_peer_record_verified": false, "error": error.to_string()});
+                        write_json(&opts.result_file, result)?;
+                        return Err(error);
+                    }
+                }
+                // Persist the real capture before either verification rejection or echo failure.
+                write_json(&opts.result_file, result.clone())?;
+            }
             let payload = if opts.scenario == "echo_large" {
                 (0..192 * 1024)
                     .map(|index| (index % 251) as u8)
@@ -2368,16 +2401,13 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             } else {
                 opts.payload.as_bytes().to_vec()
             };
-            let bytes = open_echo_stream_direct(&mut swarm, remote_peer, &payload, &opts.upgrade_observer).await?;
-            let mut result = json!({
-                "implementation": "rust",
-                "role": "dialer",
-                "scenario": opts.scenario,
-                "status": "ok",
-                "protocol": "/forge/interop/relay-echo/1",
-                "payload_bytes": bytes,
-                "echo_ok": true
-            });
+            let echo = open_echo_stream_direct(&mut swarm, remote_peer, &payload, &opts.upgrade_observer);
+            let bytes = if native_echo {
+                application_observer::after_verified_identify(&result["raw_identify_exchange"], echo).await?
+            } else { echo.await? };
+            result["status"] = json!("ok");
+            result["payload_bytes"] = json!(bytes);
+            result["echo_ok"] = json!(true);
             if dns_root {
                 result["dns_input_address"] = json!(opts.addr);
                 result["dns_resolver_configured"] = json!(opts.dns_server.is_some());
@@ -2849,6 +2879,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let observation = capture.then(|| {
         let mut evidence = observer.finalized(lifecycle.snapshot()["fixture_owned_tasks_joined"] == true);
         if outcome.is_err() { evidence["complete"] = json!(false); }
+        if role == "dialer" && matches!(scenario.as_str(), "echo" | "echo_large") {
+            if let Err(error) = application_observer::require_identify_echo_pair(&mut evidence) {
+                if outcome.is_ok() { outcome = Err(error.into()); }
+            }
+        }
         if role == "dialer" && outcome.is_ok() && evidence["complete"] != true {
             outcome = Err("native TCP application observation is unbound, ambiguous or incomplete".into());
         }
