@@ -201,6 +201,30 @@ correlates the actual client reservation with the server's fresh
 snapshots must be indexed and belong to successful terminal processes. An empty
 voucher alone is insufficient; reservation evidence is not circuit-echo evidence.
 
+The Go TCP fixture observes the pinned donor's public `transport.Upgrader`,
+`sec.SecureTransport` and `network.Multiplexer` delegates. Its bounded trace
+retains actual multistream frames, including rejected proposals before fallback,
+and successful security/muxer transitions. Early muxer negotiation is a distinct
+security-handshake observation, not an invented post-security multistream exchange.
+No donor source or Forge production API is changed for this instrumentation.
+
+An explicit outbound fixture stream carries a one-shot context binding through
+the donor's `swarm.Conn.NewStream` into `MuxedConn.OpenStream`. This associates
+application completion with the exact observed stream; connection/protocol labels
+alone are insufficient. Built-in inbound Identify remains the donor handler:
+the wrapper observes bounded response framing, byte counts and hashes, then
+successful delegated close. This proves response writing, not remote delivery.
+Application bodies and security handshake bytes are not retained. Trace limits
+never alter forwarded I/O; overflow instead invalidates the evidence.
+
+Listener traces are captured after joined host shutdown. Failed background
+upgrades remain in the report but cannot replace the selected successful target,
+and a failed target cannot borrow a different connection's success. Controlled
+parser/binding regressions and Go race tests complement the bilateral native
+TCP Noise/TLS Identify and echo runs. These are capture-layer checks: Rust
+upgrade observation and strict same-exchange integration into the acceptance
+checker are still required before the ordered-upgrade proof gate can pass.
+
 Positive exchanges use isolated Linux network namespaces with public-classified
 numeric addresses, no external interface and no default route. This exercises
 unchanged production address filters without sending probes into the Internet.

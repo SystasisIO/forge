@@ -45,6 +45,8 @@ EXPECTED_FIXTURE_FILES = {
     "go_fixture/autonat_test.go",
     "go_fixture/provider_evidence.go",
     "go_fixture/provider_evidence_test.go",
+    "go_fixture/upgrade_observer.go",
+    "go_fixture/upgrade_observer_test.go",
     "rust_fixture/Cargo.lock",
     "rust_fixture/Cargo.toml",
     "rust_fixture/main.rs",

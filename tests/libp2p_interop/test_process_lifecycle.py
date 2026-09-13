@@ -110,6 +110,49 @@ class ProcessLifecycleTests(unittest.TestCase):
                          {"exit_code": 0, "termination": "graceful"})
         self.assert_closed()
 
+    def test_tcp_upgrade_listener_is_joined_before_reading_final_evidence(self):
+        proof = {"finalized_after_host_close": True, "complete": True, "overflow": False}
+        self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof}}]
+        def read_after_join(path, seconds):
+            if "listen-identify.json" in path.name:
+                self.assertEqual(self.processes[0].returncode, 0)
+            return self.ready(path, seconds)
+
+        with patch.object(runner, "wait_json", side_effect=read_after_join), \
+             patch.object(runner, "run_dial", return_value={"status": "ok"}):
+            result = runner.run_pair_with_transport(
+                Path("fixture"), "forge", Path("fixture"), "go", "identify", self.root,
+                "tcp", "native", ("tcp", "yamux"), "tcp/identify", "noise_identity")
+        self.assertEqual(result["listener_result"]["upgrade_observation"], proof)
+        self.assertIn("--result-file", result["listener_process"]["command"])
+        self.assertEqual(len(result["owned_processes"][0]["outputs"]), 2)
+        self.assert_closed()
+
+    def test_tcp_upgrade_listener_rejects_nonfinal_or_incomplete_evidence(self):
+        for proof in ({}, {"finalized_after_host_close": False, "complete": True},
+                      {"finalized_after_host_close": True, "complete": False},
+                      {"finalized_after_host_close": True, "complete": True, "overflow": True}):
+            with self.subTest(proof=proof):
+                self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof}}]
+                with patch.object(runner, "run_dial", return_value={"status": "ok"}):
+                    with self.assertRaises(runner.CaseFailure):
+                        runner.run_pair_with_transport(
+                            Path("fixture"), "forge", Path("fixture"), "go", "echo", self.root,
+                            "tcp-tls", "native", ("tcp", "yamux"), "tcp_tls/echo", "tls_echo")
+                self.assert_closed()
+
+    def test_tcp_upgrade_listener_cleanup_failure_cannot_commit_evidence(self):
+        self.scripts = [{"waits": [timeout(), 0], "result": {
+            "status": "ok", "upgrade_observation": {
+                "finalized_after_host_close": True, "complete": True, "overflow": False}}}]
+        with patch.object(runner, "run_dial", return_value={"status": "ok"}):
+            with self.assertRaises(runner.CaseFailure) as raised:
+                runner.run_pair_with_transport(
+                    Path("fixture"), "forge", Path("fixture"), "go", "echo", self.root,
+                    "tcp", "native", ("tcp", "yamux"), "tcp/echo", "tcp_echo")
+        self.assertIn("forced SIGTERM", str(raised.exception))
+        self.assert_closed()
+
     def test_success_plus_forced_listener_exit_is_failure(self):
         self.scripts = [{"waits": [timeout(), -signal.SIGTERM]}]
         with patch.object(runner, "run_dial", return_value={"status": "ok"}):

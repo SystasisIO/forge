@@ -1256,10 +1256,14 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
         scenario != "pnet" or pnet_key_file is None or pnet_mismatch_key_file is None or pnet_fingerprint is None
     ):
         raise RuntimeError("private pnet profile requires its canonical and mismatched source key fixtures")
+    tcp_upgrade_listener = (
+        acceptance_profile == "native" and transport in {"tcp", "tcp-tls"}
+        and listener == "go" and scenario in {"identify", "echo"}
+    )
     listener_result = (
         work / f"{listener}-listen-{scenario}.json"
         if pnet_profile or scenario in PUBSUB_SCENARIOS or scenario in DHT_VALUE_SCENARIOS
-        or (scenario == "relay_reserve" and listener == "rust")
+        or (scenario == "relay_reserve" and listener == "rust") or tcp_upgrade_listener
         else None
     )
     server = start_listener(
@@ -1304,7 +1308,18 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
             require_rendezvous_lifecycle_evidence(result, dialer, listener)
         if scenario == "dht_provide_find_provider":
             require_dht_provider_evidence(result, dialer, peer_id)
+        if tcp_upgrade_listener:
+            # Upgrade observations are published only after the donor host is joined.
+            # Never wait for this final result while keeping the listener alive.
+            cleanup_errors = server.close()
+            if cleanup_errors:
+                raise RuntimeError("Go TCP listener cleanup failed: " + "; ".join(cleanup_errors))
         delivered = wait_json(listener_result, 20) if listener_result is not None else None
+        if tcp_upgrade_listener:
+            proof = delivered.get("upgrade_observation")
+            if not isinstance(proof, dict) or proof.get("finalized_after_host_close") is not True \
+                    or proof.get("complete") is not True or proof.get("overflow") is not False:
+                raise RuntimeError("Go TCP listener did not finalize complete bounded upgrade evidence")
         if scenario == "relay_reserve" and listener == "rust":
             # First result proves the event was polled; only the joined final trace is evidence.
             cleanup_errors = server.close()
