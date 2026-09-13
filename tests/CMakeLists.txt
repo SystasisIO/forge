@@ -1357,6 +1357,18 @@ add_test(
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
 )
 set_tests_properties(test_forge_libp2p_provider_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_identify_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_identify_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_identify_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_relay_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_relay_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_relay_evidence PROPERTIES TIMEOUT 10)
 
 execute_process(
    COMMAND git -C ${CMAKE_SOURCE_DIR} rev-parse HEAD

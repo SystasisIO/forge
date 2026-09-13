@@ -129,16 +129,9 @@
       "mapping_state": "mapped",
       "forge_tests": [
         "test_forge_quic_p2p p2p_libp2p_autonat_v2_codec_covers_nonce_data_and_statuses",
-        "test_forge_quic_p2p p2p_autonat_loopback_does_not_claim_public_reachability",
-        "test_forge_libp2p_interop autonatv2"
+        "test_forge_quic_p2p p2p_autonat_loopback_does_not_claim_public_reachability"
       ],
-      "forge_live_scenario": [
-        {
-          "profile": "quic_base",
-          "scenario": "autonatv2"
-        }
-      ],
-      "known_gap": "The loopback-negative test only prevents a false public-reachability claim. The registered Forge scenario remains a declared interop target, not a current passing Go/Rust result; execute it on the reviewed head before promotion."
+      "known_gap": "Codec and loopback-negative component coverage only, not native reachability proof. Native AutoNAT evidence belongs to interop.live_native_autonat and its mandatory 41-case suite; the retired generic stream-open scenario supplies no proof."
     },
     {
       "id": "mdns.private_fingerprinted_rust_limitation",
@@ -378,20 +371,18 @@
           "`forge::plugins::p2p::pubsub` is an FORGE in-process plugin facade over core GossipSub; Go/Rust wire compatibility remains tracked by the core GossipSub live cases."
     },
     {
-      "id": "interop.live_ping_identify_autonat_relay",
+      "id": "interop.live_ping_identify_relay",
       "protocol": "Interop",
       "source": "go-libp2p and rust-libp2p live fixtures",
       "donor": "live fixtures launched by tests/libp2p_interop/runner.py",
       "donor_file": [
         "donors/go-libp2p/p2p/protocol/ping/ping_test.go", "donors/go-libp2p/p2p/protocol/identify/id_test.go",
-        "donors/go-libp2p/p2p/protocol/autonatv2/client.go",
-        "donors/rust-libp2p/protocols/ping/tests/ping.rs", "donors/rust-libp2p/protocols/identify/tests/smoke.rs",
-        "donors/rust-libp2p/protocols/autonat/src/v2/client.rs"
+        "donors/rust-libp2p/protocols/ping/tests/ping.rs", "donors/rust-libp2p/protocols/identify/tests/smoke.rs"
       ],
-      "donor_case": [ "Ping", "Identify", "AutoNAT v2", "Relay reserve" ],
+      "donor_case": [ "Ping", "Identify", "Relay reserve" ],
       "mapping_state": "mapped",
       "forge_tests": [
-        "test_forge_libp2p_interop ping", "test_forge_libp2p_interop identify", "test_forge_libp2p_interop autonatv2",
+        "test_forge_libp2p_interop ping", "test_forge_libp2p_interop identify",
         "test_forge_libp2p_interop relay_reserve"
       ],
       "forge_live_scenario": [
@@ -402,10 +393,6 @@
         {
           "profile": "quic_base",
           "scenario": "identify"
-        },
-        {
-          "profile": "quic_base",
-          "scenario": "autonatv2"
         },
         {
           "profile": "quic_base",

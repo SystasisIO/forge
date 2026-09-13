@@ -517,7 +517,7 @@
         ],
         "tests": [ "test_forge_stcp", "test_forge_quic_p2p" ],
         "donor_sources": [ "docs/donors/fcl-p2p-libp2p-foundation-v1.md" ],
-        "donor_cases": [ "interop.live_ping_identify_autonat_relay" ]
+        "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
     },
     {
@@ -618,7 +618,7 @@
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-libp2p-foundation-v1.md" ],
-        "donor_cases": [ "interop.live_ping_identify_autonat_relay" ]
+        "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
     },
     {
@@ -642,7 +642,7 @@
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
-        "donor_cases": [ "interop.live_ping_identify_autonat_relay" ]
+        "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
     },
     {
@@ -696,7 +696,7 @@
         "donor_sources": [ "docs/donors/fcl-p2p-reachability-relay-v1.md" ],
         "donor_cases": [
           "autonatv2.dial_request_response_nonce", "autonatv2.malformed_and_oversized",
-          "interop.live_ping_identify_autonat_relay"
+          "interop.live_native_autonat"
         ]
       }
     },
@@ -727,7 +727,7 @@
         "donor_sources": [ "docs/donors/fcl-p2p-reachability-relay-v1.md" ],
         "donor_cases": [
           "relayv2.reserve_connect_status", "relayv2.signed_envelope", "autorelay.discovery_reservation_lifecycle",
-          "interop.live_ping_identify_autonat_relay"
+          "interop.live_ping_identify_relay"
         ]
       }
     },

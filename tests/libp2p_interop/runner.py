@@ -32,7 +32,7 @@ from provenance import (
 
 
 LIVE_SCENARIO_PROFILES = {
-    "quic_base": ("ping", "identify", "autonatv2", "relay_reserve", "unknown_protocol"),
+    "quic_base": ("ping", "identify", "relay_reserve", "unknown_protocol"),
     "tcp_noise": ("ping", "identify", "echo", "echo_large"),
     "tcp_tls": ("ping", "identify", "echo"),
     "private_tcp_yamux_pnet": (
@@ -79,6 +79,8 @@ CURRENT_ACCEPTANCE_SCENARIOS = {
     "quic_dht/dht_provide_find_provider": ("kademlia_amino",),
     "quic_rendezvous/rendezvous_register_discover": ("rendezvous_rust",),
 }
+# TLS Ping is transport smoke, not the separately registered QUIC Ping claim.
+UNCLAIMED_SMOKE_SCENARIOS = ("tcp_tls/ping",)
 # Executable registration only. Capability support remains staged until the
 # clean-head promotion wrapper validates the entire bilateral 41-case suite.
 AUTONAT_ACCEPTANCE_SCENARIOS = {
@@ -553,7 +555,7 @@ def start_listener(binary: Path, implementation: str, work: Path, scenario: Opti
         "--store-dir",
         str(store_dir),
         "--features",
-        "ping,identify" if transport == "tcp-pnet" else "ping,identify,autonatv2,relay,dcutr,dht,rendezvous,pubsub",
+        "ping,identify" if transport == "tcp-pnet" else "ping,identify,relay,dcutr,dht,rendezvous,pubsub",
         "--transport",
         transport,
     ]
@@ -1242,10 +1244,10 @@ def require_pnet_dial_evidence(result: dict, implementation: str) -> None:
 def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: Path, listener: str, scenario: str,
                             root: Path, transport: str, acceptance_profile: str,
                             transport_stack: tuple[str, ...], runner_scenario_id: str,
-                            acceptance_scenario_id: str, pnet_key_file: Optional[Path] = None,
+                            acceptance_scenario_id: Optional[str], pnet_key_file: Optional[Path] = None,
                             pnet_mismatch_key_file: Optional[Path] = None,
                             pnet_fingerprint: Optional[str] = None, dnsaddr: bool = False) -> dict:
-    work = root / f"{transport}-{dialer}-to-{listener}-{acceptance_scenario_id}"
+    work = root / f"{transport}-{dialer}-to-{listener}-{acceptance_scenario_id or scenario}"
     work.mkdir(parents=True, exist_ok=True)
     if acceptance_profile not in {"native", "private_network"}:
         raise RuntimeError(f"unsupported acceptance profile: {acceptance_profile}")
@@ -1257,6 +1259,7 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
     listener_result = (
         work / f"{listener}-listen-{scenario}.json"
         if pnet_profile or scenario in PUBSUB_SCENARIOS or scenario in DHT_VALUE_SCENARIOS
+        or (scenario == "relay_reserve" and listener == "rust")
         else None
     )
     server = start_listener(
@@ -1302,6 +1305,14 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
         if scenario == "dht_provide_find_provider":
             require_dht_provider_evidence(result, dialer, peer_id)
         delivered = wait_json(listener_result, 20) if listener_result is not None else None
+        if scenario == "relay_reserve" and listener == "rust":
+            # First result proves the event was polled; only the joined final trace is evidence.
+            cleanup_errors = server.close()
+            if cleanup_errors:
+                raise RuntimeError("Rust relay listener cleanup failed: " + "; ".join(cleanup_errors))
+            delivered = wait_json(listener_result, 20)
+            if delivered.get("trace_complete") is not True:
+                raise RuntimeError("Rust relay listener did not finalize its acceptance trace")
         if delivered is not None and delivered.get("status") != "ok":
             raise RuntimeError(f"{listener} listener reported {delivered}")
         if pnet_profile and listener == "rust":
@@ -1727,7 +1738,8 @@ def main() -> int:
                             if scenario in AUTONAT_SCENARIOS:
                                 continue  # The paired suite below owns native AutoNAT once per invocation.
                             for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
-                                f"{profile}/{scenario}", (scenario,)
+                                f"{profile}/{scenario}",
+                                (None,) if f"{profile}/{scenario}" in UNCLAIMED_SMOKE_SCENARIOS else (scenario,),
                             ):
                                 try:
                                     artifacts.append(

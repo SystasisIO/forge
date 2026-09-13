@@ -164,6 +164,15 @@ failure recovery. The regression drives a real native close callback while that
 owner is held and checks both successful close and preserved primary error.
 It does not substitute a synthetic callback or wait on unrelated connection jobs.
 
+The automatic DCUtR fallback must not begin another five-second wait after a
+shutdown-canceled dial. It observes the existing lifecycle notification and
+session admission instead of polling. Periodic heartbeat and relay-discovery
+workers retain their absolute deadlines across admission notifications, so
+waking the fallback does not accelerate unrelated network work. Regressions
+cover stop-before-wait, stop-during-wait, admission, periodic timing and shutdown.
+QUIC reset metrics count each stream once even when a local reset is followed
+by a remote RESET_STREAM; this does not suppress either native transition.
+
 Private profiles retain TCP/Yamux PSK protection. AutoNAT Internet egress requires
 explicit `allow_internet`; the default is `deny_external`. Both successful enabled
 exchanges and denial-before-I/O controls are required. A denial-only fixture must
@@ -171,9 +180,26 @@ not replace the approved positive interoperability requirements.
 
 ## Evidence Status
 
-The existing loopback `autonatv2` fixture is not a positive exchange proof:
-opening the protocol or returning an unasserted reachability enum is insufficient.
-Its previous execution must not satisfy the PR6 AutoNAT acceptance gate.
+The old loopback `autonatv2` stub is removed. Opening the protocol or returning
+an unasserted reachability enum was not a positive exchange proof. The mandatory
+41 actual exchanges and controls replace that stub in both focused and full runs.
+
+The pinned Rust Identify behaviour uses the legacy peer-record decoder in
+`protocols/identify/src/protocol.rs`. Standard `libp2p-peer-record` envelopes
+with payload type `03 01` are supported separately by
+`PeerRecord::from_signed_envelope_interop` in `core/src/peer_record.rs`.
+The fixture preserves the behaviour's original result and performs a separately
+labelled authenticated Identify exchange with a 4096-byte bound. It retains raw
+bytes and hashes before validation, uses the donor envelope verifier, and checks
+the signer, Identify key, record identity and authenticated remote identity.
+This is not a claim that the pinned behaviour consumed the original envelope.
+
+The pinned Rust relay server sends a successful reservation with `voucher: None`
+in `protocols/relay/src/protocol/inbound_hop.rs`. Forge-to-Rust evidence therefore
+correlates the actual client reservation with the server's fresh
+`ReservationReqAccepted` event, returned addresses and expiry. Both process
+snapshots must be indexed and belong to successful terminal processes. An empty
+voucher alone is insufficient; reservation evidence is not circuit-echo evidence.
 
 Positive exchanges use isolated Linux network namespaces with public-classified
 numeric addresses, no external interface and no default route. This exercises

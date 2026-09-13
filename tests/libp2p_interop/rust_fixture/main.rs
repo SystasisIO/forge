@@ -10,7 +10,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
@@ -18,7 +18,7 @@ use hickory_resolver::config::{NameServerConfig, ResolveHosts};
 use hickory_resolver::proto::xfer::Protocol as DnsProtocol;
 use libp2p::kad::store::RecordStore;
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, SwarmBuilder, Transport, autonat,
+    Multiaddr, PeerId, StreamProtocol, SwarmBuilder, Transport,
     core::transport::upgrade::Version,
     dcutr, gossipsub, identify, identity, kad,
     multiaddr::Protocol,
@@ -29,8 +29,9 @@ use libp2p::{
     tcp, tls, yamux,
 };
 use libp2p_stream as raw_stream;
-use rand::rngs::OsRng;
+use quick_protobuf::BytesReader;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 mod provider;
 #[path = "autonat.rs"]
@@ -88,7 +89,7 @@ struct PnetObservation {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    autonat: Toggle<autonat::v2::server::Behaviour>,
+    // Native AutoNAT owns a separate behaviour in autonat_fixture.
     relay: Toggle<relay::Behaviour>,
     relay_client: Toggle<relay::client::Behaviour>,
     kad: kad::Behaviour<kad::store::MemoryStore>,
@@ -256,7 +257,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
     }
     if out.transport == "tcp-pnet"
         && !autonat_fixture::is_scenario(&out.scenario)
-        && let Some(feature) = ["autonatv2", "relay", "dcutr"]
+        && let Some(feature) = ["relay", "dcutr"]
             .into_iter()
             .find(|feature| out.features.contains(*feature))
     {
@@ -286,9 +287,6 @@ fn behaviour_for(
         kad::Behaviour::with_config(peer, kad::store::MemoryStore::new(peer), kad_config);
     kad_behaviour.set_mode(Some(kad::Mode::Server));
     Behaviour {
-        autonat: (!private_network)
-            .then(|| autonat::v2::server::Behaviour::new(OsRng))
-            .into(),
         relay: (!private_network)
             .then(|| relay::Behaviour::new(peer, Default::default()))
             .into(),
@@ -746,6 +744,163 @@ async fn open_required_stream(
                     swarm.add_external_address(address);
                 }
             }
+        }
+    }
+}
+
+const RAW_IDENTIFY_LIMIT: usize = 4096;
+
+async fn read_raw_identify_frame<S>(stream: &mut S) -> Result<Vec<u8>, Box<dyn Error>>
+where
+    S: futures::AsyncRead + Unpin,
+{
+    let mut size = 0usize;
+    // Every permitted length fits in two varint bytes. Bound before allocating
+    // or reading a body; do not reuse the larger application echo-frame limit.
+    for shift in [0, 7] {
+        let mut byte = [0u8];
+        stream.read_exact(&mut byte).await?;
+        size |= usize::from(byte[0] & 0x7f) << shift;
+        if byte[0] & 0x80 == 0 {
+            if size == 0 || size > RAW_IDENTIFY_LIMIT || (shift != 0 && byte[0] == 0) {
+                return Err("Identify frame length violates canonical 4096-byte limit".into());
+            }
+            let mut bytes = vec![0; size];
+            stream.read_exact(&mut bytes).await?;
+            return Ok(bytes);
+        }
+    }
+    Err("Identify frame length exceeds 4096-byte limit".into())
+}
+
+fn raw_identify_fields(bytes: &[u8]) -> Result<(&[u8], &[u8]), Box<dyn Error>> {
+    if bytes.is_empty() || bytes.len() > RAW_IDENTIFY_LIMIT {
+        return Err("invalid bounded Identify protobuf".into());
+    }
+    let mut reader = BytesReader::from_bytes(bytes);
+    let mut public_key = None;
+    let mut signed_record = None;
+    while !reader.is_eof() {
+        let tag = reader.next_tag(bytes)?;
+        match tag >> 3 {
+            0 => return Err("Identify field zero is invalid".into()),
+            field @ (1 | 8) => {
+                if tag & 7 != 2 {
+                    return Err("Identify key/record has wrong protobuf wire type".into());
+                }
+                let slot = if field == 1 { &mut public_key } else { &mut signed_record };
+                if slot.is_some() {
+                    return Err("duplicate Identify key/record field".into());
+                }
+                *slot = Some(reader.read_bytes(bytes)?);
+            }
+            _ => reader.read_unknown(bytes, tag)?,
+        }
+    }
+    Ok((public_key.ok_or("Identify public key missing")?,
+        signed_record.ok_or("Identify signed peer record missing")?))
+}
+
+fn raw_identify_evidence(bytes: &[u8], authenticated_peer: PeerId) -> serde_json::Value {
+    use libp2p::core::{PeerRecord, SignedEnvelope};
+    const STANDARD_PAYLOAD_TYPE: &[u8] = &[0x03, 0x01];
+
+    let hex = |value: &[u8]| value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let captured = &bytes[..bytes.len().min(RAW_IDENTIFY_LIMIT)];
+    // Capture before any fallible decoding or signature/identity validation.
+    let mut evidence = json!({
+        "basis": "fixture_separate_authenticated_identify_exchange",
+        "protocol": "/ipfs/id/1.0.0",
+        "authenticated_remote_peer_id": authenticated_peer.to_string(),
+        "status": "failed",
+        "signed_peer_record_verified": false,
+        "legacy_validation": {"status": "not_attempted"},
+        "interop_validation": {"status": "not_attempted"},
+        "raw_protobuf_hex": hex(captured),
+        "raw_protobuf_sha256": format!("{:x}", Sha256::digest(captured)),
+        "raw_protobuf_bytes": captured.len(),
+        "raw_capture_truncated": captured.len() != bytes.len(),
+    });
+    let validation = (|| -> Result<(), Box<dyn Error>> {
+        let (key_bytes, envelope_bytes) = raw_identify_fields(bytes)?;
+        evidence["signed_envelope_hex"] = json!(hex(envelope_bytes));
+        evidence["signed_envelope_sha256"] = json!(format!("{:x}", Sha256::digest(envelope_bytes)));
+        let key = identity::PublicKey::try_decode_protobuf(key_bytes)?;
+        let envelope = SignedEnvelope::from_protobuf_encoding(envelope_bytes)?;
+        let (record, domain, payload_type, format) = match PeerRecord::from_signed_envelope(envelope.clone()) {
+            Ok(record) => {
+                evidence["legacy_validation"] = json!({"status": "verified"});
+                (record, "libp2p-routing-state", b"/libp2p/routing-state-record".as_slice(), "legacy")
+            }
+            Err(error) => {
+                evidence["legacy_validation"] = json!({"status": "rejected", "error": format!("{error:?}")});
+                let record = match PeerRecord::from_signed_envelope_interop(envelope.clone()) {
+                    Ok(record) => {
+                        evidence["interop_validation"] = json!({"status": "verified"});
+                        record
+                    }
+                    Err(error) => {
+                        evidence["interop_validation"] = json!({"status": "rejected", "error": format!("{error:?}")});
+                        return Err(error.into());
+                    }
+                };
+                (record, "libp2p-peer-record", STANDARD_PAYLOAD_TYPE, "standard")
+            }
+        };
+        let (_, signer) = envelope.payload_and_signing_key(domain.to_owned(), payload_type)?;
+        evidence["identify_public_key_peer_id"] = json!(key.to_peer_id().to_string());
+        evidence["signer_peer_id"] = json!(signer.to_peer_id().to_string());
+        evidence["record_peer_id"] = json!(record.peer_id().to_string());
+        if signer != &key || key.to_peer_id() != authenticated_peer || record.peer_id() != authenticated_peer {
+            return Err("Identify signer, record, public key and authenticated peer disagree".into());
+        }
+        evidence["envelope_format"] = json!(format);
+        evidence["domain"] = json!(domain);
+        evidence["payload_type_hex"] = json!(hex(payload_type));
+        evidence["record_sequence"] = json!(record.seq());
+        evidence["record_addresses"] = json!(record.addresses().iter().map(ToString::to_string).collect::<Vec<_>>());
+        Ok(())
+    })();
+    match validation {
+        Ok(()) => {
+            evidence["status"] = json!("verified");
+            evidence["signed_peer_record_verified"] = json!(true);
+            evidence["error"] = serde_json::Value::Null;
+        }
+        Err(error) => evidence["error"] = json!(format!("{error:?}")),
+    }
+    evidence
+}
+
+async fn exchange_raw_identify(
+    swarm: &mut libp2p::Swarm<Behaviour>, peer: PeerId,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    if !swarm.is_connected(&peer) {
+        return Err("raw Identify requires an established authenticated connection".into());
+    }
+    let mut control = swarm.behaviour().stream.new_control();
+    let exchange = async {
+        let mut stream = control.open_stream(peer, StreamProtocol::new("/ipfs/id/1.0.0")).await?;
+        let bytes = read_raw_identify_frame(&mut stream).await?;
+        // Like pinned recv_identify, drop after the frame rather than waiting
+        // for a close ACK from a peer that may already have dropped its writer.
+        Ok::<_, Box<dyn Error>>(raw_identify_evidence(&bytes, peer))
+    };
+    tokio::pin!(exchange);
+    let deadline = tokio::time::sleep(Duration::from_secs(15));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut deadline => return Err("raw Identify exchange deadline expired".into()),
+            result = &mut exchange => return result,
+            event = swarm.select_next_some() => match event {
+                SwarmEvent::NewListenAddr { address, .. } => swarm.add_external_address(address),
+                SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } if peer_id == peer => {
+                    return Err("authenticated connection closed during raw Identify".into());
+                }
+                _ => {}
+            },
         }
     }
 }
@@ -1661,6 +1816,30 @@ async fn wait_gossipsub_peer_and_publish(
     }
 }
 
+fn write_relay_listener_result(
+    path: &PathBuf,
+    peer: PeerId,
+    addresses: &[String],
+    acceptances: &[serde_json::Value],
+    overflow: bool,
+    started: u64,
+    complete: bool,
+) -> Result<(), Box<dyn Error>> {
+    let temporary = path.with_extension("relay.tmp");
+    write_json(&temporary, json!({
+        "implementation": "rust", "role": "listener", "scenario": "relay_reserve",
+        "status": if overflow { "overflow" } else { "ok" },
+        "peer_id": peer.to_string(), "listen_addrs": addresses,
+        "reservation_basis": "libp2p.relay.server.ReservationReqAccepted",
+        "reservation_acceptances": acceptances, "trace_overflow": overflow,
+        "trace_complete": complete, "started_at_unix_seconds": started,
+        "observed_at_unix_seconds": SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+    }))?;
+    // Both provisional and final snapshots are read by another process.
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
 async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut swarm = new_swarm(&opts).await?;
     let pnet_application_streams = Arc::new(AtomicU64::new(0));
@@ -1694,6 +1873,10 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut record_reported = false;
     let mut pnet_reported = false;
     let mut pnet_observation = PnetObservation::default();
+    let relay_started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let mut relay_addresses = Vec::new();
+    let mut relay_acceptances = Vec::new();
+    let mut relay_trace_overflow = false;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(100)) => {
@@ -1744,6 +1927,12 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
                     dht_seed_dial_started = true;
                 }
                 if ready && opts.stop_file.exists() {
+                    if opts.scenario == "relay_reserve" {
+                        write_relay_listener_result(
+                            &opts.result_file, peer, &relay_addresses, &relay_acceptances,
+                            relay_trace_overflow, relay_started, true,
+                        )?;
+                    }
                     if !pnet_reported && opts.scenario == "pnet" && !opts.pnet_control.is_empty() {
                         pnet_observation.application_streams = pnet_application_streams.load(Ordering::Relaxed);
                         write_json(
@@ -1776,11 +1965,35 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
             event = swarm.select_next_some() => {
                 eprintln!("rust-listen event: {event:?}");
                 match event {
+                    SwarmEvent::Behaviour(BehaviourEvent::Relay(
+                        relay::Event::ReservationReqAccepted { src_peer_id, renewed },
+                    )) if opts.scenario == "relay_reserve" => {
+                        if relay_acceptances.len() < 16 {
+                            relay_acceptances.push(json!({
+                                "src_peer_id": src_peer_id.to_string(), "renewed": renewed,
+                                "observed_at_unix_seconds": SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+                            }));
+                        } else {
+                            relay_trace_overflow = true;
+                        }
+                        // The runner waits for this event, then joins us and reads the final snapshot.
+                        write_relay_listener_result(
+                            &opts.result_file, peer, &relay_addresses, &relay_acceptances,
+                            relay_trace_overflow, relay_started, false,
+                        )?;
+                    }
                     SwarmEvent::IncomingConnection { .. } if opts.scenario == "pnet" => {
                         pnet_observation.attempted_connections += 1;
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         swarm.add_external_address(address.clone());
+                        if opts.scenario == "relay_reserve" {
+                            if relay_addresses.len() < 16 {
+                                relay_addresses.push(format!("{address}/p2p/{peer}"));
+                            } else {
+                                relay_trace_overflow = true;
+                            }
+                        }
                         if !ready {
                             write_json(&opts.ready_file, json!({
                                 "implementation": "rust",
@@ -1788,7 +2001,7 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
                                 "peer_id": peer.to_string(),
                                 "listen_addrs": [format!("{address}/p2p/{peer}")],
                                 "transport": opts.transport.clone(),
-                                "autonat_v2_active": swarm.behaviour().autonat.is_enabled(),
+                                "autonat_v2_active": false,
                                 "relay_service_active": swarm.behaviour().relay.is_enabled(),
                                 "relay_client_active": swarm.behaviour().relay_client.is_enabled(),
                                 "dcutr_active": swarm.behaviour().dcutr.is_enabled(),
@@ -1810,7 +2023,7 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
                                 "status": "ok",
                                 "authenticated_remote_peer_id": peer_id.to_string(),
                                 "negotiated_transport": "tcp",
-                                "autonat_v2_active": swarm.behaviour().autonat.is_enabled(),
+                                "autonat_v2_active": false,
                                 "relay_service_active": swarm.behaviour().relay.is_enabled(),
                                 "relay_client_active": swarm.behaviour().relay_client.is_enabled(),
                                 "dcutr_active": swarm.behaviour().dcutr.is_enabled(),
@@ -2066,11 +2279,23 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
     ) {
         wait_dht_remote_ready(&mut swarm, remote_peer).await?;
     }
+    let mut separate_identify = None;
     match opts.scenario.as_str() {
         "ping" if !ping_ok => return Err("ping did not complete".into()),
         "identify" if identify_count == 0 => return Err("identify did not return protocols".into()),
-        "autonatv2" => {
-            open_required_stream(&mut swarm, remote_peer, "/libp2p/autonat/2/dial-request").await?;
+        "ping" => {}
+        "identify" => {
+            let evidence = exchange_raw_identify(&mut swarm, remote_peer).await?;
+            if evidence["status"] != "verified" {
+                write_json(&opts.result_file, json!({
+                    "implementation": "rust", "role": "dialer", "scenario": "identify", "status": "failed",
+                    "signed_peer_record": identify_signed_record, "protocol_count": identify_count,
+                    "authenticated_remote_peer_id": authenticated_remote_peer_id,
+                    "raw_identify_exchange": evidence,
+                }))?;
+                return Err("raw Identify verification failed; captured evidence is in result-file".into());
+            }
+            separate_identify = Some(evidence);
         }
         "relay_reserve" => {
             let reservation = reserve_relay_address(
@@ -2152,7 +2377,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                 "negotiated_security": "/noise",
                 "negotiated_muxer": "/yamux/1.0.0",
                 "authenticated_remote_peer_id": authenticated_remote_peer_id,
-                "autonat_v2_active": swarm.behaviour().autonat.is_enabled(),
+                "autonat_v2_active": false,
                 "relay_service_active": swarm.behaviour().relay.is_enabled(),
                 "relay_client_active": swarm.behaviour().relay_client.is_enabled(),
                 "dcutr_active": swarm.behaviour().dcutr.is_enabled(),
@@ -2328,7 +2553,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             )?;
             return Ok(());
         }
-        _ => {}
+        _ => return Err(format!("unknown scenario {}", opts.scenario).into()),
     }
     write_json(
         &opts.result_file,
@@ -2340,6 +2565,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             "ping_ok": ping_ok,
             "protocol_count": identify_count,
             "signed_peer_record": identify_signed_record,
+            "raw_identify_exchange": separate_identify,
             "negotiated_transport": negotiated_transport,
             "authenticated_remote_peer_id": authenticated_remote_peer_id
         }),
@@ -2575,9 +2801,122 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RelayAddressError, RelayReservationProgress, relay_transport_addr};
-    use libp2p::{Multiaddr, identity, multiaddr::Protocol};
+    use super::{RelayAddressError, RelayReservationProgress, relay_transport_addr,
+                decode_hex, raw_identify_fields, raw_identify_evidence, read_raw_identify_frame, write_frame};
+    use libp2p::{Multiaddr, core::{PeerRecord, SignedEnvelope}, identity, multiaddr::Protocol};
+    use quick_protobuf::Writer;
+    use sha2::{Digest, Sha256};
     use std::net::Ipv4Addr;
+
+    fn identify_payload(key: &[u8], envelope: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer = Writer::new(&mut bytes);
+        writer.write_with_tag(10, |writer| writer.write_bytes(key)).unwrap();
+        writer.write_with_tag(66, |writer| writer.write_bytes(envelope)).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn raw_identify_verifies_legacy_and_standard_without_behaviour_substitution() {
+        let key = identity::Keypair::generate_ed25519();
+        for standard in [false, true] {
+            let addresses = vec!["/ip4/127.0.0.1/tcp/4001".parse().unwrap()];
+            let record = if standard { PeerRecord::new_interop(&key, addresses) }
+                         else { PeerRecord::new(&key, addresses) }.unwrap();
+            let envelope = record.into_signed_envelope().into_protobuf_encoding();
+            let bytes = identify_payload(&key.public().encode_protobuf(), &envelope);
+            let evidence = raw_identify_evidence(&bytes, key.public().to_peer_id());
+            assert_eq!(evidence["status"], "verified");
+            assert_eq!(evidence["basis"], "fixture_separate_authenticated_identify_exchange");
+            assert_eq!(evidence["envelope_format"], if standard { "standard" } else { "legacy" });
+            assert_eq!(evidence["signed_peer_record_verified"], true);
+            assert_eq!(evidence["record_peer_id"], key.public().to_peer_id().to_string());
+            assert_eq!(decode_hex(evidence["raw_protobuf_hex"].as_str().unwrap()).unwrap(), bytes);
+            assert_eq!(evidence["raw_protobuf_sha256"], format!("{:x}", Sha256::digest(&bytes)));
+            assert_eq!(decode_hex(evidence["signed_envelope_hex"].as_str().unwrap()).unwrap(), envelope);
+            assert_eq!(evidence["signed_envelope_sha256"], format!("{:x}", Sha256::digest(&envelope)));
+        }
+    }
+
+    fn assert_raw_identify_failed(bytes: &[u8], peer: libp2p::PeerId) -> serde_json::Value {
+        let evidence = raw_identify_evidence(bytes, peer);
+        assert_eq!(evidence["status"], "failed");
+        assert_eq!(evidence["signed_peer_record_verified"], false);
+        assert!(!evidence["error"].as_str().unwrap().is_empty());
+        assert_eq!(decode_hex(evidence["raw_protobuf_hex"].as_str().unwrap()).unwrap(), bytes);
+        assert_eq!(evidence["raw_protobuf_sha256"], format!("{:x}", Sha256::digest(bytes)));
+        evidence
+    }
+
+    #[test]
+    fn raw_identify_rejects_wrong_peer_key_signature_domain_and_record_signer() {
+        let key = identity::Keypair::generate_ed25519();
+        let other = identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let record = PeerRecord::new_interop(&key, vec![]).unwrap().into_signed_envelope();
+        let encoded = record.clone().into_protobuf_encoding();
+        assert_raw_identify_failed(&identify_payload(&key.public().encode_protobuf(), &encoded), other.public().to_peer_id());
+        assert_raw_identify_failed(&identify_payload(&other.public().encode_protobuf(), &encoded), peer);
+        let mut corrupt = encoded;
+        *corrupt.last_mut().unwrap() ^= 1;
+        let failed = assert_raw_identify_failed(&identify_payload(&key.public().encode_protobuf(), &corrupt), peer);
+        assert_eq!(failed["legacy_validation"]["status"], "rejected");
+        assert_eq!(failed["interop_validation"]["status"], "rejected");
+        assert!(failed["legacy_validation"]["error"].as_str().unwrap().contains("UnexpectedPayloadType"));
+        assert!(failed["interop_validation"]["error"].as_str().unwrap().contains("InvalidSignature"));
+        let (payload, _) = record.payload_and_signing_key("libp2p-peer-record".into(), &[3, 1]).unwrap();
+        for (signer, domain, kind) in [(&other, "libp2p-peer-record", vec![3, 1]),
+                                      (&key, "unrelated-domain", vec![3, 1]),
+                                      (&key, "libp2p-peer-record", vec![3, 2])] {
+            let envelope = SignedEnvelope::new(signer, domain.into(), kind, payload.to_vec()).unwrap();
+            let bytes = identify_payload(&signer.public().encode_protobuf(), &envelope.into_protobuf_encoding());
+            assert_raw_identify_failed(&bytes, signer.public().to_peer_id());
+        }
+    }
+
+    #[test]
+    fn raw_identify_malformed_failure_retains_capture_before_validation() {
+        let peer = test_peer();
+        let failed = assert_raw_identify_failed(&[10], peer);
+        assert_eq!(failed["legacy_validation"]["status"], "not_attempted");
+        assert_eq!(failed["interop_validation"]["status"], "not_attempted");
+        let bytes = identify_payload(b"invalid key", b"invalid envelope");
+        let failed = assert_raw_identify_failed(&bytes, peer);
+        assert_eq!(decode_hex(failed["signed_envelope_hex"].as_str().unwrap()).unwrap(), b"invalid envelope");
+    }
+
+    #[test]
+    fn raw_identify_parser_rejects_duplicate_missing_malformed_and_truncated_fields() {
+        let valid = identify_payload(b"key", b"record");
+        assert_eq!(raw_identify_fields(&valid).unwrap(), (b"key".as_slice(), b"record".as_slice()));
+        for suffix in [&[10, 0][..], &[66, 0], &[0], &[8, 1], &[64, 1], &[18, 2, 1], &[0x80]] {
+            let mut bytes = valid.clone();
+            bytes.extend_from_slice(suffix);
+            assert!(raw_identify_fields(&bytes).is_err());
+        }
+        for bytes in [vec![], vec![10, 0], vec![66, 0], vec![0; 4097]] {
+            assert!(raw_identify_fields(&bytes).is_err());
+        }
+        // Repeated protocols are legal; only the two security fields are singular.
+        let mut bytes = valid;
+        bytes.extend_from_slice(&[26, 1, b'a', 26, 1, b'b']);
+        assert!(raw_identify_fields(&bytes).is_ok());
+    }
+
+    #[tokio::test]
+    async fn raw_identify_frame_enforces_cap_before_body_read() {
+        let mut oversized = futures::io::Cursor::new(vec![0x81, 0x20]); // 4097, no body.
+        let error = read_raw_identify_frame(&mut oversized).await.unwrap_err();
+        assert!(error.to_string().contains("4096-byte limit"));
+        for prefix in [vec![0], vec![0x81, 0], vec![0x80, 0x80], vec![1]] {
+            assert!(read_raw_identify_frame(&mut futures::io::Cursor::new(prefix)).await.is_err());
+        }
+        let payload = vec![42; 4096];
+        let mut frame = futures::io::Cursor::new(Vec::new());
+        write_frame(&mut frame, &payload).await.unwrap();
+        frame.set_position(0);
+        assert_eq!(read_raw_identify_frame(&mut frame).await.unwrap(), payload);
+    }
 
     fn test_peer() -> libp2p::PeerId {
         identity::Keypair::generate_ed25519().public().to_peer_id()

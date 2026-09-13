@@ -72,7 +72,6 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.private_network;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
-import forge.net.p2p.reachability;
 import forge.net.p2p.rendezvous;
 import forge.net.p2p.relay;
 import forge.net.p2p.scoring;
@@ -1459,13 +1458,36 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
       return "\"protocol_count\":" + std::to_string(record->protocols.size()) + ",\"agent_version\":\"" +
              json_escape(record->agent_version) + "\",\"signed_peer_record\":true";
    }
-   if (scenario == "autonatv2") {
-      const auto state = forge::asio::blocking::run(runtime, value.async_probe_reachability(peer));
-      return "\"reachability\":" + std::to_string(static_cast<int>(state));
-   }
    if (scenario == "relay_reserve") {
+      const auto started = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch());
       const auto reservation = forge::asio::blocking::run(runtime, value.async_reserve_relay(peer));
-      return "\"voucher_bytes\":" + std::to_string(reservation.voucher ? reservation.voucher->encode().size() : 0U);
+      const auto received = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch());
+      const auto snapshot = value.diagnostics();
+      const auto session =
+          std::ranges::find(snapshot.sessions, reservation.relay_peer, &forge::net::p2p::diagnostics::session::remote_peer);
+      if (reservation.relay_peer != peer || session == snapshot.sessions.end() || !session->remote_endpoint) {
+         throw std::runtime_error{"FORGE reservation lacks its authenticated relay session"};
+      }
+      auto addresses = std::string{"["};
+      for (const auto& address : reservation.relay_endpoints) {
+         if (addresses.size() > 1) {
+            addresses += ',';
+         }
+         addresses += endpoint_json(address);
+      }
+      addresses += ']';
+      return "\"reservation_basis\":\"forge.node.async_reserve_relay\",\"relay_peer_id\":\"" +
+             json_escape(reservation.relay_peer.to_string()) + "\",\"reservation_client_peer_id\":\"" +
+             json_escape(value.local_peer().to_string()) + "\",\"authenticated_remote_peer_id\":\"" +
+             json_escape(session->remote_peer.to_string()) + "\",\"authenticated_remote_address\":" +
+             endpoint_json(*session->remote_endpoint) + ",\"reservation_started_at_unix_seconds\":" +
+             std::to_string(started.count()) + ",\"reservation_received_at_unix_seconds\":" +
+             std::to_string(received.count()) + ",\"reservation_expires_at_unix_seconds\":" +
+             std::to_string(reservation.expires_at.count()) + ",\"relay_endpoints\":" + addresses +
+             ",\"voucher_present\":" + (reservation.voucher ? "true" : "false") + ",\"voucher_bytes\":" +
+             std::to_string(reservation.voucher ? reservation.voucher->encode().size() : 0U);
    }
    if (scenario == "dht_find_peer") {
       const auto result =

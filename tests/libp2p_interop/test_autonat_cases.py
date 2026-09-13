@@ -311,6 +311,24 @@ class AutonatCasesTests(unittest.TestCase):
 
 
 class AutonatRunnerBranchTests(unittest.TestCase):
+    def test_generic_autonat_stub_is_retired_from_fixtures_and_registration(self):
+        self.assertNotIn("autonatv2", runner.SCENARIOS)
+        for profile, scenarios in runner.LIVE_SCENARIO_PROFILES.items():
+            with self.subTest(profile=profile):
+                self.assertNotIn("autonatv2", scenarios)
+        source = Path(__file__).resolve().parent
+        for name in ("runner.py", "forge_interop_fixture.cpp", "go_fixture/main.go", "rust_fixture/main.rs"):
+            with self.subTest(source=name):
+                self.assertNotIn("autonatv2", (source / name).read_text())
+        registry = json.loads((source / "donor_cases.json").read_text())["cases"]
+        for entry in registry:
+            with self.subTest(case=entry["id"]):
+                self.assertNotIn("test_forge_libp2p_interop autonatv2", entry["forge_tests"])
+                self.assertTrue(all(item["scenario"] != "autonatv2"
+                                    for item in entry.get("forge_live_scenario", [])))
+        native = next(entry for entry in registry if entry["id"] == "interop.live_native_autonat")
+        self.assertEqual(len(native["forge_live_scenario"]), 12)
+
     def test_common_preflight_and_final_identity_surround_full_or_focused_suite(self):
         for suite in ("autonat", "stage6"):
             for changed in (False, True):
@@ -336,7 +354,8 @@ class AutonatRunnerBranchTests(unittest.TestCase):
                         "export_fixture_deps": root / "deps",
                         "prepare_go_fixture": (root / "go", []), "prepare_rust_fixture": (root / "rust", []),
                         "pnet_fixture_paths": (root / "key", root / "wrong-key", "fingerprint"),
-                        "run_autonat_suite": [{"status": "passed", "scenario_id": "unit-autonat"}],
+                        "run_autonat_suite": [{"status": "passed", "suite": "autonat",
+                                               "scenario_id": spec.identifier} for spec in cases.case_specs()],
                     }
                     mocks = {name: stack.enter_context(patch.object(runner, name, return_value=value))
                              for name, value in returns.items()}
@@ -355,7 +374,22 @@ class AutonatRunnerBranchTests(unittest.TestCase):
                                      ({"forge": root / "forge", "go": root / "go", "rust": root / "rust"},
                                       root / "build" / ("autonat-run" if suite == "autonat" else "interop-run")))
                     self.assertEqual(any(m.called for m in legacy_mocks), suite == "stage6")
+                    tls_ping = [call for call in legacy_mocks[1].call_args_list
+                                if call.args[9] == "tcp_tls/ping"]
+                    self.assertEqual(len(tls_ping), 4 if suite == "stage6" else 0)
+                    self.assertTrue(all(call.args[10] is None for call in tls_ping))
+                    quic_ping = [call for call in legacy_mocks[0].call_args_list if call.args[4] == "ping"]
+                    self.assertEqual(len(quic_ping), 6 if suite == "stage6" else 0)
+                    self.assertTrue(all(call.args[6] == "ping" for call in quic_ping))
+                    for mock in legacy_mocks:
+                        for call in mock.call_args_list:
+                            self.assertNotIn("autonatv2", call.args)
+                            self.assertNotIn("autonatv2", call.kwargs.values())
                     artifact = json.loads((root / "build" / ("autonat-artifacts.json" if suite == "autonat" else "interop-artifacts.json")).read_text())
+                    native = [record for record in artifact["artifacts"] if record.get("suite") == "autonat"]
+                    self.assertEqual(len(native), 41)
+                    self.assertEqual({record["scenario_id"] for record in native},
+                                     {spec.identifier for spec in cases.case_specs()})
                     self.assertEqual(artifact["fixture_provenance"]["forge_worktree"]["changed_during_run"], changed)
                     self.assertEqual(artifact["fixture_provenance"]["binaries"]["forge"]["sha256"], "d" * 64)
 

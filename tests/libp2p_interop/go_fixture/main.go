@@ -302,7 +302,7 @@ func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHo
 		options = append(options, libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: resolver}))
 	}
 	if transport != "tcp-pnet" {
-		options = append(options, libp2p.EnableAutoNATv2(), libp2p.EnableRelay())
+		options = append(options, libp2p.EnableRelay())
 	}
 	switch transport {
 	case "quic", "":
@@ -1121,11 +1121,6 @@ func dial(opts options) (err error) {
 		result["protocol"] = string(echoProtocol)
 		result["payload_bytes"] = size
 		result["echo_ok"] = true
-	case "autonatv2":
-		if _, err = openRequiredProtocol(ctx, h, info.ID, protocol.ID("/libp2p/autonat/2/dial-request")); err != nil {
-			return err
-		}
-		result["opened"] = true
 	case "relay_reserve":
 		reservation, err := relayclient.Reserve(ctx, h, *info)
 		if err != nil {

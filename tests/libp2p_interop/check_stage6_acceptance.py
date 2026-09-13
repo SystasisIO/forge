@@ -531,13 +531,88 @@ def raw_evidence_paths(value: object) -> set[Path]:
     return paths
 
 
+def verified_process_stdout_paths(artifacts: list[object], root: Path,
+                                  binaries: dict[str, Path]) -> frozenset[Path]:
+    """Classify stdout by process ownership, never by a .log suffix.
+
+    Hash/size verification remains in the index validator. Protocol and exact
+    namespace/launcher validation remain mandatory at their existing owners.
+    Repeated process views must agree; JSON snapshots cannot alias stdout.
+    """
+    declarations: dict[Path, list[dict]] = {}
+    non_stdout: set[Path] = set()
+    stores: set[Path] = set()
+
+    def visit(value, process=False, isolated=False):
+        if isinstance(value, list):
+            for nested in value:
+                visit(nested, process, isolated)
+        elif isinstance(value, dict):
+            log = path_within(value.get("log_file"), root)
+            if log is not None:
+                command = value.get("command")
+                valid_command = False
+                if (process and isinstance(command, list) and len(command) >= 2
+                        and all(isinstance(arg, str) and arg for arg in command)):
+                    native = command
+                    if isolated and len(command) >= 6 and command[1:3] == ["netns", "exec"]:
+                        native = command[4:]
+                    options, errors = command_options(native, native[1])
+                    valid_command = (not errors and native[1] in {"listen", "dial", "destination", "dial-relay", "topology"}
+                                     and absolute_path(native[0]) in binaries.values())
+                    for flag in ("--ready-file", "--result-file", "--stop-file", "--store-dir"):
+                        path = path_within(options.get(flag), root)
+                        if path is not None:
+                            (stores if flag == "--store-dir" else non_stdout).add(path)
+                if valid_command:
+                    declarations.setdefault(log, []).append(value)
+                else:
+                    non_stdout.add(log)
+            for key, nested in value.items():
+                if key in {"result_file", "listener_result_file", "evidence_file"}:
+                    path = path_within(nested, root)
+                    if path is not None:
+                        non_stdout.add(path)
+                # `processes` is either a list or a map of role -> process.
+                child_process = key in {"owned_processes", "processes", "attempts", "listener_process"}
+                visit(nested, child_process or (process and "log_file" not in value), isolated)
+
+    for record in artifacts:
+        visit(record, isolated=isinstance(record, dict) and record.get("suite") == "autonat")
+
+    def clean(view):
+        terminal = view.get("terminal_status")
+        return (type(view.get("pid")) is int and view["pid"] > 0
+                and terminal == {"exit_code": 0, "termination": "graceful"}
+                and type(terminal["exit_code"]) is int)
+
+    verified: set[Path] = set()
+    for path, views in declarations.items():
+        owner = next((view for view in views if clean(view)), None)
+        if owner is None or path in non_stdout or any(path.is_relative_to(store) for store in stores):
+            continue
+        if any(
+            view["command"] != owner["command"]
+            or ("pid" in view and (type(view["pid"]) is not int or view["pid"] != owner["pid"]))
+            or ("terminal_status" in view and not clean(view))
+            or ("exit_code" in view and (type(view["exit_code"]) is not int or view["exit_code"] != 0))
+            or ("requested_log_file" in view and path_within(view["requested_log_file"], root) != path)
+            or failure_text(view) or view.get("spawn_error") or view.get("cleanup_errors")
+            for view in views
+        ):
+            continue
+        verified.add(path)
+    return frozenset(verified)
+
+
 def validate_evidence_index(
     artifact_path: Path, artifact_root: Path, artifacts: list[object], index: object,
-    empty_process_logs: frozenset[Path] = frozenset(),
+    binary_paths: Optional[dict[str, Path]] = None,
 ) -> tuple[dict[Path, str], list[str]]:
     errors: list[str] = []
     if not isinstance(index, list) or not index:
         return {}, ["artifact evidence_index must be a non-empty array"]
+    empty_process_logs = verified_process_stdout_paths(artifacts, artifact_root, binary_paths or {})
     indexed: dict[Path, str] = {}
     for entry in index:
         if not isinstance(entry, dict) or set(entry) != set(ARTIFACT_SCHEMA["evidence_index_required_fields"]):
@@ -562,7 +637,7 @@ def validate_evidence_index(
             continue
         resolved = (artifact_root / path).resolve()
         # A silent, joined fixture may have an empty stdout log, never an empty
-        # JSON proof. The AutoNAT branch supplies only owned process log paths.
+        # JSON proof. The same ownership rules apply to every suite and case.
         if size == 0 and resolved not in empty_process_logs:
             errors.append("artifact evidence index has an empty non-process proof")
             continue
@@ -878,12 +953,185 @@ def validate_ping_evidence(result: dict, _record: dict, _listener: Optional[dict
     return []
 
 
-def validate_identify_evidence(result: dict, _record: dict, _listener: Optional[dict]) -> list[str]:
+def identify_protobuf_fields(data: bytes, singular: set[int]) -> dict[int, list[tuple[int, object]]]:
+    """Bounded wire inspection, not another Identify implementation or crypto verifier."""
+    if not data or len(data) > 4096:
+        raise ValueError("Identify protobuf exceeds the nonempty 4096-byte bound")
+    fields: dict[int, list[tuple[int, object]]] = {}
+    offset = 0
+    while offset < len(data):
+        tag = relay_native_canonical_varint(data, offset)
+        if tag is None or not 0 < tag[0] >> 3 < (1 << 29):
+            raise ValueError("malformed Identify protobuf tag")
+        field, wire, offset = tag[0] >> 3, tag[0] & 7, tag[1]
+        if field in singular and field in fields:
+            raise ValueError("duplicate singular Identify protobuf field")
+        if wire in (0, 2):
+            value = relay_native_canonical_varint(data, offset)
+            if value is None:
+                raise ValueError("malformed Identify protobuf varint")
+            size, offset = value
+            if wire == 0:
+                payload = size
+            else:
+                if size > len(data) - offset:
+                    raise ValueError("truncated Identify protobuf bytes")
+                payload, offset = data[offset:offset + size], offset + size
+        elif wire in (1, 5):
+            size = 8 if wire == 1 else 4
+            if size > len(data) - offset:
+                raise ValueError("truncated Identify fixed field")
+            payload, offset = data[offset:offset + size], offset + size
+        else:
+            raise ValueError("unsupported Identify protobuf wire type")
+        fields.setdefault(field, []).append((wire, payload))
+    return fields
+
+
+def identify_field(fields: dict, number: int, wire: int):
+    values = fields.get(number)
+    if not isinstance(values, list) or len(values) != 1 or values[0][0] != wire:
+        raise ValueError("missing or mistyped Identify security field")
+    return values[0][1]
+
+
+def validate_raw_identify_exchange(result: dict, record: dict) -> list[str]:
+    """Inspect a *separate* Rust exchange; the Behaviour flag stays false.
+
+    Signature verification belongs to the pinned Rust donor APIs. Acceptance
+    additionally binds this report to indexed, terminal-owned raw process output
+    in validate_successful_raw_record; this pure inspection is not promotion.
+    """
+    try:
+        raw = result.get("raw_identify_exchange")
+        peer = record.get("peer_id")
+        if (not isinstance(raw, dict) or result.get("implementation") != "rust"
+                or result.get("scenario") != "identify" or result.get("signed_peer_record") is not False
+                or raw.get("basis") != "fixture_separate_authenticated_identify_exchange"
+                or raw.get("protocol") != "/ipfs/id/1.0.0" or raw.get("status") != "verified"
+                or raw.get("error") is not None or raw.get("signed_peer_record_verified") is not True
+                or raw.get("raw_capture_truncated", False) is not False
+                or not relay_native_peer_id(peer)
+                or result.get("authenticated_remote_peer_id") != peer
+                or any(raw.get(field) != peer for field in ("authenticated_remote_peer_id",
+                       "identify_public_key_peer_id", "signer_peer_id", "record_peer_id"))):
+            raise ValueError("raw Identify lacks an explicit successful separate authenticated exchange")
+        if (raw.get("envelope_format") != "standard" or raw.get("domain") != "libp2p-peer-record"
+                or raw.get("payload_type_hex") != "0301"
+                or raw.get("interop_validation") != {"status": "verified"}
+                or not isinstance(raw.get("legacy_validation"), dict)
+                or set(raw["legacy_validation"]) != {"status", "error"}
+                or raw["legacy_validation"]["status"] != "rejected"
+                or not nonempty_string(raw["legacy_validation"]["error"])):
+            raise ValueError("raw Identify does not prove explicit standard-envelope donor verification")
+
+        def decode(name):
+            value = raw.get(name + "_hex")
+            if (not isinstance(value, str) or not 0 < len(value) <= 8192 or len(value) % 2
+                    or re.fullmatch(r"[0-9a-f]+", value) is None):
+                raise ValueError("raw Identify has missing, oversized or noncanonical hex")
+            data = bytes.fromhex(value)
+            if hashlib.sha256(data).hexdigest() != raw.get(name + "_sha256"):
+                raise ValueError("raw Identify bytes/hash mismatch")
+            return data
+
+        message, envelope = decode("raw_protobuf"), decode("signed_envelope")
+        if type(raw.get("raw_protobuf_bytes")) is not int or raw["raw_protobuf_bytes"] != len(message):
+            raise ValueError("raw Identify frame length mismatch")
+        fields = identify_protobuf_fields(message, {1, 8})
+        key = identify_field(fields, 1, 2)
+        if identify_field(fields, 8, 2) != envelope:
+            raise ValueError("raw Identify envelope differs from field 8")
+        signed = identify_protobuf_fields(envelope, {1, 2, 3, 5})
+        if identify_field(signed, 1, 2) != key or identify_field(signed, 2, 2) != b"\x03\x01":
+            raise ValueError("raw Identify signer or standard payload type mismatch")
+        public = identify_protobuf_fields(key, {1, 2})
+        kind, key_data = identify_field(public, 1, 0), identify_field(public, 2, 2)
+        if set(public) != {1, 2} or kind not in (0, 1, 2, 3) or not key_data:
+            raise ValueError("raw Identify public key is invalid")
+        signature = identify_field(signed, 5, 2)
+        if not signature or (kind == 1 and (len(key_data) != 32 or len(signature) != 64)):
+            raise ValueError("raw Identify signature/key shape is invalid")
+        multihash = (bytes((0, len(key))) + key if len(key) <= 42 else b"\x12\x20" + hashlib.sha256(key).digest())
+        if relay_native_base58btc_encode(multihash) != peer:
+            raise ValueError("raw Identify public key does not derive the authenticated peer")
+        routing = identify_protobuf_fields(identify_field(signed, 3, 2), {1, 2})
+        if identify_field(routing, 1, 2) != multihash:
+            raise ValueError("raw Identify record peer differs from its signer")
+        sequence = identify_field(routing, 2, 0) if 2 in routing else 0
+        if type(raw.get("record_sequence")) is not int or raw["record_sequence"] != sequence:
+            raise ValueError("raw Identify record sequence mismatch")
+        addresses = routing.get(3, [])
+        if (not isinstance(raw.get("record_addresses"), list) or len(raw["record_addresses"]) != len(addresses)
+                or any(not nonempty_string(address) for address in raw["record_addresses"])):
+            raise ValueError("raw Identify record address count mismatch")
+        for wire, address in addresses:
+            if wire != 2 or not identify_field(identify_protobuf_fields(address, {1}), 1, 2):
+                raise ValueError("raw Identify record address is malformed")
+    except (ValueError, TypeError) as error:
+        return [str(error)]
+    return []
+
+
+def validate_identify_evidence(result: dict, record: dict, _listener: Optional[dict]) -> list[str]:
+    separate = result.get("raw_identify_exchange")
+    if separate is not None and (not isinstance(separate, dict) or separate.get("status") != "verified"):
+        return ["failed raw Identify exchange cannot be acceptance evidence"]
     if result.get("signed_peer_record") is True and (
         positive_integer(result.get("protocol_count")) or positive_integer(result.get("payload_bytes"))
     ):
         return []
+    if result.get("raw_identify_exchange") is not None:
+        errors = validate_raw_identify_exchange(result, record)
+        if not positive_integer(result.get("protocol_count")):
+            errors.append("Identify Behaviour lacks its independently observed protocol payload")
+        return errors
     return ["Identify evidence lacks a signed peer record and protocol payload"]
+
+
+def raw_identify_process_source(record: dict, payload: dict, result_path: Path,
+                                root: Path, indexed: dict[Path, str], claim_paths: set[Path]) -> list[str]:
+    """Require the exact Rust helper result captured by the joined process owner."""
+    attempts = record.get("result", {}).get("attempts")
+    owners = record.get("owned_processes")
+    if not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(owners, list):
+        return ["raw Identify requires one owned successful fixture attempt"]
+    attempt = attempts[0]
+    if not isinstance(attempt, dict):
+        return ["raw Identify attempt is malformed"]
+    options, command_errors = command_options(attempt.get("command"), "dial")
+    if command_errors or options.get("--peer-id") != record.get("peer_id") or options.get("--scenario") != "identify":
+        return ["raw Identify launch does not bind the expected authenticated peer and scenario"]
+    matches = [owner for owner in owners if isinstance(owner, dict)
+               and owner.get("command") == attempt.get("command")
+               and owner.get("pid") == attempt.get("pid") and owner.get("log_file") == attempt.get("log_file")]
+    if len(matches) != 1:
+        return ["raw Identify lacks a unique matching raw process owner"]
+    owner = matches[0]
+    terminal = {"exit_code": 0, "termination": "graceful"}
+    if (type(owner.get("pid")) is not int or owner["pid"] <= 0
+            or owner.get("terminal_status") != terminal or attempt.get("terminal_status") != terminal
+            or type(owner["terminal_status"]["exit_code"]) is not int
+            or type(attempt["terminal_status"]["exit_code"]) is not int):
+        return ["raw Identify process was not gracefully joined"]
+    outputs = owner.get("outputs")
+    if not isinstance(outputs, list) or outputs != attempt.get("outputs"):
+        return ["raw Identify process/attempt snapshots disagree"]
+    captures = [output for output in outputs if isinstance(output, dict) and output.get("argument") == "--result-file"]
+    if len(captures) != 1:
+        return ["raw Identify lacks its unique captured result"]
+    capture = captures[0]
+    source = path_within(capture.get("log_file"), root)
+    log = path_within(owner.get("log_file"), root)
+    if (capture.get("exists") is not True or path_within(capture.get("path"), root) != result_path
+            or log is None or source != Path(str(log) + ".result-file.json")
+            or source not in indexed or result_path not in indexed or log not in indexed):
+        return ["raw Identify source is absent from terminal-owned indexed output"]
+    captured, errors = load_evidence_json(source, "raw Identify process snapshot")
+    if captured != payload:
+        errors.append("raw Identify report differs from its immutable process snapshot")
+    claim_paths.add(source)
+    return errors
 
 
 def validate_quic_v1_transport_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
@@ -1074,10 +1322,147 @@ def rust_relay_command_target_errors(record: dict, relay_peer: str, relay_endpoi
     return errors
 
 
+def validate_voucherless_rust_reservation(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
+    """Pinned Rust omits vouchers: paired RESERVE response/server acceptance, not circuit echo."""
+    if (record.get("dialer") != "forge" or record.get("listener") != "rust"
+            or record.get("profile") != "native" or record.get("scenario") != "relay_reserve"
+            or not isinstance(listener, dict)):
+        return ["voucherless reservation requires the Forge-to-pinned-Rust native pair"]
+    relay = record.get("peer_id")
+    client = result.get("reservation_client_peer_id")
+    if (not relay_native_peer_id(relay) or not relay_native_peer_id(client) or relay == client
+            or result.get("relay_peer_id") != relay or result.get("authenticated_remote_peer_id") != relay
+            or listener.get("peer_id") != relay):
+        return ["voucherless reservation authenticated client/relay identities disagree"]
+    errors = rust_relay_command_target_errors(record, relay, record.get("addr"))
+    if (result.get("reservation_basis") != "forge.node.async_reserve_relay"
+            or result.get("voucher_present") is not False or type(result.get("voucher_bytes")) is not int
+            or result["voucher_bytes"] != 0 or result.get("role") != "dialer"
+            or listener.get("implementation") != "rust" or listener.get("role") != "listener"
+            or listener.get("scenario") != "relay_reserve" or listener.get("status") != "ok"
+            or listener.get("reservation_basis") != "libp2p.relay.server.ReservationReqAccepted"
+            or listener.get("trace_complete") is not True or listener.get("trace_overflow") is not False):
+        errors.append("voucherless reservation lacks bounded final native response/event evidence")
+    target, target_errors = relay_native_quic_transport_endpoint(record.get("addr"), relay)
+    remote, remote_errors = relay_native_quic_transport_endpoint(result.get("authenticated_remote_address"), relay)
+    errors.extend(target_errors + remote_errors)
+    if target is None or remote != target:
+        errors.append("voucherless reservation authenticated transport differs from the requested relay")
+    returned = result.get("relay_endpoints")
+    addresses = listener.get("listen_addrs")
+    normalized = []
+    for label, values in (("returned", returned), ("listener", addresses)):
+        if not isinstance(values, list) or not 1 <= len(values) <= 16:
+            errors.append(f"voucherless reservation lacks bounded {label} addresses")
+            normalized.append(set())
+            continue
+        endpoints = []
+        for address in values:
+            endpoint, endpoint_errors = relay_native_quic_transport_endpoint(address, relay)
+            errors.extend(endpoint_errors)
+            endpoints.append(endpoint)
+        if None in endpoints or len(set(endpoints)) != len(endpoints):
+            errors.append(f"voucherless reservation has invalid/duplicate {label} addresses")
+        normalized.append(set(endpoints))
+    if not normalized[0] or normalized[0] != normalized[1] or target not in normalized[0]:
+        errors.append("voucherless reservation returned addresses differ from the actual relay listener")
+    process = record.get("listener_process")
+    if not isinstance(process, dict) or process.get("listen_addrs") != addresses:
+        errors.append("voucherless reservation listener addresses differ from readiness")
+    acceptances = listener.get("reservation_acceptances")
+    if not isinstance(acceptances, list) or len(acceptances) != 1 or not isinstance(acceptances[0], dict):
+        return [*errors, "voucherless reservation requires exactly one fresh server acceptance"]
+    acceptance = acceptances[0]
+    if acceptance.get("src_peer_id") != client or acceptance.get("renewed") is not False:
+        errors.append("voucherless reservation server acceptance is renewed or belongs to another client")
+    times = [listener.get("started_at_unix_seconds"), result.get("reservation_started_at_unix_seconds"),
+             result.get("reservation_received_at_unix_seconds"), acceptance.get("observed_at_unix_seconds"),
+             listener.get("observed_at_unix_seconds"), result.get("reservation_expires_at_unix_seconds")]
+    if not all(positive_integer(value) for value in times):
+        errors.append("voucherless reservation lacks actual bounded timestamps")
+    else:
+        server_start, request_start, received, accepted, joined, expires = times
+        # Check at capture time, not review time; archived evidence does not expire during review.
+        if not (server_start <= request_start <= received <= joined < expires
+                and request_start <= accepted <= joined):
+            errors.append("voucherless reservation is expired or server acceptance is not fresh")
+    return errors
+
+
+def voucherless_reservation_process_sources(record: dict, payload: dict, listener_payload: Optional[dict],
+                                           root: Path, indexed: dict[Path, str], claims: set[Path]) -> list[str]:
+    """Bind both halves to unique joined owners and immutable indexed result/ready snapshots."""
+    attempts = record.get("result", {}).get("attempts")
+    owners = record.get("owned_processes")
+    listener = record.get("listener_process")
+    if (not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(attempts[0], dict)
+            or not isinstance(owners, list) or not isinstance(listener, dict) or not isinstance(listener_payload, dict)):
+        return ["voucherless reservation lacks one owned attempt and listener result"]
+    if attempts[0].get("pid") == listener.get("pid"):
+        return ["voucherless reservation requires two independently owned processes"]
+    errors = []
+    for view, expected, result_file, mode in (
+        (attempts[0], payload, record["result"].get("result_file"), "dial"),
+        (listener, listener_payload, record.get("listener_result_file"), "listen"),
+    ):
+        matches = [owner for owner in owners if isinstance(owner, dict)
+                   and all(owner.get(key) == view.get(key) for key in ("pid", "command", "log_file"))]
+        if len(matches) != 1:
+            errors.append(f"voucherless reservation {mode} lacks a unique process owner")
+            continue
+        owner = matches[0]
+        terminal = {"exit_code": 0, "termination": "graceful"}
+        if (type(owner.get("pid")) is not int or owner["pid"] <= 0
+                or owner.get("terminal_status") != terminal or view.get("terminal_status") != terminal
+                or type(owner["terminal_status"]["exit_code"]) is not int
+                or type(view["terminal_status"]["exit_code"]) is not int):
+            errors.append(f"voucherless reservation {mode} was not gracefully joined")
+        outputs = owner.get("outputs")
+        options, command_errors = command_options(view.get("command"), mode)
+        if (command_errors or not isinstance(outputs, list)
+                or (mode == "dial" and outputs != view.get("outputs"))):
+            errors.append(f"voucherless reservation {mode} output ownership is malformed")
+            continue
+        for argument in (("--result-file", "--ready-file") if mode == "listen" else ("--result-file",)):
+            captures = [output for output in outputs if isinstance(output, dict) and output.get("argument") == argument]
+            if len(captures) != 1:
+                errors.append(f"voucherless reservation {mode} lacks its unique {argument} snapshot")
+                continue
+            capture = captures[0]
+            log = path_within(owner.get("log_file"), root)
+            source = path_within(capture.get("log_file"), root)
+            original = path_within(capture.get("path"), root)
+            if (capture.get("exists") is not True or log is None or original is None or source is None
+                    or original != path_within(options.get(argument), root)
+                    or (argument == "--result-file" and original != path_within(result_file, root))
+                    or source != Path(str(log) + f".{argument.removeprefix('--')}.json")
+                    or any(path not in indexed for path in (log, source))
+                    or (argument == "--result-file" and original not in indexed)):
+                errors.append(f"voucherless reservation {mode} lacks indexed terminal-owned {argument}")
+                continue
+            captured, capture_errors = load_evidence_json(source, "voucherless reservation process snapshot")
+            errors.extend(capture_errors)
+            claims.update((log, source))
+            if argument == "--result-file":
+                claims.add(original)
+                if captured != expected:
+                    errors.append(f"voucherless reservation {mode} differs from its immutable process snapshot")
+            else:
+                if (not isinstance(captured, dict) or captured != owner.get("ready")
+                        or captured.get("implementation") != "rust" or captured.get("status") != "ready"
+                        or captured.get("role") != "listener" or captured.get("relay_service_active") is not True
+                        or captured.get("peer_id") != expected.get("peer_id")
+                        or captured.get("listen_addrs") != expected.get("listen_addrs")):
+                    errors.append("voucherless reservation readiness does not bind the actual relay service")
+    return errors
+
+
 def validate_relay_client_evidence(result: dict, record: dict, _listener: Optional[dict]) -> list[str]:
     implementation = result.get("implementation")
     if implementation == "forge" and positive_integer(result.get("voucher_bytes")):
         return []
+    if implementation == "forge":
+        return validate_voucherless_rust_reservation(result, record, _listener)
     if (
         implementation == "go"
         and result.get("voucher") is True
@@ -1451,6 +1836,13 @@ def validate_successful_raw_record(
     errors.extend(validate_result_semantics(
         expected_evidence_contract, payload or {}, record, listener_payload
     ))
+    if isinstance(payload, dict) and payload.get("raw_identify_exchange") is not None:
+        errors.extend(raw_identify_process_source(record, payload, result_path, artifact_root,
+                                                  indexed_evidence, claim_paths))
+    if (record.get("scenario") == "relay_reserve" and record.get("dialer") == "forge"
+            and isinstance(payload, dict) and not positive_integer(payload.get("voucher_bytes"))):
+        errors.extend(voucherless_reservation_process_sources(record, payload, listener_payload, artifact_root,
+                                                              indexed_evidence, claim_paths))
     if expected_runner_scenario in DNSADDR_SCENARIOS:
         dns = record.get("dns_evidence", {})
         dns_path = path_within(dns.get("log_file"), artifact_root) if isinstance(dns, dict) else None
@@ -1610,14 +2002,8 @@ def validate(
     base_records = [record for record in artifacts if not isinstance(record, dict) or record.get("suite") != "autonat"]
     autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
     base_required = {key: value for key, value in required.items() if key[1] not in AUTONAT_SCENARIOS}
-    empty_logs = frozenset(
-        Path(owner["log_file"]).resolve()
-        for record in autonat_records
-        for owner in (record.get("owned_processes") if isinstance(record.get("owned_processes"), list) else [])
-        if isinstance(owner, dict) and isinstance(owner.get("log_file"), str)
-    )
     indexed_evidence, evidence_errors = validate_evidence_index(
-        artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), empty_logs
+        artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
     errors.extend(evidence_errors)
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))

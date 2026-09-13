@@ -226,6 +226,52 @@ class AutonatAcceptanceTests(unittest.TestCase):
         self.save(refresh_index=True)
         self.assertTrue(any("all 41 cases" in error for error in self.validate(self.receipt(), expected_suite="stage6")))
 
+    def test_generic_autonat_stub_cannot_replace_a_required_native_pair(self):
+        self.full_stage6_fixture()
+        self.assertEqual(self.validate(self.receipt(), expected_suite="stage6"), [])
+        self.records.pop(0)
+        # Synthetic legacy-style receipt: opening a generic stream is not a
+        # native paired probe, even when its files and execution are indexed.
+        legacy = copy.deepcopy(self.records[-1])
+        legacy.update(scenario="autonatv2", runner_scenario_id="quic_base/autonatv2")
+        legacy.pop("acceptance_scenario_id")
+        self.records.append(legacy)
+        self.save(refresh_index=True)
+        errors = self.validate(self.receipt(), expected_suite="stage6")
+        self.assertTrue(any("all 41 cases" in error for error in errors), errors)
+
+    def test_full_suite_accepts_silent_owned_stdout_for_base_and_autonat(self):
+        self.full_stage6_fixture()
+        for record in self.records:
+            if record.get("suite") != "autonat":
+                attempt = record["result"]["attempts"][0]
+                attempt.update(pid=101, terminal_status={"exit_code": 0, "termination": "graceful"})
+                record["listener_process"]["pid"] = 102
+                record["owned_processes"] = [copy.deepcopy(attempt), copy.deepcopy(record["listener_process"])]
+            for owner in record["owned_processes"]:
+                Path(owner["log_file"]).write_bytes(b"")
+        self.save(refresh_index=True)
+        self.assertEqual(self.validate(self.receipt(), expected_suite="stage6"), [])
+
+    def test_duplicate_ping_claim_is_rejected_not_selected_by_transport(self):
+        self.full_stage6_fixture()
+        registry = self.manifest["interop_acceptance_registry"]
+        ping = checker.fixture_manifest("ping")["interop_acceptance_registry"]
+        registry["capabilities"].update(ping["capabilities"])
+        registry["evidence_contracts"] += ping["evidence_contracts"]
+        self.manifest_path.write_text(json.dumps(self.manifest))
+        self.artifact["acceptance_manifest"]["sha256"] = checker.sha256_file(self.manifest_path)
+        for profile, transport in (("quic_base", "quic"), ("tcp_tls", "tcp-tls")):
+            record = copy.deepcopy(self.records[-1])
+            record.update(dialer="forge", listener="go", scenario="ping", acceptance_scenario_id="ping",
+                          runner_scenario_id=f"{profile}/ping", transport=transport,
+                          transport_stack=["quic"] if transport == "quic" else ["tcp", "yamux"])
+            self.records.append(record)
+        self.save(refresh_index=True)
+        errors = self.validate(self.receipt(), expected_suite="stage6")
+        self.assertTrue(any("ping/forge_to_go lacks one canonical raw runner record" in error
+                            for error in errors), errors)
+
     def test_full_stage6_does_not_drop_base_contracts_or_hide_failed_pair(self):
         self.full_stage6_fixture()
         missing = self.records.pop()
@@ -475,6 +521,102 @@ class AutonatAcceptanceTests(unittest.TestCase):
             self.assertEqual(call.args[0], spec)
         self.assertEqual([r["acceptance_scenario_ids"] for r in records],
                          [runner.autonat_claims(spec) for spec in specs])
+
+
+class OwnedStdoutEvidenceTests(unittest.TestCase):
+    """Small synthetic ownership records, not edited live acceptance artifacts."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.log = self.root / "quiet.log"
+        self.log.write_bytes(b"")
+        self.result = self.root / "result.json"
+        self.result.write_text('{"status":"ok"}')
+        self.binaries = {"forge": self.root / "forge"}
+        self.owner = {
+            "pid": 123, "command": [str(self.binaries["forge"]), "dial", "--scenario", "ping",
+                                    "--result-file", str(self.result)],
+            "log_file": str(self.log), "terminal_status": {"exit_code": 0, "termination": "graceful"},
+        }
+        self.records = [{"owned_processes": [self.owner], "result": {"result_file": str(self.result)}}]
+
+    def validate_index(self, index=None):
+        if index is None:
+            index = checker.build_evidence_index(self.root, self.records)
+        return checker.validate_evidence_index(self.root / "artifact.json", self.root, self.records,
+                                               index, self.binaries)[1]
+
+    def test_silent_stdout_requires_owner_not_filename_extension(self):
+        self.assertEqual(self.validate_index(), [])
+        self.log.rename(self.root / "stdout")
+        self.log = self.root / "stdout"
+        self.owner["log_file"] = str(self.log)
+        self.assertEqual(self.validate_index(), [])
+        self.records[0]["unowned"] = {"log_file": str(self.root / "unowned.log")}
+        (self.root / "unowned.log").write_bytes(b"")
+        self.assertIn("artifact evidence index has an empty non-process proof", self.validate_index())
+
+    def test_nested_process_attempt_and_listener_ownership(self):
+        for wrapper in (lambda owner: {"attempts": [owner]},
+                        lambda owner: {"control": {"listener_process": owner}},
+                        lambda owner: {"processes": {"seeker": owner}}):
+            with self.subTest(wrapper=wrapper):
+                self.records = [wrapper(self.owner)]
+                self.assertEqual(self.validate_index(), [])
+
+    def test_running_failed_forged_or_contradictory_owner_is_not_silent_proof(self):
+        original = copy.deepcopy(self.owner)
+        changes = ({"pid": True}, {"pid": None}, {"command": ["/unbound/binary", "dial"]},
+                   {"terminal_status": {"exit_code": 0, "termination": "running"}},
+                   {"terminal_status": {"exit_code": 0, "termination": "terminated"}},
+                   {"terminal_status": {"exit_code": 1, "termination": "graceful"}},
+                   {"exit_code": 1}, {"timeout_class": "dial_timeout"},
+                   {"requested_log_file": str(self.result)})
+        for change in changes:
+            with self.subTest(change=change):
+                self.owner.clear()
+                self.owner.update(copy.deepcopy(original) | change)
+                self.assertIn("artifact evidence index has an empty non-process proof", self.validate_index())
+        self.owner.clear()
+        self.owner.update(original)
+        self.records[0]["result"]["attempts"] = [copy.deepcopy(self.owner) | {"pid": 456}]
+        self.assertIn("artifact evidence index has an empty non-process proof", self.validate_index())
+
+    def test_empty_json_cannot_borrow_stdout_ownership(self):
+        for location in ("result_file", "snapshot", "dns"):
+            with self.subTest(location=location):
+                self.records = [{"owned_processes": [self.owner]}]
+                if location == "result_file":
+                    self.records[0]["result_file"] = str(self.log)
+                elif location == "snapshot":
+                    self.owner["outputs"] = [{"argument": "--result-file", "exists": True,
+                                              "path": str(self.result), "log_file": str(self.log)}]
+                else:
+                    self.records[0]["dns_evidence"] = {"log_file": str(self.log)}
+                self.assertIn("artifact evidence index has an empty non-process proof", self.validate_index())
+                self.owner.pop("outputs", None)
+
+    def test_empty_requested_json_stop_or_store_file_is_never_stdout(self):
+        self.result.write_bytes(b"")
+        self.assertIn("artifact evidence index has an empty non-process proof", self.validate_index())
+        self.result.write_text('{"status":"ok"}')
+        original = list(self.owner["command"])
+        for flag, path in (("--ready-file", self.log), ("--stop-file", self.log), ("--store-dir", self.root)):
+            with self.subTest(flag=flag):
+                self.owner["command"] = original + [flag, str(path)]
+                self.assertIn("artifact evidence index has an empty non-process proof", self.validate_index())
+
+    def test_empty_stdout_still_requires_exact_hash_size_and_root(self):
+        index = checker.build_evidence_index(self.root, self.records)
+        next(entry for entry in index if entry["path"] == "quiet.log")["sha256"] = "0" * 64
+        self.assertTrue(any("hash or size differs" in error for error in self.validate_index(index)))
+        index = checker.build_evidence_index(self.root, self.records)
+        next(entry for entry in index if entry["path"] == "quiet.log")["size"] = 1
+        self.assertTrue(any("hash or size differs" in error for error in self.validate_index(index)))
+        self.owner["log_file"] = str(self.root / ".." / "escaped.log")
+        self.assertTrue(any("escapes artifact_root" in error for error in self.validate_index(index)))
 
 
 class PromotionSuiteTests(unittest.TestCase):

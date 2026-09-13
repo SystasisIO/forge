@@ -73,7 +73,7 @@ EXPECTED_EVIDENCE_SOURCES = {"donor_cases.json"}
 EXPECTED_REGRESSION_SOURCES = {
     "test_provenance.py", "test_dns_fixture.py", "test_process_lifecycle.py", "test_provider_evidence.py",
     "test_autonat_cases.py", "test_autonat_evidence.py", "test_autonat_network.py",
-    "test_autonat_acceptance.py",
+    "test_autonat_acceptance.py", "test_identify_evidence.py", "test_relay_evidence.py",
 }
 
 
