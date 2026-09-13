@@ -514,6 +514,8 @@ struct engine_stream::impl {
    bool reset = false;
    bool closed = false;
    bool cancel_worker_started = false;
+   // Strand-owned recovery work is distinct from native stream termination.
+   std::size_t terminal_cleanup_owners = 0;
    forge::asio::notification cancel_requested;
    // Owner-strand state is mirrored through atomics so callers can join a
    // terminal recovery without reading the strand-owned booleans.
@@ -537,8 +539,28 @@ void finish_stream_terminal_cleanup(const std::shared_ptr<engine_stream::impl>& 
       return;
    }
    publish_stream_terminal(stream);
+   if (stream->terminal_cleanup_owners != 0) {
+      return;
+   }
    stream->terminal_cleanup_complete.store(true, std::memory_order_release);
    stream->terminal_notification.notify();
+}
+
+void release_stream_terminal_owner(engine_stream::impl* stream) noexcept {
+   assert(stream->terminal_cleanup_owners != 0);
+   if (--stream->terminal_cleanup_owners == 0) {
+      stream->terminal_published.store(true, std::memory_order_release);
+      stream->terminal_cleanup_complete.store(true, std::memory_order_release);
+      stream->terminal_notification.notify();
+   }
+}
+
+using stream_terminal_owner = std::unique_ptr<engine_stream::impl, decltype(&release_stream_terminal_owner)>;
+
+[[nodiscard]] stream_terminal_owner claim_stream_terminal_owner(const std::shared_ptr<engine_stream::impl>& stream) noexcept {
+   ++stream->terminal_cleanup_owners;
+   stream->terminal_cleanup_complete.store(false, std::memory_order_release);
+   return {stream.get(), &release_stream_terminal_owner};
 }
 
 boost::asio::awaitable<void> wait_for_stream_terminal_cleanup(const std::shared_ptr<engine_stream::impl>& stream) {
@@ -866,11 +888,15 @@ struct engine_connection::impl {
       }
    }
 
-   [[nodiscard]] bool reset_stream_on_owner(const std::shared_ptr<engine_stream::impl>& stream) noexcept {
+   [[nodiscard]] bool reset_stream_on_owner(const std::shared_ptr<engine_stream::impl>& stream,
+                                             stream_terminal_owner& cleanup) noexcept {
       assert(strand.running_in_this_thread());
       if (!stream || stream->reset || stream->closed) {
          return false;
       }
+      // ngtcp2 may synchronously invoke stream_close_cb during shutdown. Claim
+      // recovery ownership first so that callback cannot complete our join.
+      cleanup = claim_stream_terminal_owner(stream);
       auto shutdown_result = 0;
       auto should_drain = false;
       if (conn != nullptr && !closing && !canceled) {
@@ -901,7 +927,10 @@ struct engine_connection::impl {
    boost::asio::awaitable<void>
    async_reset_stream_after_close_failure(const std::shared_ptr<engine_stream::impl>& stream) {
       assert(strand.running_in_this_thread());
-      if (!reset_stream_on_owner(stream)) {
+      auto cleanup = stream_terminal_owner{nullptr, &release_stream_terminal_owner};
+      if (!reset_stream_on_owner(stream, cleanup)) {
+         // A reset with no native drain needed must not wait on its own claim.
+         cleanup.reset();
          // Another owner may have published reset before it finishes draining
          // the native RESET_STREAM. Join that owner before reporting close.
          if (test_failpoint) {
@@ -916,7 +945,6 @@ struct engine_connection::impl {
          // reset_stream_on_owner has already made local terminal state visible.
          // A later native send failure follows its existing fail_all path.
       }
-      finish_stream_terminal_cleanup(stream);
    }
 
    void start_stream_cancel_worker(const std::shared_ptr<engine_stream::impl>& stream) {
@@ -942,7 +970,8 @@ struct engine_connection::impl {
                 } catch (...) {
                    // Failure to arm the waiter terminalizes this stream on its owner.
                 }
-                if (!shared->reset_stream_on_owner(stream)) {
+                auto cleanup = stream_terminal_owner{nullptr, &release_stream_terminal_owner};
+                if (!shared->reset_stream_on_owner(stream, cleanup)) {
                    co_return;
                 }
                 if (shared->test_failpoint && shared->test_failpoint("stream_reset_after_publish_before_drain")) {
@@ -960,7 +989,6 @@ struct engine_connection::impl {
                 } catch (...) {
                    // Local stream reset is terminal; wire RESET_STREAM is best effort.
                 }
-                finish_stream_terminal_cleanup(stream);
              },
              asio::detached);
       } catch (...) {
@@ -2007,6 +2035,13 @@ int stream_close_cb(ngtcp2_conn* conn, std::uint32_t, std::int64_t stream_id, st
       connection->release_queued_stream_writes(stream);
       stream->closed = true;
       finish_stream_terminal_cleanup(stream);
+      if (connection->test_failpoint) {
+         try {
+            static_cast<void>(connection->test_failpoint("stream_native_close_after_terminal_cleanup"));
+         } catch (...) {
+            // Observation only: the native callback must keep its terminal transition.
+         }
+      }
       stream->cancel_requested.notify();
       if (ngtcp2_is_bidi_stream(stream_id) && ngtcp2_conn_is_local_stream(conn, stream_id) == 0) {
          ngtcp2_conn_extend_max_streams_bidi(conn, 1);
@@ -2431,6 +2466,7 @@ void engine_stream::cancel_write() {
       if (stream->local_write_closed || stream->reset || stream->closed) {
          return;
       }
+      auto cleanup = claim_stream_terminal_owner(stream);
       auto shutdown_result = 0;
       auto should_drain = false;
       if (connection->conn != nullptr && !connection->closing && !connection->canceled) {
@@ -2448,16 +2484,18 @@ void engine_stream::cancel_write() {
          return;
       }
       if (!should_drain) {
-         finish_stream_terminal_cleanup(stream);
          return;
       }
-      connection->spawn_background([stream](const std::shared_ptr<engine_connection::impl>& value) -> asio::awaitable<void> {
+      // The pair destroys the claim before its strong stream owner, including
+      // when spawn_background drops the work before invoking the coroutine.
+      connection->spawn_background([owned = std::pair{stream, std::move(cleanup)}](
+                                       const std::shared_ptr<engine_connection::impl>& value) mutable -> asio::awaitable<void> {
          try {
             co_await value->drain_send();
          } catch (const engine_failure&) {
             value->fail_all();
          }
-         finish_stream_terminal_cleanup(stream);
+         owned.second.reset();
       });
    });
 }
