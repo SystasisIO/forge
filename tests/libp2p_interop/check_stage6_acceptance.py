@@ -13,6 +13,7 @@ from typing import Optional
 
 from dns_evidence import DNSADDR_SCENARIOS, validate_dnsaddr
 from provider_evidence import validate_provider_evidence
+from upgrade_evidence import validate_go_dial_upgrade, validate_go_listener_upgrade
 from autonat_acceptance import (
     EVIDENCE_CONTRACTS as AUTONAT_EVIDENCE_CONTRACTS,
     ROLE_DIRECTIONS as AUTONAT_ROLE_DIRECTIONS,
@@ -1089,48 +1090,75 @@ def validate_identify_evidence(result: dict, record: dict, _listener: Optional[d
     return ["Identify evidence lacks a signed peer record and protocol payload"]
 
 
-def raw_identify_process_source(record: dict, payload: dict, result_path: Path,
-                                root: Path, indexed: dict[Path, str], claim_paths: set[Path]) -> list[str]:
-    """Require the exact Rust helper result captured by the joined process owner."""
+def raw_application_process_source(record: dict, payload: dict, result_path: Path,
+                                   root: Path, indexed: dict[Path, str], claim_paths: set[Path],
+                                   mode: str = "dial") -> list[str]:
+    """Require the exact application result captured by its joined process owner."""
     attempts = record.get("result", {}).get("attempts")
     owners = record.get("owned_processes")
     if not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(owners, list):
-        return ["raw Identify requires one owned successful fixture attempt"]
+        return ["raw application requires one owned successful fixture attempt"]
     attempt = attempts[0]
     if not isinstance(attempt, dict):
-        return ["raw Identify attempt is malformed"]
-    options, command_errors = command_options(attempt.get("command"), "dial")
-    if command_errors or options.get("--peer-id") != record.get("peer_id") or options.get("--scenario") != "identify":
-        return ["raw Identify launch does not bind the expected authenticated peer and scenario"]
+        return ["raw application attempt is malformed"]
+    view = attempt if mode == "dial" else record.get("listener_process")
+    if (mode not in {"dial", "listen"} or not isinstance(view, dict)
+            or (mode == "listen" and view.get("pid") == attempt.get("pid"))):
+        return ["application evidence lacks independently owned dialer/listener processes"]
+    options, command_errors = command_options(view.get("command"), mode)
+    if (command_errors or record.get("scenario") not in {"identify", "echo"}
+            or (mode == "dial" and options.get("--peer-id") != record.get("peer_id"))
+            or options.get("--scenario") != record.get("scenario")
+            or path_within(options.get("--result-file"), root) != result_path):
+        return ["raw application launch does not bind the expected authenticated peer and scenario"]
     matches = [owner for owner in owners if isinstance(owner, dict)
-               and owner.get("command") == attempt.get("command")
-               and owner.get("pid") == attempt.get("pid") and owner.get("log_file") == attempt.get("log_file")]
+               and owner.get("command") == view.get("command")
+               and owner.get("pid") == view.get("pid") and owner.get("log_file") == view.get("log_file")]
     if len(matches) != 1:
-        return ["raw Identify lacks a unique matching raw process owner"]
+        return ["raw application lacks a unique matching raw process owner"]
     owner = matches[0]
     terminal = {"exit_code": 0, "termination": "graceful"}
     if (type(owner.get("pid")) is not int or owner["pid"] <= 0
-            or owner.get("terminal_status") != terminal or attempt.get("terminal_status") != terminal
+            or owner.get("terminal_status") != terminal or view.get("terminal_status") != terminal
             or type(owner["terminal_status"]["exit_code"]) is not int
-            or type(attempt["terminal_status"]["exit_code"]) is not int):
-        return ["raw Identify process was not gracefully joined"]
+            or type(view["terminal_status"]["exit_code"]) is not int):
+        return ["raw application process was not gracefully joined"]
     outputs = owner.get("outputs")
-    if not isinstance(outputs, list) or outputs != attempt.get("outputs"):
-        return ["raw Identify process/attempt snapshots disagree"]
+    if not isinstance(outputs, list) or (mode == "dial" and outputs != view.get("outputs")):
+        return ["raw application process/attempt snapshots disagree"]
     captures = [output for output in outputs if isinstance(output, dict) and output.get("argument") == "--result-file"]
     if len(captures) != 1:
-        return ["raw Identify lacks its unique captured result"]
+        return ["raw application lacks its unique captured result"]
     capture = captures[0]
     source = path_within(capture.get("log_file"), root)
     log = path_within(owner.get("log_file"), root)
     if (capture.get("exists") is not True or path_within(capture.get("path"), root) != result_path
             or log is None or source != Path(str(log) + ".result-file.json")
             or source not in indexed or result_path not in indexed or log not in indexed):
-        return ["raw Identify source is absent from terminal-owned indexed output"]
-    captured, errors = load_evidence_json(source, "raw Identify process snapshot")
+        return ["raw application source is absent from terminal-owned indexed output"]
+    captured, errors = load_evidence_json(source, "raw application process snapshot")
     if captured != payload:
-        errors.append("raw Identify report differs from its immutable process snapshot")
+        errors.append("raw application report differs from its immutable process snapshot")
     claim_paths.add(source)
+    if mode == "listen":
+        ready_outputs = [output for output in outputs if isinstance(output, dict)
+                         and output.get("argument") == "--ready-file"]
+        if len(ready_outputs) != 1:
+            return errors + ["application listener lacks its terminal-owned readiness snapshot"]
+        ready_output = ready_outputs[0]
+        ready_source = path_within(ready_output.get("log_file"), root)
+        if (ready_output.get("exists") is not True
+                or path_within(ready_output.get("path"), root) != path_within(options.get("--ready-file"), root)
+                or ready_source != Path(str(log) + ".ready-file.json") or ready_source not in indexed):
+            return errors + ["application listener readiness source is not indexed and owned"]
+        ready, ready_errors = load_evidence_json(ready_source, "application listener readiness snapshot")
+        errors.extend(ready_errors)
+        if (not isinstance(ready, dict) or ready != owner.get("ready") or ready.get("status") != "ready"
+                or ready.get("implementation") != record.get("listener") or ready.get("role") != "listener"
+                or ready.get("peer_id") != record.get("peer_id")
+                or ready.get("peer_id") != payload.get("local_peer_id")):
+            errors.append("application listener readiness does not identify the actual authenticated counterpart")
+        claim_paths.add(ready_source)
     return errors
 
 
@@ -1163,11 +1191,20 @@ def validate_tcp_yamux_evidence(result: dict, record: dict, listener: Optional[d
         and nonempty_string(result.get("protocol"))
     ):
         errors.append("TCP/Yamux evidence lacks a completed echo payload")
+    if require_identify and record.get("profile") == "native":
+        if record.get("dialer") == "go":
+            errors.extend(validate_go_dial_upgrade(result, record.get("peer_id"), result.get("negotiated_security")))
+        elif record.get("dialer") == "forge" and record.get("listener") == "go":
+            errors.extend(validate_go_listener_upgrade(result, listener, record.get("peer_id"), result.get("negotiated_security")))
     return errors
 
 
 def validate_noise_multistream_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
     errors = validate_identify_evidence(result, record, listener)
+    if record.get("dialer") == "go":
+        return errors + validate_go_dial_upgrade(result, record.get("peer_id"), "/noise")
+    if record.get("dialer") == "forge" and record.get("listener") == "go":
+        return errors + validate_go_listener_upgrade(result, listener, record.get("peer_id"), "/noise")
     errors.extend(exact_phase_transcript(result, "/noise"))
     if result.get("negotiated_security") != "/noise" or result.get("negotiated_muxer") != "/yamux/1.0.0":
         errors.append("Noise/multistream evidence lacks endpoint-observed TCP security and muxer selection")
@@ -1180,6 +1217,10 @@ def validate_noise_multistream_evidence(result: dict, record: dict, listener: Op
 
 def validate_tls_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
     errors = validate_identify_evidence(result, record, listener)
+    if record.get("dialer") == "go":
+        return errors + validate_go_dial_upgrade(result, record.get("peer_id"), "/tls/1.0.0")
+    if record.get("dialer") == "forge" and record.get("listener") == "go":
+        return errors + validate_go_listener_upgrade(result, listener, record.get("peer_id"), "/tls/1.0.0")
     errors.extend(exact_phase_transcript(result, "/tls/1.0.0"))
     if result.get("negotiated_security") != "/tls/1.0.0" or result.get("negotiated_muxer") != "/yamux/1.0.0":
         errors.append("TLS evidence lacks endpoint-observed TCP security and muxer selection")
@@ -1836,9 +1877,28 @@ def validate_successful_raw_record(
     errors.extend(validate_result_semantics(
         expected_evidence_contract, payload or {}, record, listener_payload
     ))
-    if isinstance(payload, dict) and payload.get("raw_identify_exchange") is not None:
-        errors.extend(raw_identify_process_source(record, payload, result_path, artifact_root,
+    if isinstance(payload, dict) and (payload.get("raw_identify_exchange") is not None or (
+        record.get("dialer") == "go" and record.get("scenario") in {"identify", "echo"}
+        and expected_evidence_contract in {
+            evidence_contract_for("noise_identity"), evidence_contract_for("multistream_select"),
+            evidence_contract_for("tls_identity"), evidence_contract_for("tcp_yamux"),
+        }
+    )):
+        errors.extend(raw_application_process_source(record, payload, result_path, artifact_root,
                                                   indexed_evidence, claim_paths))
+    if (record.get("dialer") == "forge" and record.get("listener") == "go"
+            and record.get("scenario") in {"identify", "echo"} and isinstance(payload, dict)
+            and expected_evidence_contract in {
+                evidence_contract_for("noise_identity"), evidence_contract_for("multistream_select"),
+                evidence_contract_for("tls_identity"), evidence_contract_for("tcp_yamux"),
+            }):
+        errors.extend(raw_application_process_source(record, payload, result_path, artifact_root,
+                                                     indexed_evidence, claim_paths))
+        if isinstance(listener_payload, dict):
+            errors.extend(raw_application_process_source(record, listener_payload, listener_result_path,
+                                                         artifact_root, indexed_evidence, claim_paths, "listen"))
+        else:
+            errors.append("paired upgrade evidence lacks its terminal-owned listener payload")
     if (record.get("scenario") == "relay_reserve" and record.get("dialer") == "forge"
             and isinstance(payload, dict) and not positive_integer(payload.get("voucher_bytes"))):
         errors.extend(voucherless_reservation_process_sources(record, payload, listener_payload, artifact_root,
@@ -2376,6 +2436,17 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
         result_payload = dict(result_payload)
         result_payload["implementation"] = dialer
         listener_payload = {"implementation": listener, "role": "listener", "status": "ok"}
+        peer = "listener-peer"
+        if scenario_id == "tcp_yamux":
+            # Synthetic parser self-test only. Share the unit-test receipt factory;
+            # canonical runner execution and normal acceptance never call it.
+            from test_upgrade_evidence import attach_terminal_owners, echo_receipt, paired_receipt
+            if dialer == "forge":
+                result_payload, listener_payload = paired_receipt(echo=True)
+                result_payload["payload_bytes"] = 19
+            else:
+                result_payload = echo_receipt()
+            peer = "remote"
         result_file = artifact_root / f"{stem}.json"
         listener_file = artifact_root / f"{stem}-listener.json"
         dial_log = artifact_root / f"{stem}-dial.log"
@@ -2385,7 +2456,7 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
         dial_log.write_text("dial completed\n")
         listener_log.write_text("listener completed\n")
         dial_command = [
-            str(binaries[dialer]), "dial", "--scenario", scenario, "--peer-id", "listener-peer",
+            str(binaries[dialer]), "dial", "--scenario", scenario, "--peer-id", peer,
             "--addr", "/ip4/127.0.0.1/tcp/1", "--result-file", str(result_file),
             "--store-dir", str(artifact_root / f"{stem}-dial-store"), "--transport", transport,
         ]
@@ -2401,7 +2472,7 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
             "dialer": dialer, "listener": listener, "scenario": scenario,
             "runner_scenario_id": runner_scenario_id, "acceptance_scenario_id": scenario_id,
             "profile": "native", "transport_stack": list(stack), "transport": transport,
-            "peer_id": "listener-peer", "addr": "/ip4/127.0.0.1/tcp/1",
+            "peer_id": peer, "addr": "/ip4/127.0.0.1/tcp/1",
             "effective_configuration": {
                 "activation": "enabled", "profile": "native", "transport_stack": list(stack),
                 "dialer": launcher_execution_description(dial_options, result_payload),
@@ -2417,6 +2488,8 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
             },
             "listener_result_file": str(listener_file), "listener_result": listener_payload,
         })
+        if scenario_id == "tcp_yamux":
+            attach_terminal_owners(artifacts[-1], result_payload, listener_payload)
     identity = fixture_identity(root)
     timestamp = max(time.time(), float(subprocess.check_output(
         ["git", "-C", str(root), "show", "-s", "--format=%ct", "HEAD"], text=True

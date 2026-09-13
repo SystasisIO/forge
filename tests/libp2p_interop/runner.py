@@ -1258,7 +1258,7 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
         raise RuntimeError("private pnet profile requires its canonical and mismatched source key fixtures")
     tcp_upgrade_listener = (
         acceptance_profile == "native" and transport in {"tcp", "tcp-tls"}
-        and listener == "go" and scenario in {"identify", "echo"}
+        and listener in {"go", "rust"} and scenario in {"identify", "echo"}
     )
     listener_result = (
         work / f"{listener}-listen-{scenario}.json"
@@ -1313,13 +1313,26 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
             # Never wait for this final result while keeping the listener alive.
             cleanup_errors = server.close()
             if cleanup_errors:
-                raise RuntimeError("Go TCP listener cleanup failed: " + "; ".join(cleanup_errors))
+                raise RuntimeError(f"{listener} TCP listener cleanup failed: " + "; ".join(cleanup_errors))
         delivered = wait_json(listener_result, 20) if listener_result is not None else None
         if tcp_upgrade_listener:
             proof = delivered.get("upgrade_observation")
-            if not isinstance(proof, dict) or proof.get("finalized_after_host_close") is not True \
-                    or proof.get("complete") is not True or proof.get("overflow") is not False:
-                raise RuntimeError("Go TCP listener did not finalize complete bounded upgrade evidence")
+            if not isinstance(proof, dict) or proof.get("overflow") is not False:
+                raise RuntimeError(f"{listener} TCP listener did not finalize bounded upgrade evidence")
+            if listener == "go":
+                if proof.get("finalized_after_host_close") is not True or proof.get("complete") is not True:
+                    raise RuntimeError("Go TCP listener did not finalize complete bounded upgrade evidence")
+            else:
+                # A listener has no outbound application binding. Its raw counterpart
+                # trace is evidence only after the fixture-owned task group is joined.
+                lifecycle = delivered.get("fixture_task_lifecycle")
+                if (proof.get("source") != "rust-libp2p.public-connection-upgrades.v1"
+                        or proof.get("finalized_after_swarm_drop") is not True
+                        or proof.get("fixture_owned_tasks_joined") is not True
+                        or not isinstance(lifecycle, dict)
+                        or lifecycle.get("fixture_owned_tasks_joined") is not True
+                        or lifecycle.get("overflow") is not False or lifecycle.get("errors") != []):
+                    raise RuntimeError("Rust TCP listener did not finalize its joined raw upgrade evidence")
         if scenario == "relay_reserve" and listener == "rust":
             # First result proves the event was polled; only the joined final trace is evidence.
             cleanup_errors = server.close()

@@ -4,7 +4,7 @@ use std::{
     fs,
     net::{Ipv4Addr, SocketAddr},
     num::NonZeroUsize,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         Arc, Mutex,
@@ -26,7 +26,7 @@ use libp2p::{
     pnet::{PnetConfig, PreSharedKey},
     relay, rendezvous,
     swarm::{NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle, dial_opts::DialOpts},
-    tcp, tls, yamux,
+    tcp, yamux,
 };
 use libp2p_stream as raw_stream;
 use quick_protobuf::BytesReader;
@@ -34,6 +34,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 mod provider;
+mod task_owner;
+mod upgrade_observer;
+mod application_observer;
 #[path = "autonat.rs"]
 mod autonat_fixture;
 
@@ -63,6 +66,8 @@ struct Options {
     probe_addr: String,
     internet_egress: String,
     tcp_upgrade_observation: Arc<Mutex<Option<TcpUpgradeObservation>>>,
+    upgrade_observer: upgrade_observer::Observer,
+    tasks: task_owner::Owner,
     expected_messages: usize,
     pnet_key_file: PathBuf,
     pnet_fingerprint: String,
@@ -266,7 +271,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
     Ok(out)
 }
 
-fn write_json(path: &PathBuf, value: serde_json::Value) -> Result<(), Box<dyn Error>> {
+fn write_json(path: &Path, value: serde_json::Value) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -326,6 +331,7 @@ fn behaviour_for(
 async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn Error>> {
     let transport = opts.transport.as_str();
     let key = identity::Keypair::generate_ed25519();
+    let configure_tasks = |_| opts.tasks.swarm_config();
     let resolver = opts.dns_server.map(|address| {
         let mut config = libp2p::dns::ResolverConfig::new();
         config.add_name_server(NameServerConfig::new(address, DnsProtocol::Udp));
@@ -346,6 +352,7 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                     .with_behaviour(|key, relay_client| {
                         behaviour_for(key, Some(relay_client), opts)
                     })?
+                    .with_swarm_config(configure_tasks)
                     .build()
             } else {
                 builder
@@ -353,11 +360,13 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                     .with_behaviour(|key, relay_client| {
                         behaviour_for(key, Some(relay_client), opts)
                     })?
+                    .with_swarm_config(configure_tasks)
                     .build()
             }
         }
         "tcp" => {
             let observation = Arc::clone(&opts.tcp_upgrade_observation);
+            let upgrade_observer = opts.upgrade_observer.clone();
             let expected_peer = if opts.command == "dial" {
                 Some(opts.peer_id.parse::<PeerId>()?)
             } else {
@@ -366,22 +375,21 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
             let builder = SwarmBuilder::with_existing_identity(key)
                 .with_tokio()
                 .with_other_transport(move |key| {
-                    tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
-                        .upgrade(Version::V1Lazy)
-                        .authenticate(noise::Config::new(key).expect("valid noise identity"))
-                        .multiplex(yamux::Config::default())
-                        .map(move |(peer, muxer), endpoint| {
-                            // This runs only after both upgrades, below the DNS wrapper.
-                            if expected_peer == Some(peer) && endpoint.is_dialer() {
-                                *observation.lock().expect("TCP upgrade observation lock") =
-                                    Some(TcpUpgradeObservation {
-                                        peer,
-                                        remote_address: endpoint.get_remote_address().clone(),
-                                        security: "/noise",
-                                        muxer: "/yamux/1.0.0",
-                                    });
-                            }
-                            (peer, muxer)
+                    upgrade_observer::native_transport(key, false, upgrade_observer)
+                        .map(|transport| {
+                            Transport::map(transport, move |(peer, muxer), endpoint| {
+                                // This runs only after both upgrades, below the DNS wrapper.
+                                if expected_peer == Some(peer) && endpoint.is_dialer() {
+                                    *observation.lock().expect("TCP upgrade observation lock") =
+                                        Some(TcpUpgradeObservation {
+                                            peer,
+                                            remote_address: endpoint.get_remote_address().clone(),
+                                            security: "/noise",
+                                            muxer: "/yamux/1.0.0",
+                                        });
+                                }
+                                (peer, muxer)
+                            })
                         })
                 })?;
             if let Some((config, options)) = resolver.clone() {
@@ -391,6 +399,7 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                     .with_behaviour(|key, relay_client| {
                         behaviour_for(key, Some(relay_client), opts)
                     })?
+                    .with_swarm_config(configure_tasks)
                     .build()
             } else {
                 builder
@@ -398,17 +407,17 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                     .with_behaviour(|key, relay_client| {
                         behaviour_for(key, Some(relay_client), opts)
                     })?
+                    .with_swarm_config(configure_tasks)
                     .build()
             }
         }
         "tcp-tls" => {
+            let upgrade_observer = opts.upgrade_observer.clone();
             let builder = SwarmBuilder::with_existing_identity(key)
                 .with_tokio()
-                .with_tcp(
-                    tcp::Config::default().nodelay(true),
-                    tls::Config::new,
-                    yamux::Config::default,
-                )?;
+                .with_other_transport(move |key| {
+                    upgrade_observer::native_transport(key, true, upgrade_observer)
+                })?;
             if let Some((config, options)) = resolver.clone() {
                 builder
                     .with_dns_config(config, options)
@@ -416,6 +425,7 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                     .with_behaviour(|key, relay_client| {
                         behaviour_for(key, Some(relay_client), opts)
                     })?
+                    .with_swarm_config(configure_tasks)
                     .build()
             } else {
                 builder
@@ -423,6 +433,7 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                     .with_behaviour(|key, relay_client| {
                         behaviour_for(key, Some(relay_client), opts)
                     })?
+                    .with_swarm_config(configure_tasks)
                     .build()
             }
         }
@@ -438,10 +449,12 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                 builder
                     .with_dns_config(config, options)
                     .with_behaviour(|key| behaviour_for(key, None, opts))?
+                    .with_swarm_config(configure_tasks)
                     .build()
             } else {
                 builder
                     .with_behaviour(|key| behaviour_for(key, None, opts))?
+                    .with_swarm_config(configure_tasks)
                     .build()
             }
         }
@@ -461,10 +474,12 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                 builder
                     .with_dns_config(config, options)
                     .with_behaviour(|key| behaviour_for(key, None, opts))?
+                    .with_swarm_config(configure_tasks)
                     .build()
             } else {
                 builder
                     .with_behaviour(|key| behaviour_for(key, None, opts))?
+                    .with_swarm_config(configure_tasks)
                     .build()
             }
         }
@@ -698,25 +713,34 @@ fn spawn_incoming_stream_echo(
     swarm: &mut libp2p::Swarm<Behaviour>,
     protocol: &'static str,
     opened_streams: Option<Arc<AtomicU64>>,
+    tasks: &task_owner::Owner,
 ) -> Result<(), Box<dyn Error>> {
     let mut control = swarm.behaviour().stream.new_control();
     let mut incoming = control.accept(StreamProtocol::new(protocol))?;
-    tokio::spawn(async move {
+    let errors = tasks.spawner();
+    tasks.spawn("echo_handler", async move {
         while let Some((_, mut stream)) = incoming.next().await {
             if let Some(counter) = &opened_streams {
                 counter.fetch_add(1, Ordering::Relaxed);
             }
-            let payload = match read_frame(&mut stream).await.ok() {
-                Some(value) => value,
-                None => {
-                    let _ = stream.close().await;
+            let payload = match read_frame(&mut stream).await.map_err(|error| error.to_string()) {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.record_error("echo_read_frame", error);
+                    if let Err(error) = stream.close().await {
+                        errors.record_error("echo_close_after_read_failure", error);
+                    }
                     continue;
                 }
             };
-            let _ = write_frame(&mut stream, &payload).await;
-            let _ = stream.close().await;
+            if let Err(error) = write_frame(&mut stream, &payload).await {
+                errors.record_error("echo_write_frame", error);
+            }
+            if let Err(error) = stream.close().await {
+                errors.record_error("echo_close_stream", error);
+            }
         }
-    });
+    })?;
     Ok(())
 }
 
@@ -874,16 +898,20 @@ fn raw_identify_evidence(bytes: &[u8], authenticated_peer: PeerId) -> serde_json
 
 async fn exchange_raw_identify(
     swarm: &mut libp2p::Swarm<Behaviour>, peer: PeerId,
+    observer: &upgrade_observer::Observer,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     if !swarm.is_connected(&peer) {
         return Err("raw Identify requires an established authenticated connection".into());
     }
     let mut control = swarm.behaviour().stream.new_control();
+    let attempt = observer.application(peer, application_observer::IDENTIFY);
     let exchange = async {
-        let mut stream = control.open_stream(peer, StreamProtocol::new("/ipfs/id/1.0.0")).await?;
+        let stream = control.open_stream(peer, StreamProtocol::new("/ipfs/id/1.0.0")).await?;
+        let mut stream = attempt.wrap(stream);
         let bytes = read_raw_identify_frame(&mut stream).await?;
         // Like pinned recv_identify, drop after the frame rather than waiting
         // for a close ACK from a peer that may already have dropped its writer.
+        stream.complete();
         Ok::<_, Box<dyn Error>>(raw_identify_evidence(&bytes, peer))
     };
     tokio::pin!(exchange);
@@ -909,26 +937,28 @@ async fn open_echo_stream_direct(
     swarm: &mut libp2p::Swarm<Behaviour>,
     peer: PeerId,
     payload: &[u8],
+    observer: &upgrade_observer::Observer,
 ) -> Result<usize, Box<dyn Error>> {
     let mut control = swarm.behaviour().stream.new_control();
-    let mut open =
-        Box::pin(control.open_stream(peer, StreamProtocol::new("/forge/interop/relay-echo/1")));
+    let attempt = observer.application(peer, application_observer::ECHO);
+    let exchange = async {
+        let stream = control.open_stream(peer, StreamProtocol::new(application_observer::ECHO)).await?;
+        let mut stream = attempt.wrap(stream);
+        write_frame(&mut stream, payload).await?;
+        let echoed = read_frame(&mut stream).await?;
+        stream.close().await?;
+        if echoed != payload { return Err("echo mismatch".into()); }
+        stream.complete();
+        Ok::<_, Box<dyn Error>>(echoed.len())
+    };
+    tokio::pin!(exchange);
     let deadline = tokio::time::sleep(Duration::from_secs(15));
     tokio::pin!(deadline);
     loop {
         tokio::select! {
-            result = &mut open => {
-                let mut stream = result?;
-                write_frame(&mut stream, payload).await?;
-                let echoed = read_frame(&mut stream).await?;
-                stream.close().await?;
-                if echoed != payload {
-                    return Err("echo mismatch".into());
-                }
-                return Ok(echoed.len());
-            }
+            result = &mut exchange => return result,
             _ = &mut deadline => {
-                return Err("timed out opening echo stream".into());
+                return Err("timed out completing echo stream".into());
             }
             event = swarm.select_next_some() => {
                 if let SwarmEvent::NewListenAddr { address, .. } = event {
@@ -1847,6 +1877,7 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
         &mut swarm,
         "/forge/interop/relay-echo/1",
         (opts.scenario == "pnet").then(|| Arc::clone(&pnet_application_streams)),
+        &opts.tasks,
     )?;
     if opts.scenario == "gossipsub_publish" || opts.scenario == "gossipsub_mixed_mesh_stress" {
         let topic = gossipsub::IdentTopic::new(PUBSUB_TOPIC);
@@ -1964,6 +1995,9 @@ async fn listen(opts: Options) -> Result<(), Box<dyn Error>> {
             }
             event = swarm.select_next_some() => {
                 eprintln!("rust-listen event: {event:?}");
+                if let SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } = &event {
+                    opts.upgrade_observer.established(connection_id, *peer_id, endpoint);
+                }
                 match event {
                     SwarmEvent::Behaviour(BehaviourEvent::Relay(
                         relay::Event::ReservationReqAccepted { src_peer_id, renewed },
@@ -2180,7 +2214,11 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut negotiated_transport = None;
     let mut tcp_upgrade_observation = None;
     while started.elapsed() < Duration::from_secs(20) {
-        match swarm.select_next_some().await {
+        let event = swarm.select_next_some().await;
+        if let SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } = &event {
+            opts.upgrade_observer.established(connection_id, *peer_id, endpoint);
+        }
+        match event {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } if peer_id == remote_peer => {
@@ -2285,7 +2323,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
         "identify" if identify_count == 0 => return Err("identify did not return protocols".into()),
         "ping" => {}
         "identify" => {
-            let evidence = exchange_raw_identify(&mut swarm, remote_peer).await?;
+            let evidence = exchange_raw_identify(&mut swarm, remote_peer, &opts.upgrade_observer).await?;
             if evidence["status"] != "verified" {
                 write_json(&opts.result_file, json!({
                     "implementation": "rust", "role": "dialer", "scenario": "identify", "status": "failed",
@@ -2330,7 +2368,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             } else {
                 opts.payload.as_bytes().to_vec()
             };
-            let bytes = open_echo_stream_direct(&mut swarm, remote_peer, &payload).await?;
+            let bytes = open_echo_stream_direct(&mut swarm, remote_peer, &payload, &opts.upgrade_observer).await?;
             let mut result = json!({
                 "implementation": "rust",
                 "role": "dialer",
@@ -2361,7 +2399,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                 return Err("pnet connection did not complete authenticated Identify".into());
             }
             let bytes =
-                open_echo_stream_direct(&mut swarm, remote_peer, opts.payload.as_bytes()).await?;
+                open_echo_stream_direct(&mut swarm, remote_peer, opts.payload.as_bytes(), &opts.upgrade_observer).await?;
             let mut result = json!({
                 "implementation": "rust",
                 "role": "dialer",
@@ -2574,7 +2612,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
 
 async fn destination(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut swarm = new_swarm(&opts).await?;
-    spawn_incoming_stream_echo(&mut swarm, "/forge/interop/relay-echo/1", None)?;
+    spawn_incoming_stream_echo(&mut swarm, "/forge/interop/relay-echo/1", None, &opts.tasks)?;
     let peer = *swarm.local_peer_id();
     let relay_addr: Multiaddr = opts.relay_addr.parse()?;
     let relay_listener_id = swarm.listen_on(relay_addr.clone().with(Protocol::P2pCircuit))?;
@@ -2790,13 +2828,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if autonat_fixture::is_scenario(&opts.scenario) {
         return autonat_fixture::run(opts).await;
     }
-    match opts.command.as_str() {
+    let capture = matches!(opts.transport.as_str(), "tcp" | "tcp-tls")
+        && matches!(opts.command.as_str(), "listen" | "dial")
+        && matches!(opts.scenario.as_str(), "identify" | "echo" | "echo_large");
+    let observer = opts.upgrade_observer.clone();
+    let tasks = opts.tasks.clone();
+    let result_file = opts.result_file.clone();
+    let role = if opts.command == "listen" { "listener" } else { "dialer" };
+    let scenario = opts.scenario.clone();
+    let outcome = match opts.command.as_str() {
         "listen" => listen(opts).await,
         "destination" => destination(opts).await,
         "dial" => dial(opts).await,
         "dial-relay" => dial_relay(opts).await,
         _ => Err(format!("unknown command {}", opts.command).into()),
+    };
+    // Commands own their Swarms; drain the public-executor and echo tasks only after drop.
+    let lifecycle = tasks.close_and_join().await;
+    let mut outcome = lifecycle.combine(outcome);
+    let observation = capture.then(|| {
+        let mut evidence = observer.finalized(lifecycle.snapshot()["fixture_owned_tasks_joined"] == true);
+        if outcome.is_err() { evidence["complete"] = json!(false); }
+        if role == "dialer" && outcome.is_ok() && evidence["complete"] != true {
+            outcome = Err("native TCP application observation is unbound, ambiguous or incomplete".into());
+        }
+        evidence
+    });
+    if !result_file.as_os_str().is_empty() {
+        if let Err(error) = lifecycle.write_result(
+            &result_file, role, &scenario, &outcome, observation,
+        ) {
+            if outcome.is_ok() { return Err(error.into()); }
+            eprintln!("fixture result finalization failed: {error}");
+        }
     }
+    outcome
 }
 
 #[cfg(test)]

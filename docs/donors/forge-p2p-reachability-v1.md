@@ -221,9 +221,34 @@ Listener traces are captured after joined host shutdown. Failed background
 upgrades remain in the report but cannot replace the selected successful target,
 and a failed target cannot borrow a different connection's success. Controlled
 parser/binding regressions and Go race tests complement the bilateral native
-TCP Noise/TLS Identify and echo runs. These are capture-layer checks: Rust
-upgrade observation and strict same-exchange integration into the acceptance
-checker are still required before the ordered-upgrade proof gate can pass.
+TCP Noise/TLS Identify and echo runs. The Go acceptance path now verifies actual
+canonical multistream frames, including rejected proposals, phase ordering,
+authenticated connection identity and the exact application-stream binding.
+Automatic Identify completion for echo must identify the same connection.
+
+For a Forge dialer, the fixture requires a fresh host without cached Identify,
+exactly one ever-opened session, no retired or pruned sessions, a successful
+automatic Identify with no recorded validation error, and the same connection
+before and after the application exchange. The Go listener must independently
+observe the unique corresponding authenticated connection and inbound Identify
+response. Failed unselected proposals remain part of uniqueness checks; their
+labels are checked against captured wire bytes. Echo additionally compares
+counts and hashes of actual framed bytes at both endpoints and awaits close.
+Local IDs from different implementations are not equated. Go's completed write
+is not relabelled as remote receipt. Both results must match immutable indexed
+snapshots of independently owned, gracefully joined processes.
+
+The Rust TCP fixture uses the pinned public `multistream-select` functions and
+actual inbound/outbound connection-upgrade traits, preserving lazy negotiation
+and listener role override. Passive I/O and muxer wrappers record only completed
+I/O, bounded negotiation frames and application counts/hashes; they do not
+retain application bodies or invent wire phases from configured protocols.
+The fixture explicitly owns and joins tasks submitted through its public Swarm
+executor and echo handler. That receipt does not claim ownership of hidden
+transport-internal DNS or Quinn tasks. Exact Rust application/substream
+correlation remains a separate gate; capture-layer unit and live tests alone
+cannot promote the ordered-upgrade capability. Final exact-head acceptance
+still requires both implementations and the independent review gate.
 
 Positive exchanges use isolated Linux network namespaces with public-classified
 numeric addresses, no external interface and no default route. This exercises

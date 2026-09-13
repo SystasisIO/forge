@@ -1196,10 +1196,11 @@ add_executable(
    forge_interop_fixture
    libp2p_interop/forge_interop_fixture.cpp
    libp2p_interop/forge_autonat_fixture.cpp
+   libp2p_interop/forge_connection_fixture.cpp
 )
 add_dependencies(forge_interop_fixture forge_interop_fixture_build_info)
 target_include_directories(forge_interop_fixture PRIVATE ${FORGE_INTEROP_BUILD_INFO_DIRECTORY})
-target_link_libraries(forge_interop_fixture forge_net_p2p forge_codec_hex)
+target_link_libraries(forge_interop_fixture forge_net_p2p forge_codec_hex forge_crypto_digest)
 
 add_test(
    NAME test_forge_libp2p_wire_fixture
@@ -1363,6 +1364,12 @@ add_test(
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
 )
 set_tests_properties(test_forge_libp2p_identify_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_upgrade_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_upgrade_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_upgrade_evidence PROPERTIES TIMEOUT 10)
 add_test(
    NAME test_forge_libp2p_relay_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest test_relay_evidence

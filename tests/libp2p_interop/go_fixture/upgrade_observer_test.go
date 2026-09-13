@@ -18,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/core/record"
 	"github.com/libp2p/go-libp2p/core/sec"
 	"github.com/libp2p/go-libp2p/core/transport"
 	ma "github.com/multiformats/go-multiaddr"
@@ -842,5 +843,49 @@ func TestUpgradeIdentifyReadBoundAndSeparateEventConnection(t *testing.T) {
 	identified.Conn = nil
 	if identifyOnExchangeConnection(identified, exchange, conn.remote) {
 		t.Fatal("missing event connection accepted")
+	}
+}
+
+func TestUpgradeAutomaticIdentifyRequiresSameConnectionAndLiveSubscription(t *testing.T) {
+	conn := &fakeNetworkConn{id: "echo-connection", remote: peer.ID("remote")}
+	exchange := protocolExchange{connection: conn, streamID: "echo-stream"}
+	identified := event.EvtPeerIdentificationCompleted{
+		Peer: conn.remote, Conn: conn, SignedPeerRecord: &record.Envelope{},
+	}
+	for _, name := range []string{"matching", "other-connection", "unsigned", "closed", "canceled"} {
+		t.Run(name, func(t *testing.T) {
+			events := make(chan interface{}, 2)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(map[string]any)
+			switch name {
+			case "matching":
+				other := identified
+				other.Conn = &fakeNetworkConn{id: "another", remote: conn.remote}
+				events <- other
+				events <- identified
+			case "other-connection":
+				other := identified
+				other.Conn = &fakeNetworkConn{id: "another", remote: conn.remote}
+				events <- other
+			case "unsigned":
+				unsigned := identified
+				unsigned.SignedPeerRecord = nil
+				events <- unsigned
+			case "canceled":
+				cancel()
+			}
+			if name != "canceled" {
+				close(events)
+			}
+			err := recordAutomaticIdentify(ctx, result, events, exchange, conn.remote)
+			if name == "matching" {
+				if err != nil || result["identify_event_connection_id"] != conn.id || result["signed_peer_record"] != true {
+					t.Fatalf("missing matching Identify evidence: %v %v", result, err)
+				}
+			} else if err == nil || len(result) != 0 {
+				t.Fatalf("invalid Identify evidence accepted: %v %v", result, err)
+			}
+		})
 	}
 }

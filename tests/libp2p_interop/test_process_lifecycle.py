@@ -141,6 +141,45 @@ class ProcessLifecycleTests(unittest.TestCase):
                             "tcp-tls", "native", ("tcp", "yamux"), "tcp_tls/echo", "tls_echo")
                 self.assert_closed()
 
+    def test_rust_tcp_listener_is_joined_before_final_snapshot(self):
+        proof = {"source": "rust-libp2p.public-connection-upgrades.v1",
+                 "finalized_after_swarm_drop": True, "fixture_owned_tasks_joined": True,
+                 "complete": False, "overflow": False}
+        lifecycle = {"fixture_owned_tasks_joined": True, "overflow": False, "errors": []}
+        self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof,
+                                     "fixture_task_lifecycle": lifecycle}}]
+        def read_after_join(path, seconds):
+            if "listen-identify.json" in path.name:
+                self.assertEqual(self.processes[0].returncode, 0)
+            return self.ready(path, seconds)
+
+        with patch.object(runner, "wait_json", side_effect=read_after_join), \
+             patch.object(runner, "run_dial", return_value={"status": "ok"}):
+            result = runner.run_pair_with_transport(
+                Path("fixture"), "forge", Path("fixture"), "rust", "identify", self.root,
+                "tcp", "native", ("tcp", "yamux"), "tcp/identify", "noise_identity")
+        self.assertEqual(result["listener_result"]["upgrade_observation"], proof)
+        self.assertEqual(len(result["owned_processes"][0]["outputs"]), 2)
+        self.assert_closed()
+
+    def test_rust_tcp_listener_rejects_unjoined_or_overflow_snapshot(self):
+        for field, value in (("finalized_after_swarm_drop", False),
+                             ("fixture_owned_tasks_joined", False), ("overflow", True),
+                             ("source", "requested_transport_label")):
+            with self.subTest(field=field):
+                proof = {"source": "rust-libp2p.public-connection-upgrades.v1",
+                         "finalized_after_swarm_drop": True, "fixture_owned_tasks_joined": True,
+                         "complete": False, "overflow": False, field: value}
+                self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof,
+                    "fixture_task_lifecycle": {"fixture_owned_tasks_joined": True,
+                                               "overflow": False, "errors": []}}}]
+                with patch.object(runner, "run_dial", return_value={"status": "ok"}):
+                    with self.assertRaises(runner.CaseFailure):
+                        runner.run_pair_with_transport(
+                            Path("fixture"), "forge", Path("fixture"), "rust", "echo", self.root,
+                            "tcp-tls", "native", ("tcp", "yamux"), "tcp_tls/echo", "tls_echo")
+                self.assert_closed()
+
     def test_tcp_upgrade_listener_cleanup_failure_cannot_commit_evidence(self):
         self.scripts = [{"waits": [timeout(), 0], "result": {
             "status": "ok", "upgrade_observation": {

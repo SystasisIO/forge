@@ -52,6 +52,9 @@ EXPECTED_FIXTURE_FILES = {
     "rust_fixture/main.rs",
     "rust_fixture/autonat.rs",
     "rust_fixture/provider.rs",
+    "rust_fixture/upgrade_observer.rs",
+    "rust_fixture/task_owner.rs",
+    "rust_fixture/application_observer.rs",
     "rust_fixture/rust-toolchain.toml",
 }
 EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
@@ -66,8 +69,11 @@ EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
     "forge_interop_fixture.cpp",
     "forge_autonat_fixture.cpp",
     "forge_autonat_fixture.hxx",
+    "forge_connection_fixture.cpp",
+    "forge_connection_fixture.hxx",
     "process_lifecycle.py",
     "provider_evidence.py",
+    "upgrade_evidence.py",
     "provenance.py",
     "runner.py",
 }
@@ -76,6 +82,7 @@ EXPECTED_REGRESSION_SOURCES = {
     "test_provenance.py", "test_dns_fixture.py", "test_process_lifecycle.py", "test_provider_evidence.py",
     "test_autonat_cases.py", "test_autonat_evidence.py", "test_autonat_network.py",
     "test_autonat_acceptance.py", "test_identify_evidence.py", "test_relay_evidence.py",
+    "test_upgrade_evidence.py",
 }
 
 

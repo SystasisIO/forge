@@ -25,6 +25,7 @@ from provenance import WorktreeIdentity
 import runner
 from test_autonat_cases import Harness
 from test_autonat_network import FakeCommandRunner
+from test_upgrade_evidence import attach_terminal_owners, echo_receipt, paired_receipt
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -171,16 +172,19 @@ class AutonatAcceptanceTests(unittest.TestCase):
         for dialer, listener in (("forge", "go"), ("go", "forge")):
             work = self.artifact_root / f"base-{dialer}-{listener}"
             work.mkdir()
-            payload, _, _ = checker.semantic_fixture("tcp_yamux")
-            payload["implementation"] = dialer
-            listener_payload = {"implementation": listener, "role": "listener", "status": "ok"}
+            if dialer == "forge":
+                payload, listener_payload = paired_receipt(echo=True)
+                payload["payload_bytes"] = 19
+            else:
+                payload = echo_receipt()
+                listener_payload = {"implementation": listener, "role": "listener", "status": "ok"}
             result_file, listener_file = work / "dial.json", work / "listen.json"
             result_file.write_text(json.dumps(payload))
             listener_file.write_text(json.dumps(listener_payload))
             for role in ("dial", "listen"):
                 (work / f"{role}.log").write_text("synthetic complete execution\n")
             dial_command = [str(self.binaries[dialer]), "dial", "--scenario", "echo",
-                            "--peer-id", "listener-peer", "--addr", "/ip4/127.0.0.1/tcp/1",
+                            "--peer-id", "remote", "--addr", "/ip4/127.0.0.1/tcp/1",
                             "--result-file", str(result_file), "--store-dir", str(work / "dial-store"),
                             "--transport", "tcp"]
             listen_command = [str(self.binaries[listener]), "listen", "--scenario", "echo",
@@ -191,7 +195,7 @@ class AutonatAcceptanceTests(unittest.TestCase):
                 "dialer": dialer, "listener": listener, "scenario": "echo",
                 "runner_scenario_id": "tcp_noise/echo", "acceptance_scenario_id": "tcp_yamux",
                 "profile": "native", "transport_stack": ["tcp", "yamux"], "transport": "tcp",
-                "peer_id": "listener-peer", "addr": "/ip4/127.0.0.1/tcp/1",
+                "peer_id": "remote", "addr": "/ip4/127.0.0.1/tcp/1",
                 "effective_configuration": {"activation": "enabled", "profile": "native",
                                             "transport_stack": ["tcp", "yamux"],
                                             "dialer": {"transport": "tcp"}, "listener": {"transport": "tcp"}},
@@ -203,6 +207,7 @@ class AutonatAcceptanceTests(unittest.TestCase):
                                      "terminal_status": {"exit_code": 0, "termination": "graceful"}},
                 "listener_result_file": str(listener_file), "listener_result": listener_payload,
             })
+            attach_terminal_owners(self.records[-1], payload, listener_payload)
         self.save(refresh_index=True)
 
     def receipt(self):
@@ -243,11 +248,6 @@ class AutonatAcceptanceTests(unittest.TestCase):
     def test_full_suite_accepts_silent_owned_stdout_for_base_and_autonat(self):
         self.full_stage6_fixture()
         for record in self.records:
-            if record.get("suite") != "autonat":
-                attempt = record["result"]["attempts"][0]
-                attempt.update(pid=101, terminal_status={"exit_code": 0, "termination": "graceful"})
-                record["listener_process"]["pid"] = 102
-                record["owned_processes"] = [copy.deepcopy(attempt), copy.deepcopy(record["listener_process"])]
             for owner in record["owned_processes"]:
                 Path(owner["log_file"]).write_bytes(b"")
         self.save(refresh_index=True)

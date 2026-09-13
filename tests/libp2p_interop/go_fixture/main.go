@@ -921,6 +921,30 @@ func identifyOnExchangeConnection(identified event.EvtPeerIdentificationComplete
 		exchange.connection.RemotePeer() == expected
 }
 
+func recordAutomaticIdentify(ctx context.Context, result map[string]any, events <-chan interface{}, exchange protocolExchange, expected peer.ID) error {
+	for {
+		select {
+		case received, open := <-events:
+			if !open {
+				return fmt.Errorf("Identify completion subscription closed")
+			}
+			identified, ok := received.(event.EvtPeerIdentificationCompleted)
+			if !ok || !identifyOnExchangeConnection(identified, exchange, expected) {
+				continue
+			}
+			if identified.SignedPeerRecord == nil {
+				return fmt.Errorf("Identify completion lacks a signed peer record")
+			}
+			result["signed_peer_record"] = true
+			result["identify_event_connection_id"] = identified.Conn.ID()
+			result["identify_event_basis"] = "automatic_identify_separate_exchange_same_connection"
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("Identify completion event timed out: %w", ctx.Err())
+		}
+	}
+}
+
 func openRequiredProtocol(ctx context.Context, h host.Host, peer peer.ID, id protocol.ID) (protocolExchange, error) {
 	ctx, binding := bindUpgradeStream(ctx)
 	stream, err := h.NewStream(ctx, peer, id)
@@ -1056,7 +1080,7 @@ func dial(opts options) (err error) {
 		}
 	}()
 	var identifyEvents event.Subscription
-	if opts.scenario == "identify" || opts.scenario == "pnet" {
+	if opts.scenario == "identify" || opts.scenario == "pnet" || opts.scenario == "echo" || opts.scenario == "echo_large" {
 		identifyEvents, err = h.EventBus().Subscribe(new(event.EvtPeerIdentificationCompleted), eventbus.BufSize(4))
 		if err != nil {
 			return fmt.Errorf("subscribe to Identify completion: %w", err)
@@ -1143,20 +1167,8 @@ func dial(opts options) (err error) {
 		if err != nil {
 			return err
 		}
-		identified := false
-		for !identified {
-			select {
-			case received := <-identifyEvents.Out():
-				event, ok := received.(event.EvtPeerIdentificationCompleted)
-				if ok && identifyOnExchangeConnection(event, exchange, info.ID) {
-					result["signed_peer_record"] = event.SignedPeerRecord != nil
-					result["identify_event_connection_id"] = event.Conn.ID()
-					result["identify_event_basis"] = "automatic_identify_separate_exchange_same_connection"
-					identified = true
-				}
-			case <-ctx.Done():
-				return fmt.Errorf("Identify completion event timed out: %w", ctx.Err())
-			}
+		if err := recordAutomaticIdentify(ctx, result, identifyEvents.Out(), exchange, info.ID); err != nil {
+			return err
 		}
 		result["payload_bytes"] = exchange.bytes
 		proofTarget = exchange.target
@@ -1200,6 +1212,9 @@ func dial(opts options) (err error) {
 		}
 		exchange, err := openEchoProtocol(ctx, h, info.ID, payload)
 		if err != nil {
+			return err
+		}
+		if err := recordAutomaticIdentify(ctx, result, identifyEvents.Out(), exchange, info.ID); err != nil {
 			return err
 		}
 		result["protocol"] = string(echoProtocol)
