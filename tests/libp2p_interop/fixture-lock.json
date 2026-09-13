@@ -48,12 +48,12 @@
     "rust_fixture/upgrade_observer.rs": "3635fc046c8a32e86f5b3fd6127e107a887d2deb4c5ca364d78eef74e28db71b"
   },
   "runtime_artifact_sources": {
-    "../CMakeLists.txt": "b84e6d49467b248ba7f39e4712ea5b3b8feb0c66176bf20556b0341cf5f5ad74",
+    "../CMakeLists.txt": "c10acc74a472af1e085cb5d236108ab3ea617dd1695047d06f9fa4912c2e9985",
     "autonat_acceptance.py": "5bca06fb7a97d81c823f8d42dabd671c67484f1585f4988b3473b4e406045ab3",
     "autonat_cases.py": "a7b58ae1b03359411cab68c627ca0602fe034a691a2e7fb9f9cc841fa2d4b96b",
     "autonat_evidence.py": "ee14c5984570b9e738e4f386214ec34428d01bb03ef1303917ef991b9f71c1d1",
     "autonat_network.py": "67942f7c1ad5b29c58dae908529695b0226dffcfdc23ac28e3245e74b80f9bb8",
-    "check_fixture_lock.py": "01712b0ba1b9ba11bdf9771fee85ea89bc612bd10ac197af23e038b47261faf5",
+    "check_fixture_lock.py": "e7074eadbe458daaf81880723677e9dac7686b99bb12bebff745db0399ebd789",
     "dns_evidence.py": "98b141f222095f61fe0e866498fa863dc55ddf4b082c46c3650c57ccaf28b197",
     "dns_fixture.py": "36f4fc9890ff9e1d1debf9ca0a08d73b622e4788edfced468e61a1950676b545",
     "forge_autonat_fixture.cpp": "c978eca3016131c663351a15be9797aa8c3c163df107d9758704bd9ca8b12500",
@@ -65,6 +65,7 @@
     "provenance.py": "9ae5c8ffa3d9dcd646c2a5c7148e79cd5086d60ecb156d81374fda2ca00609ec",
     "provider_evidence.py": "673d8caa86a01e0ffd90ad5149059dab9aba489d5af839794e03711f1deea660",
     "runner.py": "6b6238b0847bf0acbd9e711d169e6f7113b7fea2dba7d17c6de7c51a464841d8",
+    "rust_upgrade_evidence.py": "4d0137bce6218fbd53dddcd4bbddf468fe669076572e81a74138ff0c3d0bc78a",
     "upgrade_evidence.py": "37dd2b768a363152e54e3a9640ec3419c10c62e03051b6891df22128ffd47532"
   },
   "evidence_sources": {
@@ -76,11 +77,12 @@
     "test_autonat_evidence.py": "126ebb1e59feb0ac376403cd501d078022a95d33a4dbecf1b5ef9e8383c85ca8",
     "test_autonat_network.py": "7ebde3d9724a443b126a30242f2570719d6067a53204e25393cceb398e772cb5",
     "test_dns_fixture.py": "9f4fae8f9b313d3621e9ef24f20bc33bbd87b1ecde2271e607ba6a283a9e442e",
-    "test_identify_evidence.py": "fa749be217e1f202fcecfc1ed3241c70f822962fa83badbca383a8500469948a",
+    "test_identify_evidence.py": "161c5c441150662f9f2709a485e3e10014c4073c93fef0c01db252a956d96d68",
     "test_process_lifecycle.py": "6dc26185f974b2b6f45888ffee52d51955e340a63e859d2a8518c62ada33ed96",
     "test_provenance.py": "74bdecb22ae8d0c9210fce3f20639bc7e1d23f9a8a7a3ecfb69094645289a83c",
     "test_provider_evidence.py": "3559b80ab71a858a54f8e93513c14400bec4be769a2384c051e85e8703baefae",
     "test_relay_evidence.py": "e73779c3c84a417c80806fa6b9697c41fbda2a1a8a68e2d831ff6f00360fde0a",
+    "test_rust_upgrade_evidence.py": "c1f85fece165bb2b2c290e8a7f12b07562c4622d3262f5e0e01e3ddf678d4c5c",
     "test_upgrade_evidence.py": "dadd365b31b85b877d305421780204591a19408d60b58992f0216c4f88d9bf64"
   },
   "dependency_graphs": {

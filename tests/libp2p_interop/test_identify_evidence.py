@@ -51,7 +51,108 @@ def helper_receipt(legacy=False):
     return peer, raw
 
 
+def composed_rust_receipt(scenario, security):
+    """Join synthetic parser fixtures, never a live cryptographic proof."""
+    from test_rust_upgrade_evidence import REMOTE, IDENTIFY, body, receipt
+    peer, raw = helper_receipt()
+    raw["raw_capture_truncated"] = False
+
+    def identities(value):
+        if isinstance(value, dict):
+            return {key: identities(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [identities(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(REMOTE, peer)
+        return value
+
+    result = identities(receipt(scenario, security))
+    result.update(raw_identify_exchange=raw, protocol_count=2, authenticated_remote_peer_id=peer)
+    proof = result["upgrade_observation"]
+    framed = body(bytes.fromhex(raw["raw_protobuf_hex"]))
+    for stream in proof["connections"][0]["streams"]:
+        if stream["protocol"] == IDENTIFY:
+            stream["read"] = copy.deepcopy(framed)
+    proof["applications"]["attempts"][0]["read"] = copy.deepcopy(framed)
+    return result, {"peer_id": peer, "dialer": "rust", "listener": "forge",
+                    "profile": "native", "scenario": scenario}
+
+
 class RawIdentifyEvidenceTests(unittest.TestCase):
+    def test_paired_rust_gate_requires_independent_listener_observation(self):
+        from test_rust_upgrade_evidence import LOCAL, listener_pair
+        for security, validate in (("/noise", checker.validate_noise_multistream_evidence),
+                                    ("/tls/1.0.0", checker.validate_tls_evidence)):
+            for scenario in ("identify", "echo"):
+                with self.subTest(security=security, scenario=scenario):
+                    payload, listener = listener_pair(scenario, security, True)
+                    record = {"peer_id": LOCAL, "dialer": "forge", "listener": "rust",
+                              "profile": "native", "scenario": scenario}
+                    self.assertEqual(validate(payload, record, listener), [])
+                    self.assertTrue(validate(payload, record, None))
+                    broken = copy.deepcopy(listener)
+                    broken["upgrade_observation"]["fixture_owned_tasks_joined"] = False
+                    self.assertTrue(validate(payload, record, broken))
+                    if scenario == "echo":
+                        self.assertEqual(checker.validate_tcp_yamux_evidence(
+                            payload, record, listener, (security,)), [])
+
+    def test_paired_rust_requires_immutable_terminal_owned_counterpart(self):
+        from test_rust_upgrade_evidence import LOCAL, listener_pair
+        from test_upgrade_evidence import PairedProcessEvidenceTests, attach_terminal_owners
+        fixture = PairedProcessEvidenceTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.binaries["rust"] = fixture.root / "rust"
+        fixture.payload, fixture.listener_payload = listener_pair(late_error=True)
+        record = fixture.record
+        record.update(listener="rust", peer_id=LOCAL, listener_result=fixture.listener_payload)
+        attempt = record["result"]["attempts"][0]
+        command = attempt["command"]
+        command[command.index("--peer-id") + 1] = LOCAL
+        record["result"] = fixture.payload | {"result_file": str(fixture.result), "attempts": [attempt]}
+        record["listener_process"]["command"][0] = str(fixture.binaries["rust"])
+        fixture.listener_result.write_text(json.dumps(fixture.listener_payload))
+        attach_terminal_owners(record, fixture.payload, fixture.listener_payload)
+        fixture.save()
+        self.assertEqual(fixture.validate(), [])
+        fixture.listener_payload["extra_diagnostic"] = "not in the terminal snapshot"
+        fixture.listener_result.write_text(json.dumps(fixture.listener_payload))
+        fixture.save()
+        self.assertTrue(fixture.validate())
+
+    def test_native_rust_gate_composes_semantic_and_upgrade_validation(self):
+        for security, validate in (("/noise", checker.validate_noise_multistream_evidence),
+                                    ("/tls/1.0.0", checker.validate_tls_evidence)):
+            for scenario in ("identify", "echo"):
+                with self.subTest(security=security, scenario=scenario):
+                    payload, record = composed_rust_receipt(scenario, security)
+                    self.assertEqual(validate(payload, record, None), [])
+                    broken = copy.deepcopy(payload)
+                    broken["raw_identify_exchange"]["signed_envelope_sha256"] = "0" * 64
+                    self.assertTrue(validate(broken, record, None))
+                    broken = copy.deepcopy(payload)
+                    broken["upgrade_observation"]["applications"]["attempts"][0]["binding"]["stream_trace_id"] = True
+                    self.assertTrue(validate(broken, record, None))
+                    if scenario == "echo":
+                        self.assertEqual(checker.validate_tcp_yamux_evidence(
+                            payload, record, None, (security,)), [])
+
+    def test_echo_retains_verified_separate_identify_without_relabeling_behaviour(self):
+        peer, raw = helper_receipt()
+        payload = {"implementation": "rust", "role": "dialer", "scenario": "echo", "status": "ok",
+                   "protocol_count": 2, "signed_peer_record": False,
+                   "authenticated_remote_peer_id": peer, "raw_identify_exchange": raw}
+        record = {"peer_id": peer}
+        self.assertEqual(checker.validate_identify_evidence(payload, record, None), [])
+        self.assertIs(payload["signed_peer_record"], False)
+        for field, value in (("basis", "behaviour_summary"), ("status", "failed"),
+                             ("authenticated_remote_peer_id", "other-peer")):
+            broken = copy.deepcopy(payload)
+            broken["raw_identify_exchange"][field] = value
+            with self.subTest(field=field):
+                self.assertTrue(checker.validate_identify_evidence(broken, record, None))
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

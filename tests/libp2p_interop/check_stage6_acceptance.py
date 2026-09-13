@@ -14,6 +14,7 @@ from typing import Optional
 from dns_evidence import DNSADDR_SCENARIOS, validate_dnsaddr
 from provider_evidence import validate_provider_evidence
 from upgrade_evidence import validate_go_dial_upgrade, validate_go_listener_upgrade
+from rust_upgrade_evidence import validate_rust_dial_upgrade, validate_rust_listener_upgrade
 from autonat_acceptance import (
     EVIDENCE_CONTRACTS as AUTONAT_EVIDENCE_CONTRACTS,
     ROLE_DIRECTIONS as AUTONAT_ROLE_DIRECTIONS,
@@ -912,21 +913,6 @@ def token_value(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9._:-]{7,127}", value) is not None
 
 
-def exact_phase_transcript(result: dict, security_protocol: str) -> list[str]:
-    """Require the wire upgrade order rather than a negotiated-label summary."""
-    transcript = result.get("upgrade_transcript")
-    application = result.get("application_protocol")
-    expected = [
-        {"phase": "multistream", "protocol": "/multistream/1.0.0"},
-        {"phase": "security", "protocol": security_protocol},
-        {"phase": "muxer", "protocol": "/yamux/1.0.0"},
-        {"phase": "application", "protocol": application},
-    ]
-    if not nonempty_string(application) or transcript != expected:
-        return ["contract requires the exact ordered multistream/security/Yamux transcript"]
-    return []
-
-
 def control_result(record: dict, name: str, correlation_token: object, expected_status: str) -> tuple[Optional[dict], list[str]]:
     control = record.get(name)
     if not isinstance(control, dict):
@@ -1007,7 +993,7 @@ def validate_raw_identify_exchange(result: dict, record: dict) -> list[str]:
         raw = result.get("raw_identify_exchange")
         peer = record.get("peer_id")
         if (not isinstance(raw, dict) or result.get("implementation") != "rust"
-                or result.get("scenario") != "identify" or result.get("signed_peer_record") is not False
+                or result.get("scenario") not in {"identify", "echo"} or result.get("signed_peer_record") is not False
                 or raw.get("basis") != "fixture_separate_authenticated_identify_exchange"
                 or raw.get("protocol") != "/ipfs/id/1.0.0" or raw.get("status") != "verified"
                 or raw.get("error") is not None or raw.get("signed_peer_record_verified") is not True
@@ -1153,10 +1139,21 @@ def raw_application_process_source(record: dict, payload: dict, result_path: Pat
             return errors + ["application listener readiness source is not indexed and owned"]
         ready, ready_errors = load_evidence_json(ready_source, "application listener readiness snapshot")
         errors.extend(ready_errors)
+        local_peer = payload.get("local_peer_id")
+        if payload.get("implementation") == "rust":
+            proof = payload.get("upgrade_observation")
+            connections = proof.get("connections") if isinstance(proof, dict) else None
+            local_peer = None
+            if isinstance(connections, list) and 1 <= len(connections) <= 16:
+                identities = [connection.get("authenticated_local_peer_id")
+                              for connection in connections if isinstance(connection, dict)]
+                if (len(identities) == len(connections) and nonempty_string(identities[0])
+                        and all(identity == identities[0] for identity in identities)):
+                    local_peer = identities[0]
         if (not isinstance(ready, dict) or ready != owner.get("ready") or ready.get("status") != "ready"
                 or ready.get("implementation") != record.get("listener") or ready.get("role") != "listener"
                 or ready.get("peer_id") != record.get("peer_id")
-                or ready.get("peer_id") != payload.get("local_peer_id")):
+                or ready.get("peer_id") != local_peer):
             errors.append("application listener readiness does not identify the actual authenticated counterpart")
         claim_paths.add(ready_source)
     return errors
@@ -1177,6 +1174,15 @@ def validate_tcp_yamux_evidence(result: dict, record: dict, listener: Optional[d
                                 require_identify: bool = True) -> list[str]:
     """Require endpoint-observed TCP upgrade state, not requested CLI transport."""
     errors = validate_identify_evidence(result, record, listener) if require_identify else []
+    if require_identify and record.get("profile") == "native" and record.get("dialer") == "rust":
+        if len(security_protocols) != 1:
+            return errors + ["Rust native upgrade requires an exact security contract"]
+        return errors + validate_rust_dial_upgrade(result, record.get("peer_id"), security_protocols[0])
+    if (require_identify and record.get("profile") == "native"
+            and record.get("dialer") == "forge" and record.get("listener") == "rust"):
+        if len(security_protocols) != 1:
+            return errors + ["Rust native upgrade requires an exact security contract"]
+        return errors + validate_rust_listener_upgrade(result, listener, record.get("peer_id"), security_protocols[0])
     if result.get("negotiated_transport") != "tcp":
         errors.append("TCP/Yamux evidence lacks endpoint-observed tcp transport")
     if result.get("negotiated_security") not in security_protocols:
@@ -1201,32 +1207,28 @@ def validate_tcp_yamux_evidence(result: dict, record: dict, listener: Optional[d
 
 def validate_noise_multistream_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
     errors = validate_identify_evidence(result, record, listener)
+    if record.get("dialer") == "rust":
+        return errors + validate_rust_dial_upgrade(result, record.get("peer_id"), "/noise")
+    if record.get("dialer") == "forge" and record.get("listener") == "rust":
+        return errors + validate_rust_listener_upgrade(result, listener, record.get("peer_id"), "/noise")
     if record.get("dialer") == "go":
         return errors + validate_go_dial_upgrade(result, record.get("peer_id"), "/noise")
     if record.get("dialer") == "forge" and record.get("listener") == "go":
         return errors + validate_go_listener_upgrade(result, listener, record.get("peer_id"), "/noise")
-    errors.extend(exact_phase_transcript(result, "/noise"))
-    if result.get("negotiated_security") != "/noise" or result.get("negotiated_muxer") != "/yamux/1.0.0":
-        errors.append("Noise/multistream evidence lacks endpoint-observed TCP security and muxer selection")
-    if result.get("authenticated_remote_peer_id") != record.get("peer_id"):
-        errors.append("Noise/multistream evidence lacks the endpoint-authenticated remote peer identity")
-    if result.get("selected_protocols") != ["/noise", "/yamux/1.0.0", result.get("application_protocol")]:
-        errors.append("Noise/multistream selected protocols do not match its endpoint upgrade transcript")
-    return errors
+    return errors + ["Noise/multistream evidence requires an observed Forge/Go or Forge/Rust exchange"]
 
 
 def validate_tls_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
     errors = validate_identify_evidence(result, record, listener)
+    if record.get("dialer") == "rust":
+        return errors + validate_rust_dial_upgrade(result, record.get("peer_id"), "/tls/1.0.0")
+    if record.get("dialer") == "forge" and record.get("listener") == "rust":
+        return errors + validate_rust_listener_upgrade(result, listener, record.get("peer_id"), "/tls/1.0.0")
     if record.get("dialer") == "go":
         return errors + validate_go_dial_upgrade(result, record.get("peer_id"), "/tls/1.0.0")
     if record.get("dialer") == "forge" and record.get("listener") == "go":
         return errors + validate_go_listener_upgrade(result, listener, record.get("peer_id"), "/tls/1.0.0")
-    errors.extend(exact_phase_transcript(result, "/tls/1.0.0"))
-    if result.get("negotiated_security") != "/tls/1.0.0" or result.get("negotiated_muxer") != "/yamux/1.0.0":
-        errors.append("TLS evidence lacks endpoint-observed TCP security and muxer selection")
-    if result.get("authenticated_remote_peer_id") != record.get("peer_id"):
-        errors.append("TLS evidence lacks the endpoint-authenticated remote peer identity")
-    return errors
+    return errors + ["TLS evidence requires an observed Forge/Go or Forge/Rust exchange"]
 
 
 def pnet_control_errors(record: dict, name: str) -> list[str]:
@@ -1878,7 +1880,7 @@ def validate_successful_raw_record(
         expected_evidence_contract, payload or {}, record, listener_payload
     ))
     if isinstance(payload, dict) and (payload.get("raw_identify_exchange") is not None or (
-        record.get("dialer") == "go" and record.get("scenario") in {"identify", "echo"}
+        record.get("dialer") in {"go", "rust"} and record.get("scenario") in {"identify", "echo"}
         and expected_evidence_contract in {
             evidence_contract_for("noise_identity"), evidence_contract_for("multistream_select"),
             evidence_contract_for("tls_identity"), evidence_contract_for("tcp_yamux"),
@@ -1886,7 +1888,7 @@ def validate_successful_raw_record(
     )):
         errors.extend(raw_application_process_source(record, payload, result_path, artifact_root,
                                                   indexed_evidence, claim_paths))
-    if (record.get("dialer") == "forge" and record.get("listener") == "go"
+    if (record.get("dialer") == "forge" and record.get("listener") in {"go", "rust"}
             and record.get("scenario") in {"identify", "echo"} and isinstance(payload, dict)
             and expected_evidence_contract in {
                 evidence_contract_for("noise_identity"), evidence_contract_for("multistream_select"),
@@ -2275,31 +2277,12 @@ def semantic_fixture(scenario_id: str) -> tuple[dict, dict, Optional[dict]]:
             "negotiated_muxer": "/yamux/1.0.0", "authenticated_remote_peer_id": "listener-peer",
             "protocol": "/forge/interop/echo/1", "payload_bytes": 7, "echo_ok": True,
         })
-    elif scenario_id in {"multistream_select", "noise_identity"}:
-        application = "/forge/interop/identify/1"
-        result.update(identify | {
-            "negotiated_security": "/noise", "negotiated_muxer": "/yamux/1.0.0",
-            "authenticated_remote_peer_id": "listener-peer", "application_protocol": application,
-            "selected_protocols": ["/noise", "/yamux/1.0.0", application],
-            "upgrade_transcript": [
-                {"phase": "multistream", "protocol": "/multistream/1.0.0"},
-                {"phase": "security", "protocol": "/noise"},
-                {"phase": "muxer", "protocol": "/yamux/1.0.0"},
-                {"phase": "application", "protocol": application},
-            ],
-        })
-    elif scenario_id == "tls_identity":
-        application = "/forge/interop/identify/1"
-        result.update(identify | {
-            "negotiated_security": "/tls/1.0.0", "negotiated_muxer": "/yamux/1.0.0",
-            "authenticated_remote_peer_id": "listener-peer", "application_protocol": application,
-            "upgrade_transcript": [
-                {"phase": "multistream", "protocol": "/multistream/1.0.0"},
-                {"phase": "security", "protocol": "/tls/1.0.0"},
-                {"phase": "muxer", "protocol": "/yamux/1.0.0"},
-                {"phase": "application", "protocol": application},
-            ],
-        })
+    elif scenario_id in {"multistream_select", "noise_identity", "tls_identity"}:
+        # Shared synthetic parser fixtures, never normal runner output. Descriptive
+        # phase lists are insufficient even for the positive checker self-test.
+        from test_identify_evidence import composed_rust_receipt
+        security = "/tls/1.0.0" if scenario_id == "tls_identity" else "/noise"
+        result, record = composed_rust_receipt("identify", security)
     elif scenario_id.startswith("ping"):
         result.update({"ping_ok": True, "rtt_ms": 1})
     elif scenario_id.startswith("identify"):
@@ -2606,16 +2589,16 @@ def self_test() -> int:
             "authenticated_remote_peer_id", "echo_ok", "payload_bytes",
         ),
         "multistream_select": (
-            "upgrade_transcript", "selected_protocols", "negotiated_security",
-            "negotiated_muxer", "authenticated_remote_peer_id",
+            "upgrade_observation", "raw_identify_exchange", "signed_peer_record",
+            "protocol_count", "authenticated_remote_peer_id",
         ),
         "noise_identity": (
-            "upgrade_transcript", "selected_protocols", "negotiated_security",
-            "negotiated_muxer", "authenticated_remote_peer_id",
+            "upgrade_observation", "raw_identify_exchange", "signed_peer_record",
+            "protocol_count", "authenticated_remote_peer_id",
         ),
         "tls_identity": (
-            "upgrade_transcript", "negotiated_security", "negotiated_muxer",
-            "authenticated_remote_peer_id",
+            "upgrade_observation", "raw_identify_exchange", "signed_peer_record",
+            "protocol_count", "authenticated_remote_peer_id",
         ),
         "identify": ("signed_peer_record", "protocol_count"),
         "identify_native_tcp_yamux": ("signed_peer_record", "protocol_count"),

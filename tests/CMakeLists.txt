@@ -1371,6 +1371,11 @@ add_test(
 )
 set_tests_properties(test_forge_libp2p_upgrade_evidence PROPERTIES TIMEOUT 10)
 add_test(
+   NAME test_forge_libp2p_rust_upgrade_evidence
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/test_rust_upgrade_evidence.py
+)
+set_tests_properties(test_forge_libp2p_rust_upgrade_evidence PROPERTIES TIMEOUT 10)
+add_test(
    NAME test_forge_libp2p_relay_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest test_relay_evidence
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop

@@ -256,9 +256,18 @@ Lazy delegate completion alone is insufficient: the actual negotiation selection
 must also have occurred. Later connection errors remain in the event history and
 do not erase an earlier milestone. A response-write milestone is not remote receipt;
 paired evidence must still establish the receiver's independent successful read.
-Rust acceptance validation remains a separate gate; capture-layer unit and live
-tests alone cannot promote the ordered-upgrade capability. Final exact-head
-acceptance still requires both implementations and the independent review gate.
+The Rust validators replay canonical negotiation observations, preserve failed
+background attempts, and require the target's unambiguous application binding.
+Inbound proof additionally requires the unique counterpart response and independently
+owned Forge result. A connection error after all required response milestones remains
+visible; an earlier error cannot be reclassified as successful teardown. The existing
+Identify validator still owns signed-envelope inspection, without a second crypto
+parser in the upgrade validator. Both results must match their indexed terminal
+snapshots; descriptive phase lists are not an alternate acceptance path.
+
+Capture-layer unit and live tests alone cannot promote the ordered-upgrade
+capability. Final exact-head acceptance still requires both implementations and
+the independent review gate.
 
 Positive exchanges use isolated Linux network namespaces with public-classified
 numeric addresses, no external interface and no default route. This exercises

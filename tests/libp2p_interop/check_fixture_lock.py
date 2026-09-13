@@ -74,6 +74,7 @@ EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
     "process_lifecycle.py",
     "provider_evidence.py",
     "upgrade_evidence.py",
+    "rust_upgrade_evidence.py",
     "provenance.py",
     "runner.py",
 }
@@ -83,6 +84,7 @@ EXPECTED_REGRESSION_SOURCES = {
     "test_autonat_cases.py", "test_autonat_evidence.py", "test_autonat_network.py",
     "test_autonat_acceptance.py", "test_identify_evidence.py", "test_relay_evidence.py",
     "test_upgrade_evidence.py",
+    "test_rust_upgrade_evidence.py",
 }
 
 
