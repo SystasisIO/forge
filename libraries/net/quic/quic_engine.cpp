@@ -512,6 +512,7 @@ struct engine_stream::impl {
    bool local_write_closed = false;
    bool fin_queued = false;
    bool reset = false;
+   bool reset_counted = false;
    bool closed = false;
    bool cancel_worker_started = false;
    // Strand-owned recovery work is distinct from native stream termination.
@@ -915,7 +916,9 @@ struct engine_connection::impl {
       }
       wake(stream->read_waiters);
       wake(stream->write_waiters);
-      metrics.streams_reset.fetch_add(1, std::memory_order_relaxed);
+      if (!std::exchange(stream->reset_counted, true)) {
+         metrics.streams_reset.fetch_add(1, std::memory_order_relaxed);
+      }
       update_active_stream_metrics();
       if (shutdown_result != 0) {
          fail_all();
@@ -2058,7 +2061,9 @@ int stream_reset_cb(ngtcp2_conn*, std::int64_t stream_id, std::uint64_t, std::ui
    if (auto it = connection->streams.find(stream_id); it != connection->streams.end()) {
       auto& stream = it->second;
       stream->remote_read_reset = true;
-      connection->metrics.streams_reset.fetch_add(1, std::memory_order_relaxed);
+      if (!std::exchange(stream->reset_counted, true)) {
+         connection->metrics.streams_reset.fetch_add(1, std::memory_order_relaxed);
+      }
       wake(stream->read_waiters);
       connection->update_active_stream_metrics();
    }
@@ -2477,7 +2482,9 @@ void engine_stream::cancel_write() {
       stream->local_write_closed = true;
       publish_stream_terminal(stream);
       wake(stream->write_waiters);
-      connection->metrics.streams_reset.fetch_add(1, std::memory_order_relaxed);
+      if (!std::exchange(stream->reset_counted, true)) {
+         connection->metrics.streams_reset.fetch_add(1, std::memory_order_relaxed);
+      }
       connection->update_active_stream_metrics();
       if (shutdown_result != 0) {
          connection->fail_all();

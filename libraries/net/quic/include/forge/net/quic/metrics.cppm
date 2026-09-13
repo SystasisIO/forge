@@ -15,6 +15,7 @@ struct connection_metrics {
    std::uint64_t handshakes_failed = 0;
    std::uint64_t streams_opened = 0;
    std::uint64_t streams_accepted = 0;
+   // Unique streams reset in either direction, not the number of reset frames.
    std::uint64_t streams_reset = 0;
    std::uint64_t frames_sent = 0;
    std::uint64_t frames_received = 0;
