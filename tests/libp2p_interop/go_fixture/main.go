@@ -74,6 +74,9 @@ type options struct {
 	payload         string
 	transport       string
 	dnsServer       string
+	bindIP          string
+	probeAddr       string
+	internetEgress  string
 	expected        int
 	pnetKeyFile     string
 	pnetFingerprint string
@@ -122,6 +125,12 @@ func parseArgs() (options, error) {
 			out.payload = value
 		case "--transport":
 			out.transport = value
+		case "--bind-ip":
+			out.bindIP = value
+		case "--probe-addr":
+			out.probeAddr = value
+		case "--internet-egress":
+			out.internetEgress = value
 		case "--dns-server":
 			server, err := netip.ParseAddrPort(value)
 			if err != nil || server.Port() == 0 || server.Addr().Zone() != "" {
@@ -1369,11 +1378,19 @@ func main() {
 	if err == nil {
 		switch opts.command {
 		case "listen":
-			err = listen(opts)
+			if isAutoNATScenario(opts.scenario) {
+				err = runAutoNAT(opts)
+			} else {
+				err = listen(opts)
+			}
 		case "destination":
 			err = destination(opts)
 		case "dial":
-			err = dial(opts)
+			if isAutoNATScenario(opts.scenario) {
+				err = runAutoNAT(opts)
+			} else {
+				err = dial(opts)
+			}
 		case "dial-relay":
 			err = dialRelay(opts)
 		default:

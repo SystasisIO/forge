@@ -54,6 +54,7 @@ import forge.crypto.pki.pem;
 import forge.net.dns.types;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
+import forge.net.p2p.connection_gater;
 import forge.net.p2p.diagnostics;
 import forge.multiformats.exceptions;
 import forge.multiformats.multihash;
@@ -76,7 +77,10 @@ import forge.net.p2p.rendezvous;
 import forge.net.p2p.relay;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
+import forge.net.p2p.topology;
 import forge.net.pnet.protector;
+
+#include "forge_autonat_fixture.hxx"
 
 namespace {
 
@@ -504,6 +508,62 @@ void configure_private_network(forge::net::p2p::node::options& options,
        .protector = std::make_shared<const forge::net::pnet::protector>(
            forge::net::pnet::protector{std::move(key)}),
    };
+}
+
+forge::net::p2p::node::options autonat_node_options(std::string_view transport) {
+   const auto& identity = local_identity();
+   auto options = forge::net::p2p::node::options{
+       .certificate_pem = identity.certificate_pem,
+       .private_key_pem = identity.private_key_pem,
+       .explicit_peer_id = identity.peer,
+       .capabilities = forge::net::p2p::capability_set{.bits = forge::net::p2p::capabilities::autonat},
+       .relay_policy = {.service_enabled = false, .client_enabled = false, .public_relay_allowed = false,
+                        .auto_discovery_enabled = false},
+       .path_policy = {.allow_direct = true, .allow_hole_punch = false, .allow_relay = false},
+       .public_key = identity.public_key,
+       .peer_state = forge::net::p2p::peer_store::options{
+           .persistence = forge::net::p2p::peer_store::make_memory_persistence(),
+       },
+       .allow_insecure_test_mode = false,
+   };
+   if (transport == "quic") {
+      options.capabilities.add(forge::net::p2p::capabilities::direct_quic);
+   }
+   options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+   options.limits.topology.dht_enabled = false;
+   options.limits.topology.rendezvous_enabled = false;
+   options.limits.topology.peer_exchange_enabled = false;
+   return options;
+}
+
+forge::test::libp2p_interop::autonat_fixture_node
+make_autonat_node(forge::asio::runtime& runtime, const forge::test::libp2p_interop::fixture_arguments& args,
+                  bool service) {
+   const auto scenario = required(args, "scenario");
+   const auto transport = optional_value(args, "transport", "quic");
+   static_cast<void>(required(args, "store-dir"));
+   auto options = autonat_node_options(transport);
+   configure_private_network(options, args, transport);
+   if (transport == "tcp-pnet") {
+      const auto egress = required(args, "internet-egress");
+      if (!options.private_network || (egress != "allow" && egress != "deny")) {
+         throw std::runtime_error{"tcp-pnet AutoNAT requires --pnet-key-file and --internet-egress allow|deny"};
+      }
+      options.private_network->internet_egress = egress == "allow"
+          ? forge::net::p2p::private_network::internet_egress_policy::allow_internet
+          : forge::net::p2p::private_network::internet_egress_policy::deny_external;
+      options.capabilities = forge::net::p2p::capability_set{.bits = forge::net::p2p::capabilities::autonat};
+   }
+   const auto v1 = scenario == "autonat_v1";
+   options.reachability_policy.client_v1_enabled = !service && v1;
+   options.reachability_policy.client_v2_enabled = !service && !v1;
+   options.reachability_policy.service_v1_enabled = service && v1;
+   options.reachability_policy.service_v2_enabled = service && !v1;
+   auto [gater, observation] =
+       forge::test::libp2p_interop::make_autonat_connection_observer(options.connection_gater);
+   options.connection_gater = std::move(gater);
+   return {.value = std::make_unique<forge::net::p2p::node>(runtime, std::move(options)),
+           .connection_observation = std::move(observation)};
 }
 
 std::string pnet_evidence(const std::map<std::string, std::string>& args) {
@@ -2220,6 +2280,12 @@ int main(int argc, char** argv) {
       }
       if (args.at("command") == "build-info") {
          return build_info_mode();
+      }
+      const auto scenario = optional_value(args, "scenario");
+      if ((args.at("command") == "listen" || args.at("command") == "dial") &&
+          (scenario == "autonat_v1" || scenario == "autonat_v2")) {
+         return forge::test::libp2p_interop::run_forge_autonat_fixture(
+             args, {.make_node = make_autonat_node});
       }
       if (args.at("command") == "listen") {
          return listen_mode(args);

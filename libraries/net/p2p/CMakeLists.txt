@@ -55,6 +55,27 @@ add_library(
    pubsub.cpp
    scoring.cpp
    reachability.cpp
+   reachability_policy.cpp
+   reachability_state.cpp
+   reachability_manager.cpp
+   details/reachability_manager.hxx
+   autonat_exchange.cpp
+   details/autonat_exchange.hxx
+   autonat_v2_dialback.cpp
+   details/autonat_v2_dialback.hxx
+   details/reachability_state.hxx
+   observed_address_manager.cpp
+   details/observed_address_manager.hxx
+   node_impl_autonat.cpp
+   node_impl_reachability.cpp
+   node_impl_autonat_operation.cpp
+   details/node_impl_autonat_operation.hxx
+   host_event_subscription.cpp
+   details/host_event_subscription_impl.hxx
+   host_event_mailbox.cpp
+   details/host_event_mailbox.hxx
+   host_event_source.cpp
+   details/host_event_source.hxx
    relay.cpp
    length_delimited.cpp
    details/length_delimited.hxx

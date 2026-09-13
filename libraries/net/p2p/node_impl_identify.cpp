@@ -457,6 +457,7 @@ void node::impl::set_advertised_endpoints(std::vector<forge::net::p2p::endpoint>
       }
       const auto previous = local_endpoints_for_control_locked();
       options.advertised_endpoints = std::move(endpoints);
+      refresh_reachability_locked();
       if (!same_endpoints(previous, local_endpoints_for_control_locked())) {
          endpoints_changed = true;
          launch = advance_identify_generation_locked() && schedule_identify_push_locked();
@@ -464,6 +465,9 @@ void node::impl::set_advertised_endpoints(std::vector<forge::net::p2p::endpoint>
    }
    if (endpoints_changed && provider_registry) {
       provider_registry->notify_endpoints_changed();
+   }
+   if (endpoints_changed) {
+      notify_reachability_changed();
    }
    if (launch) {
       launch_identify_pushes();
@@ -474,11 +478,13 @@ void node::impl::notify_listen_endpoints_changed() {
    auto launch = false;
    {
       auto lock = std::scoped_lock{mutex};
+      refresh_reachability_locked();
       launch = advance_identify_generation_locked() && schedule_identify_push_locked();
    }
    if (provider_registry) {
       provider_registry->notify_endpoints_changed();
    }
+   notify_reachability_changed();
    if (launch) {
       launch_identify_pushes();
    }
@@ -707,6 +713,8 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
          launch = schedule_identify_push_locked();
       }
    }
+   observe_address(session, document);
+   notify_reachability_changed();
    if (verified_dht_server) {
       notify_dht_routing_refresh();
    }

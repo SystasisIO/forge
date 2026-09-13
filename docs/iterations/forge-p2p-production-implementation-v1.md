@@ -424,7 +424,17 @@ Stage 6 is complete only when the manifest has no `stage_6` entry,
 each delivered capability has an implementation feature/evidence mapping, and
 live Go/Rust tests cover every standard protocol or negotiation behavior that
 the profile advertises. Registered donor fixtures are test declarations, not
-passing evidence. The source checker validates only registry structure and
+passing evidence. AutoNAT receipts attribute each pair to its actual Forge role:
+client requirements cover Forge-to-Go/Rust, service requirements cover
+Go/Rust-to-Forge. This corrects the generic four-direction role template without
+reducing bilateral coverage. The separate `test_forge_p2p_autonat_acceptance`
+target requires all 41 pairs and controls, including TLS, private ALLOW/DENY and
+the genuine Go v1 negative response. It does not replace the general Stage 6
+acceptance target or count one receipt as both client and service evidence.
+The general target runs these 41 cases once alongside the other Stage 6 cases,
+with the same prepared binaries, provenance and promotion receipt; omitting
+them fails validation even if all older cases pass.
+The source checker validates only registry structure and
 current runner registrations; it never emits an execution PASS. A standalone
 artifact check can report only local `CONSISTENT`/`NOT_RUN`/`FAILED` status, not
 promotion. The CMake promotion target owns the canonical runner invocation and,

@@ -11,6 +11,7 @@ module;
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <map>
@@ -37,6 +38,7 @@ module;
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/compat/move_only_function.hpp>
 #include <boost/system/system_error.hpp>
@@ -106,37 +108,38 @@ node::impl::open_session_stream(const std::shared_ptr<session_state>& session, c
       FORGE_THROW_EXCEPTION(exceptions::internal, "P2P stream resource admission failed");
    }
    auto [guarded, resource] = detail::prepare_resource_stream(std::move(*reservation));
-   auto raw = co_await session->connection.async_open_stream();
-   resource->attach(std::move(raw));
-   if (admitted) {
-      admitted(resource);
-   }
    auto selected = forge::net::p2p::stream{};
+   auto failure = std::exception_ptr{};
    try {
-      selected = co_await protocol_negotiation::async_select(std::move(guarded), protocol);
-   } catch (...) {
-      resource->cancel();
-      throw;
-   }
-   const auto binding = bind_stream_resource(resource, protocol, dht_profiles.contains(protocol));
-   if (binding != resource_manager::stream_reservation::bind_result::accepted) {
-      selected.cancel();
-      resource->cancel();
-      if (binding == resource_manager::stream_reservation::bind_result::policy_rejected) {
-         auto lock = std::scoped_lock{mutex};
-         ++metrics_value.backpressure_rejections;
-         ++metrics_value.protocol_rejections;
-         FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P scoped stream limit reached");
+      auto raw = co_await session->connection.async_open_stream();
+      resource->attach(std::move(raw));
+      if (admitted) {
+         admitted(resource);
       }
-      FORGE_THROW_EXCEPTION(exceptions::internal, "P2P scoped stream binding failed at runtime");
-   }
-   try {
+      selected = co_await protocol_negotiation::async_select(std::move(guarded), protocol);
+      const auto binding = bind_stream_resource(resource, protocol, dht_profiles.contains(protocol));
+      if (binding != resource_manager::stream_reservation::bind_result::accepted) {
+         if (binding == resource_manager::stream_reservation::bind_result::policy_rejected) {
+            auto lock = std::scoped_lock{mutex};
+            ++metrics_value.backpressure_rejections;
+            ++metrics_value.protocol_rejections;
+            FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P scoped stream limit reached");
+         }
+         FORGE_THROW_EXCEPTION(exceptions::internal, "P2P scoped stream binding failed at runtime");
+      }
       admitted.commit();
+      detail::stream_access::set_authentication(selected, session->authentication);
    } catch (...) {
-      selected.request_cancel();
-      throw;
+      failure = std::current_exception();
    }
-   detail::stream_access::set_authentication(selected, session->authentication);
+   if (failure) {
+      // Keep the reservation through the native terminal barrier. cancel()
+      // retires resource ownership immediately and is only an abandon fallback.
+      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+      resource->request_cancel();
+      try { co_await resource->async_close(); } catch (...) {}
+      std::rethrow_exception(failure);
+   }
    co_return selected;
 }
 

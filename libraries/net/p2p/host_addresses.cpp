@@ -74,6 +74,27 @@ namespace {
 
 } // namespace
 
+std::optional<std::string> observer_group(const endpoint& value) {
+   if (value.transport.host_type != endpoint::host_kind::ip4 && value.transport.host_type != endpoint::host_kind::ip6) {
+      return std::nullopt;
+   }
+   auto error = boost::system::error_code{};
+   const auto address = boost::asio::ip::make_address(value.transport.host, error);
+   if (error || address.is_v4() != (value.transport.host_type == endpoint::host_kind::ip4)) {
+      return std::nullopt;
+   }
+   if (address.is_v4()) {
+      return address.to_string();
+   }
+   auto bytes = address.to_v6().to_bytes();
+   if (address.to_v6().is_v4_mapped()) {
+      return boost::asio::ip::address_v4{boost::asio::ip::address_v4::bytes_type{
+          bytes[12], bytes[13], bytes[14], bytes[15]}}.to_string();
+   }
+   std::fill(bytes.begin() + 7, bytes.end(), 0);
+   return boost::asio::ip::address_v6{bytes}.to_string();
+}
+
 endpoint_scope classify_endpoint_scope(const endpoint& value) {
    using host_kind = endpoint::host_kind;
    switch (value.transport.host_type) {

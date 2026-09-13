@@ -8,6 +8,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+from autonat_acceptance import (
+    EVIDENCE_CONTRACTS as AUTONAT_EVIDENCE_CONTRACTS,
+    ROLE_DIRECTIONS,
+    SCENARIOS as AUTONAT_SCENARIOS,
+)
 from check_stage6_acceptance import EVIDENCE_CONTRACT_VALIDATORS, expected_launcher_transport
 from provenance import (
     donor_checkout_head_errors,
@@ -211,6 +216,7 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
         if not isinstance(target, ast.Name) or target.id not in {
             "LIVE_SCENARIO_PROFILES",
             "CURRENT_ACCEPTANCE_SCENARIOS",
+            "AUTONAT_ACCEPTANCE_SCENARIOS",
         }:
             continue
         if target.id in literal_maps:
@@ -244,9 +250,12 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
         raise ValueError(
             "CURRENT_ACCEPTANCE_SCENARIOS must be a literal, nonempty runner-scenario-to-acceptance-scenarios map"
         )
+    autonat = literal_maps.get("AUTONAT_ACCEPTANCE_SCENARIOS", {})
+    if autonat and autonat != {f"{value[4]}/{name}": (name,) for name, value in AUTONAT_SCENARIOS.items()}:
+        raise ValueError("AutoNAT registration must cover all 12 exact role scenarios")
     return {
         (runner_scenario_id, scenario_id)
-        for runner_scenario_id, scenario_ids in acceptance_scenarios.items()
+        for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat}.items()
         for scenario_id in scenario_ids
     }
 
@@ -1169,6 +1178,10 @@ def main() -> int:
             errors.append(f"donor capability {capability_id}: acceptance scenarios must be a non-empty array")
             continue
         expected_primary_directions = expected_directions.get(applicability, set())
+        # Correct subject-role attribution, not reduced bilateral coverage:
+        # the separate AutoNAT suite validator still requires all 41 cases.
+        if capability_id in {value[0] for value in AUTONAT_SCENARIOS.values()}:
+            expected_primary_directions = ROLE_DIRECTIONS[capability_id.rsplit("_", 1)[1]]
         has_primary_scenario = False
         has_registered_scenario = False
         for scenario in scenarios:
@@ -1212,8 +1225,8 @@ def main() -> int:
                 or evidence_contract != evidence_contract_for(scenario_id)
                 or evidence_contract not in declared_contract_set
                 or registration not in {"registered", "planned"}
-                or (registration == "registered" and evidence_contract not in EVIDENCE_CONTRACT_VALIDATORS)
-                or (registration == "planned" and evidence_contract in EVIDENCE_CONTRACT_VALIDATORS)
+                or (registration == "registered" and evidence_contract not in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS))
+                or (registration == "planned" and evidence_contract in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS))
                 or evidence_contract in seen_evidence_contracts
             ):
                 errors.append(
@@ -1254,11 +1267,20 @@ def main() -> int:
                 errors.append(f"donor capability {capability_id}: acceptance runner scenario id is invalid")
             if expected_status == "passed" and set(directions) == expected_primary_directions:
                 has_primary_scenario = True
+            if scenario_id in AUTONAT_SCENARIOS and (
+                capability_id != AUTONAT_SCENARIOS[scenario_id][0]
+                or set(directions) != ROLE_DIRECTIONS[AUTONAT_SCENARIOS[scenario_id][1]]
+            ):
+                errors.append(f"donor capability {capability_id}: AutoNAT directions must match the actual Forge role")
             if registration == "registered":
                 has_registered_scenario = True
                 if isinstance(runner_scenario_id, str) and isinstance(scenario_id, str):
                     manifest_registered_pairs.add((runner_scenario_id, scenario_id))
-                if capability.get("decision") != "current":
+                # Registration establishes an executable contract, not a live
+                # verdict. Only the new paired suite may register while staged.
+                if capability.get("decision") != "current" and not (
+                    capability.get("decision") == "stage_6" and scenario_id in AUTONAT_SCENARIOS
+                ):
                     errors.append(
                         f"donor capability {capability_id}: staged scenario cannot claim current runner registration"
                     )
@@ -1367,7 +1389,7 @@ def main() -> int:
 
     if declared_contract_set != seen_evidence_contracts:
         errors.append("donor capabilities: evidence contract registry must cover acceptance scenarios exactly")
-    if registered_evidence_contracts != set(EVIDENCE_CONTRACT_VALIDATORS):
+    if registered_evidence_contracts != set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS:
         errors.append(
             "donor capabilities: executable validator registry must match registered evidence contracts exactly"
         )

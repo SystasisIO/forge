@@ -38,6 +38,9 @@ import forge.net.p2p.protocol;
 import forge.net.p2p.provider_registration;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.reachability;
+import forge.net.p2p.reachability_policy;
+import forge.net.p2p.host_event;
+import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.rendezvous;
 import forge.net.p2p.relay;
 import forge.net.p2p.resource_manager;
@@ -81,6 +84,7 @@ class node {
       limits limits{};
       relay::policy relay_policy{.service_enabled = true, .client_enabled = true, .public_relay_allowed = false};
       path::policy path_policy{};
+      forge::net::p2p::reachability_policy reachability_policy{};
       std::optional<forge::net::p2p::private_network::options> private_network;
       address_resolution::policy dns_resolution{};
       forge::net::dns::resolver_options dns_resolver{};
@@ -158,6 +162,8 @@ class node {
    [[nodiscard]] const peer_store& peers() const noexcept;
    [[nodiscard]] dht::routing_status routing_status(const protocol_id& profile) const;
    [[nodiscard]] lifecycle_status lifecycle_state() const;
+   [[nodiscard]] host_event reachability_status() const;
+   [[nodiscard]] host_event_subscription host_events() const;
 
    void protect_peer(peer_id peer, std::string tag = "manual");
    [[nodiscard]] bool unprotect_peer(peer_id peer, std::string tag = "manual");

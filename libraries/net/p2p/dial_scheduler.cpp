@@ -5,6 +5,7 @@ module;
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <exception>
 #include <functional>

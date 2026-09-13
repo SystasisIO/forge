@@ -33,6 +33,8 @@ use rand::rngs::OsRng;
 use serde_json::json;
 
 mod provider;
+#[path = "autonat.rs"]
+mod autonat_fixture;
 
 const KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 const PUBSUB_TOPIC: &str = "forge.pubsub.interop";
@@ -56,6 +58,9 @@ struct Options {
     payload: String,
     transport: String,
     dns_server: Option<SocketAddr>,
+    bind_ip: String,
+    probe_addr: String,
+    internet_egress: String,
     tcp_upgrade_observation: Arc<Mutex<Option<TcpUpgradeObservation>>>,
     expected_messages: usize,
     pnet_key_file: PathBuf,
@@ -213,6 +218,9 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
             "--target-peer-id" => out.target_peer_id = value,
             "--payload" => out.payload = value,
             "--transport" => out.transport = value,
+            "--bind-ip" => out.bind_ip = value,
+            "--probe-addr" => out.probe_addr = value,
+            "--internet-egress" => out.internet_egress = value,
             "--dns-server" => {
                 let address: SocketAddr = value.parse()?;
                 if address.port() == 0 {
@@ -247,6 +255,7 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
         out.expected_messages = 1;
     }
     if out.transport == "tcp-pnet"
+        && !autonat_fixture::is_scenario(&out.scenario)
         && let Some(feature) = ["autonatv2", "relay", "dcutr"]
             .into_iter()
             .find(|feature| out.features.contains(*feature))
@@ -2552,6 +2561,9 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let opts = parse_args()?;
+    if autonat_fixture::is_scenario(&opts.scenario) {
+        return autonat_fixture::run(opts).await;
+    }
     match opts.command.as_str() {
         "listen" => listen(opts).await,
         "destination" => destination(opts).await,

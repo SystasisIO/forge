@@ -9362,7 +9362,7 @@ BOOST_AUTO_TEST_CASE(p2p_libp2p_autonat_v2_rejects_oversized_data_response_and_u
        forge::exceptions::base);
 }
 
-BOOST_AUTO_TEST_CASE(p2p_autonat_v2_probe_public_and_persists_observation) {
+BOOST_AUTO_TEST_CASE(p2p_autonat_loopback_does_not_claim_public_reachability) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    const auto observer_identity = make_test_certificate_identity("autonat-public-observer");
    const auto subject_identity = make_test_certificate_identity("autonat-public-subject");
@@ -9370,6 +9370,7 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_v2_probe_public_and_persists_observation) {
        observer_identity, capability_set{.bits = capabilities::direct_quic | capabilities::autonat});
    auto subject_options = options_for(
        subject_identity, capability_set{.bits = capabilities::direct_quic | capabilities::autonat});
+   observer_options.reachability_policy.service_v2_enabled = true;
    observer_options.allow_insecure_test_mode = false;
    subject_options.allow_insecure_test_mode = false;
    observer_options.peer_state.persistence = peer_store::make_memory_persistence();
@@ -9385,13 +9386,10 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_v2_probe_public_and_persists_observation) {
    subject.peers().learn_endpoint(observer.local_peer(), observer_endpoint,
                                   capability_set{.bits = capabilities::direct_quic | capabilities::autonat});
 
-   const auto state = forge::asio::blocking::run(runtime, subject.async_probe_reachability(observer.local_peer()));
-   BOOST_TEST(static_cast<int>(state) == static_cast<int>(reachability::state::publicly_reachable));
-
-   const auto stored = subject.peers().find(subject.local_peer());
-   BOOST_REQUIRE(stored.has_value());
-   BOOST_TEST(static_cast<int>(stored->reachability) == static_cast<int>(reachability::state::publicly_reachable));
-   BOOST_REQUIRE(stored->observed_endpoint.has_value());
+   BOOST_CHECK_THROW(static_cast<void>(forge::asio::blocking::run(
+       runtime, subject.async_probe_reachability(observer.local_peer()))), exceptions::unsupported_protocol);
+   BOOST_CHECK(subject.reachability_status().effective == reachability::state::unknown);
+   BOOST_TEST(!subject.peers().find(subject.local_peer()).has_value());
 
    forge::asio::blocking::run(runtime, subject.async_stop());
    forge::asio::blocking::run(runtime, observer.async_stop());

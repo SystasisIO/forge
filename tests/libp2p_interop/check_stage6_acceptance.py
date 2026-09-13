@@ -13,6 +13,12 @@ from typing import Optional
 
 from dns_evidence import DNSADDR_SCENARIOS, validate_dnsaddr
 from provider_evidence import validate_provider_evidence
+from autonat_acceptance import (
+    EVIDENCE_CONTRACTS as AUTONAT_EVIDENCE_CONTRACTS,
+    ROLE_DIRECTIONS as AUTONAT_ROLE_DIRECTIONS,
+    SCENARIOS as AUTONAT_SCENARIOS,
+    validate_suite as validate_autonat_suite,
+)
 
 from provenance import (
     FIXTURE_DONOR_DIRECTORIES,
@@ -156,11 +162,14 @@ def sha256_file(path: Path) -> str:
 
 def required_scenarios(
     manifest: object,
+    suite: str = "stage6",
 ) -> tuple[
     dict[tuple[str, str], tuple[set[str], str, str, tuple[str, ...], str, tuple[str, ...], str]],
     list[str],
 ]:
     errors: list[str] = []
+    if suite not in ("stage6", "autonat"):
+        return {}, ["unknown acceptance suite"]
     if not isinstance(manifest, dict):
         return {}, ["manifest must be a JSON object"]
     registry = manifest.get("interop_acceptance_registry")
@@ -212,7 +221,8 @@ def required_scenarios(
             registration = scenario.get("registration")
             evidence_contract = scenario.get("evidence_contract")
             stack = tuple(transport_stack) if isinstance(transport_stack, list) else ()
-            if registration != "registered":
+            selected = suite == "stage6" or (isinstance(scenario_id, str) and scenario_id in AUTONAT_SCENARIOS)
+            if selected and registration != "registered":
                 errors.append(
                     f"manifest {capability_id}/{scenario_id}: non-registered scenario is promotion-blocking "
                     "until its implementing PR registers an executable validator"
@@ -251,16 +261,32 @@ def required_scenarios(
                 errors.append(f"manifest {capability_id}: duplicate acceptance scenario {scenario_id}")
             else:
                 referenced_contracts.add(evidence_contract)
-                if registration == "registered" and evidence_contract not in EVIDENCE_CONTRACT_VALIDATORS:
+                if registration == "registered" and evidence_contract not in (
+                    set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS
+                ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
                     )
-                elif registration == "registered":
+                elif registration == "registered" and selected:
                     required[key] = (
                         set(directions), status, profile, stack, runner_scenario_id, tuple(requires), evidence_contract
                     )
     if declared_contract_set != referenced_contracts:
         errors.append("manifest evidence contract registry does not cover acceptance scenarios exactly")
+    autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
+    if suite == "autonat" or autonat_required:
+        if {name for _, name in autonat_required} != set(AUTONAT_SCENARIOS):
+            errors.append("AutoNAT suite requires all 12 registered role contracts")
+        for (capability, name), value in autonat_required.items():
+            owner, role, _, transport, runner_profile = AUTONAT_SCENARIOS[name]
+            profile = "private_network" if transport == "tcp-pnet" else "native"
+            stack = ("quic",) if transport == "quic" else (("tcp", "pnet", "yamux") if transport == "tcp-pnet" else ("tcp", "yamux"))
+            dependencies = ("security.private_network_psk", "reachability.private_internet_policy") if transport == "tcp-pnet" else ()
+            if capability != owner or value != (
+                AUTONAT_ROLE_DIRECTIONS[role], "passed", profile, stack, f"{runner_profile}/{name}",
+                dependencies, evidence_contract_for(name),
+            ):
+                errors.append(f"AutoNAT {name}: role directions or exact profile contract mismatch")
     return required, errors
 
 
@@ -307,15 +333,17 @@ def absolute_path(value: object) -> Optional[Path]:
 
 
 def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path, manifest_path: Path,
-                           provenance: object) -> tuple[dict[str, Path], list[str]]:
+                           provenance: object, suite: str = "stage6") -> tuple[dict[str, Path], list[str]]:
     if not isinstance(provenance, dict):
         return {}, ["artifact fixture_provenance must be an object"]
     inputs = provenance.get("runner_inputs")
-    if not isinstance(inputs, dict) or set(inputs) != {
+    path_keys = {
         "source_dir", "build_dir", "forge_root", "donors_root", "acceptance_manifest"
-    }:
+    }
+    if (not isinstance(inputs, dict) or set(inputs) not in (path_keys, path_keys | {"suite"})
+            or inputs.get("suite", "stage6") != suite or suite not in ("stage6", "autonat")):
         return {}, ["artifact runner input provenance has invalid schema"]
-    paths = {key: absolute_path(inputs.get(key)) for key in inputs}
+    paths = {key: absolute_path(inputs.get(key)) for key in path_keys}
     if any(path is None for path in paths.values()):
         return {}, ["artifact runner input provenance contains a non-absolute path"]
     resolved = {key: path for key, path in paths.items() if path is not None}
@@ -325,8 +353,8 @@ def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path,
         or resolved["forge_root"] != root.resolve()
         or resolved["acceptance_manifest"] != manifest_path.resolve()
         or not resolved["donors_root"].is_dir()
-        or artifact_root != build_dir / "interop-run"
-        or artifact_path.resolve() != build_dir / "interop-artifacts.json"
+        or artifact_root != build_dir / ("autonat-run" if suite == "autonat" else "interop-run")
+        or artifact_path.resolve() != build_dir / ("autonat-artifacts.json" if suite == "autonat" else "interop-artifacts.json")
     ):
         return {}, ["artifact runner input provenance does not bind canonical roots and artifact paths"]
     return resolved, []
@@ -359,8 +387,9 @@ def validate_donor_provenance(root: Path, provenance: object, inputs: dict[str, 
 
 
 def validate_runner_argv(root: Path, argv: object, manifest_path: Path, inputs: dict[str, Path],
-                         binary_paths: dict[str, Path]) -> list[str]:
-    if not isinstance(argv, list) or len(argv) != 2 + 2 * len(RUNNER_FLAGS) or any(
+                         binary_paths: dict[str, Path], suite: str = "stage6") -> list[str]:
+    flags = RUNNER_FLAGS + (("--suite",) if suite == "autonat" else ())
+    if not isinstance(argv, list) or len(argv) != 2 + 2 * len(flags) or any(
         not isinstance(argument, str) or not argument for argument in argv
     ):
         return ["artifact runner_argv must record the complete canonical runner invocation"]
@@ -370,9 +399,11 @@ def validate_runner_argv(root: Path, argv: object, manifest_path: Path, inputs: 
     resolved_runner = runner_path.resolve() if runner_path.is_absolute() else (root / runner_path).resolve()
     if resolved_runner != (root / CANONICAL_RUNNER).resolve() or not resolved_runner.is_file():
         return ["artifact runner argv does not execute the canonical runner under source root"]
-    if tuple(argv[2::2]) != RUNNER_FLAGS:
+    if tuple(argv[2::2]) != flags:
         return ["artifact runner argv flags differ from the canonical live runner mode"]
-    values = dict(zip(RUNNER_FLAGS, argv[3::2]))
+    values = dict(zip(flags, argv[3::2]))
+    if suite == "autonat" and values["--suite"] != suite:
+        return ["artifact runner argv suite differs from canonical inputs"]
     if values["--enabled"] not in ENABLED_VALUES:
         return ["artifact runner argv does not prove an enabled live execution"]
     expected = {
@@ -501,7 +532,8 @@ def raw_evidence_paths(value: object) -> set[Path]:
 
 
 def validate_evidence_index(
-    artifact_path: Path, artifact_root: Path, artifacts: list[object], index: object
+    artifact_path: Path, artifact_root: Path, artifacts: list[object], index: object,
+    empty_process_logs: frozenset[Path] = frozenset(),
 ) -> tuple[dict[Path, str], list[str]]:
     errors: list[str] = []
     if not isinstance(index, list) or not index:
@@ -522,13 +554,18 @@ def validate_evidence_index(
             or ".." in path.parts
             or path == Path(".")
             or type(size) is not int
-            or size <= 0
+            or size < 0
             or not isinstance(expected_hash, str)
             or SHA256.fullmatch(expected_hash) is None
         ):
             errors.append("artifact evidence index path, size or SHA-256 is invalid")
             continue
         resolved = (artifact_root / path).resolve()
+        # A silent, joined fixture may have an empty stdout log, never an empty
+        # JSON proof. The AutoNAT branch supplies only owned process log paths.
+        if size == 0 and resolved not in empty_process_logs:
+            errors.append("artifact evidence index has an empty non-process proof")
+            continue
         try:
             resolved.relative_to(artifact_root)
         except ValueError:
@@ -1484,6 +1521,7 @@ def validate_execution_receipt(receipt: object, artifact_path: Path, artifact: d
 def validate(
     root: Path, manifest_path: Path, artifact_path: Path, expected_head: str,
     execution_receipt: Optional[dict] = None,
+    expected_suite: Optional[str] = None,
 ) -> tuple[list[str], bool]:
     if not root.is_dir():
         return ["source root is unavailable"], False
@@ -1492,9 +1530,7 @@ def validate(
         manifest_hash = sha256_file(manifest_path)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         return [f"manifest cannot be read: {error}"], False
-    required, errors = required_scenarios(manifest)
-    if errors:
-        return errors, False
+    errors = []
     commit_timestamp, git_errors = validate_git_state(root, expected_head)
     errors.extend(git_errors)
     if not artifact_path.is_file():
@@ -1505,6 +1541,13 @@ def validate(
         return [*errors, f"artifact cannot be read: {error}"], False
     if not isinstance(artifact, dict) or set(artifact) != set(ARTIFACT_SCHEMA["required_fields"]):
         return [*errors, "artifact has invalid canonical runner schema"], False
+    provenance = artifact.get("fixture_provenance")
+    runner_inputs = provenance.get("runner_inputs") if isinstance(provenance, dict) else None
+    suite = runner_inputs.get("suite", "stage6") if isinstance(runner_inputs, dict) else None
+    if suite not in ("stage6", "autonat") or (expected_suite is not None and suite != expected_suite):
+        return [*errors, "artifact suite differs from requested canonical suite"], False
+    required, manifest_errors = required_scenarios(manifest, suite)
+    errors.extend(manifest_errors)
     if artifact.get("schema_version") != ARTIFACT_SCHEMA["schema_version"]:
         errors.append("artifact schema_version is invalid")
     if execution_receipt is not None:
@@ -1548,12 +1591,12 @@ def validate(
     )
     errors.extend(provenance_errors)
     inputs, input_errors = validate_runner_inputs(
-        root, artifact_path, artifact_root, manifest_path, artifact.get("fixture_provenance")
+        root, artifact_path, artifact_root, manifest_path, artifact.get("fixture_provenance"), suite
     )
     errors.extend(input_errors)
     errors.extend(validate_donor_provenance(root, artifact.get("fixture_provenance"), inputs))
     errors.extend(validate_runner_argv(
-        root, artifact.get("runner_argv"), manifest_path, inputs, binary_paths
+        root, artifact.get("runner_argv"), manifest_path, inputs, binary_paths, suite
     ))
     failures = artifact.get("failures")
     if not isinstance(failures, list):
@@ -1563,14 +1606,51 @@ def validate(
     artifacts = artifact.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         return [*errors, "canonical runner artifacts must be a non-empty array"], False
+    autonat_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "autonat"]
+    base_records = [record for record in artifacts if not isinstance(record, dict) or record.get("suite") != "autonat"]
+    autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
+    base_required = {key: value for key, value in required.items() if key[1] not in AUTONAT_SCENARIOS}
+    empty_logs = frozenset(
+        Path(owner["log_file"]).resolve()
+        for record in autonat_records
+        for owner in (record.get("owned_processes") if isinstance(record.get("owned_processes"), list) else [])
+        if isinstance(owner, dict) and isinstance(owner.get("log_file"), str)
+    )
     indexed_evidence, evidence_errors = validate_evidence_index(
-        artifact_path, artifact_root, artifacts, artifact.get("evidence_index")
+        artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), empty_logs
     )
     errors.extend(evidence_errors)
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
-    used_records: set[int] = set()
     used_evidence: set[Path] = set()
+    # Standalone legacy parser fixtures can have a partial manifest, but every
+    # promotion receipt and every registered AutoNAT claim requires the full 41.
+    if suite == "autonat" or autonat_required or autonat_records or execution_receipt is not None:
+        def load_indexed_json(value):
+            path = path_within(value, artifact_root)
+            if path is None or path not in indexed_evidence:
+                raise ValueError("AutoNAT raw output is absent from verified evidence index")
+            payload, failures = load_evidence_json(path, "AutoNAT raw output")
+            if failures or payload is None:
+                raise ValueError("; ".join(failures))
+            return payload
+
+        # No receipt is duplicated across role claims, cases or directions.
+        for record in autonat_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("AutoNAT cases reuse raw process/network evidence")
+            used_evidence.update(paths)
+        errors.extend(validate_autonat_suite(
+            autonat_records, autonat_required, artifact_root, binary_paths, load_indexed_json,
+            pnet_fingerprint_for_launcher_key, root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key",
+        ))
+    if suite == "autonat":
+        if base_records:
+            errors.append("focused AutoNAT suite contains unrelated base records")
+        return errors, False
+
+    used_records: set[int] = set()
     for (capability_id, scenario_id), (
         expected_directions,
         _expected_status,
@@ -1579,11 +1659,11 @@ def validate(
         expected_runner_scenario,
         _expected_requires,
         expected_evidence_contract,
-    ) in required.items():
+    ) in base_required.items():
         for direction in expected_directions:
             matches = [
                 index
-                for index, record in enumerate(artifacts)
+                for index, record in enumerate(base_records)
                 if isinstance(record, dict)
                 and record.get("acceptance_scenario_id") == scenario_id
                 and direction_of(record) == direction
@@ -1603,7 +1683,7 @@ def validate(
             errors.extend(
                 f"{capability_id}/{scenario_id}/{direction}: {error}"
                 for error in validate_successful_raw_record(
-                    artifacts[index],
+                    base_records[index],
                     capability_id,
                     direction,
                     expected_profile,
