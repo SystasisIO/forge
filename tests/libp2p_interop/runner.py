@@ -1308,13 +1308,21 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
             require_rendezvous_lifecycle_evidence(result, dialer, listener)
         if scenario == "dht_provide_find_provider":
             require_dht_provider_evidence(result, dialer, peer_id)
-        if tcp_upgrade_listener:
-            # Upgrade observations are published only after the donor host is joined.
-            # Never wait for this final result while keeping the listener alive.
+        delivered = None
+        if listener_result is not None:
+            if not tcp_upgrade_listener:
+                # These scenarios publish delivery while still serving. Keep that
+                # bounded barrier, but never commit this mutable pre-shutdown file.
+                pending = wait_json(listener_result, 20)
+                if pending.get("status") != "ok":
+                    raise RuntimeError(f"{listener} listener reported {pending}")
+            # All result-writing listeners may append terminal evidence on stop,
+            # not just native TCP upgrade fixtures. Read the same final payload
+            # that close() captured into the owner's immutable output snapshot.
             cleanup_errors = server.close()
             if cleanup_errors:
-                raise RuntimeError(f"{listener} TCP listener cleanup failed: " + "; ".join(cleanup_errors))
-        delivered = wait_json(listener_result, 20) if listener_result is not None else None
+                raise RuntimeError(f"{listener} listener cleanup failed: " + "; ".join(cleanup_errors))
+            delivered = wait_json(listener_result, 20)
         if tcp_upgrade_listener:
             proof = delivered.get("upgrade_observation")
             if not isinstance(proof, dict) or proof.get("overflow") is not False:
@@ -1334,11 +1342,6 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
                         or lifecycle.get("overflow") is not False or lifecycle.get("errors") != []):
                     raise RuntimeError("Rust TCP listener did not finalize its joined raw upgrade evidence")
         if scenario == "relay_reserve" and listener == "rust":
-            # First result proves the event was polled; only the joined final trace is evidence.
-            cleanup_errors = server.close()
-            if cleanup_errors:
-                raise RuntimeError("Rust relay listener cleanup failed: " + "; ".join(cleanup_errors))
-            delivered = wait_json(listener_result, 20)
             if delivered.get("trace_complete") is not True:
                 raise RuntimeError("Rust relay listener did not finalize its acceptance trace")
         if delivered is not None and delivered.get("status") != "ok":

@@ -299,6 +299,67 @@ fn tcp_address(value: &Value, peer: &str) -> Option<String> {
     Some(addr.to_string())
 }
 
+pub(crate) fn bound_remote_endpoint(
+    connection: &Value,
+    event: &Value,
+    peer: &str,
+) -> Result<String, &'static str> {
+    let numeric = tcp_address(&event["endpoint"]["remote_address"], peer);
+    let Some(receipts) = connection.get("transport_output_receipts") else {
+        return numeric.ok_or("DNS Swarm endpoint lacks a causal transport output receipt");
+    };
+    let receipts = receipts.as_array().ok_or("invalid transport output receipts")?;
+    let [detail] = receipts.as_slice() else { return Err("ambiguous transport output receipts"); };
+    let boundary = detail["after_event_sequence"].as_u64().ok_or("missing transport output boundary")?;
+    let events = connection["events"].as_array().ok_or("missing transport output event history")?;
+    if detail["basis"] != "donor_transport_output_identity"
+        || boundary > events.len() as u64
+        || !detail["dns_wrapper_enabled"].is_boolean()
+        || detail["connection_trace_id"] != connection["connection_trace_id"]
+        || connection["authenticated_remote_peer_id"] != peer
+        || detail["authenticated_remote_peer_id"] != peer
+        || detail["request_endpoint"] != event["endpoint"]
+        || detail["resolved_endpoint"] != connection["endpoint"]
+        || detail["local_address"] != connection["local_address"]
+        || detail["remote_address"] != connection["remote_address"]
+        || detail["request_endpoint"]["direction"] != detail["resolved_endpoint"]["direction"]
+        || detail["request_endpoint"]["upgrade_role"] != detail["resolved_endpoint"]["upgrade_role"] {
+        return Err("transport output receipt disagrees with authenticated endpoints");
+    }
+    let resolved = tcp_address(&detail["resolved_endpoint"]["remote_address"], peer)
+        .ok_or("transport output is not a numeric TCP endpoint")?;
+    if connection["remote_address"].as_str() != Some(resolved.as_str()) {
+        return Err("resolved dial endpoint disagrees with actual socket");
+    }
+    if let Some(numeric) = numeric {
+        if numeric != resolved { return Err("numeric request disagrees with resolved endpoint"); }
+    } else {
+        let request: Multiaddr = event["endpoint"]["remote_address"].as_str()
+            .ok_or("missing DNS request address")?.parse().map_err(|_| "invalid DNS request address")?;
+        let protocols = request.iter().collect::<Vec<_>>();
+        let has_dns = protocols.iter().any(|p| matches!(p, Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_)));
+        let peer_matches = protocols.iter().enumerate().all(|(i, p)| match p {
+            Protocol::P2p(id) => i + 1 == protocols.len() && id.to_string() == peer,
+            Protocol::P2pCircuit => false,
+            _ => true,
+        });
+        let resolved_addr: Multiaddr = resolved.parse().map_err(|_| "invalid resolved socket")?;
+        let resolved_port = resolved_addr.iter().find_map(|p| match p {
+            Protocol::Tcp(port) => Some(port),
+            _ => None,
+        });
+        let port_matches = protocols.iter().all(|p| match p {
+            Protocol::Tcp(port) => Some(*port) == resolved_port,
+            _ => true,
+        });
+        if detail["dns_wrapper_enabled"] != true || detail["request_endpoint"]["direction"] != "outbound"
+            || !has_dns || !peer_matches || !port_matches {
+            return Err("non-numeric request lacks matching donor DNS provenance");
+        }
+    }
+    Ok(resolved)
+}
+
 fn bind(raw: &Value, app: &Value) -> Result<Value, &'static str> {
     let peer = app["authenticated_remote_peer_id"]
         .as_str()
@@ -324,8 +385,7 @@ fn bind(raw: &Value, app: &Value) -> Result<Value, &'static str> {
     let [event] = matches.as_slice() else {
         return Err("absent or ambiguous Swarm connection");
     };
-    let remote = tcp_address(&event["endpoint"]["remote_address"], peer)
-        .ok_or("non-numeric Swarm endpoint")?;
+    let remote = bound_remote_endpoint(connection, event, peer)?;
     if connection["remote_address"].as_str() != Some(remote.as_str())
         || event["endpoint"]["direction"] != connection["direction"]
         || tcp_address(&connection["local_address"], peer).is_none()
@@ -607,6 +667,122 @@ mod tests {
                 "preexisting_raw_streams": [], "opened": true, "application_io_complete": true,
                 "attempt_ended": true, "stream_drop_returned": true, "write_close_returned": false,
                 "read_eof": false, "overflow": false, "errors": [], "read": read, "write": write}]}})
+    }
+
+    fn output_fixture(dns: bool) -> Value {
+        let mut raw = fixture();
+        let peer = raw["connections"][0]["authenticated_remote_peer_id"].as_str().unwrap().to_owned();
+        raw["swarm_events"][0]["endpoint"]["upgrade_role"] = json!("outbound");
+        let resolved = raw["swarm_events"][0]["endpoint"].clone();
+        if dns {
+            raw["swarm_events"][0]["endpoint"]["remote_address"] =
+                json!(format!("/dnsaddr/fixture.test/p2p/{peer}"));
+        }
+        let request = raw["swarm_events"][0]["endpoint"].clone();
+        let connection = &mut raw["connections"][0];
+        connection["endpoint"] = resolved.clone();
+        connection["events"] = json!([]);
+        connection["transport_output_receipts"] = json!([{
+            "basis": "donor_transport_output_identity", "after_event_sequence": 0,
+            "connection_trace_id": connection["connection_trace_id"],
+            "authenticated_remote_peer_id": peer, "dns_wrapper_enabled": dns,
+            "request_endpoint": request, "resolved_endpoint": resolved,
+            "local_address": connection["local_address"], "remote_address": connection["remote_address"],
+        }]);
+        raw
+    }
+
+    #[test]
+    fn application_dns_output_binding_preserves_original_request_and_numeric_socket() {
+        let raw = output_fixture(true);
+        let result = finalize(raw.clone(), true);
+        assert_eq!(result["complete"], true);
+        let binding = &result["applications"]["attempts"][0]["binding"];
+        assert_eq!(binding["remote_address"], "/ip4/127.0.0.1/tcp/4444");
+        assert_eq!(binding["connection_trace_id"], 7);
+        assert_eq!(binding["swarm_connection_id"], "unrelated-native-id-500");
+        assert_eq!(result["connections"][0]["transport_output_receipts"],
+            raw["connections"][0]["transport_output_receipts"]);
+        for (port, complete) in [(4444, true), (5555, false)] {
+            let mut raw = raw.clone();
+            let peer = raw["connections"][0]["authenticated_remote_peer_id"].as_str().unwrap();
+            let request = json!(format!("/dns4/fixture.test/tcp/{port}/p2p/{peer}"));
+            raw["swarm_events"][0]["endpoint"]["remote_address"] = request.clone();
+            raw["connections"][0]["transport_output_receipts"][0]["request_endpoint"]["remote_address"] = request;
+            assert_eq!(finalize(raw, true)["complete"], complete, "port {port}");
+        }
+    }
+
+    #[test]
+    fn application_dns_output_binding_rejects_endpoint_peer_and_provenance_mismatch() {
+        for case in 0..11 {
+            let mut raw = output_fixture(true);
+            match case {
+                0 => raw["swarm_events"][0]["endpoint"]["remote_address"] = json!("/dnsaddr/other.test"),
+                1 => raw["connections"][0]["remote_address"] = json!("/ip4/127.0.0.1/tcp/5555"),
+                2 => raw["connections"][0]["transport_output_receipts"][0]["authenticated_remote_peer_id"] = json!(PeerId::random().to_string()),
+                3 => raw["connections"][0]["transport_output_receipts"][0]["connection_trace_id"] = json!(8),
+                4 => raw["connections"][0]["transport_output_receipts"][0]["dns_wrapper_enabled"] = json!(false),
+                5 => raw["connections"][0]["transport_output_receipts"][0]["after_event_sequence"] = json!(1),
+                6 => raw["connections"][0]["transport_output_receipts"] = json!([]),
+                7 => raw["connections"][0]["transport_output_receipts"] = json!({}),
+                8 => { raw["connections"][0].as_object_mut().unwrap().remove("transport_output_receipts"); }
+                9 => {
+                    // Even internally consistent receipt text cannot authorize the wrong peer suffix.
+                    let wrong = json!(format!("/dnsaddr/fixture.test/p2p/{}", PeerId::random()));
+                    raw["swarm_events"][0]["endpoint"]["remote_address"] = wrong.clone();
+                    raw["connections"][0]["transport_output_receipts"][0]["request_endpoint"]["remote_address"] = wrong;
+                }
+                _ => {
+                    raw["swarm_events"][0]["endpoint"]["upgrade_role"] = json!("inbound");
+                    raw["connections"][0]["transport_output_receipts"][0]["request_endpoint"]["upgrade_role"] = json!("inbound");
+                }
+            }
+            assert_eq!(finalize(raw, true)["complete"], false, "case {case}");
+        }
+    }
+
+    #[test]
+    fn application_dns_output_binding_rejects_duplicate_and_failed_alternatives() {
+        for kind in ["receipt", "connection", "stream", "event"] {
+            let mut raw = output_fixture(true);
+            let list = match kind {
+                "receipt" => &mut raw["connections"][0]["transport_output_receipts"],
+                "connection" => &mut raw["connections"],
+                "stream" => &mut raw["connections"][0]["streams"],
+                _ => &mut raw["swarm_events"],
+            };
+            let mut second = list[0].clone();
+            if kind == "connection" {
+                second["connection_trace_id"] = json!(8);
+                second["security_complete"] = json!(false);
+                second["transport_output_receipts"] = json!([]);
+            } else if kind == "stream" {
+                second["stream_trace_id"] = json!(20);
+                second["io_failed"] = json!(true);
+            }
+            list.as_array_mut().unwrap().push(second);
+            assert_eq!(finalize(raw, true)["complete"], false, "{kind}");
+        }
+    }
+
+    #[test]
+    fn application_numeric_output_binding_stays_strict() {
+        assert_eq!(finalize(fixture(), true)["complete"], true);
+        assert_eq!(finalize(output_fixture(false), true)["complete"], true);
+        for case in 0..3 {
+            let mut raw = output_fixture(false);
+            match case {
+                0 => raw["connections"][0]["transport_output_receipts"] = json!(false),
+                1 => raw["connections"][0]["transport_output_receipts"][0]["resolved_endpoint"]["remote_address"] = json!("/ip4/127.0.0.1/tcp/5555"),
+                _ => {
+                    let wrong = json!("/ip4/127.0.0.1/tcp/5555");
+                    raw["swarm_events"][0]["endpoint"]["remote_address"] = wrong.clone();
+                    raw["connections"][0]["transport_output_receipts"][0]["request_endpoint"]["remote_address"] = wrong;
+                }
+            }
+            assert_eq!(finalize(raw, true)["complete"], false, "case {case}");
+        }
     }
 
     #[test]

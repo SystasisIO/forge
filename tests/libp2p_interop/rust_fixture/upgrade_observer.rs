@@ -49,6 +49,7 @@ struct Connection {
     remote_peer: String,
     phases: Vec<Selection>,
     events: Vec<Value>,
+    transport_output_receipts: Vec<Value>,
     overflow: bool,
     muxer_drop_observed: bool,
     muxer_close_returned: bool,
@@ -234,6 +235,7 @@ impl Connection {
             "muxer_drop_observed": self.muxer_drop_observed,
             "muxer_close_returned": self.muxer_close_returned,
             "overflow": self.overflow, "events": self.events,
+            "transport_output_receipts": self.transport_output_receipts,
             "negotiations": self.phases.iter().take(2).map(Selection::snapshot).collect::<Vec<_>>(),
             "streams": self.phases.iter().enumerate().skip(2).map(|(index, phase)| {
                 let mut value = phase.snapshot();
@@ -245,6 +247,17 @@ impl Connection {
 }
 
 impl Observer {
+    // The legacy DNS summary uses the same causal output receipt, never the latest peer match.
+    pub(crate) fn resolved_endpoint(&self, peer: PeerId, point: &ConnectedPoint) -> Option<libp2p::Multiaddr> {
+        let snapshot = self.snapshot();
+        let connections = snapshot["connections"].as_array()?;
+        let matches = connections.iter().filter(|c| c["authenticated_remote_peer_id"] == peer.to_string()).collect::<Vec<_>>();
+        let [connection] = matches.as_slice() else { return None; };
+        let event = json!({"endpoint": endpoint(point)});
+        super::application_observer::bound_remote_endpoint(connection, &event, &peer.to_string()).ok()?;
+        connection["endpoint"]["remote_address"].as_str()?.parse().ok()
+    }
+
     pub(crate) fn application(
         &self,
         peer: PeerId,
@@ -276,6 +289,7 @@ impl Observer {
                 Selection::new(outbound, false),
             ],
             events: Vec::new(),
+            transport_output_receipts: Vec::new(),
             overflow: false,
             muxer_drop_observed: false,
             muxer_close_returned: false,
@@ -909,6 +923,7 @@ pub(crate) fn native_transport(
     key: &identity::Keypair,
     use_tls: bool,
     observer: Observer,
+    resolver: Option<(libp2p::dns::ResolverConfig, libp2p::dns::ResolverOpts)>,
 ) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn std::error::Error + Send + Sync>> {
     let local_peer = key.public().to_peer_id();
     // Both branches use exactly the pinned TCP builder's security/muxer configurations.
@@ -929,16 +944,45 @@ pub(crate) fn native_transport(
                             connection.event(0, "authenticated_peer", json!({"peer_id": peer.to_string()}));
                         });
                         let muxer = apply(secure, yamux::Config::default(), outbound, trace.clone(), 1).await?;
-                        Ok::<_, io::Error>((peer, StreamMuxerBox::new(ObservedMuxer { inner: Box::pin(muxer), trace })))
+                        Ok::<_, io::Error>((peer, StreamMuxerBox::new(ObservedMuxer { inner: Box::pin(muxer), trace: trace.clone() }), trace))
                     }
                 }).boxed()
         }};
     }
-    Ok(if use_tls {
+    let transport = if use_tls {
         transport!(tls::Config::new(key).map_err(io::Error::other)?)
     } else {
         transport!(noise::Config::new(key).map_err(io::Error::other)?)
+    };
+    // DNS preserves the exact successful inner output, including its Trace. The outer
+    // map receives the original dial address, while Trace already owns numeric socket facts.
+    Ok(match resolver {
+        Some((config, options)) => libp2p::dns::tokio::Transport::custom(transport, config, options)
+            .map(|output, point| bind_transport_output(output, point, true)).boxed(),
+        None => transport.map(|output, point| bind_transport_output(output, point, false)).boxed(),
     })
+}
+
+fn bind_transport_output(
+    (peer, muxer, trace): (PeerId, StreamMuxerBox, Trace),
+    point: ConnectedPoint,
+    dns_enabled: bool,
+) -> (PeerId, StreamMuxerBox) {
+    trace.update(|connection| {
+        if connection.transport_output_receipts.len() == 2 {
+            connection.overflow = true;
+            return;
+        }
+        connection.transport_output_receipts.push(json!({
+            "basis": "donor_transport_output_identity",
+            "after_event_sequence": connection.events.len(),
+            "connection_trace_id": connection.id,
+            "request_endpoint": endpoint(&point), "resolved_endpoint": connection.endpoint,
+            "local_address": connection.local_address, "remote_address": connection.remote_address,
+            "authenticated_remote_peer_id": peer.to_string(), "dns_wrapper_enabled": dns_enabled,
+        }));
+    });
+    (peer, muxer)
 }
 
 fn socket_address(address: std::net::SocketAddr) -> String {
@@ -1643,6 +1687,67 @@ mod tests {
             self.calls.lock().unwrap().push("poll");
             Poll::Ready(Err(io::Error::from(io::ErrorKind::ConnectionReset)))
         }
+    }
+
+    #[test]
+    fn transport_output_receipt_follows_exact_trace_and_preserves_muxer() {
+        let observer = Observer::default();
+        let peer = PeerId::random();
+        let resolved = ConnectedPoint::Dialer {
+            address: format!("/ip4/127.0.0.1/tcp/4002/p2p/{peer}").parse().unwrap(),
+            role_override: Endpoint::Dialer,
+            port_use: libp2p::core::transport::PortUse::Reuse,
+        };
+        let request = ConnectedPoint::Dialer {
+            address: format!("/dnsaddr/fixture.test/p2p/{peer}").parse().unwrap(),
+            role_override: Endpoint::Dialer,
+            port_use: libp2p::core::transport::PortUse::Reuse,
+        };
+        let trace = observer.begin(&resolved, "/ip4/127.0.0.1/tcp/4001".into(),
+            "/ip4/127.0.0.1/tcp/4002".into(), PeerId::random());
+        trace.update(|connection| {
+            connection.remote_peer = peer.to_string();
+            connection.event(0, "authenticated_peer", json!({"peer_id": peer.to_string()}));
+        });
+        // A later failed trace cannot steal the successful output's receipt.
+        let failed = observer.begin(&resolved, "failed-local".into(), "failed-remote".into(), PeerId::random());
+        failed.update(|connection| connection.failure(0, "delegate_error", "test failure"));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let muxer = StreamMuxerBox::new(FakeMuxer { calls: calls.clone(), trace: trace.clone() });
+        let (returned_peer, mut muxer) = bind_transport_output((peer, muxer, trace), request.clone(), true);
+        assert_eq!(returned_peer, peer);
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(Pin::new(&mut muxer).poll_close(&mut cx).is_ready());
+        assert_eq!(*calls.lock().unwrap(), ["close"]);
+        let snapshot = observer.snapshot();
+        let receipt = &snapshot["connections"][0]["transport_output_receipts"][0];
+        assert_eq!(receipt["connection_trace_id"], 1);
+        assert_eq!(receipt["request_endpoint"], endpoint(&request));
+        assert_eq!(receipt["resolved_endpoint"], endpoint(&resolved));
+        assert_eq!(receipt["after_event_sequence"], 1);
+        assert_eq!(receipt["dns_wrapper_enabled"], true);
+        assert_eq!(snapshot["connections"][1]["transport_output_receipts"], json!([]));
+        assert_eq!(snapshot["connections"][0]["events"].as_array().unwrap().len(), 1);
+        assert!(observer.resolved_endpoint(peer, &request).is_some());
+    }
+
+    #[test]
+    fn transport_output_receipts_are_bounded_with_sticky_overflow() {
+        let (observer, trace) = fixture_trace();
+        let point = ConnectedPoint::Listener {
+            local_addr: "/ip4/127.0.0.1/tcp/4001".parse().unwrap(),
+            send_back_addr: "/ip4/127.0.0.1/tcp/4002".parse().unwrap(),
+        };
+        for _ in 0..3 {
+            let muxer = StreamMuxerBox::new(FakeMuxer {
+                calls: Arc::new(Mutex::new(Vec::new())), trace: trace.clone(),
+            });
+            drop(bind_transport_output((PeerId::random(), muxer, trace.clone()), point.clone(), false));
+        }
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot["connections"][0]["transport_output_receipts"].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot["overflow"], true);
     }
 
     #[test]

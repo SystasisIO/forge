@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -65,7 +65,6 @@ struct Options {
     bind_ip: String,
     probe_addr: String,
     internet_egress: String,
-    tcp_upgrade_observation: Arc<Mutex<Option<TcpUpgradeObservation>>>,
     upgrade_observer: upgrade_observer::Observer,
     tasks: task_owner::Owner,
     expected_messages: usize,
@@ -78,7 +77,6 @@ struct Options {
 
 #[derive(Clone, Debug)]
 struct TcpUpgradeObservation {
-    peer: PeerId,
     remote_address: Multiaddr,
     security: &'static str,
     muxer: &'static str,
@@ -365,77 +363,36 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
             }
         }
         "tcp" => {
-            let observation = Arc::clone(&opts.tcp_upgrade_observation);
             let upgrade_observer = opts.upgrade_observer.clone();
-            let expected_peer = if opts.command == "dial" {
-                Some(opts.peer_id.parse::<PeerId>()?)
-            } else {
-                None
-            };
+            let resolver = resolver.clone();
             let builder = SwarmBuilder::with_existing_identity(key)
                 .with_tokio()
                 .with_other_transport(move |key| {
-                    upgrade_observer::native_transport(key, false, upgrade_observer)
-                        .map(|transport| {
-                            Transport::map(transport, move |(peer, muxer), endpoint| {
-                                // This runs only after both upgrades, below the DNS wrapper.
-                                if expected_peer == Some(peer) && endpoint.is_dialer() {
-                                    *observation.lock().expect("TCP upgrade observation lock") =
-                                        Some(TcpUpgradeObservation {
-                                            peer,
-                                            remote_address: endpoint.get_remote_address().clone(),
-                                            security: "/noise",
-                                            muxer: "/yamux/1.0.0",
-                                        });
-                                }
-                                (peer, muxer)
-                            })
-                        })
+                    upgrade_observer::native_transport(key, false, upgrade_observer, resolver)
                 })?;
-            if let Some((config, options)) = resolver.clone() {
-                builder
-                    .with_dns_config(config, options)
-                    .with_relay_client(noise::Config::new, yamux::Config::default)?
-                    .with_behaviour(|key, relay_client| {
-                        behaviour_for(key, Some(relay_client), opts)
-                    })?
-                    .with_swarm_config(configure_tasks)
-                    .build()
-            } else {
-                builder
-                    .with_relay_client(noise::Config::new, yamux::Config::default)?
-                    .with_behaviour(|key, relay_client| {
-                        behaviour_for(key, Some(relay_client), opts)
-                    })?
-                    .with_swarm_config(configure_tasks)
-                    .build()
-            }
+            builder
+                .with_relay_client(noise::Config::new, yamux::Config::default)?
+                .with_behaviour(|key, relay_client| {
+                    behaviour_for(key, Some(relay_client), opts)
+                })?
+                .with_swarm_config(configure_tasks)
+                .build()
         }
         "tcp-tls" => {
             let upgrade_observer = opts.upgrade_observer.clone();
+            let resolver = resolver.clone();
             let builder = SwarmBuilder::with_existing_identity(key)
                 .with_tokio()
                 .with_other_transport(move |key| {
-                    upgrade_observer::native_transport(key, true, upgrade_observer)
+                    upgrade_observer::native_transport(key, true, upgrade_observer, resolver)
                 })?;
-            if let Some((config, options)) = resolver.clone() {
-                builder
-                    .with_dns_config(config, options)
-                    .with_relay_client(noise::Config::new, yamux::Config::default)?
-                    .with_behaviour(|key, relay_client| {
-                        behaviour_for(key, Some(relay_client), opts)
-                    })?
-                    .with_swarm_config(configure_tasks)
-                    .build()
-            } else {
-                builder
-                    .with_relay_client(noise::Config::new, yamux::Config::default)?
-                    .with_behaviour(|key, relay_client| {
-                        behaviour_for(key, Some(relay_client), opts)
-                    })?
-                    .with_swarm_config(configure_tasks)
-                    .build()
-            }
+            builder
+                .with_relay_client(noise::Config::new, yamux::Config::default)?
+                .with_behaviour(|key, relay_client| {
+                    behaviour_for(key, Some(relay_client), opts)
+                })?
+                .with_swarm_config(configure_tasks)
+                .build()
         }
         "tcp-pnet" if opts.pnet_key_file.as_os_str().is_empty() => {
             let builder = SwarmBuilder::with_existing_identity(key)
@@ -2235,15 +2192,13 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                 authenticated_remote_peer_id = Some(peer_id.to_string());
                 connection_remote_addr = Some(endpoint.get_remote_address().to_string());
                 negotiated_transport = observed_quic_transport(&endpoint);
-                if dns_root && opts.transport == "tcp" {
-                    tcp_upgrade_observation = Some(
-                        opts.tcp_upgrade_observation
-                            .lock()
-                            .map_err(|_| "TCP upgrade observation lock poisoned")?
-                            .clone()
-                            .filter(|observed| observed.peer == peer_id)
-                            .ok_or("DNSADDR connection lacks the expected peer's TCP upgrade observation")?,
-                    );
+                if dns_root && matches!(opts.transport.as_str(), "tcp" | "tcp-tls") {
+                    tcp_upgrade_observation = Some(TcpUpgradeObservation {
+                        remote_address: opts.upgrade_observer.resolved_endpoint(peer_id, &endpoint)
+                            .ok_or("DNSADDR connection lacks a unique causal numeric transport receipt")?,
+                        security: if opts.transport == "tcp-tls" { "/tls/1.0.0" } else { "/noise" },
+                        muxer: "/yamux/1.0.0",
+                    });
                 }
                 swarm
                     .behaviour_mut()

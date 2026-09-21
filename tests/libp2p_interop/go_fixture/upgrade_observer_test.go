@@ -879,8 +879,8 @@ func TestUpgradeAutomaticIdentifyRequiresSameConnectionAndLiveSubscription(t *te
 				close(events)
 			}
 			err := recordAutomaticIdentify(ctx, result, events, exchange, conn.remote)
-			if name == "matching" {
-				if err != nil || result["identify_event_connection_id"] != conn.id || result["signed_peer_record"] != true {
+			if name == "matching" || name == "unsigned" {
+				if err != nil || result["identify_event_connection_id"] != conn.id || result["signed_peer_record"] != (name == "matching") {
 					t.Fatalf("missing matching Identify evidence: %v %v", result, err)
 				}
 			} else if err == nil || len(result) != 0 {

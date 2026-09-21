@@ -269,6 +269,9 @@ class UpgradeEvidenceTests(unittest.TestCase):
                        {"identify_event_basis": "cached"}, {"application_protocol": "/ipfs/id/1.0.0"}):
             self.assertTrue(self.validate(echo_receipt() | fields), fields)
 
+    def test_unsigned_identify_event_is_not_native_upgrade_evidence(self):
+        self.assertTrue(self.validate(receipt() | {"signed_peer_record": False}))
+
     def test_echo_payload_size_matches_single_actual_wire_frame(self):
         for size in (20, True, 19.0):
             with self.subTest(size=size):

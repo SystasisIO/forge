@@ -226,6 +226,12 @@ canonical multistream frames, including rejected proposals, phase ordering,
 authenticated connection identity and the exact application-stream binding.
 Automatic Identify completion for echo must identify the same connection.
 
+The Go collector preserves whether that event actually includes a signed peer
+record. A donor-only QUIC exchange may complete without one; its result remains
+`signed_peer_record: false`. This does not satisfy Forge's native upgrade evidence
+validators, which still require signed evidence. A collector must not turn an
+optional donor field into either fabricated validation or a wire-protocol failure.
+
 For a Forge dialer, the fixture requires a fresh host without cached Identify,
 exactly one ever-opened session, no retired or pruned sessions, a successful
 automatic Identify with no recorded validation error, and the same connection
@@ -250,6 +256,13 @@ the unique authenticated connection, their causal open boundary, and counts
 and hashes of actual framed I/O. Native echo first performs the separate verified
 Identify exchange; the two bindings must use different streams on the same
 connection. The original Identify behaviour flag is not overwritten.
+
+The native TCP DNS wrapper carries that exact transport output's trace through
+the pinned donor resolver. A bounded output receipt keeps the original dial
+request, resolved inner endpoint and actual numeric socket separate. The receipt
+is matched to the same Swarm event; a latest observation selected only by Peer ID
+is not sufficient. This proves the donor's resolution-to-connection path, not
+DNSSEC or the authenticity of arbitrary DNS answers.
 
 Completed upgrade and response-write milestones are sticky, ordered observations.
 Lazy delegate completion alone is insufficient: the actual negotiation selection

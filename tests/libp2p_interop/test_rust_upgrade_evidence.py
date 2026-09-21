@@ -93,6 +93,25 @@ def raw_stream(connection, protocol, read=None, write=None):
     return stream
 
 
+def output_receipt(connection, request=None, dns=False):
+    before = next((e["sequence"] - 1 for e in connection["events"] if e["kind"] == "substream_opened"),
+                  len(connection["events"]))
+    return {"basis": "donor_transport_output_identity", "after_event_sequence": before,
+            "connection_trace_id": connection["connection_trace_id"],
+            "authenticated_remote_peer_id": connection["authenticated_remote_peer_id"],
+            "dns_wrapper_enabled": dns, "request_endpoint": copy.deepcopy(request or connection["endpoint"]),
+            "resolved_endpoint": copy.deepcopy(connection["endpoint"]),
+            "local_address": connection["local_address"], "remote_address": connection["remote_address"]}
+
+
+def dns_request(result, address):
+    proof = result["upgrade_observation"]
+    point = proof["swarm_events"][0]["endpoint"]
+    point["remote_address"] = address
+    proof["connections"][0]["transport_output_receipts"] = [output_receipt(proof["connections"][0], point, True)]
+    result["dns_input_address"] = address
+
+
 def receipt(scenario="identify", security="/noise"):
     endpoint = {"direction": "outbound", "upgrade_role": "outbound",
                 "remote_address": REMOTE_ADDR + "/p2p/" + REMOTE}
@@ -117,6 +136,7 @@ def receipt(scenario="identify", security="/noise"):
     negotiation(connection, "muxer", MUXER)
     connection["negotiations"][1]["upgrade_completed_sequence"] = event(
         connection, "muxer", "upgrade_completed", detail={"protocol": MUXER})
+    connection["transport_output_receipts"] = [output_receipt(connection)]
     data = b"synthetic opaque Identify bytes, not a signed envelope"
     raw_stream(connection, IDENTIFY, read=data)  # Automatic exchange predates our open boundary.
     attempts = []
@@ -178,6 +198,10 @@ def renumber(connection):
                 record = connection["negotiations"][int(item["phase"] == "muxer")]
                 key = "upgrade_completed_sequence"
             record[key] = index
+    before = next((e["sequence"] - 1 for e in connection["events"] if e["kind"] == "substream_opened"),
+                  len(connection["events"]))
+    for receipt in connection.get("transport_output_receipts", []):
+        receipt["after_event_sequence"] = before
 
 
 def background(result, authenticated=OTHER):
@@ -190,6 +214,7 @@ def background(result, authenticated=OTHER):
     phase = "muxer" if authenticated else "security"
     index = int(bool(authenticated))
     connection["streams"] = []
+    connection["transport_output_receipts"] = []
     connection["events"] = [e for e in connection["events"] if phase == "muxer" and e["phase"] == "security"]
     for item in connection["events"]:
         if item["kind"] == "authenticated_peer":
@@ -261,6 +286,7 @@ def listener_pair(scenario="identify", security="/noise", late_error=False):
     marker = c["events"].pop()
     c["events"].insert(last_identify + 1, marker)
     renumber(c)
+    c["transport_output_receipts"] = [output_receipt(c)]
     if late_error:
         c["negotiations"][1]["io_failed"] = True
         event(c, "muxer", "muxer_poll_error",
@@ -399,6 +425,10 @@ class RustListenerUpgradeEvidenceTests(unittest.TestCase):
         pair = listener_pair()
         c = pair[1]["upgrade_observation"]["connections"][0]
         c["direction"] = c["endpoint"]["direction"] = "outbound"
+        del c["endpoint"]["local_address"]
+        # Keep the transport receipt coherent so the paired-listener direction
+        # check, rather than a stale receipt, rejects this evidence.
+        c["transport_output_receipts"] = [output_receipt(c)]
         self.assert_invalid(pair, "direction")
 
     def test_cross_endpoint_echo_counts_hash_and_exact_payload_prefix(self):
@@ -458,6 +488,60 @@ class RustDialUpgradeEvidenceTests(unittest.TestCase):
                     self.assert_valid(value, security)
                     self.assertEqual(value, before)
                     self.assertFalse(value["signed_peer_record"])
+
+    def test_dns_request_is_bound_to_authenticated_numeric_socket(self):
+        for address in ("/dns/peer.test/tcp/42000", "/dns4/peer.test/tcp/42000",
+                        "/dnsaddr/peer.test/p2p/" + REMOTE):
+            for scenario in ("identify", "echo"):
+                with self.subTest(address=address, scenario=scenario):
+                    result = receipt(scenario)
+                    dns_request(result, address)
+                    self.assert_valid(result)
+
+    def test_dns_request_mismatch_and_unbounded_shapes_fail_closed(self):
+        bad = ("/dns6/peer.test/tcp/42000", "/dns4/peer.test/tcp/42001",
+               "/dns4/peer.test/tcp/42000/p2p/" + OTHER,
+               "/dns4/peer.test/tcp/42000/p2p-circuit",
+               "/dns4/peer.test/udp/42000", "/dns4/peer.test",
+               "/dns4/peer..test/tcp/42000", "/dns4/" + "a" * 64 + "/tcp/42000",
+               "/dns4/peer.test/tcp/00001", "/dns4/peer.test/tcp/65536",
+               "/dns4/peer.test" * 17 + "/tcp/42000")
+        for address in bad:
+            with self.subTest(address=address):
+                result = receipt()
+                dns_request(result, address)
+                self.assert_invalid(result)
+
+    def test_transport_output_receipt_identity_and_order_are_required(self):
+        changes = [("connection_trace_id", 2), ("connection_trace_id", True),
+                   ("authenticated_remote_peer_id", OTHER), ("dns_wrapper_enabled", False),
+                   ("after_event_sequence", 0), ("after_event_sequence", True),
+                   ("local_address", REMOTE_ADDR), ("remote_address", LOCAL_ADDR)]
+        for field, value in changes:
+            with self.subTest(field=field, value=value):
+                result = receipt()
+                dns_request(result, "/dns4/peer.test/tcp/42000")
+                c = result["upgrade_observation"]["connections"][0]
+                c["transport_output_receipts"][0][field] = value
+                self.assert_invalid(result)
+        result = receipt()
+        c = result["upgrade_observation"]["connections"][0]
+        c["transport_output_receipts"][0]["after_event_sequence"] = next(
+            e["sequence"] for e in c["events"] if e["kind"] == "substream_opened")
+        self.assert_invalid(result, "before stream use")
+
+    def test_missing_duplicate_or_unrelated_transport_receipt_is_not_proof(self):
+        for count in (0, 2, 3):
+            with self.subTest(count=count):
+                result = receipt()
+                c = result["upgrade_observation"]["connections"][0]
+                c["transport_output_receipts"] = [output_receipt(c) for _ in range(count)]
+                self.assert_invalid(result)
+        result = receipt()
+        dns_request(result, "/dns4/peer.test/tcp/42000")
+        result["upgrade_observation"]["swarm_events"][0]["endpoint"]["remote_address"] = (
+            "/dns4/other.test/tcp/42000")
+        self.assert_invalid(result, "original request differs")
 
     def test_v1lazy_delegate_precedes_wire_ack_but_marker_cannot(self):
         result = receipt()
@@ -533,6 +617,7 @@ class RustDialUpgradeEvidenceTests(unittest.TestCase):
         connection["authenticated_remote_peer_id"] = OTHER
         connection["endpoint"]["remote_address"] = REMOTE_ADDR + "/p2p/" + OTHER
         next(e for e in connection["events"] if e["kind"] == "authenticated_peer")["detail"]["peer_id"] = OTHER
+        connection["transport_output_receipts"] = [output_receipt(connection)]
         self.assert_invalid(result, "absent or ambiguous authenticated connection")
 
     def test_corrupt_unauthenticated_hint_rejected(self):

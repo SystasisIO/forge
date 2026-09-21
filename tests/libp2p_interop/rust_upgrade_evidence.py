@@ -91,6 +91,107 @@ def _tcp(value, peer, suffix=False):
     return "/".join(parts)
 
 
+def _request_address(value, peer, resolved=None):
+    """Validate recorded native TCP/DNS components without resolving a name."""
+    _require(isinstance(value, str) and len(value) <= 2048, "invalid transport request address")
+    parts = value.split("/")
+    dns = any(p in {"dns", "dns4", "dns6", "dnsaddr"} for p in parts[1::2])
+    if not dns:
+        numeric = _tcp(value, peer, True)
+        _require(resolved is None or numeric == resolved, "numeric transport request differs from socket")
+        return False
+    _require(parts[0] == "" and len(parts) % 2 == 1 and 3 <= len(parts) <= 33,
+             "invalid bounded DNS request components")
+    has_dnsaddr, ports = False, []
+    for index in range(1, len(parts), 2):
+        protocol, text = parts[index:index + 2]
+        if protocol in {"dns", "dns4", "dns6", "dnsaddr"}:
+            labels = text.rstrip(".").split(".")
+            _require(1 <= len(text) <= 254 and all(re.fullmatch(r"[A-Za-z0-9_-]{1,63}", label)
+                                                   for label in labels), "invalid DNS request name")
+            has_dnsaddr |= protocol == "dnsaddr"
+            if resolved is not None and protocol in {"dns4", "dns6"}:
+                _require(resolved.startswith("/ip4/" if protocol == "dns4" else "/ip6/"),
+                         "DNS request address family differs from socket")
+        elif protocol == "p2p":
+            _peer(text)
+            _require(index == len(parts) - 2 and text == peer, "DNS request target peer suffix mismatch")
+        elif protocol == "tcp":
+            _require(re.fullmatch(r"[1-9][0-9]{0,4}", text) and int(text) <= 65535, "invalid DNS request port")
+            ports.append(text)
+            _require(resolved is None or text == resolved.split("/")[-1], "DNS request port differs from socket")
+        elif protocol in {"ip4", "ip6"}:
+            numeric = _tcp(f"/{protocol}/{text}/tcp/1", peer)
+            _require(resolved is None or numeric.rsplit("/", 1)[0] == resolved.rsplit("/", 1)[0],
+                     "DNS request IP filter differs from socket")
+        else:
+            raise ValueError("unsupported or circuit DNS request component")
+    _require(has_dnsaddr or ports, "DNS host request lacks TCP transport")
+    return True
+
+
+def _request_endpoint(value, peer, resolved=None):
+    point = _object(value, "transport request endpoint")
+    _require(point.get("direction") in {"inbound", "outbound"}
+             and point.get("upgrade_role") in {"inbound", "outbound"}, "invalid transport request role")
+    keys = {"direction", "upgrade_role", "remote_address"}
+    if point["direction"] == "inbound":
+        keys.add("local_address")
+        _tcp(point.get("local_address"), peer)
+    _require(set(point) == keys, "invalid transport request endpoint fields")
+    dns = _request_address(point.get("remote_address"), peer, resolved)
+    _require(not dns or point["direction"] == "outbound", "DNS request is not outbound")
+    return dns
+
+
+def _transport_receipts(connection):
+    receipts = _list(connection.get("transport_output_receipts"), 0, 2, "transport output receipt")
+    peer, events = connection["authenticated_remote_peer_id"], connection["events"]
+    fields = {"basis", "after_event_sequence", "connection_trace_id", "request_endpoint", "resolved_endpoint",
+              "local_address", "remote_address", "authenticated_remote_peer_id", "dns_wrapper_enabled"}
+    previous = 0
+    for receipt in receipts:
+        _object(receipt, "transport output receipt")
+        _require(set(receipt) == fields and receipt.get("basis") == "donor_transport_output_identity"
+                 and type(receipt.get("connection_trace_id")) is int
+                 and receipt["connection_trace_id"] == connection["connection_trace_id"]
+                 and bool(peer) and receipt.get("authenticated_remote_peer_id") == peer
+                 and type(receipt.get("dns_wrapper_enabled")) is bool,
+                 "invalid transport output identity/shape")
+        boundary = receipt.get("after_event_sequence")
+        _require(integer(boundary, 0, len(events)) and boundary >= previous, "invalid transport output boundary")
+        auth = _unique(events, "authenticated_peer")
+        completions = [_unique([e for e in events if e["phase"] == phase], "delegate_completed")
+                       for phase in ("security", "muxer")]
+        # after_event_sequence includes the last captured event. With V1Lazy this
+        # can be exactly delegate_completed; the wire ACK/marker may follow later.
+        _require(boundary >= max(e["sequence"] for e in [auth, *completions])
+                 and not any(e["kind"] == "substream_opened" and e["sequence"] <= boundary for e in events),
+                 "transport output boundary is not after authentication/delegates and before stream use")
+        previous = boundary
+        _require(receipt["resolved_endpoint"] == connection["endpoint"]
+                 and receipt["local_address"] == connection["local_address"]
+                 and receipt["remote_address"] == connection["remote_address"],
+                 "transport output resolved endpoint differs from actual socket")
+        request = receipt["request_endpoint"]
+        dns = _request_endpoint(request, peer, connection["remote_address"])
+        _require(request["direction"] == connection["direction"]
+                 and request["upgrade_role"] == connection["endpoint"]["upgrade_role"]
+                 and (not dns or receipt["dns_wrapper_enabled"] is True),
+                 "transport output request role/DNS wrapper mismatch")
+        if request["direction"] == "inbound":
+            _require(request["local_address"] == connection["local_address"], "transport output local request mismatch")
+    return receipts
+
+
+def _bound_remote_endpoint(connection, event):
+    receipts = connection["transport_output_receipts"]
+    _require(len(receipts) == 1, "target lacks one unique transport output receipt")
+    _require(receipts[0]["request_endpoint"] == event["endpoint"],
+             "transport output original request differs from Swarm endpoint")
+    return connection["remote_address"]
+
+
 def _hex(value, low, high):
     _require(isinstance(value, str) and 2 * low <= len(value) <= 2 * high
              and len(value) % 2 == 0 and re.fullmatch(r"[0-9a-f]*", value), "invalid bounded canonical hex")
@@ -367,6 +468,7 @@ def _connections(proof):
                         and stream["write_close_returned"] and stream["write"]["complete_frames"])
             _require(stream["response_write_complete"] == response, "contradictory local write completion")
         _milestones(connection)
+        _transport_receipts(connection)
     return connections
 
 
@@ -564,7 +666,7 @@ def _validate_listener(payload, listener, remote, security):
         _require(_tcp(payload["connection_local_addr"], local) == connection["remote_address"],
                  "Forge local endpoint disagrees with counterpart")
     swarm = [e for e in _swarm_events(proof) if e["authenticated_remote_peer_id"] == local]
-    _require(len(swarm) == 1 and swarm[0]["endpoint"] == connection["endpoint"],
+    _require(len(swarm) == 1 and _bound_remote_endpoint(connection, swarm[0]) == connection["remote_address"],
              "missing or ambiguous matching inbound Swarm endpoint")
     identify = _inbound_response(connection, IDENTIFY)
     _require(identify["read"]["framed_bytes"] == 0, "Identify response has unexpected inbound body")
@@ -599,12 +701,7 @@ def _swarm_events(proof):
         _peer(event.get("authenticated_remote_peer_id"))
         _require(event.get("kind") == "connection_established" and identifier not in ids,
                  "duplicate or invalid Swarm event")
-        point = _object(event.get("endpoint"), "Swarm endpoint")
-        _require(point.get("direction") in {"inbound", "outbound"}
-                 and point.get("upgrade_role") in {"inbound", "outbound"}, "invalid Swarm endpoint role")
-        _tcp(point.get("remote_address"), event["authenticated_remote_peer_id"], True)
-        if point["direction"] == "inbound":
-            _tcp(point.get("local_address"), event["authenticated_remote_peer_id"])
+        _request_endpoint(event.get("endpoint"), event["authenticated_remote_peer_id"])
         ids.add(identifier)
     return events
 
@@ -639,7 +736,9 @@ def _validate(result, peer, security):
     _require(len(swarm) == 1, "absent or ambiguous authenticated Swarm event")
     endpoint = _object(swarm[0].get("endpoint"), "Swarm endpoint")
     _require(endpoint.get("direction") == endpoint.get("upgrade_role") == "outbound"
-             and _tcp(endpoint.get("remote_address"), peer, True) == connection["remote_address"], "Swarm endpoint mismatch")
+             and _bound_remote_endpoint(connection, swarm[0]) == connection["remote_address"], "Swarm endpoint mismatch")
+    if "dns_input_address" in result:
+        _require(result["dns_input_address"] == endpoint["remote_address"], "DNS input differs from transport original request")
     applications = _object(proof.get("applications"), "applications")
     _require(applications.get("source") == "actual_swarm_stream_framed_io"
              and applications.get("overflow") is False, "wrong application collector")

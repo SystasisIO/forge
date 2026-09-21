@@ -932,10 +932,8 @@ func recordAutomaticIdentify(ctx context.Context, result map[string]any, events 
 			if !ok || !identifyOnExchangeConnection(identified, exchange, expected) {
 				continue
 			}
-			if identified.SignedPeerRecord == nil {
-				return fmt.Errorf("Identify completion lacks a signed peer record")
-			}
-			result["signed_peer_record"] = true
+			// Preserve the donor event; capability-specific validators require signed evidence.
+			result["signed_peer_record"] = identified.SignedPeerRecord != nil
 			result["identify_event_connection_id"] = identified.Conn.ID()
 			result["identify_event_basis"] = "automatic_identify_separate_exchange_same_connection"
 			return nil

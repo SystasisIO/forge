@@ -32,20 +32,20 @@
     "go_fixture/autonat_test.go": "e58c54d81e53ca3f2bb6a53bda3688326b71180295190e4fde6bf0591ae121fd",
     "go_fixture/go.mod": "1c6c7ed0084ea684bd6a59774fde405678a989e90118a529ee4695345b42de3e",
     "go_fixture/go.sum": "4c5c4bab5b838e9027b83777413feb9c2540f2d0c076c86214a549cfad47902a",
-    "go_fixture/main.go": "4aab3f75871ba67a8c183dff36013eb7dca161f191523799e82b6e5b00c25976",
+    "go_fixture/main.go": "53bc2d488849ef09a8a9d7cd6fd60c380e6930e4c0c7115f08b6b060dc88ef6c",
     "go_fixture/provider_evidence.go": "11a0261658220273fbec4c0a0978505a465a78eb45017117c8c7b84b6bef11eb",
     "go_fixture/provider_evidence_test.go": "f5287bde12f9aabcfe7c8bbb53dbd5f8c815d973aae5697d3c97bae81c395c11",
     "go_fixture/upgrade_observer.go": "eb2eaffaa9d19d2a633b26aa4e86b26dd3172bd42fcad9d1f3cda139cc8a03e8",
-    "go_fixture/upgrade_observer_test.go": "a558f3121dda57aa8327d5827d4c184c761108ab713dc72a3fa5ebf19cd4c7c3",
+    "go_fixture/upgrade_observer_test.go": "ae4564cff1a44c9954e2ced1dc007f36e8276c281a7796586618b0029bc73dfb",
     "rust_fixture/Cargo.lock": "501dc3cff4cf92cbd7661f97a2929631ed2f12e0531a704bf8445e83572cfd39",
     "rust_fixture/Cargo.toml": "b1ef4619348a572799788aa3bc814e68dd96d46bc589624f7848e0002b47848d",
-    "rust_fixture/application_observer.rs": "4c1d10b497648e80b45f533cc4ae33dd60db979c70ccc30fc280047e45e41e53",
+    "rust_fixture/application_observer.rs": "3ed1799d57cbb6d2e46e34c59669a9474418394e515e6a4d7306e4a2e9d4daa8",
     "rust_fixture/autonat.rs": "f03829c7f97f94eee625a90def197f12fb6a2f3016ea5c2810bd2d68c29d289b",
-    "rust_fixture/main.rs": "4cf58e892aecf86c3fdaf770b8c084b8b1e6319168b8a033414cc4e63dace0e6",
+    "rust_fixture/main.rs": "afb2c842270b5affc2fe5f7aa758661b45f013faa765058c6df87d10ee632c0d",
     "rust_fixture/provider.rs": "b1feb9223c6ccd2b8435de3b54f7660d8381217788e1dfd4f166f2bdaf7ab618",
     "rust_fixture/rust-toolchain.toml": "32d99b8237d5832435d362c395422d69f52348a9fd1a154f70336d2991403064",
     "rust_fixture/task_owner.rs": "98ad462a07f1a72c9011ce15f87b477a959560bac502df7e79b7bd9df5eb703e",
-    "rust_fixture/upgrade_observer.rs": "3635fc046c8a32e86f5b3fd6127e107a887d2deb4c5ca364d78eef74e28db71b"
+    "rust_fixture/upgrade_observer.rs": "90ed97aa1773fc138bdfebbf5deb13966fe332e9c53634359c88d1b4e83c9773"
   },
   "runtime_artifact_sources": {
     "../CMakeLists.txt": "c10acc74a472af1e085cb5d236108ab3ea617dd1695047d06f9fa4912c2e9985",
@@ -64,8 +64,8 @@
     "process_lifecycle.py": "ba242a9f22041605eb7a412e622d23b6a0eec720c275925a86435b3ee697e3f8",
     "provenance.py": "9ae5c8ffa3d9dcd646c2a5c7148e79cd5086d60ecb156d81374fda2ca00609ec",
     "provider_evidence.py": "673d8caa86a01e0ffd90ad5149059dab9aba489d5af839794e03711f1deea660",
-    "runner.py": "6b6238b0847bf0acbd9e711d169e6f7113b7fea2dba7d17c6de7c51a464841d8",
-    "rust_upgrade_evidence.py": "4d0137bce6218fbd53dddcd4bbddf468fe669076572e81a74138ff0c3d0bc78a",
+    "runner.py": "4690eb882b33d23b942d0311706310d68c969d69dc5318e17a6868bff66b10aa",
+    "rust_upgrade_evidence.py": "1f3bef2a9e5f92172a7188ffec77c89d51f70bda9462371ad61de914048dc1fd",
     "upgrade_evidence.py": "37dd2b768a363152e54e3a9640ec3419c10c62e03051b6891df22128ffd47532"
   },
   "evidence_sources": {
@@ -78,12 +78,12 @@
     "test_autonat_network.py": "7ebde3d9724a443b126a30242f2570719d6067a53204e25393cceb398e772cb5",
     "test_dns_fixture.py": "9f4fae8f9b313d3621e9ef24f20bc33bbd87b1ecde2271e607ba6a283a9e442e",
     "test_identify_evidence.py": "161c5c441150662f9f2709a485e3e10014c4073c93fef0c01db252a956d96d68",
-    "test_process_lifecycle.py": "6dc26185f974b2b6f45888ffee52d51955e340a63e859d2a8518c62ada33ed96",
+    "test_process_lifecycle.py": "7b10cf2e82cf3ff4e27fbfc3a89522596405f5482ff37e399484ab2e89f1be7a",
     "test_provenance.py": "74bdecb22ae8d0c9210fce3f20639bc7e1d23f9a8a7a3ecfb69094645289a83c",
     "test_provider_evidence.py": "3559b80ab71a858a54f8e93513c14400bec4be769a2384c051e85e8703baefae",
     "test_relay_evidence.py": "e73779c3c84a417c80806fa6b9697c41fbda2a1a8a68e2d831ff6f00360fde0a",
-    "test_rust_upgrade_evidence.py": "c1f85fece165bb2b2c290e8a7f12b07562c4622d3262f5e0e01e3ddf678d4c5c",
-    "test_upgrade_evidence.py": "dadd365b31b85b877d305421780204591a19408d60b58992f0216c4f88d9bf64"
+    "test_rust_upgrade_evidence.py": "cff3ea00fac6561c182eeef9b4fbb90f5d543b3f4d7588a49e56b8c347e01e17",
+    "test_upgrade_evidence.py": "beed646e65c0e0c4b40a733a05f4f8a847b026fb5f033a152761023644ea671c"
   },
   "dependency_graphs": {
     "go": {
