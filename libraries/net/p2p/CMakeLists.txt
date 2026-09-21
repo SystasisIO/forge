@@ -4,6 +4,9 @@ add_library(
    identity_signature.cpp
    details/identity_signature.hxx
    endpoint.cpp
+   mdns_codec.cpp
+   mdns_policy.cpp
+   details/mdns_codec.hxx
    dns_address_expander.cpp
    details/dns_address_expander.hxx
    direct_attempt.cpp

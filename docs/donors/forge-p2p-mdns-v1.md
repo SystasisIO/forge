@@ -7,6 +7,11 @@ prerequisite is implemented separately from the network service. The mDNS
 runtime, interface lifecycle and bilateral live evidence remain pending; this
 note is not a production-support claim. Plugin configuration remains Stage 7.
 
+The private packet codec and bounded policy validation are implemented. Codec
+tests cover DNS compression, all four sections, raw labels, QU/cache-flush
+flags, individual TXT attributes, malformed packets and resource limits. These
+are packet-level tests, not evidence of multicast discovery or interoperability.
+
 ## Inspected Sources
 
 | Source | Accepted contract |

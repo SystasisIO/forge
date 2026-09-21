@@ -54,7 +54,7 @@
   "public_surface_snapshots": {
     "net.p2p.node": {
       "owner": "net.p2p.node",
-      "module_count": 33,
+      "module_count": 34,
       "modules": [
         "forge.net.p2p.address_resolution",
         "forge.net.p2p.connection_gater", "forge.net.p2p.dht",        "forge.net.p2p.dht.record_store",
@@ -64,6 +64,7 @@
         "forge.net.p2p.exceptions", "forge.net.p2p.hole_punch",       "forge.net.p2p.host_event",
         "forge.net.p2p.host_event_subscription", "forge.net.p2p.identify",
         "forge.net.p2p.identity",   "forge.net.p2p.ipns",             "forge.net.p2p.lifecycle",
+        "forge.net.p2p.mdns_policy",
         "forge.net.p2p.message",    "forge.net.p2p.negotiation",      "forge.net.p2p.node",
         "forge.net.p2p.peer_store", "forge.net.p2p.private_network",  "forge.net.p2p.protocol",         "forge.net.p2p.provider_registration",
         "forge.net.p2p.pubsub",     "forge.net.p2p.reachability",     "forge.net.p2p.reachability_policy",
@@ -123,6 +124,7 @@
         "forge.net.p2p.identity": [ "identity.secure_transport_authentication" ],
         "forge.net.p2p.ipns": [ "protocol.kademlia" ],
         "forge.net.p2p.lifecycle": [ "lifecycle.bootstrap", "addressing.dnsaddr" ],
+        "forge.net.p2p.mdns_policy": [ "lifecycle.discovery" ],
         "forge.net.p2p.message": [ "protocol.peer_exchange" ],
         "forge.net.p2p.negotiation": [ "protocol.multistream_select" ],
         "forge.net.p2p.node": [
@@ -182,7 +184,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "0b2cb853ab24519f4a104457485d583814672b2976e457a2e17d5aab293e471b",
+      "sha256": "ad121c4f1fcb7f9daccdb84621e67f241599ac48f39240cb14aefc5458e4d7f0",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -948,7 +950,7 @@
       "state": "partial",
       "owner": "net.p2p.node",
       "normal_activation": "managed_node_lifecycle_and_coalesced_explicit_trigger",
-      "configuration": "topology mode, watermarks, refresh/query limits, DHT profiles, Rendezvous points and Forge PEX",
+      "configuration": "topology mode, watermarks, refresh/query limits, DHT profiles, Rendezvous points and Forge PEX; bounded mDNS policy validation exists but is not yet connected to node lifecycle",
       "resource_ownership": "one node-owned manager with bounded source queries, observations, dials and pruning",
       "persistence": "peer facts update peer_store; per-source trust, TTL, cookie and retry state remain operational",
       "maintenance": "periodic jittered refresh restores low watermark to target and prunes above high watermark",

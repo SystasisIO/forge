@@ -1074,6 +1074,8 @@ add_executable(
    quic_p2p/dht_routing_refresh_tests.cpp
    quic_p2p/dht_time_tests.cpp
    quic_p2p/ipns_tests.cpp
+   quic_p2p/mdns_codec_tests.cpp
+   quic_p2p/mdns_policy_tests.cpp
    quic_p2p/quic_tests.cpp
    quic_p2p/connection_gater_tests.cpp
    quic_p2p/resource_manager_tests.cpp
