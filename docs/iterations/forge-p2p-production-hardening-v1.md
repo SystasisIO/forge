@@ -4,8 +4,9 @@
 >
 > This document records the production integration gaps found while preparing
 > Forge Content Swarm. Completing this program is the primary Forge network
-> objective before Content Swarm implementation resumes. This document does not
-> change the public API by itself.
+> objective. Content Swarm may develop in parallel from Stage 7, subject to the
+> separate development and production gates in section 10. This document does
+> not change the public API by itself.
 
 ## 1. Audit Standard
 
@@ -891,6 +892,9 @@ work after the raw-node contracts are stable.
 - expose narrow typed contributions and read-only diagnostics;
 - prove configuration, restart and shutdown parity with programmatic nodes.
 
+After Stage 6 completion, Content Swarm development may proceed in parallel
+under the boundaries in section 10, without delaying P2P delivery.
+
 ### Stage 8: Native Production Proof And Release Gate
 
 - run scale, churn, cancellation, malformed-input and resource-exhaustion
@@ -899,7 +903,9 @@ work after the raw-node contracts are stable.
 - demonstrate zero `stub`, `orphan`, unintended `manual-only`, `partial` or
   `unverified` inventory entries;
 - update support documentation only from passed evidence;
-- declare `forge_net_p2p` production-ready before resuming Content Swarm.
+- exercise Content Swarm integration without replacing raw-node/plugin proof;
+- declare `forge_net_p2p` production-ready before permitting Content Swarm
+  production use, which also requires Swarm's own acceptance gates.
 
 The declaration applies only to the native TCP/QUIC and private-network
 profiles whose required manifest entries pass. It does not imply browser
@@ -995,10 +1001,34 @@ complete only after its exact-head review and evidence gates pass.
 
 ## 10. Content Swarm Entry Gate
 
-Content Swarm remains a documented follow-up and must not be implemented on top
-of the current P2P lifecycle. Swarm work may resume only after:
+The maintainer-approved delivery order separates development from production.
+It supersedes the earlier prohibition on all Swarm implementation until after
+Stage 8; it does not declare the current P2P lifecycle production-ready.
 
-- phases 0 through 8 are complete;
+### Parallel development gate: Stage 7
+
+- Stage 6 is complete and its P2P contracts are fixed before Swarm development
+  resumes alongside Stage 7;
+- the scope covers content identifiers, manifests, file-backed storage,
+  integrity verification, transfer scheduling, Forge API streaming and
+  deterministic tests;
+- network integration uses the official plugin as the validated Stage 7
+  configuration and contribution surfaces become available; a temporary
+  product-owned raw-node configuration path is not an alternative;
+- Swarm does not implement missing discovery, provider renewal, relay, NAT
+  traversal or network maintenance above the P2P layer;
+- parallel development must not delay completion of P2P Stages 7 and 8.
+
+### Joint validation: Stage 8
+
+Run multi-process Swarm integration tests covering interrupted transfers,
+recovery, slow peers, memory bounds and long-duration operation. These tests
+supplement the mandatory raw-node, official-plugin and Go/Rust evidence; they
+do not replace it.
+
+### Production gate: after Stage 8
+
+- P2P stages through Stage 8 are complete for the required deployment profiles;
 - `forge_net_p2p` and `plugins.p2p.node` satisfy every production acceptance
   gate above;
 - provider publication has an owned registration lifetime and automatic
@@ -1006,9 +1036,14 @@ of the current P2P lifecycle. Swarm work may resume only after:
 - a node can discover non-bootstrap providers and open an application protocol
   through the official plugin without product-owned discovery loops;
 - resource, cancellation and shutdown tests prove that content-sized workloads
-  cannot bypass P2P admission.
+  cannot bypass P2P admission;
+- Swarm's own acceptance gates pass independently: P2P readiness alone does not
+  authorize Swarm production use.
 
-Swarm then owns content manifests, piece exchange and seeding intent. It reuses
+Stage 9 WebSocket support is not a prerequisite for native Swarm deployment;
+browser transport support requires its separate gates.
+
+Swarm owns content manifests, piece exchange and seeding intent. It reuses
 the completed P2P provider discovery and Forge API streaming rather than
 compensating for incomplete node mechanics.
 

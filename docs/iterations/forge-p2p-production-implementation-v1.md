@@ -557,13 +557,35 @@ through the official plugins. Plugins remain dependency/configuration adapters:
 they may not own mDNS, NAT, relay, dialing, GossipSub or resource-maintenance
 loops. Programmatic nodes and plugin-created nodes must have lifecycle parity.
 
+After Stage 6 is complete and its P2P contracts are fixed, Content Swarm may
+resume development in parallel with Stage 7. This maintainer-approved overlap
+replaces the earlier requirement to defer all Swarm implementation until after
+Stage 8; it does not relax any P2P production gate.
+
+The parallel scope covers content identifiers, manifests, file-backed storage,
+integrity verification, transfer scheduling and Forge API streaming, with
+deterministic tests. Network integration uses the official P2P plugin as its
+validated configuration and contribution surfaces become available in Stage 7;
+products must not create a temporary raw-node configuration path around it.
+Swarm must reuse P2P discovery, provider registration, relay, NAT traversal and
+network maintenance rather than implement substitutes. Parallel work must not
+delay completion of the P2P Stage 7 and Stage 8 gates.
+
 ### Stage 8: Production proof
 
 Run restart, churn, scale, hostile-peer, bounded-memory and long-duration tests
 through both the raw node and official plugins, followed by live Go and Rust
 interop. Only then may native and private-network inventory entries be promoted
-to `live` and Content Swarm resume on the hardened substrate. This promotion
-does not claim browser transport support.
+to `live`. Stage 8 also exercises Swarm as an integration consumer through
+multi-process tests of interrupted transfers, recovery, slow peers, bounded
+memory and long-duration operation. These tests supplement rather than replace
+the raw-node and official-plugin proof.
+
+Swarm production use requires both the relevant P2P Stage 8 gates and Swarm's
+own acceptance gates to pass; P2P readiness does not imply Swarm readiness.
+See the [Content Swarm entry gates](forge-p2p-production-hardening-v1.md#10-content-swarm-entry-gate).
+Stage 9 is not required for native Swarm operation. This promotion does not
+claim browser transport support.
 
 ### Stage 9: P2P WebSocket and browser transport profile
 

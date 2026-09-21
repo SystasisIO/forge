@@ -1,16 +1,19 @@
-# Forge Content Swarm v1
+# Forge Swarm v1
 
-> **Status:** accepted implementation direction, blocked by Forge P2P
-> production hardening, not shipped API.
+> **Status:** accepted implementation direction, not shipped API. Development
+> may resume alongside P2P Stage 7 after Stage 6 completion; production remains
+> gated by P2P Stage 8 and Swarm's own acceptance tests.
 >
-> **Implementation branch:** `forge-api-live-streaming-v1`.
+> **Historical prerequisite branch:** `forge-api-live-streaming-v1`.
+> Swarm implementation branches are chosen by the focused delivery plans.
 >
 > This document defines the cross-library boundary and implementation order for
 > a neutral BitTorrent-like immutable-content distribution mechanism. Detailed
 > public signatures are finalized in the focused PR that owns each component.
-> Content Swarm implementation does not resume until
-> [`forge-p2p-production-hardening-v1.md`](forge-p2p-production-hardening-v1.md)
-> reaches its production acceptance gate.
+> Development, joint validation and production follow the separate
+> [Swarm entry gates](forge-p2p-production-hardening-v1.md#10-content-swarm-entry-gate).
+> The document filename is retained for existing links; `content` is not a
+> planned library family or namespace.
 
 ## 1. Goal
 
@@ -28,13 +31,15 @@ representation of user payload bytes.
 
 The implementation is split into these layers:
 
-1. `forge_content_swarm` owns deterministic descriptor, Merkle, piece, picker,
-   transfer and resume mechanics.
-2. `forge_content_swarm_api` owns the transport-neutral peer `FORGE_API`
+1. `forge_swarm` owns deterministic descriptor, Merkle, piece, picker,
+   transfer and resume mechanics, the storage contract and its file-backed
+   implementation.
+2. `forge_swarm_api` owns the transport-neutral peer `FORGE_API`
    contract and its wire DTOs.
-3. `forge_content_file_store` is a reusable filesystem-backed implementation of
-   the content-store contract. It writes ordinary files and directories.
-4. `forge_plugins_content_swarm` binds those libraries to Forge application
+3. `forge::swarm::file_store` implements the storage contract within
+   `forge_swarm`. It writes ordinary files and directories; a separate generic
+   content-storage library is not introduced without an independent use case.
+4. `forge_plugins_swarm_node` binds those libraries to Forge application
    lifecycle, API publication, P2P discovery, peer sessions, limits and
    diagnostics.
 5. Host products own descriptor trust, source and destination selection,
@@ -44,30 +49,30 @@ Forge does not ship a standalone swarm daemon. A user-facing daemon is a
 product because it must choose paths, conflict behavior, CLI/API, retention and
 account/origin policy.
 
+Swarm is a standalone distribution engine, not a transport or a P2P-node
+subcomponent. It uses `forge::api` for typed peer exchange and `forge::net::p2p`
+through the official plugin for network mechanics. It therefore lives in
+`forge::swarm`, not `forge::content::swarm`, `forge::net::swarm` or
+`forge::net::p2p::swarm`. No `content` family is created speculatively.
+
 ## 3. Planned Project Shape
 
-The family follows `create-library` and `create-plugin` without aggregate-only
+The library and plugin follow `create-library` and `create-plugin` without aggregate-only
 modules, dummy sources or mixed file ownership:
 
 ```text
-libraries/content/
+libraries/swarm/
   CMakeLists.txt
   README.md
-  swarm/
-    CMakeLists.txt
-    README.md
-    include/forge/content/swarm/
-    details/
-  file_store/
-    CMakeLists.txt
-    README.md
-    include/forge/content/file_store/
-    details/
+  include/forge/swarm/
+    file_store.cppm
+  details/
+  file_store.cpp
 
-plugins/content/swarm/
+plugins/swarm/node/
   CMakeLists.txt
   README.md
-  include/forge/plugins/content/swarm/
+  include/forge/plugins/swarm/node/
   details/
 ```
 
@@ -75,19 +80,27 @@ Planned targets and package components:
 
 | Target | Component | Namespace |
 | --- | --- | --- |
-| `forge_content_swarm` | `content_swarm` | `forge::content::swarm` |
-| `forge_content_swarm_api` | `content_swarm_api` | `forge::content::swarm` |
-| `forge_content_file_store` | `content_file_store` | `forge::content::file_store` |
-| `forge_plugins_content_swarm` | `plugins_content_swarm` | `forge::plugins::content::swarm` |
+| `forge_swarm` | `swarm` | `forge::swarm` |
+| `forge_swarm_api` | `swarm_api` | `forge::swarm` |
+| `forge_plugins_swarm_node` | `plugins_swarm_node` | `forge::plugins::swarm::node` |
 
-`forge_content_swarm_api` may be a focused target declared in the same physical
-`swarm` leaf, as Crypto asymmetric values are separated from the heavy
+Library modules use the `forge.swarm.*` prefix; the file store module is
+`forge.swarm.file_store`. The plugin module prefix and contract id are both
+`forge.plugins.swarm.node`. Its role is ownership of the Swarm runtime, not
+ownership of a second network node. The `forge::plugins::swarm` grouping
+namespace contains no public declarations.
+
+`forge_swarm_api` is a focused target declared in the same physical
+`swarm` library, as Crypto asymmetric values are separated from the heavy
 algorithm target. It must not force API dependencies on deterministic swarm
-mechanics.
+mechanics. Each source/module has one target owner. Domain API declarations
+remain in `forge::swarm`; they do not create an `api` child namespace or a new
+transport binding. Non-template implementations use exact public/private
+pairs, and aspect units split only coherent implementations.
 
 ## 4. Forge API Prerequisite
 
-The current Forge API streaming surface is batch-shaped:
+The original prerequisite addressed a batch-shaped Forge API streaming surface:
 
 - server streaming materializes `std::vector<Response>`;
 - client streaming accepts `std::vector<Request>`;
@@ -95,8 +108,9 @@ The current Forge API streaming surface is batch-shaped:
 - the generic transport client buffers all response frames until the terminal
   frame.
 
-This is not suitable for unbounded transfer, flow control or simultaneous peer
-messages. The existing vector contract is replaced rather than wrapped.
+That surface is not suitable for unbounded transfer, flow control or simultaneous
+peer messages. Swarm consumes the live API contract described below; it must not
+reintroduce vector-based streaming or build a second streaming runtime.
 
 ### 4.1 Public stream primitives
 
@@ -259,7 +273,7 @@ mechanics.
 
 ### 7.1 Store contract
 
-`forge_content_swarm` defines a storage contract with these capabilities:
+`forge_swarm` defines a storage contract with these capabilities:
 
 - return a consistent availability snapshot;
 - read a bounded range from a verified piece;
@@ -274,9 +288,10 @@ mechanics.
 The contract is filesystem-neutral so Spine snapshot directories and model
 caches can provide adapters without copying their payload into a second store.
 
-### 7.2 Generic file store
+### 7.2 File-backed Swarm store
 
-`forge_content_file_store` implements the contract using ordinary files:
+`forge::swarm::file_store`, shipped by `forge_swarm`, implements the contract
+using ordinary files:
 
 - an existing complete file or directory can be verified and seeded directly;
 - a single-file download writes a hidden sibling staging file;
@@ -306,7 +321,7 @@ remains directly accessible as normal files.
 
 ## 8. Swarm Mechanics
 
-`forge_content_swarm` owns deterministic mechanisms independent of sockets and
+`forge_swarm` owns deterministic mechanisms independent of sockets and
 application lifecycle:
 
 - peer availability and verified local availability bitfields;
@@ -326,7 +341,7 @@ paths or emit product receipts.
 
 ## 9. Transport-Neutral Swarm API
 
-`forge_content_swarm_api` owns the shared client/server contract. The plugin
+`forge_swarm_api` owns the shared client/server contract. The plugin
 implements the server and uses the generated proxy as a client.
 
 The expected remote surface has two logical operations:
@@ -351,9 +366,9 @@ Peer messages cover:
 Piece data items are bounded blocks, initially no larger than 16 KiB. Large
 pieces are never serialized as one unbounded DTO.
 
-## 10. Content Swarm Plugin
+## 10. Swarm Node Plugin
 
-`forge_plugins_content_swarm` is the lifecycle-owned reference runtime. It:
+`forge_plugins_swarm_node` is the lifecycle-owned reference runtime. It:
 
 - installs local control and remote peer APIs;
 - publishes the peer API through `plugins.p2p.node`;
@@ -363,7 +378,8 @@ pieces are never serialized as one unbounded DTO.
 - applies global and per-peer connection, stream, request and bandwidth limits;
 - runs picker decisions and verification work against a registered content
   store;
-- refreshes provider announcements only while verified content is available;
+- retains provider registrations only while verified content is available;
+  renewal and withdrawal mechanics remain owned by the P2P node;
 - exposes progress, availability, peer and error diagnostics;
 - emits transport facts such as requested, received and verified bytes;
 - stops admission, cancels pending work, closes streams and flushes resume state
@@ -402,7 +418,7 @@ Examples:
 
 - Spine registers a finalized snapshot directory through a read-only adapter.
 - An inference product registers its model cache.
-- `storlane-swarmd` composes `forge_content_file_store`, chooses user-visible
+- `storlane-swarmd` composes `forge::swarm::file_store`, chooses user-visible
   paths and optionally binds the same descriptor to a durable Storlane origin.
 
 ## 12. Donor Traceability
@@ -532,20 +548,25 @@ allowing reads and writes to progress independently.
 
 1. Replace vector streaming with live Forge API streams.
 2. Add binding capability validation and full P2P/QUIC/WebSocket coverage.
-3. Complete every production phase and acceptance gate in
-   `forge-p2p-production-hardening-v1.md`; P0/P1 completion alone is
-   insufficient to resume Swarm implementation.
-4. Expose focused DHT provider discovery from `plugins.p2p.node`.
-5. Prove `find provider -> resolver -> typed duplex API` in integration tests.
+3. Complete P2P Stage 6 and fix its contracts before parallel Swarm development
+   starts alongside Stage 7. Earlier partial P2P delivery is insufficient.
+4. During Stage 7, expose validated configuration and focused DHT provider
+   discovery through `plugins.p2p.node`.
+5. Prove `find provider -> resolver -> typed duplex API` through the official
+   plugin before enabling Swarm network integration.
 
-This block is complete before Swarm defines its public peer contract.
+Blocks 2 and 3 and the transport-neutral peer contract may proceed alongside
+Stage 7 after steps 1 through 3. Network integration in Block 4 depends on steps
+4 and 5; no temporary raw-node path or product-owned discovery loop is allowed.
+Parallel Swarm work must not delay P2P Stage 7 or Stage 8 delivery.
 
 ### Block 2: descriptor and file storage
 
 1. Add canonical descriptor/file-tree values and fixtures.
 2. Add Merkle and piece-layer validation.
 3. Add the abstract content-store contract.
-4. Add `forge_content_file_store` and actual-file durability tests.
+4. Add `forge::swarm::file_store` within `forge_swarm` and actual-file durability
+   tests; do not create a separate content-storage target.
 
 ### Block 3: scheduling mechanics
 
@@ -567,6 +588,13 @@ This block is complete before Swarm defines its public peer contract.
 2. Compare bootstrap latency and origin load against current range sync.
 3. Only after that proof, integrate model caches and build `storlane-swarmd`.
 
+Stage 8 includes joint multi-process Swarm/P2P tests of interrupted transfers,
+recovery, slow peers, memory bounds and long-duration operation. They supplement
+rather than replace P2P raw-node, official-plugin and Go/Rust evidence.
+Production use requires the applicable P2P Stage 8 gates and Swarm's own gates
+below to pass independently. Stage 9 WebSocket support does not block native
+Swarm deployment and must not be inferred from native readiness.
+
 ## 14. Required Validation
 
 The feature is not production-ready after a loopback transfer. Required gates
@@ -585,7 +613,10 @@ include:
 - peer flood, oversized request, slow reader and bounded queue tests;
 - at least three real peers with downloader-to-seed promotion;
 - package consumers and `test_forge_structure` for every new target;
-- no active import from Content into DB, Chain, product or plugin namespaces.
+- no import from the Swarm library into product or plugin implementation
+  namespaces, and no reverse dependency from API Core or network substrates
+  onto Swarm; storage adapters must not introduce DB/Chain ownership into
+  deterministic Swarm mechanics.
 
 ## 15. Explicit Non-Goals For v1
 
