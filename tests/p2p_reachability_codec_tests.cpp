@@ -26,6 +26,33 @@ void check_bytes(const std::vector<std::uint8_t>& actual, const std::vector<std:
    BOOST_CHECK_EQUAL_COLLECTIONS(actual.begin(), actual.end(), expected.begin(), expected.end());
 }
 
+void append_raw_varint(std::vector<std::uint8_t>& out, std::uint64_t value) {
+   while (value >= 0x80U) {
+      out.push_back(static_cast<std::uint8_t>((value & 0x7fU) | 0x80U));
+      value >>= 7U;
+   }
+   out.push_back(static_cast<std::uint8_t>(value));
+}
+
+void append_raw_varint_field(std::vector<std::uint8_t>& out, std::uint32_t field, std::uint64_t value) {
+   append_raw_varint(out, static_cast<std::uint64_t>(field) << 3U);
+   append_raw_varint(out, value);
+}
+
+void append_raw_bytes_field(std::vector<std::uint8_t>& out, std::uint32_t field,
+                            const std::vector<std::uint8_t>& value) {
+   append_raw_varint(out, (static_cast<std::uint64_t>(field) << 3U) | 2U);
+   append_raw_varint(out, value.size());
+   out.insert(out.end(), value.begin(), value.end());
+}
+
+[[nodiscard]] std::vector<std::uint8_t> raw_frame(const std::vector<std::uint8_t>& payload) {
+   auto out = std::vector<std::uint8_t>{};
+   append_raw_varint(out, payload.size());
+   out.insert(out.end(), payload.begin(), payload.end());
+   return out;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(p2p_reachability_codec_tests)
@@ -134,6 +161,46 @@ BOOST_AUTO_TEST_CASE(autonat_codec_applies_endpoint_and_framed_message_bounds_in
    BOOST_CHECK_THROW(reachability::codec::encode_v2(v2_data, message_limit), exceptions::invalid_options);
    BOOST_CHECK_THROW(reachability::codec::decode_v2(reachability::codec::encode_v2(v2_data), message_limit),
                      exceptions::codec_error);
+}
+
+BOOST_AUTO_TEST_CASE(autonat_codec_rejects_out_of_range_raw_enum_values) {
+   auto v1_response = std::vector<std::uint8_t>{};
+   append_raw_varint_field(v1_response, 1, 1);
+   auto v1_status = std::vector<std::uint8_t>{};
+   append_raw_varint_field(v1_status, 1, 65'536);
+   const auto observed_address = std::vector<std::uint8_t>{0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x0f, 0xa1};
+   append_raw_bytes_field(v1_status, 3, observed_address);
+   append_raw_bytes_field(v1_response, 3, v1_status);
+   BOOST_CHECK_THROW(reachability::codec::decode_v1(raw_frame(v1_response)), exceptions::codec_error);
+
+   auto v2_response_status = std::vector<std::uint8_t>{};
+   append_raw_varint_field(v2_response_status, 1, 65'736);
+   auto v2_response = std::vector<std::uint8_t>{};
+   append_raw_bytes_field(v2_response, 2, v2_response_status);
+   BOOST_CHECK_THROW(reachability::codec::decode_v2(raw_frame(v2_response)), exceptions::codec_error);
+
+   auto v2_dial_status = std::vector<std::uint8_t>{};
+   append_raw_varint_field(v2_dial_status, 3, 65'736);
+   auto v2_dial = std::vector<std::uint8_t>{};
+   append_raw_bytes_field(v2_dial, 2, v2_dial_status);
+   BOOST_CHECK_THROW(reachability::codec::decode_v2(raw_frame(v2_dial)), exceptions::codec_error);
+}
+
+BOOST_AUTO_TEST_CASE(autonat_codec_rejects_out_of_range_raw_indices) {
+   constexpr auto out_of_range_index = std::uint64_t{1} << 32U;
+
+   auto v2_response_index = std::vector<std::uint8_t>{};
+   append_raw_varint_field(v2_response_index, 2, out_of_range_index);
+   auto v2_response = std::vector<std::uint8_t>{};
+   append_raw_bytes_field(v2_response, 2, v2_response_index);
+   BOOST_CHECK_THROW(reachability::codec::decode_v2(raw_frame(v2_response)), exceptions::codec_error);
+
+   auto v2_data_request = std::vector<std::uint8_t>{};
+   append_raw_varint_field(v2_data_request, 1, out_of_range_index);
+   append_raw_varint_field(v2_data_request, 2, 1);
+   auto v2_data = std::vector<std::uint8_t>{};
+   append_raw_bytes_field(v2_data, 3, v2_data_request);
+   BOOST_CHECK_THROW(reachability::codec::decode_v2(raw_frame(v2_data)), exceptions::codec_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

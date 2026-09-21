@@ -4,6 +4,7 @@ module;
 
 #include <cstdint>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -113,6 +114,22 @@ namespace {
    return out;
 }
 
+[[nodiscard]] reachability::dial_status checked_dial_status(std::uint64_t value) {
+   switch (value) {
+   case static_cast<std::uint16_t>(reachability::dial_status::ok):
+      return reachability::dial_status::ok;
+   case static_cast<std::uint16_t>(reachability::dial_status::dial_error):
+      return reachability::dial_status::dial_error;
+   case static_cast<std::uint16_t>(reachability::dial_status::dial_refused):
+      return reachability::dial_status::dial_refused;
+   case static_cast<std::uint16_t>(reachability::dial_status::bad_request):
+      return reachability::dial_status::bad_request;
+   case static_cast<std::uint16_t>(reachability::dial_status::internal_error):
+      return reachability::dial_status::internal_error;
+   }
+   FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v1 dial status");
+}
+
 [[nodiscard]] reachability::dial_response decode_dial_response(std::span<const std::uint8_t> bytes) {
    auto out = reachability::dial_response{.status = reachability::dial_status::ok};
    auto in = detail::reader{bytes};
@@ -123,7 +140,7 @@ namespace {
          if (type != detail::wire_type::varint) {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT status must be varint");
          }
-         out.status = static_cast<reachability::dial_status>(in.read_varint());
+         out.status = checked_dial_status(in.read_varint());
          break;
       case 2:
          if (type != detail::wire_type::length_delimited) {
@@ -156,23 +173,29 @@ namespace {
 }
 
 [[nodiscard]] reachability::v2::dial_status checked_v2_dial_status(std::uint64_t value) {
-   switch (static_cast<reachability::v2::dial_status>(value)) {
-   case reachability::v2::dial_status::unused:
-   case reachability::v2::dial_status::dial_error:
-   case reachability::v2::dial_status::dial_back_error:
-   case reachability::v2::dial_status::ok:
-      return static_cast<reachability::v2::dial_status>(value);
+   switch (value) {
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::unused):
+      return reachability::v2::dial_status::unused;
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::dial_error):
+      return reachability::v2::dial_status::dial_error;
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::dial_back_error):
+      return reachability::v2::dial_status::dial_back_error;
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::ok):
+      return reachability::v2::dial_status::ok;
    }
    FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v2 dial status");
 }
 
 [[nodiscard]] reachability::v2::response_status checked_v2_response_status(std::uint64_t value) {
-   switch (static_cast<reachability::v2::response_status>(value)) {
-   case reachability::v2::response_status::internal_error:
-   case reachability::v2::response_status::request_rejected:
-   case reachability::v2::response_status::dial_refused:
-   case reachability::v2::response_status::ok:
-      return static_cast<reachability::v2::response_status>(value);
+   switch (value) {
+   case static_cast<std::uint16_t>(reachability::v2::response_status::internal_error):
+      return reachability::v2::response_status::internal_error;
+   case static_cast<std::uint16_t>(reachability::v2::response_status::request_rejected):
+      return reachability::v2::response_status::request_rejected;
+   case static_cast<std::uint16_t>(reachability::v2::response_status::dial_refused):
+      return reachability::v2::response_status::dial_refused;
+   case static_cast<std::uint16_t>(reachability::v2::response_status::ok):
+      return reachability::v2::response_status::ok;
    }
    FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v2 response status");
 }
@@ -182,6 +205,13 @@ namespace {
       return reachability::v2::dial_back_status::ok;
    }
    FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v2 dial-back status");
+}
+
+[[nodiscard]] std::uint32_t checked_v2_index(std::uint64_t value) {
+   if (value > std::numeric_limits<std::uint32_t>::max()) {
+      FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 address index exceeds uint32 range");
+   }
+   return static_cast<std::uint32_t>(value);
 }
 
 [[nodiscard]] reachability::v2::dial_request decode_v2_dial_request(std::span<const std::uint8_t> bytes,
@@ -246,7 +276,7 @@ namespace {
          if (type != detail::wire_type::varint) {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 response address index must be varint");
          }
-         out.index = static_cast<std::uint32_t>(in.read_varint());
+         out.index = checked_v2_index(in.read_varint());
          break;
       case 3:
          if (type != detail::wire_type::varint) {
@@ -286,7 +316,7 @@ namespace {
          continue;
       }
       if (field == 1) {
-         out.index = static_cast<std::uint32_t>(in.read_varint());
+         out.index = checked_v2_index(in.read_varint());
       } else if (field == 2) {
          out.bytes = in.read_varint();
       } else {

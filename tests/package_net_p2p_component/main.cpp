@@ -5,7 +5,6 @@
 #include <utility>
 #include <boost/asio/awaitable.hpp>
 
-import forge.chrono.iso8601;
 import forge.chrono.timestamp;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
@@ -62,8 +61,10 @@ static_assert(requires(forge::net::p2p::node& node, forge::multiformats::multiad
 });
 
 int main() {
-   const auto eol = forge::chrono::iso8601::parse_rfc3339_timestamp("9999-12-31T23:59:59.999999999Z");
-   if (forge::chrono::iso8601::format_rfc3339(eol) != "9999-12-31T23:59:59.999999999Z") {
+   const auto whole_seconds = std::chrono::sys_seconds{std::chrono::sys_days{
+       std::chrono::year{9999} / std::chrono::December / 31}};
+   const auto eol = forge::chrono::timestamp{whole_seconds, std::chrono::nanoseconds{999'999'999}};
+   if (eol.whole_seconds() != whole_seconds || eol.subsecond() != std::chrono::nanoseconds{999'999'999}) {
       return 1;
    }
    const auto id = forge::net::p2p::peer_id{};
