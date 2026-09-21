@@ -25,6 +25,7 @@ struct endpoint {
    protocol_kind protocol = protocol_kind::quic_v1;
    std::string host;
    std::uint16_t port = 0;
+   std::string zone;
 
    [[nodiscard]] std::string authority() const;
 };

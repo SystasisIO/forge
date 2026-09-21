@@ -2395,6 +2395,42 @@ BOOST_AUTO_TEST_CASE(p2p_endpoint_parses_libp2p_quic_address_format) {
    BOOST_TEST(parsed.is_direct_quic());
 }
 
+BOOST_AUTO_TEST_CASE(p2p_endpoint_roundtrips_scoped_ipv6_and_rejects_misplaced_zones) {
+   const auto first = parse_endpoint("/ip6zone/en0/ip6/fe80::1/tcp/4001");
+   const auto second = parse_endpoint("/ip6zone/en1/ip6/fe80::1/tcp/4001");
+
+   BOOST_TEST(static_cast<int>(first.transport.host_type) == static_cast<int>(endpoint::host_kind::ip6));
+   BOOST_TEST(first.transport.host == "fe80::1");
+   BOOST_TEST(first.transport.zone == "en0");
+   BOOST_TEST(first.transport.authority() == "[fe80::1%en0]:4001");
+   BOOST_TEST(first.to_string() == "/ip6zone/en0/ip6/fe80::1/tcp/4001");
+   BOOST_TEST(first.to_multiaddr().to_bytes() ==
+              forge::multiformats::multiaddr::parse("/ip6zone/en0/ip6/fe80::1/tcp/4001").to_bytes(),
+              boost::test_tools::per_element());
+   BOOST_TEST(first.to_string() != second.to_string());
+
+   const auto quic = parse_endpoint("/ip6zone/en0/ip6/fe80::1/udp/4001/quic-v1");
+   BOOST_TEST(quic.is_direct_quic());
+   BOOST_TEST(quic.transport.zone == "en0");
+   BOOST_TEST(quic.to_string() == "/ip6zone/en0/ip6/fe80::1/udp/4001/quic-v1");
+
+   const auto expected = peer(44).to_bytes();
+   BOOST_TEST(direct::detail::quic_client_token_cache::make_key(expected, "ip6", "fe80::1", "en0", 4001) !=
+              direct::detail::quic_client_token_cache::make_key(expected, "ip6", "fe80::1", "en1", 4001));
+
+   BOOST_CHECK_THROW((void)parse_endpoint("/ip6zone/en0/ip6zone/en1/ip6/fe80::1/tcp/4001"),
+                     exceptions::invalid_options);
+   BOOST_CHECK_THROW((void)parse_endpoint("/ip6/fe80::1/ip6zone/en0/tcp/4001"), exceptions::invalid_options);
+   BOOST_CHECK_THROW((void)parse_endpoint("/ip6zone/en0/ip4/192.0.2.1/tcp/4001"), exceptions::invalid_options);
+
+   const auto invalid = endpoint{.transport = {.host_type = endpoint::host_kind::ip4,
+                                                .protocol = endpoint::protocol_kind::tcp,
+                                                .host = "192.0.2.1",
+                                                .port = 4001,
+                                                .zone = "en0"}};
+   BOOST_CHECK_THROW((void)invalid.to_multiaddr(), exceptions::invalid_options);
+}
+
 BOOST_AUTO_TEST_CASE(p2p_endpoint_uses_multiaddr_for_tcp_wss_and_relay_views) {
    const auto id = peer(43);
 

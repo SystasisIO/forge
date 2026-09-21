@@ -91,7 +91,7 @@ make_quic_client_options(const forge::net::p2p::endpoint& endpoint, std::optiona
 
    const auto peer = expected->to_bytes();
    const auto key = quic_client_token_cache::make_key(peer, host_kind_name(endpoint.transport.host_type),
-                                                      endpoint.transport.host, endpoint.transport.port);
+                                                      endpoint.transport.host, endpoint.transport.zone, endpoint.transport.port);
    const auto cache = std::weak_ptr<quic_client_token_cache>{client_tokens};
    out.client_tokens = forge::net::quic::client_token_callbacks{
        .take =
