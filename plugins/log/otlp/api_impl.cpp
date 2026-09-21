@@ -8,6 +8,7 @@ module;
 module forge.plugins.log.otlp.plugin;
 
 import forge.asio.runtime;
+import forge.crypto.core.secret_bytes;
 import forge.log.logger;
 import forge.otlp.crash;
 import forge.otlp.log_exporter;

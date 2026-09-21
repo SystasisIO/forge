@@ -229,6 +229,10 @@ std::optional<std::uint32_t> require_method_request(std::string_view api, std::s
          require_request_within_limits(request, limits);
          return request.limit;
       }
+      if (method == "get_producer_rewards") {
+         require_request_within_limits(unpack_request<protocol::producer_rewards_request>(payload, limits), limits);
+         return 1U;
+      }
    } else if (api == "forge.chain.api.state") {
       if (method == "get_account") {
          require_request_within_limits(unpack_request<protocol::account_request>(payload, limits), limits);
@@ -327,6 +331,10 @@ void require_method_response(std::string_view api, std::string_view method, bool
          const auto response = unpack_response<protocol::producers_response>(payload, limits);
          require_nonempty_next(response.next);
          require_items(response.rows.size(), *requested_items, limits, "rows");
+      } else if (method == "get_producer_rewards") {
+         const auto response = unpack_response<protocol::producer_rewards_response>(payload, limits);
+         require_items(response.system.rows.size(), *requested_items, limits, "eosio.system rows");
+         require_items(response.bpay.rows.size(), *requested_items, limits, "eosio.bpay rows");
       }
    } else if (api == "forge.chain.api.state") {
       if (method == "get_table_changes") {
@@ -393,6 +401,14 @@ void require_request_within_limits(const protocol::producers_request& value, con
    require_page(value.limit, limits.max_page_size, "limit", true);
    if (value.cursor && value.cursor->empty()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_request, "producer cursor must not be empty");
+   }
+}
+
+void require_request_within_limits(const protocol::producer_rewards_request& value,
+                                   const protocol::service_limits& limits) {
+   require_packed_request(value, limits);
+   if (!static_cast<bool>(value.producer)) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_request, "producer rewards require a producer account");
    }
 }
 
@@ -582,6 +598,13 @@ void require_response_within_limits(const protocol::producers_response& response
    require_response_within_limits(response, limits);
    require_nonempty_next(response.next);
    require_items(response.rows.size(), request.limit, limits, "rows");
+}
+
+void require_response_within_limits(const protocol::producer_rewards_response& response,
+                                    const protocol::producer_rewards_request&, const protocol::service_limits& limits) {
+   require_response_within_limits(response, limits);
+   require_items(response.system.rows.size(), 1U, limits, "eosio.system rows");
+   require_items(response.bpay.rows.size(), 1U, limits, "eosio.bpay rows");
 }
 
 void require_response_within_limits(const protocol::account_changes_response& response,

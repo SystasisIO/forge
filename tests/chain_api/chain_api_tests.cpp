@@ -48,6 +48,7 @@ import forge.asio.runtime;
 import forge.chain.api.admin;
 import forge.chain.api.authenticated_audit_verifier;
 import forge.chain.api.block;
+import forge.chain.api.contract_table_projection_verifier;
 import forge.chain.api.exceptions;
 import forge.chain.api.finality;
 import forge.chain.api.info;
@@ -62,6 +63,8 @@ import forge.chain.api.verified_client;
 import forge.chain.core.merkle;
 import forge.chain.protocol.audit;
 import forge.chain.protocol.account_authority;
+import forge.chain.protocol.contract_commitment;
+import forge.chain.protocol.producer_rewards;
 import forge.codec.hex;
 import forge.codec.json;
 import forge.crypto.asymmetric;
@@ -183,6 +186,11 @@ class block_service final : public forge::chain::api::block {
       co_return forge::chain::protocol::producers_response{};
    }
 
+   boost::asio::awaitable<forge::chain::protocol::producer_rewards_response>
+   get_producer_rewards(forge::chain::protocol::producer_rewards_request) override {
+      co_return rewards_response;
+   }
+
    boost::asio::awaitable<forge::chain::protocol::producer_schedule_response>
    get_producer_schedule(forge::chain::protocol::anchored_request) override {
       co_return forge::chain::protocol::producer_schedule_response{};
@@ -194,6 +202,7 @@ class block_service final : public forge::chain::api::block {
    }
 
    bool throw_producers_not_found = false;
+   forge::chain::protocol::producer_rewards_response rewards_response;
 
  private:
    forge::chain::protocol::block_response response_;
@@ -626,6 +635,9 @@ class accepting_audit_verifier final : public forge::chain::api::audit_verifier 
                                                                    const forge::chain::api::authenticated_range_query&,
                                                                    const forge::chain::protocol::proof_blob&) override {
       ++state_range_verifications;
+      if (!state_ranges.empty()) {
+         return state_ranges.at(state_range_verifications - 1U);
+      }
       return range_result;
    }
    forge::chain::api::authenticated_change_range
@@ -671,6 +683,7 @@ class accepting_audit_verifier final : public forge::chain::api::audit_verifier 
    std::size_t ancestry_verifications = 0;
    std::optional<forge::chain::protocol::bytes> point_value;
    forge::chain::api::authenticated_state_range range_result;
+   std::vector<forge::chain::api::authenticated_state_range> state_ranges;
    std::optional<forge::chain::api::authenticated_change_range> state_change_result;
    std::optional<std::vector<std::pair<std::uint32_t, std::string>>> expected_state_change_proofs;
    std::optional<forge::chain::protocol::state_anchor> ancestry_finalized;
@@ -1351,7 +1364,7 @@ BOOST_AUTO_TEST_CASE(chain_http_uses_resource_verbs) {
    require_routes(blocks, method::get,
                   {"get_block", "get_header", "get_block_state", "get_canonical_range",
                    "get_activated_protocol_features", "get_consensus_parameters", "get_producers",
-                   "get_producer_schedule", "get_finalizer_info"});
+                   "get_producer_rewards", "get_producer_schedule", "get_finalizer_info"});
    require_routes(state, method::get,
                   {"get_account", "get_code", "get_permission_links", "get_table_rows", "get_table_scope",
                    "get_currency_balance", "get_currency_stats", "get_scheduled_transactions"});
@@ -1361,9 +1374,9 @@ BOOST_AUTO_TEST_CASE(chain_http_uses_resource_verbs) {
                   {"get_required_keys", "compute_transaction", "send_read_only_transaction"});
    require_routes(submissions, method::post, {"submit", "submit_batch"});
    require_routes(admin, method::get,
-                  {"producer_status", "get_operator_identity", "get_node_status", "supported_protocol_features",
-                   "account_ram_corrections", "unapplied_transactions", "snapshot_status", "snapshot_requests",
-                   "integrity_hash"});
+                  {"producer_status", "get_finalizer_status", "get_operator_identity", "get_node_status",
+                   "supported_protocol_features", "account_ram_corrections", "unapplied_transactions",
+                   "snapshot_status", "snapshot_requests", "integrity_hash"});
    require_routes(admin, method::post,
                   {"push_block", "create_snapshot", "request_snapshot", "prune", "schedule_snapshot"});
    require_routes(admin, method::put, {"configure_pause", "set_access_policy", "schedule_protocol_features"});
@@ -1381,13 +1394,13 @@ BOOST_AUTO_TEST_CASE(chain_block_info_admin_contracts_are_version_2) {
    const auto info = forge::chain::api::info::describe();
    const auto admin = forge::chain::api::admin::describe();
    BOOST_TEST(block.version.major == 2U);
-   BOOST_TEST(block.version.revision == 1U);
+   BOOST_TEST(block.version.revision == 2U);
    BOOST_TEST(info.version.major == 2U);
    BOOST_TEST(info.version.revision == 0U);
    BOOST_TEST(admin.version.major == 2U);
-   BOOST_TEST(admin.version.revision == 3U);
+   BOOST_TEST(admin.version.revision == 4U);
    BOOST_TEST(forge::chain::api::block::ref().major == 2U);
-   BOOST_TEST(forge::chain::api::block::ref().min_revision == 1U);
+   BOOST_TEST(forge::chain::api::block::ref().min_revision == 2U);
    BOOST_TEST(forge::chain::api::info::ref().major == 2U);
    BOOST_TEST(forge::chain::api::admin::ref().major == 2U);
 }
@@ -1420,7 +1433,7 @@ BOOST_AUTO_TEST_CASE(chain_snapshot_lifecycle_descriptor_and_codecs_are_revision
    BOOST_REQUIRE(create != nullptr);
    BOOST_REQUIRE(request_method != nullptr);
    BOOST_REQUIRE(status != nullptr);
-   BOOST_TEST(descriptor.version.revision == 3U);
+   BOOST_TEST(descriptor.version.revision == 4U);
    BOOST_TEST(request_method->since_revision == 2U);
    BOOST_TEST(status->since_revision == 2U);
    BOOST_CHECK(create->response_type == std::type_index{typeid(forge::chain::protocol::snapshot_response)});
@@ -1475,7 +1488,7 @@ BOOST_AUTO_TEST_CASE(chain_block_descriptor_declares_not_found_only_for_entity_l
    const auto descriptor = forge::chain::api::block::describe();
    const auto not_found = forge::api::core::exception_identity<forge::chain::api::exceptions::not_found>();
 
-   for (const auto name : {"get_block", "get_header", "get_block_state", "get_producers"}) {
+   for (const auto name : {"get_block", "get_header", "get_block_state", "get_producers", "get_producer_rewards"}) {
       const auto* method = forge::api::core::find_method(descriptor, name);
       BOOST_REQUIRE(method != nullptr);
       BOOST_CHECK(std::ranges::find(method->errors, not_found, &forge::api::core::error_descriptor::identity) !=
@@ -1488,6 +1501,212 @@ BOOST_AUTO_TEST_CASE(chain_block_descriptor_declares_not_found_only_for_entity_l
       BOOST_CHECK(std::ranges::find(method->errors, not_found, &forge::api::core::error_descriptor::identity) ==
                   method->errors.end());
    }
+}
+
+BOOST_AUTO_TEST_CASE(chain_producer_rewards_verify_one_finalized_anchor_and_canonical_table_sources) {
+   namespace protocol = forge::chain::protocol;
+   namespace api = forge::chain::api;
+
+   const auto producer = protocol::account_name{"alice"};
+   const auto core_symbol = protocol::symbol_code{"SYS"};
+   const auto anchor_header = protocol::block_header{
+       .timestamp = protocol::block_timestamp{2'000U},
+       .producer = protocol::account_name{"eosio"},
+   };
+   const auto anchor = protocol::state_anchor{
+       .block = protocol::calculate_block_id(anchor_header),
+       .block_num = protocol::calculate_block_num(anchor_header),
+   };
+   const auto context = protocol::response_context{
+       .chain = anchor.chain,
+       .head = anchor.block,
+       .finalized = anchor.block,
+       .anchor = anchor,
+   };
+   const auto producer_row = protocol::producer_info{
+       .owner = producer,
+       .is_active = true,
+       .unpaid_blocks = 17U,
+       .last_claim_time = protocol::time_point{protocol::microseconds{100U}},
+   };
+   const auto claimable = protocol::asset{55'000, protocol::symbol{core_symbol, 4U}};
+   const auto reward_row = protocol::bpay_reward{.owner = producer, .quantity = claimable};
+   const auto stored_producer = protocol::primary_value{
+       .payer = protocol::account_name{"eosio"},
+       .row = forge::raw::pack(producer_row),
+   };
+   const auto stored_reward = protocol::primary_value{
+       .payer = protocol::account_name{"eosio.bpay"},
+       .row = forge::raw::pack(reward_row),
+   };
+   const auto source_response = [&](const protocol::primary_value& stored, std::string scheme) {
+      auto response = protocol::table_rows_response{};
+      response.context = context;
+      response.audit = protocol::audit_bundle{
+          .state = {protocol::proof_blob{.scheme = std::move(scheme)}},
+      };
+      response.rows = {{.value = stored.row, .payer = stored.payer}};
+      return response;
+   };
+   const auto to_bytes = [](const protocol::commitment_bytes& value) {
+      auto result = protocol::bytes{};
+      result.reserve(value.size());
+      for (const auto byte : value) {
+         result.push_back(std::to_integer<std::uint8_t>(byte));
+      }
+      return result;
+   };
+   const auto source_range = [&](protocol::contract_table_location location, std::uint64_t primary,
+                                 const protocol::primary_value& stored) {
+      return api::authenticated_state_range{
+          .rows = {{
+              .key =
+                  to_bytes(protocol::contract_primary_key(location, protocol::contract_table_family::primary, primary)),
+              .value = forge::raw::pack(stored),
+          }},
+      };
+   };
+   const auto producer_location = protocol::contract_table_location{
+       .code = protocol::account_name{"eosio"}.value,
+       .scope = protocol::name{"eosio"}.value,
+       .table = protocol::table_name{"producers"}.value,
+   };
+   const auto bpay_location = protocol::contract_table_location{
+       .code = protocol::account_name{"eosio.bpay"}.value,
+       .scope = protocol::name{"eosio.bpay"}.value,
+       .table = protocol::table_name{"rewards"}.value,
+   };
+   const auto request = protocol::producer_rewards_request{
+       .producer = producer,
+       .anchor = anchor.block,
+       .audit = protocol::audit_mode::required,
+   };
+   const auto reward = protocol::project_producer_reward(producer_row, std::optional{reward_row},
+                                                         anchor_header.timestamp.to_time_point());
+   BOOST_REQUIRE(reward.has_value());
+   auto response = protocol::producer_rewards_response{};
+   response.context = context;
+   response.audit = protocol::audit_bundle{
+       .finality = protocol::proof_blob{.scheme = "test.finality"},
+   };
+   response.anchor_header = anchor_header;
+   response.reward = *reward;
+   response.system = source_response(stored_producer, "test.system");
+   response.bpay = source_response(stored_reward, "test.bpay");
+
+   auto service = std::make_shared<block_service>(protocol::block_response{});
+   service->rewards_response = response;
+   auto registry = forge::api::core::registry{};
+   registry.install<api::block>(api::block::describe(), service);
+   auto verifier = std::make_shared<accepting_audit_verifier>();
+   verifier->preferred_anchor = anchor.block;
+   verifier->state_ranges = {
+       source_range(producer_location, producer.value, stored_producer),
+       source_range(bpay_location, producer.value, stored_reward),
+   };
+   auto client = api::verified_client{
+       api::raw_client{api::service_handles{.blocks = registry.get<api::block>(api::block::ref())}}, verifier,
+       api::make_contract_table_projection_verifier()};
+
+   BOOST_CHECK(run(client.get_producer_rewards(request)) == response);
+   BOOST_CHECK_EQUAL(verifier->state_range_verifications, 2U);
+
+   auto claimed = response;
+   claimed.reward.bpay.claimable.reset();
+   claimed.bpay.rows.clear();
+   service->rewards_response = claimed;
+   verifier->state_range_verifications = 0U;
+   verifier->state_ranges = {
+       source_range(producer_location, producer.value, stored_producer),
+       api::authenticated_state_range{},
+   };
+   BOOST_CHECK(run(client.get_producer_rewards(request)) == claimed);
+
+   service->rewards_response = response;
+   ++service->rewards_response.reward.bpay.claimable->amount;
+   verifier->state_range_verifications = 0U;
+   verifier->state_ranges = {
+       source_range(producer_location, producer.value, stored_producer),
+       source_range(bpay_location, producer.value, stored_reward),
+   };
+   BOOST_CHECK_THROW(run(client.get_producer_rewards(request)), api::exceptions::invalid_state_proof);
+
+   service->rewards_response = response;
+   service->rewards_response.reward.system.contract = protocol::account_name{"eosio.bpay"};
+   verifier->state_range_verifications = 0U;
+   verifier->state_ranges = {
+       source_range(producer_location, producer.value, stored_producer),
+       source_range(bpay_location, producer.value, stored_reward),
+   };
+   BOOST_CHECK_THROW(run(client.get_producer_rewards(request)), api::exceptions::invalid_state_proof);
+
+   service->rewards_response = response;
+   service->rewards_response.reward.bpay.contract = protocol::account_name{"eosio"};
+   verifier->state_range_verifications = 0U;
+   verifier->state_ranges = {
+       source_range(producer_location, producer.value, stored_producer),
+       source_range(bpay_location, producer.value, stored_reward),
+   };
+   BOOST_CHECK_THROW(run(client.get_producer_rewards(request)), api::exceptions::invalid_state_proof);
+
+   service->rewards_response = response;
+   ++service->rewards_response.anchor_header.timestamp.slot;
+   BOOST_CHECK_THROW(run(client.get_producer_rewards(request)), api::exceptions::invalid_state_proof);
+
+   const auto malformed_reward = protocol::bpay_reward{
+       .owner = protocol::account_name{"bob"},
+       .quantity = claimable,
+   };
+   const auto stored_malformed_reward = protocol::primary_value{
+       .payer = protocol::account_name{"eosio.bpay"},
+       .row = forge::raw::pack(malformed_reward),
+   };
+   service->rewards_response = response;
+   service->rewards_response.bpay = source_response(stored_malformed_reward, "test.bpay");
+   verifier->state_range_verifications = 0U;
+   verifier->state_ranges = {
+       source_range(producer_location, producer.value, stored_producer),
+       source_range(bpay_location, producer.value, stored_malformed_reward),
+   };
+   BOOST_CHECK_THROW(run(client.get_producer_rewards(request)), api::exceptions::invalid_state_proof);
+}
+
+BOOST_AUTO_TEST_CASE(chain_producer_reward_projection_preserves_bpay_absence_and_rejects_malformed_rows) {
+   namespace protocol = forge::chain::protocol;
+
+   const auto producer = protocol::producer_info{
+       .owner = protocol::account_name{"alice"},
+       .is_active = true,
+       .unpaid_blocks = 17U,
+       .last_claim_time = protocol::time_point{protocol::microseconds{100U}},
+   };
+   const auto anchor_time = protocol::time_point{protocol::days(1) + protocol::microseconds{101U}};
+   const auto absent = protocol::project_producer_reward(producer, std::nullopt, anchor_time);
+   BOOST_REQUIRE(absent.has_value());
+   BOOST_CHECK(absent->system.eligible);
+   BOOST_CHECK(absent->system.active);
+   BOOST_CHECK(absent->system.next_claim_time == anchor_time);
+   BOOST_CHECK(absent->system.contract == protocol::account_name{"eosio"});
+   BOOST_CHECK(absent->system.claim_action == protocol::action_name{"claimrewards"});
+   BOOST_CHECK(!absent->bpay.claimable.has_value());
+   BOOST_CHECK(absent->bpay.contract == protocol::account_name{"eosio.bpay"});
+   BOOST_CHECK(absent->bpay.claim_action == protocol::action_name{"claimrewards"});
+
+   const auto wrong_owner = protocol::bpay_reward{
+       .owner = protocol::account_name{"bob"},
+       .quantity = protocol::asset{1, protocol::make_symbol("SYS", 4U)},
+   };
+   BOOST_CHECK(!protocol::project_producer_reward(producer, wrong_owner, anchor_time).has_value());
+
+   const auto invalid_quantity = protocol::bpay_reward{
+       .owner = producer.owner,
+       .quantity = protocol::asset{1},
+   };
+   BOOST_CHECK(!protocol::project_producer_reward(producer, invalid_quantity, anchor_time).has_value());
+
+   auto overflow = producer;
+   overflow.last_claim_time = protocol::time_point{protocol::microseconds{std::numeric_limits<std::int64_t>::max()}};
+   BOOST_CHECK(!protocol::project_producer_reward(overflow, std::nullopt, anchor_time).has_value());
 }
 
 BOOST_AUTO_TEST_CASE(chain_producers_http_roundtrip_preserves_typed_not_found) {
@@ -2235,6 +2454,7 @@ BOOST_AUTO_TEST_CASE(chain_admin_declares_mutation_errors_only_for_mutating_meth
    const auto identity = forge::api::core::exception_identity<forge::chain::api::exceptions::conflict>();
    const auto* push = forge::api::core::find_method(descriptor, "push_block");
    const auto* status = forge::api::core::find_method(descriptor, "producer_status");
+   const auto* finalizer = forge::api::core::find_method(descriptor, "get_finalizer_status");
    const auto* operator_identity = forge::api::core::find_method(descriptor, "get_operator_identity");
    const auto* node_status = forge::api::core::find_method(descriptor, "get_node_status");
    const auto* snapshot_status = forge::api::core::find_method(descriptor, "snapshot_status");
@@ -2243,6 +2463,7 @@ BOOST_AUTO_TEST_CASE(chain_admin_declares_mutation_errors_only_for_mutating_meth
    const auto snapshot_lost = forge::api::core::exception_identity<forge::chain::api::exceptions::snapshot_lost>();
    BOOST_REQUIRE(push != nullptr);
    BOOST_REQUIRE(status != nullptr);
+   BOOST_REQUIRE(finalizer != nullptr);
    BOOST_REQUIRE(operator_identity != nullptr);
    BOOST_REQUIRE(node_status != nullptr);
    BOOST_REQUIRE(snapshot_status != nullptr);
@@ -2251,6 +2472,8 @@ BOOST_AUTO_TEST_CASE(chain_admin_declares_mutation_errors_only_for_mutating_meth
                push->errors.end());
    BOOST_CHECK(std::ranges::find(status->errors, identity, &forge::api::core::error_descriptor::identity) ==
                status->errors.end());
+   BOOST_CHECK(std::ranges::find(finalizer->errors, identity, &forge::api::core::error_descriptor::identity) ==
+               finalizer->errors.end());
    BOOST_CHECK(std::ranges::find(operator_identity->errors, identity, &forge::api::core::error_descriptor::identity) ==
                operator_identity->errors.end());
    BOOST_CHECK(std::ranges::find(node_status->errors, identity, &forge::api::core::error_descriptor::identity) ==
@@ -2269,6 +2492,7 @@ BOOST_AUTO_TEST_CASE(chain_admin_declares_mutation_errors_only_for_mutating_meth
    }
    BOOST_TEST(operator_identity->since_revision == 1U);
    BOOST_TEST(node_status->since_revision == 1U);
+   BOOST_TEST(finalizer->since_revision == 4U);
 }
 
 BOOST_AUTO_TEST_CASE(chain_http_omits_an_unspecified_anchor) {

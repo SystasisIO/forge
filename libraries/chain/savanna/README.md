@@ -135,6 +135,16 @@ bytes never supply a checkpoint as trust material. Use
 `advance_finality_trust_with_replay()` when the verified replay anchors are
 also needed for an ancestry-aware trust promotion.
 
+`finality_replay::producer_opportunities` records every expected timestamp
+slot between replayed headers. Each value is selected from the replayed proposer
+policy at that slot; skipped slots carry no `produced_block`, while the produced
+slot carries its block identity and number. This makes missed slots observable
+without treating a produced block as a schedule opportunity. Policy transitions
+use the same canonical selection as admission. Materialization is bounded by
+`finality_witness_limits::max_producer_slots`. The Savanna schedule-version
+sentinel (`1 << 31`) remains a header-format marker; it is never compared with
+a producer-policy schedule version.
+
 `append()` is `O(log N)` and does not replay the retained range. Full replay is
 performed by explicit `validate()` and by Raw decoding. The Raw v1 layout is:
 

@@ -1577,6 +1577,123 @@ BOOST_AUTO_TEST_CASE(portable_savanna_pure_advance_derives_checkpoint_and_reject
                      savanna::exceptions::invalid_header);
 }
 
+BOOST_AUTO_TEST_CASE(portable_savanna_replay_reports_skipped_slot_policy_opportunities_and_rejects_wrong_producer) {
+   const auto eosio = make_producer_key(19U);
+   const auto alice = make_producer_key(31U);
+   const auto finalizer = make_finalizer(29U);
+   const auto configuration = make_genesis(eosio, finalizer);
+   const auto commitment = savanna::state_commitment{
+       .state_root = make_digest(11U),
+       .state_size = 1U,
+       .change_root = make_digest(12U),
+       .change_count = 1U,
+   };
+   const auto genesis = savanna::make_genesis_candidate(configuration, commitment);
+   const auto chain = savanna::calculate_chain_id(configuration);
+   const auto policy = savanna::proposer_policy_diff{
+       .version = 1U,
+       .proposal_time = savanna::block_timestamp{13U},
+       .producers =
+           {
+               .remove_indexes = {0U},
+               .insert_indexes = {{
+                   0U,
+                   {
+                       .producer_name = protocol::account_name{"alice"},
+                       .authority =
+                           protocol::block_signing_authority_v0{
+                               .threshold = 1U,
+                               .keys = {{.key = public_key(alice), .weight = 1U}},
+                           },
+                   },
+               }},
+           },
+   };
+
+   auto first_block = make_child(genesis.value, eosio, savanna::state_commitment{});
+   first_block.header_extensions.front().second = forge::raw::pack(
+       savanna::finality_extension{.claim = genesis.value.state.finality.latest_qc_claim(), .proposers = policy});
+   first_block.producer_signature = sign(eosio, protocol::calculate_block_id(first_block));
+   const auto first_receipt = make_digest(13U);
+   const auto first = admit_with_receipt(genesis.value, first_block, first_receipt);
+
+   auto second_block = make_child(first, eosio, savanna::state_commitment{}, make_current_qc(first, finalizer));
+   second_block.timestamp = savanna::block_timestamp{24U};
+   second_block.producer_signature = sign(eosio, protocol::calculate_block_id(second_block));
+   const auto second_receipt = make_digest(14U);
+   const auto second = admit_with_receipt(first, second_block, second_receipt);
+
+   const auto third_timestamp = savanna::block_timestamp{36U};
+   BOOST_CHECK(savanna::scheduled_producer(second.state, third_timestamp).producer_name ==
+               protocol::account_name{"eosio"});
+   auto third_block = make_child(second, eosio, savanna::state_commitment{}, make_current_qc(second, finalizer));
+   third_block.timestamp = third_timestamp;
+   third_block.producer_signature = sign(eosio, protocol::calculate_block_id(third_block));
+   const auto third_receipt = make_digest(15U);
+   const auto third = admit_with_receipt(second, third_block, third_receipt);
+
+   const auto fourth_timestamp = savanna::block_timestamp{48U};
+   BOOST_CHECK(savanna::scheduled_producer(third.state, fourth_timestamp).producer_name ==
+               protocol::account_name{"alice"});
+   auto fourth_block = make_child(third, alice, savanna::state_commitment{}, make_current_qc(third, finalizer));
+   fourth_block.timestamp = fourth_timestamp;
+   fourth_block.producer = protocol::account_name{"alice"};
+   fourth_block.producer_signature = sign(alice, protocol::calculate_block_id(fourth_block));
+   const auto fourth_receipt = make_digest(16U);
+   static_cast<void>(admit_with_receipt(third, fourth_block, fourth_receipt));
+
+   const auto witness = savanna::make_finality_witness(
+       chain, genesis.value.id,
+       std::array{make_record(first_block, first_receipt), make_record(second_block, second_receipt),
+                  make_record(third_block, third_receipt), make_record(fourth_block, fourth_receipt)});
+   const auto trust = savanna::finality_genesis_bootstrap{.configuration = configuration, .commitment = commitment};
+   const auto replay = savanna::replay_finality_witness(trust, witness);
+   BOOST_REQUIRE_EQUAL(replay.producer_opportunities.size(), fourth_timestamp.slot - genesis.value.timestamp.slot);
+   for (auto position = std::size_t{1U}; position < replay.producer_opportunities.size(); ++position) {
+      BOOST_TEST(replay.producer_opportunities[position].timestamp.slot ==
+                 replay.producer_opportunities[position - 1U].timestamp.slot + 1U);
+   }
+   BOOST_CHECK(replay.producer_opportunities[0].expected_producer == protocol::account_name{"eosio"});
+   BOOST_REQUIRE(replay.producer_opportunities[0].produced_block.has_value());
+   BOOST_REQUIRE(replay.producer_opportunities[0].produced_block_num.has_value());
+   BOOST_TEST(*replay.producer_opportunities[0].produced_block == first.id);
+   BOOST_TEST(*replay.producer_opportunities[0].produced_block_num == first.num);
+   BOOST_TEST(replay.producer_opportunities[1].timestamp.slot == first_block.timestamp.slot + 1U);
+   BOOST_CHECK(replay.producer_opportunities[1].expected_producer == protocol::account_name{"eosio"});
+   BOOST_TEST(!replay.producer_opportunities[1].produced_block.has_value());
+   BOOST_TEST(!replay.producer_opportunities[1].produced_block_num.has_value());
+   BOOST_TEST(replay.producer_opportunities[11].timestamp.slot == second_block.timestamp.slot);
+   BOOST_REQUIRE(replay.producer_opportunities[11].produced_block.has_value());
+   BOOST_TEST(*replay.producer_opportunities[11].produced_block == second.id);
+   BOOST_TEST(replay.producer_opportunities[12].timestamp.slot == second_block.timestamp.slot + 1U);
+   BOOST_CHECK(replay.producer_opportunities[12].expected_producer == protocol::account_name{"eosio"});
+   BOOST_TEST(!replay.producer_opportunities[12].produced_block.has_value());
+   BOOST_TEST(replay.producer_opportunities[23].timestamp.slot == third_block.timestamp.slot);
+   BOOST_REQUIRE(replay.producer_opportunities[23].produced_block.has_value());
+   BOOST_TEST(*replay.producer_opportunities[23].produced_block == third.id);
+   BOOST_TEST(replay.producer_opportunities[24].timestamp.slot == third_block.timestamp.slot + 1U);
+   BOOST_CHECK(replay.producer_opportunities[24].expected_producer == protocol::account_name{"eosio"});
+   BOOST_TEST(!replay.producer_opportunities[24].produced_block.has_value());
+   BOOST_TEST(replay.producer_opportunities.back().timestamp.slot == fourth_timestamp.slot);
+   BOOST_CHECK(replay.producer_opportunities.back().expected_producer == protocol::account_name{"alice"});
+   BOOST_REQUIRE(replay.producer_opportunities.back().produced_block.has_value());
+   BOOST_TEST(*replay.producer_opportunities.back().produced_block == protocol::calculate_block_id(fourth_block));
+   BOOST_TEST(std::count_if(replay.producer_opportunities.begin(), replay.producer_opportunities.end(),
+                            [](const auto& value) { return value.produced_block.has_value(); }) == 4U);
+   BOOST_CHECK_THROW(static_cast<void>(savanna::replay_finality_witness(
+                         trust, witness, savanna::finality_witness_limits{.max_producer_slots = 35U})),
+                     savanna::exceptions::finality_witness_limit_exceeded);
+   BOOST_TEST(first_block.schedule_version == savanna::proper_savanna_schedule_version);
+   BOOST_TEST(policy.version != first_block.schedule_version);
+
+   auto malicious = witness;
+   malicious.records.back().header.producer = protocol::account_name{"eosio"};
+   malicious.records.back().header.producer_signature =
+       sign(eosio, protocol::calculate_block_id(malicious.records.back().header));
+   BOOST_CHECK_THROW(static_cast<void>(savanna::replay_finality_witness(trust, malicious)),
+                     savanna::exceptions::invalid_header);
+}
+
 BOOST_AUTO_TEST_CASE(portable_savanna_verifier_ratchets_without_rolling_back_or_promoting_tampered_proofs) {
    const auto fixture = make_rich_portable_fixture();
    const auto verifier =
@@ -1591,6 +1708,17 @@ BOOST_AUTO_TEST_CASE(portable_savanna_verifier_ratchets_without_rolling_back_or_
 
    const auto state = verifier->replay_state(fixture.target_anchor, fixture.genesis_finality);
    BOOST_CHECK(state.id == fixture.target_anchor.block);
+   const auto verified_replay = verifier->verified_replay(fixture.target_anchor, fixture.genesis_finality);
+   BOOST_CHECK(std::ranges::find(verified_replay.anchors, fixture.target_anchor) != verified_replay.anchors.end());
+   BOOST_CHECK(!verified_replay.producer_opportunities.empty());
+   const auto earlier_replay = verifier->verified_replay(fixture.first_change_anchor, fixture.genesis_finality);
+   BOOST_REQUIRE(!earlier_replay.anchors.empty());
+   BOOST_CHECK(earlier_replay.anchors.back() == fixture.first_change_anchor);
+   BOOST_REQUIRE(!earlier_replay.producer_opportunities.empty());
+   BOOST_REQUIRE(earlier_replay.producer_opportunities.back().produced_block.has_value());
+   BOOST_CHECK(*earlier_replay.producer_opportunities.back().produced_block == fixture.first_change_anchor.block);
+   BOOST_TEST(earlier_replay.finalized_block_num == fixture.first_change_anchor.block_num);
+   BOOST_TEST(earlier_replay.validated_block_num == fixture.first_change_anchor.block_num);
    BOOST_CHECK_NO_THROW(verifier->verify(fixture.target_anchor, fixture.genesis_finality));
    const auto promoted_trust = forge::raw::pack(verifier->preferred_trust());
 
@@ -1612,6 +1740,8 @@ BOOST_AUTO_TEST_CASE(portable_savanna_verifier_ratchets_without_rolling_back_or_
        sign(outsider, protocol::calculate_block_id(tampered_witness.records.front().header));
    const auto tampered = savanna::encode_finality_witness(tampered_witness);
    BOOST_CHECK_THROW(verifier->verify(fixture.target_anchor, tampered), api::exceptions::invalid_finality);
+   BOOST_CHECK_THROW(static_cast<void>(verifier->verified_replay(fixture.target_anchor, tampered)),
+                     api::exceptions::invalid_finality);
    BOOST_CHECK(*verifier->preferred_trust_anchor() == fixture.target_anchor.block);
    BOOST_CHECK(forge::raw::pack(verifier->preferred_trust()) == promoted_trust);
 }
@@ -1857,7 +1987,7 @@ BOOST_AUTO_TEST_CASE(portable_savanna_stale_snapshot_commit_is_monotonic) {
    auto higher_advance = savanna::advance_finality_trust_with_replay(*higher_snapshot.source_trust, higher_witness,
                                                                      fixture.anchor(4U), limits);
    auto higher_state = higher_advance.checkpoint.value.state;
-   store.install_verified(std::move(higher_advance.checkpoint), higher_advance.replay, fixture.anchor(4U),
+   store.install_verified(std::move(higher_advance.checkpoint), std::move(higher_advance.replay), fixture.anchor(4U),
                           forge::crypto::digest::sha256::hash(higher_proof), std::move(higher_state));
    const auto after_higher_anchor = store.preferred_trust_anchor();
    const auto after_higher_trust = forge::raw::pack(store.preferred_trust());
@@ -1866,7 +1996,7 @@ BOOST_AUTO_TEST_CASE(portable_savanna_stale_snapshot_commit_is_monotonic) {
                                                                     fixture.anchor(3U), limits);
    auto lower_state = lower_advance.checkpoint.value.state;
    const auto lower_digest = forge::crypto::digest::sha256::hash(lower_proof);
-   BOOST_CHECK_NO_THROW(store.install_verified(std::move(lower_advance.checkpoint), lower_advance.replay,
+   BOOST_CHECK_NO_THROW(store.install_verified(std::move(lower_advance.checkpoint), std::move(lower_advance.replay),
                                                fixture.anchor(3U), lower_digest, std::move(lower_state)));
    BOOST_CHECK(after_higher_anchor == fixture.candidate(4U).id);
    BOOST_CHECK(store.preferred_trust_anchor() == fixture.candidate(4U).id);

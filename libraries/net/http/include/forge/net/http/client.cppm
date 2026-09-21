@@ -4,6 +4,7 @@ module;
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,6 +38,10 @@ struct client_options {
    std::size_t max_provider_headers = 16U;
    std::size_t max_provider_header_bytes = 8U * 1024U;
 };
+
+void validate_provider_headers(std::span<const header_entry> headers,
+                               std::span<const header_entry> existing_headers = {}, std::size_t max_headers = 16U,
+                               std::size_t max_header_bytes = 8U * 1024U);
 
 class client {
  public:

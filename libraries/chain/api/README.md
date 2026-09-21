@@ -151,14 +151,18 @@ known response target. Historical transaction status calls without an explicit
 `finality_from` first obtain an unaudited inclusion-height hint, then issue a
 separate audited status confirmation using that locally selected retained
 anchor; a missing height or unavailable retained anchor fails locally before a
-confirmation request, and only the confirmed response is returned or verified. `preferred_trust()`
-and `replay_state()` expose the selected locally trusted state to consumers
-that need Savanna-specific projection verification. The exact verified replay
-state is retained in the same bounded parallel-response window, so immediate
+confirmation request, and only the confirmed response is returned or verified.
+`preferred_trust()`, `replay_state()` and `verified_replay()` expose the selected
+locally trusted state to consumers that need Savanna-specific projection
+verification. The latter includes canonical producer opportunities for the
+exact finalized anchor and proof, so consumers never reconstruct proposer
+policy history themselves. The exact verified replay is retained in the same
+bounded parallel-response window, so immediate
 replay of an in-flight response does not depend on its source checkpoint still
 being retained. Forge verifies the witness locally; it does not load trust
 material from files or select product policy. The contract-table projection
-verifier covers get_table_rows and get_table_changes, including canonical key
+verifier covers get_table_rows, get_table_changes and get_producer_rewards,
+including canonical key
 layout, row/payer bytes, ordering, deletion, cursors and authenticated
 continuations. It intentionally does not verify table scope or native product
 projections. Those calls fail closed unless a product installs its own
@@ -166,12 +170,33 @@ projection verifier.
 
 ## Typed block, info and admin reads
 
-`forge.chain.api.block` and `forge.chain.api.info` are contract version `2.0`;
-`forge.chain.api.admin` is version `2.1`. Major version 2 is a clean break:
+`forge.chain.api.block` is contract version `2.2`, `forge.chain.api.info` is
+version `2.0`, and `forge.chain.api.admin` is version `2.4`. Major version 2
+is a clean break:
 there are no compatibility aliases, legacy readers or alternate JSON modes.
 Admin revision 1 appends the read-only `get_operator_identity` and
 `get_node_status` capability-descriptor methods, mapped to
 `/v1/chain/admin/operator-identity` and `/v1/chain/admin/node-status`.
+Block revision 2 appends `get_producer_rewards`. Its response has one outer
+finality witness and two table sources at that exact finalized anchor:
+`eosio`/`producers` and `eosio.bpay`/`eosio.bpay`/`rewards`. The verified
+client verifies the outer witness once and each source through the existing
+contract-table verifier; it does not trust the returned aggregate. The latter
+is the exact donor `rewards_row { owner, quantity }`; a missing row remains an
+empty `bpay.claimable` value, never a liquid `eosio.token` balance. The
+response carries two fixed canonical action locations: `system` names
+`eosio::claimrewards`, while `bpay` names `eosio.bpay::claimrewards`. The
+system facts do not promise a claim amount or execution eligibility before
+`claimrewards` executes. Neither source contains an unsigned or signed
+transaction. Its `anchor_header` hashes to the
+finalized anchor before its timestamp feeds the shared pure reward projector;
+the server does not construct an independent aggregate.
+
+Admin revision 4 appends trusted local `get_finalizer_status`, mapped to
+`/v1/chain/admin/finalizer`. It reports whether the local finalizer is enabled,
+whether it belongs to the current policy and its last emitted vote. It is
+operational node state, therefore it is intentionally exposed through the
+Admin transport only and is not a `verified_client` projection.
 
 Block responses use the complete host `activated_protocol_feature_info` and
 reuse the canonical

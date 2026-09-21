@@ -1570,6 +1570,10 @@ BOOST_AUTO_TEST_CASE(abi_and_system_actions_match_spring_fixtures) {
        .abi = {char{0x0a}, char{0x0b}},
    };
    BOOST_TEST(pack_hex(setabi) == expected(spring::setabi_raw));
+
+   const auto claim = protocol::claimrewards{.owner = protocol::account_name{"eosio"}};
+   BOOST_TEST(pack_hex(claim) == expected(spring::name_eosio_raw));
+   BOOST_CHECK(forge::raw::unpack_exact<protocol::claimrewards>(forge::raw::pack(claim)).owner == claim.owner);
 }
 
 BOOST_AUTO_TEST_CASE(legacy_abi_unpack_normalizes_tail_fields_on_pack) {

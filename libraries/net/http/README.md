@@ -68,6 +68,8 @@ nonblocking and thread-safe, and has no cancellation channel. Its output is
 rejected when a header name collides case-insensitively with the request or with
 another provider header; this includes `Authorization`. Its execution consumes
 the request timeout budget before transport work begins.
+`validate_provider_headers` exposes that exact policy for components that must
+reject a resolved provider result during startup instead of on the first request.
 
 `forge::net::http::server` can instead receive a shared
 `forge::net::tls::context_provider`. Listener mode is fixed when the server

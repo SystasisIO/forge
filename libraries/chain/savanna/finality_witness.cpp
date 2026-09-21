@@ -27,11 +27,13 @@ namespace {
 namespace protocol = forge::chain::protocol;
 
 void validate_limits(finality_witness_limits limits) {
-   if (limits.max_blocks == 0U || limits.max_blocks > finality_witness_hard_max_blocks || limits.max_bytes == 0U ||
-       limits.max_bytes > finality_witness_hard_max_bytes) {
+   if (limits.max_blocks == 0U || limits.max_blocks > finality_witness_hard_max_blocks ||
+       limits.max_producer_slots == 0U || limits.max_producer_slots > finality_witness_hard_max_producer_slots ||
+       limits.max_bytes == 0U || limits.max_bytes > finality_witness_hard_max_bytes) {
       FORGE_THROW_EXCEPTION(exceptions::finality_witness_limit_exceeded,
                             "Savanna finality witness limits exceed the hard bounds",
                             forge::exceptions::ctx("max_blocks", limits.max_blocks),
+                            forge::exceptions::ctx("max_producer_slots", limits.max_producer_slots),
                             forge::exceptions::ctx("max_bytes", limits.max_bytes));
    }
 }
@@ -302,6 +304,7 @@ replay_result replay(const finality_trust& trust, const finality_witness& witnes
       result.expected = seed.root;
    }
    result.replay.anchors.reserve(witness.records.size() + 1U);
+   result.replay.producer_opportunities.reserve(witness.records.size());
    auto parent = std::move(seed.root);
    for (const auto& record : witness.records) {
       auto block = make_header_only_block(record);
@@ -312,6 +315,16 @@ replay_result replay(const finality_trust& trust, const finality_witness& witnes
       }
       verify_signature(block, prepared);
       verify_qc(parent, prepared);
+      const auto slot_count = static_cast<std::uint64_t>(record.header.timestamp.slot) - parent.timestamp.slot;
+      const auto populated_slots = static_cast<std::uint64_t>(result.replay.producer_opportunities.size());
+      const auto producer_slot_limit = static_cast<std::uint64_t>(limits.max_producer_slots);
+      if (populated_slots > producer_slot_limit || slot_count > producer_slot_limit - populated_slots) {
+         FORGE_THROW_EXCEPTION(exceptions::finality_witness_limit_exceeded,
+                               "Savanna finality witness producer slots exceed the configured limit",
+                               forge::exceptions::ctx("slots", slot_count),
+                               forge::exceptions::ctx("limit", limits.max_producer_slots));
+      }
+      const auto produced_by = prepared.producer.producer_name;
       auto next = finish(parent, block, std::move(prepared));
       next.action_receipt_root = record.action_receipt_root;
       next.validation =
@@ -331,6 +344,19 @@ replay_result replay(const finality_trust& trust, const finality_witness& witnes
          result.expected = next;
       }
       result.replay.anchors.push_back(std::move(anchor));
+      for (auto slot = parent.timestamp.slot + 1U; slot < record.header.timestamp.slot; ++slot) {
+         const auto timestamp = block_timestamp{slot};
+         result.replay.producer_opportunities.push_back({
+             .timestamp = timestamp,
+             .expected_producer = scheduled_producer(parent.state, timestamp).producer_name,
+         });
+      }
+      result.replay.producer_opportunities.push_back({
+          .timestamp = record.header.timestamp,
+          .expected_producer = produced_by,
+          .produced_block = next.id,
+          .produced_block_num = next.num,
+      });
       parent = std::move(next);
    }
    return result;

@@ -6,6 +6,7 @@ module;
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -202,6 +203,14 @@ void require_matching_credential(const session_record& record, const forge::auth
    }
 }
 
+void require_matching_credential(const device_grant_record& record, const forge::auth::pairing::credential& credential,
+                                 time_point now) {
+   require_active_credential(credential, now);
+   if (record.credential_id != credential.id || record.credential_generation != credential.generation) {
+      FORGE_THROW_EXCEPTION(exceptions::credential_mismatch, "device grant credential binding does not match");
+   }
+}
+
 [[noreturn]] void throw_invalid_secret(bool csrf) {
    if (csrf) {
       FORGE_THROW_EXCEPTION(exceptions::csrf_invalid, "CSRF secret is invalid");
@@ -217,6 +226,60 @@ void verify_secret(const forge::crypto::core::secret_string& presented, const fo
    const auto actual = identify_secret(presented, csrf);
    if (!forge::crypto::core::constant_time_equal(expected.to_uint8_span(), actual.to_uint8_span())) {
       throw_invalid_secret(csrf);
+   }
+}
+
+void require_device_grant_record(const device_grant_record& record) {
+   require_credential_id(record.credential_id);
+   if (record.credential_generation == 0 || record.rotation_generation == 0 || record.token_digest.empty()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant record is invalid");
+   }
+   require_supported_time(record.issued_at, time_input::record);
+   require_supported_time(record.last_activity_at, time_input::record);
+   require_supported_time(record.idle_expires_at, time_input::record);
+   require_supported_time(record.absolute_expires_at, time_input::record);
+   if (record.terminal_at.has_value()) {
+      require_supported_time(*record.terminal_at, time_input::record);
+   }
+   if (record.last_activity_at < record.issued_at || record.absolute_expires_at <= record.issued_at ||
+       record.idle_expires_at != canonical_idle_expiry(record.last_activity_at, record.absolute_expires_at,
+                                                       record.idle_timeout, time_input::record)) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant timestamps are invalid");
+   }
+
+   switch (record.state) {
+   case device_grant_state::active:
+      if (record.terminal_at.has_value()) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_state, "active device grant has a terminal time");
+      }
+      break;
+   case device_grant_state::rotated:
+   case device_grant_state::revoked:
+      if (!record.terminal_at.has_value() || *record.terminal_at < record.last_activity_at ||
+          *record.terminal_at >= record.idle_expires_at || *record.terminal_at >= record.absolute_expires_at) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_state, "terminal device grant has an invalid terminal time");
+      }
+      break;
+   default:
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant record has an unknown state");
+   }
+}
+
+void require_device_grant_lifecycle(const device_grant_record& record, time_point now) {
+   if (now < record.last_activity_at || (record.terminal_at.has_value() && now < *record.terminal_at)) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant transition time regressed");
+   }
+   if (record.state == device_grant_state::rotated) {
+      FORGE_THROW_EXCEPTION(exceptions::replayed, "device grant token was replayed after rotation");
+   }
+   if (record.state == device_grant_state::revoked) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant is revoked");
+   }
+   if (now >= record.absolute_expires_at) {
+      FORGE_THROW_EXCEPTION(exceptions::expired, "device grant expired");
+   }
+   if (now >= record.idle_expires_at) {
+      FORGE_THROW_EXCEPTION(exceptions::idle_expired, "device grant idle timeout expired");
    }
 }
 
@@ -345,6 +408,109 @@ void logout_session(session_record& record, time_point now) {
 
 void revoke_session(session_record& record, time_point now) {
    logout_session(record, now);
+}
+
+device_grant_issuance issue_device_grant(const forge::auth::pairing::credential& credential,
+                                         device_grant_options options) {
+   const auto idle_expires_at =
+       canonical_idle_expiry(options.now, options.absolute_expires_at, options.idle_timeout, time_input::options);
+   require_active_credential(credential, options.now);
+
+   auto material = forge::crypto::core::secret_bytes{forge::crypto::core::random_bytes(secret_bytes)};
+   auto token =
+       forge::crypto::core::secret_string{forge::codec::base64::encode(material.span(), secret_encode_options())};
+   return {
+       .record =
+           {
+               .token_digest = forge::crypto::digest::sha256::hash(material.span()),
+               .credential_id = credential.id,
+               .credential_generation = credential.generation,
+               .rotation_generation = 1,
+               .issued_at = options.now,
+               .last_activity_at = options.now,
+               .idle_expires_at = idle_expires_at,
+               .absolute_expires_at = options.absolute_expires_at,
+               .idle_timeout = options.idle_timeout,
+           },
+       .token = std::move(token),
+   };
+}
+
+void validate_device_grant_issuance(const device_grant_issuance& issuance) {
+   require_device_grant_record(issuance.record);
+   if (issuance.record.state != device_grant_state::active) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant issuance record must be active");
+   }
+   verify_secret(issuance.token, issuance.record.token_digest, false);
+}
+
+forge::crypto::digest::sha256 identify_device_grant_token(const forge::crypto::core::secret_string& token) {
+   return identify_secret(token, false);
+}
+
+forge::auth::pairing::credential_binding validate_device_grant(const device_grant_record& record,
+                                                               const forge::crypto::core::secret_string& token,
+                                                               const forge::auth::pairing::credential& credential,
+                                                               time_point now) {
+   require_device_grant_record(record);
+   verify_secret(token, record.token_digest, false);
+   require_device_grant_lifecycle(record, now);
+   require_matching_credential(record, credential, now);
+   return {.id = record.credential_id, .generation = record.credential_generation};
+}
+
+device_grant_issuance rotate_device_grant(device_grant_record& record, const forge::crypto::core::secret_string& token,
+                                          const forge::auth::pairing::credential& credential, time_point now) {
+   static_cast<void>(validate_device_grant(record, token, credential, now));
+   if (record.rotation_generation == std::numeric_limits<std::uint64_t>::max()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant rotation generation is exhausted");
+   }
+
+   const auto next_idle_expires_at =
+       canonical_idle_expiry(now, record.absolute_expires_at, record.idle_timeout, time_input::record);
+   auto material = forge::crypto::core::secret_bytes{forge::crypto::core::random_bytes(secret_bytes)};
+   const auto digest = forge::crypto::digest::sha256::hash(material.span());
+   if (forge::crypto::core::constant_time_equal(record.token_digest.to_uint8_span(), digest.to_uint8_span())) {
+      FORGE_THROW_EXCEPTION(exceptions::secret_collision, "device grant token material collided during rotation");
+   }
+   auto result = device_grant_issuance{
+       .record =
+           {
+               .token_digest = digest,
+               .credential_id = record.credential_id,
+               .credential_generation = record.credential_generation,
+               .rotation_generation = record.rotation_generation + 1,
+               .issued_at = now,
+               .last_activity_at = now,
+               .idle_expires_at = next_idle_expires_at,
+               .absolute_expires_at = record.absolute_expires_at,
+               .idle_timeout = record.idle_timeout,
+           },
+       .token =
+           forge::crypto::core::secret_string{forge::codec::base64::encode(material.span(), secret_encode_options())},
+   };
+   record.state = device_grant_state::rotated;
+   record.terminal_at = now;
+   return result;
+}
+
+device_grant_refresh refresh_device_grant(device_grant_record& record, const forge::crypto::core::secret_string& token,
+                                          const forge::auth::pairing::credential& credential, session_options options) {
+   static_cast<void>(validate_device_grant(record, token, credential, options.now));
+   if (options.absolute_expires_at > record.absolute_expires_at) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options,
+                            "session absolute expiry exceeds its device grant absolute expiry");
+   }
+   auto next_session = issue_session(credential, options);
+   auto next_grant = rotate_device_grant(record, token, credential, options.now);
+   return {.grant = std::move(next_grant), .session = std::move(next_session)};
+}
+
+void revoke_device_grant(device_grant_record& record, time_point now) {
+   require_device_grant_record(record);
+   require_device_grant_lifecycle(record, now);
+   record.state = device_grant_state::revoked;
+   record.terminal_at = now;
 }
 
 } // namespace forge::auth::session

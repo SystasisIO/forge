@@ -24,6 +24,7 @@ BOOST_DESCRIBE_STRUCT(linkauth, (), (account, code, type, requirement))
 BOOST_DESCRIBE_STRUCT(unlinkauth, (), (account, code, type))
 BOOST_DESCRIBE_STRUCT(canceldelay, (), (canceling_auth, trx_id))
 BOOST_DESCRIBE_STRUCT(onerror, (), (sender_id, sent_trx))
+BOOST_DESCRIBE_STRUCT(claimrewards, (), (owner))
 } // namespace forge::chain::protocol
 
 FORGE_DECLARE_SERIALIZATION_PACK(forge::chain::protocol::newaccount)
@@ -35,4 +36,5 @@ FORGE_DECLARE_SERIALIZATION_PACK(forge::chain::protocol::linkauth)
 FORGE_DECLARE_SERIALIZATION_PACK(forge::chain::protocol::unlinkauth)
 FORGE_DECLARE_SERIALIZATION_PACK(forge::chain::protocol::canceldelay)
 FORGE_DECLARE_SERIALIZATION_PACK(forge::chain::protocol::onerror)
+FORGE_DECLARE_SERIALIZATION_PACK(forge::chain::protocol::claimrewards)
 #endif

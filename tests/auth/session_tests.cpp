@@ -10,8 +10,11 @@
 
 import forge.auth.session.exceptions;
 import forge.auth.session.session;
+import forge.auth.session.serialization;
 import forge.codec.base64;
 import forge.crypto.core.secret_string;
+import forge.raw.exceptions;
+import forge.raw.raw;
 
 namespace pairing = forge::auth::pairing;
 namespace session = forge::auth::session;
@@ -36,6 +39,17 @@ const auto test_now = session::time_point{std::chrono::seconds{1'700'000'000}};
 options_at(session::time_point now = test_now,
            std::chrono::system_clock::duration idle_timeout = std::chrono::minutes{2},
            std::chrono::system_clock::duration absolute_lifetime = std::chrono::minutes{10}) {
+   return {
+       .now = now,
+       .absolute_expires_at = now + absolute_lifetime,
+       .idle_timeout = idle_timeout,
+   };
+}
+
+[[nodiscard]] session::device_grant_options
+grant_options_at(session::time_point now = test_now,
+                 std::chrono::system_clock::duration idle_timeout = std::chrono::minutes{2},
+                 std::chrono::system_clock::duration absolute_lifetime = std::chrono::minutes{10}) {
    return {
        .now = now,
        .absolute_expires_at = now + absolute_lifetime,
@@ -338,6 +352,143 @@ BOOST_AUTO_TEST_CASE(rotation_prevents_fixation_and_logout_revoke_are_terminal) 
    auto revoked = session::issue_session(owner, options_at());
    session::revoke_session(revoked.record, test_now + std::chrono::seconds{1});
    BOOST_CHECK(revoked.record.state == session::session_state::revoked);
+}
+
+BOOST_AUTO_TEST_CASE(device_grant_rotation_preserves_absolute_expiry_and_detects_replay) {
+   const auto owner = credential();
+   auto previous = session::issue_device_grant(owner, {.now = test_now,
+                                                       .absolute_expires_at = test_now + std::chrono::days{180},
+                                                       .idle_timeout = std::chrono::days{30}});
+   session::validate_device_grant_issuance(previous);
+   BOOST_TEST(previous.token.size() == 43U);
+   BOOST_TEST(previous.record.rotation_generation == 1U);
+   BOOST_CHECK(session::identify_device_grant_token(previous.token) == previous.record.token_digest);
+
+   const auto refresh_time = test_now + std::chrono::days{29};
+   const auto absolute_expiry = previous.record.absolute_expires_at;
+   const auto previous_token = previous.token;
+   auto next = session::rotate_device_grant(previous.record, previous.token, owner, refresh_time);
+
+   BOOST_CHECK(previous.record.state == session::device_grant_state::rotated);
+   BOOST_REQUIRE(previous.record.terminal_at.has_value());
+   BOOST_CHECK(*previous.record.terminal_at == refresh_time);
+   BOOST_TEST(next.record.rotation_generation == 2U);
+   BOOST_CHECK(next.record.absolute_expires_at == absolute_expiry);
+   BOOST_CHECK(next.record.idle_expires_at == refresh_time + std::chrono::days{30});
+   BOOST_CHECK(next.token.view() != previous_token.view());
+   BOOST_CHECK(session::validate_device_grant(next.record, next.token, owner, refresh_time).id == owner.id);
+   require_exception<session::exceptions::replayed>([&] {
+      return session::validate_device_grant(previous.record, previous_token, owner,
+                                            refresh_time + std::chrono::seconds{1});
+   });
+   auto unrelated = forge::crypto::core::secret_string{std::string(43U, 'A')};
+   require_exception<session::exceptions::token_invalid>([&] {
+      return session::validate_device_grant(previous.record, unrelated, owner, refresh_time + std::chrono::seconds{1});
+   });
+}
+
+BOOST_AUTO_TEST_CASE(device_grant_is_credential_bound_and_does_not_issue_a_session) {
+   const auto owner = credential();
+   const auto issuance = session::issue_device_grant(owner, grant_options_at());
+   static_assert(!exposes_session_token<session::device_grant_issuance>);
+   static_assert(!exposes_csrf_secret<session::device_grant_issuance>);
+
+   auto changed = owner;
+   ++changed.generation;
+   changed.updated_at = test_now + std::chrono::seconds{1};
+   require_exception<session::exceptions::credential_mismatch>([&] {
+      return session::validate_device_grant(issuance.record, issuance.token, changed,
+                                            test_now + std::chrono::seconds{1});
+   });
+
+   auto revoked = owner;
+   revoked.state = pairing::credential_state::revoked;
+   revoked.updated_at = test_now + std::chrono::seconds{1};
+   revoked.revoked_at = revoked.updated_at;
+   require_exception<session::exceptions::credential_revoked>([&] {
+      return session::validate_device_grant(issuance.record, issuance.token, revoked,
+                                            test_now + std::chrono::seconds{1});
+   });
+}
+
+BOOST_AUTO_TEST_CASE(device_grant_refresh_rotates_grant_and_issues_bound_session) {
+   const auto owner = credential();
+   auto previous = session::issue_device_grant(owner, grant_options_at());
+   const auto refresh_time = test_now + std::chrono::seconds{1};
+   auto refreshed = session::refresh_device_grant(previous.record, previous.token, owner,
+                                                  {.now = refresh_time,
+                                                   .absolute_expires_at = refresh_time + std::chrono::minutes{8},
+                                                   .idle_timeout = std::chrono::minutes{2}});
+
+   BOOST_CHECK(previous.record.state == session::device_grant_state::rotated);
+   BOOST_TEST(refreshed.grant.record.rotation_generation == 2U);
+   const auto principal = session::validate_session(refreshed.session.record, refreshed.session.session_token, owner,
+                                                    refresh_time + std::chrono::seconds{1});
+   BOOST_CHECK(principal.credential_id == owner.id);
+   session::verify_csrf_secret(refreshed.session.record, refreshed.session.csrf_secret,
+                               refresh_time + std::chrono::seconds{1});
+
+   auto overlong = session::issue_device_grant(owner, grant_options_at());
+   const auto overlong_before = overlong.record;
+   require_exception<session::exceptions::invalid_options>([&] {
+      return session::refresh_device_grant(
+          overlong.record, overlong.token, owner,
+          {.now = refresh_time,
+           .absolute_expires_at = overlong.record.absolute_expires_at + std::chrono::seconds{1},
+           .idle_timeout = std::chrono::minutes{2}});
+   });
+   BOOST_CHECK(overlong.record == overlong_before);
+
+   auto atomic_failure = session::issue_device_grant(owner, grant_options_at());
+   const auto atomic_failure_before = atomic_failure.record;
+   require_exception<session::exceptions::invalid_options>([&] {
+      return session::refresh_device_grant(
+          atomic_failure.record, atomic_failure.token, owner,
+          {.now = refresh_time, .absolute_expires_at = refresh_time, .idle_timeout = std::chrono::minutes{2}});
+   });
+   BOOST_CHECK(atomic_failure.record == atomic_failure_before);
+}
+
+BOOST_AUTO_TEST_CASE(device_grant_expiry_revoke_and_backdated_transitions_are_terminal) {
+   const auto owner = credential();
+   auto issuance = session::issue_device_grant(owner, grant_options_at());
+   const auto before = issuance.record;
+
+   require_exception<session::exceptions::invalid_state>([&] {
+      return session::rotate_device_grant(issuance.record, issuance.token, owner, test_now - std::chrono::seconds{1});
+   });
+   BOOST_CHECK(issuance.record == before);
+
+   session::revoke_device_grant(issuance.record, test_now + std::chrono::seconds{1});
+   BOOST_CHECK(issuance.record.state == session::device_grant_state::revoked);
+   require_exception<session::exceptions::invalid_state>([&] {
+      return session::validate_device_grant(issuance.record, issuance.token, owner, test_now + std::chrono::seconds{2});
+   });
+
+   const auto expired = session::issue_device_grant(owner, grant_options_at());
+   require_exception<session::exceptions::idle_expired>([&] {
+      return session::validate_device_grant(expired.record, expired.token, owner, expired.record.idle_expires_at);
+   });
+
+   auto malformed = session::issue_device_grant(owner, grant_options_at()).record;
+   malformed.rotation_generation = 0;
+   const auto malformed_before = malformed;
+   require_exception<session::exceptions::invalid_state>(
+       [&] { session::revoke_device_grant(malformed, test_now + std::chrono::seconds{1}); });
+   BOOST_CHECK(malformed == malformed_before);
+}
+
+BOOST_AUTO_TEST_CASE(device_grant_raw_round_trip_rejects_malformed_state) {
+   const auto owner = credential();
+   const auto issuance = session::issue_device_grant(owner, grant_options_at());
+   const auto packed = forge::raw::pack(issuance.record);
+   BOOST_CHECK(forge::raw::unpack_exact<session::device_grant_record>(packed) == issuance.record);
+
+   auto malformed = issuance.record;
+   malformed.state = static_cast<session::device_grant_state>(0xffU);
+   BOOST_CHECK_THROW(
+       static_cast<void>(forge::raw::unpack_exact<session::device_grant_record>(forge::raw::pack(malformed))),
+       forge::raw::exceptions::codec_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

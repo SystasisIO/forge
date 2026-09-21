@@ -43,6 +43,14 @@ int main() {
    const auto exception_import = session::exceptions::code::csrf_invalid;
    const auto record_round_trip = forge::raw::unpack_exact<session::session_record>(
        std::span<const std::uint8_t>{forge::raw::pack(issuance.record)});
+   auto device_grant = session::issue_device_grant(
+       credential,
+       {.now = now, .absolute_expires_at = now + std::chrono::hours{1}, .idle_timeout = std::chrono::minutes{10}});
+   session::validate_device_grant_issuance(device_grant);
+   const auto device_grant_round_trip = forge::raw::unpack_exact<session::device_grant_record>(
+       std::span<const std::uint8_t>{forge::raw::pack(device_grant.record)});
+   auto next_device_grant =
+       session::rotate_device_grant(device_grant.record, device_grant.token, credential, now + std::chrono::seconds{1});
    auto invalid_state = issuance.record;
    invalid_state.state = static_cast<session::session_state>(0xffU);
    auto invalid_duration = issuance.record;
@@ -71,6 +79,8 @@ int main() {
    if (!require(principal.credential_id.value == "credential-consumer", "session principal changed") ||
        !require(exception_import == session::exceptions::code::csrf_invalid, "session exception import changed") ||
        !require(record_round_trip == issuance.record, "session Raw round-trip changed") ||
+       !require(device_grant_round_trip.rotation_generation == 1, "device grant Raw round-trip changed") ||
+       !require(next_device_grant.record.rotation_generation == 2, "device grant rotation changed") ||
        !require(invalid_state_rejected, "invalid session state was accepted") ||
        !require(invalid_duration_rejected, "invalid session duration was accepted") ||
        !require(invalid_expiry_rejected, "invalid session expiry was accepted")) {

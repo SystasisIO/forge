@@ -2,10 +2,12 @@ module;
 
 #include <forge/exceptions/macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <deque>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -75,6 +77,32 @@ template <typename Operation> decltype(auto) translate_finality_failure(Operatio
       FORGE_THROW_EXCEPTION(exceptions::invalid_finality,
                             "Savanna finality witness verification failed with a non-standard error");
    }
+}
+
+savanna::finality_replay project_replay_through(savanna::finality_replay replay,
+                                                 const protocol::state_anchor& expected) {
+   const auto anchor = std::ranges::find(replay.anchors, expected);
+   if (anchor == replay.anchors.end()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_finality,
+                            "Savanna finality replay does not contain the requested anchor");
+   }
+   replay.anchors.erase(std::next(anchor), replay.anchors.end());
+
+   const auto opportunity = std::ranges::find_if(replay.producer_opportunities, [&](const auto& value) {
+      return value.produced_block && *value.produced_block == expected.block;
+   });
+   if (opportunity == replay.producer_opportunities.end()) {
+      if (replay.anchors.size() != 1U) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_finality,
+                               "Savanna finality replay has no producer opportunity for the requested anchor");
+      }
+      replay.producer_opportunities.clear();
+   } else {
+      replay.producer_opportunities.erase(std::next(opportunity), replay.producer_opportunities.end());
+   }
+   replay.finalized_block_num = std::min(replay.finalized_block_num, expected.block_num);
+   replay.validated_block_num = std::min(replay.validated_block_num, expected.block_num);
+   return replay;
 }
 
 } // namespace
@@ -172,6 +200,24 @@ savanna::header_state savanna_finality_verifier::replay_state(const protocol::st
    });
 }
 
+savanna::finality_replay savanna_finality_verifier::verified_replay(const protocol::state_anchor& expected,
+                                                                    const protocol::proof_blob& proof) const {
+   if (!impl_) {
+      FORGE_THROW_EXCEPTION(exceptions::trust_required, "Savanna finality verifier is not initialized");
+   }
+   return translate_finality_failure([&] {
+      const auto proof_digest = forge::crypto::digest::sha256::hash(proof);
+      const auto limits = impl_->trust_store.witness_limits();
+      if (const auto cached = impl_->trust_store.cached_replay(expected, proof_digest)) {
+         return project_replay_through(*cached, expected);
+      }
+      const auto witness = savanna::decode_finality_witness(proof, limits);
+      const auto snapshot = impl_->trust_store.take_snapshot(expected, witness);
+      auto replay = savanna::advance_finality_trust_with_replay(*snapshot.source_trust, witness, expected, limits).replay;
+      return project_replay_through(std::move(replay), expected);
+   });
+}
+
 void savanna_finality_verifier::verify(const protocol::state_anchor& anchor, const protocol::proof_blob& proof) {
    if (!impl_) {
       FORGE_THROW_EXCEPTION(exceptions::trust_required, "Savanna finality verifier is not initialized");
@@ -197,7 +243,8 @@ void savanna_finality_verifier::verify(const protocol::state_anchor& anchor, con
    auto replay = std::move(std::get<2>(verified));
    auto state = std::move(std::get<3>(verified));
    translate_finality_failure([&] {
-      impl_->trust_store.install_verified(std::move(checkpoint), replay, anchor, proof_digest, std::move(state));
+      impl_->trust_store.install_verified(std::move(checkpoint), std::move(replay), anchor, proof_digest,
+                                          std::move(state));
    });
 }
 

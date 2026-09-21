@@ -47,6 +47,20 @@ Dependencies: `forge_chrono`, `forge_core`, `forge_reflect`, `forge_variant`, Bo
 private Boost.DLL and optional private Boost.Stacktrace fallback. Public API
 does not expose `std::stacktrace` or `boost::stacktrace`.
 
+## Hierarchy Routing
+
+A child logger routes to every appender and structured sink attached to itself
+and its parents. A shared appender or sink is delivered once, even when it is
+attached at several levels. The source logger name is preserved: a record
+emitted by `chain.producer` remains `chain.producer` when a parent route adds a
+console or OTLP destination.
+
+The retained appender API only accepts `log_message`. When new structured code
+is routed to an appender, Forge bridges the complete redacted text record into
+that compatibility surface rather than dropping fields. Conversely, a legacy
+`log_message` is converted once for structured sinks, so a logger can fan out
+to console appenders and OTLP at the same time.
+
 ## Stacktrace Backend
 
 Backend order:

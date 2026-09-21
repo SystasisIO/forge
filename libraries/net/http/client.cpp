@@ -9,6 +9,7 @@ module;
 #include <exception>
 #include <memory>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -92,7 +93,7 @@ void validate_provider_header(const header_entry& header) {
    }
 }
 
-[[nodiscard]] bool has_header_named(const std::vector<header_entry>& headers, std::string_view name) {
+[[nodiscard]] bool has_header_named(std::span<const header_entry> headers, std::string_view name) {
    return std::ranges::any_of(headers,
                               [name](const header_entry& header) { return header_name_equal(header.name, name); });
 }
@@ -124,6 +125,38 @@ request make_request(method method_value, const base_url& endpoint, std::string_
 }
 
 } // namespace
+
+void validate_provider_headers(std::span<const header_entry> headers, std::span<const header_entry> existing_headers,
+                               std::size_t max_headers, std::size_t max_header_bytes) {
+   if (max_headers == 0U || max_headers > max_client_provider_headers || max_header_bytes == 0U ||
+       max_header_bytes > max_client_provider_header_bytes) {
+      FORGE_THROW_EXCEPTION(exceptions::bad_request, "HTTP header provider limits are outside the supported bounds");
+   }
+   if (headers.size() > max_headers) {
+      FORGE_THROW_EXCEPTION(exceptions::request_header_fields_too_large,
+                            "HTTP header provider exceeded its configured header count");
+   }
+
+   auto provider_header_names = std::vector<std::string_view>{};
+   provider_header_names.reserve(headers.size());
+   auto bytes = std::size_t{};
+   for (const auto& header : headers) {
+      validate_provider_header(header);
+      if (has_header_named(existing_headers, header.name) ||
+          std::ranges::any_of(provider_header_names,
+                              [&header](std::string_view name) { return header_name_equal(name, header.name); })) {
+         FORGE_THROW_EXCEPTION(exceptions::bad_request,
+                               "HTTP header provider returned a header that collides with an existing header");
+      }
+      if (header.name.size() > max_header_bytes - bytes ||
+          header.text.size() > max_header_bytes - bytes - header.name.size()) {
+         FORGE_THROW_EXCEPTION(exceptions::request_header_fields_too_large,
+                               "HTTP header provider exceeded its configured header byte limit");
+      }
+      bytes += header.name.size() + header.text.size();
+      provider_header_names.push_back(header.name);
+   }
+}
 
 client::client(forge::asio::runtime& runtime, base_url endpoint, client_options options) try
     : endpoint_(std::move(endpoint)), options_(std::move(options)),
@@ -216,29 +249,10 @@ request client::apply_provider_headers(request request_value) const {
    }
    try {
       auto headers = options_.header_provider(request_value);
-      if (headers.size() > options_.max_provider_headers) {
-         FORGE_THROW_EXCEPTION(exceptions::request_header_fields_too_large,
-                               "HTTP header provider exceeded its configured header count");
-      }
       const auto existing_headers = request_value.headers();
-      auto provider_header_names = std::vector<std::string_view>{};
-      provider_header_names.reserve(headers.size());
-      auto bytes = std::size_t{};
+      validate_provider_headers(headers, existing_headers, options_.max_provider_headers,
+                                options_.max_provider_header_bytes);
       for (const auto& header : headers) {
-         validate_provider_header(header);
-         if (has_header_named(existing_headers, header.name) ||
-             std::ranges::any_of(provider_header_names,
-                                 [&header](std::string_view name) { return header_name_equal(name, header.name); })) {
-            FORGE_THROW_EXCEPTION(exceptions::bad_request,
-                                  "HTTP header provider returned a header that collides with an existing header");
-         }
-         if (header.name.size() > options_.max_provider_header_bytes - bytes ||
-             header.text.size() > options_.max_provider_header_bytes - bytes - header.name.size()) {
-            FORGE_THROW_EXCEPTION(exceptions::request_header_fields_too_large,
-                                  "HTTP header provider exceeded its configured header byte limit");
-         }
-         bytes += header.name.size() + header.text.size();
-         provider_header_names.push_back(header.name);
          request_value.insert(header.name, header.text);
       }
       return request_value;

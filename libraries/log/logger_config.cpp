@@ -5,6 +5,8 @@ module;
 #include <mutex>
 #include <unordered_map>
 #include <string>
+#include <utility>
+#include <vector>
 
 module forge.log.logger_config;
 
@@ -29,7 +31,21 @@ bool log_config::register_appender(const std::string& type, const appender_facto
 
 logger log_config::get_logger(const std::string& name) {
    std::lock_guard g(log_config::get().log_mutex);
-   return log_config::get().logger_map[name];
+   auto& loggers = log_config::get().logger_map;
+   if (const auto existing = loggers.find(name); existing != loggers.end()) {
+      return existing->second;
+   }
+
+   auto result = logger{name};
+   if (name != default_logger_name) {
+      if (const auto parent = loggers.find(default_logger_name); parent != loggers.end()) {
+         result.set_parent(parent->second);
+         result.set_enabled(parent->second.is_enabled());
+         result.set_log_level(parent->second.get_log_level());
+      }
+   }
+   loggers.emplace(name, result);
+   return result;
 }
 
 void log_config::update_logger(const std::string& name, logger& log) {
@@ -72,6 +88,7 @@ void configure_logging(const std::filesystem::path& lc) {
    throw log::exceptions::invalid_config{"file-based logging config parsing is not part of forge_log"};
 }
 bool configure_logging(const logging_config& cfg) {
+   static_cast<void>(logger::get());
    return log_config::configure_logging(cfg);
 }
 
@@ -156,7 +173,7 @@ logging_config logging_config::default_config() {
    dlc.name = default_logger_name;
    dlc.level = log_level::info;
    dlc.appenders.push_back("stderr");
-   cfg.loggers.push_back(dlc);
+   cfg.loggers.push_back(std::move(dlc));
    return cfg;
 }
 

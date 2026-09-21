@@ -349,6 +349,34 @@ commitment::primary_value read_primary(proof_cursor& proofs, commitment::contrac
        proofs.read(commitment::contract_primary_key(location, commitment::contract_table_family::primary, primary)));
 }
 
+protocol::table_rows_request reward_source_request(const protocol::producer_rewards_request& request,
+                                                   protocol::account_name code, protocol::name scope,
+                                                   protocol::table_name table, std::uint64_t primary) {
+   const auto key = encode_table_key(primary);
+   return {
+       .code = code,
+       .scope = scope,
+       .table = table,
+       .index = {.kind = protocol::table_index_kind::primary},
+       .lower_bound = key,
+       .upper_bound = key,
+       .limit = 1U,
+       .anchor = request.anchor,
+       .finality_from = request.finality_from,
+       .audit = request.audit,
+   };
+}
+
+void verify_reward_source_context(const protocol::audited_response& outer, const protocol::table_rows_response& source,
+                                  const char* name) {
+   if (source.context != outer.context || !source.audit || source.audit->finality || source.audit->ancestry ||
+       !source.audit->content.empty() || source.audit->transaction) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state_proof,
+                            "Savanna producer reward source does not share the finalized anchor",
+                            forge::exceptions::ctx("source", name));
+   }
+}
+
 } // namespace
 
 void contract_table_projection_verifier::verify(const protocol::table_rows_request& request,
@@ -462,6 +490,52 @@ void contract_table_projection_verifier::verify(const protocol::table_rows_reque
    }
    if (response.next != continuation) {
       reject("Savanna table rows continuation is not bound to the authenticated range");
+   }
+}
+
+void contract_table_projection_verifier::verify(const protocol::producer_rewards_request& request,
+                                                const protocol::producer_rewards_response& response,
+                                                const protocol::audit_bundle& audit, audit_verifier& verifier) {
+   if (!response.context.anchor || !audit.state.empty() || audit.ancestry || !audit.content.empty() ||
+       audit.transaction) {
+      reject("Savanna producer rewards response has unrelated outer audit material");
+   }
+   if (protocol::calculate_block_id(response.anchor_header) != response.context.anchor->block ||
+       protocol::calculate_block_num(response.anchor_header) != response.context.anchor->block_num) {
+      reject("Savanna producer rewards anchor header is not bound to the finalized anchor");
+   }
+
+   verify_reward_source_context(response, response.system, "eosio.system");
+   verify_reward_source_context(response, response.bpay, "eosio.bpay");
+
+   const auto system = reward_source_request(request, protocol::account_name{"eosio"}, protocol::name{"eosio"},
+                                             protocol::table_name{"producers"}, request.producer.value);
+   const auto bpay = reward_source_request(request, protocol::account_name{"eosio.bpay"},
+                                           protocol::name{"eosio.bpay"}, protocol::table_name{"rewards"},
+                                           request.producer.value);
+   verify(system, response.system, *response.system.audit, verifier);
+   verify(bpay, response.bpay, *response.bpay.audit, verifier);
+
+   if (response.system.rows.size() != 1U || response.system.next || response.bpay.rows.size() > 1U ||
+       response.bpay.next) {
+      reject("Savanna producer reward source does not contain its canonical table rows");
+   }
+   const auto producer = unpack_source<protocol::producer_info>(response.system.rows.front().value);
+   if (producer.owner != request.producer) {
+      reject("Savanna producer reward source does not match its request");
+   }
+   auto bpay_reward = std::optional<protocol::bpay_reward>{};
+   if (!response.bpay.rows.empty()) {
+      bpay_reward = unpack_source<protocol::bpay_reward>(response.bpay.rows.front().value);
+   }
+
+   const auto expected =
+       protocol::project_producer_reward(producer, bpay_reward, response.anchor_header.timestamp.to_time_point());
+   if (!expected) {
+      reject("Savanna producer reward source has malformed canonical rows");
+   }
+   if (response.reward != *expected) {
+      reject("Savanna producer rewards are not the canonical authenticated projection");
    }
 }
 

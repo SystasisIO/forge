@@ -206,6 +206,39 @@ Savanna finality data. In a proper Savanna block, the historical
 `block_header.action_mroot` field carries a finality-tree root claim instead;
 the two roots must not be substituted for one another.
 
+## Producer Reward Projection
+
+`forge.chain.protocol.producer_rewards` defines a canonical, evidence-oriented
+producer reward view with two fixed sources. `system` is the `eosio`
+`producers` source: its `active`, `unpaid_blocks`, `last_claim_time` and first
+strictly later `next_claim_time` describe the producer-row inputs to the
+system claim. `eligible` is the row-and-anchor-time predicate
+`active && anchor_time >= next_claim_time`, not a promise about global system
+state. Its `claim_action` is exactly
+`eosio::claimrewards { owner }`. `bpay.claimable` is the exact `quantity` from
+the `eosio.bpay` `rewards` row scoped by `eosio.bpay`, keyed by the producer
+account. Its `bpay_reward` source layout is exactly `{ owner, quantity }` and
+its `claim_action` is exactly `eosio.bpay::claimrewards { owner }`. Both fixed
+actions reuse the canonical `claimrewards { owner }` payload; the action
+account distinguishes their contract semantics.
+
+`project_producer_reward(producer_info, optional<bpay_reward>, anchor_time)`
+is the public pure construction point for both sources. API responses carry an
+`anchor_header`; a verifier hashes it back to the finalized anchor before
+passing its timestamp to that projector. The projector returns an empty
+optional for malformed rows or an unrepresentable next-claim time; absence of
+the `bpay` row is valid and still yields a projection.
+
+When `eosio.bpay::claimrewards` has erased that row, the projection preserves
+that fact as an empty optional; it never substitutes an `eosio.token` liquid
+balance or invents a zero asset.
+
+The system source deliberately does not calculate a producer reward amount or
+promise that its action will succeed: global activation, execution time and
+dynamic reward buckets are evaluated by `eosio.system`. Neither source
+constructs a transaction; callers supply transaction headers, authorization
+and signatures elsewhere.
+
 ## Boundaries And Safety
 
 Text and variant conversion are API and diagnostic representations, not signing

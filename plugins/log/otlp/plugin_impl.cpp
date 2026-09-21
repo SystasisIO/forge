@@ -4,10 +4,12 @@ module;
 
 module forge.plugins.log.otlp.plugin;
 
+import forge.crypto.core.secret_bytes;
 import forge.log.logger;
 import forge.otlp.crash;
 import forge.otlp.log_exporter;
 import forge.otlp.log_sink;
+import forge.plugins.crypto.secrets.api;
 import forge.plugins.log.otlp.exceptions;
 import forge.plugins.log.otlp.types;
 
@@ -25,14 +27,14 @@ metrics plugin::impl::current_metrics() const {
    }
    const auto snapshot = exporter->metrics();
    return metrics{
-      .enqueued_records = snapshot.enqueued_records,
-      .exported_records = snapshot.exported_records,
-      .failed_records = snapshot.failed_records,
-      .dropped_records = snapshot.dropped_records,
-      .retry_attempts = snapshot.retry_attempts,
-      .batches = snapshot.export_attempts,
-      .queue_bytes = static_cast<std::uint64_t>(snapshot.queue_bytes),
-      .queue_records = static_cast<std::uint64_t>(snapshot.queue_depth),
+       .enqueued_records = snapshot.enqueued_records,
+       .exported_records = snapshot.exported_records,
+       .failed_records = snapshot.failed_records,
+       .dropped_records = snapshot.dropped_records,
+       .retry_attempts = snapshot.retry_attempts,
+       .batches = snapshot.export_attempts,
+       .queue_bytes = static_cast<std::uint64_t>(snapshot.queue_bytes),
+       .queue_records = static_cast<std::uint64_t>(snapshot.queue_depth),
    };
 }
 

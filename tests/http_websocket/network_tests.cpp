@@ -1974,6 +1974,9 @@ class endpoint_api_impl final : public endpoint_api {
    boost::asio::awaitable<endpoint_control_response> current(endpoint_control_request request) override {
       request.response().set("X-Endpoint-Id", request.id);
       append_set_cookie(request.response(), set_cookie{.name = "endpoint", .value = request.id});
+      if (request.id == "failure") {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "declared endpoint failure");
+      }
       if (request.id == "status-mismatch") {
          request.response().result(status::accepted);
       }
@@ -2027,6 +2030,9 @@ class stream_buffered_api_impl final : public stream_buffered_api {
       const auto payload = co_await request.body.async_read_all();
       append_set_cookie(request.response(), set_cookie{.name = "endpoint", .value = request.id});
       append_set_cookie(request.response(), set_cookie{.name = "stream", .value = payload});
+      if (request.id == "failure") {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "declared stream endpoint failure");
+      }
       co_return endpoint_control_response{.summary = request.id + ":" + payload};
    }
 };
@@ -3956,6 +3962,12 @@ BOOST_AUTO_TEST_CASE(http_endpoint_request_injects_request_and_response_state) {
        runtime, connection.async_request(make_request(method::get, "/endpoint/status-mismatch")));
    BOOST_TEST(mismatch.result() == status::internal_server_error);
 
+   auto failure = forge::asio::blocking::run(
+       runtime, connection.async_request(make_request(method::get, "/endpoint/failure")));
+   BOOST_TEST(failure.result() == status::bad_request);
+   BOOST_TEST(failure["X-Endpoint-Id"] == "failure");
+   BOOST_TEST(failure["Set-Cookie"].find("endpoint=failure") != std::string::npos);
+
    server.stop();
 }
 
@@ -4033,6 +4045,22 @@ BOOST_AUTO_TEST_CASE(http_stream_path_buffered_response_merges_endpoint_headers_
    auto decoded = forge::codec::json::read<endpoint_control_response>(response_value.body());
    BOOST_REQUIRE(decoded.ok());
    BOOST_TEST(decoded.value.summary == "abc:payload");
+
+   auto failure_request = make_request(method::put, "/stream-buffered/failure");
+   failure_request.body() = "payload";
+   failure_request.set(field::content_type, "application/octet-stream");
+   failure_request.prepare_payload();
+   auto failure = forge::asio::blocking::run(runtime, connection.async_request(std::move(failure_request)));
+   BOOST_TEST(failure.result() == status::bad_request);
+   const auto failure_headers = failure.headers();
+   BOOST_TEST(std::count_if(failure_headers.begin(), failure_headers.end(),
+                            [](const header_entry& header) { return header.name == "Set-Cookie"; }) == 2);
+   BOOST_TEST(std::any_of(failure_headers.begin(), failure_headers.end(), [](const header_entry& header) {
+      return header.name == "Set-Cookie" && header.text == "endpoint=failure";
+   }));
+   BOOST_TEST(std::any_of(failure_headers.begin(), failure_headers.end(), [](const header_entry& header) {
+      return header.name == "Set-Cookie" && header.text == "stream=payload";
+   }));
 
    server.stop();
 }

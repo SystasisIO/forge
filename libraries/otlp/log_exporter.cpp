@@ -135,7 +135,8 @@ std::optional<std::chrono::milliseconds> parse_retry_after(std::string_view valu
 
 bool retryable_status(forge::net::http::status status) {
    return status == forge::net::http::status::too_many_requests || status == forge::net::http::status::bad_gateway ||
-          status == forge::net::http::status::service_unavailable || status == forge::net::http::status::gateway_timeout;
+          status == forge::net::http::status::service_unavailable ||
+          status == forge::net::http::status::gateway_timeout;
 }
 
 bool success_status(forge::net::http::status status) {
@@ -242,7 +243,8 @@ BOOST_DESCRIBE_STRUCT(otlp_export_request, (), (resourceLogs))
    if (record.stacktrace.has_value()) {
       attributes.push_back(make_string_attribute("stacktrace.backend", record.stacktrace->backend));
       if (!record.stacktrace->unavailable_reason.empty()) {
-         attributes.push_back(make_string_attribute("stacktrace.unavailable_reason", record.stacktrace->unavailable_reason));
+         attributes.push_back(
+             make_string_attribute("stacktrace.unavailable_reason", record.stacktrace->unavailable_reason));
       }
       auto formatted = std::string{};
       for (const auto& frame : record.stacktrace->frames) {
@@ -271,11 +273,11 @@ BOOST_DESCRIBE_STRUCT(otlp_export_request, (), (resourceLogs))
 
 [[nodiscard]] otlp_log_record make_log_record(const forge::log_record& record) {
    return otlp_log_record{
-      .timeUnixNano = std::to_string(timestamp_nanos(record)),
-      .severityNumber = severity_number(record.level),
-      .severityText = severity_text(record.level),
-      .body = otlp_log_body{.stringValue = record.message},
-      .attributes = record_attributes(record),
+       .timeUnixNano = std::to_string(timestamp_nanos(record)),
+       .severityNumber = severity_number(record.level),
+       .severityText = severity_text(record.level),
+       .body = otlp_log_body{.stringValue = record.message},
+       .attributes = record_attributes(record),
    };
 }
 
@@ -304,10 +306,10 @@ struct log_exporter::impl : std::enable_shared_from_this<impl> {
          endpoint = forge::net::http::parse_base_url(options.endpoint);
       } catch (const std::exception& error) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid OTLP endpoint",
-                             forge::exceptions::ctx("endpoint", options.endpoint),
-                             forge::exceptions::ctx("reason", error.what()));
+                               forge::exceptions::ctx("endpoint", options.endpoint),
+                               forge::exceptions::ctx("reason", error.what()));
       }
-      client = std::make_unique<forge::net::http::client>(runtime, endpoint);
+      client = std::make_unique<forge::net::http::client>(runtime, endpoint, std::move(options.http_client));
    }
 
    void validate_options() const {
@@ -601,8 +603,7 @@ struct log_exporter::impl : std::enable_shared_from_this<impl> {
          if (now >= *shutdown_deadline) {
             co_return false;
          }
-         const auto remaining =
-             std::chrono::duration_cast<std::chrono::milliseconds>(*shutdown_deadline - now);
+         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*shutdown_deadline - now);
          if (remaining <= delay) {
             co_return false;
          }
@@ -643,23 +644,23 @@ struct log_exporter::impl : std::enable_shared_from_this<impl> {
       }
 
       auto request = otlp_export_request{
-         .resourceLogs =
-            {
-               otlp_resource_log{
-                  .resource = otlp_resource{.attributes = std::move(attributes)},
-                  .scopeLogs =
-                     {
-                        otlp_scope_log{
-                           .scope =
-                              otlp_scope{
-                                 .name = std::string{instrumentation_scope_name},
-                                 .version = std::string{instrumentation_scope_version},
+          .resourceLogs =
+              {
+                  otlp_resource_log{
+                      .resource = otlp_resource{.attributes = std::move(attributes)},
+                      .scopeLogs =
+                          {
+                              otlp_scope_log{
+                                  .scope =
+                                      otlp_scope{
+                                          .name = std::string{instrumentation_scope_name},
+                                          .version = std::string{instrumentation_scope_version},
+                                      },
+                                  .logRecords = std::move(log_records),
                               },
-                           .logRecords = std::move(log_records),
-                        },
-                     },
-               },
-            },
+                          },
+                  },
+              },
       };
 
       auto encoded = forge::codec::json::write(request);
@@ -667,7 +668,7 @@ struct log_exporter::impl : std::enable_shared_from_this<impl> {
          const auto message = encoded.diagnostics.empty() ? std::string{"unknown JSON encoding error"}
                                                           : encoded.diagnostics.front().message;
          FORGE_THROW_EXCEPTION(exceptions::export_failed, "failed to encode OTLP logs",
-                             forge::exceptions::ctx("reason", message));
+                               forge::exceptions::ctx("reason", message));
       }
       return std::move(encoded.text);
    }

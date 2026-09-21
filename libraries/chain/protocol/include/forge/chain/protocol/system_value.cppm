@@ -100,6 +100,14 @@ struct onerror {
    }
 };
 
+struct claimrewards {
+   account_name owner;
+
+   static constexpr action_name get_name() {
+      return make_name("claimrewards");
+   }
+};
+
 template <typename Stream> void raw_pack(Stream& stream, const newaccount& value) {
    forge::raw::pack(stream, value.creator);
    forge::raw::pack(stream, value.name);
@@ -206,6 +214,14 @@ template <typename Stream> void raw_pack(Stream& stream, const onerror& value) {
 template <typename Stream> void raw_unpack(Stream& stream, onerror& value) {
    forge::raw::unpack(stream, value.sender_id);
    forge::raw::unpack(stream, value.sent_trx);
+}
+
+template <typename Stream> void raw_pack(Stream& stream, const claimrewards& value) {
+   forge::raw::pack(stream, value.owner);
+}
+
+template <typename Stream> void raw_unpack(Stream& stream, claimrewards& value) {
+   forge::raw::unpack(stream, value.owner);
 }
 
 } // namespace forge::chain::protocol

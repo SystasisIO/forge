@@ -13,6 +13,8 @@ class contract_table_projection_verifier final : public projection_verifier {
  public:
    void verify(const protocol::table_rows_request& request, const protocol::table_rows_response& response,
                const protocol::audit_bundle& audit, audit_verifier& verifier) override;
+   void verify(const protocol::producer_rewards_request& request, const protocol::producer_rewards_response& response,
+               const protocol::audit_bundle& audit, audit_verifier& verifier) override;
    void verify(const protocol::table_changes_request& request, const protocol::table_changes_response& response,
                const protocol::audit_bundle& audit, audit_verifier& verifier) override;
 };

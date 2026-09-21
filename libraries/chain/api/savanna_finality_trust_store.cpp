@@ -88,6 +88,15 @@ savanna_finality_trust_store::cached_replay_state(const protocol::state_anchor& 
    return found == replay_states_.end() ? nullptr : found->state;
 }
 
+std::shared_ptr<const savanna::finality_replay>
+savanna_finality_trust_store::cached_replay(const protocol::state_anchor& anchor,
+                                            const protocol::digest& proof_digest) const {
+   const auto lock = std::lock_guard{mutex_};
+   const auto found = std::ranges::find_if(
+       replay_states_, [&](const auto& entry) { return entry.anchor == anchor && entry.proof_digest == proof_digest; });
+   return found == replay_states_.end() ? nullptr : found->replay;
+}
+
 savanna_finality_trust_store::snapshot
 savanna_finality_trust_store::take_snapshot(const protocol::state_anchor& expected,
                                             const savanna::finality_witness& witness) const {
@@ -110,15 +119,17 @@ savanna_finality_trust_store::take_snapshot(const protocol::state_anchor& expect
 }
 
 void savanna_finality_trust_store::install_verified(savanna::finality_checkpoint_bootstrap checkpoint,
-                                                    const savanna::finality_replay& replay,
+                                                    savanna::finality_replay replay,
                                                     const protocol::state_anchor& anchor,
                                                     const protocol::digest& proof_digest, savanna::header_state state) {
    auto candidate = make_checkpoint_entry(std::move(checkpoint));
    candidate.canonical_anchors = canonical_anchors(replay, candidate.position, limits_);
+   auto retained_replay = std::make_shared<const savanna::finality_replay>(std::move(replay));
    auto replay_entry = replay_state_entry{
        .anchor = anchor,
        .proof_digest = proof_digest,
        .state = std::make_shared<const savanna::header_state>(std::move(state)),
+       .replay = retained_replay,
    };
    const auto lock = std::lock_guard{mutex_};
    if (candidate.position.chain != chain_) {
@@ -154,7 +165,7 @@ void savanna_finality_trust_store::install_verified(savanna::finality_checkpoint
       return;
    }
 
-   if (!replay_contains(replay, current.position)) {
+   if (!replay_contains(*retained_replay, current.position)) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_finality,
                             "Savanna finality checkpoint does not descend from the current preferred checkpoint");
    }

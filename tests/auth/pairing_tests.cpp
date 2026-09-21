@@ -1,4 +1,5 @@
 #include <boost/test/unit_test.hpp>
+#include <boost/describe.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -57,6 +58,11 @@ template <typename Value> constexpr bool exposes_pre_session_token = requires(Va
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(auth_pairing)
+
+BOOST_AUTO_TEST_CASE(public_states_are_described_for_network_projections) {
+   static_assert(boost::describe::has_describe_enumerators<pairing::pending_state>::value);
+   static_assert(boost::describe::has_describe_enumerators<pairing::credential_state>::value);
+}
 
 BOOST_AUTO_TEST_CASE(bootstrap_uses_random_base64url_secret_and_persists_only_a_digest) {
    static_assert(!exposes_clear_token<pairing::bootstrap_record>);

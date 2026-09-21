@@ -60,6 +60,8 @@ void require_request_within_limits(const protocol::block_range_request& value, c
 void require_request_within_limits(const protocol::protocol_features_request& value,
                                    const protocol::service_limits& limits);
 void require_request_within_limits(const protocol::producers_request& value, const protocol::service_limits& limits);
+void require_request_within_limits(const protocol::producer_rewards_request& value,
+                                   const protocol::service_limits& limits);
 void require_request_within_limits(const protocol::account_request& value, const protocol::service_limits& limits);
 void require_request_within_limits(const protocol::code_request& value, const protocol::service_limits& limits);
 void require_request_within_limits(const protocol::permission_links_request& value,
@@ -91,6 +93,9 @@ void require_response_within_limits(const protocol::protocol_features_response& 
                                     const protocol::service_limits& limits);
 void require_response_within_limits(const protocol::producers_response& response,
                                     const protocol::producers_request& request, const protocol::service_limits& limits);
+void require_response_within_limits(const protocol::producer_rewards_response& response,
+                                    const protocol::producer_rewards_request& request,
+                                    const protocol::service_limits& limits);
 void require_response_within_limits(const protocol::account_changes_response& response,
                                     const protocol::account_changes_request& request,
                                     const protocol::service_limits& limits);

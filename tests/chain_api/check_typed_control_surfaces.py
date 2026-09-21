@@ -25,6 +25,8 @@ def main() -> int:
     protocol_dir = root / "libraries/chain/protocol/include/forge/chain/protocol"
     api_dir = root / "libraries/chain/api/include/forge/chain/api"
     block_protocol_path = protocol_dir / "block_query.cppm"
+    producer_rewards_protocol_path = protocol_dir / "producer_rewards.cppm"
+    producer_rewards_impl_path = root / "libraries/chain/protocol/producer_rewards.cpp"
     feature_protocol_path = protocol_dir / "protocol_feature.cppm"
     activated_feature_protocol_path = protocol_dir / "activated_protocol_feature.cppm"
     activated_feature_info_protocol_path = protocol_dir / "activated_protocol_feature_info.cppm"
@@ -39,6 +41,8 @@ def main() -> int:
     raw_stream_path = root / "libraries/raw/include/forge/raw/stream.cppm"
 
     block_protocol = block_protocol_path.read_text(encoding="utf-8")
+    producer_rewards_protocol = producer_rewards_protocol_path.read_text(encoding="utf-8")
+    producer_rewards_impl = producer_rewards_impl_path.read_text(encoding="utf-8")
     feature_protocol = feature_protocol_path.read_text(encoding="utf-8")
     activated_feature_protocol = activated_feature_protocol_path.read_text(encoding="utf-8")
     activated_feature_info_protocol = activated_feature_info_protocol_path.read_text(encoding="utf-8")
@@ -96,6 +100,43 @@ def main() -> int:
         block_protocol_path,
         "compatibility alias",
     )
+
+    for needle in (
+        "struct bpay_reward {",
+        "account_name owner;",
+        "asset quantity;",
+        "struct system_reward {",
+        "bool eligible = false;",
+        "bool active = false;",
+        "std::uint32_t unpaid_blocks = 0;",
+        "time_point last_claim_time{};",
+        "time_point next_claim_time{};",
+        "account_name contract;",
+        "action_name claim_action;",
+        "struct bpay_claim {",
+        "std::optional<asset> claimable;",
+        "struct producer_reward {",
+        "account_name producer;",
+        "system_reward system;",
+        "bpay_claim bpay;",
+        "std::optional<producer_reward> project_producer_reward(const producer_info& system,",
+        "struct producer_rewards_request {",
+        "account_name producer;",
+        "struct producer_rewards_response : audited_response {",
+        "block_header anchor_header;",
+        "table_rows_response system;",
+        "table_rows_response bpay;",
+    ):
+        require(producer_rewards_protocol, needle, producer_rewards_protocol_path)
+    if producer_rewards_protocol.count("account_name contract;") != 2:
+        raise SystemExit(f"{producer_rewards_protocol_path}: both reward sources must expose their contract location")
+    if producer_rewards_protocol.count("action_name claim_action;") != 2:
+        raise SystemExit(f"{producer_rewards_protocol_path}: both reward sources must expose their claim action name")
+    forbid(producer_rewards_protocol, "forge::variant", producer_rewards_protocol_path)
+    forbid(producer_rewards_protocol, "core_symbol", producer_rewards_protocol_path)
+    forbid(producer_rewards_protocol, "bpay_balance", producer_rewards_protocol_path)
+    require(producer_rewards_impl, "return std::nullopt;", producer_rewards_impl_path)
+    forbid(producer_rewards_impl, "std::invalid_argument", producer_rewards_impl_path)
 
     for needle in (
         "remaining_container_elements() const noexcept",
@@ -225,6 +266,10 @@ def main() -> int:
         "std::vector<forge::chain::protocol::account_ram_correction> rows;",
         admin_protocol_path,
     )
+    require(admin_protocol, "struct finalizer_status {", admin_protocol_path)
+    require(admin_protocol, "bool enabled = false;", admin_protocol_path)
+    require(admin_protocol, "bool policy_member = false;", admin_protocol_path)
+    require(admin_protocol, "std::optional<finalizer_vote_record> last_emitted_vote;", admin_protocol_path)
     forbid(admin_protocol, "std::vector<forge::variant> rows", admin_protocol_path)
     forbid_pattern(admin_protocol, r"\bforge::variant\s+\w+\s*;", admin_protocol_path, "public variant field")
     forbid_pattern(
@@ -234,9 +279,18 @@ def main() -> int:
         "compatibility alias",
     )
 
-    require(block_api, 'FORGE_API_CONTRACT("forge.chain.api.block", 2, 1)', block_api_path)
+    require(block_api, 'FORGE_API_CONTRACT("forge.chain.api.block", 2, 2)', block_api_path)
     require(info_api, 'FORGE_API_CONTRACT("forge.chain.api.info", 2, 0)', info_api_path)
-    require(admin_api, 'FORGE_API_CONTRACT("forge.chain.api.admin", 2, 3)', admin_api_path)
+    require(admin_api, 'FORGE_API_CONTRACT("forge.chain.api.admin", 2, 4)', admin_api_path)
+    require(block_api, "FORGE_API_METHOD_TYPED_SINCE(get_producer_rewards", block_api_path)
+    require(
+        block_api,
+        '"/v1/chain/blocks/producer-rewards?producer={producer}&anchor={anchor}&finality_from={finality_from}"',
+        block_api_path,
+    )
+    forbid(block_api, "core_symbol", block_api_path)
+    require(admin_api, "FORGE_API_METHOD_TYPED_SINCE(get_finalizer_status", admin_api_path)
+    require(admin_api, '"/v1/chain/admin/finalizer"', admin_api_path)
     require(admin_api, "FORGE_API_METHOD_TYPED_SINCE(get_operator_identity", admin_api_path)
     require(admin_api, "FORGE_API_METHOD_TYPED_SINCE(get_node_status", admin_api_path)
     require(admin_api, "FORGE_API_METHOD_TYPED_SINCE(snapshot_status", admin_api_path)

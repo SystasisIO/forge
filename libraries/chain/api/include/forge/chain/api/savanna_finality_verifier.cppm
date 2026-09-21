@@ -30,6 +30,8 @@ class savanna_finality_verifier final : public finality_verifier {
    [[nodiscard]] std::optional<protocol::block_id> trust_anchor_at_or_before(protocol::block_num target) const override;
    [[nodiscard]] savanna::header_state replay_state(const protocol::state_anchor& expected,
                                                     const protocol::proof_blob& proof) const;
+   [[nodiscard]] savanna::finality_replay verified_replay(const protocol::state_anchor& expected,
+                                                          const protocol::proof_blob& proof) const;
 
    void verify(const protocol::state_anchor& anchor, const protocol::proof_blob& proof) override;
    void verify_ancestry(const protocol::state_anchor& finalized, std::span<const protocol::state_anchor> intermediate,

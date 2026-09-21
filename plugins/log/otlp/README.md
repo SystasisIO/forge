@@ -54,6 +54,8 @@ Runtime identity:
 - `forge_otlp`
 - `forge_config_core`
 - `forge_schema`
+- `forge_plugins_crypto_secrets` only when a configured header uses
+  `secret-id` and `purpose`.
 
 ## Configuration
 
@@ -65,6 +67,7 @@ plugins:
   log:
     otlp:
       enabled: true
+      export-enabled: true
       endpoint: "http://localhost:4318"
       logs-path: "/v1/logs"
       protocol: "http-json"
@@ -102,14 +105,42 @@ plugins:
       request-timeout-ms: 30000
       shutdown-timeout-ms: 5000
 
+      headers:
+        - name: "Authorization"
+          secret-id: "otlp/grafana-cloud"
+          purpose: "otlp.logs.authorization"
+
       crash-spool:
         enabled: false
         directory: "./crash-spool"
         resend-on-startup: true
 ```
 
-`enabled: false` is a no-op: no exporter is created, no sink is attached and no
-network work is started.
+`enabled` is the application-owned plugin selection flag. When it is `false`,
+the OTLP plugin is not instantiated. `export-enabled: false` keeps the plugin
+loaded and applies configured logger routes without creating an exporter,
+attaching an OTLP sink or starting network work. Named routes retain the
+default console parent.
+
+### Header Sources
+
+Each header has exactly one source:
+
+- compatibility/local-test literal: `value`;
+- production secret reference: `secret-id` and `purpose` together.
+
+Supplying neither source, both sources, or only one half of a secret reference
+is an `invalid_config` error. A secret reference is resolved once during plugin
+startup through the local `forge.plugins.crypto.secrets` API. Its configured
+purpose must be allowed by that plugin. Missing Secrets support, an unknown
+secret, or denied purpose stops OTLP startup with a typed error that names only
+the header, secret id and purpose; secret bytes are never placed in diagnostics,
+effective configuration or logs.
+
+For production, keep vendor tokens out of YAML and configure Crypto Secrets
+with the `otlp.logs.authorization` purpose. Literal values remain supported for
+existing deployments and isolated local tests, but should not carry cloud
+credentials.
 
 ## Examples
 
@@ -130,7 +161,10 @@ forge_ilog(network_log, "peer connected ${peer}", ("peer", peer_id));
 ```
 
 The plugin attaches one shared OTLP sink to every configured `loggers[]` route
-with `export: true`. Logger names are user-defined; the plugin does not hardcode
+with `export: true`. Logger routing is additive: parent console appenders and
+the OTLP sink both receive the same structured record, preserving its source
+logger name. If the same shared sink is reachable through multiple route levels,
+it is invoked once. Logger names are user-defined; the plugin does not hardcode
 product domains.
 
 ### Management API
@@ -159,11 +193,11 @@ queue/export counters from the underlying `forge_otlp` exporter.
 
 ## Security And Common Mistakes
 
-- Do not log secrets in logger names, resource attributes, custom headers or
-  structured fields.
-- Invalid configured OTLP headers fail config validation before HTTP requests
-  are built.
-- `enabled: false` creates no exporter and starts no network work.
+- Do not log secrets in logger names, resource attributes or structured fields.
+- Use `secret-id` plus `purpose` for cloud authorization headers. Header source
+  validation runs before HTTP requests are built.
+- `export-enabled: false` creates no exporter and starts no network work, but
+  still configures logger routes and their console-parent routing.
 - Flush during shutdown when callers require best-effort delivery of queued
   records.
 

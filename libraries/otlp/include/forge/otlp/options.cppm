@@ -8,6 +8,8 @@ module;
 
 export module forge.otlp.options;
 
+import forge.net.http.client;
+
 export namespace forge::otlp {
 
 struct attribute {
@@ -47,6 +49,7 @@ struct log_exporter_options {
    std::chrono::milliseconds request_timeout{30'000};
    std::chrono::milliseconds shutdown_timeout{5'000};
    std::string user_agent = "FORGE-OTLP-Exporter-Cpp/1.0.0";
+   forge::net::http::client_options http_client;
 };
 
 struct exporter_metrics {
