@@ -128,6 +128,23 @@ BOOST_AUTO_TEST_CASE(multiaddr_matches_donor_tcp_and_quic_binary_vectors) try {
 }
 FORGE_LOG_AND_RETHROW();
 
+BOOST_AUTO_TEST_CASE(multiaddr_ip6zone_matches_donor_variable_length_binary_vector) try {
+   const auto text = std::string{"/ip6zone/en0/ip6/fe80::1/tcp/4001"};
+   const auto expected = forge::multiformats::bytes{
+       0x2a, 0x03, 'e', 'n', '0', 0x29,
+       0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+       0x06, 0x0f, 0xa1,
+   };
+
+   const auto parsed = forge::multiformats::multiaddr::parse(text);
+   const auto encoded = parsed.to_bytes();
+   BOOST_CHECK_EQUAL(parsed.to_string(), text);
+   BOOST_CHECK_EQUAL_COLLECTIONS(encoded.begin(), encoded.end(), expected.begin(), expected.end());
+   BOOST_CHECK_EQUAL(forge::multiformats::multiaddr::from_bytes(expected).to_string(), text);
+}
+FORGE_LOG_AND_RETHROW();
+
 BOOST_AUTO_TEST_CASE(multiaddr_roundtrips_dns_wss_peer_and_relay_circuit) try {
    const auto peer = std::string{"QmcgpsyWgH8Y8ajJz1Cu72KnS5uo2Aa2LpzU7kinSupNKC"};
    const auto wss = "/dns4/example.com/tcp/443/wss/p2p/" + peer;
@@ -191,11 +208,22 @@ BOOST_AUTO_TEST_CASE(multiaddr_rejects_malformed_donor_cases_with_typed_errors) 
                      forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::parse("/dnsaddr/"),
                      forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::parse("/ip6zone/"),
+                     forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::parse("/ip6zone/en0//ip6/fe80::1"),
+                     forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0x38, 0x00}),
                      forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW(
        (void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0x38, 0x03, 'a', '/', 'b'}),
        forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0x2a, 0x00}),
+                     forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW(
+       (void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0x2a, 0x03, 'a', '/', 'b'}),
+       forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0x2a, 0x80}),
+                     forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0x04, 0x7f}),
                      forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW((void)forge::multiformats::multiaddr::from_bytes(forge::multiformats::bytes{0xff, 0xff, 0xff, 0xff}),
@@ -208,6 +236,8 @@ BOOST_AUTO_TEST_CASE(multiaddr_push_rejects_invalid_component_state) try {
 
    auto value = forge::multiformats::multiaddr{};
    BOOST_CHECK_THROW(value.push({.code = ip4, .value = {}}), forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW(value.push({.code = ip6zone, .value = {}}), forge::multiformats::exceptions::invalid_format);
+   BOOST_CHECK_THROW(value.push({.code = ip6zone, .value = "en/0"}), forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW(value.push({.code = tcp, .value = {}}), forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW(value.push({.code = p2p, .value = {}}), forge::multiformats::exceptions::invalid_format);
    BOOST_CHECK_THROW(value.push({.code = quic_v1, .value = "unexpected"}), forge::multiformats::exceptions::invalid_format);

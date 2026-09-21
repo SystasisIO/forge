@@ -20,6 +20,7 @@ enum class multicodec_code : std::uint64_t {
    ip4 = 0x04,
    tcp = 0x06,
    ip6 = 0x29,
+   ip6zone = 0x2a,
    dns = 0x35,
    dns4 = 0x36,
    dns6 = 0x37,

@@ -24,6 +24,7 @@ struct protocol_entry {
 constexpr auto protocols = std::array{
     protocol_entry{.name = "ip4", .code = multicodec_code::ip4},
     protocol_entry{.name = "ip6", .code = multicodec_code::ip6},
+    protocol_entry{.name = "ip6zone", .code = multicodec_code::ip6zone},
     protocol_entry{.name = "dns", .code = multicodec_code::dns},
     protocol_entry{.name = "dns4", .code = multicodec_code::dns4},
     protocol_entry{.name = "dns6", .code = multicodec_code::dns6},
@@ -62,6 +63,8 @@ multicodec_code multicodec_decode(std::span<const std::uint8_t> data, std::size_
          return multicodec_code::tcp;
       case code_value(multicodec_code::ip6):
          return multicodec_code::ip6;
+      case code_value(multicodec_code::ip6zone):
+         return multicodec_code::ip6zone;
       case code_value(multicodec_code::dns):
          return multicodec_code::dns;
       case code_value(multicodec_code::dns4):

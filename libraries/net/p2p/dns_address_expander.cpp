@@ -166,6 +166,7 @@ void check_cancellation(std::chrono::steady_clock::time_point deadline, std::sto
    case protocol_code::dns4:
    case protocol_code::dns6:
    case protocol_code::dnsaddr:
+   case protocol_code::ip6zone:
    case protocol_code::p2p:
       // For p2p, the text form is a conservative upper bound on decoded bytes.
       return checked_add(result, checked_add(varint_size(component.value.size()), component.value.size(),

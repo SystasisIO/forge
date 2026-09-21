@@ -12,6 +12,12 @@ tests cover DNS compression, all four sections, raw labels, QU/cache-flush
 flags, individual TXT attributes, malformed packets and resource limits. These
 are packet-level tests, not evidence of multicast discovery or interoperability.
 
+Standard `ip6zone` (code 42) is supported by the generic multiaddr codec using
+the Go donor's non-empty, slash-free, length-prefixed value contract. Its
+golden covers `/ip6zone/en0/ip6/fe80::1/tcp/4001`. This does not perform OS
+interface lookup or establish scoped TCP/QUIC dialing support. Those runtime
+paths must be validated separately before the mDNS service can use them.
+
 ## Inspected Sources
 
 | Source | Accepted contract |
