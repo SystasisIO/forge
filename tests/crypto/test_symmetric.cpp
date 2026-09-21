@@ -16,6 +16,8 @@
 import forge.crypto.symmetric.aes;
 import forge.crypto.symmetric.kdf;
 import forge.crypto.symmetric.xsalsa20;
+import forge.crypto.symmetric.salsa20;
+import forge.crypto.digest.sha256;
 import forge.crypto.core.random;
 import forge.crypto.core.secret_bytes;
 import forge.crypto.core.types;
@@ -527,5 +529,57 @@ BOOST_AUTO_TEST_CASE(xsalsa20_rejects_dynamic_key_and_nonce_sizes) try {
    BOOST_CHECK_THROW(construct_nonce(), forge::crypto::symmetric::xsalsa20::exceptions::invalid_nonce);
 }
 FORGE_LOG_AND_RETHROW();
+
+BOOST_AUTO_TEST_CASE(salsa20_matches_libsodium_stream2_golden) {
+   namespace salsa20 = forge::crypto::symmetric::salsa20;
+   // Vendored libsodium test/default/stream2.c and stream2.exp.
+   const auto key = salsa20::key{std::array<std::uint8_t, 32>{
+       0xdc, 0x90, 0x8d, 0xda, 0x0b, 0x93, 0x44, 0xa9, 0x53, 0x62, 0x9b, 0x73, 0x38, 0x20, 0x77, 0x88,
+       0x80, 0xf3, 0xce, 0xb4, 0x21, 0xbb, 0x61, 0xb9, 0x1c, 0xbd, 0x4c, 0x3e, 0x66, 0x25, 0x6c, 0xe4}};
+   const auto nonce = salsa20::make_nonce(
+       std::array<std::uint8_t, 8>{0x82, 0x19, 0xe0, 0x03, 0x6b, 0x7a, 0x0b, 0x37});
+   const auto output = forge::crypto::core::secret_bytes{salsa20::keystream(key, nonce, 4'194'304)};
+   auto hash = forge::crypto::digest::sha256::encoder{};
+   hash.write(output.span());
+   BOOST_CHECK_EQUAL(hash.result().str(), "662b9d0e3463029156069b12f918691a98f7dfb2ca0393c96bbfc6b1fbd630a2");
+
+   for (const auto size : {0U, 1U, 63U, 64U, 65U, 127U, 128U, 129U}) {
+      const auto prefix = forge::crypto::core::secret_bytes{salsa20::keystream(key, nonce, size)};
+      BOOST_CHECK_EQUAL(prefix.size(), size);
+      BOOST_CHECK(std::equal(prefix.span().begin(), prefix.span().end(), output.span().begin()));
+   }
+}
+
+BOOST_AUTO_TEST_CASE(salsa20_rejects_invalid_sizes_and_moved_keys) {
+   namespace salsa20 = forge::crypto::symmetric::salsa20;
+   static_assert(!std::is_copy_constructible_v<salsa20::key>);
+   static_assert(!std::is_copy_assignable_v<salsa20::key>);
+   static_assert(std::is_nothrow_move_constructible_v<salsa20::key>);
+   static_assert(std::is_nothrow_move_assignable_v<salsa20::key>);
+   for (const auto size : {0U, 31U, 33U}) {
+      const auto bytes = forge::crypto::core::bytes(size);
+      BOOST_CHECK_THROW(salsa20::key{bytes}, salsa20::exceptions::invalid_key);
+   }
+   for (const auto size : {0U, 7U, 9U}) {
+      const auto bytes = forge::crypto::core::bytes(size);
+      BOOST_CHECK_THROW(static_cast<void>(salsa20::make_nonce(bytes)), salsa20::exceptions::invalid_nonce);
+   }
+   auto source = salsa20::key{std::array<std::uint8_t, 32>{}};
+   const auto nonce = salsa20::nonce{};
+   const auto expected = forge::crypto::core::secret_bytes{salsa20::keystream(source, nonce, 65)};
+   auto moved = std::move(source);
+   BOOST_CHECK(source.span().empty());
+   BOOST_CHECK_THROW(static_cast<void>(salsa20::keystream(source, nonce, 0)), salsa20::exceptions::invalid_key);
+   auto destination = salsa20::key{std::array<std::uint8_t, 32>{1}};
+   destination = std::move(moved);
+   BOOST_CHECK(moved.span().empty());
+   BOOST_CHECK_THROW(static_cast<void>(salsa20::keystream(moved, nonce, 1)), salsa20::exceptions::invalid_key);
+   const auto actual = forge::crypto::core::secret_bytes{salsa20::keystream(destination, nonce, 65)};
+   BOOST_CHECK_EQUAL_COLLECTIONS(actual.span().begin(), actual.span().end(),
+                                 expected.span().begin(), expected.span().end());
+   BOOST_CHECK_THROW(static_cast<void>(salsa20::keystream(destination, nonce,
+                                                          std::numeric_limits<std::size_t>::max())),
+                     salsa20::exceptions::invalid_size);
+}
 
 BOOST_AUTO_TEST_SUITE_END()

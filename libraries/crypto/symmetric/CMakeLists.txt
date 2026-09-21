@@ -4,10 +4,22 @@ add_library(
    chacha20_poly1305.cpp
    counter_state.cpp
    kdf.cpp
+   salsa20.cpp
    stream_impl.cpp
    xsalsa20.cpp
 )
-forge_target_modules_at(forge_crypto_symmetric crypto/symmetric)
+target_sources(
+   forge_crypto_symmetric PUBLIC
+      FILE_SET CXX_MODULES
+      BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      FILES
+         include/forge/crypto/symmetric/aes.cppm
+         include/forge/crypto/symmetric/chacha20_poly1305.cppm
+         include/forge/crypto/symmetric/kdf.cppm
+         include/forge/crypto/symmetric/salsa20.cppm
+         include/forge/crypto/symmetric/xsalsa20.cppm
+)
+target_compile_features(forge_crypto_symmetric PUBLIC cxx_std_23)
 target_sources(
    forge_crypto_symmetric PRIVATE
       $<TARGET_OBJECTS:forge_crypto_symmetric_xsalsa20_vendor>

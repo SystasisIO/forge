@@ -1069,15 +1069,15 @@
       "interop_applicability": "go_only_rust_limited",
       "decision": "stage_6",
       "planned_branch": "forge-p2p-mdns-v1",
-      "origin": "forge_extension",
+      "origin": "libp2p",
       "forge_feature_ids": [],
       "donor_sources": [
         "donors/libp2p-specs/discovery/mdns.md",
         "donors/go-libp2p/p2p/discovery/mdns/mdns.go",
-        "donors/rust-libp2p/protocols/mdns/src/lib.rs"
+        "donors/rust-libp2p/protocols/mdns/src/lib.rs",
+        "donors/rust-libp2p/transports/pnet/src/lib.rs"
       ],
-      "forge_sources": [ "docs/iterations/forge-p2p-production-implementation-v1.md" ],
-      "rationale": "Forge defines the private fingerprinted mDNS namespace; Go and Rust donors are patterns and limitations only, with no claim that a libp2p specification defines this extension."
+      "rationale": "The libp2p mDNS specification defines the private fingerprinted namespace but not the fingerprint computation. Forge uses the pinned Rust pnet Salsa20/SHAKE128 algorithm and its Go-IPFS golden vector. Go interop explicitly configures the service name; pinned Rust mDNS cannot configure a private service name."
     },
     {
       "id": "addressing.dnsaddr",

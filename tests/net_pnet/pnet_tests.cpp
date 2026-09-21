@@ -33,6 +33,7 @@ import forge.asio.blocking;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.crypto.symmetric.xsalsa20;
+import forge.net.pnet.network_fingerprint;
 import forge.net.pnet.protector;
 import forge.net.transport.connector;
 import forge.net.transport.exceptions;
@@ -531,6 +532,40 @@ BOOST_AUTO_TEST_CASE(key_parses_canonical_swarm_key_terminal_forms_and_fingerpri
 
    const auto short_key = std::array<std::uint8_t, 31>{};
    BOOST_CHECK_THROW(pnet::pre_shared_key{short_key}, pnet::exceptions::invalid_options);
+}
+
+BOOST_AUTO_TEST_CASE(network_fingerprint_matches_rust_go_donor_and_survives_moves) {
+   static_assert(pnet::network_fingerprint::byte_size == 16);
+   static_assert(!std::is_same_v<pnet::network_fingerprint, pnet::operational_fingerprint>);
+   const auto expected = pnet::network_fingerprint{.bytes = {
+       0x45, 0xfc, 0x98, 0x6b, 0xbc, 0x93, 0x88, 0xa1, 0x1d, 0x93, 0x9d, 0xf2, 0x6f, 0x73, 0x0f, 0x0c}};
+   auto source = pnet::pre_shared_key::parse_swarm_key(
+       "/key/swarm/psk/1.0.0/\n/base16/\n6189c5cf0b87fb800c1a9feeda73c6ab5e998db48fb9e6a978575c770ceef683");
+   const auto operational = source.fingerprint();
+   BOOST_CHECK(source.network_fingerprint() == expected);
+   BOOST_CHECK(source.fingerprint() == operational);
+   auto moved = std::move(source);
+   BOOST_CHECK_THROW(static_cast<void>(source.network_fingerprint()), pnet::exceptions::invalid_options);
+   BOOST_CHECK_THROW(static_cast<void>(source.fingerprint()), pnet::exceptions::invalid_options);
+   auto assigned = pnet::pre_shared_key{fixture_key_bytes()};
+   assigned = std::move(moved);
+   BOOST_CHECK_THROW(static_cast<void>(moved.network_fingerprint()), pnet::exceptions::invalid_options);
+   BOOST_CHECK(assigned.network_fingerprint() == expected);
+   BOOST_CHECK(assigned.fingerprint() == operational);
+   auto original = pnet::protector{std::move(assigned)};
+   BOOST_CHECK_THROW(static_cast<void>(assigned.network_fingerprint()), pnet::exceptions::invalid_options);
+   BOOST_CHECK(original.network_fingerprint() == expected);
+   auto protector = std::move(original);
+   BOOST_CHECK_THROW(static_cast<void>(original.network_fingerprint()), pnet::exceptions::invalid_options);
+   auto destination = fixture_protector();
+   destination = std::move(protector);
+   BOOST_CHECK_THROW(static_cast<void>(protector.network_fingerprint()), pnet::exceptions::invalid_options);
+   BOOST_CHECK(destination.network_fingerprint() == expected);
+   BOOST_CHECK(destination.fingerprint() == operational);
+   BOOST_CHECK(fixture_protector().network_fingerprint() != expected);
+
+   const auto long_key = std::array<std::uint8_t, 33>{};
+   BOOST_CHECK_THROW(pnet::pre_shared_key{long_key}, pnet::exceptions::invalid_options);
 }
 
 BOOST_AUTO_TEST_CASE(protector_eagerly_writes_one_local_nonce_before_returning_the_protected_stream) {

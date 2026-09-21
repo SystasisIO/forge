@@ -791,6 +791,7 @@ add_executable(test_forge_crypto_symmetric unit/main.cpp crypto/test_symmetric.c
 target_link_libraries(
    test_forge_crypto_symmetric
    forge_crypto_symmetric
+   forge_crypto_digest
    forge_raw
    Boost::included_unit_test_framework
 )

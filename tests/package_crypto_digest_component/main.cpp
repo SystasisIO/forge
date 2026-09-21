@@ -9,6 +9,7 @@ import forge.crypto.digest.sha224;
 import forge.crypto.digest.sha256;
 import forge.crypto.digest.sha3;
 import forge.crypto.digest.sha512;
+import forge.crypto.digest.shake128;
 
 namespace {
 
@@ -23,6 +24,10 @@ concept has_rvalue_uint8_span = requires(T&& value) { std::move(value).to_uint8_
 } // namespace
 
 int main() {
+   const auto shake = forge::crypto::digest::shake128({}, 16);
+   if (shake.size() != 16 || shake.front() != 0x7f || shake.back() != 0x3e) {
+      return 1;
+   }
    static_assert(!has_rvalue_data<forge::crypto::digest::ripemd160>);
    static_assert(!has_rvalue_data<forge::crypto::digest::sha1>);
    static_assert(!has_rvalue_data<forge::crypto::digest::sha224>);

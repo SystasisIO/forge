@@ -107,6 +107,21 @@ def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def private_mdns_attribution_errors(capability: dict[str, object]) -> list[str]:
+    sources = capability.get("donor_sources", [])
+    required = (
+        "donors/libp2p-specs/discovery/mdns.md",
+        "donors/rust-libp2p/transports/pnet/src/lib.rs",
+    )
+    if (capability.get("origin") != "libp2p" or not isinstance(sources, list)
+            or not all(source in sources for source in required)):
+        return [
+            "donor capability discovery.mdns_private_fingerprinted: must attribute the namespace "
+            "to the libp2p specification and fingerprint computation to pinned Rust pnet"
+        ]
+    return []
+
+
 def extract_namespace_names(source: str, namespace: str, declaration: str) -> set[str]:
     match = re.search(rf"namespace {namespace}\s*\{{(?P<body>.*?)\n\}}", source, re.DOTALL)
     if match is None:
@@ -1607,7 +1622,6 @@ def main() -> int:
             )
 
     forge_policy_extensions = {
-        "discovery.mdns_private_fingerprinted",
         "reachability.private_internet_policy",
     }
     for capability_id in forge_policy_extensions:
@@ -1621,6 +1635,10 @@ def main() -> int:
             errors.append(
                 f"donor capability {capability_id}: must remain a Forge extension with its design source"
             )
+
+    errors.extend(private_mdns_attribution_errors(
+        capabilities_by_id.get("discovery.mdns_private_fingerprinted", {})
+    ))
 
     gossipsub_branch_owners = {
         "pubsub.gossipsub_v1_0_v1_1": "forge-p2p-gossipsub-scoring-v1",

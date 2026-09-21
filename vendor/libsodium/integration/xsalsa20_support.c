@@ -53,3 +53,10 @@ forge_xsalsa20_vendor_xor_ic(unsigned char *c, const unsigned char *m,
 {
    return crypto_stream_xsalsa20_xor_ic(c, m, mlen, n, ic, k);
 }
+
+int
+forge_salsa20_vendor_keystream(unsigned char *c, unsigned long long clen,
+                               const unsigned char *n, const unsigned char *k)
+{
+   return crypto_stream_salsa20(c, clen, n, k);
+}
