@@ -396,9 +396,6 @@ void append_resolved_targets(dns_address_expansion_state& state, const std::vect
 
 void append_endpoint(dns_address_expansion_state& state, dns_address_candidate_state& candidate,
                      const multiaddr& value, const std::optional<peer_id>& expected, bool discovered) {
-   if (discovered && host_addresses::has_interface_zone(value)) {
-      return;
-   }
    auto parsed = std::optional<endpoint>{};
    try {
       parsed.emplace(parse_endpoint(value.to_string()));
@@ -518,6 +515,9 @@ async_expand_candidate(const std::shared_ptr<dns_address_expansion_operation>& o
                        std::stop_token stop, std::size_t depth, bool discovered) {
    auto& state = operation->state;
    check_cancellation(deadline, stop);
+   if (discovered && host_addresses::has_interface_zone(candidate)) {
+      co_return std::vector<endpoint>{};
+   }
    const auto active_key = candidate.to_string();
    auto found = state.candidates.try_emplace(active_key).first;
    auto& cached = found->second;

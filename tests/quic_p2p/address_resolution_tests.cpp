@@ -536,6 +536,27 @@ BOOST_AUTO_TEST_CASE(p2p_dnsaddr_skips_interface_scoped_txt_candidates) {
    }
 }
 
+BOOST_AUTO_TEST_CASE(p2p_dnsaddr_scoped_child_cannot_share_literal_cache_or_provenance) {
+   auto runtime = forge::asio::runtime{};
+   const auto literal = std::string{"/ip6zone/local0/ip6/2001:4860::1/tcp/4001"};
+   const auto dns_root = std::string{"/ip6zone/local0/dnsaddr/scoped-cache.test"};
+   for (const auto literal_first : {false, true}) {
+      BOOST_TEST_CONTEXT("literal first=" << literal_first) {
+         auto script = std::make_shared<lookup_script>();
+         script->text_responses.emplace("_dnsaddr.scoped-cache.test",
+             dns::text_response{.answers = {text_record("dnsaddr=/ip6/2001:4860::1/tcp/4001")}});
+         auto resolver = make_expander(script);
+         const auto roots = literal_first ? std::vector<std::string>{literal, dns_root}
+                                          : std::vector<std::string>{dns_root, literal};
+         const auto result = expand_roots_result(runtime, resolver, roots);
+         BOOST_REQUIRE_EQUAL(result.targets.size(), 1U);
+         BOOST_TEST(result.targets.front().concrete.to_string() == literal);
+         BOOST_REQUIRE_EQUAL(result.targets.front().root_indices.size(), 1U);
+         BOOST_TEST(result.targets.front().root_indices.front() == (literal_first ? 0U : 1U));
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(p2p_dnsaddr_filters_raw_records_before_per_lookup_candidate_limit) {
    const auto known = p2p::peer_id::from_string("QmcgpsyWgH8Y8ajJz1Cu72KnS5uo2Aa2LpzU7kinSupNKC");
    auto runtime = forge::asio::runtime{};
