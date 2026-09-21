@@ -11,6 +11,7 @@ add_library(
    details/dns_address_expander.hxx
    direct_attempt.cpp
    details/direct_attempt.hxx
+   details/direct_dial_root.hxx
    dial_ranker.cpp
    details/dial_ranker.hxx
    black_hole_detector.cpp
