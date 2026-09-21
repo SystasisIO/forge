@@ -30,8 +30,10 @@ module;
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
@@ -1414,17 +1416,26 @@ BOOST_AUTO_TEST_CASE(p2p_topology_manager_deduplicates_sources_and_retries_after
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
    BOOST_REQUIRE(lifecycle.begin_start());
-   auto steady_now = std::chrono::steady_clock::time_point{std::chrono::hours{100}};
-   auto system_now = std::chrono::system_clock::time_point{std::chrono::hours{100}};
-   auto dials = std::size_t{};
-   auto discovery_calls = std::size_t{};
+   const auto steady_anchor = std::chrono::steady_clock::now();
+   const auto system_anchor = std::chrono::system_clock::now();
+   auto steady_offset = std::atomic<std::chrono::steady_clock::duration>{};
+   auto system_offset = std::atomic<std::chrono::system_clock::duration>{};
+   auto dials = std::atomic_size_t{};
+   auto discovery_calls = std::atomic_size_t{};
+   auto first_discovery_release = std::make_shared<forge::asio::notification>();
+   auto first_discovery_entered = std::make_shared<std::promise<void>>();
+   auto first_discovery_entered_future = first_discovery_entered->get_future();
    auto callbacks = topology_callbacks();
    callbacks.discover =
-       [&system_now, &discovery_calls](
+       [system_anchor, &system_offset, &discovery_calls, first_discovery_release, first_discovery_entered](
            std::shared_ptr<cancellation_latch>) -> boost::asio::awaitable<std::vector<discovery::result>> {
-      if (discovery_calls++ != 0) {
+      if (discovery_calls.fetch_add(1, std::memory_order_acq_rel) != 0) {
          co_return std::vector<discovery::result>{};
       }
+      const auto release_epoch = first_discovery_release->epoch();
+      first_discovery_entered->set_value();
+      static_cast<void>(co_await first_discovery_release->async_wait(release_epoch));
+      const auto system_now = system_anchor + system_offset.load(std::memory_order_acquire);
       co_return std::vector<discovery::result>{
           discovery::result{.peer = test_peer(61),
                             .endpoints = {discovered_rendezvous_address(test_peer(61), 4061)},
@@ -1444,28 +1455,54 @@ BOOST_AUTO_TEST_CASE(p2p_topology_manager_deduplicates_sources_and_retries_after
       };
    };
    callbacks.dial = [&dials](discovery::result, std::shared_ptr<cancellation_latch>) -> boost::asio::awaitable<bool> {
-      ++dials;
+      dials.fetch_add(1, std::memory_order_acq_rel);
       co_return false;
    };
-   auto manager = std::make_shared<detail::topology_manager>(test_topology_policy(), std::move(callbacks),
-                                                             detail::topology_manager::clocks{
-                                                                 .steady_now = [&steady_now] { return steady_now; },
-                                                                 .system_now = [&system_now] { return system_now; },
-                                                             });
+   auto policy = test_topology_policy();
+   policy.refresh_interval = std::chrono::hours{24};
+   auto manager = std::make_shared<detail::topology_manager>(
+       std::move(policy), std::move(callbacks), detail::topology_manager::clocks{
+                                                   .steady_now = [steady_anchor, &steady_offset] {
+                                                      return steady_anchor + steady_offset.load(std::memory_order_acquire);
+                                                   },
+                                                   .system_now = [system_anchor, &system_offset] {
+                                                      return system_anchor + system_offset.load(std::memory_order_acquire);
+                                                   },
+                                               });
    manager->start(lifecycle);
+   auto stopped = false;
+   const auto cleanup = boost::scope::scope_exit{[&] {
+      first_discovery_release->notify();
+      if (!stopped) {
+         try {
+            stop_topology_manager(runtime, *manager, lifecycle);
+         } catch (...) {
+         }
+      }
+   }};
+
+   BOOST_REQUIRE(first_discovery_entered_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   first_discovery_entered_future.get();
+   auto strand = boost::asio::make_strand(runtime.context());
+   auto first = boost::asio::co_spawn(strand, manager->async_refresh(), boost::asio::use_future);
+   boost::asio::post(strand, [first_discovery_release] {
+      first_discovery_release->notify();
+   });
+   BOOST_REQUIRE(first.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   static_cast<void>(first.get());
+   BOOST_TEST(dials.load(std::memory_order_acquire) == 1U);
    static_cast<void>(forge::asio::blocking::run(runtime, manager->async_refresh()));
-   BOOST_TEST(dials == 1U);
+   BOOST_TEST(dials.load(std::memory_order_acquire) == 2U);
    static_cast<void>(forge::asio::blocking::run(runtime, manager->async_refresh()));
-   BOOST_TEST(dials == 2U);
+   BOOST_TEST(dials.load(std::memory_order_acquire) == 2U);
+   steady_offset.store(std::chrono::hours{3}, std::memory_order_release);
    static_cast<void>(forge::asio::blocking::run(runtime, manager->async_refresh()));
-   BOOST_TEST(dials == 2U);
-   steady_now += std::chrono::hours{3};
+   BOOST_TEST(dials.load(std::memory_order_acquire) == 3U);
+   system_offset.store(std::chrono::hours{2}, std::memory_order_release);
    static_cast<void>(forge::asio::blocking::run(runtime, manager->async_refresh()));
-   BOOST_TEST(dials == 3U);
-   system_now += std::chrono::hours{2};
-   static_cast<void>(forge::asio::blocking::run(runtime, manager->async_refresh()));
-   BOOST_TEST(dials == 3U);
+   BOOST_TEST(dials.load(std::memory_order_acquire) == 3U);
    stop_topology_manager(runtime, *manager, lifecycle);
+   stopped = true;
 }
 
 BOOST_AUTO_TEST_CASE(p2p_topology_manager_stop_cancels_a_running_source) {
