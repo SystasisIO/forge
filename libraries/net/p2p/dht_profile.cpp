@@ -19,6 +19,7 @@ module forge.net.p2p.dht;
 
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 
 namespace forge::net::p2p {
@@ -145,7 +146,7 @@ void validate_ipns_record(const dht::record& value, dht::value_validation_contex
                                                                 dht::value_expiry_context context) {
    const auto signed_eol = ipns::decode(value.value).eol();
    const auto supplied =
-       ipns::time_point{std::chrono::time_point_cast<std::chrono::nanoseconds>(context.supplied_expires_at)};
+       forge::chrono::timestamp{std::chrono::time_point_cast<std::chrono::nanoseconds>(context.supplied_expires_at)};
    if (signed_eol >= supplied) {
       return context.supplied_expires_at;
    }

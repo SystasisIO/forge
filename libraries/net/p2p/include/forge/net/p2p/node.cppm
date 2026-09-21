@@ -30,6 +30,7 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.identity;
 import forge.net.p2p.identify;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.peer_store;
@@ -201,7 +202,7 @@ class node {
    boost::asio::awaitable<dht::value_get_result> async_get_value(protocol_id profile, dht::key key,
                                                                  dht::query_options options = {});
    [[nodiscard]] ipns::record create_ipns_record(std::span<const std::uint8_t> value, std::uint64_t sequence,
-                                                 ipns::time_point eol, std::chrono::nanoseconds ttl,
+                                                 forge::chrono::timestamp eol, std::chrono::nanoseconds ttl,
                                                  ipns::create_options options = {}) const;
    boost::asio::awaitable<rendezvous::register_response>
    async_rendezvous_register(peer_id rendezvous_peer, rendezvous::register_request request);

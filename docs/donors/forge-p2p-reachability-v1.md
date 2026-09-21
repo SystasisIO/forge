@@ -295,6 +295,16 @@ traversal or Internet-wide production reachability. Real NAT and long-running
 hostile-network proof remain later delivery gates. No donor test-only private
 address allowance or fabricated successful address validation is permitted.
 
+The PR6 time cleanup retains the existing IPNS golden records and their signed
+EOL text. Generic RFC3339 mechanics and the split seconds/nanoseconds value now
+belong to `forge_chrono`, not the P2P protocol module. The wide parser retains
+the existing IPNS truncation of sub-nanosecond digits; the existing narrow
+Chrono parser still rejects precision loss and nanosecond-count overflow.
+Clock acquisition remains explicit `std::chrono` code. Added regressions cover
+signed noncanonical EOL text, offsets, year 9999, negative epochs, integer
+boundaries and IPNS's typed error mapping; they do not change the IPNS wire
+contract or claim a new libp2p capability.
+
 Implementation is in progress. New codec, observed-address, event and state tests
 are not by themselves proof of autonomous lifecycle or live interoperability.
 PR6 is not complete until node integration, focused/package suites, exact-head

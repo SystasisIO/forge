@@ -107,6 +107,7 @@ import forge.net.p2p.dialing;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.identify;
 import forge.net.p2p.identity;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.message;
@@ -11348,7 +11349,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_creates_ipns_record_with_its_identity) {
    const auto identity = make_test_identity();
    auto local = node{runtime, options_for(identity)};
    const auto value = std::string_view{"/ipfs/bafkqaaa"};
-   const auto eol = ipns::time_point{
+   const auto eol = forge::chrono::timestamp{
        std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::sys_days{std::chrono::year{2030} / 1 / 1})};
    const auto record = local.create_ipns_record(
        std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(value.data()), value.size()}, 7, eol,
@@ -11359,7 +11360,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_creates_ipns_record_with_its_identity) {
                   std::vector<std::uint8_t>(value.begin(), value.end()),
               boost::test_tools::per_element());
    ipns::validate(record, local.local_peer(), identity.key,
-                  ipns::time_point{std::chrono::time_point_cast<std::chrono::seconds>(
+                  forge::chrono::timestamp{std::chrono::time_point_cast<std::chrono::seconds>(
                       std::chrono::sys_days{std::chrono::year{2029} / 1 / 1})});
 
    forge::asio::blocking::run(runtime, local.async_stop());
@@ -11369,7 +11370,7 @@ BOOST_AUTO_TEST_CASE(p2p_amino_ipns_preserves_typed_keybook_failures) {
    const auto identity = make_rsa_identity();
    auto create_options = ipns::create_options{};
    create_options.embed_public_key = false;
-   const auto eol = ipns::time_point{
+   const auto eol = forge::chrono::timestamp{
        std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::sys_days{std::chrono::year{2030} / 1 / 1})};
    const auto value = std::string_view{"/ipfs/bafkqaaa"};
    const auto record = ipns::create(

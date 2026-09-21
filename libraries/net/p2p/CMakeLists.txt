@@ -213,6 +213,7 @@ target_include_directories(forge_net_p2p PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
 
 target_link_libraries(
    forge_net_p2p PUBLIC
+      forge_chrono
       forge_exceptions
       forge_api_core
       forge_raw

@@ -222,10 +222,17 @@ Foundation compatibility modules below P2P live in `forge_multiformats`:
 `forge.multiformats.multihash`, `forge.multiformats.multibase` and
 first-class multiaddr/address support.
 
-IPNS retains its domain-specific seconds-plus-subsecond EOL timestamp and
-RFC3339Nano codec. Libp2p-compatible IPNS EOL values may reach year 9999,
-outside the `int64` `sys_time<nanoseconds>` range after 2262; therefore
-`forge_net_p2p` does not depend on `forge_chrono` for IPNS wire handling.
+IPNS uses `forge::chrono::timestamp` directly for EOL (end of lifetime),
+including nanosecond precision through year 9999. `forge_net_p2p` depends on
+`forge_chrono` for the value and shared RFC3339Nano codec; IPNS owns validation,
+expiry, typed P2P errors and preservation of the original signed RFC3339 bytes.
+Decode never replaces signed validity text with canonical formatted text.
+
+Source migration: replace the removed `forge::net::p2p::ipns::time_point`
+with `forge::chrono::timestamp` and import `forge.chrono.timestamp` directly.
+There is no compatibility alias or timestamp clock; acquire current time with
+`std::chrono::system_clock::now()` and explicitly cast to nanoseconds when
+constructing a timestamp. Wire encodings and signed golden records are unchanged.
 
 ## Production Network Direction
 

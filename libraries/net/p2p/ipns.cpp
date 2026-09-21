@@ -3,15 +3,14 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
-#include <array>
 #include <bit>
-#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,6 +18,8 @@ module;
 
 module forge.net.p2p.ipns;
 
+import forge.chrono.iso8601;
+import forge.chrono.timestamp;
 import forge.crypto.asymmetric;
 import forge.exceptions;
 import forge.multiformats.multicodec;
@@ -46,132 +47,21 @@ constexpr auto signature_v2_prefix = std::string_view{"ipns-signature:"};
    FORGE_THROW_EXCEPTION(exceptions::invalid_identity, std::move(message));
 }
 
-void append_fixed_decimal(std::string& out, unsigned value, unsigned width) {
-   auto buffer = std::array<char, 10>{};
-   auto* begin = buffer.data();
-   auto* end = begin + static_cast<std::ptrdiff_t>(buffer.size());
-   const auto result = std::to_chars(begin, end, value);
-   if (result.ec != std::errc{} || static_cast<unsigned>(result.ptr - begin) > width) {
+[[nodiscard]] std::string format_eol(forge::chrono::timestamp value) {
+   try {
+      return forge::chrono::iso8601::format_rfc3339(value);
+   } catch (const std::out_of_range&) {
       throw_invalid_options("IPNS EOL is outside RFC3339Nano range");
    }
-   out.append(width - static_cast<unsigned>(result.ptr - begin), '0');
-   out.append(begin, result.ptr);
 }
 
-[[nodiscard]] std::string format_rfc3339_nano(time_point value) {
-   const auto day = std::chrono::floor<std::chrono::days>(value.whole_seconds());
-   const auto date = std::chrono::year_month_day{day};
-   const auto year = static_cast<int>(date.year());
-   if (!date.ok() || year < 0 || year > 9999) {
-      throw_invalid_options("IPNS EOL is outside RFC3339Nano range");
+[[nodiscard]] forge::chrono::timestamp parse_eol(std::span<const std::uint8_t> bytes) {
+   try {
+      return forge::chrono::iso8601::parse_rfc3339_timestamp(
+          std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+   } catch (const std::invalid_argument& error) {
+      FORGE_THROW_EXCEPTION(exceptions::codec_error, error.what());
    }
-   const auto time = std::chrono::hh_mm_ss<std::chrono::nanoseconds>{(value.whole_seconds() - day) + value.subsecond()};
-   auto out = std::string{};
-   out.reserve(30);
-   append_fixed_decimal(out, static_cast<unsigned>(year), 4);
-   out.push_back('-');
-   append_fixed_decimal(out, static_cast<unsigned>(date.month()), 2);
-   out.push_back('-');
-   append_fixed_decimal(out, static_cast<unsigned>(date.day()), 2);
-   out.push_back('T');
-   append_fixed_decimal(out, static_cast<unsigned>(time.hours().count()), 2);
-   out.push_back(':');
-   append_fixed_decimal(out, static_cast<unsigned>(time.minutes().count()), 2);
-   out.push_back(':');
-   append_fixed_decimal(out, static_cast<unsigned>(time.seconds().count()), 2);
-   auto fraction = time.subseconds().count();
-   if (fraction != 0) {
-      auto digits = std::string{};
-      digits.reserve(9);
-      append_fixed_decimal(digits, static_cast<unsigned>(fraction), 9);
-      while (digits.back() == '0') {
-         digits.pop_back();
-      }
-      out.push_back('.');
-      out += digits;
-   }
-   out.push_back('Z');
-   return out;
-}
-
-[[nodiscard]] unsigned decimal(std::string_view value, std::size_t offset, std::size_t count) {
-   if (count == 0 || offset > value.size() || count > value.size() - offset) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "truncated IPNS RFC3339Nano EOL");
-   }
-   auto out = unsigned{};
-   const auto result = std::from_chars(value.data() + static_cast<std::ptrdiff_t>(offset),
-                                       value.data() + static_cast<std::ptrdiff_t>(offset + count), out);
-   if (result.ec != std::errc{} || result.ptr != value.data() + static_cast<std::ptrdiff_t>(offset + count)) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid IPNS RFC3339Nano EOL digits");
-   }
-   return out;
-}
-
-[[nodiscard]] time_point parse_rfc3339_nano(std::span<const std::uint8_t> bytes) {
-   const auto value = std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-   if (value.size() < 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
-       value[16] != ':') {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid IPNS RFC3339Nano EOL shape");
-   }
-   const auto year_value = decimal(value, 0, 4);
-   const auto month_value = decimal(value, 5, 2);
-   const auto day_value = decimal(value, 8, 2);
-   const auto hour = decimal(value, 11, 2);
-   const auto minute = decimal(value, 14, 2);
-   const auto second = decimal(value, 17, 2);
-   const auto date = std::chrono::year_month_day{std::chrono::year{static_cast<int>(year_value)},
-                                                 std::chrono::month{month_value}, std::chrono::day{day_value}};
-   if (!date.ok() || hour > 23 || minute > 59 || second > 59) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid IPNS RFC3339Nano EOL date or time");
-   }
-
-   auto offset = std::size_t{19};
-   auto fraction = std::int64_t{};
-   if (offset < value.size() && value[offset] == '.') {
-      const auto begin = ++offset;
-      while (offset < value.size() && value[offset] >= '0' && value[offset] <= '9') {
-         ++offset;
-      }
-      const auto digits = offset - begin;
-      if (digits == 0) {
-         FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid IPNS RFC3339Nano fractional seconds");
-      }
-      const auto retained = std::min<std::size_t>(digits, 9);
-      fraction = decimal(value, begin, retained);
-      for (auto remaining = retained; remaining < 9; ++remaining) {
-         fraction *= 10;
-      }
-   }
-
-   auto zone_offset = std::int64_t{};
-   if (offset < value.size() && value[offset] == 'Z') {
-      ++offset;
-   } else if (offset < value.size() && (value[offset] == '+' || value[offset] == '-')) {
-      const auto negative = value[offset++] == '-';
-      if (offset + 5 != value.size() || value[offset + 2] != ':') {
-         FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid IPNS RFC3339Nano timezone");
-      }
-      const auto zone_hour = decimal(value, offset, 2);
-      const auto zone_minute = decimal(value, offset + 3, 2);
-      if (zone_hour > 23 || zone_minute > 59) {
-         FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid IPNS RFC3339Nano timezone offset");
-      }
-      zone_offset = static_cast<std::int64_t>(zone_hour * 60U + zone_minute) * 60;
-      if (negative) {
-         zone_offset = -zone_offset;
-      }
-      offset += 5;
-   } else {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "IPNS RFC3339Nano EOL is missing timezone");
-   }
-   if (offset != value.size()) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "IPNS RFC3339Nano EOL has trailing data");
-   }
-
-   const auto local = std::chrono::sys_seconds{std::chrono::sys_days{date}} + std::chrono::hours{hour} +
-                      std::chrono::minutes{minute} + std::chrono::seconds{second};
-   const auto seconds = local.time_since_epoch().count() - zone_offset;
-   return time_point{std::chrono::sys_seconds{std::chrono::seconds{seconds}}, std::chrono::nanoseconds{fraction}};
 }
 
 [[nodiscard]] std::vector<std::uint8_t> signature_v2_data(std::span<const std::uint8_t> data) {
@@ -256,37 +146,6 @@ optional_bytes(const std::optional<std::vector<std::uint8_t>>& value) noexcept {
 
 } // namespace
 
-time_point::time_point(std::chrono::sys_seconds whole_seconds, std::chrono::nanoseconds subsecond)
-    : whole_seconds_{whole_seconds}, subsecond_{subsecond} {
-   if (subsecond_ < std::chrono::nanoseconds::zero() || subsecond_ >= std::chrono::seconds{1}) {
-      throw_invalid_options("IPNS time subsecond must be in [0, 1 second)");
-   }
-}
-
-time_point::time_point(std::chrono::sys_time<std::chrono::nanoseconds> value) {
-   whole_seconds_ = std::chrono::floor<std::chrono::seconds>(value);
-   subsecond_ = value - whole_seconds_;
-}
-
-time_point time_point::now() {
-   return time_point{std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now())};
-}
-
-std::chrono::sys_seconds time_point::whole_seconds() const noexcept {
-   return whole_seconds_;
-}
-
-std::chrono::nanoseconds time_point::subsecond() const noexcept {
-   return subsecond_;
-}
-
-std::strong_ordering operator<=>(const time_point& left, const time_point& right) noexcept {
-   if (const auto seconds = left.whole_seconds_ <=> right.whole_seconds_; seconds != 0) {
-      return seconds;
-   }
-   return left.subsecond_ <=> right.subsecond_;
-}
-
 std::span<const std::uint8_t> record::value() const noexcept {
    return value_;
 }
@@ -295,7 +154,7 @@ std::uint64_t record::sequence() const noexcept {
    return sequence_;
 }
 
-time_point record::eol() const noexcept {
+forge::chrono::timestamp record::eol() const noexcept {
    return eol_;
 }
 
@@ -347,7 +206,7 @@ std::span<const std::uint8_t> record::encoded() const noexcept {
 }
 
 record create(const public_key& key, const signing_callback& signer, std::span<const std::uint8_t> value,
-              std::uint64_t sequence, time_point eol, std::chrono::nanoseconds ttl, create_options options) {
+              std::uint64_t sequence, forge::chrono::timestamp eol, std::chrono::nanoseconds ttl, create_options options) {
    if (!signer) {
       throw_invalid_options("IPNS signing callback is empty");
    }
@@ -364,7 +223,7 @@ record create(const public_key& key, const signing_callback& signer, std::span<c
       throw_invalid_options(error.what());
    }
 
-   const auto validity = format_rfc3339_nano(eol);
+   const auto validity = format_eol(eol);
    auto cbor = detail::ipns_cbor::encode(detail::ipns_cbor::document{
        .value = {value.begin(), value.end()},
        .validity = {validity.begin(), validity.end()},
@@ -446,7 +305,7 @@ record decode(std::span<const std::uint8_t> bytes) {
    out.value_ = std::move(document.value);
    out.sequence_ = std::bit_cast<std::uint64_t>(document.sequence);
    out.eol_text_ = {document.validity.begin(), document.validity.end()};
-   out.eol_ = parse_rfc3339_nano(document.validity);
+   out.eol_ = parse_eol(document.validity);
    out.ttl_ = std::chrono::nanoseconds{document.ttl};
    out.validity_ = static_cast<validity_type>(document.validity_type);
    out.metadata_ = std::move(document.metadata_values);
@@ -458,12 +317,12 @@ std::vector<std::uint8_t> encode(const record& value) {
 }
 
 void validate(const record& value, const peer_id& expected_peer, std::optional<public_key> external_key,
-              time_point now) {
+              forge::chrono::timestamp now) {
    const auto resolver = [external_key = std::move(external_key)](const peer_id&) { return external_key; };
    validate(value, expected_peer, public_key_resolver{resolver}, now);
 }
 
-void validate(const record& value, const peer_id& expected_peer, const public_key_resolver& resolver, time_point now) {
+void validate(const record& value, const peer_id& expected_peer, const public_key_resolver& resolver, forge::chrono::timestamp now) {
    if (!resolver) {
       throw_invalid_options("IPNS public key resolver is empty");
    }

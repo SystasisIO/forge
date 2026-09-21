@@ -5,6 +5,8 @@
 #include <utility>
 #include <boost/asio/awaitable.hpp>
 
+import forge.chrono.iso8601;
+import forge.chrono.timestamp;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.address_resolution;
@@ -22,6 +24,12 @@ import forge.net.p2p.node;
 import forge.multiformats.multiaddr;
 
 namespace p2p = forge::net::p2p;
+
+static_assert(std::is_same_v<decltype(std::declval<const p2p::ipns::record&>().eol()),
+                             forge::chrono::timestamp>);
+static_assert(requires(const p2p::node& node, forge::chrono::timestamp eol) {
+   { node.create_ipns_record({}, 1, eol, std::chrono::seconds{1}) } -> std::same_as<p2p::ipns::record>;
+});
 
 static_assert(!std::is_copy_constructible_v<p2p::host_event_subscription>);
 static_assert(!std::is_copy_assignable_v<p2p::host_event_subscription>);
@@ -54,6 +62,10 @@ static_assert(requires(forge::net::p2p::node& node, forge::multiformats::multiad
 });
 
 int main() {
+   const auto eol = forge::chrono::iso8601::parse_rfc3339_timestamp("9999-12-31T23:59:59.999999999Z");
+   if (forge::chrono::iso8601::format_rfc3339(eol) != "9999-12-31T23:59:59.999999999Z") {
+      return 1;
+   }
    const auto id = forge::net::p2p::peer_id{};
    auto store = forge::net::p2p::dht::record_store{
        forge::net::p2p::amino_v1(), {.persistence = forge::net::p2p::dht::record_store::make_memory_persistence()}};

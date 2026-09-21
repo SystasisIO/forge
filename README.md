@@ -141,7 +141,7 @@ registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
 | Библиотека | Target | Что Делает | Основные Зависимости |
 | --- | --- | --- | --- |
 | [core](libraries/core/README.md) | `forge_core` | Strings, UTF-8, type names and `uint128`. | Boost headers/multiprecision as owned implementation detail. |
-| [chrono](libraries/chrono/README.md) | `forge_chrono` | ISO-8601/RFC3339 and relative formatting for standard chrono values. | Boost.DateTime privately. |
+| [chrono](libraries/chrono/README.md) | `forge_chrono` | ISO-8601/RFC3339 and relative formatting, plus wide nanosecond timestamps. | Boost.DateTime privately. |
 | [exceptions](libraries/exceptions/README.md) | `forge_exceptions` | Std-based context errors and capture/assert macros. | `forge_core`. |
 | [reflect](libraries/reflect/README.md) | `forge_reflect` | Thin Boost.Describe traversal helpers. | Boost.Describe via Boost headers. |
 | [variant](libraries/variant/README.md) | `forge_variant` | Dynamic value/object model and described conversions. | `forge_chrono`, `forge_core`, `forge_reflect`, Boost.MultiIndex/multiprecision. |
@@ -284,7 +284,8 @@ FORGE использует версию `MAJOR.MINOR.PATCH` вместе с яв
 - Reflection canonical spelling — Boost.Describe. `FORGE_REFLECT` and `FC_REFLECT`
   запрещены.
 - Time API использует `std::chrono`; старые `forge::time_point` aliases не
-  возвращаются.
+  возвращаются. Узкое исключение: `forge::chrono::timestamp` хранит широкую
+  временную метку с наносекундной точностью, без часов и `now()`.
 - Ошибки являются std-compatible: `context_error` используется только для
   structured context and nested exception chains.
 

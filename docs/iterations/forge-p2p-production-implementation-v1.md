@@ -402,6 +402,14 @@ own no capability entry.
     ignored and capability matching decides use, plus opt-in Partial Messages
     with Go/Rust interop evidence.
 
+The maintainer-approved PR6 follow-up moves IPNS's wide timestamp value and
+shared RFC3339 parsing/formatting into the existing `forge_chrono` leaf. This
+is a narrow extension of PR1: the value composes standard seconds and a
+nanosecond remainder to preserve dates through year 9999 without overflowing
+a signed 64-bit nanosecond count. It introduces no clock, `now()` helper or
+timer policy. Ordinary network time and deadlines remain `std::chrono`;
+IPNS retains protocol validation, expiry and the original signed wire text.
+
 The existing DHT, topology and transport services are reused. mDNS, DNSAddr,
 AutoNAT, AutoRelay and path upgrades feed the same topology manager; they do
 not create parallel discovery or dialing loops. Typed events report state

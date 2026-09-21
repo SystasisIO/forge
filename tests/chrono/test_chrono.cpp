@@ -7,6 +7,7 @@
 
 import forge.chrono.iso8601;
 import forge.chrono.relative;
+import forge.chrono.timestamp;
 
 BOOST_AUTO_TEST_SUITE(chrono_test_suite)
 
@@ -121,6 +122,75 @@ BOOST_AUTO_TEST_CASE(rfc3339_rejects_invalid_or_lossy_input) {
                      std::invalid_argument);
    BOOST_CHECK_THROW(static_cast<void>(forge::chrono::iso8601::parse_rfc3339("9999-01-01T00:00:00Z")),
                      std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(wide_timestamp_roundtrips_negative_epochs_and_int64_boundaries) {
+   for (const auto count : {std::numeric_limits<std::int64_t>::min(),
+                            std::numeric_limits<std::int64_t>::min() + 1,
+                            std::int64_t{-1'000'000'001}, std::int64_t{-1'000'000'000},
+                            std::int64_t{-1}, std::int64_t{0}, std::int64_t{1},
+                            std::numeric_limits<std::int64_t>::max()}) {
+      const auto narrow = std::chrono::sys_time<std::chrono::nanoseconds>{std::chrono::nanoseconds{count}};
+      const auto wide = forge::chrono::timestamp{narrow};
+      BOOST_CHECK(wide.subsecond() >= std::chrono::nanoseconds::zero());
+      BOOST_CHECK(wide.subsecond() < std::chrono::seconds{1});
+      const auto text = forge::chrono::iso8601::format_rfc3339(wide);
+      BOOST_CHECK(forge::chrono::iso8601::parse_rfc3339_timestamp(text) == wide);
+      BOOST_CHECK(forge::chrono::iso8601::parse_rfc3339(text) == narrow);
+   }
+   const auto negative = forge::chrono::timestamp{
+       std::chrono::sys_time<std::chrono::nanoseconds>{std::chrono::nanoseconds{-1}}};
+   BOOST_CHECK_EQUAL(negative.whole_seconds().time_since_epoch().count(), -1);
+   BOOST_CHECK_EQUAL(negative.subsecond().count(), 999'999'999);
+   BOOST_CHECK(negative < forge::chrono::timestamp{});
+}
+
+BOOST_AUTO_TEST_CASE(rfc3339_existing_standard_time_conversions_remain_unambiguous) {
+   BOOST_CHECK_EQUAL(forge::chrono::iso8601::format_rfc3339(std::chrono::sys_seconds{}),
+                     "1970-01-01T00:00:00Z");
+   BOOST_CHECK_EQUAL(forge::chrono::iso8601::format_rfc3339(
+                         std::chrono::sys_time<std::chrono::microseconds>{std::chrono::microseconds{1}}),
+                     "1970-01-01T00:00:00.000001Z");
+}
+
+BOOST_AUTO_TEST_CASE(wide_rfc3339_preserves_year_range_and_fraction_policy) {
+   for (const auto text : {"0000-01-01T00:00:00Z", "1969-12-31T23:59:59.999999999Z",
+                           "2500-01-02T03:04:05.123456789Z", "9999-12-31T23:59:59.999999999Z"}) {
+      BOOST_CHECK_EQUAL(forge::chrono::iso8601::format_rfc3339(
+                            forge::chrono::iso8601::parse_rfc3339_timestamp(text)), text);
+   }
+   const auto precise = forge::chrono::iso8601::parse_rfc3339_timestamp(
+       "9999-12-31T23:59:59.123456789999Z");
+   BOOST_CHECK_EQUAL(forge::chrono::iso8601::format_rfc3339(precise),
+                     "9999-12-31T23:59:59.123456789Z");
+   BOOST_CHECK(forge::chrono::iso8601::parse_rfc3339_timestamp("1970-01-01T01:30:01.120340500+01:30") ==
+               forge::chrono::iso8601::parse_rfc3339_timestamp("1970-01-01T00:00:01.1203405Z"));
+   BOOST_CHECK(forge::chrono::iso8601::parse_rfc3339_timestamp("1970-01-01T00:00:00-01:30") ==
+               forge::chrono::iso8601::parse_rfc3339_timestamp("1970-01-01T01:30:00Z"));
+   const auto last = forge::chrono::iso8601::parse_rfc3339_timestamp("9999-12-31T23:59:59.999999999Z");
+   BOOST_CHECK(precise < last);
+   BOOST_CHECK_THROW(static_cast<void>(forge::chrono::iso8601::format_rfc3339(
+                         forge::chrono::iso8601::parse_rfc3339_timestamp("9999-12-31T23:59:59-00:01"))),
+                     std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(wide_timestamp_rejects_invalid_remainders_and_text) {
+   BOOST_CHECK_THROW((forge::chrono::timestamp{std::chrono::sys_seconds{}, std::chrono::nanoseconds{-1}}),
+                     std::invalid_argument);
+   BOOST_CHECK_THROW((forge::chrono::timestamp{std::chrono::sys_seconds{}, std::chrono::seconds{1}}),
+                     std::invalid_argument);
+   for (const auto text : {"1970-02-30T00:00:00Z", "1970-01-01T00:00:00.Z",
+                           "1970-01-01T00:00:00Ztrailing", "1970-01-01T00:00:00+24:00",
+                           "1970-01-01T00:00:00", "1970-01-01T00:00:60Z",
+                           "1970-01-01t00:00:00z"}) {
+      BOOST_CHECK_THROW(static_cast<void>(forge::chrono::iso8601::parse_rfc3339_timestamp(text)),
+                        std::invalid_argument);
+   }
+   for (const auto seconds : {std::numeric_limits<std::int64_t>::min(),
+                              std::numeric_limits<std::int64_t>::max()}) {
+      const auto value = forge::chrono::timestamp{std::chrono::sys_seconds{std::chrono::seconds{seconds}}};
+      BOOST_CHECK_THROW(static_cast<void>(forge::chrono::iso8601::format_rfc3339(value)), std::out_of_range);
+   }
 }
 
 BOOST_AUTO_TEST_CASE(relative_format_retains_suffix_and_future_behavior) {
