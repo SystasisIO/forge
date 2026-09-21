@@ -67,6 +67,8 @@ class peer_store {
       std::string agent_version;
       std::vector<std::uint8_t> public_key;
       std::vector<protocol_id> protocols;
+      // Original verified evidence, including its sequence. Not a forwarding
+      // capability: consumers must apply their address policy before export.
       std::vector<std::uint8_t> signed_peer_record;
       std::vector<endpoint_record> endpoints;
       std::vector<relay_record> relay_reservations;

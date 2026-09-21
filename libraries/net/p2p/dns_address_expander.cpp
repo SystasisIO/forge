@@ -37,6 +37,7 @@ import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 
 #include "details/dns_address_expander.hxx"
+#include "details/host_addresses.hxx"
 
 namespace forge::net::p2p::detail {
 
@@ -395,6 +396,9 @@ void append_resolved_targets(dns_address_expansion_state& state, const std::vect
 
 void append_endpoint(dns_address_expansion_state& state, dns_address_candidate_state& candidate,
                      const multiaddr& value, const std::optional<peer_id>& expected, bool discovered) {
+   if (discovered && host_addresses::has_interface_zone(value)) {
+      return;
+   }
    auto parsed = std::optional<endpoint>{};
    try {
       parsed.emplace(parse_endpoint(value.to_string()));
@@ -615,6 +619,11 @@ async_expand_candidate(const std::shared_ptr<dns_address_expansion_operation>& o
                   } catch (const multiformats::exceptions::invalid_format&) {
                      // DNSADDR records are independently supplied candidates; malformed
                      // records must not poison other valid records in the same answer.
+                     continue;
+                  }
+                  if (host_addresses::has_interface_zone(parsed)) {
+                     // TXT answers are remote data. Interface scope belongs only to
+                     // the local host that supplied a literal root.
                      continue;
                   }
                   ensure_size_at_most(parsed.components(), state.limits.max_multiaddr_size);

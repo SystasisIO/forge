@@ -488,6 +488,54 @@ BOOST_AUTO_TEST_CASE(p2p_dnsaddr_skips_malformed_records_and_deduplicates_result
    BOOST_TEST(values.front().to_string() == "/ip4/192.0.2.30/tcp/4001");
 }
 
+BOOST_AUTO_TEST_CASE(p2p_dnsaddr_skips_interface_scoped_txt_candidates) {
+   auto runtime = forge::asio::runtime{};
+
+   {
+      auto script = std::make_shared<lookup_script>();
+      script->text_responses.emplace(
+          "_dnsaddr.mixed-zone.test",
+          dns::text_response{.answers = {text_record("dnsaddr=/ip6zone/remote0/ip6/2001:4860::1/tcp/4001"),
+                                         text_record("dnsaddr=/ip4/192.0.2.32/tcp/4001")}});
+      auto resolver = make_expander(script);
+      const auto values = expand(runtime, resolver, "/dnsaddr/mixed-zone.test");
+      BOOST_REQUIRE_EQUAL(values.size(), 1U);
+      BOOST_TEST(values.front().to_string() == "/ip4/192.0.2.32/tcp/4001");
+   }
+
+   {
+      auto script = std::make_shared<lookup_script>();
+      script->text_responses.emplace(
+          "_dnsaddr.zone-only.test",
+          dns::text_response{.answers = {text_record("dnsaddr=/ip6zone/remote0/ip6/2001:4860::2/tcp/4001")}});
+      auto resolver = make_expander(script);
+      BOOST_CHECK_THROW(expand(runtime, resolver, "/dnsaddr/zone-only.test"), p2p::exceptions::invalid_options);
+   }
+
+   {
+      auto script = std::make_shared<lookup_script>();
+      script->text_responses.emplace(
+          "_dnsaddr.outer-zone.test",
+          dns::text_response{.answers = {text_record("dnsaddr=/dnsaddr/inner-zone.test")}});
+      script->text_responses.emplace(
+          "_dnsaddr.inner-zone.test",
+          dns::text_response{.answers = {text_record("dnsaddr=/ip6zone/remote0/ip6/2001:4860::3/tcp/4001"),
+                                         text_record("dnsaddr=/ip4/192.0.2.33/tcp/4001")}});
+      auto resolver = make_expander(script);
+      const auto values = expand(runtime, resolver, "/dnsaddr/outer-zone.test");
+      BOOST_REQUIRE_EQUAL(values.size(), 1U);
+      BOOST_TEST(values.front().to_string() == "/ip4/192.0.2.33/tcp/4001");
+      BOOST_REQUIRE_EQUAL(script->text_requests.size(), 2U);
+   }
+
+   {
+      auto resolver = make_expander(std::make_shared<lookup_script>());
+      const auto values = expand(runtime, resolver, "/ip6zone/local0/ip6/fe80::1/tcp/4001");
+      BOOST_REQUIRE_EQUAL(values.size(), 1U);
+      BOOST_TEST(values.front().to_string() == "/ip6zone/local0/ip6/fe80::1/tcp/4001");
+   }
+}
+
 BOOST_AUTO_TEST_CASE(p2p_dnsaddr_filters_raw_records_before_per_lookup_candidate_limit) {
    const auto known = p2p::peer_id::from_string("QmcgpsyWgH8Y8ajJz1Cu72KnS5uo2Aa2LpzU7kinSupNKC");
    auto runtime = forge::asio::runtime{};

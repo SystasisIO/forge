@@ -64,6 +64,7 @@ import forge.net.p2p.connection_gater;
 import forge.net.p2p.dht;
 import forge.net.p2p.discovery;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.envelope;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.host_event;
@@ -282,6 +283,63 @@ struct node_session_fixture {
       const auto self = owner.impl_;
       const auto lock = std::scoped_lock{self->mutex};
       self->connections.fail_next_prepare_for_test();
+   }
+
+   static identify::document local_identify_document(node& owner, std::optional<endpoint> observed_endpoint) {
+      return owner.impl_->local_identify_document(std::move(observed_endpoint));
+   }
+
+   static void scoped_record_retains_sequence_without_forwarding() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      auto server = node{runtime, fixture_options("scoped-record-server")};
+      auto client = node{runtime, fixture_options("scoped-record-client")};
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{&client, [&](void*) noexcept {
+         for (auto* owner : {&client, &server}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (const std::exception& error) { BOOST_ERROR("scoped record cleanup: " << error.what()); }
+            catch (...) { BOOST_ERROR("scoped record cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto address = server.local_endpoint();
+      BOOST_REQUIRE(address);
+      static_cast<void>(bounded_result(runtime, client.async_connect(*address)));
+      const auto self = client.impl_;
+      const auto session = self->session_for_path(server.local_peer(), path::kind::direct);
+      BOOST_REQUIRE(session);
+      const auto previous = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(previous);
+      BOOST_REQUIRE(!previous->signed_peer_record.empty());
+      auto record = rendezvous::codec::decode_peer_record(
+          signed_envelope::decode(previous->signed_peer_record).payload);
+      ++record.sequence;
+      record.endpoints = {parse_endpoint("/ip6zone/foreign0/ip6/2001:4860::1/tcp/4001").to_multiaddr()};
+      const auto& identity = server.impl_->identity;
+      const auto envelope = rendezvous::codec::seal_peer_record(
+          record, decode_public_key(identity.public_key), *identity.private_key).encode();
+      auto document = identify::document{
+          .protocol_version = "/forge/scoped-evidence/1",
+          .protocols = {builtins::ping},
+          .signed_peer_record = envelope,
+      };
+      self->learn_from_identify(session, document, false);
+      const auto retained = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(retained);
+      BOOST_TEST(retained->signed_peer_record == envelope, boost::test_tools::per_element());
+      BOOST_TEST(std::ranges::none_of(retained->endpoints, [](const auto& item) {
+         return std::ranges::any_of(item.address.components(), [](const auto& component) {
+            return component.code == forge::multiformats::protocol_code::ip6zone;
+         });
+      }));
+      const auto forwarded = bounded_result(runtime, self->identify_peer_for_discovery(
+          server.local_peer(), discovery::source::dht, std::chrono::seconds{2}));
+      BOOST_REQUIRE(forwarded);
+      BOOST_TEST(forwarded->signed_peer_record.empty());
+      document.signed_peer_record = previous->signed_peer_record;
+      self->learn_from_identify(session, document, false);
+      const auto after_regression = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(after_regression);
+      BOOST_TEST(after_regression->signed_peer_record == envelope, boost::test_tools::per_element());
    }
 
    static void autonat_local_upgrade_refusal_is_not_negative() {
@@ -1536,6 +1594,25 @@ BOOST_AUTO_TEST_CASE(p2p_dial_cancellation_interrupts_occupied_admission_and_awa
 
 BOOST_AUTO_TEST_CASE(p2p_dial_deadline_interrupts_occupied_admission_and_awaits_native_close) {
    node_session_fixture::blocked_admission(true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_identify_egress_omits_interface_scoped_endpoints) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto options = fixture_options("identify-interface-scope");
+   const auto scoped = parse_endpoint("/ip6zone/receiver0/ip6/2001:4860::1/tcp/4001");
+   const auto public_address = parse_endpoint("/ip6/2001:4860::2/tcp/4001");
+   options.advertised_endpoints = {scoped, public_address};
+   auto owner = node{runtime, std::move(options)};
+
+   const auto document = node_session_fixture::local_identify_document(owner, scoped);
+   BOOST_TEST(!document.observed_endpoint.has_value());
+   BOOST_REQUIRE_EQUAL(document.listen_endpoints.size(), 1U);
+   BOOST_TEST(document.listen_endpoints.front().to_string() ==
+              public_address.to_string() + "/p2p/" + owner.local_peer().to_string());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_identify_scoped_record_retains_sequence_without_forwarding) {
+   node_session_fixture::scoped_record_retains_sequence_without_forwarding();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_cached_session_removed_before_open_allows_only_one_fresh_handshaken_dial) {

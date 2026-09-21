@@ -73,6 +73,20 @@ BOOST_AUTO_TEST_CASE(v2_dialback_is_address_scoped_and_expires) {
    BOOST_CHECK(state.snapshot(now + policy.observation_ttl).effective == reachability::state::unknown);
 }
 
+BOOST_AUTO_TEST_CASE(v2_dialback_keeps_scoped_ipv6_interfaces_distinct) {
+   auto state = detail::reachability_state{reachability_policy{}};
+   const auto first = parse_endpoint("/ip6zone/1/ip6/2001:4860::1/tcp/4001");
+   const auto second = parse_endpoint("/ip6zone/2/ip6/2001:4860::1/tcp/4001");
+   const auto generation = state.set_addresses(std::vector<endpoint>{first});
+   const auto now = std::chrono::steady_clock::time_point{};
+   const auto remote = parse_endpoint("/ip4/1.1.1.1/tcp/4001");
+
+   BOOST_TEST(!state.record_v2(reachability_peer(1), remote, generation, second,
+       reachability::state::publicly_reachable, true, now));
+   BOOST_REQUIRE(state.record_v2(reachability_peer(1), remote, generation, first,
+       reachability::state::publicly_reachable, true, now));
+}
+
 BOOST_AUTO_TEST_CASE(lan_dialback_never_claims_public_internet) {
    auto state = detail::reachability_state{reachability_policy{}};
    const auto address = parse_endpoint("/ip4/192.168.1.2/tcp/4001");

@@ -29,7 +29,8 @@ namespace {
 
 bool same_address(const endpoint& left, const endpoint& right) {
    return left.transport.host_type == right.transport.host_type && left.transport.host == right.transport.host &&
-          left.transport.port == right.transport.port && left.transport.protocol == right.transport.protocol &&
+          left.transport.zone == right.transport.zone && left.transport.port == right.transport.port &&
+          left.transport.protocol == right.transport.protocol &&
           left.encapsulation == right.encapsulation && left.relayed.has_value() == right.relayed.has_value() &&
           (!left.relayed || left.relayed->target == right.relayed->target);
 }

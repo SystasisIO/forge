@@ -15876,6 +15876,51 @@ BOOST_AUTO_TEST_CASE(p2p_identify_push_ignores_invalid_signed_record_without_dro
    forge::asio::blocking::run(runtime, server.async_stop());
 }
 
+BOOST_AUTO_TEST_CASE(p2p_identify_push_rejects_interface_scoped_observation_without_dropping_authenticated_facts) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   const auto server_identity = make_test_certificate_identity("identify-scoped-record-server");
+   const auto client_identity = make_test_certificate_identity("identify-scoped-record-client");
+   auto server = node{runtime, options_for(server_identity)};
+   auto client = node{runtime, options_for(client_identity)};
+
+   const auto server_endpoint = listen(server, runtime);
+   static_cast<void>(forge::asio::blocking::run(
+       runtime, client.async_connect(server_endpoint, node::connect_options{.expected_peer = server.local_peer()})));
+   static_cast<void>(wait_for_identified_peer(server, client.local_peer(), runtime, "scoped Push inbound Identify"));
+   const auto scoped = parse_endpoint("/ip6zone/receiver0/ip6/2001:4860::1/udp/4210/quic-v1/p2p/" +
+                                      client.local_peer().to_string());
+   const auto observed = parse_endpoint("/ip6zone/receiver0/ip6/2001:4860::2/udp/4211/quic-v1");
+   auto stream = forge::asio::blocking::run(
+       runtime, client.async_open_protocol_stream(server.local_peer(), builtins::identify_push));
+   const auto pushed = identify::document{
+       .protocol_version = "/forge/scoped-record/1",
+       .listen_endpoints = addresses_for({scoped}),
+       .protocols = std::vector<protocol_id>{builtins::ping},
+       .observed_endpoint = observed,
+   };
+   forge::asio::blocking::run(runtime, stream.async_write(wrap_length_delimited(identify::encode(pushed))));
+   forge::asio::blocking::run(runtime, stream.async_close());
+   static_cast<void>(wait_for_peer_record(server, client.local_peer(), runtime,
+       "Identify interface-scoped observation rejection", [](const auto& record) {
+          return record.protocol_version == "/forge/scoped-record/1";
+       }));
+
+   const auto found = server.peers().find(client.local_peer());
+   BOOST_REQUIRE(found);
+   BOOST_TEST(found->protocol_version == "/forge/scoped-record/1");
+   BOOST_TEST(!found->observed_endpoint.has_value());
+   BOOST_TEST(std::ranges::none_of(found->endpoints, [](const peer_store::endpoint_record& value) {
+      return std::ranges::any_of(value.address.components(), [](const auto& component) {
+         return component.code == forge::multiformats::protocol_code::ip6zone;
+      });
+   }));
+   BOOST_TEST(std::ranges::any_of(found->protocols, [](const protocol_id& value) { return value == builtins::ping; }));
+   BOOST_TEST(forge::asio::blocking::run(runtime, client.async_ping(server.local_peer())).count() >= 0);
+
+   forge::asio::blocking::run(runtime, client.async_stop());
+   forge::asio::blocking::run(runtime, server.async_stop());
+}
+
 BOOST_AUTO_TEST_CASE(p2p_identify_push_rejects_canonical_record_with_mismatched_inner_peer) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    const auto server_identity = make_test_certificate_identity("identify-inner-peer-server");

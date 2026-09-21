@@ -261,6 +261,15 @@ not inherit that dependency. The planned public mDNS delivery requires Go/Rust
 interop; fingerprinted private mDNS requires Go evidence and a documented Rust
 limitation. Neither mDNS delivery is claimed by the reachability PR.
 
+IPv6 interface zones are local routing metadata. Explicit local endpoints may
+contain `ip6zone`, but network-learned addresses and DNSADDR results cannot
+select an interface on this host. Scoped listeners remain usable locally and
+are omitted from ordinary Identify advertisements and observed-address reports.
+An original verified signed peer record may remain in the peer store as
+sequence evidence while its usable address projection excludes scoped entries.
+Such an envelope is not forwarded by discovery; filtering its signed bytes
+would invalidate the signature. The stored envelope is not a forwarding permit.
+
 The direct QUIC profile keeps a bounded, peer-scoped cache of opaque QUIC
 `NEW_TOKEN` values only for authenticated expected peers. Its key includes the
 expected peer identity and direct endpoint host kind/address/UDP port, never
