@@ -50,10 +50,12 @@ import forge.asio.blocking;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.codec.hex;
+import forge.crypto.digest.sha256;
 import forge.crypto.pki.pem;
 import forge.net.dns.types;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
+import forge.net.p2p.connection_gater;
 import forge.net.p2p.diagnostics;
 import forge.multiformats.exceptions;
 import forge.multiformats.multihash;
@@ -71,12 +73,15 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.private_network;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
-import forge.net.p2p.reachability;
 import forge.net.p2p.rendezvous;
 import forge.net.p2p.relay;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
+import forge.net.p2p.topology;
 import forge.net.pnet.protector;
+
+#include "forge_autonat_fixture.hxx"
+#include "forge_connection_fixture.hxx"
 
 namespace {
 
@@ -506,6 +511,62 @@ void configure_private_network(forge::net::p2p::node::options& options,
    };
 }
 
+forge::net::p2p::node::options autonat_node_options(std::string_view transport) {
+   const auto& identity = local_identity();
+   auto options = forge::net::p2p::node::options{
+       .certificate_pem = identity.certificate_pem,
+       .private_key_pem = identity.private_key_pem,
+       .explicit_peer_id = identity.peer,
+       .capabilities = forge::net::p2p::capability_set{.bits = forge::net::p2p::capabilities::autonat},
+       .relay_policy = {.service_enabled = false, .client_enabled = false, .public_relay_allowed = false,
+                        .auto_discovery_enabled = false},
+       .path_policy = {.allow_direct = true, .allow_hole_punch = false, .allow_relay = false},
+       .public_key = identity.public_key,
+       .peer_state = forge::net::p2p::peer_store::options{
+           .persistence = forge::net::p2p::peer_store::make_memory_persistence(),
+       },
+       .allow_insecure_test_mode = false,
+   };
+   if (transport == "quic") {
+      options.capabilities.add(forge::net::p2p::capabilities::direct_quic);
+   }
+   options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+   options.limits.topology.dht_enabled = false;
+   options.limits.topology.rendezvous_enabled = false;
+   options.limits.topology.peer_exchange_enabled = false;
+   return options;
+}
+
+forge::test::libp2p_interop::autonat_fixture_node
+make_autonat_node(forge::asio::runtime& runtime, const forge::test::libp2p_interop::fixture_arguments& args,
+                  bool service) {
+   const auto scenario = required(args, "scenario");
+   const auto transport = optional_value(args, "transport", "quic");
+   static_cast<void>(required(args, "store-dir"));
+   auto options = autonat_node_options(transport);
+   configure_private_network(options, args, transport);
+   if (transport == "tcp-pnet") {
+      const auto egress = required(args, "internet-egress");
+      if (!options.private_network || (egress != "allow" && egress != "deny")) {
+         throw std::runtime_error{"tcp-pnet AutoNAT requires --pnet-key-file and --internet-egress allow|deny"};
+      }
+      options.private_network->internet_egress = egress == "allow"
+          ? forge::net::p2p::private_network::internet_egress_policy::allow_internet
+          : forge::net::p2p::private_network::internet_egress_policy::deny_external;
+      options.capabilities = forge::net::p2p::capability_set{.bits = forge::net::p2p::capabilities::autonat};
+   }
+   const auto v1 = scenario == "autonat_v1";
+   options.reachability_policy.client_v1_enabled = !service && v1;
+   options.reachability_policy.client_v2_enabled = !service && !v1;
+   options.reachability_policy.service_v1_enabled = service && v1;
+   options.reachability_policy.service_v2_enabled = service && !v1;
+   auto [gater, observation] =
+       forge::test::libp2p_interop::make_autonat_connection_observer(options.connection_gater);
+   options.connection_gater = std::move(gater);
+   return {.value = std::make_unique<forge::net::p2p::node>(runtime, std::move(options)),
+           .connection_observation = std::move(observation)};
+}
+
 std::string pnet_evidence(const std::map<std::string, std::string>& args) {
    return "\"pnet_enabled\":true,\"negotiated_pnet\":true,\"pnet_fingerprint\":\"" +
           json_escape(required(args, "pnet-fingerprint")) + "\"";
@@ -618,7 +679,8 @@ std::vector<std::uint8_t> signed_rendezvous_record(const libp2p_identity& identi
 
 std::vector<std::uint8_t> wrap_length_delimited(std::span<const std::uint8_t> payload);
 boost::asio::awaitable<std::vector<std::uint8_t>> read_length_delimited(forge::net::p2p::stream& stream,
-                                                                        std::size_t max_payload_size);
+                                                                        std::size_t max_payload_size,
+                                                                        std::vector<std::uint8_t>* observed_frame = nullptr);
 
 void register_echo(forge::net::p2p::node& value) {
    value.register_protocol_handler(
@@ -739,7 +801,8 @@ std::vector<std::uint8_t> wrap_length_delimited(std::span<const std::uint8_t> pa
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> read_length_delimited(forge::net::p2p::stream& stream,
-                                                                        std::size_t max_payload_size) {
+                                                                        std::size_t max_payload_size,
+                                                                        std::vector<std::uint8_t>* observed_frame) {
    auto buffer = std::vector<std::uint8_t>{};
    while (true) {
       try {
@@ -750,6 +813,12 @@ boost::asio::awaitable<std::vector<std::uint8_t>> read_length_delimited(forge::n
          const auto total = decoded.size + static_cast<std::size_t>(decoded.value);
          if (buffer.size() >= total) {
             auto frame = std::vector<std::uint8_t>{buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(total)};
+            if (observed_frame) {
+               if (buffer.size() != total) {
+                  throw std::runtime_error{"single-response evidence contains trailing wire bytes"};
+               }
+               *observed_frame = frame;
+            }
             co_return unwrap_length_delimited(frame, max_payload_size);
          }
       } catch (const forge::multiformats::exceptions::invalid_format& error) {
@@ -1399,13 +1468,36 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
       return "\"protocol_count\":" + std::to_string(record->protocols.size()) + ",\"agent_version\":\"" +
              json_escape(record->agent_version) + "\",\"signed_peer_record\":true";
    }
-   if (scenario == "autonatv2") {
-      const auto state = forge::asio::blocking::run(runtime, value.async_probe_reachability(peer));
-      return "\"reachability\":" + std::to_string(static_cast<int>(state));
-   }
    if (scenario == "relay_reserve") {
+      const auto started = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch());
       const auto reservation = forge::asio::blocking::run(runtime, value.async_reserve_relay(peer));
-      return "\"voucher_bytes\":" + std::to_string(reservation.voucher ? reservation.voucher->encode().size() : 0U);
+      const auto received = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch());
+      const auto snapshot = value.diagnostics();
+      const auto session =
+          std::ranges::find(snapshot.sessions, reservation.relay_peer, &forge::net::p2p::diagnostics::session::remote_peer);
+      if (reservation.relay_peer != peer || session == snapshot.sessions.end() || !session->remote_endpoint) {
+         throw std::runtime_error{"FORGE reservation lacks its authenticated relay session"};
+      }
+      auto addresses = std::string{"["};
+      for (const auto& address : reservation.relay_endpoints) {
+         if (addresses.size() > 1) {
+            addresses += ',';
+         }
+         addresses += endpoint_json(address);
+      }
+      addresses += ']';
+      return "\"reservation_basis\":\"forge.node.async_reserve_relay\",\"relay_peer_id\":\"" +
+             json_escape(reservation.relay_peer.to_string()) + "\",\"reservation_client_peer_id\":\"" +
+             json_escape(value.local_peer().to_string()) + "\",\"authenticated_remote_peer_id\":\"" +
+             json_escape(session->remote_peer.to_string()) + "\",\"authenticated_remote_address\":" +
+             endpoint_json(*session->remote_endpoint) + ",\"reservation_started_at_unix_seconds\":" +
+             std::to_string(started.count()) + ",\"reservation_received_at_unix_seconds\":" +
+             std::to_string(received.count()) + ",\"reservation_expires_at_unix_seconds\":" +
+             std::to_string(reservation.expires_at.count()) + ",\"relay_endpoints\":" + addresses +
+             ",\"voucher_present\":" + (reservation.voucher ? "true" : "false") + ",\"voucher_bytes\":" +
+             std::to_string(reservation.voucher ? reservation.voucher->encode().size() : 0U);
    }
    if (scenario == "dht_find_peer") {
       const auto result =
@@ -1823,15 +1915,28 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
             bytes[index] = static_cast<std::uint8_t>(index % 251U);
          }
       }
-      forge::asio::blocking::run(runtime, stream.async_write(wrap_length_delimited(bytes)));
-      const auto echoed = forge::asio::blocking::run(runtime, read_length_delimited(stream, maximum_echo_payload));
+      const auto request = wrap_length_delimited(bytes);
+      auto response = std::vector<std::uint8_t>{};
+      const auto stream_id = stream.id();
+      const auto authentication = stream.authentication();
+      forge::asio::blocking::run(runtime, stream.async_write(request));
+      const auto echoed = forge::asio::blocking::run(runtime, read_length_delimited(stream, maximum_echo_payload, &response));
       if (echoed != bytes) {
          throw std::runtime_error{"FORGE echo mismatch"};
       }
+      forge::asio::blocking::run(runtime, stream.async_close());
       auto evidence = "\"protocol\":\"" + json_escape(echo_protocol) + "\",\"payload_bytes\":" +
-                      std::to_string(echoed.size()) + ",\"echo_ok\":true";
+                      std::to_string(echoed.size()) + ",\"echo_ok\":true" +
+                      ",\"application_stream_id\":" + std::to_string(stream_id) +
+                      ",\"application_protocol\":\"" + json_escape(echo_protocol) +
+                      "\",\"application_close_returned\":true,\"application_request_framed_bytes\":" +
+                      std::to_string(request.size()) + ",\"application_response_framed_bytes\":" +
+                      std::to_string(response.size()) + ",\"application_request_framed_sha256\":\"" +
+                      forge::crypto::digest::sha256::hash(std::span<const std::uint8_t>{request}).str() +
+                      "\",\"application_response_framed_sha256\":\"" +
+                      forge::crypto::digest::sha256::hash(std::span<const std::uint8_t>{response}).str() + "\"";
       if (remote.transport.protocol != forge::net::p2p::endpoint::protocol_kind::quic_v1) {
-         evidence += ",\"negotiated_security\":\"" + std::string{negotiated_security(stream.authentication())} +
+         evidence += ",\"negotiated_security\":\"" + std::string{negotiated_security(authentication)} +
                      "\",\"negotiated_muxer\":\"/yamux/1.0.0\"";
       }
       return evidence;
@@ -1939,6 +2044,10 @@ int dial_mode(const std::map<std::string, std::string>& args) {
    auto remote = forge::net::p2p::parse_endpoint(required(args, "addr"));
    auto peer = forge::net::p2p::peer_id::from_string(required(args, "peer-id"));
    const auto pnet_profile = transport == "tcp-pnet";
+   const auto direct_evidence = scenario == "identify" || scenario == "echo";
+   if (direct_evidence) {
+      forge::test::libp2p_interop::require_fresh_identify(value, peer);
+   }
    value.peers().learn_endpoint(
        peer, remote,
        forge::net::p2p::capability_set{
@@ -1951,7 +2060,8 @@ int dial_mode(const std::map<std::string, std::string>& args) {
                              forge::net::p2p::capabilities::rendezvous | forge::net::p2p::capabilities::pubsub});
 
    auto connection_evidence = std::string{};
-   if (scenario == "identify" || scenario.starts_with("dht_") || scenario == "gossipsub_publish" ||
+   auto captured_connection = std::optional<forge::net::p2p::diagnostics::session>{};
+   if (direct_evidence || scenario.starts_with("dht_") || scenario == "gossipsub_publish" ||
        scenario == "gossipsub_mixed_mesh_stress" || scenario == "pnet") {
       auto session = forge::net::p2p::node::session_info{};
       try {
@@ -1977,23 +2087,21 @@ int dial_mode(const std::map<std::string, std::string>& args) {
          throw std::runtime_error{"FORGE automatic Identify did not complete, state=" +
                                   std::to_string(static_cast<int>(session.identify_state))};
       }
-      if (scenario == "identify") {
+      if (direct_evidence) {
          if (session.remote_peer != peer || session.path != forge::net::p2p::path::kind::direct) {
             throw std::runtime_error{"FORGE Identify connection did not retain the authenticated direct peer"};
          }
-         const auto snapshot = value.diagnostics();
-         const auto observed = std::ranges::find(snapshot.sessions, session.remote_peer,
-                                                 &forge::net::p2p::diagnostics::session::remote_peer);
-         if (observed == snapshot.sessions.end() || !observed->remote_endpoint ||
-             observed->remote_endpoint->transport.protocol != remote.transport.protocol) {
-            throw std::runtime_error{"FORGE Identify connection did not expose the dialed transport"};
-         }
+         captured_connection = forge::test::libp2p_interop::capture_identified_connection(value, peer, remote);
          const auto transport = remote.transport.protocol == forge::net::p2p::endpoint::protocol_kind::quic_v1
                                     ? std::string_view{"/quic-v1"}
                                     : std::string_view{"tcp"};
          connection_evidence = "\"negotiated_transport\":\"" + std::string{transport} +
                                "\",\"authenticated_remote_peer_id\":\"" + json_escape(session.remote_peer.to_string()) +
-                               "\"";
+                               "\",\"local_peer_id\":\"" + json_escape(value.local_peer().to_string()) +
+                               "\",\"connection_remote_addr\":\"" + json_escape(captured_connection->remote_endpoint->to_string()) +
+                               "\",\"application_connection_id\":" + std::to_string(captured_connection->id) +
+                               ",\"identify_event_connection_id\":" + std::to_string(captured_connection->id) +
+                               ",\"identify_event_basis\":\"automatic_identify_single_fresh_connection\"";
       }
       if (scenario == "pnet") {
          if (session.identify_state != forge::net::p2p::identify::state::identified ||
@@ -2007,10 +2115,17 @@ int dial_mode(const std::map<std::string, std::string>& args) {
 
    const auto details = run_scenario(runtime, value, scenario, optional_value(args, "payload", pubsub_payload), peer,
                                      remote, optional_value(args, "target-peer-id"));
+   const auto identify_evidence = scenario == "echo"
+       ? run_scenario(runtime, value, "identify", {}, peer, remote) : std::string{};
+   if (captured_connection) {
+      forge::test::libp2p_interop::require_same_connection(value, *captured_connection);
+      connection_evidence += ",\"single_fresh_connection_retained\":true";
+   }
    forge::asio::blocking::run(runtime, value.async_stop());
    write_file(required(args, "result-file"), "{\"implementation\":\"forge\",\"role\":\"dialer\",\"scenario\":\"" +
                                                  json_escape(scenario) + "\",\"status\":\"ok\"," + details +
                                                  (connection_evidence.empty() ? "" : "," + connection_evidence) +
+                                                 (identify_evidence.empty() ? "" : "," + identify_evidence) +
                                                  (scenario == "pnet" ? "," + pnet_evidence(args) : "") +
                                                  "}\n");
    return 0;
@@ -2220,6 +2335,12 @@ int main(int argc, char** argv) {
       }
       if (args.at("command") == "build-info") {
          return build_info_mode();
+      }
+      const auto scenario = optional_value(args, "scenario");
+      if ((args.at("command") == "listen" || args.at("command") == "dial") &&
+          (scenario == "autonat_v1" || scenario == "autonat_v2")) {
+         return forge::test::libp2p_interop::run_forge_autonat_fixture(
+             args, {.make_node = make_autonat_node});
       }
       if (args.at("command") == "listen") {
          return listen_mode(args);

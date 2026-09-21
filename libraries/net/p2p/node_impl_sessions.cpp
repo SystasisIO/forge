@@ -78,6 +78,7 @@ import forge.net.yamux.session;
 
 #include "details/direct_transport.hxx"
 #include "details/cancellation_latch.hxx"
+#include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
 #include "details/owner_cancellation.hxx"
 #include "details/path_selector.hxx"
@@ -100,7 +101,7 @@ namespace asio = boost::asio;
    });
 }
 
-boost::asio::awaitable<void> async_close_terminal(forge::net::transport::session& connection) {
+boost::asio::awaitable<std::exception_ptr> async_close_terminal(forge::net::transport::session& connection) {
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    try {
       co_await connection.async_close();
@@ -108,7 +109,9 @@ boost::asio::awaitable<void> async_close_terminal(forge::net::transport::session
       // transport::session reports failures only after terminal cleanup. Keep
       // the owner through that barrier, then make cancellation idempotent.
       detail::request_session_cancel(connection);
+      co_return std::current_exception();
    }
+   co_return std::exception_ptr{};
 }
 
 std::shared_ptr<node::impl::session_state>
@@ -126,6 +129,7 @@ node::impl::retire_session_locked(const std::shared_ptr<session_state>& session,
       std::terminate();
    }
    auto retired = transferred.position->second;
+   remove_address_observation_locked(retired->id);
    if (track_close) {
       try {
          static_cast<void>(
@@ -156,7 +160,7 @@ boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_
       co_return;
    }
 
-   co_await async_close_terminal(session->connection);
+   const auto failure = co_await async_close_terminal(session->connection);
    // The terminal model can retain the direct-attempt teardown ticket through
    // its lower native transport, so destroy it before releasing that ticket.
    auto transport = std::move(session->connection);
@@ -166,10 +170,46 @@ boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_
    auto teardown_ticket = detail::session_teardown::ticket{};
    session->resource.release();
    session->native_lifetime.reset();
+   if (failure) {
+      const auto lock = std::scoped_lock{mutex};
+      if (session_admission_closed && !session_shutdown_error) { session_shutdown_error = failure; }
+   }
    forget_retired_session(session);
    if (session->retirement.complete_terminal(teardown_ticket)) {
       teardown_ticket.release();
    }
+}
+
+boost::asio::awaitable<void> node::impl::async_retire_sessions_gracefully() {
+   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+   auto retiring = std::vector<std::shared_ptr<session_state>>{};
+   {
+      const auto lock = std::scoped_lock{mutex};
+      session_admission_closed = true;
+      retiring.reserve(sessions.size() + retiring_sessions.size());
+      for (const auto& [_, session] : retiring_sessions) { retiring.push_back(session); }
+      while (!sessions.empty()) {
+         const auto session = sessions.begin()->second;
+         session->closed = true;
+         retiring.push_back(retire_session_locked(session, false));
+         connections.forget(session->id);
+         ++metrics_value.sessions_closed;
+      }
+      metrics_value.active_sessions = 0;
+   }
+   // Keep the shared listener socket alive until every established session has
+   // sent its close and joined native cleanup. Concurrent callers join the same
+   // retirement owners, including closes started before this snapshot.
+   for (const auto& session : retiring) {
+      try {
+         co_await async_retire_session(session, true);
+      } catch (...) {
+         const auto lock = std::scoped_lock{mutex};
+         if (!session_shutdown_error) { session_shutdown_error = std::current_exception(); }
+      }
+   }
+   const auto lock = std::scoped_lock{mutex};
+   if (session_shutdown_error) { std::rethrow_exception(session_shutdown_error); }
 }
 
 void node::impl::forget_retired_session(const std::shared_ptr<session_state>& session) noexcept {
@@ -408,6 +448,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                             rejection_reason.empty() ? "P2P session admission rejected" : rejection_reason);
    }
 
+   lifecycle_wakeup->notify();
    co_return;
 }
 
@@ -649,6 +690,7 @@ node::impl::commit_direct_attempt(detail::direct_attempt attempt,
       session->authentication = attempt.connection.authentication;
       session->direct_endpoint = attempt.target;
       session->direct_roots = std::move(roots);
+      session->local_endpoint = attempt.connection.local_endpoint;
       session->remote_endpoint = attempt.connection.remote_endpoint;
       session->native_lifetime = attempt.resources;
       session->resource = std::move(attempt.resources->session);
@@ -823,6 +865,7 @@ boost::asio::awaitable<void> node::impl::handle_inbound_connection(direct::conne
       };
       session->authentication = connection.authentication;
       session->direct_endpoint = connection.local_endpoint;
+      session->local_endpoint = connection.local_endpoint;
       session->remote_endpoint = connection.remote_endpoint;
 
       // Complete all copying before transferring terminal transport ownership.
@@ -927,7 +970,7 @@ boost::asio::awaitable<void> node::impl::handle_incoming_stream(std::shared_ptr<
       } else if (admitted.protocol == builtins::autonat_v2_dial_back) {
          co_await handle_autonat_v2_dial_back(session, std::move(admitted.stream));
       } else if (admitted.protocol == builtins::autonat_v1) {
-         co_await handle_autonat_v1(std::move(admitted.stream));
+         co_await handle_autonat_v1(session, std::move(admitted.stream));
       } else if (admitted.protocol == builtins::relay_hop) {
          co_await handle_relay_hop(session, std::move(admitted.stream));
       } else if (admitted.protocol == builtins::relay_stop) {

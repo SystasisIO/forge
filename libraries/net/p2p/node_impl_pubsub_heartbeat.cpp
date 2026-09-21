@@ -87,9 +87,15 @@ void node::impl::launch_pubsub_heartbeat() {
    if (!launch_tracked([self]() -> asio::awaitable<void> {
           const auto wakeup = self->lifecycle_wakeup;
           auto observed = wakeup->epoch();
-          observed = co_await wakeup->async_wait_until(
-              observed, std::chrono::steady_clock::now() + self->options.limits.pubsub.limits.heartbeat_initial_delay);
+          auto deadline = std::chrono::steady_clock::now() + self->options.limits.pubsub.limits.heartbeat_initial_delay;
           while (true) {
+             // Admission also notifies this wakeup; only the deadline schedules work.
+             while (!self->lifecycle.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+                observed = co_await wakeup->async_wait_until(observed, deadline);
+             }
+             if (self->lifecycle.stop_requested()) {
+                co_return;
+             }
              {
                 auto lock = std::scoped_lock{self->mutex};
                 if (self->stopped) {
@@ -97,8 +103,7 @@ void node::impl::launch_pubsub_heartbeat() {
                 }
              }
              co_await self->pubsub_heartbeat_once();
-             observed = co_await wakeup->async_wait_until(
-                 observed, std::chrono::steady_clock::now() + self->options.limits.pubsub.limits.heartbeat_interval);
+             deadline = std::chrono::steady_clock::now() + self->options.limits.pubsub.limits.heartbeat_interval;
           }
        })) {
       auto lock = std::scoped_lock{mutex};

@@ -1077,6 +1077,14 @@ add_executable(
    quic_p2p/connection_gater_tests.cpp
    quic_p2p/resource_manager_tests.cpp
    quic_p2p/p2p_lifecycle_tests.cpp
+   quic_p2p/host_event_tests.cpp
+   quic_p2p/reachability_state_tests.cpp
+   quic_p2p/reachability_manager_tests.cpp
+   quic_p2p/node_reachability_tests.cpp
+   quic_p2p/node_autonat_service_tests.cpp
+   quic_p2p/autonat_exchange_tests.cpp
+   quic_p2p/net_p2p_observed_address_tests.cpp
+   p2p_reachability_codec_tests.cpp
    quic_p2p/p2p_tests.cpp
    quic_p2p/direct_transport_tests.cpp
    quic_p2p/address_resolution_tests.cpp
@@ -1187,10 +1195,12 @@ add_custom_target(
 add_executable(
    forge_interop_fixture
    libp2p_interop/forge_interop_fixture.cpp
+   libp2p_interop/forge_autonat_fixture.cpp
+   libp2p_interop/forge_connection_fixture.cpp
 )
 add_dependencies(forge_interop_fixture forge_interop_fixture_build_info)
 target_include_directories(forge_interop_fixture PRIVATE ${FORGE_INTEROP_BUILD_INFO_DIRECTORY})
-target_link_libraries(forge_interop_fixture forge)
+target_link_libraries(forge_interop_fixture forge_net_p2p forge_codec_hex forge_crypto_digest)
 
 add_test(
    NAME test_forge_libp2p_wire_fixture
@@ -1319,11 +1329,58 @@ add_test(
 )
 set_tests_properties(test_forge_libp2p_process_lifecycle PROPERTIES TIMEOUT 10)
 add_test(
+   NAME test_forge_libp2p_autonat_network
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_autonat_network
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_autonat_network PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_autonat_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_autonat_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_autonat_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_autonat_cases
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_autonat_cases
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_autonat_cases PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_autonat_acceptance
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_autonat_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_autonat_acceptance PROPERTIES TIMEOUT 120)
+add_test(
    NAME test_forge_libp2p_provider_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest test_provider_evidence
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
 )
 set_tests_properties(test_forge_libp2p_provider_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_identify_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_identify_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_identify_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_upgrade_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_upgrade_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_upgrade_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_rust_upgrade_evidence
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/test_rust_upgrade_evidence.py
+)
+set_tests_properties(test_forge_libp2p_rust_upgrade_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_relay_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest test_relay_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_relay_evidence PROPERTIES TIMEOUT 10)
 
 execute_process(
    COMMAND git -C ${CMAKE_SOURCE_DIR} rev-parse HEAD
@@ -1342,6 +1399,24 @@ add_custom_target(
       --forge-fixture $<TARGET_FILE:forge_interop_fixture>
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
       --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}
+      --forge-root ${CMAKE_SOURCE_DIR}
+      --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
+      --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json
+      --expected-head ${_forge_p2p_stage6_expected_head}
+   DEPENDS forge_interop_fixture test_forge_p2p_inventory
+   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+   VERBATIM
+)
+
+add_custom_target(
+   test_forge_p2p_autonat_acceptance
+   COMMAND ${Python3_EXECUTABLE}
+      ${FORGE_P2P_STAGE6_PROMOTION_WRAPPER}
+      --suite autonat
+      --runner ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/runner.py
+      --forge-fixture $<TARGET_FILE:forge_interop_fixture>
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+      --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/autonat
       --forge-root ${CMAKE_SOURCE_DIR}
       --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
       --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json

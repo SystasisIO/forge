@@ -47,6 +47,9 @@ class dial_scheduler;
 class lifecycle_wakeup;
 class resource_stream;
 class worker_terminal_owner;
+class reachability_manager;
+class observed_address_manager;
+class host_event_source;
 
 } // namespace detail
 
@@ -92,6 +95,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
       std::shared_ptr<void> native_lifetime;
       std::optional<forge::net::p2p::endpoint> direct_endpoint;
       std::vector<forge::multiformats::multiaddr> direct_roots;
+      std::optional<forge::net::p2p::endpoint> local_endpoint;
       std::optional<forge::net::p2p::endpoint> remote_endpoint;
       connection_manager::direction direction = connection_manager::direction::outbound;
       std::string identify_error;
@@ -259,11 +263,27 @@ struct node::impl : std::enable_shared_from_this<impl> {
    mutable connection_manager connections{connection_policy_for(options.limits)};
    std::map<protocol_id, node::protocol_handler> handlers;
    std::map<std::uint64_t, std::shared_ptr<session_state>> sessions;
+   std::shared_ptr<detail::reachability_manager> reachability_manager_value;
+   std::shared_ptr<detail::observed_address_manager> observed_addresses;
+   std::shared_ptr<detail::host_event_source> host_event_source;
+   std::vector<endpoint> confirmed_observed_addresses;
+   bool reachability_started = false;
+   bool reachability_finished = false;
+   bool reachability_identify_dirty = false;
    std::map<std::uint64_t, std::shared_ptr<session_state>> retiring_sessions;
    std::map<std::uint64_t, operation_deadline::stop_token> protocol_open_deadlines;
    std::map<peer_id, relay_reservation_state> inbound_relay_reservations;
    std::map<peer_id, relay_reservation_state> outbound_relay_reservations;
-   std::map<peer_id, std::uint64_t> pending_autonat_v2_nonces;
+   struct autonat_nonce {
+      std::uint64_t value = 0;
+      std::chrono::steady_clock::time_point expires_at;
+      std::optional<endpoint> observed;
+      std::shared_ptr<forge::asio::notification> changed;
+   };
+   std::map<peer_id, autonat_nonce> pending_autonat_v2_nonces;
+   std::vector<std::pair<peer_id, std::chrono::steady_clock::time_point>> autonat_service_requests;
+   std::set<peer_id> autonat_service_active;
+   std::size_t autonat_handlers_active = 0;
    std::uint64_t next_reservation_id = 1;
    std::uint64_t next_session_id = 1;
    std::uint64_t next_protocol_open_deadline_id = 1;
@@ -277,6 +297,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    std::optional<std::chrono::steady_clock::time_point> stop_requested_at;
    bool stopped = false;
    bool session_admission_closed = false;
+   std::exception_ptr session_shutdown_error;
    bool peer_exchange_admission_closed = false;
    bool peer_state_hydrated = false;
 
@@ -312,6 +333,37 @@ struct node::impl : std::enable_shared_from_this<impl> {
    void release_pubsub_outbound_bytes(const peer_id& peer, std::size_t bytes) noexcept;
 
    [[nodiscard]] std::vector<forge::net::p2p::endpoint> local_endpoints_for_control() const;
+   void initialize_reachability();
+   void start_reachability();
+   void stop_reachability() noexcept;
+   void finish_reachability() noexcept;
+   void close_reachability_results_locked() noexcept;
+   void sync_reachability_addresses_locked();
+   void refresh_reachability_locked();
+   void invalidate_reachability_locked() noexcept;
+   void remove_address_observation_locked(std::uint64_t session) noexcept;
+   boost::asio::awaitable<void> join_reachability();
+   void observe_address(const std::shared_ptr<session_state>& session, const identify::document& document);
+   void notify_reachability_changed() noexcept;
+   void publish_host_state(host_event state);
+   [[nodiscard]] host_event current_host_state() const;
+   [[nodiscard]] forge::net::p2p::diagnostics::reachability_state reachability_diagnostics() const;
+   [[nodiscard]] host_event_subscription subscribe_host_events() const;
+   [[nodiscard]] std::shared_ptr<session_state> reachability_session_locked(const peer_id& peer,
+       std::optional<protocol_id> protocol = std::nullopt) const;
+   [[nodiscard]] std::vector<std::shared_ptr<session_state>> reachability_sessions_locked() const;
+   static boost::asio::awaitable<reachability::state> probe_reachability_owned(std::shared_ptr<impl> self, peer_id observer);
+   static boost::asio::awaitable<reachability::result> exchange_reachability_owned(std::shared_ptr<impl> self,
+       peer_id observer, endpoint remote, bool v2, std::vector<endpoint> candidates,
+       std::shared_ptr<cancellation_latch> cancellation, std::uint64_t session_id);
+   static boost::asio::awaitable<void> ping_reachability_owned(std::shared_ptr<impl> self, peer_id peer,
+       std::shared_ptr<cancellation_latch> cancellation);
+   static boost::asio::awaitable<opened_direct_stream> open_reachability_stream_owned(std::shared_ptr<impl> self,
+       peer_id peer, protocol_id protocol, std::chrono::milliseconds timeout,
+       std::shared_ptr<cancellation_latch> cancellation, std::uint64_t session_id);
+   static boost::asio::awaitable<void> select_reachability_stream_owned(std::shared_ptr<impl> self,
+       std::shared_ptr<session_state> session, protocol_id protocol, detail::stream_admission_handler admission,
+       opened_direct_stream& opened);
    [[nodiscard]] std::vector<forge::net::p2p::endpoint> local_endpoints_for_control_locked() const;
 
    [[nodiscard]] identify::document
@@ -395,6 +447,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    retire_session_locked(const std::shared_ptr<session_state>& session, bool track_close) noexcept;
    boost::asio::awaitable<void> async_retire_session(const std::shared_ptr<session_state>& session,
                                                       bool allow_untracked);
+   boost::asio::awaitable<void> async_retire_sessions_gracefully();
    void forget_retired_session(const std::shared_ptr<session_state>& session) noexcept;
 
    void forget_session(const peer_id& peer);
@@ -420,9 +473,16 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    void remember_autonat_v2_nonce(const peer_id& peer, std::uint64_t nonce);
 
-   void forget_autonat_v2_nonce(const peer_id& peer);
+   void forget_autonat_v2_nonce(const peer_id& peer, std::uint64_t nonce);
 
-   [[nodiscard]] bool consume_autonat_v2_nonce(const peer_id& peer, std::uint64_t nonce);
+   [[nodiscard]] bool consume_autonat_v2_nonce(std::uint64_t nonce, const endpoint& local_endpoint);
+   [[nodiscard]] std::optional<endpoint> autonat_v2_observation(const peer_id& observer,
+                                                               std::uint64_t nonce) const;
+   boost::asio::awaitable<std::optional<endpoint>> async_autonat_v2_observation(
+       peer_id observer, std::uint64_t nonce, std::shared_ptr<cancellation_latch> cancellation = {});
+   static boost::asio::awaitable<std::optional<endpoint>> wait_autonat_v2_observation(
+       std::shared_ptr<impl> self, peer_id observer, std::uint64_t nonce,
+       std::shared_ptr<cancellation_latch> cancellation);
 
    void increment_opened_protocol();
 
@@ -687,7 +747,20 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<void> handle_autonat_v2_dial_request(std::shared_ptr<session_state> session,
                                                                forge::net::p2p::stream stream);
 
-   boost::asio::awaitable<void> handle_autonat_v1(forge::net::p2p::stream stream);
+   boost::asio::awaitable<void> handle_autonat_v1(std::shared_ptr<session_state> session,
+                                                 forge::net::p2p::stream stream);
+
+   struct autonat_operation;
+   enum class autonat_protocol { v1, v2_request, v2_dial_back };
+   boost::asio::awaitable<void> handle_autonat(std::shared_ptr<session_state> session,
+                                              forge::net::p2p::stream stream, autonat_protocol protocol);
+   boost::asio::awaitable<void> run_autonat(std::shared_ptr<autonat_operation> operation,
+                                            std::shared_ptr<detail::worker_terminal_owner> terminal);
+   boost::asio::awaitable<void> serve_autonat_v1(std::shared_ptr<autonat_operation> operation);
+   boost::asio::awaitable<void> serve_autonat_v2(std::shared_ptr<autonat_operation> operation);
+   boost::asio::awaitable<reachability::v2::dial_status>
+   probe_autonat(std::shared_ptr<autonat_operation> operation, endpoint target,
+                  std::optional<std::uint64_t> nonce);
 
    boost::asio::awaitable<void> handle_relayed_yamux_stream(std::shared_ptr<session_state> session,
                                                             forge::net::transport::stream stream,

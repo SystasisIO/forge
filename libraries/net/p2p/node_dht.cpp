@@ -60,6 +60,7 @@ import forge.net.p2p.exceptions;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.identify;
 import forge.net.p2p.identity;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.negotiation;
@@ -699,7 +700,7 @@ boost::asio::awaitable<dht::value_get_result> node::async_get_value(protocol_id 
    return async_get_value_owned(impl_, std::move(protocol), std::move(key), options);
 }
 
-ipns::record node::create_ipns_record(std::span<const std::uint8_t> value, std::uint64_t sequence, ipns::time_point eol,
+ipns::record node::create_ipns_record(std::span<const std::uint8_t> value, std::uint64_t sequence, forge::chrono::timestamp eol,
                                       std::chrono::nanoseconds ttl, ipns::create_options options) const {
    const auto self = impl_;
    if (!self) {

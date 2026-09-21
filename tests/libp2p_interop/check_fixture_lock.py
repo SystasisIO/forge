@@ -41,28 +41,50 @@ EXPECTED_FIXTURE_FILES = {
     "go_fixture/go.mod",
     "go_fixture/go.sum",
     "go_fixture/main.go",
+    "go_fixture/autonat.go",
+    "go_fixture/autonat_test.go",
     "go_fixture/provider_evidence.go",
     "go_fixture/provider_evidence_test.go",
+    "go_fixture/upgrade_observer.go",
+    "go_fixture/upgrade_observer_test.go",
     "rust_fixture/Cargo.lock",
     "rust_fixture/Cargo.toml",
     "rust_fixture/main.rs",
+    "rust_fixture/autonat.rs",
     "rust_fixture/provider.rs",
+    "rust_fixture/upgrade_observer.rs",
+    "rust_fixture/task_owner.rs",
+    "rust_fixture/application_observer.rs",
     "rust_fixture/rust-toolchain.toml",
 }
 EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
     "../CMakeLists.txt",
     "check_fixture_lock.py",
+    "autonat_cases.py",
+    "autonat_acceptance.py",
+    "autonat_evidence.py",
+    "autonat_network.py",
     "dns_fixture.py",
     "dns_evidence.py",
     "forge_interop_fixture.cpp",
+    "forge_autonat_fixture.cpp",
+    "forge_autonat_fixture.hxx",
+    "forge_connection_fixture.cpp",
+    "forge_connection_fixture.hxx",
     "process_lifecycle.py",
     "provider_evidence.py",
+    "upgrade_evidence.py",
+    "rust_upgrade_evidence.py",
     "provenance.py",
     "runner.py",
 }
 EXPECTED_EVIDENCE_SOURCES = {"donor_cases.json"}
 EXPECTED_REGRESSION_SOURCES = {
-    "test_provenance.py", "test_dns_fixture.py", "test_process_lifecycle.py", "test_provider_evidence.py"
+    "test_provenance.py", "test_dns_fixture.py", "test_process_lifecycle.py", "test_provider_evidence.py",
+    "test_autonat_cases.py", "test_autonat_evidence.py", "test_autonat_network.py",
+    "test_autonat_acceptance.py", "test_identify_evidence.py", "test_relay_evidence.py",
+    "test_upgrade_evidence.py",
+    "test_rust_upgrade_evidence.py",
 }
 
 

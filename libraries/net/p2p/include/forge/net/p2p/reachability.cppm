@@ -140,6 +140,7 @@ struct reachability {
 
    struct codec {
       [[nodiscard]] static std::vector<std::uint8_t> encode_v1(const message& value);
+      [[nodiscard]] static std::vector<std::uint8_t> encode_v1(const message& value, options opts);
       [[nodiscard]] static message decode_v1(std::span<const std::uint8_t> bytes);
       [[nodiscard]] static message decode_v1(std::span<const std::uint8_t> bytes, options opts);
 

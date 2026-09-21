@@ -30,6 +30,7 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.identity;
 import forge.net.p2p.identify;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.peer_store;
@@ -38,6 +39,9 @@ import forge.net.p2p.protocol;
 import forge.net.p2p.provider_registration;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.reachability;
+import forge.net.p2p.reachability_policy;
+import forge.net.p2p.host_event;
+import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.rendezvous;
 import forge.net.p2p.relay;
 import forge.net.p2p.resource_manager;
@@ -81,6 +85,7 @@ class node {
       limits limits{};
       relay::policy relay_policy{.service_enabled = true, .client_enabled = true, .public_relay_allowed = false};
       path::policy path_policy{};
+      forge::net::p2p::reachability_policy reachability_policy{};
       std::optional<forge::net::p2p::private_network::options> private_network;
       address_resolution::policy dns_resolution{};
       forge::net::dns::resolver_options dns_resolver{};
@@ -158,6 +163,8 @@ class node {
    [[nodiscard]] const peer_store& peers() const noexcept;
    [[nodiscard]] dht::routing_status routing_status(const protocol_id& profile) const;
    [[nodiscard]] lifecycle_status lifecycle_state() const;
+   [[nodiscard]] host_event reachability_status() const;
+   [[nodiscard]] host_event_subscription host_events() const;
 
    void protect_peer(peer_id peer, std::string tag = "manual");
    [[nodiscard]] bool unprotect_peer(peer_id peer, std::string tag = "manual");
@@ -195,7 +202,7 @@ class node {
    boost::asio::awaitable<dht::value_get_result> async_get_value(protocol_id profile, dht::key key,
                                                                  dht::query_options options = {});
    [[nodiscard]] ipns::record create_ipns_record(std::span<const std::uint8_t> value, std::uint64_t sequence,
-                                                 ipns::time_point eol, std::chrono::nanoseconds ttl,
+                                                 forge::chrono::timestamp eol, std::chrono::nanoseconds ttl,
                                                  ipns::create_options options = {}) const;
    boost::asio::awaitable<rendezvous::register_response>
    async_rendezvous_register(peer_id rendezvous_peer, rendezvous::register_request request);

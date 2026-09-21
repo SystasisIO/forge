@@ -17,6 +17,8 @@ from typing import Optional
 sys.dont_write_bytecode = True
 
 from dns_fixture import DnsaddrServer
+from autonat_cases import run_suite as run_autonat_suite
+from autonat_acceptance import acceptance_id as autonat_acceptance_id, SCENARIOS as AUTONAT_SCENARIOS
 from process_lifecycle import Listener, current_scope, enter_scope, exit_scope, spawn_owned, tail_text
 from provider_evidence import validate_hidden_find_peer_evidence, validate_provider_evidence
 from provenance import (
@@ -30,11 +32,19 @@ from provenance import (
 
 
 LIVE_SCENARIO_PROFILES = {
-    "quic_base": ("ping", "identify", "autonatv2", "relay_reserve", "unknown_protocol"),
+    "quic_base": ("ping", "identify", "relay_reserve", "unknown_protocol"),
     "tcp_noise": ("ping", "identify", "echo", "echo_large"),
     "tcp_tls": ("ping", "identify", "echo"),
-    "private_tcp_yamux_pnet": ("pnet", "dnsaddr_private_tcp_yamux_pnet"),
-    "tcp_stage6": ("dnsaddr",),
+    "private_tcp_yamux_pnet": (
+        "pnet", "dnsaddr_private_tcp_yamux_pnet",
+        "autonat_v1_client_private_tcp_yamux_pnet", "autonat_v1_service_private_tcp_yamux_pnet",
+        "autonat_v2_client_private_tcp_yamux_pnet", "autonat_v2_service_private_tcp_yamux_pnet",
+    ),
+    "tcp_stage6": (
+        "dnsaddr", "autonat_v1_client_native_tcp_yamux", "autonat_v1_service_native_tcp_yamux",
+        "autonat_v2_client_native_tcp_yamux", "autonat_v2_service_native_tcp_yamux",
+    ),
+    "quic_stage6": ("autonat_v1_client", "autonat_v1_service", "autonat_v2_client", "autonat_v2_service"),
     "quic_dht": (
         "dht_find_peer",
         "dht_provide_find_provider",
@@ -69,6 +79,24 @@ CURRENT_ACCEPTANCE_SCENARIOS = {
     "quic_dht/dht_provide_find_provider": ("kademlia_amino",),
     "quic_rendezvous/rendezvous_register_discover": ("rendezvous_rust",),
 }
+# TLS Ping is transport smoke, not the separately registered QUIC Ping claim.
+UNCLAIMED_SMOKE_SCENARIOS = ("tcp_tls/ping",)
+# Executable registration only. Capability support remains staged until the
+# clean-head promotion wrapper validates the entire bilateral 41-case suite.
+AUTONAT_ACCEPTANCE_SCENARIOS = {
+    "quic_stage6/autonat_v1_client": ("autonat_v1_client",),
+    "quic_stage6/autonat_v1_service": ("autonat_v1_service",),
+    "quic_stage6/autonat_v2_client": ("autonat_v2_client",),
+    "quic_stage6/autonat_v2_service": ("autonat_v2_service",),
+    "tcp_stage6/autonat_v1_client_native_tcp_yamux": ("autonat_v1_client_native_tcp_yamux",),
+    "tcp_stage6/autonat_v1_service_native_tcp_yamux": ("autonat_v1_service_native_tcp_yamux",),
+    "tcp_stage6/autonat_v2_client_native_tcp_yamux": ("autonat_v2_client_native_tcp_yamux",),
+    "tcp_stage6/autonat_v2_service_native_tcp_yamux": ("autonat_v2_service_native_tcp_yamux",),
+    "private_tcp_yamux_pnet/autonat_v1_client_private_tcp_yamux_pnet": ("autonat_v1_client_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/autonat_v1_service_private_tcp_yamux_pnet": ("autonat_v1_service_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/autonat_v2_client_private_tcp_yamux_pnet": ("autonat_v2_client_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/autonat_v2_service_private_tcp_yamux_pnet": ("autonat_v2_service_private_tcp_yamux_pnet",),
+}
 DIAL_TIMEOUT_SECONDS = 90
 PNET_FINGERPRINT_DOMAIN = b"forge.net.pnet.operational-fingerprint.v1\0"
 NATIVE_TOPOLOGIES = (
@@ -87,6 +115,12 @@ LOCKED_FORGE_FIXTURE_COMPILER = {
     "compiler_id": "Clang",
     "compiler_version": "22.1.8",
 }
+def autonat_claims(spec):
+    name = autonat_acceptance_id(spec)
+    return [] if name is None else list(
+        AUTONAT_ACCEPTANCE_SCENARIOS[f"{AUTONAT_SCENARIOS[name][4]}/{name}"])
+
+
 def command_option_values(command: object) -> dict[str, str]:
     if not isinstance(command, list) or len(command) < 2:
         return {}
@@ -521,7 +555,7 @@ def start_listener(binary: Path, implementation: str, work: Path, scenario: Opti
         "--store-dir",
         str(store_dir),
         "--features",
-        "ping,identify" if transport == "tcp-pnet" else "ping,identify,autonatv2,relay,dcutr,dht,rendezvous,pubsub",
+        "ping,identify" if transport == "tcp-pnet" else "ping,identify,relay,dcutr,dht,rendezvous,pubsub",
         "--transport",
         transport,
     ]
@@ -1210,10 +1244,10 @@ def require_pnet_dial_evidence(result: dict, implementation: str) -> None:
 def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: Path, listener: str, scenario: str,
                             root: Path, transport: str, acceptance_profile: str,
                             transport_stack: tuple[str, ...], runner_scenario_id: str,
-                            acceptance_scenario_id: str, pnet_key_file: Optional[Path] = None,
+                            acceptance_scenario_id: Optional[str], pnet_key_file: Optional[Path] = None,
                             pnet_mismatch_key_file: Optional[Path] = None,
                             pnet_fingerprint: Optional[str] = None, dnsaddr: bool = False) -> dict:
-    work = root / f"{transport}-{dialer}-to-{listener}-{acceptance_scenario_id}"
+    work = root / f"{transport}-{dialer}-to-{listener}-{acceptance_scenario_id or scenario}"
     work.mkdir(parents=True, exist_ok=True)
     if acceptance_profile not in {"native", "private_network"}:
         raise RuntimeError(f"unsupported acceptance profile: {acceptance_profile}")
@@ -1222,9 +1256,14 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
         scenario != "pnet" or pnet_key_file is None or pnet_mismatch_key_file is None or pnet_fingerprint is None
     ):
         raise RuntimeError("private pnet profile requires its canonical and mismatched source key fixtures")
+    tcp_upgrade_listener = (
+        acceptance_profile == "native" and transport in {"tcp", "tcp-tls"}
+        and listener in {"go", "rust"} and scenario in {"identify", "echo"}
+    )
     listener_result = (
         work / f"{listener}-listen-{scenario}.json"
         if pnet_profile or scenario in PUBSUB_SCENARIOS or scenario in DHT_VALUE_SCENARIOS
+        or (scenario == "relay_reserve" and listener == "rust") or tcp_upgrade_listener
         else None
     )
     server = start_listener(
@@ -1269,7 +1308,42 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
             require_rendezvous_lifecycle_evidence(result, dialer, listener)
         if scenario == "dht_provide_find_provider":
             require_dht_provider_evidence(result, dialer, peer_id)
-        delivered = wait_json(listener_result, 20) if listener_result is not None else None
+        delivered = None
+        if listener_result is not None:
+            if not tcp_upgrade_listener:
+                # These scenarios publish delivery while still serving. Keep that
+                # bounded barrier, but never commit this mutable pre-shutdown file.
+                pending = wait_json(listener_result, 20)
+                if pending.get("status") != "ok":
+                    raise RuntimeError(f"{listener} listener reported {pending}")
+            # All result-writing listeners may append terminal evidence on stop,
+            # not just native TCP upgrade fixtures. Read the same final payload
+            # that close() captured into the owner's immutable output snapshot.
+            cleanup_errors = server.close()
+            if cleanup_errors:
+                raise RuntimeError(f"{listener} listener cleanup failed: " + "; ".join(cleanup_errors))
+            delivered = wait_json(listener_result, 20)
+        if tcp_upgrade_listener:
+            proof = delivered.get("upgrade_observation")
+            if not isinstance(proof, dict) or proof.get("overflow") is not False:
+                raise RuntimeError(f"{listener} TCP listener did not finalize bounded upgrade evidence")
+            if listener == "go":
+                if proof.get("finalized_after_host_close") is not True or proof.get("complete") is not True:
+                    raise RuntimeError("Go TCP listener did not finalize complete bounded upgrade evidence")
+            else:
+                # A listener has no outbound application binding. Its raw counterpart
+                # trace is evidence only after the fixture-owned task group is joined.
+                lifecycle = delivered.get("fixture_task_lifecycle")
+                if (proof.get("source") != "rust-libp2p.public-connection-upgrades.v1"
+                        or proof.get("finalized_after_swarm_drop") is not True
+                        or proof.get("fixture_owned_tasks_joined") is not True
+                        or not isinstance(lifecycle, dict)
+                        or lifecycle.get("fixture_owned_tasks_joined") is not True
+                        or lifecycle.get("overflow") is not False or lifecycle.get("errors") != []):
+                    raise RuntimeError("Rust TCP listener did not finalize its joined raw upgrade evidence")
+        if scenario == "relay_reserve" and listener == "rust":
+            if delivered.get("trace_complete") is not True:
+                raise RuntimeError("Rust relay listener did not finalize its acceptance trace")
         if delivered is not None and delivered.get("status") != "ok":
             raise RuntimeError(f"{listener} listener reported {delivered}")
         if pnet_profile and listener == "rust":
@@ -1504,6 +1578,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
+    parser.add_argument("--suite", choices=("stage6", "autonat"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -1523,9 +1598,10 @@ def main() -> int:
     build_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict] = []
     failures: list[str] = []
-    root = build_dir / "interop-run"
+    root = build_dir / ("autonat-run" if args.suite == "autonat" else "interop-run")
     artifact_path = build_dir / (
-        "interop-provenance-artifacts.json" if args.provenance_only else "interop-artifacts.json"
+        "interop-provenance-artifacts.json" if args.provenance_only else
+        "autonat-artifacts.json" if args.suite == "autonat" else "interop-artifacts.json"
     )
     provenance = {
         "forge_worktree": {"start": None, "end": None, "changed_during_run": None},
@@ -1534,6 +1610,7 @@ def main() -> int:
         "tools": {},
         "commands": [],
         "runner_inputs": {
+            "suite": args.suite,
             "source_dir": str(source_dir),
             "build_dir": str(build_dir),
             "forge_root": str(forge_root),
@@ -1631,13 +1708,118 @@ def main() -> int:
                 shutil.rmtree(root)
             root.mkdir(parents=True)
             pnet_key_file, pnet_mismatch_key_file, pnet_fingerprint = pnet_fixture_paths(source_dir, root)
-            for listener in ("go", "rust", "forge"):
-                for dialer in ("forge", "go", "rust"):
-                    if listener == dialer:
-                        continue
-                    for scenario in SCENARIOS:
+            if args.suite == "stage6":
+                for listener in ("go", "rust", "forge"):
+                    for dialer in ("forge", "go", "rust"):
+                        if listener == dialer:
+                            continue
+                        for scenario in SCENARIOS:
+                            for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
+                                f"quic_base/{scenario}", (scenario,)
+                            ):
+                                try:
+                                    artifacts.append(
+                                        run_pair(
+                                            binaries[dialer],
+                                            dialer,
+                                            binaries[listener],
+                                            listener,
+                                            scenario,
+                                            root,
+                                            acceptance_scenario_id,
+                                        )
+                                    )
+                                except Exception as error:
+                                    record_case_failure(artifacts, failures, f"{dialer}->{listener} {acceptance_scenario_id}", error)
+                        for scenario in DHT_SCENARIOS:
+                            try:
+                                if scenario in DHT_VALUE_SCENARIOS:
+                                    artifacts.append(run_dht_value_remote_get(binaries, dialer, listener, scenario, root))
+                                else:
+                                    for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
+                                        f"quic_dht/{scenario}", (scenario,)
+                                    ):
+                                        artifacts.append(
+                                            run_pair(
+                                                binaries[dialer],
+                                                dialer,
+                                                binaries[listener],
+                                                listener,
+                                                scenario,
+                                                root,
+                                                acceptance_scenario_id,
+                                            )
+                                        )
+                            except Exception as error:
+                                record_case_failure(artifacts, failures, f"{dialer}->{listener} {scenario}", error)
+                        for scenario in PUBSUB_SCENARIOS:
+                            if "forge" not in (dialer, listener):
+                                continue
+                            try:
+                                artifacts.append(
+                                    run_pair(
+                                        binaries[dialer], dialer, binaries[listener], listener, scenario, root,
+                                    )
+                                )
+                            except Exception as error:
+                                record_case_failure(artifacts, failures, f"{dialer}->{listener} {scenario}", error)
+                for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
+                    for transport, profile in (("tcp", "tcp_noise"), ("tcp-tls", "tcp_tls"), ("tcp", "tcp_stage6")):
+                        for scenario in LIVE_SCENARIO_PROFILES[profile]:
+                            if scenario in AUTONAT_SCENARIOS:
+                                continue  # The paired suite below owns native AutoNAT once per invocation.
+                            for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
+                                f"{profile}/{scenario}",
+                                (None,) if f"{profile}/{scenario}" in UNCLAIMED_SMOKE_SCENARIOS else (scenario,),
+                            ):
+                                try:
+                                    artifacts.append(
+                                        run_pair_with_transport(
+                                            binaries[dialer],
+                                            dialer,
+                                            binaries[listener],
+                                            listener,
+                                            "echo" if scenario == "dnsaddr" else scenario,
+                                            root,
+                                            transport,
+                                            "native",
+                                            ("tcp", "yamux"),
+                                            f"{profile}/{scenario}",
+                                            acceptance_scenario_id,
+                                            dnsaddr=scenario == "dnsaddr",
+                                        )
+                                    )
+                                except Exception as error:
+                                    record_case_failure(artifacts, failures,
+                                                        f"{dialer}->{listener} {transport} {acceptance_scenario_id}", error)
+                for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
+                    for scenario in LIVE_SCENARIO_PROFILES["private_tcp_yamux_pnet"]:
+                        if scenario in AUTONAT_SCENARIOS:
+                            continue
                         for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
-                            f"quic_base/{scenario}", (scenario,)
+                            f"private_tcp_yamux_pnet/{scenario}", (scenario,)
+                        ):
+                            try:
+                                artifacts.append(
+                                    run_pair_with_transport(
+                                        binaries[dialer], dialer, binaries[listener], listener, "pnet", root,
+                                        "tcp-pnet", "private_network", ("tcp", "pnet", "yamux"),
+                                        f"private_tcp_yamux_pnet/{scenario}", acceptance_scenario_id,
+                                        pnet_key_file, pnet_mismatch_key_file, pnet_fingerprint,
+                                        dnsaddr=scenario == "dnsaddr_private_tcp_yamux_pnet",
+                                    )
+                                )
+                            except Exception as error:
+                                record_case_failure(artifacts, failures,
+                                                    f"{dialer}->{listener} tcp-pnet {acceptance_scenario_id}", error)
+                try:
+                    artifacts.append(run_pubsub_mixed_mesh_stress(binaries, root))
+                except Exception as error:
+                    record_case_failure(artifacts, failures, PUBSUB_STRESS_SCENARIO, error)
+                for listener, dialer in (("rust", "forge"), ("forge", "rust")):
+                    for scenario in RENDEZVOUS_SCENARIOS:
+                        for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
+                            f"quic_rendezvous/{scenario}", (scenario,)
                         ):
                             try:
                                 artifacts.append(
@@ -1653,123 +1835,40 @@ def main() -> int:
                                 )
                             except Exception as error:
                                 record_case_failure(artifacts, failures, f"{dialer}->{listener} {acceptance_scenario_id}", error)
-                    for scenario in DHT_SCENARIOS:
-                        try:
-                            if scenario in DHT_VALUE_SCENARIOS:
-                                artifacts.append(run_dht_value_remote_get(binaries, dialer, listener, scenario, root))
-                            else:
-                                for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
-                                    f"quic_dht/{scenario}", (scenario,)
-                                ):
-                                    artifacts.append(
-                                        run_pair(
-                                            binaries[dialer],
-                                            dialer,
-                                            binaries[listener],
-                                            listener,
-                                            scenario,
-                                            root,
-                                            acceptance_scenario_id,
-                                        )
-                                    )
-                        except Exception as error:
-                            record_case_failure(artifacts, failures, f"{dialer}->{listener} {scenario}", error)
-                    for scenario in PUBSUB_SCENARIOS:
-                        if "forge" not in (dialer, listener):
-                            continue
+                for seeker, routing, hidden in HIDDEN_DHT_PERMUTATIONS:
+                    try:
+                        artifacts.append(run_hidden_dht_find_peer(binaries, seeker, routing, hidden, root))
+                    except Exception as error:
+                        record_case_failure(artifacts, failures, f"{seeker}->{routing}->{hidden} {HIDDEN_DHT_SCENARIO}", error)
+                for scenario in TOPOLOGY_SCENARIOS:
+                    try:
+                        artifacts.append(run_topology(binaries["forge"], "forge", scenario, root))
+                    except Exception as error:
+                        record_case_failure(artifacts, failures, f"forge topology {scenario}", error)
+                    for source, relay_impl, destination_impl in NATIVE_TOPOLOGIES:
                         try:
                             artifacts.append(
-                                run_pair(
-                                    binaries[dialer], dialer, binaries[listener], listener, scenario, root,
-                                )
-                            )
-                        except Exception as error:
-                            record_case_failure(artifacts, failures, f"{dialer}->{listener} {scenario}", error)
-            for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
-                for transport, profile in (("tcp", "tcp_noise"), ("tcp-tls", "tcp_tls"), ("tcp", "tcp_stage6")):
-                    for scenario in LIVE_SCENARIO_PROFILES[profile]:
-                        for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
-                            f"{profile}/{scenario}", (scenario,)
-                        ):
-                            try:
-                                artifacts.append(
-                                    run_pair_with_transport(
-                                        binaries[dialer],
-                                        dialer,
-                                        binaries[listener],
-                                        listener,
-                                        "echo" if scenario == "dnsaddr" else scenario,
-                                        root,
-                                        transport,
-                                        "native",
-                                        ("tcp", "yamux"),
-                                        f"{profile}/{scenario}",
-                                        acceptance_scenario_id,
-                                        dnsaddr=scenario == "dnsaddr",
-                                    )
-                                )
-                            except Exception as error:
-                                record_case_failure(artifacts, failures,
-                                                    f"{dialer}->{listener} {transport} {acceptance_scenario_id}", error)
-            for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
-                for scenario in LIVE_SCENARIO_PROFILES["private_tcp_yamux_pnet"]:
-                    for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
-                        f"private_tcp_yamux_pnet/{scenario}", (scenario,)
-                    ):
-                        try:
-                            artifacts.append(
-                                run_pair_with_transport(
-                                    binaries[dialer], dialer, binaries[listener], listener, "pnet", root,
-                                    "tcp-pnet", "private_network", ("tcp", "pnet", "yamux"),
-                                    f"private_tcp_yamux_pnet/{scenario}", acceptance_scenario_id,
-                                    pnet_key_file, pnet_mismatch_key_file, pnet_fingerprint,
-                                    dnsaddr=scenario == "dnsaddr_private_tcp_yamux_pnet",
-                                )
+                                run_native_relay_topology(binaries, source, relay_impl, destination_impl, scenario, root)
                             )
                         except Exception as error:
                             record_case_failure(artifacts, failures,
-                                                f"{dialer}->{listener} tcp-pnet {acceptance_scenario_id}", error)
-            try:
-                artifacts.append(run_pubsub_mixed_mesh_stress(binaries, root))
-            except Exception as error:
-                record_case_failure(artifacts, failures, PUBSUB_STRESS_SCENARIO, error)
-            for listener, dialer in (("rust", "forge"), ("forge", "rust")):
-                for scenario in RENDEZVOUS_SCENARIOS:
-                    for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
-                        f"quic_rendezvous/{scenario}", (scenario,)
-                    ):
-                        try:
-                            artifacts.append(
-                                run_pair(
-                                    binaries[dialer],
-                                    dialer,
-                                    binaries[listener],
-                                    listener,
-                                    scenario,
-                                    root,
-                                    acceptance_scenario_id,
-                                )
-                            )
-                        except Exception as error:
-                            record_case_failure(artifacts, failures, f"{dialer}->{listener} {acceptance_scenario_id}", error)
-            for seeker, routing, hidden in HIDDEN_DHT_PERMUTATIONS:
-                try:
-                    artifacts.append(run_hidden_dht_find_peer(binaries, seeker, routing, hidden, root))
-                except Exception as error:
-                    record_case_failure(artifacts, failures, f"{seeker}->{routing}->{hidden} {HIDDEN_DHT_SCENARIO}", error)
-            for scenario in TOPOLOGY_SCENARIOS:
-                try:
-                    artifacts.append(run_topology(binaries["forge"], "forge", scenario, root))
-                except Exception as error:
-                    record_case_failure(artifacts, failures, f"forge topology {scenario}", error)
-                for source, relay_impl, destination_impl in NATIVE_TOPOLOGIES:
-                    try:
-                        artifacts.append(
-                            run_native_relay_topology(binaries, source, relay_impl, destination_impl, scenario, root)
-                        )
-                    except Exception as error:
-                        record_case_failure(artifacts, failures,
-                                            f"{source}->{relay_impl}->{destination_impl} native relay topology {scenario}", error)
+                                                f"{source}->{relay_impl}->{destination_impl} native relay topology {scenario}", error)
+            # Full Stage 6 includes the complete paired suite, using the same
+            # binaries, artifact root, provenance and final execution receipt.
+            registered = {f"{profile}/{name}"
+                          for profile in ("quic_stage6", "tcp_stage6", "private_tcp_yamux_pnet")
+                          for name in LIVE_SCENARIO_PROFILES[profile] if name in AUTONAT_SCENARIOS}
+            if registered != set(AUTONAT_ACCEPTANCE_SCENARIOS):
+                raise RuntimeError("AutoNAT executable registration differs from the full suite")
+            for artifact in run_autonat_suite(
+                binaries, root, pnet_key=pnet_key_file, pnet_fingerprint=pnet_fingerprint,
+                wait_json=wait_json, command_attempt=command_attempt,
+                claims_for_case=autonat_claims,
+            ):
+                artifacts.append(artifact)
+                if artifact["status"] != "passed":
+                    failures.append(f"{artifact['scenario_id']}: " +
+                                    "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
     except Exception as error:
         failures.append(f"preflight: {error}")
     finally:

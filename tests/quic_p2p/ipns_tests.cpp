@@ -14,12 +14,14 @@
 #include <variant>
 #include <vector>
 
+import forge.chrono.iso8601;
 import forge.codec.hex;
 import forge.crypto.asymmetric.ed25519;
 import forge.crypto.asymmetric.rsa;
 import forge.multiformats.varint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 
 namespace forge::net::p2p::ipns {
@@ -48,12 +50,13 @@ namespace {
    };
 }
 
-[[nodiscard]] time_point at(unsigned year, unsigned month, unsigned day, unsigned hour = 0, unsigned minute = 0,
-                            unsigned second = 0, std::chrono::nanoseconds fraction = {}) {
+[[nodiscard]] forge::chrono::timestamp at(unsigned year, unsigned month, unsigned day, unsigned hour = 0,
+                                         unsigned minute = 0, unsigned second = 0,
+                                         std::chrono::nanoseconds fraction = {}) {
    const auto whole =
        std::chrono::sys_seconds{std::chrono::sys_days{std::chrono::year{static_cast<int>(year)} / month / day}} +
        std::chrono::hours{hour} + std::chrono::minutes{minute} + std::chrono::seconds{second};
-   return time_point{whole, fraction};
+   return forge::chrono::timestamp{whole, fraction};
 }
 
 [[nodiscard]] std::vector<std::uint8_t> bytes(std::span<const std::uint8_t> value) {
@@ -136,10 +139,45 @@ bytes_field_payload(std::span<const std::uint8_t> value, std::uint32_t wanted) {
 }
 
 [[nodiscard]] record make_record(const forge::crypto::asymmetric::ed25519::private_key& key, std::string_view value,
-                                 std::uint64_t sequence, time_point eol, create_options options = {}) {
+                                 std::uint64_t sequence, forge::chrono::timestamp eol, create_options options = {}) {
    return create(libp2p_key(key), signer(key),
                  std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(value.data()), value.size()},
                  sequence, eol, std::chrono::minutes{5}, std::move(options));
+}
+
+// Produce a V2-only signed fixture with the original, possibly noncanonical EOL.
+[[nodiscard]] std::vector<std::uint8_t>
+with_signed_eol(const forge::crypto::asymmetric::ed25519::private_key& key, std::string_view text) {
+   const auto original = std::string_view{"2030-01-02T03:04:05.123456789Z"};
+   const auto base = make_record(key, "/ipfs/bafkqaaa", 7,
+                                 at(2030, 1, 2, 3, 4, 5, std::chrono::nanoseconds{123'456'789}));
+   auto data = bytes(base.data());
+   const auto found = std::search(data.begin(), data.end(), original.begin(), original.end());
+   BOOST_REQUIRE(found != data.end());
+   const auto offset = static_cast<std::size_t>(found - data.begin());
+   BOOST_REQUIRE(offset >= 2);
+   BOOST_REQUIRE_EQUAL(data[offset - 2], 0x58U);
+   BOOST_REQUIRE(text.size() >= 24 && text.size() <= 255);
+   data[offset - 1] = static_cast<std::uint8_t>(text.size());
+   data.erase(data.begin() + static_cast<std::ptrdiff_t>(offset),
+              data.begin() + static_cast<std::ptrdiff_t>(offset + original.size()));
+   data.insert(data.begin() + static_cast<std::ptrdiff_t>(offset), text.begin(), text.end());
+
+   const auto prefix = std::string_view{"ipns-signature:"};
+   auto message = std::vector<std::uint8_t>{prefix.begin(), prefix.end()};
+   message.insert(message.end(), data.begin(), data.end());
+   const auto signature = key.sign(message);
+   auto encoded = std::vector<std::uint8_t>{};
+   const auto append = [&](std::uint32_t field, std::span<const std::uint8_t> payload) {
+      const auto tag = forge::multiformats::varint_encode((field << 3U) | 2U);
+      const auto size = forge::multiformats::varint_encode(payload.size());
+      encoded.insert(encoded.end(), tag.begin(), tag.end());
+      encoded.insert(encoded.end(), size.begin(), size.end());
+      encoded.insert(encoded.end(), payload.begin(), payload.end());
+   };
+   append(8, signature);
+   append(9, data);
+   return encoded;
 }
 
 // Pinned Boxo 23c380b: Ed25519 seed 01..20, 2030-01-02T03:04:05.123456789Z,
@@ -349,6 +387,46 @@ BOOST_AUTO_TEST_CASE(p2p_ipns_eol_supports_boxo_year_range_beyond_nanosecond_epo
    BOOST_TEST(created.eol_text() == "2500-01-02T03:04:05Z");
    BOOST_CHECK(created.eol() == at(2500, 1, 2, 3, 4, 5));
    validate(created, make_peer_id(libp2p_key(key)), std::nullopt, at(2499, 1, 1));
+}
+
+BOOST_AUTO_TEST_CASE(p2p_ipns_wide_eol_preserves_signed_original_text) {
+   const auto key = deterministic_key();
+   const auto peer = make_peer_id(libp2p_key(key));
+   for (const auto text : {"2030-01-02T03:04:05.123456780Z",
+                           "2030-01-02T04:34:05.123456789+01:30",
+                           "2030-01-02T03:04:05.123456789987Z",
+                           "9999-12-31T23:59:59.999999999Z",
+                           "1969-12-31T23:59:59.999999999Z",
+                           "1677-09-21T00:12:43.145224192Z",
+                           "2262-04-11T23:47:16.854775807Z"}) {
+      const auto encoded = with_signed_eol(key, text);
+      const auto decoded = decode(encoded);
+      const auto expected = forge::chrono::iso8601::parse_rfc3339_timestamp(text);
+      BOOST_CHECK(decoded.eol() == expected);
+      BOOST_TEST(decoded.eol_text() == text);
+      BOOST_TEST(encode(decoded) == encoded, boost::test_tools::per_element());
+      const auto before = forge::chrono::timestamp{
+          expected.whole_seconds() - std::chrono::seconds{1}, expected.subsecond()};
+      validate(decoded, peer, std::nullopt, before);
+      const auto after = forge::chrono::timestamp{
+          expected.whole_seconds() + std::chrono::seconds{1}, expected.subsecond()};
+      BOOST_CHECK_THROW(validate(decoded, peer, std::nullopt, after), exceptions::protocol_error);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_ipns_wide_eol_keeps_typed_codec_and_option_errors) {
+   const auto key = deterministic_key();
+   for (const auto text : {"2030-02-30T03:04:05.123456789Z",
+                           "2030-01-02T03:04:05.123456789+24:00",
+                           "2030-01-02T03:04:05.123456789Ztrailing"}) {
+      BOOST_CHECK_THROW(decode(with_signed_eol(key, text)), exceptions::codec_error);
+   }
+   BOOST_CHECK_THROW(make_record(key, "/ipfs/bafkqaaa", 1, at(10000, 1, 1)),
+                     exceptions::invalid_options);
+   const auto last = at(9999, 12, 31, 23, 59, 59, std::chrono::nanoseconds{999'999'999});
+   const auto created = make_record(key, "/ipfs/bafkqaaa", 1, last);
+   BOOST_CHECK(created.eol() == last);
+   BOOST_TEST(created.eol_text() == "9999-12-31T23:59:59.999999999Z");
 }
 
 BOOST_AUTO_TEST_CASE(p2p_ipns_selector_matches_boxo_order_and_raw_tie_break) {

@@ -74,6 +74,9 @@ type options struct {
 	payload         string
 	transport       string
 	dnsServer       string
+	bindIP          string
+	probeAddr       string
+	internetEgress  string
 	expected        int
 	pnetKeyFile     string
 	pnetFingerprint string
@@ -122,6 +125,12 @@ func parseArgs() (options, error) {
 			out.payload = value
 		case "--transport":
 			out.transport = value
+		case "--bind-ip":
+			out.bindIP = value
+		case "--probe-addr":
+			out.probeAddr = value
+		case "--internet-egress":
+			out.internetEgress = value
 		case "--dns-server":
 			server, err := netip.ParseAddrPort(value)
 			if err != nil || server.Port() == 0 || server.Addr().Zone() != "" {
@@ -206,6 +215,7 @@ func installEchoHandler(h host.Host, pnetState *pnetConnectionState) {
 		}
 		if err := writeFrame(s, payload); err != nil {
 			_ = s.Reset()
+			return
 		}
 	})
 }
@@ -217,6 +227,7 @@ type fixtureHost struct {
 	dhtStore  ds.Batching
 	pubsub    *pubsub.PubSub
 	pnet      *pnetConnectionState
+	upgrades  *upgradeObserver
 }
 
 type pnetConnectionState struct {
@@ -276,6 +287,10 @@ func loadPnetKey(path string) (corepnet.PSK, error) {
 
 func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHost, error) {
 	var pnetState *pnetConnectionState
+	var upgrades *upgradeObserver
+	if transport == "tcp" || transport == "tcp-tls" {
+		upgrades = &upgradeObserver{}
+	}
 	options := []libp2p.Option{
 		libp2p.NoTransports,
 		libp2p.ForceReachabilityPublic(),
@@ -293,7 +308,7 @@ func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHo
 		options = append(options, libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: resolver}))
 	}
 	if transport != "tcp-pnet" {
-		options = append(options, libp2p.EnableAutoNATv2(), libp2p.EnableRelay())
+		options = append(options, libp2p.EnableRelay())
 	}
 	switch transport {
 	case "quic", "":
@@ -303,16 +318,16 @@ func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHo
 		)
 	case "tcp":
 		options = append(options,
-			libp2p.Transport(tcp.NewTCPTransport),
-			libp2p.Security(noise.ID, noise.New),
-			libp2p.Muxer(yamux.ID, yamux.DefaultTransport),
+			libp2p.Transport(observedTCP(upgrades)),
+			libp2p.Security(noise.ID, observedNoise),
+			libp2p.Muxer(yamux.ID, observedYamux()),
 			libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
 		)
 	case "tcp-tls":
 		options = append(options,
-			libp2p.Transport(tcp.NewTCPTransport),
-			libp2p.Security(sectls.ID, sectls.New),
-			libp2p.Muxer(yamux.ID, yamux.DefaultTransport),
+			libp2p.Transport(observedTCP(upgrades)),
+			libp2p.Security(sectls.ID, observedTLS),
+			libp2p.Muxer(yamux.ID, observedYamux()),
 			libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
 		)
 	case "tcp-pnet":
@@ -385,7 +400,8 @@ func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHo
 		h.Close()
 		return nil, err
 	}
-	return &fixtureHost{Host: h, holePunch: holePunchService, kad: dht, dhtStore: dhtStore, pubsub: pubsubRouter}, nil
+	return &fixtureHost{Host: h, holePunch: holePunchService, kad: dht, dhtStore: dhtStore,
+		pubsub: pubsubRouter, upgrades: upgrades}, nil
 }
 
 func fixtureReservationAddressFilter(h host.Host) relayv2.ReservationAddressFilterFunc {
@@ -684,12 +700,24 @@ func writePubSubStressResult(opts options, state *pubsubStressState) error {
 	})
 }
 
-func listen(opts options) error {
+func listen(opts options) (err error) {
 	h, err := newHost(opts.transport, opts.pnetKeyFile, opts.dnsServer)
 	if err != nil {
 		return err
 	}
-	defer h.Close()
+	defer func() {
+		err = errors.Join(err, h.Close())
+		if h.upgrades != nil && opts.resultFile != "" && upgradeProofProtocol(opts.scenario) != "" {
+			proof, proofErr := h.upgrades.finish(upgradeProofProtocol(opts.scenario), "", network.DirInbound)
+			err = errors.Join(err, proofErr)
+			result := map[string]any{"implementation": "go", "role": "listener", "scenario": opts.scenario,
+				"local_peer_id": h.ID().String(), "status": "ok", "upgrade_observation": proof}
+			if err != nil {
+				result["status"], result["error"] = "error", err.Error()
+			}
+			err = errors.Join(err, writeJSON(opts.resultFile, result))
+		}
+	}()
 	var stress *pubsubStressState
 	if opts.scenario == "gossipsub_publish" {
 		if err := installPubSubListener(h, opts.resultFile); err != nil {
@@ -879,44 +907,110 @@ func destination(opts options) error {
 	}
 }
 
-func openRequiredProtocol(ctx context.Context, h host.Host, peer peer.ID, id protocol.ID) (int, error) {
-	stream, err := h.NewStream(ctx, peer, id)
-	if err != nil {
-		return 0, err
-	}
-	defer stream.Close()
-	if id == protocol.ID("/ipfs/id/1.0.0") {
-		payload, err := io.ReadAll(stream)
-		if err != nil {
-			return 0, err
-		}
-		if len(payload) == 0 {
-			return 0, fmt.Errorf("%s returned empty payload", id)
-		}
-		return len(payload), nil
-	}
-	return 0, nil
+type protocolExchange struct {
+	bytes      int
+	connection network.Conn
+	streamID   string
+	protocol   protocol.ID
+	target     upgradeTarget
 }
 
-func openEchoProtocol(ctx context.Context, h host.Host, peer peer.ID, payload []byte) (int, error) {
-	stream, err := h.NewStream(ctx, peer, echoProtocol)
+func identifyOnExchangeConnection(identified event.EvtPeerIdentificationCompleted, exchange protocolExchange, expected peer.ID) bool {
+	return identified.Peer == expected && identified.Conn != nil && exchange.connection != nil &&
+		identified.Conn.ID() == exchange.connection.ID() && identified.Conn.RemotePeer() == expected &&
+		exchange.connection.RemotePeer() == expected
+}
+
+func recordAutomaticIdentify(ctx context.Context, result map[string]any, events <-chan interface{}, exchange protocolExchange, expected peer.ID) error {
+	for {
+		select {
+		case received, open := <-events:
+			if !open {
+				return fmt.Errorf("Identify completion subscription closed")
+			}
+			identified, ok := received.(event.EvtPeerIdentificationCompleted)
+			if !ok || !identifyOnExchangeConnection(identified, exchange, expected) {
+				continue
+			}
+			// Preserve the donor event; capability-specific validators require signed evidence.
+			result["signed_peer_record"] = identified.SignedPeerRecord != nil
+			result["identify_event_connection_id"] = identified.Conn.ID()
+			result["identify_event_basis"] = "automatic_identify_separate_exchange_same_connection"
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("Identify completion event timed out: %w", ctx.Err())
+		}
+	}
+}
+
+func openRequiredProtocol(ctx context.Context, h host.Host, peer peer.ID, id protocol.ID) (protocolExchange, error) {
+	ctx, binding := bindUpgradeStream(ctx)
+	stream, err := h.NewStream(ctx, peer, id)
 	if err != nil {
-		return 0, err
+		return protocolExchange{}, err
 	}
 	defer stream.Close()
+	binding.attach(stream)
+	result := protocolExchange{connection: stream.Conn(), streamID: stream.ID(), protocol: stream.Protocol(), target: binding.target()}
+	if id == protocol.ID("/ipfs/id/1.0.0") {
+		payload, err := io.ReadAll(io.LimitReader(stream, 4097))
+		if err != nil {
+			return result, err
+		}
+		if len(payload) == 0 || len(payload) > 4096 {
+			_ = stream.Reset()
+			return result, fmt.Errorf("%s payload outside 1..4096 byte bound", id)
+		}
+		result.bytes = len(payload)
+		binding.complete(stream)
+	}
+	return result, nil
+}
+
+func openEchoProtocol(ctx context.Context, h host.Host, peer peer.ID, payload []byte) (protocolExchange, error) {
+	ctx, binding := bindUpgradeStream(ctx)
+	stream, err := h.NewStream(ctx, peer, echoProtocol)
+	if err != nil {
+		return protocolExchange{}, err
+	}
+	defer stream.Close()
+	binding.attach(stream)
+	result := protocolExchange{connection: stream.Conn(), streamID: stream.ID(), protocol: stream.Protocol(), target: binding.target()}
 	if err := writeFrame(stream, payload); err != nil {
 		_ = stream.Reset()
-		return 0, err
+		return result, err
 	}
 	echoed, err := readFrame(bufio.NewReader(stream))
 	if err != nil {
 		_ = stream.Reset()
-		return 0, err
+		return result, err
 	}
 	if string(echoed) != string(payload) {
-		return 0, fmt.Errorf("echo mismatch: %q", string(echoed))
+		return result, fmt.Errorf("echo mismatch: %q", string(echoed))
 	}
-	return len(echoed), nil
+	result.bytes = len(echoed)
+	binding.complete(stream)
+	return result, nil
+}
+
+func recordProtocolExchange(result map[string]any, exchange protocolExchange) {
+	c := exchange.connection
+	state := c.ConnState()
+	result["application_protocol"] = string(exchange.protocol)
+	result["application_connection_id"] = c.ID()
+	result["application_stream_id"] = exchange.streamID
+	result["authenticated_remote_peer_id"] = c.RemotePeer().String()
+	result["connection_local_addr"] = c.LocalMultiaddr().String()
+	result["connection_remote_addr"] = c.RemoteMultiaddr().String()
+	// Actual connection state corroborates the trace; it never generates phase history.
+	result["negotiated_transport"] = canonicalNegotiatedTransport(state.Transport)
+	result["negotiated_security"] = string(state.Security)
+	result["negotiated_muxer"] = string(state.StreamMultiplexer)
+	var muxed *observedMuxedConn
+	if c.As(&muxed) {
+		result["application_connection_trace_id"] = muxed.trace.evidence.ID
+		result["application_stream_trace_id"] = exchange.target.stream
+	}
 }
 
 func canonicalNegotiatedTransport(transport string) string {
@@ -959,6 +1053,8 @@ func dial(opts options) (err error) {
 	if err != nil {
 		return err
 	}
+	var result map[string]any
+	var proofTarget upgradeTarget
 	defer func() {
 		if closeErr := h.Close(); closeErr != nil {
 			if err != nil {
@@ -967,9 +1063,22 @@ func dial(opts options) (err error) {
 				err = fmt.Errorf("dialer cleanup failed: %w", closeErr)
 			}
 		}
+		if h.upgrades != nil && upgradeProofProtocol(opts.scenario) != "" {
+			proof, proofErr := h.upgrades.finish(upgradeProofProtocol(opts.scenario), opts.peerID, network.DirOutbound, proofTarget)
+			err = errors.Join(err, proofErr)
+			if result == nil {
+				result = map[string]any{"implementation": "go", "role": "dialer", "scenario": opts.scenario,
+					"local_peer_id": h.ID().String(), "status": "ok"}
+			}
+			result["upgrade_observation"] = proof
+			if err != nil {
+				result["status"], result["error"] = "error", err.Error()
+			}
+			err = errors.Join(err, writeJSON(opts.resultFile, result))
+		}
 	}()
 	var identifyEvents event.Subscription
-	if opts.scenario == "identify" || opts.scenario == "pnet" {
+	if opts.scenario == "identify" || opts.scenario == "pnet" || opts.scenario == "echo" || opts.scenario == "echo_large" {
 		identifyEvents, err = h.EventBus().Subscribe(new(event.EvtPeerIdentificationCompleted), eventbus.BufSize(4))
 		if err != nil {
 			return fmt.Errorf("subscribe to Identify completion: %w", err)
@@ -1016,7 +1125,7 @@ func dial(opts options) (err error) {
 		addDHTPeer(h, info)
 	}
 
-	result := map[string]any{
+	result = map[string]any{
 		"implementation": "go",
 		"role":           "dialer",
 		"scenario":       opts.scenario,
@@ -1052,24 +1161,16 @@ func dial(opts options) (err error) {
 			return fmt.Errorf("ping timed out: %w", ctx.Err())
 		}
 	case "identify":
-		size, err := openRequiredProtocol(ctx, h, info.ID, protocol.ID("/ipfs/id/1.0.0"))
+		exchange, err := openRequiredProtocol(ctx, h, info.ID, protocol.ID("/ipfs/id/1.0.0"))
 		if err != nil {
 			return err
 		}
-		identified := false
-		for !identified {
-			select {
-			case received := <-identifyEvents.Out():
-				event, ok := received.(event.EvtPeerIdentificationCompleted)
-				if ok && event.Peer == info.ID {
-					result["signed_peer_record"] = event.SignedPeerRecord != nil
-					identified = true
-				}
-			case <-ctx.Done():
-				return fmt.Errorf("Identify completion event timed out: %w", ctx.Err())
-			}
+		if err := recordAutomaticIdentify(ctx, result, identifyEvents.Out(), exchange, info.ID); err != nil {
+			return err
 		}
-		result["payload_bytes"] = size
+		result["payload_bytes"] = exchange.bytes
+		proofTarget = exchange.target
+		recordProtocolExchange(result, exchange)
 	case "pnet":
 		identified := false
 		for !identified {
@@ -1086,13 +1187,15 @@ func dial(opts options) (err error) {
 				return fmt.Errorf("pnet Identify completion event timed out: %w", ctx.Err())
 			}
 		}
-		size, err := openEchoProtocol(ctx, h, info.ID, []byte(opts.payload))
+		exchange, err := openEchoProtocol(ctx, h, info.ID, []byte(opts.payload))
 		if err != nil {
 			return err
 		}
 		h.pnet.applicationStreams.Add(1)
 		result["protocol"] = string(echoProtocol)
-		result["payload_bytes"] = size
+		result["payload_bytes"] = exchange.bytes
+		proofTarget = exchange.target
+		recordProtocolExchange(result, exchange)
 		result["echo_ok"] = true
 		for key, value := range pnetEvidence(opts) {
 			result[key] = value
@@ -1105,18 +1208,18 @@ func dial(opts options) (err error) {
 				payload[index] = byte(index % 251)
 			}
 		}
-		size, err := openEchoProtocol(ctx, h, info.ID, payload)
+		exchange, err := openEchoProtocol(ctx, h, info.ID, payload)
 		if err != nil {
 			return err
 		}
-		result["protocol"] = string(echoProtocol)
-		result["payload_bytes"] = size
-		result["echo_ok"] = true
-	case "autonatv2":
-		if _, err = openRequiredProtocol(ctx, h, info.ID, protocol.ID("/libp2p/autonat/2/dial-request")); err != nil {
+		if err := recordAutomaticIdentify(ctx, result, identifyEvents.Out(), exchange, info.ID); err != nil {
 			return err
 		}
-		result["opened"] = true
+		result["protocol"] = string(echoProtocol)
+		result["payload_bytes"] = exchange.bytes
+		proofTarget = exchange.target
+		recordProtocolExchange(result, exchange)
+		result["echo_ok"] = true
 	case "relay_reserve":
 		reservation, err := relayclient.Reserve(ctx, h, *info)
 		if err != nil {
@@ -1248,6 +1351,9 @@ func dial(opts options) (err error) {
 	default:
 		return fmt.Errorf("unknown scenario %s", opts.scenario)
 	}
+	if h.upgrades != nil && upgradeProofProtocol(opts.scenario) != "" {
+		return nil
+	}
 	return writeJSON(opts.resultFile, result)
 }
 
@@ -1369,11 +1475,19 @@ func main() {
 	if err == nil {
 		switch opts.command {
 		case "listen":
-			err = listen(opts)
+			if isAutoNATScenario(opts.scenario) {
+				err = runAutoNAT(opts)
+			} else {
+				err = listen(opts)
+			}
 		case "destination":
 			err = destination(opts)
 		case "dial":
-			err = dial(opts)
+			if isAutoNATScenario(opts.scenario) {
+				err = runAutoNAT(opts)
+			} else {
+				err = dial(opts)
+			}
 		case "dial-relay":
 			err = dialRelay(opts)
 		default:

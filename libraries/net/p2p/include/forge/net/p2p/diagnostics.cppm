@@ -18,6 +18,7 @@ import forge.net.p2p.dht.record_store;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
 import forge.net.p2p.identify;
+import forge.net.p2p.host_event;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
@@ -229,6 +230,24 @@ struct diagnostics {
       std::uint64_t failed_refreshes = 0;
    };
 
+   struct reachability_state {
+      host_event host;
+      bool client_v1_enabled = false;
+      bool client_v2_enabled = false;
+      bool service_v1_enabled = false;
+      bool service_v2_enabled = false;
+      bool internet_egress_allowed = false;
+      std::size_t pending_probes = 0;
+      std::size_t pending_pings = 0;
+      std::size_t waiting_probes = 0;
+      std::size_t active_handlers = 0;
+      std::size_t max_pending_probes = 0;
+      std::size_t max_parallel_pings = 0;
+      std::uint64_t ping_successes = 0;
+      std::uint64_t ping_failures = 0;
+      std::uint64_t probe_errors = 0;
+   };
+
    struct snapshot {
       network_state network;
       metrics_snapshot metrics;
@@ -243,6 +262,7 @@ struct diagnostics {
       resource_manager::limits effective_limits;
       topology_state topology;
       dialing::black_hole_status black_holes;
+      reachability_state reachability;
    };
 };
 
@@ -294,4 +314,8 @@ BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::topology_state, (),
                        observations, active_operations, waiting_refreshes, completed_refreshes, failed_refreshes))
 BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::snapshot, (),
                       (network, metrics, resources, pubsub, connections, peers, sessions, persistence, dht_profiles,
-                       lifecycle, effective_limits, topology, black_holes))
+                       lifecycle, effective_limits, topology, black_holes, reachability))
+BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::reachability_state, (),
+                      (host, client_v1_enabled, client_v2_enabled, service_v1_enabled, service_v2_enabled,
+                       internet_egress_allowed, pending_probes, pending_pings, waiting_probes, active_handlers,
+                       max_pending_probes, max_parallel_pings, ping_successes, ping_failures, probe_errors))

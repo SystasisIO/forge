@@ -222,10 +222,17 @@ Foundation compatibility modules below P2P live in `forge_multiformats`:
 `forge.multiformats.multihash`, `forge.multiformats.multibase` and
 first-class multiaddr/address support.
 
-IPNS retains its domain-specific seconds-plus-subsecond EOL timestamp and
-RFC3339Nano codec. Libp2p-compatible IPNS EOL values may reach year 9999,
-outside the `int64` `sys_time<nanoseconds>` range after 2262; therefore
-`forge_net_p2p` does not depend on `forge_chrono` for IPNS wire handling.
+IPNS uses `forge::chrono::timestamp` directly for EOL (end of lifetime),
+including nanosecond precision through year 9999. `forge_net_p2p` depends on
+`forge_chrono` for the value and shared RFC3339Nano codec; IPNS owns validation,
+expiry, typed P2P errors and preservation of the original signed RFC3339 bytes.
+Decode never replaces signed validity text with canonical formatted text.
+
+Source migration: replace the removed `forge::net::p2p::ipns::time_point`
+with `forge::chrono::timestamp` and import `forge.chrono.timestamp` directly.
+There is no compatibility alias or timestamp clock; acquire current time with
+`std::chrono::system_clock::now()` and explicitly cast to nanoseconds when
+constructing a timestamp. Wire encodings and signed golden records are unchanged.
 
 ## Production Network Direction
 
@@ -250,9 +257,9 @@ boundary, not fork P2P core. The private profile is TCP/Yamux plus a transport
 PSK layer before the normal secure channel, not a negotiated `/pnet` protocol
 ID. It excludes QUIC, Relay and DCUtR; AutoNAT lifecycle/client/service and
 UPnP each require explicit private-profile Internet egress, while native runs do
-not inherit that dependency. Public mDNS has Go/Rust interop; fingerprinted
-private mDNS is a Forge extension informed by donors and is Go-compatible with
-a documented Rust limitation.
+not inherit that dependency. The planned public mDNS delivery requires Go/Rust
+interop; fingerprinted private mDNS requires Go evidence and a documented Rust
+limitation. Neither mDNS delivery is claimed by the reachability PR.
 
 The direct QUIC profile keeps a bounded, peer-scoped cache of opaque QUIC
 `NEW_TOKEN` values only for authenticated expected peers. Its key includes the
@@ -275,13 +282,55 @@ Network-level behaviors that must not be pushed into plugins:
 - protocol capability negotiation;
 - network limits, backpressure, metrics and shutdown behavior.
 
-Stage 6 must add typed host events and periodic Ping liveness within
-`forge_net_p2p`; this host-local policy is distinct from the already current
-Ping wire protocol. `plugins.p2p.node` may map the validated configuration and
+Stage 6 PR-6 implements typed host events and periodic Ping liveness within
+`forge_net_p2p`; its final-head live evidence gate is still open. This host-local
+policy is distinct from the already current Ping wire protocol.
+`plugins.p2p.node` may map the validated configuration and
 consume narrow local events, but it must not own Ping, observed-address,
 AutoNAT lifecycle, mDNS, UPnP or topology maintenance loops. Coordinated direct
 dial and port reuse replace the deprecated `/libp2p/simultaneous-connect`
 negotiation.
+
+### Reachability Ownership (Preview)
+
+`node::options::reachability_policy` controls the node-owned client lifecycle,
+observation expiry, independent-observer thresholds and bounded Ping work.
+`async_start()` starts it after initial bootstrap; `async_stop()` cancels and
+joins its operations before closing sessions and persistence. Manual
+`async_probe_reachability(peer)` joins the same coalesced per-observer path.
+Its return is that probe's result, not the confidence-filtered host verdict.
+
+AutoNAT v1 votes determine node-level reachability. V2 evidence is scoped to a
+particular address and requires an operation-owned nonce observed on an actual
+inbound dialback. The authenticated dialer may differ from the observer's peer
+identity, as in Go's separate probe host. LAN evidence never establishes public
+Internet reachability; service refusal, protocol failure and Ping failure are
+not negative NAT votes. Address-set changes invalidate pending generations.
+
+Both AutoNAT services default off. Explicit `service_v1_enabled` and
+`service_v2_enabled` advertise only their corresponding request protocols; the
+v2 client advertises the dialback protocol independently. Service probes use
+fresh, isolated native connections and do not populate the service's normal
+peer/session topology. Private TCP/PSK nodes require explicit
+`private_network::internet_egress_policy::allow_internet`; the default rejects
+external probing before I/O and does not advertise these roles. This does not
+enable QUIC, Relay or DCUtR in the private profile.
+
+`node::reachability_status()` exposes the last published host state.
+`node::host_events()` returns a move-only subscription with an atomic initial
+snapshot and increasing generation. One reader is allowed per subscription;
+slow readers receive the latest state with `resync_required`, not an unbounded
+event queue. Closing a subscription or stopping the host wakes pending reads
+with `nullopt`. A surviving subscription does not retain the node.
+
+Observed addresses become advertised only after independent authenticated
+Identify observations confirm a listening endpoint. Expiry or session removal
+withdraws confirmations and triggers Identify Push. A v1 response's substituted
+observed address is a vote, never advertisement authority. New host state is
+ephemeral; no peer-cache schema or plugin YAML changes belong to this PR.
+
+See [the PR-6 donor note](../../../docs/donors/forge-p2p-reachability-v1.md)
+for accepted donor behavior and the still-pending runtime/live validation gates.
 
 Circuit Relay v2 reservations belong to authenticated peer sessions. Renewal
 keeps the same reservation generation and active-circuit accounting; the final

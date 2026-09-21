@@ -17,6 +17,51 @@
   },
   "cases": [
     {
+      "id": "interop.live_native_autonat",
+      "protocol": "AutoNAT v1/v2 native client and service",
+      "source": "donors/libp2p-specs/autonat/autonat-v1.md and autonat-v2.md",
+      "donor": "Pinned Go and Rust native client/service APIs; isolated bilateral authenticated dialback",
+      "donor_file": [
+        "donors/libp2p-specs/autonat/autonat-v1.md", "donors/libp2p-specs/autonat/autonat-v2.md",
+        "donors/go-libp2p/p2p/host/autonat/client.go", "donors/go-libp2p/p2p/host/autonat/svc.go",
+        "donors/go-libp2p/p2p/protocol/autonatv2/client.go", "donors/go-libp2p/p2p/protocol/autonatv2/server.go",
+        "donors/rust-libp2p/protocols/autonat/src/v1/behaviour/as_client.rs",
+        "donors/rust-libp2p/protocols/autonat/src/v1/behaviour/as_server.rs",
+        "donors/rust-libp2p/protocols/autonat/src/v2/client.rs", "donors/rust-libp2p/protocols/autonat/src/v2/server.rs"
+      ],
+      "donor_case": [ "native authenticated dialback", "v1 typed negative after service timeout", "v2 requested address result" ],
+      "mapping_state": "mapped",
+      "forge_tests": [
+        "test_forge_libp2p_interop autonat_v1_client",
+        "test_forge_libp2p_interop autonat_v1_service",
+        "test_forge_libp2p_interop autonat_v2_client",
+        "test_forge_libp2p_interop autonat_v2_service",
+        "test_forge_libp2p_interop autonat_v1_client_native_tcp_yamux",
+        "test_forge_libp2p_interop autonat_v1_service_native_tcp_yamux",
+        "test_forge_libp2p_interop autonat_v2_client_native_tcp_yamux",
+        "test_forge_libp2p_interop autonat_v2_service_native_tcp_yamux",
+        "test_forge_libp2p_interop autonat_v1_client_private_tcp_yamux_pnet",
+        "test_forge_libp2p_interop autonat_v1_service_private_tcp_yamux_pnet",
+        "test_forge_libp2p_interop autonat_v2_client_private_tcp_yamux_pnet",
+        "test_forge_libp2p_interop autonat_v2_service_private_tcp_yamux_pnet"
+      ],
+      "forge_live_scenario": [
+        { "profile": "quic_stage6", "scenario": "autonat_v1_client" },
+        { "profile": "quic_stage6", "scenario": "autonat_v1_service" },
+        { "profile": "quic_stage6", "scenario": "autonat_v2_client" },
+        { "profile": "quic_stage6", "scenario": "autonat_v2_service" },
+        { "profile": "tcp_stage6", "scenario": "autonat_v1_client_native_tcp_yamux" },
+        { "profile": "tcp_stage6", "scenario": "autonat_v1_service_native_tcp_yamux" },
+        { "profile": "tcp_stage6", "scenario": "autonat_v2_client_native_tcp_yamux" },
+        { "profile": "tcp_stage6", "scenario": "autonat_v2_service_native_tcp_yamux" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "autonat_v1_client_private_tcp_yamux_pnet" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "autonat_v1_service_private_tcp_yamux_pnet" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "autonat_v2_client_private_tcp_yamux_pnet" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "autonat_v2_service_private_tcp_yamux_pnet" }
+      ],
+      "known_gap": "Executable registration is not current support or a live verdict. Corrected role attribution assigns Forge-client only outbound and Forge-service only inbound receipts, without removing any bilateral direction: all 41 cases remain mandatory. Client-DENY is policy evidence only; the old autonatv2 codec fixture is not native reachability proof."
+    },
+    {
       "id": "multiaddr.text_binary_roundtrip",
       "protocol": "Multiaddr",
       "source": "donors/libp2p-specs/addressing/README.md and donors/multiaddr/protocols.csv",
@@ -84,16 +129,9 @@
       "mapping_state": "mapped",
       "forge_tests": [
         "test_forge_quic_p2p p2p_libp2p_autonat_v2_codec_covers_nonce_data_and_statuses",
-        "test_forge_quic_p2p p2p_autonat_v2_probe_public_and_persists_observation",
-        "test_forge_libp2p_interop autonatv2"
+        "test_forge_quic_p2p p2p_autonat_loopback_does_not_claim_public_reachability"
       ],
-      "forge_live_scenario": [
-        {
-          "profile": "quic_base",
-          "scenario": "autonatv2"
-        }
-      ],
-      "known_gap": "The registered Forge scenario is a declared interop target, not a current passing Go/Rust result; execute it on the reviewed head before promotion."
+      "known_gap": "Codec and loopback-negative component coverage only, not native reachability proof. Native AutoNAT evidence belongs to interop.live_native_autonat and its mandatory 41-case suite; the retired generic stream-open scenario supplies no proof."
     },
     {
       "id": "mdns.private_fingerprinted_rust_limitation",
@@ -120,7 +158,7 @@
       "mapping_state": "mapped",
       "forge_tests": [ "test_forge_quic_p2p p2p_libp2p_autonat_v2_rejects_oversized_data_response_and_unknown_status" ],
       "known_gap":
-          "Negative malformed and oversized AutoNAT v2 behavior is component-only; live fixtures exercise valid exchanges."
+          "Negative malformed and oversized AutoNAT v2 behavior is component-only. The existing loopback live scenario does not prove a valid dialback exchange; positive bilateral PR6 evidence remains pending."
     },
     {
       "id": "relayv2.reserve_connect_status",
@@ -333,20 +371,18 @@
           "`forge::plugins::p2p::pubsub` is an FORGE in-process plugin facade over core GossipSub; Go/Rust wire compatibility remains tracked by the core GossipSub live cases."
     },
     {
-      "id": "interop.live_ping_identify_autonat_relay",
+      "id": "interop.live_ping_identify_relay",
       "protocol": "Interop",
       "source": "go-libp2p and rust-libp2p live fixtures",
       "donor": "live fixtures launched by tests/libp2p_interop/runner.py",
       "donor_file": [
         "donors/go-libp2p/p2p/protocol/ping/ping_test.go", "donors/go-libp2p/p2p/protocol/identify/id_test.go",
-        "donors/go-libp2p/p2p/protocol/autonatv2/client.go",
-        "donors/rust-libp2p/protocols/ping/tests/ping.rs", "donors/rust-libp2p/protocols/identify/tests/smoke.rs",
-        "donors/rust-libp2p/protocols/autonat/src/v2/client.rs"
+        "donors/rust-libp2p/protocols/ping/tests/ping.rs", "donors/rust-libp2p/protocols/identify/tests/smoke.rs"
       ],
-      "donor_case": [ "Ping", "Identify", "AutoNAT v2", "Relay reserve" ],
+      "donor_case": [ "Ping", "Identify", "Relay reserve" ],
       "mapping_state": "mapped",
       "forge_tests": [
-        "test_forge_libp2p_interop ping", "test_forge_libp2p_interop identify", "test_forge_libp2p_interop autonatv2",
+        "test_forge_libp2p_interop ping", "test_forge_libp2p_interop identify",
         "test_forge_libp2p_interop relay_reserve"
       ],
       "forge_live_scenario": [
@@ -357,10 +393,6 @@
         {
           "profile": "quic_base",
           "scenario": "identify"
-        },
-        {
-          "profile": "quic_base",
-          "scenario": "autonatv2"
         },
         {
           "profile": "quic_base",

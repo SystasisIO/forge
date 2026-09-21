@@ -402,6 +402,14 @@ own no capability entry.
     ignored and capability matching decides use, plus opt-in Partial Messages
     with Go/Rust interop evidence.
 
+The maintainer-approved PR6 follow-up moves IPNS's wide timestamp value and
+shared RFC3339 parsing/formatting into the existing `forge_chrono` leaf. This
+is a narrow extension of PR1: the value composes standard seconds and a
+nanosecond remainder to preserve dates through year 9999 without overflowing
+a signed 64-bit nanosecond count. It introduces no clock, `now()` helper or
+timer policy. Ordinary network time and deadlines remain `std::chrono`;
+IPNS retains protocol validation, expiry and the original signed wire text.
+
 The existing DHT, topology and transport services are reused. mDNS, DNSAddr,
 AutoNAT, AutoRelay and path upgrades feed the same topology manager; they do
 not create parallel discovery or dialing loops. Typed events report state
@@ -424,7 +432,17 @@ Stage 6 is complete only when the manifest has no `stage_6` entry,
 each delivered capability has an implementation feature/evidence mapping, and
 live Go/Rust tests cover every standard protocol or negotiation behavior that
 the profile advertises. Registered donor fixtures are test declarations, not
-passing evidence. The source checker validates only registry structure and
+passing evidence. AutoNAT receipts attribute each pair to its actual Forge role:
+client requirements cover Forge-to-Go/Rust, service requirements cover
+Go/Rust-to-Forge. This corrects the generic four-direction role template without
+reducing bilateral coverage. The separate `test_forge_p2p_autonat_acceptance`
+target requires all 41 pairs and controls, including TLS, private ALLOW/DENY and
+the genuine Go v1 negative response. It does not replace the general Stage 6
+acceptance target or count one receipt as both client and service evidence.
+The general target runs these 41 cases once alongside the other Stage 6 cases,
+with the same prepared binaries, provenance and promotion receipt; omitting
+them fails validation even if all older cases pass.
+The source checker validates only registry structure and
 current runner registrations; it never emits an execution PASS. A standalone
 artifact check can report only local `CONSISTENT`/`NOT_RUN`/`FAILED` status, not
 promotion. The CMake promotion target owns the canonical runner invocation and,
@@ -547,13 +565,35 @@ through the official plugins. Plugins remain dependency/configuration adapters:
 they may not own mDNS, NAT, relay, dialing, GossipSub or resource-maintenance
 loops. Programmatic nodes and plugin-created nodes must have lifecycle parity.
 
+After Stage 6 is complete and its P2P contracts are fixed, Content Swarm may
+resume development in parallel with Stage 7. This maintainer-approved overlap
+replaces the earlier requirement to defer all Swarm implementation until after
+Stage 8; it does not relax any P2P production gate.
+
+The parallel scope covers content identifiers, manifests, file-backed storage,
+integrity verification, transfer scheduling and Forge API streaming, with
+deterministic tests. Network integration uses the official P2P plugin as its
+validated configuration and contribution surfaces become available in Stage 7;
+products must not create a temporary raw-node configuration path around it.
+Swarm must reuse P2P discovery, provider registration, relay, NAT traversal and
+network maintenance rather than implement substitutes. Parallel work must not
+delay completion of the P2P Stage 7 and Stage 8 gates.
+
 ### Stage 8: Production proof
 
 Run restart, churn, scale, hostile-peer, bounded-memory and long-duration tests
 through both the raw node and official plugins, followed by live Go and Rust
 interop. Only then may native and private-network inventory entries be promoted
-to `live` and Content Swarm resume on the hardened substrate. This promotion
-does not claim browser transport support.
+to `live`. Stage 8 also exercises Swarm as an integration consumer through
+multi-process tests of interrupted transfers, recovery, slow peers, bounded
+memory and long-duration operation. These tests supplement rather than replace
+the raw-node and official-plugin proof.
+
+Swarm production use requires both the relevant P2P Stage 8 gates and Swarm's
+own acceptance gates to pass; P2P readiness does not imply Swarm readiness.
+See the [Content Swarm entry gates](forge-p2p-production-hardening-v1.md#10-content-swarm-entry-gate).
+Stage 9 is not required for native Swarm operation. This promotion does not
+claim browser transport support.
 
 ### Stage 9: P2P WebSocket and browser transport profile
 

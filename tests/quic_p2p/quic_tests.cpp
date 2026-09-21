@@ -2653,6 +2653,106 @@ BOOST_AUTO_TEST_CASE(quic_stream_close_owner_start_failure_hands_off_to_cancel_w
    server.stop();
 }
 
+BOOST_AUTO_TEST_CASE(quic_native_stream_close_does_not_complete_held_reset_owner) {
+   for (const auto fail_close : {false, true}) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      auto server = listener{runtime, endpoint{.host = "127.0.0.1", .port = 0}, loopback_server_options()};
+      auto client = connector{runtime};
+      auto mutex = std::make_shared<std::mutex>();
+      auto changed = std::make_shared<std::condition_variable>();
+      auto armed = std::make_shared<std::atomic_bool>(false);
+      auto held = std::make_shared<std::atomic_bool>(false);
+      auto released = std::make_shared<std::atomic_bool>(false);
+      auto native_closed = std::make_shared<std::atomic_bool>(false);
+      auto joining = std::make_shared<std::atomic_bool>(false);
+      auto options = loopback_client_options();
+      options.test_failpoint = [changed, armed, held, released, native_closed, joining, fail_close](std::string_view name) {
+         if (name == "stream_reset_after_publish_before_drain") {
+            if (!armed->load() || held->exchange(true)) { return false; }
+            changed->notify_all();
+            return true;
+         }
+         if (name == "stream_reset_after_publish_before_drain_wait") { return !released->load(); }
+         if (name == "stream_native_close_after_terminal_cleanup" && held->load() && !released->load()) {
+            native_closed->store(true);
+            changed->notify_all();
+         }
+         if (name == "stream_close_before_state_check") { return fail_close && armed->load(); }
+         if ((fail_close && name == "stream_reset_before_terminal_join") ||
+             (!fail_close && name == "stream_close_before_terminal_join")) {
+            joining->store(true);
+            changed->notify_all();
+         }
+         return false;
+      };
+      auto accepted = boost::asio::co_spawn(runtime.context(), server.async_accept(), boost::asio::use_future);
+      auto connection = run_with_deadline(runtime, client.async_connect(server.local_endpoint(), std::move(options)),
+                                          std::chrono::seconds{5}, "connect native-close ownership fixture");
+      auto inbound = get_with_deadline(accepted, std::chrono::seconds{5}, "accept native-close ownership fixture");
+      auto stream = as_transport_stream(run_with_deadline(runtime, connection.async_open_stream(),
+          std::chrono::seconds{2}, "open native-close target stream"));
+      auto trigger = std::optional<forge::net::quic::stream>{};
+      auto close = std::future<void>{};
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{held.get(), [&](void*) noexcept {
+         released->store(true);
+         armed->store(false);
+         if (close.valid()) {
+            if (close.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+               BOOST_ERROR("native-close fixture did not join its stream close");
+            } else {
+               try { close.get(); }
+               catch (const std::bad_alloc&) {}
+               catch (...) { BOOST_ERROR("native-close fixture returned an unexpected close error"); }
+            }
+         }
+         try {
+            run_with_deadline(runtime, connection.async_close(), std::chrono::seconds{2}, "join native-close client");
+         } catch (...) { BOOST_ERROR("native-close client cleanup failed"); }
+         try {
+            run_with_deadline(runtime, inbound.async_close(), std::chrono::seconds{2}, "join native-close peer");
+         } catch (...) { BOOST_ERROR("native-close peer cleanup failed"); }
+         try {
+            run_with_deadline(runtime, server.async_stop(), std::chrono::seconds{2}, "join native-close listener");
+         } catch (...) { BOOST_ERROR("native-close listener cleanup failed"); }
+      }};
+      // Materialize the stream on the peer before resetting either direction.
+      auto accepted_stream = boost::asio::co_spawn(runtime.context(), inbound.async_accept_stream(), boost::asio::use_future);
+      const auto payload = std::vector<std::uint8_t>{1};
+      run_with_deadline(runtime, stream.async_write(payload), std::chrono::seconds{2}, "write native-close target");
+      auto peer_stream = get_with_deadline(accepted_stream, std::chrono::seconds{2}, "accept native-close target");
+      BOOST_TEST(run_with_deadline(runtime, peer_stream.async_read(), std::chrono::seconds{2},
+                                  "read native-close target") == payload);
+      armed->store(true);
+      stream.request_cancel();
+      {
+         auto lock = std::unique_lock{*mutex};
+         BOOST_REQUIRE(changed->wait_for(lock, std::chrono::seconds{2}, [&] { return held->load(); }));
+      }
+      peer_stream.request_cancel();
+      // This normal open drives the connection independently of the held cancel
+      // worker. No synthetic callback or terminal-state mutation is injected.
+      trigger.emplace(run_with_deadline(runtime, connection.async_open_stream(), std::chrono::seconds{2},
+                                        "drive native RESET_STREAM independently"));
+      {
+         auto lock = std::unique_lock{*mutex};
+         BOOST_REQUIRE(changed->wait_for(lock, std::chrono::seconds{2}, [&] { return native_closed->load(); }));
+      }
+      close = boost::asio::co_spawn(runtime.context(), stream.async_close(), boost::asio::use_future);
+      {
+         auto lock = std::unique_lock{*mutex};
+         BOOST_REQUIRE(changed->wait_for(lock, std::chrono::seconds{2}, [&] { return joining->load(); }));
+      }
+      BOOST_CHECK(close.wait_for(std::chrono::milliseconds{20}) == std::future_status::timeout);
+      released->store(true);
+      BOOST_REQUIRE(close.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+      if (fail_close) { BOOST_CHECK_THROW(close.get(), std::bad_alloc); }
+      else { BOOST_CHECK_NO_THROW(close.get()); }
+      armed->store(false);
+      run_with_deadline(runtime, peer_stream.async_close(), std::chrono::seconds{2}, "join native-close target peer");
+      run_with_deadline(runtime, trigger->async_close(), std::chrono::seconds{2}, "close native-close drain trigger");
+   }
+}
+
 BOOST_AUTO_TEST_CASE(quic_close_failure_joins_cancel_worker_terminal_drain) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto server = listener{runtime, endpoint{.host = "127.0.0.1", .port = 0}, loopback_server_options()};

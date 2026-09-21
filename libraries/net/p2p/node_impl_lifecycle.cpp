@@ -236,10 +236,12 @@ void node::impl::request_lifecycle_stop() noexcept {
       const auto lock = std::scoped_lock{mutex};
       peer_exchange_admission_closed = true;
       session_admission_closed = true;
+      close_reachability_results_locked();
       peer_exchange_value.close();
       active_peer_exchange_operations.swap(peer_exchange_operations);
    }
    request_dial_scheduler_stop();
+   stop_reachability();
    for (const auto& [_, operation] : active_peer_exchange_operations) {
       operation->cancellation.request_stop();
    }
@@ -303,11 +305,13 @@ void node::impl::listen(forge::net::p2p::endpoint endpoint) {
          FORGE_THROW_EXCEPTION(exceptions::closed, "P2P node is stopped");
       }
       local_endpoint = direct_registry.listen(std::move(endpoint));
+      refresh_reachability_locked();
       launch_identify_push = advance_identify_generation_locked() && schedule_identify_push_locked();
    }
    if (provider_registry) {
       provider_registry->notify_endpoints_changed();
    }
+   notify_reachability_changed();
    if (launch_identify_push) {
       launch_identify_pushes();
    }
@@ -331,6 +335,7 @@ boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
    }
 
    start_topology_manager();
+   start_reachability();
    lifecycle.set_phase(lifecycle_phase::maintenance);
    bootstrap->start_maintenance(lifecycle);
    co_return lifecycle_status{

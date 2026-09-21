@@ -59,6 +59,8 @@ import forge.net.p2p.discovery;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.envelope;
 import forge.net.p2p.hole_punch;
+import forge.net.p2p.host_event;
+import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.identify;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.exceptions;
@@ -90,6 +92,9 @@ import forge.net.yamux.session;
 #include "details/session_lifecycle.hxx"
 
 namespace forge::net::p2p {
+
+host_event node::reachability_status() const { return impl_->current_host_state(); }
+host_event_subscription node::host_events() const { return impl_->subscribe_host_events(); }
 
 void remember_dht_peer(peer_store& store, const protocol_id& protocol, dht::routing_table& routing,
                        std::chrono::milliseconds refresh_interval, const dht::peer& value,
@@ -414,9 +419,14 @@ boost::asio::awaitable<void> async_stop_after_topology_join(auto self) {
           auto failure = std::exception_ptr{};
           self->request_lifecycle_stop();
           try {
-             co_await self->async_join_topology_manager();
+             co_await self->join_reachability();
           } catch (...) {
              failure = std::current_exception();
+          }
+          try {
+             co_await self->async_join_topology_manager();
+          } catch (...) {
+             if (!failure) { failure = std::current_exception(); }
           }
           try {
              co_await self->async_close_dial_scheduler();
@@ -424,6 +434,11 @@ boost::asio::awaitable<void> async_stop_after_topology_join(auto self) {
              if (!failure) {
                 failure = std::current_exception();
              }
+          }
+          try {
+             co_await self->async_retire_sessions_gracefully();
+          } catch (...) {
+             if (!failure) { failure = std::current_exception(); }
           }
           try {
              stop_owned(self);
@@ -456,6 +471,7 @@ node::node(forge::asio::runtime& runtime, node::options options) {
    impl_->initialize_dht_provider_registry();
    impl_->initialize_lifecycle();
    impl_->initialize_topology_manager();
+   impl_->initialize_reachability();
    // Launch the self-owning maintenance task only after every throwing
    // constructor step has completed.
    impl_->initialize_dht_routing_refresh();
@@ -523,6 +539,7 @@ node::metrics_snapshot node::metrics() const {
 forge::net::p2p::diagnostics::snapshot node::diagnostics(forge::net::p2p::diagnostics::options options) const {
    // Snapshot the detector under its own lock before entering the node mutex.
    const auto black_holes = impl_->dial_black_hole_status();
+   const auto reachability = impl_->reachability_diagnostics();
    const auto persistence = impl_->store.persistence_state();
    const auto lifecycle = lifecycle_state();
    const auto retained_identify_attempts = impl_->identify_service.retained();
@@ -585,6 +602,7 @@ forge::net::p2p::diagnostics::snapshot node::diagnostics(forge::net::p2p::diagno
    };
    out.lifecycle = lifecycle;
    out.black_holes = black_holes;
+   out.reachability = reachability;
    out.effective_limits = impl_->resources.configured_limits();
    out.metrics = impl_->metrics_value;
    out.metrics.gater_peer_dial_rejections = impl_->connection_gate->denied(detail::connection_gater_stage::peer_dial);
@@ -768,99 +786,7 @@ boost::asio::awaitable<void> node::async_request_peer_exchange(peer_id peer) {
 }
 
 boost::asio::awaitable<reachability::state> node::async_probe_reachability(peer_id observer) {
-   auto self = impl_;
-   if (self->private_network_enabled()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                            "P2P private-network AutoNAT requires an explicit Internet-egress policy");
-   }
-   auto endpoints = self->local_endpoints_for_control();
-   if (endpoints.empty()) {
-      co_return reachability::state::private_network;
-   }
-   const auto nonce = random_nonce();
-   try {
-      self->remember_autonat_v2_nonce(observer, nonce);
-      auto stream = co_await self->open_protocol_direct(observer, builtins::autonat_v2_dial_request,
-                                                        node::open_options{}.timeout);
-      co_await stream.async_write(reachability::codec::encode_v2(reachability::v2::message{
-          .type = reachability::v2::message::kind::dial_request,
-          .dial_request =
-              reachability::v2::dial_request{
-                  .endpoints = endpoints,
-                  .nonce = nonce,
-              },
-      }));
-      auto state = reachability::state::private_network;
-      auto observed = std::optional<forge::net::p2p::endpoint>{};
-      auto buffer = std::vector<std::uint8_t>{};
-      for (auto step = 0U; step != 8U; ++step) {
-         auto message = reachability::codec::decode_v2(
-             co_await async_read_length_delimited(stream, buffer, reachability::options{}.max_message_size));
-         if (message.type == reachability::v2::message::kind::dial_data_request && message.dial_data_request) {
-            auto remaining = message.dial_data_request->bytes;
-            while (remaining > 0) {
-               const auto chunk_size = static_cast<std::size_t>(
-                   std::min<std::uint64_t>(remaining, reachability::options{}.max_data_response_size));
-               co_await stream.async_write(reachability::codec::encode_v2(reachability::v2::message{
-                   .type = reachability::v2::message::kind::dial_data_response,
-                   .dial_data_response =
-                       reachability::v2::dial_data_response{
-                           .data = std::vector<std::uint8_t>(chunk_size, 0x61),
-                       },
-               }));
-               remaining -= chunk_size;
-            }
-            continue;
-         }
-         if (message.type != reachability::v2::message::kind::dial_response || !message.dial_response) {
-            FORGE_THROW_EXCEPTION(exceptions::protocol_error, "AutoNAT v2 probe expected dial response");
-         }
-         if (message.dial_response->status == reachability::v2::response_status::ok &&
-             message.dial_response->dial_status == reachability::v2::dial_status::ok) {
-            state = reachability::state::publicly_reachable;
-            if (message.dial_response->index < endpoints.size()) {
-               observed = endpoints[message.dial_response->index];
-            }
-         } else if (message.dial_response->status == reachability::v2::response_status::dial_refused ||
-                    message.dial_response->dial_status == reachability::v2::dial_status::dial_back_error) {
-            state = reachability::state::blocked;
-         }
-         self->forget_autonat_v2_nonce(observer);
-         self->increment_reachability_check(state);
-         self->store.mark_reachability(self->local, state, observed);
-         co_return state;
-      }
-      FORGE_THROW_EXCEPTION(exceptions::protocol_error, "AutoNAT v2 probe exceeded message exchange limit");
-   } catch (const forge::exceptions::base& error) {
-      self->forget_autonat_v2_nonce(observer);
-      if (p2p_code(error) != exceptions::code::unsupported_protocol) {
-         throw;
-      }
-   }
-   auto stream = co_await self->open_protocol_direct(observer, builtins::autonat_v1, node::open_options{}.timeout);
-   co_await stream.async_write(reachability::codec::encode_v1(reachability::message{
-       .kind = reachability::message::message_kind::dial,
-       .peer =
-           reachability::peer_info{
-               .peer = self->local,
-               .endpoints = std::move(endpoints),
-           },
-   }));
-   auto response = reachability::codec::decode_v1(co_await stream.async_read());
-   if (response.kind != reachability::message::message_kind::dial_response || !response.response) {
-      FORGE_THROW_EXCEPTION(exceptions::protocol_error, "AutoNAT probe expected dial response");
-   }
-   auto state = reachability::state::private_network;
-   if (response.response->status == reachability::dial_status::ok) {
-      state = reachability::state::publicly_reachable;
-   } else if (response.response->status == reachability::dial_status::dial_refused) {
-      state = reachability::state::blocked;
-   }
-   self->increment_reachability_check(state);
-   self->store.mark_reachability(self->local, state,
-                                 response.response->endpoint ? std::make_optional(*response.response->endpoint)
-                                                             : std::nullopt);
-   co_return state;
+   return impl::probe_reachability_owned(impl_, std::move(observer));
 }
 
 boost::asio::awaitable<rendezvous::register_response>

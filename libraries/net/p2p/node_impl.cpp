@@ -378,6 +378,7 @@ void normalize_topology_capacity(node::options& options) noexcept {
 }
 
 void validate(const node::options& options) {
+   validate(options.reachability_policy);
    detail::dns_address_expander::validate_policy(options.dns_resolution);
    detail::dial_scheduler::validate_policy(dial_scheduler_policy(options));
    try {
@@ -610,6 +611,11 @@ void node::impl::require_private_protocol_allowed(const protocol_id& protocol) c
    if (!private_network_enabled()) {
       return;
    }
+   if (options.private_network->internet_egress == private_network::internet_egress_policy::allow_internet &&
+       (protocol == builtins::autonat_v1 || protocol == builtins::autonat_v2_dial_request ||
+        protocol == builtins::autonat_v2_dial_back)) {
+      return;
+   }
    if (protocol == builtins::autonat_v1 || protocol == builtins::autonat_v2_dial_request ||
        protocol == builtins::autonat_v2_dial_back || protocol == builtins::relay_hop ||
        protocol == builtins::relay_stop || protocol == builtins::dcutr) {
@@ -693,7 +699,9 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control()
 }
 
 std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_locked() const {
-   return host_addresses::merge_advertised(options.advertised_endpoints, direct_registry.local_endpoints(), local);
+   auto configured = options.advertised_endpoints;
+   configured.insert(configured.end(), confirmed_observed_addresses.begin(), confirmed_observed_addresses.end());
+   return host_addresses::merge_advertised(configured, direct_registry.local_endpoints(), local);
 }
 
 [[nodiscard]] std::optional<node::protocol_handler> node::impl::handler_for(const protocol_id& protocol) const {
@@ -714,10 +722,19 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_l
    auto out = std::vector<protocol_id>{builtins::ping,
                                        builtins::identify,
                                        builtins::identify_push};
+   if (!private_network_enabled() ||
+       options.private_network->internet_egress == private_network::internet_egress_policy::allow_internet) {
+      if (options.reachability_policy.service_v2_enabled) {
+         out.push_back(builtins::autonat_v2_dial_request);
+      }
+      if (options.reachability_policy.client_v2_enabled) {
+         out.push_back(builtins::autonat_v2_dial_back);
+      }
+      if (options.reachability_policy.service_v1_enabled) {
+         out.push_back(builtins::autonat_v1);
+      }
+   }
    if (!private_network_enabled()) {
-      out.push_back(builtins::autonat_v2_dial_request);
-      out.push_back(builtins::autonat_v2_dial_back);
-      out.push_back(builtins::autonat_v1);
       out.push_back(builtins::relay_stop);
       out.push_back(builtins::dcutr);
    }
@@ -750,33 +767,6 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_l
    return out;
 }
 
-void node::impl::remember_autonat_v2_nonce(const peer_id& peer, std::uint64_t nonce) {
-   auto lock = std::scoped_lock{mutex};
-   pending_autonat_v2_nonces[peer] = nonce;
-}
-
-void node::impl::forget_autonat_v2_nonce(const peer_id& peer) {
-   auto lock = std::scoped_lock{mutex};
-   pending_autonat_v2_nonces.erase(peer);
-}
-
-[[nodiscard]] bool node::impl::consume_autonat_v2_nonce(const peer_id& peer, std::uint64_t nonce) {
-   auto lock = std::scoped_lock{mutex};
-   const auto it = pending_autonat_v2_nonces.find(peer);
-   if (it != pending_autonat_v2_nonces.end() && it->second == nonce) {
-      pending_autonat_v2_nonces.erase(it);
-      return true;
-   }
-   if (options.allow_insecure_test_mode) {
-      const auto nonce_it =
-          std::ranges::find_if(pending_autonat_v2_nonces, [&](const auto& item) { return item.second == nonce; });
-      if (nonce_it != pending_autonat_v2_nonces.end()) {
-         pending_autonat_v2_nonces.erase(nonce_it);
-         return true;
-      }
-   }
-   return false;
-}
 
 void node::impl::increment_opened_protocol() {
    auto lock = std::scoped_lock{mutex};
@@ -1112,139 +1102,6 @@ boost::asio::awaitable<void> node::impl::handle_ping(forge::net::p2p::stream str
    }
 }
 
-boost::asio::awaitable<void> node::impl::handle_autonat_v2_dial_back(std::shared_ptr<node::impl::session_state> session,
-                                                                     forge::net::p2p::stream stream) {
-   auto buffer = std::vector<std::uint8_t>{};
-   auto request = reachability::codec::decode_v2_dial_back(
-       co_await async_read_length_delimited(stream, buffer, reachability::options{}.max_message_size));
-   if (request.nonce == 0 || !consume_autonat_v2_nonce(session->info.remote_peer, request.nonce)) {
-      FORGE_THROW_EXCEPTION(exceptions::protocol_error, "AutoNAT v2 dial-back nonce mismatch");
-   }
-   co_await stream.async_write(reachability::codec::encode_v2_dial_back_response(
-       reachability::v2::dial_back_response{.status = reachability::v2::dial_back_status::ok}));
-   co_await stream.async_close();
-}
-
-boost::asio::awaitable<void>
-node::impl::handle_autonat_v2_dial_request(std::shared_ptr<node::impl::session_state> session,
-                                           forge::net::p2p::stream stream) {
-   auto buffer = std::vector<std::uint8_t>{};
-   auto request = reachability::codec::decode_v2(
-       co_await async_read_length_delimited(stream, buffer, reachability::options{}.max_message_size));
-   auto response = reachability::v2::dial_response{
-       .status = reachability::v2::response_status::request_rejected,
-       .index = 0,
-       .dial_status = reachability::v2::dial_status::unused,
-   };
-   if (request.type == reachability::v2::message::kind::dial_request && request.dial_request &&
-       !request.dial_request->endpoints.empty() && request.dial_request->nonce != 0) {
-      response.status = reachability::v2::response_status::dial_refused;
-      response.dial_status = reachability::v2::dial_status::dial_error;
-      const auto limit = std::min<std::uint64_t>(4096, reachability::options{}.max_data_response_size);
-      for (std::size_t index = 0; index < request.dial_request->endpoints.size(); ++index) {
-         const auto& candidate = request.dial_request->endpoints[index];
-         co_await stream.async_write(reachability::codec::encode_v2(reachability::v2::message{
-             .type = reachability::v2::message::kind::dial_data_request,
-             .dial_data_request =
-                 reachability::v2::dial_data_request{
-                     .index = static_cast<std::uint32_t>(index),
-                     .bytes = limit,
-                 },
-         }));
-         const auto data = reachability::codec::decode_v2(
-             co_await async_read_length_delimited(stream, buffer, reachability::options{}.max_message_size));
-         if (data.type != reachability::v2::message::kind::dial_data_response || !data.dial_data_response ||
-             data.dial_data_response->data.size() < limit) {
-            response.status = reachability::v2::response_status::request_rejected;
-            response.dial_status = reachability::v2::dial_status::dial_error;
-            break;
-         }
-         response.index = static_cast<std::uint32_t>(index);
-         try {
-            auto dialed = co_await connect_direct(candidate, node::connect_options{
-                                                                 .expected_peer = session->info.remote_peer,
-                                                                 .allow_relay = false,
-                                                                 .timeout = std::chrono::milliseconds{1'500},
-                                                             });
-            try {
-               auto dial_back = co_await open_session_stream(dialed, builtins::autonat_v2_dial_back);
-               co_await dial_back.async_write(reachability::codec::encode_v2_dial_back(
-                   reachability::v2::dial_back{.nonce = request.dial_request->nonce}));
-               auto dial_back_buffer = std::vector<std::uint8_t>{};
-               const auto dial_back_response =
-                   reachability::codec::decode_v2_dial_back_response(co_await async_read_length_delimited(
-                       dial_back, dial_back_buffer, reachability::options{}.max_message_size));
-               if (dial_back_response.status == reachability::v2::dial_back_status::ok) {
-                  response.status = reachability::v2::response_status::ok;
-                  response.dial_status = reachability::v2::dial_status::ok;
-                  break;
-               }
-               response.status = reachability::v2::response_status::ok;
-               response.dial_status = reachability::v2::dial_status::dial_back_error;
-            } catch (...) {
-               response.status = reachability::v2::response_status::ok;
-               response.dial_status = reachability::v2::dial_status::dial_back_error;
-            }
-         } catch (const forge::exceptions::base& error) {
-            response.status = reachability::v2::response_status::ok;
-            response.dial_status = p2p_code(error) == exceptions::code::peer_verification_failed
-                                       ? reachability::v2::dial_status::dial_back_error
-                                       : reachability::v2::dial_status::dial_error;
-         } catch (...) {
-            response.status = reachability::v2::response_status::ok;
-            response.dial_status = reachability::v2::dial_status::dial_error;
-         }
-      }
-   }
-   co_await stream.async_write(reachability::codec::encode_v2(reachability::v2::message{
-       .type = reachability::v2::message::kind::dial_response,
-       .dial_response = std::move(response),
-   }));
-   co_await stream.async_close();
-}
-
-boost::asio::awaitable<void> node::impl::handle_autonat_v1(forge::net::p2p::stream stream) {
-   auto request = reachability::codec::decode_v1(co_await stream.async_read());
-   auto response = reachability::dial_response{
-       .status = reachability::dial_status::bad_request,
-       .status_text = "expected AutoNAT dial request",
-   };
-   if (request.kind == reachability::message::message_kind::dial && request.peer && !request.peer->endpoints.empty()) {
-      response.status = reachability::dial_status::dial_error;
-      response.status_text = "dial failed";
-      for (const auto& candidate : request.peer->endpoints) {
-         try {
-            auto session = co_await connect_direct(candidate, node::connect_options{
-                                                                  .expected_peer = request.peer->peer,
-                                                                  .allow_relay = false,
-                                                                  .timeout = std::chrono::milliseconds{1'500},
-                                                              });
-            session->closed = true;
-            forget_session(session);
-            try {
-               co_await session->connection.async_close();
-            } catch (...) {
-               detail::request_session_cancel(session->connection);
-            }
-            response.status = reachability::dial_status::ok;
-            response.status_text.clear();
-            response.endpoint = candidate;
-            break;
-         } catch (const forge::exceptions::base& error) {
-            response.status = p2p_code(error) == exceptions::code::peer_verification_failed
-                                  ? reachability::dial_status::dial_refused
-                                  : reachability::dial_status::dial_error;
-         } catch (...) {
-            response.status = reachability::dial_status::dial_error;
-         }
-      }
-   }
-   co_await stream.async_write(reachability::codec::encode_v1(reachability::message{
-       .kind = reachability::message::message_kind::dial_response,
-       .response = std::move(response),
-   }));
-   co_await stream.async_close();
-}
 
 [[nodiscard]] host_addresses::learning_context
 discovery_context_for_session_peer(std::optional<peer_id> session_peer, std::optional<endpoint> session_remote_endpoint,

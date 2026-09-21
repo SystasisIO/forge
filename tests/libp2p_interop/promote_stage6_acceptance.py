@@ -57,6 +57,7 @@ def main() -> int:
     parser.add_argument("--donors-root", required=True)
     parser.add_argument("--acceptance-manifest", required=True)
     parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--suite", choices=("stage6", "autonat"), default="stage6")
     args = parser.parse_args()
 
     root = Path(args.forge_root).resolve()
@@ -67,8 +68,8 @@ def main() -> int:
         return 2
     build_base = Path(args.build_dir).resolve()
     invocation_directory = create_invocation_directory(build_base)
-    artifact_path = invocation_directory / "interop-artifacts.json"
-    receipt_path = invocation_directory / "stage6-promotion-receipt.json"
+    artifact_path = invocation_directory / ("autonat-artifacts.json" if args.suite == "autonat" else "interop-artifacts.json")
+    receipt_path = invocation_directory / f"{args.suite}-promotion-receipt.json"
     runner_argv = [
         str(Path(sys.executable).resolve()),
         str(Path(args.runner).resolve()),
@@ -80,6 +81,8 @@ def main() -> int:
         "--donors-root", str(Path(args.donors_root).resolve()),
         "--acceptance-manifest", str(manifest_path),
     ]
+    if args.suite == "autonat":
+        runner_argv += ["--suite", "autonat"]
     started = time.time()
     result = subprocess.run(runner_argv, cwd=root, env=forced_live_environment(), check=False)
     finished = time.time()
@@ -96,9 +99,9 @@ def main() -> int:
     write_receipt(receipt_path, receipt)
 
     errors, has_limitations = validate(
-        root, manifest_path, artifact_path, args.expected_head, receipt
+        root, manifest_path, artifact_path, args.expected_head, receipt, expected_suite=args.suite
     )
-    print(f"stage6 promotion evidence: {invocation_directory}", file=sys.stderr)
+    print(f"{args.suite} promotion evidence: {invocation_directory}", file=sys.stderr)
     if promotion_status(result.returncode, errors) == "FAILED":
         if result.returncode != 0:
             print(f"FAILED: canonical runner exited with {result.returncode}; receipt={receipt_path}", file=sys.stderr)
@@ -108,7 +111,8 @@ def main() -> int:
     if has_limitations:
         print("PASS_WITH_DOCUMENTED_LIMITATIONS: canonical runner executed and was validated in this promotion")
     else:
-        print("PASS: canonical runner executed and was validated in this promotion")
+        scope = "full Stage 6 including AutoNAT41" if args.suite == "stage6" else "focused AutoNAT41 only, not full Stage 6"
+        print(f"PASS: {scope}; canonical runner executed and was validated in this promotion")
     return 0
 
 

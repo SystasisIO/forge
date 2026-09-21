@@ -1,6 +1,7 @@
 module;
 #include <boost/date_time/posix_time/posix_time.hpp>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -9,8 +10,11 @@ module;
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 module forge.chrono.iso8601;
+
+import forge.chrono.timestamp;
 
 namespace forge::chrono::iso8601 {
 namespace {
@@ -22,11 +26,6 @@ constexpr auto legacy_boost_first_second = std::chrono::sys_seconds{std::chrono:
 constexpr auto legacy_boost_last_second = std::chrono::sys_seconds{std::chrono::sys_days{std::chrono::year_month_day{
                                               std::chrono::year{9999}, std::chrono::month{12}, std::chrono::day{31}}}} +
                                           std::chrono::hours{23} + std::chrono::minutes{59} + std::chrono::seconds{59};
-
-struct seconds_and_fraction {
-   std::int64_t seconds;
-   std::int64_t fraction;
-};
 
 [[nodiscard]] boost::posix_time::ptime epoch() {
    return boost::posix_time::from_time_t(0);
@@ -69,24 +68,24 @@ void append_fixed_decimal(std::string& output, unsigned value, unsigned width) {
    return parsed;
 }
 
-[[nodiscard]] constexpr seconds_and_fraction decompose_nanoseconds(std::int64_t nanoseconds) noexcept {
+[[nodiscard]] constexpr std::pair<std::int64_t, std::int64_t> decompose_nanoseconds(std::int64_t nanoseconds) noexcept {
    auto seconds = nanoseconds / nanoseconds_per_second;
    auto fraction = nanoseconds % nanoseconds_per_second;
    if (fraction < 0) {
       --seconds;
       fraction += nanoseconds_per_second;
    }
-   return {.seconds = seconds, .fraction = fraction};
+   return {seconds, fraction};
 }
 
-[[nodiscard]] constexpr seconds_and_fraction decompose_microseconds(std::int64_t microseconds) noexcept {
+[[nodiscard]] constexpr std::pair<std::int64_t, std::int64_t> decompose_microseconds(std::int64_t microseconds) noexcept {
    auto seconds = microseconds / microseconds_per_second;
    auto fraction = microseconds % microseconds_per_second;
    if (fraction < 0) {
       --seconds;
       fraction += microseconds_per_second;
    }
-   return {.seconds = seconds, .fraction = fraction};
+   return {seconds, fraction};
 }
 
 void require_legacy_boost_range(std::int64_t seconds) {
@@ -101,9 +100,9 @@ void require_legacy_boost_range(std::int64_t seconds) {
    constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
    constexpr auto minimum_parts = decompose_nanoseconds(minimum);
    constexpr auto maximum_parts = decompose_nanoseconds(maximum);
-   if (fraction < 0 || fraction >= nanoseconds_per_second || seconds < minimum_parts.seconds ||
-       seconds > maximum_parts.seconds || (seconds == minimum_parts.seconds && fraction < minimum_parts.fraction) ||
-       (seconds == maximum_parts.seconds && fraction > maximum_parts.fraction)) {
+   if (fraction < 0 || fraction >= nanoseconds_per_second || seconds < minimum_parts.first ||
+       seconds > maximum_parts.first || (seconds == minimum_parts.first && fraction < minimum_parts.second) ||
+       (seconds == maximum_parts.first && fraction > maximum_parts.second)) {
       throw_invalid_rfc3339("timestamp is outside the nanosecond range");
    }
 
@@ -111,7 +110,7 @@ void require_legacy_boost_range(std::int64_t seconds) {
       return (seconds * nanoseconds_per_second) + fraction;
    }
 
-   if (seconds == minimum_parts.seconds && fraction == minimum_parts.fraction) {
+   if (seconds == minimum_parts.first && fraction == minimum_parts.second) {
       return minimum;
    }
 
@@ -151,13 +150,13 @@ std::chrono::sys_seconds parse_seconds(std::string_view value) {
 
 std::string format(std::chrono::sys_time<std::chrono::microseconds> value) {
    const auto timestamp = decompose_microseconds(value.time_since_epoch().count());
-   require_legacy_boost_range(timestamp.seconds);
-   const auto ptime = epoch() + boost::posix_time::seconds{timestamp.seconds};
+   require_legacy_boost_range(timestamp.first);
+   const auto ptime = epoch() + boost::posix_time::seconds{timestamp.first};
    const auto base = boost::posix_time::to_iso_extended_string(ptime);
-   if ((timestamp.fraction % 1000) == 0) {
-      return base + "." + std::to_string((timestamp.fraction / 1000) + 1000).substr(1);
+   if ((timestamp.second % 1000) == 0) {
+      return base + "." + std::to_string((timestamp.second / 1000) + 1000).substr(1);
    }
-   return base + "." + std::to_string(timestamp.fraction + microseconds_per_second).substr(1);
+   return base + "." + std::to_string(timestamp.second + microseconds_per_second).substr(1);
 }
 
 std::chrono::sys_time<std::chrono::microseconds> parse_microseconds(std::string_view value) {
@@ -197,8 +196,17 @@ std::chrono::sys_time<std::chrono::microseconds> parse_microseconds(std::string_
 }
 
 std::string format_rfc3339(std::chrono::sys_time<std::chrono::nanoseconds> value) {
-   const auto timestamp = decompose_nanoseconds(value.time_since_epoch().count());
-   const auto whole_seconds = std::chrono::sys_seconds{std::chrono::seconds{timestamp.seconds}};
+   return format_rfc3339(forge::chrono::timestamp{value});
+}
+
+std::string format_rfc3339(forge::chrono::timestamp value) {
+   const auto whole_seconds = value.whole_seconds();
+   constexpr auto first = std::chrono::sys_seconds{std::chrono::sys_days{
+       std::chrono::year{0} / std::chrono::January / 1}};
+   // Check before calendar conversion, whose year representation is narrower.
+   if (whole_seconds < first || whole_seconds > legacy_boost_last_second) {
+      throw std::out_of_range{"RFC3339 timestamp is outside the supported range"};
+   }
    const auto day = std::chrono::floor<std::chrono::days>(whole_seconds);
    const auto date = std::chrono::year_month_day{day};
    const auto year = static_cast<int>(date.year());
@@ -221,10 +229,10 @@ std::string format_rfc3339(std::chrono::sys_time<std::chrono::nanoseconds> value
    output.push_back(':');
    append_fixed_decimal(output, static_cast<unsigned>(time.seconds().count()), 2);
 
-   if (timestamp.fraction != 0) {
+   if (value.subsecond().count() != 0) {
       auto digits = std::string{};
       digits.reserve(9);
-      append_fixed_decimal(digits, static_cast<unsigned>(timestamp.fraction), 9);
+      append_fixed_decimal(digits, static_cast<unsigned>(value.subsecond().count()), 9);
       while (digits.back() == '0') {
          digits.pop_back();
       }
@@ -236,7 +244,9 @@ std::string format_rfc3339(std::chrono::sys_time<std::chrono::nanoseconds> value
    return output;
 }
 
-std::chrono::sys_time<std::chrono::nanoseconds> parse_rfc3339(std::string_view value) {
+namespace {
+
+[[nodiscard]] forge::chrono::timestamp parse_rfc3339_value(std::string_view value, bool truncate_fraction) {
    if (value.size() < 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
        value[16] != ':') {
       throw_invalid_rfc3339("invalid shape");
@@ -262,11 +272,12 @@ std::chrono::sys_time<std::chrono::nanoseconds> parse_rfc3339(std::string_view v
          ++offset;
       }
       const auto digits = offset - first_digit;
-      if (digits == 0 || digits > 9) {
+      if (digits == 0 || (!truncate_fraction && digits > 9)) {
          throw_invalid_rfc3339("fractional seconds must contain one to nine digits");
       }
-      fraction = parse_decimal(value, first_digit, digits);
-      for (auto index = digits; index < 9; ++index) {
+      const auto retained = std::min<std::size_t>(digits, 9);
+      fraction = parse_decimal(value, first_digit, retained);
+      for (auto index = retained; index < 9; ++index) {
          fraction *= 10;
       }
    }
@@ -299,8 +310,21 @@ std::chrono::sys_time<std::chrono::nanoseconds> parse_rfc3339(std::string_view v
 
    const auto local = std::chrono::sys_seconds{std::chrono::sys_days{date}} + std::chrono::hours{hour} +
                       std::chrono::minutes{minute} + std::chrono::seconds{second};
+   return forge::chrono::timestamp{local - std::chrono::seconds{timezone_seconds},
+                                   std::chrono::nanoseconds{fraction}};
+}
+
+} // namespace
+
+forge::chrono::timestamp parse_rfc3339_timestamp(std::string_view value) {
+   return parse_rfc3339_value(value, true);
+}
+
+std::chrono::sys_time<std::chrono::nanoseconds> parse_rfc3339(std::string_view value) {
+   const auto parsed = parse_rfc3339_value(value, false);
    return std::chrono::sys_time<std::chrono::nanoseconds>{
-       std::chrono::nanoseconds{checked_nanoseconds(local.time_since_epoch().count() - timezone_seconds, fraction)}};
+       std::chrono::nanoseconds{checked_nanoseconds(parsed.whole_seconds().time_since_epoch().count(),
+                                                    parsed.subsecond().count())}};
 }
 
 } // namespace forge::chrono::iso8601

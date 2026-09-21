@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import runner
 import process_lifecycle
@@ -30,6 +30,8 @@ class FakeProcess:
         if isinstance(outcome, Exception):
             raise outcome
         self.returncode = outcome
+        if "final_result" in self.script:
+            self.result_path.write_text(json.dumps(self.script["final_result"]))
         return outcome
 
     def send_signal(self, value):
@@ -73,9 +75,11 @@ class ProcessLifecycleTests(unittest.TestCase):
         for flag in ("--ready-file", "--result-file"):
             if flag not in command:
                 continue
-            if flag == "--result-file" and not script.get("write_result", True):
-                continue
             path = Path(command[command.index(flag) + 1])
+            if flag == "--result-file":
+                process.result_path = path
+                if not script.get("write_result", True):
+                    continue
             if flag == "--ready-file" and not script.get("ready", True):
                 if script.get("malformed_ready"):
                     path.write_text("{partial readiness")
@@ -108,6 +112,223 @@ class ProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["owned_processes"][0]["terminal_status"],
                          {"exit_code": 0, "termination": "graceful"})
+        self.assert_closed()
+
+    def test_tcp_upgrade_listener_is_joined_before_reading_final_evidence(self):
+        proof = {"finalized_after_host_close": True, "complete": True, "overflow": False}
+        self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof}}]
+        def read_after_join(path, seconds):
+            if "listen-identify.json" in path.name:
+                self.assertEqual(self.processes[0].returncode, 0)
+            return self.ready(path, seconds)
+
+        with patch.object(runner, "wait_json", side_effect=read_after_join), \
+             patch.object(runner, "run_dial", return_value={"status": "ok"}):
+            result = runner.run_pair_with_transport(
+                Path("fixture"), "forge", Path("fixture"), "go", "identify", self.root,
+                "tcp", "native", ("tcp", "yamux"), "tcp/identify", "noise_identity")
+        self.assertEqual(result["listener_result"]["upgrade_observation"], proof)
+        self.assertIn("--result-file", result["listener_process"]["command"])
+        self.assertEqual(len(result["owned_processes"][0]["outputs"]), 2)
+        self.assert_closed()
+
+    def test_tcp_upgrade_listener_rejects_nonfinal_or_incomplete_evidence(self):
+        for proof in ({}, {"finalized_after_host_close": False, "complete": True},
+                      {"finalized_after_host_close": True, "complete": False},
+                      {"finalized_after_host_close": True, "complete": True, "overflow": True}):
+            with self.subTest(proof=proof):
+                self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof}}]
+                with patch.object(runner, "run_dial", return_value={"status": "ok"}):
+                    with self.assertRaises(runner.CaseFailure):
+                        runner.run_pair_with_transport(
+                            Path("fixture"), "forge", Path("fixture"), "go", "echo", self.root,
+                            "tcp-tls", "native", ("tcp", "yamux"), "tcp_tls/echo", "tls_echo")
+                self.assert_closed()
+
+    def test_rust_tcp_listener_is_joined_before_final_snapshot(self):
+        proof = {"source": "rust-libp2p.public-connection-upgrades.v1",
+                 "finalized_after_swarm_drop": True, "fixture_owned_tasks_joined": True,
+                 "complete": False, "overflow": False}
+        lifecycle = {"fixture_owned_tasks_joined": True, "overflow": False, "errors": []}
+        self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof,
+                                     "fixture_task_lifecycle": lifecycle}}]
+        def read_after_join(path, seconds):
+            if "listen-identify.json" in path.name:
+                self.assertEqual(self.processes[0].returncode, 0)
+            return self.ready(path, seconds)
+
+        with patch.object(runner, "wait_json", side_effect=read_after_join), \
+             patch.object(runner, "run_dial", return_value={"status": "ok"}):
+            result = runner.run_pair_with_transport(
+                Path("fixture"), "forge", Path("fixture"), "rust", "identify", self.root,
+                "tcp", "native", ("tcp", "yamux"), "tcp/identify", "noise_identity")
+        self.assertEqual(result["listener_result"]["upgrade_observation"], proof)
+        self.assertEqual(len(result["owned_processes"][0]["outputs"]), 2)
+        self.assert_closed()
+
+    def test_rust_tcp_listener_rejects_unjoined_or_overflow_snapshot(self):
+        for field, value in (("finalized_after_swarm_drop", False),
+                             ("fixture_owned_tasks_joined", False), ("overflow", True),
+                             ("source", "requested_transport_label")):
+            with self.subTest(field=field):
+                proof = {"source": "rust-libp2p.public-connection-upgrades.v1",
+                         "finalized_after_swarm_drop": True, "fixture_owned_tasks_joined": True,
+                         "complete": False, "overflow": False, field: value}
+                self.scripts = [{"result": {"status": "ok", "upgrade_observation": proof,
+                    "fixture_task_lifecycle": {"fixture_owned_tasks_joined": True,
+                                               "overflow": False, "errors": []}}}]
+                with patch.object(runner, "run_dial", return_value={"status": "ok"}):
+                    with self.assertRaises(runner.CaseFailure):
+                        runner.run_pair_with_transport(
+                            Path("fixture"), "forge", Path("fixture"), "rust", "echo", self.root,
+                            "tcp-tls", "native", ("tcp", "yamux"), "tcp_tls/echo", "tls_echo")
+                self.assert_closed()
+
+    def test_tcp_upgrade_listener_cleanup_failure_cannot_commit_evidence(self):
+        self.scripts = [{"waits": [timeout(), 0], "result": {
+            "status": "ok", "upgrade_observation": {
+                "finalized_after_host_close": True, "complete": True, "overflow": False}}}]
+        with patch.object(runner, "run_dial", return_value={"status": "ok"}):
+            with self.assertRaises(runner.CaseFailure) as raised:
+                runner.run_pair_with_transport(
+                    Path("fixture"), "forge", Path("fixture"), "go", "echo", self.root,
+                    "tcp", "native", ("tcp", "yamux"), "tcp/echo", "tcp_echo")
+        self.assertIn("forced SIGTERM", str(raised.exception))
+        self.assert_closed()
+
+    def run_result_pair(self, scenario="pnet", dnsaddr=False, implementation="rust"):
+        """Mock only wire operations: real runner ownership and snapshots remain."""
+        private = scenario == "pnet"
+        transport = "tcp-pnet" if private else "quic"
+        def resolver(_address, _peer, path):
+            path.write_text(json.dumps({"synthetic_lifecycle_test": True}))
+            context = MagicMock()
+            context.__enter__.return_value = context
+            context.root = "/dnsaddr/synthetic-lifecycle.test"
+            context.nameserver = "127.0.0.1:5300"
+            return context
+
+        with patch.object(runner, "run_dial", return_value={"status": "ok", "implementation": "forge",
+                    "negotiated_security": "/noise", "negotiated_muxer": "/yamux/1.0.0"}), \
+             patch.object(runner, "run_pnet_control", return_value={"synthetic_control": True}), \
+             patch.object(runner, "DnsaddrServer", side_effect=resolver):
+            return runner.run_pair_with_transport(
+                Path("fixture"), "forge", Path("fixture"), implementation, scenario, self.root,
+                transport, "private_network" if private else "native",
+                ("tcp", "pnet", "yamux") if private else ("quic",),
+                "synthetic/" + scenario, "synthetic-dnsaddr" if dnsaddr else scenario,
+                pnet_key_file=self.root / "unused-key" if private else None,
+                pnet_mismatch_key_file=self.root / "unused-other-key" if private else None,
+                pnet_fingerprint="synthetic-fingerprint" if private else None, dnsaddr=dnsaddr)
+
+    def test_result_writing_listeners_capture_terminal_payload_not_early_payload(self):
+        for implementation, scenario, dnsaddr in (
+            ("rust", "pnet", False), ("rust", "pnet", True),
+            ("rust", "gossipsub_publish", False), ("go", "gossipsub_publish", False),
+            ("forge", "dht_pk_put_get", False),
+        ):
+            with self.subTest(implementation=implementation, scenario=scenario, dnsaddr=dnsaddr):
+                early = {"status": "ok", "implementation": implementation,
+                         "autonat_v2_active": False, "relay_service_active": False,
+                         "relay_client_active": False, "dcutr_active": False}
+                terminal = {**early, "fixture_task_lifecycle": {"fixture_owned_tasks_joined": True}}
+                self.scripts = [{"result": early, "final_result": terminal}]
+                result = self.run_result_pair(scenario, dnsaddr, implementation)
+                self.assertEqual(result["listener_result"], terminal)
+                self.assertNotEqual(result["listener_result"], early)
+                self.assertEqual(result["listener_process"]["terminal_status"],
+                                 {"exit_code": 0, "termination": "graceful"})
+                owned = result["owned_processes"][0]
+                outputs = [o for o in owned["outputs"] if o["argument"] == "--result-file"]
+                self.assertEqual(len(outputs), 1)
+                snapshot = Path(outputs[0]["log_file"])
+                self.assertEqual(json.loads(snapshot.read_text()), result["listener_result"])
+                self.assertEqual(json.loads(Path(result["listener_result_file"]).read_text()), terminal)
+                indexed = {entry["path"]: entry for entry in runner.evidence_index(self.root, [result])}
+                self.assertEqual(indexed[snapshot.relative_to(self.root).as_posix()]["sha256"],
+                                 hashlib.sha256(snapshot.read_bytes()).hexdigest())
+                self.assert_closed()
+
+    def test_terminal_listener_failure_overrides_early_success_and_keeps_raw_output(self):
+        terminal = {"status": "failed", "error": "terminal task join failed"}
+        self.scripts = [{"result": {"status": "ok"}, "final_result": terminal}]
+        with self.assertRaises(runner.CaseFailure) as raised:
+            self.run_result_pair("gossipsub_publish")
+        failure = raised.exception
+        self.assertIn("terminal task join failed", str(failure.primary))
+        self.assertNotIn("uncommitted_result", failure.artifact)
+        outputs = failure.artifact["processes"][0]["outputs"]
+        snapshot = Path(next(o["log_file"] for o in outputs if o["argument"] == "--result-file"))
+        self.assertEqual(json.loads(snapshot.read_text()), terminal)
+        self.assert_closed()
+
+    def test_rust_relay_requires_terminal_trace_after_join(self):
+        for complete in (True, False):
+            with self.subTest(complete=complete):
+                early = {"status": "ok", "trace_complete": False}
+                terminal = {"status": "ok", "trace_complete": complete}
+                self.scripts = [{"result": early, "final_result": terminal}]
+                if complete:
+                    result = self.run_result_pair("relay_reserve")
+                    self.assertEqual(result["listener_result"], terminal)
+                else:
+                    with self.assertRaises(runner.CaseFailure) as raised:
+                        self.run_result_pair("relay_reserve")
+                    self.assertIn("did not finalize its acceptance trace", str(raised.exception))
+                self.assert_closed()
+
+    def test_go_identify_cannot_claim_unsigned_forge_record_as_success(self):
+        for value in (False, None, 1):
+            with self.subTest(value=value):
+                self.scripts = [{}]
+                with patch.object(runner, "run_dial", return_value={
+                        "status": "ok", "signed_peer_record": value}):
+                    with self.assertRaises(runner.CaseFailure) as raised:
+                        runner.run_pair_with_transport(
+                            Path("fixture"), "go", Path("fixture"), "forge", "identify", self.root,
+                            "quic", "native", ("quic",), "synthetic/identify", "identify")
+                self.assertIn("did not receive Forge's signed Identify peer record", str(raised.exception))
+                self.assert_closed()
+
+    def test_result_writer_forced_or_nonzero_exit_never_commits_final_success(self):
+        for waits in ([timeout(), 0], [7]):
+            with self.subTest(waits=waits):
+                self.scripts = [{"waits": waits, "result": {"status": "ok"},
+                                 "final_result": {"status": "ok", "terminal": True}}]
+                with self.assertRaises(runner.CaseFailure) as raised:
+                    self.run_result_pair("gossipsub_publish")
+                self.assertNotIn("uncommitted_result", raised.exception.artifact)
+                process = raised.exception.artifact["processes"][0]
+                self.assertEqual(len(process["outputs"]), 2)
+                self.assertIn("forced SIGTERM" if len(waits) == 2 else "exit code 7", str(raised.exception))
+                self.assert_closed()
+
+    def test_missing_early_delivery_still_times_out_then_preserves_terminal_snapshot(self):
+        self.scripts = [{"result": {"status": "ok"}, "final_result": {"status": "ok", "terminal": True}}]
+        def missing_delivery(path, seconds):
+            if "listen-gossipsub_publish" in path.name and self.processes[-1].returncode is None:
+                self.assertEqual(seconds, 20)
+                raise TimeoutError("controlled delivery deadline")
+            return self.ready(path, seconds)
+
+        with patch.object(runner, "wait_json", side_effect=missing_delivery):
+            with self.assertRaises(runner.CaseFailure) as raised:
+                self.run_result_pair("gossipsub_publish")
+        self.assertIsInstance(raised.exception.primary, TimeoutError)
+        outputs = raised.exception.artifact["processes"][0]["outputs"]
+        self.assertEqual(len(outputs), 2)
+        self.assertEqual(raised.exception.artifact["processes"][0]["terminal_status"]["exit_code"], 0)
+        self.assert_closed()
+
+    def test_early_delivery_failure_is_not_erased_by_final_success_or_cleanup_error(self):
+        self.scripts = [{"waits": [timeout(), 0],
+                         "result": {"status": "failed", "error": "original delivery failure"},
+                         "final_result": {"status": "ok", "terminal": True}}]
+        with self.assertRaises(runner.CaseFailure) as raised:
+            self.run_result_pair("gossipsub_publish")
+        self.assertIn("original delivery failure", str(raised.exception.primary))
+        self.assertIn("forced SIGTERM", str(raised.exception))
+        self.assertNotIn("uncommitted_result", raised.exception.artifact)
         self.assert_closed()
 
     def test_success_plus_forced_listener_exit_is_failure(self):

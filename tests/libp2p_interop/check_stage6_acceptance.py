@@ -13,6 +13,14 @@ from typing import Optional
 
 from dns_evidence import DNSADDR_SCENARIOS, validate_dnsaddr
 from provider_evidence import validate_provider_evidence
+from upgrade_evidence import validate_go_dial_upgrade, validate_go_listener_upgrade
+from rust_upgrade_evidence import validate_rust_dial_upgrade, validate_rust_listener_upgrade
+from autonat_acceptance import (
+    EVIDENCE_CONTRACTS as AUTONAT_EVIDENCE_CONTRACTS,
+    ROLE_DIRECTIONS as AUTONAT_ROLE_DIRECTIONS,
+    SCENARIOS as AUTONAT_SCENARIOS,
+    validate_suite as validate_autonat_suite,
+)
 
 from provenance import (
     FIXTURE_DONOR_DIRECTORIES,
@@ -156,11 +164,14 @@ def sha256_file(path: Path) -> str:
 
 def required_scenarios(
     manifest: object,
+    suite: str = "stage6",
 ) -> tuple[
     dict[tuple[str, str], tuple[set[str], str, str, tuple[str, ...], str, tuple[str, ...], str]],
     list[str],
 ]:
     errors: list[str] = []
+    if suite not in ("stage6", "autonat"):
+        return {}, ["unknown acceptance suite"]
     if not isinstance(manifest, dict):
         return {}, ["manifest must be a JSON object"]
     registry = manifest.get("interop_acceptance_registry")
@@ -212,7 +223,8 @@ def required_scenarios(
             registration = scenario.get("registration")
             evidence_contract = scenario.get("evidence_contract")
             stack = tuple(transport_stack) if isinstance(transport_stack, list) else ()
-            if registration != "registered":
+            selected = suite == "stage6" or (isinstance(scenario_id, str) and scenario_id in AUTONAT_SCENARIOS)
+            if selected and registration != "registered":
                 errors.append(
                     f"manifest {capability_id}/{scenario_id}: non-registered scenario is promotion-blocking "
                     "until its implementing PR registers an executable validator"
@@ -251,16 +263,32 @@ def required_scenarios(
                 errors.append(f"manifest {capability_id}: duplicate acceptance scenario {scenario_id}")
             else:
                 referenced_contracts.add(evidence_contract)
-                if registration == "registered" and evidence_contract not in EVIDENCE_CONTRACT_VALIDATORS:
+                if registration == "registered" and evidence_contract not in (
+                    set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS
+                ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
                     )
-                elif registration == "registered":
+                elif registration == "registered" and selected:
                     required[key] = (
                         set(directions), status, profile, stack, runner_scenario_id, tuple(requires), evidence_contract
                     )
     if declared_contract_set != referenced_contracts:
         errors.append("manifest evidence contract registry does not cover acceptance scenarios exactly")
+    autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
+    if suite == "autonat" or autonat_required:
+        if {name for _, name in autonat_required} != set(AUTONAT_SCENARIOS):
+            errors.append("AutoNAT suite requires all 12 registered role contracts")
+        for (capability, name), value in autonat_required.items():
+            owner, role, _, transport, runner_profile = AUTONAT_SCENARIOS[name]
+            profile = "private_network" if transport == "tcp-pnet" else "native"
+            stack = ("quic",) if transport == "quic" else (("tcp", "pnet", "yamux") if transport == "tcp-pnet" else ("tcp", "yamux"))
+            dependencies = ("security.private_network_psk", "reachability.private_internet_policy") if transport == "tcp-pnet" else ()
+            if capability != owner or value != (
+                AUTONAT_ROLE_DIRECTIONS[role], "passed", profile, stack, f"{runner_profile}/{name}",
+                dependencies, evidence_contract_for(name),
+            ):
+                errors.append(f"AutoNAT {name}: role directions or exact profile contract mismatch")
     return required, errors
 
 
@@ -307,15 +335,17 @@ def absolute_path(value: object) -> Optional[Path]:
 
 
 def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path, manifest_path: Path,
-                           provenance: object) -> tuple[dict[str, Path], list[str]]:
+                           provenance: object, suite: str = "stage6") -> tuple[dict[str, Path], list[str]]:
     if not isinstance(provenance, dict):
         return {}, ["artifact fixture_provenance must be an object"]
     inputs = provenance.get("runner_inputs")
-    if not isinstance(inputs, dict) or set(inputs) != {
+    path_keys = {
         "source_dir", "build_dir", "forge_root", "donors_root", "acceptance_manifest"
-    }:
+    }
+    if (not isinstance(inputs, dict) or set(inputs) not in (path_keys, path_keys | {"suite"})
+            or inputs.get("suite", "stage6") != suite or suite not in ("stage6", "autonat")):
         return {}, ["artifact runner input provenance has invalid schema"]
-    paths = {key: absolute_path(inputs.get(key)) for key in inputs}
+    paths = {key: absolute_path(inputs.get(key)) for key in path_keys}
     if any(path is None for path in paths.values()):
         return {}, ["artifact runner input provenance contains a non-absolute path"]
     resolved = {key: path for key, path in paths.items() if path is not None}
@@ -325,8 +355,8 @@ def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path,
         or resolved["forge_root"] != root.resolve()
         or resolved["acceptance_manifest"] != manifest_path.resolve()
         or not resolved["donors_root"].is_dir()
-        or artifact_root != build_dir / "interop-run"
-        or artifact_path.resolve() != build_dir / "interop-artifacts.json"
+        or artifact_root != build_dir / ("autonat-run" if suite == "autonat" else "interop-run")
+        or artifact_path.resolve() != build_dir / ("autonat-artifacts.json" if suite == "autonat" else "interop-artifacts.json")
     ):
         return {}, ["artifact runner input provenance does not bind canonical roots and artifact paths"]
     return resolved, []
@@ -359,8 +389,9 @@ def validate_donor_provenance(root: Path, provenance: object, inputs: dict[str, 
 
 
 def validate_runner_argv(root: Path, argv: object, manifest_path: Path, inputs: dict[str, Path],
-                         binary_paths: dict[str, Path]) -> list[str]:
-    if not isinstance(argv, list) or len(argv) != 2 + 2 * len(RUNNER_FLAGS) or any(
+                         binary_paths: dict[str, Path], suite: str = "stage6") -> list[str]:
+    flags = RUNNER_FLAGS + (("--suite",) if suite == "autonat" else ())
+    if not isinstance(argv, list) or len(argv) != 2 + 2 * len(flags) or any(
         not isinstance(argument, str) or not argument for argument in argv
     ):
         return ["artifact runner_argv must record the complete canonical runner invocation"]
@@ -370,9 +401,11 @@ def validate_runner_argv(root: Path, argv: object, manifest_path: Path, inputs: 
     resolved_runner = runner_path.resolve() if runner_path.is_absolute() else (root / runner_path).resolve()
     if resolved_runner != (root / CANONICAL_RUNNER).resolve() or not resolved_runner.is_file():
         return ["artifact runner argv does not execute the canonical runner under source root"]
-    if tuple(argv[2::2]) != RUNNER_FLAGS:
+    if tuple(argv[2::2]) != flags:
         return ["artifact runner argv flags differ from the canonical live runner mode"]
-    values = dict(zip(RUNNER_FLAGS, argv[3::2]))
+    values = dict(zip(flags, argv[3::2]))
+    if suite == "autonat" and values["--suite"] != suite:
+        return ["artifact runner argv suite differs from canonical inputs"]
     if values["--enabled"] not in ENABLED_VALUES:
         return ["artifact runner argv does not prove an enabled live execution"]
     expected = {
@@ -500,12 +533,88 @@ def raw_evidence_paths(value: object) -> set[Path]:
     return paths
 
 
+def verified_process_stdout_paths(artifacts: list[object], root: Path,
+                                  binaries: dict[str, Path]) -> frozenset[Path]:
+    """Classify stdout by process ownership, never by a .log suffix.
+
+    Hash/size verification remains in the index validator. Protocol and exact
+    namespace/launcher validation remain mandatory at their existing owners.
+    Repeated process views must agree; JSON snapshots cannot alias stdout.
+    """
+    declarations: dict[Path, list[dict]] = {}
+    non_stdout: set[Path] = set()
+    stores: set[Path] = set()
+
+    def visit(value, process=False, isolated=False):
+        if isinstance(value, list):
+            for nested in value:
+                visit(nested, process, isolated)
+        elif isinstance(value, dict):
+            log = path_within(value.get("log_file"), root)
+            if log is not None:
+                command = value.get("command")
+                valid_command = False
+                if (process and isinstance(command, list) and len(command) >= 2
+                        and all(isinstance(arg, str) and arg for arg in command)):
+                    native = command
+                    if isolated and len(command) >= 6 and command[1:3] == ["netns", "exec"]:
+                        native = command[4:]
+                    options, errors = command_options(native, native[1])
+                    valid_command = (not errors and native[1] in {"listen", "dial", "destination", "dial-relay", "topology"}
+                                     and absolute_path(native[0]) in binaries.values())
+                    for flag in ("--ready-file", "--result-file", "--stop-file", "--store-dir"):
+                        path = path_within(options.get(flag), root)
+                        if path is not None:
+                            (stores if flag == "--store-dir" else non_stdout).add(path)
+                if valid_command:
+                    declarations.setdefault(log, []).append(value)
+                else:
+                    non_stdout.add(log)
+            for key, nested in value.items():
+                if key in {"result_file", "listener_result_file", "evidence_file"}:
+                    path = path_within(nested, root)
+                    if path is not None:
+                        non_stdout.add(path)
+                # `processes` is either a list or a map of role -> process.
+                child_process = key in {"owned_processes", "processes", "attempts", "listener_process"}
+                visit(nested, child_process or (process and "log_file" not in value), isolated)
+
+    for record in artifacts:
+        visit(record, isolated=isinstance(record, dict) and record.get("suite") == "autonat")
+
+    def clean(view):
+        terminal = view.get("terminal_status")
+        return (type(view.get("pid")) is int and view["pid"] > 0
+                and terminal == {"exit_code": 0, "termination": "graceful"}
+                and type(terminal["exit_code"]) is int)
+
+    verified: set[Path] = set()
+    for path, views in declarations.items():
+        owner = next((view for view in views if clean(view)), None)
+        if owner is None or path in non_stdout or any(path.is_relative_to(store) for store in stores):
+            continue
+        if any(
+            view["command"] != owner["command"]
+            or ("pid" in view and (type(view["pid"]) is not int or view["pid"] != owner["pid"]))
+            or ("terminal_status" in view and not clean(view))
+            or ("exit_code" in view and (type(view["exit_code"]) is not int or view["exit_code"] != 0))
+            or ("requested_log_file" in view and path_within(view["requested_log_file"], root) != path)
+            or failure_text(view) or view.get("spawn_error") or view.get("cleanup_errors")
+            for view in views
+        ):
+            continue
+        verified.add(path)
+    return frozenset(verified)
+
+
 def validate_evidence_index(
-    artifact_path: Path, artifact_root: Path, artifacts: list[object], index: object
+    artifact_path: Path, artifact_root: Path, artifacts: list[object], index: object,
+    binary_paths: Optional[dict[str, Path]] = None,
 ) -> tuple[dict[Path, str], list[str]]:
     errors: list[str] = []
     if not isinstance(index, list) or not index:
         return {}, ["artifact evidence_index must be a non-empty array"]
+    empty_process_logs = verified_process_stdout_paths(artifacts, artifact_root, binary_paths or {})
     indexed: dict[Path, str] = {}
     for entry in index:
         if not isinstance(entry, dict) or set(entry) != set(ARTIFACT_SCHEMA["evidence_index_required_fields"]):
@@ -522,13 +631,18 @@ def validate_evidence_index(
             or ".." in path.parts
             or path == Path(".")
             or type(size) is not int
-            or size <= 0
+            or size < 0
             or not isinstance(expected_hash, str)
             or SHA256.fullmatch(expected_hash) is None
         ):
             errors.append("artifact evidence index path, size or SHA-256 is invalid")
             continue
         resolved = (artifact_root / path).resolve()
+        # A silent, joined fixture may have an empty stdout log, never an empty
+        # JSON proof. The same ownership rules apply to every suite and case.
+        if size == 0 and resolved not in empty_process_logs:
+            errors.append("artifact evidence index has an empty non-process proof")
+            continue
         try:
             resolved.relative_to(artifact_root)
         except ValueError:
@@ -799,21 +913,6 @@ def token_value(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9._:-]{7,127}", value) is not None
 
 
-def exact_phase_transcript(result: dict, security_protocol: str) -> list[str]:
-    """Require the wire upgrade order rather than a negotiated-label summary."""
-    transcript = result.get("upgrade_transcript")
-    application = result.get("application_protocol")
-    expected = [
-        {"phase": "multistream", "protocol": "/multistream/1.0.0"},
-        {"phase": "security", "protocol": security_protocol},
-        {"phase": "muxer", "protocol": "/yamux/1.0.0"},
-        {"phase": "application", "protocol": application},
-    ]
-    if not nonempty_string(application) or transcript != expected:
-        return ["contract requires the exact ordered multistream/security/Yamux transcript"]
-    return []
-
-
 def control_result(record: dict, name: str, correlation_token: object, expected_status: str) -> tuple[Optional[dict], list[str]]:
     control = record.get(name)
     if not isinstance(control, dict):
@@ -841,12 +940,223 @@ def validate_ping_evidence(result: dict, _record: dict, _listener: Optional[dict
     return []
 
 
-def validate_identify_evidence(result: dict, _record: dict, _listener: Optional[dict]) -> list[str]:
+def identify_protobuf_fields(data: bytes, singular: set[int]) -> dict[int, list[tuple[int, object]]]:
+    """Bounded wire inspection, not another Identify implementation or crypto verifier."""
+    if not data or len(data) > 4096:
+        raise ValueError("Identify protobuf exceeds the nonempty 4096-byte bound")
+    fields: dict[int, list[tuple[int, object]]] = {}
+    offset = 0
+    while offset < len(data):
+        tag = relay_native_canonical_varint(data, offset)
+        if tag is None or not 0 < tag[0] >> 3 < (1 << 29):
+            raise ValueError("malformed Identify protobuf tag")
+        field, wire, offset = tag[0] >> 3, tag[0] & 7, tag[1]
+        if field in singular and field in fields:
+            raise ValueError("duplicate singular Identify protobuf field")
+        if wire in (0, 2):
+            value = relay_native_canonical_varint(data, offset)
+            if value is None:
+                raise ValueError("malformed Identify protobuf varint")
+            size, offset = value
+            if wire == 0:
+                payload = size
+            else:
+                if size > len(data) - offset:
+                    raise ValueError("truncated Identify protobuf bytes")
+                payload, offset = data[offset:offset + size], offset + size
+        elif wire in (1, 5):
+            size = 8 if wire == 1 else 4
+            if size > len(data) - offset:
+                raise ValueError("truncated Identify fixed field")
+            payload, offset = data[offset:offset + size], offset + size
+        else:
+            raise ValueError("unsupported Identify protobuf wire type")
+        fields.setdefault(field, []).append((wire, payload))
+    return fields
+
+
+def identify_field(fields: dict, number: int, wire: int):
+    values = fields.get(number)
+    if not isinstance(values, list) or len(values) != 1 or values[0][0] != wire:
+        raise ValueError("missing or mistyped Identify security field")
+    return values[0][1]
+
+
+def validate_raw_identify_exchange(result: dict, record: dict) -> list[str]:
+    """Inspect a *separate* Rust exchange; the Behaviour flag stays false.
+
+    Signature verification belongs to the pinned Rust donor APIs. Acceptance
+    additionally binds this report to indexed, terminal-owned raw process output
+    in validate_successful_raw_record; this pure inspection is not promotion.
+    """
+    try:
+        raw = result.get("raw_identify_exchange")
+        peer = record.get("peer_id")
+        if (not isinstance(raw, dict) or result.get("implementation") != "rust"
+                or result.get("scenario") not in {"identify", "echo"} or result.get("signed_peer_record") is not False
+                or raw.get("basis") != "fixture_separate_authenticated_identify_exchange"
+                or raw.get("protocol") != "/ipfs/id/1.0.0" or raw.get("status") != "verified"
+                or raw.get("error") is not None or raw.get("signed_peer_record_verified") is not True
+                or raw.get("raw_capture_truncated", False) is not False
+                or not relay_native_peer_id(peer)
+                or result.get("authenticated_remote_peer_id") != peer
+                or any(raw.get(field) != peer for field in ("authenticated_remote_peer_id",
+                       "identify_public_key_peer_id", "signer_peer_id", "record_peer_id"))):
+            raise ValueError("raw Identify lacks an explicit successful separate authenticated exchange")
+        if (raw.get("envelope_format") != "standard" or raw.get("domain") != "libp2p-peer-record"
+                or raw.get("payload_type_hex") != "0301"
+                or raw.get("interop_validation") != {"status": "verified"}
+                or not isinstance(raw.get("legacy_validation"), dict)
+                or set(raw["legacy_validation"]) != {"status", "error"}
+                or raw["legacy_validation"]["status"] != "rejected"
+                or not nonempty_string(raw["legacy_validation"]["error"])):
+            raise ValueError("raw Identify does not prove explicit standard-envelope donor verification")
+
+        def decode(name):
+            value = raw.get(name + "_hex")
+            if (not isinstance(value, str) or not 0 < len(value) <= 8192 or len(value) % 2
+                    or re.fullmatch(r"[0-9a-f]+", value) is None):
+                raise ValueError("raw Identify has missing, oversized or noncanonical hex")
+            data = bytes.fromhex(value)
+            if hashlib.sha256(data).hexdigest() != raw.get(name + "_sha256"):
+                raise ValueError("raw Identify bytes/hash mismatch")
+            return data
+
+        message, envelope = decode("raw_protobuf"), decode("signed_envelope")
+        if type(raw.get("raw_protobuf_bytes")) is not int or raw["raw_protobuf_bytes"] != len(message):
+            raise ValueError("raw Identify frame length mismatch")
+        fields = identify_protobuf_fields(message, {1, 8})
+        key = identify_field(fields, 1, 2)
+        if identify_field(fields, 8, 2) != envelope:
+            raise ValueError("raw Identify envelope differs from field 8")
+        signed = identify_protobuf_fields(envelope, {1, 2, 3, 5})
+        if identify_field(signed, 1, 2) != key or identify_field(signed, 2, 2) != b"\x03\x01":
+            raise ValueError("raw Identify signer or standard payload type mismatch")
+        public = identify_protobuf_fields(key, {1, 2})
+        kind, key_data = identify_field(public, 1, 0), identify_field(public, 2, 2)
+        if set(public) != {1, 2} or kind not in (0, 1, 2, 3) or not key_data:
+            raise ValueError("raw Identify public key is invalid")
+        signature = identify_field(signed, 5, 2)
+        if not signature or (kind == 1 and (len(key_data) != 32 or len(signature) != 64)):
+            raise ValueError("raw Identify signature/key shape is invalid")
+        multihash = (bytes((0, len(key))) + key if len(key) <= 42 else b"\x12\x20" + hashlib.sha256(key).digest())
+        if relay_native_base58btc_encode(multihash) != peer:
+            raise ValueError("raw Identify public key does not derive the authenticated peer")
+        routing = identify_protobuf_fields(identify_field(signed, 3, 2), {1, 2})
+        if identify_field(routing, 1, 2) != multihash:
+            raise ValueError("raw Identify record peer differs from its signer")
+        sequence = identify_field(routing, 2, 0) if 2 in routing else 0
+        if type(raw.get("record_sequence")) is not int or raw["record_sequence"] != sequence:
+            raise ValueError("raw Identify record sequence mismatch")
+        addresses = routing.get(3, [])
+        if (not isinstance(raw.get("record_addresses"), list) or len(raw["record_addresses"]) != len(addresses)
+                or any(not nonempty_string(address) for address in raw["record_addresses"])):
+            raise ValueError("raw Identify record address count mismatch")
+        for wire, address in addresses:
+            if wire != 2 or not identify_field(identify_protobuf_fields(address, {1}), 1, 2):
+                raise ValueError("raw Identify record address is malformed")
+    except (ValueError, TypeError) as error:
+        return [str(error)]
+    return []
+
+
+def validate_identify_evidence(result: dict, record: dict, _listener: Optional[dict]) -> list[str]:
+    separate = result.get("raw_identify_exchange")
+    if separate is not None and (not isinstance(separate, dict) or separate.get("status") != "verified"):
+        return ["failed raw Identify exchange cannot be acceptance evidence"]
     if result.get("signed_peer_record") is True and (
         positive_integer(result.get("protocol_count")) or positive_integer(result.get("payload_bytes"))
     ):
         return []
+    if result.get("raw_identify_exchange") is not None:
+        errors = validate_raw_identify_exchange(result, record)
+        if not positive_integer(result.get("protocol_count")):
+            errors.append("Identify Behaviour lacks its independently observed protocol payload")
+        return errors
     return ["Identify evidence lacks a signed peer record and protocol payload"]
+
+
+def raw_application_process_source(record: dict, payload: dict, result_path: Path,
+                                   root: Path, indexed: dict[Path, str], claim_paths: set[Path],
+                                   mode: str = "dial") -> list[str]:
+    """Require the exact application result captured by its joined process owner."""
+    attempts = record.get("result", {}).get("attempts")
+    owners = record.get("owned_processes")
+    if not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(owners, list):
+        return ["raw application requires one owned successful fixture attempt"]
+    attempt = attempts[0]
+    if not isinstance(attempt, dict):
+        return ["raw application attempt is malformed"]
+    view = attempt if mode == "dial" else record.get("listener_process")
+    if (mode not in {"dial", "listen"} or not isinstance(view, dict)
+            or (mode == "listen" and view.get("pid") == attempt.get("pid"))):
+        return ["application evidence lacks independently owned dialer/listener processes"]
+    options, command_errors = command_options(view.get("command"), mode)
+    if (command_errors or record.get("scenario") not in {"identify", "echo"}
+            or (mode == "dial" and options.get("--peer-id") != record.get("peer_id"))
+            or options.get("--scenario") != record.get("scenario")
+            or path_within(options.get("--result-file"), root) != result_path):
+        return ["raw application launch does not bind the expected authenticated peer and scenario"]
+    matches = [owner for owner in owners if isinstance(owner, dict)
+               and owner.get("command") == view.get("command")
+               and owner.get("pid") == view.get("pid") and owner.get("log_file") == view.get("log_file")]
+    if len(matches) != 1:
+        return ["raw application lacks a unique matching raw process owner"]
+    owner = matches[0]
+    terminal = {"exit_code": 0, "termination": "graceful"}
+    if (type(owner.get("pid")) is not int or owner["pid"] <= 0
+            or owner.get("terminal_status") != terminal or view.get("terminal_status") != terminal
+            or type(owner["terminal_status"]["exit_code"]) is not int
+            or type(view["terminal_status"]["exit_code"]) is not int):
+        return ["raw application process was not gracefully joined"]
+    outputs = owner.get("outputs")
+    if not isinstance(outputs, list) or (mode == "dial" and outputs != view.get("outputs")):
+        return ["raw application process/attempt snapshots disagree"]
+    captures = [output for output in outputs if isinstance(output, dict) and output.get("argument") == "--result-file"]
+    if len(captures) != 1:
+        return ["raw application lacks its unique captured result"]
+    capture = captures[0]
+    source = path_within(capture.get("log_file"), root)
+    log = path_within(owner.get("log_file"), root)
+    if (capture.get("exists") is not True or path_within(capture.get("path"), root) != result_path
+            or log is None or source != Path(str(log) + ".result-file.json")
+            or source not in indexed or result_path not in indexed or log not in indexed):
+        return ["raw application source is absent from terminal-owned indexed output"]
+    captured, errors = load_evidence_json(source, "raw application process snapshot")
+    if captured != payload:
+        errors.append("raw application report differs from its immutable process snapshot")
+    claim_paths.add(source)
+    if mode == "listen":
+        ready_outputs = [output for output in outputs if isinstance(output, dict)
+                         and output.get("argument") == "--ready-file"]
+        if len(ready_outputs) != 1:
+            return errors + ["application listener lacks its terminal-owned readiness snapshot"]
+        ready_output = ready_outputs[0]
+        ready_source = path_within(ready_output.get("log_file"), root)
+        if (ready_output.get("exists") is not True
+                or path_within(ready_output.get("path"), root) != path_within(options.get("--ready-file"), root)
+                or ready_source != Path(str(log) + ".ready-file.json") or ready_source not in indexed):
+            return errors + ["application listener readiness source is not indexed and owned"]
+        ready, ready_errors = load_evidence_json(ready_source, "application listener readiness snapshot")
+        errors.extend(ready_errors)
+        local_peer = payload.get("local_peer_id")
+        if payload.get("implementation") == "rust":
+            proof = payload.get("upgrade_observation")
+            connections = proof.get("connections") if isinstance(proof, dict) else None
+            local_peer = None
+            if isinstance(connections, list) and 1 <= len(connections) <= 16:
+                identities = [connection.get("authenticated_local_peer_id")
+                              for connection in connections if isinstance(connection, dict)]
+                if (len(identities) == len(connections) and nonempty_string(identities[0])
+                        and all(identity == identities[0] for identity in identities)):
+                    local_peer = identities[0]
+        if (not isinstance(ready, dict) or ready != owner.get("ready") or ready.get("status") != "ready"
+                or ready.get("implementation") != record.get("listener") or ready.get("role") != "listener"
+                or ready.get("peer_id") != record.get("peer_id")
+                or ready.get("peer_id") != local_peer):
+            errors.append("application listener readiness does not identify the actual authenticated counterpart")
+        claim_paths.add(ready_source)
+    return errors
 
 
 def validate_quic_v1_transport_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
@@ -864,6 +1174,15 @@ def validate_tcp_yamux_evidence(result: dict, record: dict, listener: Optional[d
                                 require_identify: bool = True) -> list[str]:
     """Require endpoint-observed TCP upgrade state, not requested CLI transport."""
     errors = validate_identify_evidence(result, record, listener) if require_identify else []
+    if require_identify and record.get("profile") == "native" and record.get("dialer") == "rust":
+        if len(security_protocols) != 1:
+            return errors + ["Rust native upgrade requires an exact security contract"]
+        return errors + validate_rust_dial_upgrade(result, record.get("peer_id"), security_protocols[0])
+    if (require_identify and record.get("profile") == "native"
+            and record.get("dialer") == "forge" and record.get("listener") == "rust"):
+        if len(security_protocols) != 1:
+            return errors + ["Rust native upgrade requires an exact security contract"]
+        return errors + validate_rust_listener_upgrade(result, listener, record.get("peer_id"), security_protocols[0])
     if result.get("negotiated_transport") != "tcp":
         errors.append("TCP/Yamux evidence lacks endpoint-observed tcp transport")
     if result.get("negotiated_security") not in security_protocols:
@@ -878,29 +1197,38 @@ def validate_tcp_yamux_evidence(result: dict, record: dict, listener: Optional[d
         and nonempty_string(result.get("protocol"))
     ):
         errors.append("TCP/Yamux evidence lacks a completed echo payload")
+    if require_identify and record.get("profile") == "native":
+        if record.get("dialer") == "go":
+            errors.extend(validate_go_dial_upgrade(result, record.get("peer_id"), result.get("negotiated_security")))
+        elif record.get("dialer") == "forge" and record.get("listener") == "go":
+            errors.extend(validate_go_listener_upgrade(result, listener, record.get("peer_id"), result.get("negotiated_security")))
     return errors
 
 
 def validate_noise_multistream_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
     errors = validate_identify_evidence(result, record, listener)
-    errors.extend(exact_phase_transcript(result, "/noise"))
-    if result.get("negotiated_security") != "/noise" or result.get("negotiated_muxer") != "/yamux/1.0.0":
-        errors.append("Noise/multistream evidence lacks endpoint-observed TCP security and muxer selection")
-    if result.get("authenticated_remote_peer_id") != record.get("peer_id"):
-        errors.append("Noise/multistream evidence lacks the endpoint-authenticated remote peer identity")
-    if result.get("selected_protocols") != ["/noise", "/yamux/1.0.0", result.get("application_protocol")]:
-        errors.append("Noise/multistream selected protocols do not match its endpoint upgrade transcript")
-    return errors
+    if record.get("dialer") == "rust":
+        return errors + validate_rust_dial_upgrade(result, record.get("peer_id"), "/noise")
+    if record.get("dialer") == "forge" and record.get("listener") == "rust":
+        return errors + validate_rust_listener_upgrade(result, listener, record.get("peer_id"), "/noise")
+    if record.get("dialer") == "go":
+        return errors + validate_go_dial_upgrade(result, record.get("peer_id"), "/noise")
+    if record.get("dialer") == "forge" and record.get("listener") == "go":
+        return errors + validate_go_listener_upgrade(result, listener, record.get("peer_id"), "/noise")
+    return errors + ["Noise/multistream evidence requires an observed Forge/Go or Forge/Rust exchange"]
 
 
 def validate_tls_evidence(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
     errors = validate_identify_evidence(result, record, listener)
-    errors.extend(exact_phase_transcript(result, "/tls/1.0.0"))
-    if result.get("negotiated_security") != "/tls/1.0.0" or result.get("negotiated_muxer") != "/yamux/1.0.0":
-        errors.append("TLS evidence lacks endpoint-observed TCP security and muxer selection")
-    if result.get("authenticated_remote_peer_id") != record.get("peer_id"):
-        errors.append("TLS evidence lacks the endpoint-authenticated remote peer identity")
-    return errors
+    if record.get("dialer") == "rust":
+        return errors + validate_rust_dial_upgrade(result, record.get("peer_id"), "/tls/1.0.0")
+    if record.get("dialer") == "forge" and record.get("listener") == "rust":
+        return errors + validate_rust_listener_upgrade(result, listener, record.get("peer_id"), "/tls/1.0.0")
+    if record.get("dialer") == "go":
+        return errors + validate_go_dial_upgrade(result, record.get("peer_id"), "/tls/1.0.0")
+    if record.get("dialer") == "forge" and record.get("listener") == "go":
+        return errors + validate_go_listener_upgrade(result, listener, record.get("peer_id"), "/tls/1.0.0")
+    return errors + ["TLS evidence requires an observed Forge/Go or Forge/Rust exchange"]
 
 
 def pnet_control_errors(record: dict, name: str) -> list[str]:
@@ -1037,10 +1365,147 @@ def rust_relay_command_target_errors(record: dict, relay_peer: str, relay_endpoi
     return errors
 
 
+def validate_voucherless_rust_reservation(result: dict, record: dict, listener: Optional[dict]) -> list[str]:
+    """Pinned Rust omits vouchers: paired RESERVE response/server acceptance, not circuit echo."""
+    if (record.get("dialer") != "forge" or record.get("listener") != "rust"
+            or record.get("profile") != "native" or record.get("scenario") != "relay_reserve"
+            or not isinstance(listener, dict)):
+        return ["voucherless reservation requires the Forge-to-pinned-Rust native pair"]
+    relay = record.get("peer_id")
+    client = result.get("reservation_client_peer_id")
+    if (not relay_native_peer_id(relay) or not relay_native_peer_id(client) or relay == client
+            or result.get("relay_peer_id") != relay or result.get("authenticated_remote_peer_id") != relay
+            or listener.get("peer_id") != relay):
+        return ["voucherless reservation authenticated client/relay identities disagree"]
+    errors = rust_relay_command_target_errors(record, relay, record.get("addr"))
+    if (result.get("reservation_basis") != "forge.node.async_reserve_relay"
+            or result.get("voucher_present") is not False or type(result.get("voucher_bytes")) is not int
+            or result["voucher_bytes"] != 0 or result.get("role") != "dialer"
+            or listener.get("implementation") != "rust" or listener.get("role") != "listener"
+            or listener.get("scenario") != "relay_reserve" or listener.get("status") != "ok"
+            or listener.get("reservation_basis") != "libp2p.relay.server.ReservationReqAccepted"
+            or listener.get("trace_complete") is not True or listener.get("trace_overflow") is not False):
+        errors.append("voucherless reservation lacks bounded final native response/event evidence")
+    target, target_errors = relay_native_quic_transport_endpoint(record.get("addr"), relay)
+    remote, remote_errors = relay_native_quic_transport_endpoint(result.get("authenticated_remote_address"), relay)
+    errors.extend(target_errors + remote_errors)
+    if target is None or remote != target:
+        errors.append("voucherless reservation authenticated transport differs from the requested relay")
+    returned = result.get("relay_endpoints")
+    addresses = listener.get("listen_addrs")
+    normalized = []
+    for label, values in (("returned", returned), ("listener", addresses)):
+        if not isinstance(values, list) or not 1 <= len(values) <= 16:
+            errors.append(f"voucherless reservation lacks bounded {label} addresses")
+            normalized.append(set())
+            continue
+        endpoints = []
+        for address in values:
+            endpoint, endpoint_errors = relay_native_quic_transport_endpoint(address, relay)
+            errors.extend(endpoint_errors)
+            endpoints.append(endpoint)
+        if None in endpoints or len(set(endpoints)) != len(endpoints):
+            errors.append(f"voucherless reservation has invalid/duplicate {label} addresses")
+        normalized.append(set(endpoints))
+    if not normalized[0] or normalized[0] != normalized[1] or target not in normalized[0]:
+        errors.append("voucherless reservation returned addresses differ from the actual relay listener")
+    process = record.get("listener_process")
+    if not isinstance(process, dict) or process.get("listen_addrs") != addresses:
+        errors.append("voucherless reservation listener addresses differ from readiness")
+    acceptances = listener.get("reservation_acceptances")
+    if not isinstance(acceptances, list) or len(acceptances) != 1 or not isinstance(acceptances[0], dict):
+        return [*errors, "voucherless reservation requires exactly one fresh server acceptance"]
+    acceptance = acceptances[0]
+    if acceptance.get("src_peer_id") != client or acceptance.get("renewed") is not False:
+        errors.append("voucherless reservation server acceptance is renewed or belongs to another client")
+    times = [listener.get("started_at_unix_seconds"), result.get("reservation_started_at_unix_seconds"),
+             result.get("reservation_received_at_unix_seconds"), acceptance.get("observed_at_unix_seconds"),
+             listener.get("observed_at_unix_seconds"), result.get("reservation_expires_at_unix_seconds")]
+    if not all(positive_integer(value) for value in times):
+        errors.append("voucherless reservation lacks actual bounded timestamps")
+    else:
+        server_start, request_start, received, accepted, joined, expires = times
+        # Check at capture time, not review time; archived evidence does not expire during review.
+        if not (server_start <= request_start <= received <= joined < expires
+                and request_start <= accepted <= joined):
+            errors.append("voucherless reservation is expired or server acceptance is not fresh")
+    return errors
+
+
+def voucherless_reservation_process_sources(record: dict, payload: dict, listener_payload: Optional[dict],
+                                           root: Path, indexed: dict[Path, str], claims: set[Path]) -> list[str]:
+    """Bind both halves to unique joined owners and immutable indexed result/ready snapshots."""
+    attempts = record.get("result", {}).get("attempts")
+    owners = record.get("owned_processes")
+    listener = record.get("listener_process")
+    if (not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(attempts[0], dict)
+            or not isinstance(owners, list) or not isinstance(listener, dict) or not isinstance(listener_payload, dict)):
+        return ["voucherless reservation lacks one owned attempt and listener result"]
+    if attempts[0].get("pid") == listener.get("pid"):
+        return ["voucherless reservation requires two independently owned processes"]
+    errors = []
+    for view, expected, result_file, mode in (
+        (attempts[0], payload, record["result"].get("result_file"), "dial"),
+        (listener, listener_payload, record.get("listener_result_file"), "listen"),
+    ):
+        matches = [owner for owner in owners if isinstance(owner, dict)
+                   and all(owner.get(key) == view.get(key) for key in ("pid", "command", "log_file"))]
+        if len(matches) != 1:
+            errors.append(f"voucherless reservation {mode} lacks a unique process owner")
+            continue
+        owner = matches[0]
+        terminal = {"exit_code": 0, "termination": "graceful"}
+        if (type(owner.get("pid")) is not int or owner["pid"] <= 0
+                or owner.get("terminal_status") != terminal or view.get("terminal_status") != terminal
+                or type(owner["terminal_status"]["exit_code"]) is not int
+                or type(view["terminal_status"]["exit_code"]) is not int):
+            errors.append(f"voucherless reservation {mode} was not gracefully joined")
+        outputs = owner.get("outputs")
+        options, command_errors = command_options(view.get("command"), mode)
+        if (command_errors or not isinstance(outputs, list)
+                or (mode == "dial" and outputs != view.get("outputs"))):
+            errors.append(f"voucherless reservation {mode} output ownership is malformed")
+            continue
+        for argument in (("--result-file", "--ready-file") if mode == "listen" else ("--result-file",)):
+            captures = [output for output in outputs if isinstance(output, dict) and output.get("argument") == argument]
+            if len(captures) != 1:
+                errors.append(f"voucherless reservation {mode} lacks its unique {argument} snapshot")
+                continue
+            capture = captures[0]
+            log = path_within(owner.get("log_file"), root)
+            source = path_within(capture.get("log_file"), root)
+            original = path_within(capture.get("path"), root)
+            if (capture.get("exists") is not True or log is None or original is None or source is None
+                    or original != path_within(options.get(argument), root)
+                    or (argument == "--result-file" and original != path_within(result_file, root))
+                    or source != Path(str(log) + f".{argument.removeprefix('--')}.json")
+                    or any(path not in indexed for path in (log, source))
+                    or (argument == "--result-file" and original not in indexed)):
+                errors.append(f"voucherless reservation {mode} lacks indexed terminal-owned {argument}")
+                continue
+            captured, capture_errors = load_evidence_json(source, "voucherless reservation process snapshot")
+            errors.extend(capture_errors)
+            claims.update((log, source))
+            if argument == "--result-file":
+                claims.add(original)
+                if captured != expected:
+                    errors.append(f"voucherless reservation {mode} differs from its immutable process snapshot")
+            else:
+                if (not isinstance(captured, dict) or captured != owner.get("ready")
+                        or captured.get("implementation") != "rust" or captured.get("status") != "ready"
+                        or captured.get("role") != "listener" or captured.get("relay_service_active") is not True
+                        or captured.get("peer_id") != expected.get("peer_id")
+                        or captured.get("listen_addrs") != expected.get("listen_addrs")):
+                    errors.append("voucherless reservation readiness does not bind the actual relay service")
+    return errors
+
+
 def validate_relay_client_evidence(result: dict, record: dict, _listener: Optional[dict]) -> list[str]:
     implementation = result.get("implementation")
     if implementation == "forge" and positive_integer(result.get("voucher_bytes")):
         return []
+    if implementation == "forge":
+        return validate_voucherless_rust_reservation(result, record, _listener)
     if (
         implementation == "go"
         and result.get("voucher") is True
@@ -1414,6 +1879,32 @@ def validate_successful_raw_record(
     errors.extend(validate_result_semantics(
         expected_evidence_contract, payload or {}, record, listener_payload
     ))
+    if isinstance(payload, dict) and (payload.get("raw_identify_exchange") is not None or (
+        record.get("dialer") in {"go", "rust"} and record.get("scenario") in {"identify", "echo"}
+        and expected_evidence_contract in {
+            evidence_contract_for("noise_identity"), evidence_contract_for("multistream_select"),
+            evidence_contract_for("tls_identity"), evidence_contract_for("tcp_yamux"),
+        }
+    )):
+        errors.extend(raw_application_process_source(record, payload, result_path, artifact_root,
+                                                  indexed_evidence, claim_paths))
+    if (record.get("dialer") == "forge" and record.get("listener") in {"go", "rust"}
+            and record.get("scenario") in {"identify", "echo"} and isinstance(payload, dict)
+            and expected_evidence_contract in {
+                evidence_contract_for("noise_identity"), evidence_contract_for("multistream_select"),
+                evidence_contract_for("tls_identity"), evidence_contract_for("tcp_yamux"),
+            }):
+        errors.extend(raw_application_process_source(record, payload, result_path, artifact_root,
+                                                     indexed_evidence, claim_paths))
+        if isinstance(listener_payload, dict):
+            errors.extend(raw_application_process_source(record, listener_payload, listener_result_path,
+                                                         artifact_root, indexed_evidence, claim_paths, "listen"))
+        else:
+            errors.append("paired upgrade evidence lacks its terminal-owned listener payload")
+    if (record.get("scenario") == "relay_reserve" and record.get("dialer") == "forge"
+            and isinstance(payload, dict) and not positive_integer(payload.get("voucher_bytes"))):
+        errors.extend(voucherless_reservation_process_sources(record, payload, listener_payload, artifact_root,
+                                                              indexed_evidence, claim_paths))
     if expected_runner_scenario in DNSADDR_SCENARIOS:
         dns = record.get("dns_evidence", {})
         dns_path = path_within(dns.get("log_file"), artifact_root) if isinstance(dns, dict) else None
@@ -1484,6 +1975,7 @@ def validate_execution_receipt(receipt: object, artifact_path: Path, artifact: d
 def validate(
     root: Path, manifest_path: Path, artifact_path: Path, expected_head: str,
     execution_receipt: Optional[dict] = None,
+    expected_suite: Optional[str] = None,
 ) -> tuple[list[str], bool]:
     if not root.is_dir():
         return ["source root is unavailable"], False
@@ -1492,9 +1984,7 @@ def validate(
         manifest_hash = sha256_file(manifest_path)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         return [f"manifest cannot be read: {error}"], False
-    required, errors = required_scenarios(manifest)
-    if errors:
-        return errors, False
+    errors = []
     commit_timestamp, git_errors = validate_git_state(root, expected_head)
     errors.extend(git_errors)
     if not artifact_path.is_file():
@@ -1505,6 +1995,13 @@ def validate(
         return [*errors, f"artifact cannot be read: {error}"], False
     if not isinstance(artifact, dict) or set(artifact) != set(ARTIFACT_SCHEMA["required_fields"]):
         return [*errors, "artifact has invalid canonical runner schema"], False
+    provenance = artifact.get("fixture_provenance")
+    runner_inputs = provenance.get("runner_inputs") if isinstance(provenance, dict) else None
+    suite = runner_inputs.get("suite", "stage6") if isinstance(runner_inputs, dict) else None
+    if suite not in ("stage6", "autonat") or (expected_suite is not None and suite != expected_suite):
+        return [*errors, "artifact suite differs from requested canonical suite"], False
+    required, manifest_errors = required_scenarios(manifest, suite)
+    errors.extend(manifest_errors)
     if artifact.get("schema_version") != ARTIFACT_SCHEMA["schema_version"]:
         errors.append("artifact schema_version is invalid")
     if execution_receipt is not None:
@@ -1548,12 +2045,12 @@ def validate(
     )
     errors.extend(provenance_errors)
     inputs, input_errors = validate_runner_inputs(
-        root, artifact_path, artifact_root, manifest_path, artifact.get("fixture_provenance")
+        root, artifact_path, artifact_root, manifest_path, artifact.get("fixture_provenance"), suite
     )
     errors.extend(input_errors)
     errors.extend(validate_donor_provenance(root, artifact.get("fixture_provenance"), inputs))
     errors.extend(validate_runner_argv(
-        root, artifact.get("runner_argv"), manifest_path, inputs, binary_paths
+        root, artifact.get("runner_argv"), manifest_path, inputs, binary_paths, suite
     ))
     failures = artifact.get("failures")
     if not isinstance(failures, list):
@@ -1563,14 +2060,45 @@ def validate(
     artifacts = artifact.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         return [*errors, "canonical runner artifacts must be a non-empty array"], False
+    autonat_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "autonat"]
+    base_records = [record for record in artifacts if not isinstance(record, dict) or record.get("suite") != "autonat"]
+    autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
+    base_required = {key: value for key, value in required.items() if key[1] not in AUTONAT_SCENARIOS}
     indexed_evidence, evidence_errors = validate_evidence_index(
-        artifact_path, artifact_root, artifacts, artifact.get("evidence_index")
+        artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
     errors.extend(evidence_errors)
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
-    used_records: set[int] = set()
     used_evidence: set[Path] = set()
+    # Standalone legacy parser fixtures can have a partial manifest, but every
+    # promotion receipt and every registered AutoNAT claim requires the full 41.
+    if suite == "autonat" or autonat_required or autonat_records or execution_receipt is not None:
+        def load_indexed_json(value):
+            path = path_within(value, artifact_root)
+            if path is None or path not in indexed_evidence:
+                raise ValueError("AutoNAT raw output is absent from verified evidence index")
+            payload, failures = load_evidence_json(path, "AutoNAT raw output")
+            if failures or payload is None:
+                raise ValueError("; ".join(failures))
+            return payload
+
+        # No receipt is duplicated across role claims, cases or directions.
+        for record in autonat_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("AutoNAT cases reuse raw process/network evidence")
+            used_evidence.update(paths)
+        errors.extend(validate_autonat_suite(
+            autonat_records, autonat_required, artifact_root, binary_paths, load_indexed_json,
+            pnet_fingerprint_for_launcher_key, root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key",
+        ))
+    if suite == "autonat":
+        if base_records:
+            errors.append("focused AutoNAT suite contains unrelated base records")
+        return errors, False
+
+    used_records: set[int] = set()
     for (capability_id, scenario_id), (
         expected_directions,
         _expected_status,
@@ -1579,11 +2107,11 @@ def validate(
         expected_runner_scenario,
         _expected_requires,
         expected_evidence_contract,
-    ) in required.items():
+    ) in base_required.items():
         for direction in expected_directions:
             matches = [
                 index
-                for index, record in enumerate(artifacts)
+                for index, record in enumerate(base_records)
                 if isinstance(record, dict)
                 and record.get("acceptance_scenario_id") == scenario_id
                 and direction_of(record) == direction
@@ -1603,7 +2131,7 @@ def validate(
             errors.extend(
                 f"{capability_id}/{scenario_id}/{direction}: {error}"
                 for error in validate_successful_raw_record(
-                    artifacts[index],
+                    base_records[index],
                     capability_id,
                     direction,
                     expected_profile,
@@ -1749,31 +2277,12 @@ def semantic_fixture(scenario_id: str) -> tuple[dict, dict, Optional[dict]]:
             "negotiated_muxer": "/yamux/1.0.0", "authenticated_remote_peer_id": "listener-peer",
             "protocol": "/forge/interop/echo/1", "payload_bytes": 7, "echo_ok": True,
         })
-    elif scenario_id in {"multistream_select", "noise_identity"}:
-        application = "/forge/interop/identify/1"
-        result.update(identify | {
-            "negotiated_security": "/noise", "negotiated_muxer": "/yamux/1.0.0",
-            "authenticated_remote_peer_id": "listener-peer", "application_protocol": application,
-            "selected_protocols": ["/noise", "/yamux/1.0.0", application],
-            "upgrade_transcript": [
-                {"phase": "multistream", "protocol": "/multistream/1.0.0"},
-                {"phase": "security", "protocol": "/noise"},
-                {"phase": "muxer", "protocol": "/yamux/1.0.0"},
-                {"phase": "application", "protocol": application},
-            ],
-        })
-    elif scenario_id == "tls_identity":
-        application = "/forge/interop/identify/1"
-        result.update(identify | {
-            "negotiated_security": "/tls/1.0.0", "negotiated_muxer": "/yamux/1.0.0",
-            "authenticated_remote_peer_id": "listener-peer", "application_protocol": application,
-            "upgrade_transcript": [
-                {"phase": "multistream", "protocol": "/multistream/1.0.0"},
-                {"phase": "security", "protocol": "/tls/1.0.0"},
-                {"phase": "muxer", "protocol": "/yamux/1.0.0"},
-                {"phase": "application", "protocol": application},
-            ],
-        })
+    elif scenario_id in {"multistream_select", "noise_identity", "tls_identity"}:
+        # Shared synthetic parser fixtures, never normal runner output. Descriptive
+        # phase lists are insufficient even for the positive checker self-test.
+        from test_identify_evidence import composed_rust_receipt
+        security = "/tls/1.0.0" if scenario_id == "tls_identity" else "/noise"
+        result, record = composed_rust_receipt("identify", security)
     elif scenario_id.startswith("ping"):
         result.update({"ping_ok": True, "rtt_ms": 1})
     elif scenario_id.startswith("identify"):
@@ -1910,6 +2419,17 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
         result_payload = dict(result_payload)
         result_payload["implementation"] = dialer
         listener_payload = {"implementation": listener, "role": "listener", "status": "ok"}
+        peer = "listener-peer"
+        if scenario_id == "tcp_yamux":
+            # Synthetic parser self-test only. Share the unit-test receipt factory;
+            # canonical runner execution and normal acceptance never call it.
+            from test_upgrade_evidence import attach_terminal_owners, echo_receipt, paired_receipt
+            if dialer == "forge":
+                result_payload, listener_payload = paired_receipt(echo=True)
+                result_payload["payload_bytes"] = 19
+            else:
+                result_payload = echo_receipt()
+            peer = "remote"
         result_file = artifact_root / f"{stem}.json"
         listener_file = artifact_root / f"{stem}-listener.json"
         dial_log = artifact_root / f"{stem}-dial.log"
@@ -1919,7 +2439,7 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
         dial_log.write_text("dial completed\n")
         listener_log.write_text("listener completed\n")
         dial_command = [
-            str(binaries[dialer]), "dial", "--scenario", scenario, "--peer-id", "listener-peer",
+            str(binaries[dialer]), "dial", "--scenario", scenario, "--peer-id", peer,
             "--addr", "/ip4/127.0.0.1/tcp/1", "--result-file", str(result_file),
             "--store-dir", str(artifact_root / f"{stem}-dial-store"), "--transport", transport,
         ]
@@ -1935,7 +2455,7 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
             "dialer": dialer, "listener": listener, "scenario": scenario,
             "runner_scenario_id": runner_scenario_id, "acceptance_scenario_id": scenario_id,
             "profile": "native", "transport_stack": list(stack), "transport": transport,
-            "peer_id": "listener-peer", "addr": "/ip4/127.0.0.1/tcp/1",
+            "peer_id": peer, "addr": "/ip4/127.0.0.1/tcp/1",
             "effective_configuration": {
                 "activation": "enabled", "profile": "native", "transport_stack": list(stack),
                 "dialer": launcher_execution_description(dial_options, result_payload),
@@ -1951,6 +2471,8 @@ def write_artifact(root: Path, manifest_path: Path, artifact_path: Path, scenari
             },
             "listener_result_file": str(listener_file), "listener_result": listener_payload,
         })
+        if scenario_id == "tcp_yamux":
+            attach_terminal_owners(artifacts[-1], result_payload, listener_payload)
     identity = fixture_identity(root)
     timestamp = max(time.time(), float(subprocess.check_output(
         ["git", "-C", str(root), "show", "-s", "--format=%ct", "HEAD"], text=True
@@ -2067,16 +2589,16 @@ def self_test() -> int:
             "authenticated_remote_peer_id", "echo_ok", "payload_bytes",
         ),
         "multistream_select": (
-            "upgrade_transcript", "selected_protocols", "negotiated_security",
-            "negotiated_muxer", "authenticated_remote_peer_id",
+            "upgrade_observation", "raw_identify_exchange", "signed_peer_record",
+            "protocol_count", "authenticated_remote_peer_id",
         ),
         "noise_identity": (
-            "upgrade_transcript", "selected_protocols", "negotiated_security",
-            "negotiated_muxer", "authenticated_remote_peer_id",
+            "upgrade_observation", "raw_identify_exchange", "signed_peer_record",
+            "protocol_count", "authenticated_remote_peer_id",
         ),
         "tls_identity": (
-            "upgrade_transcript", "negotiated_security", "negotiated_muxer",
-            "authenticated_remote_peer_id",
+            "upgrade_observation", "raw_identify_exchange", "signed_peer_record",
+            "protocol_count", "authenticated_remote_peer_id",
         ),
         "identify": ("signed_peer_record", "protocol_count"),
         "identify_native_tcp_yamux": ("signed_peer_record", "protocol_count"),

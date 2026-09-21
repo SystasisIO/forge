@@ -506,9 +506,27 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_registration_rejects_unrepresentable_identify_
                      exceptions::invalid_options);
    auto count_options = make_lifecycle_node_options("lifecycle-identify-count-limit");
    count_options.identify.max_protocols = 9;
+   const auto count_limit = count_options.identify.max_protocols;
+   count_options.lifecycle.listen = {parse_endpoint("/ip4/127.0.0.1/tcp/0")};
    auto count_limited = node{runtime, std::move(count_options)};
+   auto count_rejected = std::optional<protocol_id>{};
+   // Service opt-in changes the builtin count. Fill the configured capacity,
+   // then verify the actual advertised count rather than assuming nine builtins.
+   for (auto index = std::size_t{}; index <= count_limit; ++index) {
+      auto protocol = protocol_id{.value = "/product/count-limit/" + std::to_string(index)};
+      try {
+         count_limited.register_protocol_handler(protocol,
+             [](node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+                co_await incoming.stream.async_close();
+             });
+      } catch (const exceptions::backpressure_rejected&) {
+         count_rejected = std::move(protocol);
+         break;
+      }
+   }
+   BOOST_REQUIRE(count_rejected);
    BOOST_CHECK_THROW(count_limited.register_protocol_handler(
-                         protocol_id{.value = "/product/count-limit/1"},
+                         *count_rejected,
                          [](node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
                             co_await incoming.stream.async_close();
                          }),
@@ -549,8 +567,18 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_registration_rejects_unrepresentable_identify_
    BOOST_TEST(!supports(*record, *rejected));
    BOOST_TEST(std::ranges::all_of(accepted, [&](const auto& protocol) { return supports(*record, protocol); }));
 
+   static_cast<void>(forge::asio::blocking::run(runtime, count_limited.async_start()));
+   const auto count_address = count_limited.local_endpoint();
+   BOOST_REQUIRE(count_address);
+   static_cast<void>(forge::asio::blocking::run(runtime, client.async_connect(*count_address)));
+   const auto count_record = client.peers().find(count_limited.local_peer());
+   BOOST_REQUIRE(count_record);
+   BOOST_TEST(count_record->protocols.size() == count_limit);
+   BOOST_TEST(!supports(*count_record, *count_rejected));
+
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, server.async_stop());
+   forge::asio::blocking::run(runtime, count_limited.async_stop());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_identify_push_fanout_covers_multiple_bounded_batches) {

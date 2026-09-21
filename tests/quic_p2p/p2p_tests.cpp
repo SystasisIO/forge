@@ -107,6 +107,7 @@ import forge.net.p2p.dialing;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.identify;
 import forge.net.p2p.identity;
+import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.message;
@@ -9362,7 +9363,7 @@ BOOST_AUTO_TEST_CASE(p2p_libp2p_autonat_v2_rejects_oversized_data_response_and_u
        forge::exceptions::base);
 }
 
-BOOST_AUTO_TEST_CASE(p2p_autonat_v2_probe_public_and_persists_observation) {
+BOOST_AUTO_TEST_CASE(p2p_autonat_loopback_does_not_claim_public_reachability) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    const auto observer_identity = make_test_certificate_identity("autonat-public-observer");
    const auto subject_identity = make_test_certificate_identity("autonat-public-subject");
@@ -9370,6 +9371,7 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_v2_probe_public_and_persists_observation) {
        observer_identity, capability_set{.bits = capabilities::direct_quic | capabilities::autonat});
    auto subject_options = options_for(
        subject_identity, capability_set{.bits = capabilities::direct_quic | capabilities::autonat});
+   observer_options.reachability_policy.service_v2_enabled = true;
    observer_options.allow_insecure_test_mode = false;
    subject_options.allow_insecure_test_mode = false;
    observer_options.peer_state.persistence = peer_store::make_memory_persistence();
@@ -9385,13 +9387,10 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_v2_probe_public_and_persists_observation) {
    subject.peers().learn_endpoint(observer.local_peer(), observer_endpoint,
                                   capability_set{.bits = capabilities::direct_quic | capabilities::autonat});
 
-   const auto state = forge::asio::blocking::run(runtime, subject.async_probe_reachability(observer.local_peer()));
-   BOOST_TEST(static_cast<int>(state) == static_cast<int>(reachability::state::publicly_reachable));
-
-   const auto stored = subject.peers().find(subject.local_peer());
-   BOOST_REQUIRE(stored.has_value());
-   BOOST_TEST(static_cast<int>(stored->reachability) == static_cast<int>(reachability::state::publicly_reachable));
-   BOOST_REQUIRE(stored->observed_endpoint.has_value());
+   BOOST_CHECK_THROW(static_cast<void>(forge::asio::blocking::run(
+       runtime, subject.async_probe_reachability(observer.local_peer()))), exceptions::unsupported_protocol);
+   BOOST_CHECK(subject.reachability_status().effective == reachability::state::unknown);
+   BOOST_TEST(!subject.peers().find(subject.local_peer()).has_value());
 
    forge::asio::blocking::run(runtime, subject.async_stop());
    forge::asio::blocking::run(runtime, observer.async_stop());
@@ -11350,7 +11349,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_creates_ipns_record_with_its_identity) {
    const auto identity = make_test_identity();
    auto local = node{runtime, options_for(identity)};
    const auto value = std::string_view{"/ipfs/bafkqaaa"};
-   const auto eol = ipns::time_point{
+   const auto eol = forge::chrono::timestamp{
        std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::sys_days{std::chrono::year{2030} / 1 / 1})};
    const auto record = local.create_ipns_record(
        std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(value.data()), value.size()}, 7, eol,
@@ -11361,7 +11360,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_creates_ipns_record_with_its_identity) {
                   std::vector<std::uint8_t>(value.begin(), value.end()),
               boost::test_tools::per_element());
    ipns::validate(record, local.local_peer(), identity.key,
-                  ipns::time_point{std::chrono::time_point_cast<std::chrono::seconds>(
+                  forge::chrono::timestamp{std::chrono::time_point_cast<std::chrono::seconds>(
                       std::chrono::sys_days{std::chrono::year{2029} / 1 / 1})});
 
    forge::asio::blocking::run(runtime, local.async_stop());
@@ -11371,7 +11370,7 @@ BOOST_AUTO_TEST_CASE(p2p_amino_ipns_preserves_typed_keybook_failures) {
    const auto identity = make_rsa_identity();
    auto create_options = ipns::create_options{};
    create_options.embed_public_key = false;
-   const auto eol = ipns::time_point{
+   const auto eol = forge::chrono::timestamp{
        std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::sys_days{std::chrono::year{2030} / 1 / 1})};
    const auto value = std::string_view{"/ipfs/bafkqaaa"};
    const auto record = ipns::create(

@@ -1,7 +1,6 @@
 module;
 
 #include <chrono>
-#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -15,6 +14,7 @@ module;
 
 export module forge.net.p2p.ipns;
 
+import forge.chrono.timestamp;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 
@@ -27,23 +27,6 @@ enum class validity_type : std::uint8_t {
    eol = 0,
 };
 
-class time_point {
- public:
-   time_point() = default;
-   time_point(std::chrono::sys_seconds whole_seconds, std::chrono::nanoseconds subsecond = {});
-   time_point(std::chrono::sys_time<std::chrono::nanoseconds> value);
-
-   [[nodiscard]] static time_point now();
-   [[nodiscard]] std::chrono::sys_seconds whole_seconds() const noexcept;
-   [[nodiscard]] std::chrono::nanoseconds subsecond() const noexcept;
-
-   [[nodiscard]] friend bool operator==(const time_point&, const time_point&) noexcept = default;
-   friend std::strong_ordering operator<=>(const time_point& left, const time_point& right) noexcept;
-
- private:
-   std::chrono::sys_seconds whole_seconds_{};
-   std::chrono::nanoseconds subsecond_{};
-};
 using metadata_value = std::variant<std::string, std::vector<std::uint8_t>, std::int64_t, bool>;
 using metadata = std::map<std::string, metadata_value, std::less<>>;
 // The callback must synchronously sign the supplied bytes without changing
@@ -66,7 +49,7 @@ class record {
 
    [[nodiscard]] std::span<const std::uint8_t> value() const noexcept;
    [[nodiscard]] std::uint64_t sequence() const noexcept;
-   [[nodiscard]] time_point eol() const noexcept;
+   [[nodiscard]] forge::chrono::timestamp eol() const noexcept;
    [[nodiscard]] std::string_view eol_text() const noexcept;
    [[nodiscard]] std::chrono::nanoseconds ttl() const noexcept;
    [[nodiscard]] validity_type validity() const noexcept;
@@ -83,11 +66,11 @@ class record {
    record() = default;
 
    friend record create(const public_key&, const signing_callback&, std::span<const std::uint8_t>, std::uint64_t,
-                        time_point, std::chrono::nanoseconds, create_options);
+                        forge::chrono::timestamp, std::chrono::nanoseconds, create_options);
    friend record decode(std::span<const std::uint8_t>);
    friend std::vector<std::uint8_t> encode(const record&);
-   friend void validate(const record&, const peer_id&, std::optional<public_key>, time_point);
-   friend void validate(const record&, const peer_id&, const public_key_resolver&, time_point);
+   friend void validate(const record&, const peer_id&, std::optional<public_key>, forge::chrono::timestamp);
+   friend void validate(const record&, const peer_id&, const public_key_resolver&, forge::chrono::timestamp);
    friend std::size_t select(std::span<const record>);
 
    std::vector<std::uint8_t> encoded_;
@@ -104,7 +87,7 @@ class record {
 
    std::vector<std::uint8_t> value_;
    std::uint64_t sequence_ = 0;
-   time_point eol_{};
+   forge::chrono::timestamp eol_{};
    std::string eol_text_;
    std::chrono::nanoseconds ttl_{};
    validity_type validity_ = validity_type::eol;
@@ -112,15 +95,17 @@ class record {
 };
 
 [[nodiscard]] record create(const public_key& key, const signing_callback& signer, std::span<const std::uint8_t> value,
-                            std::uint64_t sequence, time_point eol, std::chrono::nanoseconds ttl,
+                            std::uint64_t sequence, forge::chrono::timestamp eol, std::chrono::nanoseconds ttl,
                             create_options options = {});
 [[nodiscard]] record decode(std::span<const std::uint8_t> bytes);
 [[nodiscard]] std::vector<std::uint8_t> encode(const record& value);
 
 void validate(const record& value, const peer_id& expected_peer, std::optional<public_key> external_key = std::nullopt,
-              time_point now = time_point::now());
+              forge::chrono::timestamp now = forge::chrono::timestamp{
+                  std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now())});
 void validate(const record& value, const peer_id& expected_peer, const public_key_resolver& resolver,
-              time_point now = time_point::now());
+              forge::chrono::timestamp now = forge::chrono::timestamp{
+                  std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now())});
 
 [[nodiscard]] std::size_t select(std::span<const record> candidates);
 [[nodiscard]] std::vector<std::uint8_t> routing_key(const peer_id& peer);

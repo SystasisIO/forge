@@ -4,6 +4,8 @@ module;
 
 #include <cstdint>
 #include <cstddef>
+#include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,7 +33,11 @@ namespace {
    return parse_endpoint(forge::multiformats::multiaddr::from_bytes(value).to_string());
 }
 
-[[nodiscard]] std::vector<std::uint8_t> encode_peer_info(const reachability::peer_info& value) {
+[[nodiscard]] std::vector<std::uint8_t> encode_peer_info(const reachability::peer_info& value,
+                                                          reachability::options options) {
+   if (value.endpoints.size() > options.max_endpoints) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "AutoNAT peer has too many addresses");
+   }
    auto out = std::vector<std::uint8_t>{};
    detail::append_bytes(out, 1, value.peer.to_bytes());
    for (const auto& item : value.endpoints) {
@@ -41,7 +47,8 @@ namespace {
    return out;
 }
 
-[[nodiscard]] reachability::peer_info decode_peer_info(std::span<const std::uint8_t> bytes) {
+[[nodiscard]] reachability::peer_info decode_peer_info(std::span<const std::uint8_t> bytes,
+                                                        reachability::options options) {
    auto out = reachability::peer_info{};
    auto in = detail::reader{bytes};
    while (!in.done()) {
@@ -56,6 +63,9 @@ namespace {
          break;
       case 2:
          out.endpoints.push_back(endpoint_from_bytes(in.bytes()));
+         if (out.endpoints.size() > options.max_endpoints) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT peer has too many addresses");
+         }
          break;
       default:
          in.skip(type);
@@ -65,8 +75,34 @@ namespace {
    return out;
 }
 
+[[nodiscard]] std::vector<std::uint8_t> encode_v1_dial(const reachability::peer_info& value,
+                                                        reachability::options options) {
+   auto out = std::vector<std::uint8_t>{};
+   detail::append_bytes(out, 1, encode_peer_info(value, options));
+   return out;
+}
+
+[[nodiscard]] std::optional<reachability::peer_info> decode_v1_dial(std::span<const std::uint8_t> bytes,
+                                                                      reachability::options options) {
+   auto out = std::optional<reachability::peer_info>{};
+   auto in = detail::reader{bytes};
+   while (!in.done()) {
+      const auto [field, type] = in.key();
+      if (field == 1) {
+         if (type != detail::wire_type::length_delimited) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT dial peer must be bytes");
+         }
+         out = decode_peer_info(in.bytes(), options);
+      } else {
+         in.skip(type);
+      }
+   }
+   return out;
+}
+
 [[nodiscard]] std::vector<std::uint8_t> encode_dial_response(const reachability::dial_response& value) {
    auto out = std::vector<std::uint8_t>{};
+   // Rust's proto2 decoder distinguishes an explicit OK from an absent status.
    detail::append_uint64(out, 1, static_cast<std::uint16_t>(value.status));
    if (!value.status_text.empty()) {
       detail::append_string(out, 2, value.status_text);
@@ -78,8 +114,24 @@ namespace {
    return out;
 }
 
+[[nodiscard]] reachability::dial_status checked_dial_status(std::uint64_t value) {
+   switch (value) {
+   case static_cast<std::uint16_t>(reachability::dial_status::ok):
+      return reachability::dial_status::ok;
+   case static_cast<std::uint16_t>(reachability::dial_status::dial_error):
+      return reachability::dial_status::dial_error;
+   case static_cast<std::uint16_t>(reachability::dial_status::dial_refused):
+      return reachability::dial_status::dial_refused;
+   case static_cast<std::uint16_t>(reachability::dial_status::bad_request):
+      return reachability::dial_status::bad_request;
+   case static_cast<std::uint16_t>(reachability::dial_status::internal_error):
+      return reachability::dial_status::internal_error;
+   }
+   FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v1 dial status");
+}
+
 [[nodiscard]] reachability::dial_response decode_dial_response(std::span<const std::uint8_t> bytes) {
-   auto out = reachability::dial_response{};
+   auto out = reachability::dial_response{.status = reachability::dial_status::ok};
    auto in = detail::reader{bytes};
    while (!in.done()) {
       const auto [field, type] = in.key();
@@ -88,7 +140,7 @@ namespace {
          if (type != detail::wire_type::varint) {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT status must be varint");
          }
-         out.status = static_cast<reachability::dial_status>(in.read_varint());
+         out.status = checked_dial_status(in.read_varint());
          break;
       case 2:
          if (type != detail::wire_type::length_delimited) {
@@ -121,23 +173,29 @@ namespace {
 }
 
 [[nodiscard]] reachability::v2::dial_status checked_v2_dial_status(std::uint64_t value) {
-   switch (static_cast<reachability::v2::dial_status>(value)) {
-   case reachability::v2::dial_status::unused:
-   case reachability::v2::dial_status::dial_error:
-   case reachability::v2::dial_status::dial_back_error:
-   case reachability::v2::dial_status::ok:
-      return static_cast<reachability::v2::dial_status>(value);
+   switch (value) {
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::unused):
+      return reachability::v2::dial_status::unused;
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::dial_error):
+      return reachability::v2::dial_status::dial_error;
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::dial_back_error):
+      return reachability::v2::dial_status::dial_back_error;
+   case static_cast<std::uint16_t>(reachability::v2::dial_status::ok):
+      return reachability::v2::dial_status::ok;
    }
    FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v2 dial status");
 }
 
 [[nodiscard]] reachability::v2::response_status checked_v2_response_status(std::uint64_t value) {
-   switch (static_cast<reachability::v2::response_status>(value)) {
-   case reachability::v2::response_status::internal_error:
-   case reachability::v2::response_status::request_rejected:
-   case reachability::v2::response_status::dial_refused:
-   case reachability::v2::response_status::ok:
-      return static_cast<reachability::v2::response_status>(value);
+   switch (value) {
+   case static_cast<std::uint16_t>(reachability::v2::response_status::internal_error):
+      return reachability::v2::response_status::internal_error;
+   case static_cast<std::uint16_t>(reachability::v2::response_status::request_rejected):
+      return reachability::v2::response_status::request_rejected;
+   case static_cast<std::uint16_t>(reachability::v2::response_status::dial_refused):
+      return reachability::v2::response_status::dial_refused;
+   case static_cast<std::uint16_t>(reachability::v2::response_status::ok):
+      return reachability::v2::response_status::ok;
    }
    FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v2 response status");
 }
@@ -147,6 +205,13 @@ namespace {
       return reachability::v2::dial_back_status::ok;
    }
    FORGE_THROW_EXCEPTION(exceptions::codec_error, "unknown AutoNAT v2 dial-back status");
+}
+
+[[nodiscard]] std::uint32_t checked_v2_index(std::uint64_t value) {
+   if (value > std::numeric_limits<std::uint32_t>::max()) {
+      FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 address index exceeds uint32 range");
+   }
+   return static_cast<std::uint32_t>(value);
 }
 
 [[nodiscard]] reachability::v2::dial_request decode_v2_dial_request(std::span<const std::uint8_t> bytes,
@@ -197,7 +262,6 @@ namespace {
 
 [[nodiscard]] reachability::v2::dial_response decode_v2_dial_response(std::span<const std::uint8_t> bytes) {
    auto out = reachability::v2::dial_response{};
-   auto saw_status = false;
    auto in = detail::reader{bytes};
    while (!in.done()) {
       const auto [field, type] = in.key();
@@ -207,13 +271,12 @@ namespace {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 response status must be varint");
          }
          out.status = checked_v2_response_status(in.read_varint());
-         saw_status = true;
          break;
       case 2:
          if (type != detail::wire_type::varint) {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 response address index must be varint");
          }
-         out.index = static_cast<std::uint32_t>(in.read_varint());
+         out.index = checked_v2_index(in.read_varint());
          break;
       case 3:
          if (type != detail::wire_type::varint) {
@@ -226,17 +289,20 @@ namespace {
          break;
       }
    }
-   if (!saw_status) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 response missing status");
-   }
    return out;
 }
 
 [[nodiscard]] std::vector<std::uint8_t> encode_v2_dial_response(const reachability::v2::dial_response& value) {
    auto out = std::vector<std::uint8_t>{};
-   detail::append_uint64(out, 1, static_cast<std::uint16_t>(value.status));
-   detail::append_uint64(out, 2, value.index);
-   detail::append_uint64(out, 3, static_cast<std::uint16_t>(value.dial_status));
+   if (value.status != reachability::v2::response_status::internal_error) {
+      detail::append_uint64(out, 1, static_cast<std::uint16_t>(value.status));
+   }
+   if (value.index != 0) {
+      detail::append_uint64(out, 2, value.index);
+   }
+   if (value.dial_status != reachability::v2::dial_status::unused) {
+      detail::append_uint64(out, 3, static_cast<std::uint16_t>(value.dial_status));
+   }
    return out;
 }
 
@@ -250,7 +316,7 @@ namespace {
          continue;
       }
       if (field == 1) {
-         out.index = static_cast<std::uint32_t>(in.read_varint());
+         out.index = checked_v2_index(in.read_varint());
       } else if (field == 2) {
          out.bytes = in.read_varint();
       } else {
@@ -304,11 +370,12 @@ namespace {
    return out;
 }
 
-[[nodiscard]] std::vector<std::uint8_t> make_v1_payload(const reachability::message& value) {
+[[nodiscard]] std::vector<std::uint8_t> make_v1_payload(const reachability::message& value,
+                                                         reachability::options options) {
    auto out = std::vector<std::uint8_t>{};
    detail::append_uint64(out, 1, static_cast<std::uint16_t>(value.kind));
    if (value.peer) {
-      const auto encoded = encode_peer_info(*value.peer);
+      const auto encoded = encode_v1_dial(*value.peer, options);
       detail::append_bytes(out, 2, encoded);
    }
    if (value.response) {
@@ -318,7 +385,8 @@ namespace {
    return out;
 }
 
-[[nodiscard]] reachability::message read_v1_payload(std::span<const std::uint8_t> bytes) {
+[[nodiscard]] reachability::message read_v1_payload(std::span<const std::uint8_t> bytes,
+                                                     reachability::options options) {
    auto out = reachability::message{};
    auto in = detail::reader{bytes};
    while (!in.done()) {
@@ -334,7 +402,7 @@ namespace {
          if (type != detail::wire_type::length_delimited) {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT dial peer must be bytes");
          }
-         out.peer = decode_peer_info(in.bytes());
+         out.peer = decode_v1_dial(in.bytes(), options);
          break;
       case 3:
          if (type != detail::wire_type::length_delimited) {
@@ -455,13 +523,14 @@ namespace {
 [[nodiscard]] std::vector<std::uint8_t>
 make_v2_dial_back_response_payload(const reachability::v2::dial_back_response& value) {
    auto out = std::vector<std::uint8_t>{};
-   detail::append_uint64(out, 1, static_cast<std::uint16_t>(value.status));
+   if (value.status != reachability::v2::dial_back_status::ok) {
+      detail::append_uint64(out, 1, static_cast<std::uint16_t>(value.status));
+   }
    return out;
 }
 
 [[nodiscard]] reachability::v2::dial_back_response read_v2_dial_back_response_payload(std::span<const std::uint8_t> bytes) {
    auto out = reachability::v2::dial_back_response{};
-   auto saw_status = false;
    auto in = detail::reader{bytes};
    while (!in.done()) {
       const auto [field, type] = in.key();
@@ -470,21 +539,30 @@ make_v2_dial_back_response_payload(const reachability::v2::dial_back_response& v
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 dial-back response status must be varint");
          }
          out.status = checked_v2_dial_back_status(in.read_varint());
-         saw_status = true;
       } else {
          in.skip(type);
       }
    }
-   if (!saw_status) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "AutoNAT v2 dial-back response missing status");
-   }
    return out;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> wrap_bounded_message(std::vector<std::uint8_t> payload,
+                                                              reachability::options options) {
+   if (payload.size() > options.max_message_size) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "AutoNAT message exceeds configured size limit");
+   }
+   return detail::wrap_message(payload);
 }
 
 } // namespace
 
 std::vector<std::uint8_t> reachability::codec::encode_v1(const reachability::message& value) {
-   return detail::wrap_message(make_v1_payload(value));
+   return encode_v1(value, reachability::options{});
+}
+
+std::vector<std::uint8_t> reachability::codec::encode_v1(const reachability::message& value,
+                                                         reachability::options opts) {
+   return wrap_bounded_message(make_v1_payload(value, opts), opts);
 }
 
 reachability::message reachability::codec::decode_v1(std::span<const std::uint8_t> bytes) {
@@ -493,7 +571,7 @@ reachability::message reachability::codec::decode_v1(std::span<const std::uint8_
 
 reachability::message reachability::codec::decode_v1(std::span<const std::uint8_t> bytes,
                                                      reachability::options opts) {
-   return read_v1_payload(detail::unwrap_message(bytes, opts.max_message_size));
+   return read_v1_payload(detail::unwrap_message(bytes, opts.max_message_size), opts);
 }
 
 std::vector<std::uint8_t> reachability::codec::encode_v2(const reachability::v2::message& value) {
@@ -502,7 +580,7 @@ std::vector<std::uint8_t> reachability::codec::encode_v2(const reachability::v2:
 
 std::vector<std::uint8_t> reachability::codec::encode_v2(const reachability::v2::message& value,
                                                          reachability::options opts) {
-   return detail::wrap_message(make_v2_payload(value, opts));
+   return wrap_bounded_message(make_v2_payload(value, opts), opts);
 }
 
 reachability::v2::message reachability::codec::decode_v2(std::span<const std::uint8_t> bytes) {

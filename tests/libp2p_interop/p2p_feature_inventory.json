@@ -54,18 +54,20 @@
   "public_surface_snapshots": {
     "net.p2p.node": {
       "owner": "net.p2p.node",
-      "module_count": 30,
+      "module_count": 33,
       "modules": [
         "forge.net.p2p.address_resolution",
         "forge.net.p2p.connection_gater", "forge.net.p2p.dht",        "forge.net.p2p.dht.record_store",
         "forge.net.p2p.diagnostics",
         "forge.net.p2p.dialing",
         "forge.net.p2p.discovery",  "forge.net.p2p.endpoint",         "forge.net.p2p.envelope",
-        "forge.net.p2p.exceptions", "forge.net.p2p.hole_punch",       "forge.net.p2p.identify",
+        "forge.net.p2p.exceptions", "forge.net.p2p.hole_punch",       "forge.net.p2p.host_event",
+        "forge.net.p2p.host_event_subscription", "forge.net.p2p.identify",
         "forge.net.p2p.identity",   "forge.net.p2p.ipns",             "forge.net.p2p.lifecycle",
         "forge.net.p2p.message",    "forge.net.p2p.negotiation",      "forge.net.p2p.node",
         "forge.net.p2p.peer_store", "forge.net.p2p.private_network",  "forge.net.p2p.protocol",         "forge.net.p2p.provider_registration",
-        "forge.net.p2p.pubsub",     "forge.net.p2p.reachability",     "forge.net.p2p.relay",
+        "forge.net.p2p.pubsub",     "forge.net.p2p.reachability",     "forge.net.p2p.reachability_policy",
+        "forge.net.p2p.relay",
         "forge.net.p2p.rendezvous", "forge.net.p2p.resource_manager", "forge.net.p2p.scoring",
         "forge.net.p2p.stream",     "forge.net.p2p.topology"
       ],
@@ -77,7 +79,8 @@
         "forge.net.p2p.dht.record_store": [ "protocol.kademlia" ],
         "forge.net.p2p.diagnostics": [
           "state.peer_store", "resource.sessions", "resource.streams", "resource.dials", "resource.queued_bytes",
-          "topology.connection_manager", "dialing.ipv6_black_hole_detection", "dialing.udp_black_hole_detection"
+          "topology.connection_manager", "dialing.ipv6_black_hole_detection", "dialing.udp_black_hole_detection",
+          "protocol.autonat", "protocol.ping", "security.private_network_psk"
         ],
         "forge.net.p2p.discovery": [
           "protocol.peer_exchange", "protocol.kademlia", "protocol.rendezvous", "protocol.relay", "lifecycle.discovery"
@@ -114,6 +117,8 @@
           "topology.connection_manager"
         ],
         "forge.net.p2p.hole_punch": [ "protocol.dcutr", "state.hole_punch_attempt" ],
+        "forge.net.p2p.host_event": [ "protocol.autonat", "lifecycle.bootstrap" ],
+        "forge.net.p2p.host_event_subscription": [ "protocol.autonat" ],
         "forge.net.p2p.identify": [ "protocol.identify" ],
         "forge.net.p2p.identity": [ "identity.secure_transport_authentication" ],
         "forge.net.p2p.ipns": [ "protocol.kademlia" ],
@@ -152,7 +157,7 @@
           "topology.connection_manager"
         ],
         "forge.net.p2p.peer_store": [ "state.peer_store" ],
-        "forge.net.p2p.private_network": [ "security.private_network_psk" ],
+        "forge.net.p2p.private_network": [ "security.private_network_psk", "protocol.autonat" ],
         "forge.net.p2p.protocol": [
           "protocol.echo", "protocol.ping", "protocol.identify", "protocol.peer_exchange", "protocol.autonat",
           "protocol.relay", "protocol.dcutr", "protocol.kademlia", "protocol.rendezvous", "protocol.gossipsub"
@@ -160,6 +165,7 @@
         "forge.net.p2p.provider_registration": [ "protocol.kademlia" ],
         "forge.net.p2p.pubsub": [ "protocol.gossipsub" ],
         "forge.net.p2p.reachability": [ "protocol.autonat" ],
+        "forge.net.p2p.reachability_policy": [ "protocol.autonat", "protocol.ping", "resource.host_scopes" ],
         "forge.net.p2p.relay": [ "protocol.relay" ],
         "forge.net.p2p.rendezvous": [ "protocol.rendezvous" ],
         "forge.net.p2p.resource_manager": [
@@ -176,7 +182,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "26592374988c3f43808c33ebab6ed28d23d942fbc176e0ce92e715f13be232ed",
+      "sha256": "0b2cb853ab24519f4a104457485d583814672b2976e457a2e17d5aab293e471b",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -511,7 +517,7 @@
         ],
         "tests": [ "test_forge_stcp", "test_forge_quic_p2p" ],
         "donor_sources": [ "docs/donors/fcl-p2p-libp2p-foundation-v1.md" ],
-        "donor_cases": [ "interop.live_ping_identify_autonat_relay" ]
+        "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
     },
     {
@@ -545,12 +551,12 @@
       "state": "unverified",
       "owner": "net.p2p.node",
       "normal_activation": "explicit private_network node option",
-      "configuration": "shared forge.net.pnet.protector in private_network::options",
+      "configuration": "shared forge.net.pnet.protector and private_network::internet_egress in private_network::options; AutoNAT is eligible only when the profile explicitly allows Internet egress",
       "resource_ownership": "the node owns one protector profile; each direct TCP session owns a protected stream",
       "persistence": "none",
       "maintenance": "node lifecycle closes protected sessions with their lower TCP streams",
-      "diagnostics": "the non-secret operational fingerprint identifies the private profile; a wrong PSK fails later security negotiation",
-      "intended_disposition": "preserve direct TCP/Yamux composition without a QUIC, Relay or DCUtR claim",
+      "diagnostics": "the non-secret operational fingerprint identifies the private profile, while reachability diagnostics expose the effective egress gate; neither proves external connectivity",
+      "intended_disposition": "preserve direct TCP/Yamux composition and the source-level AutoNAT egress gate without a QUIC, Relay, DCUtR or external-reachability claim",
       "builtin_protocols": [],
       "capabilities": [],
       "evidence": {
@@ -559,6 +565,8 @@
           "libraries/net/p2p/include/forge/net/p2p/private_network.cppm",
           "libraries/net/p2p/private_network.cpp",
           "libraries/net/p2p/node.cpp",
+          "libraries/net/p2p/node_impl.cpp",
+          "libraries/net/p2p/node_impl_reachability.cpp",
           "libraries/net/pnet/include/forge/net/pnet/protector.cppm",
           "libraries/net/pnet/protector.cpp",
           "tests/libp2p_interop/runner.py"
@@ -591,23 +599,26 @@
     },
     {
       "id": "protocol.ping",
-      "state": "manual-only",
+      "state": "unverified",
       "owner": "net.p2p.node",
-      "normal_activation": "inbound_or_explicit_caller",
-      "configuration": "built-in responder and explicit caller; no node-owned periodic liveness policy",
-      "resource_ownership": "one protocol stream and caller deadline",
-      "persistence": "explicit RTT observations may update peer_store",
-      "maintenance": "none",
-      "diagnostics": "no maintained liveness view",
-      "intended_disposition": "integrate_node_owned_periodic_liveness_policy",
+      "normal_activation": "node-owned reachability lifecycle or explicit caller",
+      "configuration": "reachability_policy controls enablement, interval, timeout and bounded parallel pings",
+      "resource_ownership": "the reachability manager owns bounded ping work and caller deadlines",
+      "persistence": "ping outcomes are operational reachability state; source inspection does not establish durable or interop behavior",
+      "maintenance": "the reachability manager schedules periodic pings and cancels active work during lifecycle shutdown",
+      "diagnostics": "reachability diagnostics expose configured limits and ping success/failure counters; this is not runtime-readiness evidence",
+      "intended_disposition": "retain the source-owned periodic liveness policy while PR6 readiness remains unverified",
       "builtin_protocols": [ "ping" ],
       "capabilities": [],
       "evidence": {
         "layers": [ "codec", "raw_node", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/node_impl.cpp" ],
+        "source_paths": [
+          "libraries/net/p2p/include/forge/net/p2p/reachability_policy.cppm",
+          "libraries/net/p2p/node_impl_reachability.cpp"
+        ],
         "tests": [ "test_forge_quic_p2p", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-libp2p-foundation-v1.md" ],
-        "donor_cases": [ "interop.live_ping_identify_autonat_relay" ]
+        "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
     },
     {
@@ -631,7 +642,7 @@
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
-        "donor_cases": [ "interop.live_ping_identify_autonat_relay" ]
+        "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
     },
     {
@@ -660,25 +671,32 @@
     },
     {
       "id": "protocol.autonat",
-      "state": "partial",
+      "state": "unverified",
       "owner": "net.p2p.node",
-      "normal_activation": "inbound_or_explicit_caller",
-      "configuration": "v1/v2 protocol IDs and explicit probes exist without an effective reachability or private Internet-egress policy",
-      "resource_ownership": "bounded probe streams and dial-back state",
-      "persistence": "individual observations can update peer_store",
-      "maintenance": "no node-owned v1 reachability lifecycle, v2 address-evidence lifecycle or bounded reconciliation loop",
-      "diagnostics": "no effective maintained reachability state",
-      "intended_disposition": "integrate_separate_v1_node_and_v2_address_reachability_lifecycles",
+      "normal_activation": "node-owned reachability lifecycle or explicit probe",
+      "configuration": "node::options::reachability_policy controls v1/v2 client and service roles; private profiles require explicit private_network::internet_egress=allow_internet",
+      "resource_ownership": "the reachability manager owns bounded observer probes, service quotas, dial-back nonces, pings and cancellation",
+      "persistence": "observations and host-event snapshots are operational node state; source inspection does not establish durable or interop behavior",
+      "maintenance": "the node-owned manager refreshes v1/v2 observations, emits host events and drains active work during lifecycle shutdown",
+      "diagnostics": "node reachability status, subscriptions and diagnostics snapshot expose source-level state and counters, not runtime-readiness evidence",
+      "intended_disposition": "retain separate v1 node and v2 address source lifecycles with the explicit private egress gate; PR6 readiness remains unverified",
       "builtin_protocols": [ "autonat_v1", "autonat_v2_dial_request", "autonat_v2_dial_back" ],
       "capabilities": [ "autonat" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/node_impl.cpp", "libraries/net/p2p/reachability.cpp" ],
+        "source_paths": [
+          "libraries/net/p2p/include/forge/net/p2p/host_event.cppm",
+          "libraries/net/p2p/include/forge/net/p2p/host_event_subscription.cppm",
+          "libraries/net/p2p/include/forge/net/p2p/reachability_policy.cppm",
+          "libraries/net/p2p/node_impl_autonat.cpp",
+          "libraries/net/p2p/node_impl_reachability.cpp",
+          "libraries/net/p2p/reachability.cpp"
+        ],
         "tests": [ "test_forge_quic_p2p", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-reachability-relay-v1.md" ],
         "donor_cases": [
           "autonatv2.dial_request_response_nonce", "autonatv2.malformed_and_oversized",
-          "interop.live_ping_identify_autonat_relay"
+          "interop.live_native_autonat"
         ]
       }
     },
@@ -709,7 +727,7 @@
         "donor_sources": [ "docs/donors/fcl-p2p-reachability-relay-v1.md" ],
         "donor_cases": [
           "relayv2.reserve_connect_status", "relayv2.signed_envelope", "autorelay.discovery_reservation_lifecycle",
-          "interop.live_ping_identify_autonat_relay"
+          "interop.live_ping_identify_relay"
         ]
       }
     },
