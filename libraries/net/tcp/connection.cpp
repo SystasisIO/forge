@@ -67,12 +67,8 @@ void validate_options(const options& value) {
 }
 
 [[nodiscard]] transport::endpoint from_asio_endpoint(const asio_tcp::endpoint& endpoint) {
-   const auto address = endpoint.address();
-   return transport::endpoint{.host_type = address.is_v6() ? transport::endpoint::host_kind::ip6
-                                                           : transport::endpoint::host_kind::ip4,
-                              .protocol = transport::endpoint::protocol_kind::tcp,
-                              .host = address.to_string(),
-                              .port = endpoint.port()};
+   return transport::endpoint::from_address(endpoint.address(), endpoint.port(),
+                                            transport::endpoint::protocol_kind::tcp);
 }
 
 void cancel_socket(asio_tcp::socket& socket) noexcept {

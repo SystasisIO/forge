@@ -118,6 +118,9 @@ co_await outbound.stream.async_write_frame(payload);
 - Throws typed `forge::net::tcp::exceptions::*` at the TCP boundary.
 - `dns`, `dns4` and `dns6` are connect-only host kinds.
 - Listen accepts only concrete `ip4` and `ip6` endpoints.
+- IPv6 literals may carry a native interface name or numeric scope in `endpoint::zone`.
+  TCP validates that scope before opening a socket; link-local IPv6 requires one.
+  Returned endpoints preserve a numeric scope without resolving it back to an interface name.
 - TLS-over-TCP belongs to `forge_net_stcp`.
 
 ## Security And Common Mistakes
