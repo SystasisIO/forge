@@ -27,6 +27,7 @@ paths must be validated separately before the mDNS service can use them.
 | Rust `22fb4c784fc55ad8b15d05fdc9f98d663107d4cb`, `protocols/mdns/src/behaviour.rs` and `behaviour/iface.rs` | Per-interface discovery and expiry. Do not copy abort-without-join cleanup or the IPv6 interface-index-zero TODO. |
 | Same Rust revision, `transports/pnet/src/lib.rs` | 16-byte fingerprint: Salsa20 with nonce `finprint`, 64 keystream bytes, then SHAKE128 with 16 output bytes. The donor golden was checked against Go-IPFS. |
 | Vendored c-ares, `src/lib/record/ares_dns_record.c` and `ares_dns_mapping.c` | Its ordinary DNS class validation rejects mDNS QU/cache-flush high bits. It is not a transparent mDNS packet codec. |
+| [RFC 6762 Appendix C](https://www.rfc-editor.org/rfc/rfc6762.html#appendix-C) | Expanded mDNS names allow 255 bytes before the root terminator, 256 bytes total. Encode, uncompressed decode and compressed decode accept that boundary and reject 257 bytes. |
 
 The private service namespace is specified by libp2p; its fingerprint
 computation is a donor convention, not specified by the mDNS document. The

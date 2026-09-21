@@ -160,24 +160,50 @@ BOOST_AUTO_TEST_CASE(name_label_limits_root_and_binary_labels_roundtrip) {
    value.questions.push_back({.owner = {std::string(63, 'a'), std::string(63, 'b'),
                                        std::string(63, 'c'), std::string(61, 'd')}});
    BOOST_CHECK(codec::decode(codec::encode(value)) == value);
-   value.questions.back().owner.back().push_back('d'); // Expanded wire length 256.
+   value.questions.back().owner.back().push_back('d'); // mDNS wire length 256, including root.
+   BOOST_CHECK(codec::decode(codec::encode(value)) == value);
+   value.questions.back().owner.back().push_back('d'); // mDNS wire length 257, including root.
    BOOST_CHECK_THROW(static_cast<void>(codec::encode(value)), codec_error);
    value.questions.back().owner = {std::string(64, 'a')};
    BOOST_CHECK_THROW(static_cast<void>(codec::encode(value)), codec_error);
    value.questions.back().owner = {""};
    BOOST_CHECK_THROW(static_cast<void>(codec::encode(value)), codec_error);
 
-   // Hand-built maximum-length first question plus a compressed overlong second.
+   // Hand-built 254-byte first name plus a compressed 256-byte second name.
    auto packet = codec::bytes{0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0};
+   for (const auto size : {63U, 63U, 63U, 60U}) {
+      packet.push_back(static_cast<std::uint8_t>(size));
+      packet.insert(packet.end(), size, 'a');
+   }
+   packet.insert(packet.end(), {0, 0, 12, 0, 1, 1, 'x', 0xc0, 12, 0, 12, 0, 1});
+   const auto decoded_compressed = codec::decode(packet);
+   BOOST_REQUIRE_EQUAL(decoded_compressed.questions.size(), 2U);
+   BOOST_CHECK_EQUAL(decoded_compressed.questions[1].owner.size(), 5U);
+   BOOST_CHECK_EQUAL(decoded_compressed.questions[1].owner.front(), "x");
+
+   // A 255-byte first name plus a label makes the compressed name 257 bytes.
+   packet = {0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0};
    for (const auto size : {63U, 63U, 63U, 61U}) {
       packet.push_back(static_cast<std::uint8_t>(size));
       packet.insert(packet.end(), size, 'a');
    }
    packet.insert(packet.end(), {0, 0, 12, 0, 1, 1, 'x', 0xc0, 12, 0, 12, 0, 1});
    BOOST_CHECK_THROW(static_cast<void>(codec::decode(packet)), codec_error);
-   // One uncompressed name of wire length 256.
+
+   // One uncompressed name of mDNS wire length 256 is valid.
    packet = {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0};
    for (const auto size : {63U, 63U, 63U, 62U}) {
+      packet.push_back(static_cast<std::uint8_t>(size));
+      packet.insert(packet.end(), size, 'a');
+   }
+   packet.insert(packet.end(), {0, 0, 12, 0, 1});
+   const auto decoded_uncompressed = codec::decode(packet);
+   BOOST_REQUIRE_EQUAL(decoded_uncompressed.questions.size(), 1U);
+   BOOST_CHECK_EQUAL(decoded_uncompressed.questions.front().owner.back().size(), 62U);
+
+   // One uncompressed name of mDNS wire length 257 is invalid.
+   packet = {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0};
+   for (const auto size : {63U, 63U, 63U, 63U}) {
       packet.push_back(static_cast<std::uint8_t>(size));
       packet.insert(packet.end(), size, 'a');
    }

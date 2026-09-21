@@ -49,7 +49,7 @@ void read_name(std::span<const std::uint8_t> packet, std::size_t& offset, std::s
                const limits& bounds, name* output) {
    auto cursor = offset;
    auto jumped = false;
-   auto expanded = std::size_t{1}; // Root terminator is part of the 255-byte limit.
+   auto expanded = std::size_t{1}; // RFC 6762 Appendix C permits 255 bytes plus the root terminator.
    auto depth = std::size_t{};
    auto targets = std::array<std::size_t, 128>{};
    for (;;) {
@@ -81,7 +81,7 @@ void read_name(std::span<const std::uint8_t> packet, std::size_t& offset, std::s
          }
          return;
       }
-      require(length <= 63 && length + 1U <= 255U - expanded, "mDNS expanded name exceeds 255 bytes");
+      require(length <= 63 && length + 1U <= 256U - expanded, "mDNS expanded name exceeds 256 bytes");
       require_bytes(cursor, length, current_end);
       expanded += length + 1U;
       if (output) {
@@ -257,7 +257,7 @@ void emit_name(bytes* output, std::size_t& size, const name& value, const limits
    auto expanded = std::size_t{1};
    for (const auto& label : value) {
       require(!label.empty() && label.size() <= 63, "mDNS label length must be in [1, 63]");
-      consume_budget(expanded, label.size() + 1, 255, "mDNS name exceeds 255 bytes");
+      consume_budget(expanded, label.size() + 1, 256, "mDNS name exceeds 256 bytes");
       emit_byte(output, size, static_cast<std::uint8_t>(label.size()), bounds);
       emit_bytes(output, size,
                  {reinterpret_cast<const std::uint8_t*>(label.data()), label.size()}, bounds);
