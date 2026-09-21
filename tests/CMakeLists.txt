@@ -927,6 +927,7 @@ add_executable(
    test_forge_transport
    unit/main.cpp
    transport/transport_tests.cpp
+   transport/datagram_io_tests.cpp
 )
 target_link_libraries(test_forge_transport forge Boost::included_unit_test_framework)
 add_test(NAME test_forge_transport COMMAND test_forge_transport WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

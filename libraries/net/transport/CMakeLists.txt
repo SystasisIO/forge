@@ -3,6 +3,7 @@ add_library(
    buffer.cpp
    bounded_frame_buffer.cpp
    connector.cpp
+   datagram_io.cpp
    endpoint.cpp
    frame.cpp
    listener.cpp
