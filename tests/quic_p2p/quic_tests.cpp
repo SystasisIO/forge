@@ -22,6 +22,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__APPLE__) || defined(__linux__)
+#include <net/if.h>
+#endif
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -654,6 +658,23 @@ class udp_fault_proxy : public std::enable_shared_from_this<udp_fault_proxy> {
       hold_server_to_client_.store(true, std::memory_order_release);
    }
 
+   boost::asio::awaitable<void> replay_held_from_wrong_source() {
+      co_await boost::asio::co_spawn(
+          strand_,
+          [self = shared_from_this()]() -> boost::asio::awaitable<void> {
+             BOOST_REQUIRE(!self->held_server_to_client_.empty());
+             auto wrong = udp::socket{self->strand_, udp::endpoint{boost::asio::ip::make_address("127.0.0.1"), 0}};
+             const auto packet = self->held_server_to_client_.front();
+             co_await wrong.async_send_to(boost::asio::buffer(packet.bytes), packet.destination,
+                                          boost::asio::use_awaitable);
+          },
+          boost::asio::use_awaitable);
+   }
+
+   [[nodiscard]] std::uint64_t token_initials_received() const noexcept {
+      return token_initials_received_.load(std::memory_order_acquire);
+   }
+
    void release_server_to_client() {
       auto self = shared_from_this();
       boost::asio::dispatch(strand_, [self = std::move(self)] {
@@ -716,6 +737,11 @@ class udp_fault_proxy : public std::enable_shared_from_this<udp_fault_proxy> {
          server_packets_received_.fetch_add(1, std::memory_order_release);
       }
       if (!from_server) {
+         auto header = ngtcp2_pkt_hd{};
+         if (ngtcp2_pkt_decode_hd_long(&header, buffer_.data(), bytes) >= 0 && header.type == NGTCP2_PKT_INITIAL &&
+             header.tokenlen != 0) {
+            token_initials_received_.fetch_add(1, std::memory_order_release);
+         }
          client_endpoint_ = source_endpoint_;
          has_client_endpoint_ = true;
       }
@@ -846,6 +872,7 @@ class udp_fault_proxy : public std::enable_shared_from_this<udp_fault_proxy> {
    std::vector<packet> held_server_to_client_;
    std::atomic_uint64_t server_packets_received_{0};
    std::atomic_uint64_t server_packets_held_{0};
+   std::atomic_uint64_t token_initials_received_{0};
    std::atomic_bool drop_next_client_to_server_{false};
    std::atomic_bool hold_server_to_client_{false};
 };
@@ -971,6 +998,177 @@ BOOST_AUTO_TEST_CASE(quic_connector_numeric_host_overrides_dns_family_constraint
    run_with_deadline(runtime, server_connection.async_close(), std::chrono::milliseconds{5'000},
                      "numeric IPv4 QUIC server close");
    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(quic_scoped_endpoint_conversions_preserve_zone) {
+   const auto value = parse_endpoint("quic://[fe80::1%en0]:4001");
+   BOOST_TEST(value.host == "fe80::1");
+   BOOST_TEST(value.zone == "en0");
+   BOOST_TEST(value.authority() == "[fe80::1%en0]:4001");
+   const auto transport = to_transport_endpoint(value);
+   BOOST_TEST(transport.zone == "en0");
+   const auto restored = from_transport_endpoint(transport);
+   BOOST_TEST(restored.host == value.host);
+   BOOST_TEST(restored.zone == value.zone);
+   BOOST_TEST(restored.authority() == value.authority());
+}
+
+BOOST_AUTO_TEST_CASE(quic_wildcard_listener_preserves_concrete_destination_through_retry) {
+   for (const auto ipv6 : {false, true}) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      const auto host = std::string{ipv6 ? "::1" : "127.0.0.1"};
+      auto admitted_exact = std::atomic_bool{false};
+      auto options = loopback_server_options();
+      options.inbound_connection_filter = [&admitted_exact, host](const endpoint& local, const endpoint& remote) {
+         admitted_exact.store(local.host == host && remote.host == host, std::memory_order_release);
+         return true;
+      };
+      auto server = listener{runtime, endpoint{.host = ipv6 ? "::" : "0.0.0.0", .port = 0}, options};
+      auto accepted = boost::asio::co_spawn(runtime.context(), server.async_accept(), boost::asio::use_future);
+      auto client = connector{runtime};
+      auto outgoing = run_with_deadline(
+          runtime,
+          client.async_connect(endpoint{.host = host, .port = server.local_endpoint().port}, loopback_client_options()),
+          std::chrono::seconds{5}, "wildcard concrete path connect");
+      auto incoming = get_with_deadline(accepted, std::chrono::seconds{5}, "wildcard concrete path accept");
+      BOOST_TEST(outgoing.local_endpoint().host == host);
+      BOOST_TEST(incoming.local_endpoint().host == host);
+      BOOST_TEST(incoming.remote_endpoint().host == host);
+      BOOST_TEST(incoming.remote_endpoint().port == outgoing.local_endpoint().port);
+      BOOST_TEST(admitted_exact.load(std::memory_order_acquire));
+      BOOST_TEST(outgoing.metrics().retry_packets_received == 1U);
+      run_with_deadline(runtime, outgoing.async_close(), std::chrono::seconds{5}, "wildcard client close");
+      run_with_deadline(runtime, incoming.async_close(), std::chrono::seconds{5}, "wildcard server close");
+      run_with_deadline(runtime, server.async_stop(), std::chrono::seconds{5}, "wildcard listener stop");
+   }
+}
+
+BOOST_AUTO_TEST_CASE(quic_ipv6_wildcard_preserves_ipv4_mapped_roundtrip) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto server = listener{runtime, endpoint{.host = "::", .port = 0}, loopback_server_options()};
+   auto accepted = boost::asio::co_spawn(runtime.context(), server.async_accept(), boost::asio::use_future);
+   auto client = connector{runtime};
+   auto outgoing = run_with_deadline(
+       runtime, client.async_connect(endpoint{.host = "127.0.0.1", .port = server.local_endpoint().port},
+                                     loopback_client_options()),
+       std::chrono::seconds{5}, "dual-stack connect");
+   auto incoming = get_with_deadline(accepted, std::chrono::seconds{5}, "dual-stack accept");
+   BOOST_TEST(incoming.local_endpoint().host == "::ffff:127.0.0.1");
+   BOOST_TEST(incoming.remote_endpoint().host == "::ffff:127.0.0.1");
+   BOOST_TEST(outgoing.metrics().retry_packets_received == 1U);
+
+   auto stream_accepted = boost::asio::co_spawn(runtime.context(), incoming.async_accept_stream(),
+                                                boost::asio::use_future);
+   auto sender = run_with_deadline(runtime, outgoing.async_open_stream(), std::chrono::seconds{5},
+                                    "dual-stack open stream");
+   const auto payload = std::vector<std::uint8_t>{'m', 'a', 'p', 'p', 'e', 'd'};
+   run_with_deadline(runtime, sender.async_write(payload), std::chrono::seconds{5}, "dual-stack write");
+   auto receiver = get_with_deadline(stream_accepted, std::chrono::seconds{5}, "dual-stack accept stream");
+   const auto received = run_with_deadline(runtime, receiver.async_read(), std::chrono::seconds{5},
+                                           "dual-stack read");
+   BOOST_TEST(received == payload, boost::test_tools::per_element());
+   run_with_deadline(runtime, receiver.async_write(payload), std::chrono::seconds{5}, "dual-stack reply");
+   const auto reply = run_with_deadline(runtime, sender.async_read(), std::chrono::seconds{5},
+                                        "dual-stack read reply");
+   BOOST_TEST(reply == payload, boost::test_tools::per_element());
+   run_with_deadline(runtime, outgoing.async_close(), std::chrono::seconds{5}, "dual-stack client close");
+   run_with_deadline(runtime, incoming.async_close(), std::chrono::seconds{5}, "dual-stack server close");
+   run_with_deadline(runtime, server.async_stop(), std::chrono::seconds{5}, "dual-stack stop");
+}
+
+#if defined(__APPLE__) || defined(__linux__)
+BOOST_AUTO_TEST_CASE(quic_connected_ipv6_output_preserves_explicit_scope) {
+#if defined(__APPLE__)
+   const auto index = if_nametoindex("lo0");
+#else
+   const auto index = if_nametoindex("lo");
+#endif
+   BOOST_REQUIRE(index != 0U);
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto server = listener{runtime, endpoint{.host = "::", .port = 0, .zone = std::to_string(index)},
+                          loopback_server_options()};
+   BOOST_TEST(server.local_endpoint().zone == std::to_string(index));
+   auto accepted = boost::asio::co_spawn(runtime.context(), server.async_accept(), boost::asio::use_future);
+   auto client = connector{runtime};
+   auto outgoing = run_with_deadline(
+       runtime,
+       client.async_connect(
+           endpoint{.host = "::1", .port = server.local_endpoint().port, .zone = std::to_string(index)},
+           loopback_client_options()),
+       std::chrono::seconds{5}, "scoped IPv6 connect");
+   auto incoming = get_with_deadline(accepted, std::chrono::seconds{5}, "scoped IPv6 accept");
+   BOOST_TEST(outgoing.remote_endpoint().host == "::1");
+   BOOST_TEST(outgoing.remote_endpoint().zone == std::to_string(index));
+   BOOST_TEST(outgoing.local_endpoint().host == "::1");
+   BOOST_TEST(outgoing.metrics().retry_packets_received == 1U);
+   run_with_deadline(runtime, outgoing.async_close(), std::chrono::seconds{5}, "scoped client close");
+   run_with_deadline(runtime, incoming.async_close(), std::chrono::seconds{5}, "scoped server close");
+   run_with_deadline(runtime, server.async_stop(), std::chrono::seconds{5}, "scoped listener stop");
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(quic_connected_client_ignores_retry_from_wrong_udp_source) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto server = listener{runtime, endpoint{.host = "127.0.0.1", .port = 0}, loopback_server_options()};
+   auto proxy = std::make_shared<udp_fault_proxy>(runtime.context(), server.local_endpoint(), fault_proxy_rules{});
+   proxy->hold_server_to_client();
+   proxy->start();
+   auto client = connector{runtime};
+   auto pending = boost::asio::co_spawn(runtime.context(),
+                                        client.async_connect(proxy->local_endpoint(), loopback_client_options()),
+                                        boost::asio::use_future);
+   auto accepted = boost::asio::co_spawn(runtime.context(), server.async_accept(), boost::asio::use_future);
+   auto probe = [proxy]() -> boost::asio::awaitable<void> {
+      auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+      while (proxy->server_packets_held() == 0) {
+         timer.expires_after(std::chrono::milliseconds{1});
+         co_await timer.async_wait(boost::asio::use_awaitable);
+      }
+      co_await proxy->replay_held_from_wrong_source();
+      timer.expires_after(std::chrono::milliseconds{100});
+      co_await timer.async_wait(boost::asio::use_awaitable);
+      // An ordinary Initial retransmission is tokenless; accepting the foreign
+      // Retry would instead produce a token-bearing Initial at the real peer.
+      BOOST_TEST(proxy->token_initials_received() == 0U);
+   };
+   run_with_deadline(runtime, probe(), std::chrono::seconds{3}, "foreign-source Retry probe");
+   proxy->release_server_to_client();
+   auto outgoing = get_with_deadline(pending, std::chrono::seconds{5}, "correct-source Retry connect");
+   auto incoming = get_with_deadline(accepted, std::chrono::seconds{5}, "correct-source Retry accept");
+   BOOST_TEST(proxy->token_initials_received() >= 1U);
+   run_with_deadline(runtime, outgoing.async_close(), std::chrono::seconds{5}, "foreign-source client close");
+   run_with_deadline(runtime, incoming.async_close(), std::chrono::seconds{5}, "foreign-source server close");
+   proxy->stop();
+   run_with_deadline(runtime, server.async_stop(), std::chrono::seconds{5}, "foreign-source listener stop");
+}
+
+BOOST_AUTO_TEST_CASE(quic_connected_client_cancel_releases_owned_udp_port) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto peer = udp::socket{runtime.context(), udp::endpoint{boost::asio::ip::make_address("127.0.0.1"), 0}};
+   auto client = connector{runtime};
+   auto pending = boost::asio::co_spawn(
+       runtime.context(), client.async_connect(to_quic_endpoint(peer.local_endpoint()), loopback_client_options()),
+       boost::asio::use_future);
+   auto capture = [&peer]() -> boost::asio::awaitable<udp::endpoint> {
+      auto bytes = std::array<std::uint8_t, 65536>{};
+      auto source = udp::endpoint{};
+      co_await peer.async_receive_from(boost::asio::buffer(bytes), source, boost::asio::use_awaitable);
+      co_return source;
+   };
+   const auto owned = run_with_deadline(runtime, capture(), std::chrono::seconds{3}, "capture connected client FD");
+   BOOST_TEST(owned.address().to_string() == "127.0.0.1");
+   BOOST_TEST(owned.port() != 0U);
+   client.cancel();
+   try {
+      static_cast<void>(get_with_deadline(pending, std::chrono::seconds{5}, "cancel connected client FD"));
+      BOOST_FAIL("expected canceled connect");
+   } catch (const forge::exceptions::base& error) {
+      BOOST_REQUIRE(exceptions::code_of(error).has_value());
+      BOOST_TEST(static_cast<int>(*exceptions::code_of(error)) == static_cast<int>(exceptions::code::canceled));
+   }
+   auto reused = udp::socket{runtime.context()};
+   reused.open(owned.protocol());
+   BOOST_CHECK_NO_THROW(reused.bind(owned));
 }
 
 BOOST_AUTO_TEST_CASE(quic_connector_reuses_verified_new_token_without_retry) {
@@ -1246,6 +1444,77 @@ BOOST_AUTO_TEST_CASE(quic_native_handshake_preserves_committed_terminal_winner) 
          BOOST_CHECK(terminal_release.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
          BOOST_TEST(released.expired());
          run_with_deadline(runtime, inbound.async_close(), std::chrono::seconds{2}, "close terminal winner peer");
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(quic_native_udp_failure_preserves_committed_cancel_and_deadline) {
+   struct failure_barrier {
+      std::mutex mutex;
+      std::condition_variable changed;
+      bool deadline_observed = false;
+      std::atomic_size_t calls{0};
+      std::atomic_bool wait_expired{false};
+   };
+
+   for (const auto cancel_wins : {true, false}) {
+      BOOST_TEST_CONTEXT((cancel_wins ? "committed cancel versus native UDP refusal"
+                                     : "committed absolute deadline versus native UDP refusal")) {
+         auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+         auto client = connector{runtime};
+         // Allocate an ephemeral port before closing it; never assume port 9
+         // or another fixed service port is unused. The native error is real.
+         auto reservation =
+             udp::socket{runtime.context(), udp::endpoint{boost::asio::ip::make_address("127.0.0.1"), 0}};
+         const auto remote = to_quic_endpoint(reservation.local_endpoint());
+         reservation.close();
+
+         auto barrier = std::make_shared<failure_barrier>();
+         auto attempt_executor = boost::asio::make_strand(runtime.context());
+         auto observation = boost::asio::steady_timer{attempt_executor};
+         auto options = loopback_client_options();
+         options.connect_timeout = std::chrono::seconds{1};
+         options.handshake_timeout = std::chrono::seconds{5};
+         options.test_failpoint = [&client, barrier, cancel_wins](std::string_view name) {
+            if (name != "handshake_udp_failure_before_report") {
+               return false;
+            }
+            barrier->calls.fetch_add(1, std::memory_order_relaxed);
+            if (cancel_wins) {
+               client.cancel();
+            } else {
+               // Only the connection strand pauses. The attempt executor runs
+               // the original connect timer and then the observation timer.
+               auto lock = std::unique_lock{barrier->mutex};
+               if (!barrier->changed.wait_for(lock, std::chrono::seconds{3},
+                                              [&] { return barrier->deadline_observed; })) {
+                  barrier->wait_expired.store(true, std::memory_order_release);
+               }
+            }
+            return false;
+         };
+         auto operation = [&]() -> boost::asio::awaitable<connection> {
+            if (!cancel_wins) {
+               observation.expires_after(std::chrono::milliseconds{1'200});
+               observation.async_wait([barrier](boost::system::error_code error) {
+                  if (!error) {
+                     {
+                        auto lock = std::scoped_lock{barrier->mutex};
+                        barrier->deadline_observed = true;
+                     }
+                     barrier->changed.notify_all();
+                  }
+               });
+            }
+            co_return co_await client.async_connect(remote, std::move(options));
+         };
+         auto pending = boost::asio::co_spawn(attempt_executor, operation(), boost::asio::use_future);
+         const auto expected = cancel_wins ? exceptions::code::canceled : exceptions::code::connect_timeout;
+         BOOST_CHECK_EXCEPTION(
+             get_with_deadline_or_stop(runtime, pending, std::chrono::seconds{5}, "native UDP failure arbitration"),
+             forge::exceptions::base, [expected](const auto& error) { return exceptions::code_of(error) == expected; });
+         BOOST_TEST(barrier->calls.load(std::memory_order_relaxed) == 1U);
+         BOOST_TEST(!barrier->wait_expired.load(std::memory_order_acquire));
       }
    }
 }
@@ -3305,11 +3574,13 @@ BOOST_AUTO_TEST_CASE(quic_loopback_rejects_missing_mtls_client_certificate) {
    auto server = listener{runtime, endpoint{.host = "127.0.0.1", .port = 0}, std::move(server_options_value)};
    auto accept_future = boost::asio::co_spawn(runtime.context(), server.async_accept(), boost::asio::use_future);
    auto client = connector{runtime};
+   auto client_options_value = loopback_client_options();
+   client_options_value.handshake_timeout = std::chrono::milliseconds{1'000};
 
    auto client_connected = false;
    try {
       auto connection =
-          run_with_deadline(runtime, client.async_connect(server.local_endpoint(), loopback_client_options()),
+          run_with_deadline(runtime, client.async_connect(server.local_endpoint(), std::move(client_options_value)),
                             std::chrono::milliseconds{5'000}, "missing mTLS client cert connect");
       client_connected = connection.valid();
       run_with_deadline(runtime, connection.async_close(), std::chrono::milliseconds{5'000},
@@ -3332,7 +3603,7 @@ BOOST_AUTO_TEST_CASE(quic_loopback_rejects_missing_mtls_client_certificate) {
           forge::net::quic::exceptions::code_of(error).value() == exceptions::code::connection_closed;
       BOOST_TEST(acceptable);
    }
-   (void)client_connected;
+   BOOST_TEST(!client_connected);
    server.stop();
 }
 

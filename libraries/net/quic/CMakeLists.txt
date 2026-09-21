@@ -13,6 +13,8 @@ add_library(
    client_token_cache.cpp
    details/client_token_cache.hxx
    quic_engine.cpp
+   server_udp_socket.cpp
+   details/server_udp_socket.hxx
    details/quic_engine.hxx
    details/engine_client_options.hxx
    details/engine_server_options.hxx

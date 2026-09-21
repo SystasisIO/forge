@@ -7,6 +7,7 @@ module;
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 
 module forge.net.quic.endpoint;
 
@@ -22,6 +23,9 @@ constexpr auto scheme = std::string_view{"quic://"};
 } // namespace
 
 std::string endpoint::authority() const {
+   if (host.find(':') != std::string::npos) {
+      return "[" + host + (zone.empty() ? "" : "%" + zone) + "]:" + std::to_string(port);
+   }
    return host + ":" + std::to_string(port);
 }
 
@@ -66,7 +70,17 @@ endpoint parse_endpoint(std::string_view value) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_endpoint, "QUIC endpoint port is invalid");
    }
 
-   return endpoint{.host = std::string{host_value}, .port = static_cast<std::uint16_t>(parsed_port)};
+   auto zone = std::string{};
+   if (const auto separator = host_value.find('%'); separator != std::string_view::npos) {
+      if (host_value.find(':') == std::string_view::npos || separator + 1 == host_value.size() ||
+          host_value.find('%', separator + 1) != std::string_view::npos) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_endpoint, "invalid QUIC endpoint zone");
+      }
+      zone = host_value.substr(separator + 1);
+      host_value = host_value.substr(0, separator);
+   }
+   return endpoint{
+       .host = std::string{host_value}, .port = static_cast<std::uint16_t>(parsed_port), .zone = std::move(zone)};
 }
 
 } // namespace forge::net::quic

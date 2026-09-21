@@ -177,6 +177,7 @@ void append_cache_key_component(std::string& out, std::string_view value) {
                                    : family == detail::engine_endpoint::address_family::ipv6 ? "ipv6"
                                                                                              : "any");
    append_cache_key_component(out, normalized_host(remote.host));
+   append_cache_key_component(out, remote.zone);
    append_cache_key_component(out, std::to_string(remote.port));
    return out;
 }
@@ -229,7 +230,8 @@ boost::asio::awaitable<connection> connector::async_connect(endpoint remote, cli
          };
       }
       auto engine_connection = co_await impl_->engine.async_connect(
-          detail::engine_endpoint{.host = std::move(remote.host), .port = remote.port, .family = family},
+          detail::engine_endpoint{
+              .host = std::move(remote.host), .port = remote.port, .family = family, .zone = std::move(remote.zone)},
           std::move(engine_options));
       co_return detail::connection_access::make(detail::connection_handle{.engine = std::move(engine_connection)});
    } catch (const detail::engine_failure& error) {

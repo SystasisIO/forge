@@ -119,7 +119,7 @@ endpoint connection::local_endpoint() const {
       return endpoint{};
    }
    const auto local = impl_->engine->local_endpoint();
-   return endpoint{.host = local.host, .port = local.port};
+   return endpoint{.host = local.host, .port = local.port, .zone = local.zone};
 }
 
 endpoint connection::remote_endpoint() const {
@@ -127,7 +127,7 @@ endpoint connection::remote_endpoint() const {
       return endpoint{};
    }
    const auto remote = impl_->engine->remote_endpoint();
-   return endpoint{.host = remote.host, .port = remote.port};
+   return endpoint{.host = remote.host, .port = remote.port, .zone = remote.zone};
 }
 
 connection_metrics connection::metrics() const {

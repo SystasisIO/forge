@@ -242,6 +242,51 @@ released connection are isolated according to ngtcp2's silent-drop contract;
 they neither consume a listener slot indefinitely nor fail a concurrent
 `async_accept()` for another connection.
 
+## UDP Routing And Scope
+
+A client uses one dedicated UDP socket, permanently connected to its selected
+remote tuple. Open, bind, connect and local-endpoint discovery happen before
+creating the ngtcp2 connection. Its local address is concrete, not a wildcard.
+Client sends use the connected socket without a destination argument; every
+ngtcp2 output path is copied with its packet and checked against the owned local
+and remote endpoints. A changed path fails rather than silently using the old
+route. Client migration, remote rebinding and server preferred addresses are not
+supported. This is an explicit implementation policy, not a consequence inferred
+solely from the advertised `disable_active_migration` transport parameter.
+
+Client readiness waits for ngtcp2 `handshake_confirmed`, when both endpoints
+agree that the handshake finished, rather than local cryptographic completion.
+The existing connect/handshake deadlines still apply. Server readiness remains
+on `handshake_completed`, which already implies confirmation for a server.
+Peer verification and token-store publication remain gated after client readiness.
+
+Native UDP send and receive failures retain a typed handshake terminal cause
+before cleanup. Peer refusal/unreachability is a connection failure, not caller
+cancellation; other native failures retain an internal-error classification.
+Cleanup flags do not replace that cause. A previously committed connect timeout
+or cancellation still wins, and `operation_aborted` is not relabeled as a peer
+failure.
+
+The shared server socket remains unconnected. Transport `datagram_io` supplies
+the actual destination, remote endpoint and receive-interface index through
+Initial, Retry, INVALID_TOKEN, admission and queued packet processing. Sends use
+the path returned by ngtcp2, including connection-close packets. IPv6 zones are
+represented separately from the host and preserved as native scope IDs.
+
+Ordinary unicast replies require exact source-address affinity, not interface
+pinning. The received interface index remains packet metadata. Scoped IPv6 or
+an explicitly scoped listener requires the matching interface; conflicting or
+unsupported constraints fail without retrying with a weaker route. On Darwin,
+this ordinary IPv4 policy uses source-only packet info and does not promise
+interface selection for duplicate local addresses. No temporary socket-option
+mutation is performed. A consumer requiring fixed interface ownership must
+provide an appropriate persistent binding.
+
+Gate tickets serialize sends across suspension points, including shared-listener
+replies. Send waits are bounded to five seconds; cancellation races join their
+losing operations. Connection cancellation never cancels the shared listener FD.
+Listener stop closes its gate and socket, waking queued and active operations.
+
 ## Initial Tokens
 
 The listener validates the remote address with an encrypted QUIC Retry token

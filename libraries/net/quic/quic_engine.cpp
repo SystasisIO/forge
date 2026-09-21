@@ -1,6 +1,7 @@
 #include "details/quic_engine.hxx"
 #include "details/acknowledged_ranges.hxx"
 #include "details/initial_token.hxx"
+#include "details/server_udp_socket.hxx"
 
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -8,6 +9,7 @@
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/ip/udp.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/dispatch.hpp>
@@ -15,6 +17,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/system/system_error.hpp>
 
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -53,6 +56,8 @@ import forge.crypto.core.secret_string;
 import forge.codec.hex;
 import forge.crypto.digest.sha256;
 import forge.asio.notification;
+import forge.asio.exceptions;
+import forge.net.transport.endpoint;
 #include "details/engine_client_options.hxx"
 #include "details/engine_server_options.hxx"
 
@@ -197,23 +202,9 @@ int remove_connection_id_cb(ngtcp2_conn*, const ngtcp2_cid* cid, void* user_data
 
 [[nodiscard]] sockaddr_storage to_sockaddr_storage(const udp::endpoint& endpoint) {
    auto storage = sockaddr_storage{};
-   if (endpoint.address().is_v4()) {
-      auto addr = sockaddr_in{};
-      addr.sin_family = AF_INET;
-      addr.sin_port = htons(endpoint.port());
-      const auto bytes = endpoint.address().to_v4().to_bytes();
-      static_assert(sizeof(addr.sin_addr.s_addr) == bytes.size());
-      std::memcpy(&addr.sin_addr.s_addr, bytes.data(), bytes.size());
-      std::memcpy(&storage, &addr, sizeof(addr));
-   } else {
-      auto addr = sockaddr_in6{};
-      addr.sin6_family = AF_INET6;
-      addr.sin6_port = htons(endpoint.port());
-      const auto bytes = endpoint.address().to_v6().to_bytes();
-      static_assert(sizeof(addr.sin6_addr.s6_addr) == bytes.size());
-      std::memcpy(addr.sin6_addr.s6_addr, bytes.data(), bytes.size());
-      std::memcpy(&storage, &addr, sizeof(addr));
-   }
+   // Keep the native scope ID and platform sockaddr length fields intact.
+   assert(endpoint.size() <= sizeof(storage));
+   std::memcpy(&storage, endpoint.data(), endpoint.size());
    return storage;
 }
 
@@ -221,6 +212,22 @@ int remove_connection_id_cb(ngtcp2_conn*, const ngtcp2_cid* cid, void* user_data
    auto* addr = reinterpret_cast<sockaddr*>(&storage);
    const auto len = addr->sa_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
    return ngtcp2_addr{.addr = addr, .addrlen = static_cast<socklen_t>(len)};
+}
+
+[[nodiscard]] udp::endpoint from_ngtcp2_addr(const ngtcp2_addr& address) {
+   auto result = udp::endpoint{};
+   if (address.addr == nullptr || address.addrlen > result.capacity() ||
+       (address.addr->sa_family != AF_INET && address.addr->sa_family != AF_INET6) ||
+       address.addrlen != (address.addr->sa_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6))) {
+      throw_engine(engine_error_kind::internal_error, "invalid QUIC output path");
+   }
+   std::memcpy(result.data(), address.addr, address.addrlen);
+   result.resize(address.addrlen);
+   return result;
+}
+
+[[nodiscard]] forge::net::transport::datagram_io::received copy_route(const ngtcp2_path& path) {
+   return {.remote = from_ngtcp2_addr(path.remote), .local = from_ngtcp2_addr(path.local)};
 }
 
 struct path_storage {
@@ -435,7 +442,27 @@ void remove_waiter(std::vector<std::weak_ptr<asio::steady_timer>>& waiters,
 }
 
 [[nodiscard]] engine_endpoint from_udp_endpoint(const udp::endpoint& value) {
-   return engine_endpoint{.host = value.address().to_string(), .port = value.port()};
+   const auto endpoint = forge::net::transport::endpoint::from_address(
+       value.address(), value.port(), forge::net::transport::endpoint::protocol_kind::quic_v1);
+   return engine_endpoint{.host = endpoint.host,
+                          .port = endpoint.port,
+                          .family = value.address().is_v4() ? engine_endpoint::address_family::ipv4
+                                                            : engine_endpoint::address_family::ipv6,
+                          .zone = endpoint.zone};
+}
+
+[[nodiscard]] asio::ip::address literal_address(const engine_endpoint& value) {
+   using endpoint = forge::net::transport::endpoint;
+   try {
+      return endpoint{.host_type = value.host.find(':') == std::string::npos ? endpoint::host_kind::ip4
+                                                                             : endpoint::host_kind::ip6,
+                      .host = value.host,
+                      .port = value.port,
+                      .zone = value.zone}
+          .literal_address();
+   } catch (const boost::system::system_error& error) {
+      throw_engine(engine_error_kind::invalid_endpoint, error.what());
+   }
 }
 
 } // namespace
@@ -628,84 +655,11 @@ struct engine_connection_metrics_state {
    }
 };
 
-struct server_udp_socket : std::enable_shared_from_this<server_udp_socket> {
-   explicit server_udp_socket(asio::strand<asio::io_context::executor_type> strand_value)
-       : strand(std::move(strand_value)), socket(strand) {}
-
-   void open_and_bind(const udp::endpoint& endpoint) {
-      auto ec = boost::system::error_code{};
-      socket.open(endpoint.protocol(), ec);
-      if (ec) {
-         throw_engine(engine_error_kind::internal_error, "failed to open QUIC listener socket: " + ec.message());
-      }
-      socket.bind(endpoint, ec);
-      if (ec) {
-         throw_engine(engine_error_kind::internal_error, "failed to bind QUIC listener socket: " + ec.message());
-      }
-      bound_endpoint = socket.local_endpoint();
-   }
-
-   [[nodiscard]] udp::endpoint local_endpoint() const noexcept {
-      return bound_endpoint;
-   }
-
-   boost::asio::awaitable<std::pair<std::vector<std::uint8_t>, udp::endpoint>> async_receive() {
-      co_return co_await asio::co_spawn(
-          strand,
-          [self = shared_from_this()]() -> asio::awaitable<std::pair<std::vector<std::uint8_t>, udp::endpoint>> {
-             if (self->stopped) {
-                throw boost::system::system_error{asio::error::operation_aborted};
-             }
-             auto packet = std::vector<std::uint8_t>(65'536);
-             auto from = udp::endpoint{};
-             const auto read =
-                 co_await self->socket.async_receive_from(asio::buffer(packet), from, asio::use_awaitable);
-             packet.resize(read);
-             co_return std::pair{std::move(packet), std::move(from)};
-          },
-          asio::use_awaitable);
-   }
-
-   boost::asio::awaitable<boost::system::error_code> async_send(std::vector<std::uint8_t> packet,
-                                                                udp::endpoint destination) {
-      co_return co_await asio::co_spawn(
-          strand,
-          [self = shared_from_this(), packet = std::move(packet),
-           destination = std::move(destination)]() mutable -> asio::awaitable<boost::system::error_code> {
-             if (self->stopped) {
-                co_return asio::error::operation_aborted;
-             }
-             auto ec = boost::system::error_code{};
-             co_await self->socket.async_send_to(asio::buffer(packet), destination,
-                                                 asio::redirect_error(asio::use_awaitable, ec));
-             co_return ec;
-          },
-          asio::use_awaitable);
-   }
-
-   void stop() {
-      auto self = shared_from_this();
-      asio::dispatch(strand, [self] {
-         if (self->stopped) {
-            return;
-         }
-         self->stopped = true;
-         auto ignored = boost::system::error_code{};
-         self->socket.cancel(ignored);
-         self->socket.close(ignored);
-      });
-   }
-
-   asio::strand<asio::io_context::executor_type> strand;
-   udp::socket socket;
-   udp::endpoint bound_endpoint;
-   bool stopped = false;
-};
 
 struct engine_connection::impl {
    struct queued_packet {
       std::vector<std::uint8_t> bytes;
-      udp::endpoint from;
+      forge::net::transport::datagram_io::received route;
    };
 
    impl(asio::io_context& context_value, std::shared_ptr<udp::socket> socket_value, udp::endpoint local_endpoint_value,
@@ -737,6 +691,7 @@ struct engine_connection::impl {
    asio::strand<asio::io_context::executor_type> strand;
    std::shared_ptr<udp::socket> socket;
    std::shared_ptr<server_udp_socket> server_socket;
+   forge::asio::gate send_gate;
    udp::endpoint local_endpoint_value;
    udp::endpoint remote_endpoint;
    engine_transport_limits limits;
@@ -772,11 +727,13 @@ struct engine_connection::impl {
    asio::steady_timer handshake_timer;
    asio::steady_timer expiry_timer;
    asio::steady_timer owner_drain_timer;
-   std::deque<std::vector<std::uint8_t>> outbound_datagrams;
+   std::deque<server_udp_socket::packet> outbound_datagrams;
    std::deque<queued_packet> inbound_packets;
    std::size_t queued_datagram_bytes = 0;
    std::size_t queued_inbound_packet_bytes = 0;
    bool handshake_done = false;
+   std::optional<engine_error_kind> handshake_terminal_cause;
+   boost::system::error_code handshake_transport_error;
    bool closing = false;
    bool canceled = false;
    bool terminal_cleanup_complete = false;
@@ -1129,6 +1086,7 @@ struct engine_connection::impl {
       assert(strand.running_in_this_thread());
       boost::system::error_code ignored;
       if (close_socket && socket) {
+         send_gate.close();
          socket->cancel(ignored);
          socket->close(ignored);
       }
@@ -1177,6 +1135,24 @@ struct engine_connection::impl {
       }
       notify_closed_once();
       terminal_cleanup_complete = true;
+   }
+
+   void fail_udp(boost::system::error_code error) noexcept {
+      assert(strand.running_in_this_thread());
+      if (!handshake_done && !closing && !canceled && !handshake_terminal_cause &&
+          error != asio::error::operation_aborted) {
+         handshake_transport_error = error;
+         if (error == asio::error::connection_refused || error == asio::error::connection_reset ||
+             error == asio::error::network_unreachable || error == asio::error::host_unreachable ||
+             error == asio::error::network_down) {
+            handshake_terminal_cause = engine_error_kind::connection_closed;
+         } else if (error == asio::error::timed_out) {
+            handshake_terminal_cause = engine_error_kind::handshake_timeout;
+         } else {
+            handshake_terminal_cause = engine_error_kind::internal_error;
+         }
+      }
+      fail_all();
    }
 
    void close_transport(bool cancel_socket) {
@@ -1278,13 +1254,23 @@ struct engine_connection::impl {
       if (handshake_done) {
          co_return;
       }
-      auto timer = std::make_shared<asio::steady_timer>(strand);
-      timer->expires_after(timeout);
-      handshake_waiters.emplace_back(timer);
-      boost::system::error_code ec;
-      co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+      if (!closing && !canceled) {
+         auto timer = std::make_shared<asio::steady_timer>(strand);
+         timer->expires_after(timeout);
+         handshake_waiters.emplace_back(timer);
+         boost::system::error_code ec;
+         co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+      }
       if (handshake_done) {
          co_return;
+      }
+      if (handshake_terminal_cause) {
+         if (test_failpoint) {
+            // Observation barrier only: retain the real socket failure and let
+            // the outer active_connect arbitration decide the terminal winner.
+            static_cast<void>(test_failpoint("handshake_udp_failure_before_report"));
+         }
+         throw_engine(*handshake_terminal_cause, "QUIC handshake UDP failure: " + handshake_transport_error.message());
       }
       if (canceled && metrics.backpressure_rejections.load(std::memory_order_relaxed) > 0) {
          throw_engine(engine_error_kind::backpressure_rejected,
@@ -1299,6 +1285,57 @@ struct engine_connection::impl {
       metrics.handshakes_failed.fetch_add(1, std::memory_order_relaxed);
       metrics.timeouts.fetch_add(1, std::memory_order_relaxed);
       throw_engine(engine_error_kind::handshake_timeout, "QUIC handshake timed out");
+   }
+
+   asio::awaitable<boost::system::error_code> send_packet_impl(server_udp_socket::packet packet) {
+      if (server_socket) {
+         co_return co_await server_socket->async_send(std::move(packet));
+      }
+      try {
+         auto ticket = co_await send_gate.acquire();
+         auto ec = boost::system::error_code{};
+         const auto written =
+             co_await socket->async_send(asio::buffer(packet.bytes), asio::redirect_error(asio::use_awaitable, ec));
+         if (!ec && written != packet.bytes.size()) {
+            ec = asio::error::message_size;
+         }
+         co_return ec;
+      } catch (const forge::asio::exceptions::canceled&) {
+         co_return asio::error::operation_aborted;
+      } catch (const forge::asio::exceptions::rejected&) {
+         co_return asio::error::operation_aborted;
+      }
+   }
+
+   asio::awaitable<void> wait_send_terminal() {
+      auto observed = termination_changed.epoch();
+      while (!terminal_signaled.load(std::memory_order_acquire)) {
+         observed = co_await termination_changed.async_wait(observed);
+      }
+   }
+
+   asio::awaitable<boost::system::error_code> send_packet(server_udp_socket::packet packet,
+                                                          bool closing_packet = false) {
+      // The dedicated client owns one immutable connected path. Never silently
+      // send a packet on a different path than ngtcp2 requested.
+      if (!server_socket && (packet.route.local != local_endpoint_value || packet.route.remote != remote_endpoint)) {
+         throw_engine(engine_error_kind::internal_error, "QUIC client output changed its fixed UDP path");
+      }
+      using namespace asio::experimental::awaitable_operators;
+      auto deadline = asio::steady_timer{strand};
+      deadline.expires_after(detached_write_drain_timeout);
+      // Structured races join the canceled branch, including shared-socket gate
+      // acquisition/readiness. Never cancel the listener FD for one connection.
+      if (closing_packet) {
+         auto result = co_await (send_packet_impl(std::move(packet)) || deadline.async_wait(asio::use_awaitable));
+         co_return result.index() == 0 ? std::get<0>(result) : asio::error::timed_out;
+      }
+      auto result = co_await (send_packet_impl(std::move(packet)) || deadline.async_wait(asio::use_awaitable) ||
+                              wait_send_terminal());
+      if (result.index() == 0) {
+         co_return std::get<0>(result);
+      }
+      co_return result.index() == 1 ? asio::error::timed_out : asio::error::operation_aborted;
    }
 
    void start_udp_send_loop() {
@@ -1316,24 +1353,17 @@ struct engine_connection::impl {
             }
             auto packet = std::move(value->outbound_datagrams.front());
             value->outbound_datagrams.pop_front();
-            if (value->queued_datagram_bytes >= packet.size()) {
-               value->queued_datagram_bytes -= packet.size();
+            if (value->queued_datagram_bytes >= packet.bytes.size()) {
+               value->queued_datagram_bytes -= packet.bytes.size();
             } else {
                value->queued_datagram_bytes = 0;
             }
 
-            const auto packet_size = packet.size();
-            auto ec = boost::system::error_code{};
-            if (value->server_socket) {
-               ec = co_await value->server_socket->async_send(std::move(packet), value->remote_endpoint);
-               co_await asio::dispatch(value->strand, asio::use_awaitable);
-            } else {
-               co_await value->socket->async_send_to(asio::buffer(packet), value->remote_endpoint,
-                                                     asio::redirect_error(asio::use_awaitable, ec));
-            }
+            const auto packet_size = packet.bytes.size();
+            const auto ec = co_await value->send_packet(std::move(packet));
             if (ec) {
                if (!value->closing) {
-                  value->fail_all();
+                  value->fail_udp(ec);
                }
                break;
             }
@@ -1350,7 +1380,7 @@ struct engine_connection::impl {
       }
    }
 
-   void enqueue_datagram(std::span<const std::uint8_t> packet) {
+   void enqueue_datagram(std::span<const std::uint8_t> packet, const ngtcp2_path& path) {
       if (packet.empty()) {
          return;
       }
@@ -1359,7 +1389,7 @@ struct engine_connection::impl {
          fail_all();
          throw_engine(engine_error_kind::backpressure_rejected, "QUIC UDP datagram queue exceeds limit");
       }
-      outbound_datagrams.emplace_back(packet.begin(), packet.end());
+      outbound_datagrams.push_back({.bytes = {packet.begin(), packet.end()}, .route = copy_route(path)});
       queued_datagram_bytes += packet.size();
       start_udp_send_loop();
    }
@@ -1681,7 +1711,7 @@ struct engine_connection::impl {
                complete_submitted_writes(selected);
             }
             ngtcp2_conn_update_pkt_tx_time(conn, timestamp());
-            enqueue_datagram({packet.data(), static_cast<std::size_t>(nwrite)});
+            enqueue_datagram({packet.data(), static_cast<std::size_t>(nwrite)}, ps.path);
             ++packets_this_drain;
             if (packets_this_drain >= max_packets_per_drain) {
                drain_requested = true;
@@ -1702,7 +1732,8 @@ struct engine_connection::impl {
       }
    }
 
-   boost::asio::awaitable<void> handle_packet(std::vector<std::uint8_t> packet, udp::endpoint from) {
+   boost::asio::awaitable<void> handle_packet(std::vector<std::uint8_t> packet,
+                                              forge::net::transport::datagram_io::received route) {
       assert(strand.running_in_this_thread());
       co_await asio::dispatch(strand, asio::use_awaitable);
       start_cancel_request_worker();
@@ -1718,7 +1749,7 @@ struct engine_connection::impl {
          throw_engine(engine_error_kind::backpressure_rejected, "QUIC inbound packet queue exceeds limit");
       }
       queued_inbound_packet_bytes += packet_size;
-      inbound_packets.push_back(queued_packet{.bytes = std::move(packet), .from = std::move(from)});
+      inbound_packets.push_back(queued_packet{.bytes = std::move(packet), .route = std::move(route)});
       if (!drain_active && !packet_processing_active) {
          co_await process_queued_packets();
       }
@@ -1741,7 +1772,7 @@ struct engine_connection::impl {
          } else {
             queued_inbound_packet_bytes = 0;
          }
-         auto path = make_path(local_endpoint(), queued.from);
+         auto path = make_path(queued.route.local, queued.route.remote);
          auto pi = ngtcp2_pkt_info{};
          const auto rv =
              ngtcp2_conn_read_pkt(conn, &path.path, &pi, queued.bytes.data(), queued.bytes.size(), timestamp());
@@ -1782,18 +1813,19 @@ struct engine_connection::impl {
          try {
             while (!value->closing && !value->canceled) {
                auto packet = std::vector<std::uint8_t>(65536);
-               auto from = udp::endpoint{};
                boost::system::error_code ec;
-               const auto nread = co_await value->socket->async_receive_from(
-                   asio::buffer(packet), from, asio::redirect_error(asio::use_awaitable, ec));
+               const auto nread = co_await value->socket->async_receive(asio::buffer(packet),
+                                                                        asio::redirect_error(asio::use_awaitable, ec));
                if (ec) {
                   if (ec != asio::error::operation_aborted && !value->closing) {
-                     value->fail_all();
+                     value->fail_udp(ec);
                   }
                   co_return;
                }
                packet.resize(nread);
-               co_await value->handle_packet(std::move(packet), std::move(from));
+               co_await value->handle_packet(
+                   std::move(packet),
+                   {.size = nread, .remote = value->remote_endpoint, .local = value->local_endpoint_value});
             }
          } catch (...) {
             if (!value->closing && !value->canceled) {
@@ -2080,7 +2112,9 @@ int extend_max_local_streams_bidi_cb(ngtcp2_conn*, std::uint64_t, void* user_dat
    return ngtcp2_callbacks{
        .client_initial = ngtcp2_crypto_client_initial_cb,
        .recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb,
-       .handshake_completed = handshake_completed_cb,
+       // Local TLS completion can precede transmission of the final flight.
+       // Only confirmation below makes the client ready for publication.
+       .handshake_completed = nullptr,
        .encrypt = ngtcp2_crypto_encrypt_cb,
        .decrypt = ngtcp2_crypto_decrypt_cb,
        .hp_mask = ngtcp2_crypto_hp_mask_cb,
@@ -2693,18 +2727,9 @@ boost::asio::awaitable<void> engine_connection::async_close() {
                    const auto written = ngtcp2_conn_write_connection_close(
                        connection->conn, &path.path, &packet_info, packet.data(), packet.size(), &close_error, timestamp());
                    if (written > 0) {
-                      auto send_error = boost::system::error_code{};
                       const auto packet_size = static_cast<std::size_t>(written);
-                      if (connection->server_socket) {
-                         send_error = co_await connection->server_socket->async_send(
-                             std::vector<std::uint8_t>{packet.begin(), packet.begin() + written},
-                             connection->remote_endpoint);
-                         co_await asio::dispatch(connection->strand, asio::use_awaitable);
-                      } else if (connection->socket) {
-                         co_await connection->socket->async_send_to(asio::buffer(packet.data(), packet_size),
-                                                                    connection->remote_endpoint,
-                                                                    asio::redirect_error(asio::use_awaitable, send_error));
-                      }
+                      const auto send_error = co_await connection->send_packet(
+                          {.bytes = {packet.begin(), packet.begin() + written}, .route = copy_route(path.path)}, true);
                       if (!send_error) {
                          connection->metrics.packets_sent.fetch_add(1, std::memory_order_relaxed);
                          connection->metrics.bytes_sent.fetch_add(packet_size, std::memory_order_relaxed);
@@ -2982,7 +3007,7 @@ engine_connector::async_connect(engine_endpoint remote, engine_client_options op
    const auto clear_cancellation_slot = [](asio::cancellation_slot* slot) noexcept { slot->clear(); };
    auto cancellation_slot_cleanup = std::unique_ptr<asio::cancellation_slot, decltype(clear_cancellation_slot)>{
        &cancellation_slot, clear_cancellation_slot};
-   connect_timer->expires_after(options.connect_timeout);
+   connect_timer->expires_at(connect_started + options.connect_timeout);
    connect_timer->async_wait([connect_timer, active_connect](boost::system::error_code ec) {
       if (ec) {
          return;
@@ -3035,28 +3060,42 @@ engine_connector::async_connect(engine_endpoint remote, engine_client_options op
 
    throw_if_terminal();
    try {
-      switch (remote.family) {
-      case engine_endpoint::address_family::any:
-         resolver->async_resolve(
-             remote.host, std::to_string(remote.port),
-             [active_connect](boost::system::error_code error, udp::resolver::results_type results) mutable {
-                active_connect->complete_resolution(error, std::move(results));
-             });
-         break;
-      case engine_endpoint::address_family::ipv4:
-         resolver->async_resolve(
-             udp::v4(), remote.host, std::to_string(remote.port),
-             [active_connect](boost::system::error_code error, udp::resolver::results_type results) mutable {
-                active_connect->complete_resolution(error, std::move(results));
-             });
-         break;
-      case engine_endpoint::address_family::ipv6:
-         resolver->async_resolve(
-             udp::v6(), remote.host, std::to_string(remote.port),
-             [active_connect](boost::system::error_code error, udp::resolver::results_type results) mutable {
-                active_connect->complete_resolution(error, std::move(results));
-             });
-         break;
+      auto literal_error = boost::system::error_code{};
+      static_cast<void>(asio::ip::make_address(remote.host, literal_error));
+      if (!literal_error || !remote.zone.empty() || remote.host.find(':') != std::string::npos ||
+          remote.host.find('%') != std::string::npos) {
+         const auto address = literal_address(remote);
+         if ((remote.family == engine_endpoint::address_family::ipv4 && !address.is_v4()) ||
+             (remote.family == engine_endpoint::address_family::ipv6 && !address.is_v6())) {
+            throw_engine(engine_error_kind::invalid_endpoint, "QUIC literal address family mismatch");
+         }
+         active_connect->complete_resolution(
+             {}, udp::resolver::results_type::create(udp::endpoint{address, remote.port}, remote.host,
+                                                     std::to_string(remote.port)));
+      } else {
+         switch (remote.family) {
+         case engine_endpoint::address_family::any:
+            resolver->async_resolve(
+                remote.host, std::to_string(remote.port),
+                [active_connect](boost::system::error_code error, udp::resolver::results_type results) mutable {
+                   active_connect->complete_resolution(error, std::move(results));
+                });
+            break;
+         case engine_endpoint::address_family::ipv4:
+            resolver->async_resolve(
+                udp::v4(), remote.host, std::to_string(remote.port),
+                [active_connect](boost::system::error_code error, udp::resolver::results_type results) mutable {
+                   active_connect->complete_resolution(error, std::move(results));
+                });
+            break;
+         case engine_endpoint::address_family::ipv6:
+            resolver->async_resolve(
+                udp::v6(), remote.host, std::to_string(remote.port),
+                [active_connect](boost::system::error_code error, udp::resolver::results_type results) mutable {
+                   active_connect->complete_resolution(error, std::move(results));
+                });
+            break;
+         }
       }
    } catch (...) {
       active_connect->release_resolver();
@@ -3092,10 +3131,6 @@ engine_connector::async_connect(engine_endpoint remote, engine_client_options op
    auto remote_endpoint = *resolution_results.begin();
    auto ec = boost::system::error_code{};
    auto socket = std::make_shared<udp::socket>(impl_->context);
-   {
-      auto lock = std::scoped_lock{active_connect->mutex};
-      active_connect->socket = socket;
-   }
    socket->open(remote_endpoint.endpoint().protocol(), ec);
    if (ec) {
       finish_connect_or_throw();
@@ -3106,8 +3141,17 @@ engine_connector::async_connect(engine_endpoint remote, engine_client_options op
       finish_connect_or_throw();
       throw_engine(engine_error_kind::internal_error, "failed to bind QUIC UDP socket: " + ec.message());
    }
-   const auto local_endpoint = socket->local_endpoint(ec);
+   // A dedicated client owns a fixed remote tuple for its whole lifetime.
+   // Connecting this same FD selects a concrete local address before ngtcp2
+   // records its path, and lets the kernel filter datagrams from other peers.
+   socket->connect(remote_endpoint.endpoint(), ec);
    if (ec) {
+      finish_connect_or_throw();
+      throw_engine(engine_error_kind::invalid_endpoint, "failed to connect QUIC UDP socket: " + ec.message());
+   }
+   const auto local_endpoint = socket->local_endpoint(ec);
+   if (ec || local_endpoint.address().is_unspecified() ||
+       local_endpoint.protocol() != remote_endpoint.endpoint().protocol()) {
       finish_connect_or_throw();
       throw_engine(engine_error_kind::internal_error, "failed to read QUIC UDP socket endpoint: " + ec.message());
    }
@@ -3135,6 +3179,7 @@ engine_connector::async_connect(engine_endpoint remote, engine_client_options op
    }
    {
       auto lock = std::scoped_lock{active_connect->mutex};
+      active_connect->socket = socket;
       active_connect->connection = connection_impl;
    }
    auto connect_error = std::exception_ptr{};
@@ -3152,7 +3197,7 @@ engine_connector::async_connect(engine_endpoint remote, engine_client_options op
 
              const auto dcid = random_cid(NGTCP2_MIN_INITIAL_DCIDLEN);
              const auto scid = random_cid(cid_length);
-             auto path = make_path(socket->local_endpoint(), remote_endpoint.endpoint());
+             auto path = make_path(local_endpoint, remote_endpoint.endpoint());
              auto initial_token = std::vector<std::uint8_t>{};
              if (options.client_tokens && options.client_tokens->take) {
                 try {
@@ -3434,17 +3479,21 @@ struct engine_listener::impl {
                    }
                 } guard{self};
                 while (!self->stopped) {
-                   auto received = std::pair<std::vector<std::uint8_t>, udp::endpoint>{};
+                   auto received = server_udp_socket::packet{};
                    try {
                       received = co_await self->server_socket->async_receive();
-                   } catch (const boost::system::system_error&) {
+                   } catch (const boost::system::system_error& error) {
+                      if (error.code() == asio::error::message_size || error.code() == asio::error::invalid_argument) {
+                         // datagram_io consumed a malformed/truncated or wrong-interface packet.
+                         continue;
+                      }
                       co_return;
                    }
                    if (self->stopped) {
                       co_return;
                    }
                    try {
-                      co_await self->handle_packet(std::move(received.first), std::move(received.second));
+                      co_await self->handle_packet(std::move(received.bytes), std::move(received.route));
                    } catch (const engine_failure&) {
                       // Malformed/adversarial packets must not permanently stop the listener.
                    }
@@ -3552,8 +3601,9 @@ struct engine_listener::impl {
           });
    }
 
-   boost::asio::awaitable<void> send_retry(const ngtcp2_pkt_hd& header, const udp::endpoint& remote) {
-      auto path = make_path(server_socket->local_endpoint(), remote);
+   boost::asio::awaitable<void> send_retry(const ngtcp2_pkt_hd& header,
+                                           forge::net::transport::datagram_io::received route) {
+      auto path = make_path(route.local, route.remote);
       const auto retry_scid = random_cid(cid_length);
       const auto token = initial_tokens.generate_retry(header.version,
                                                        initial_token_remote_address{
@@ -3572,13 +3622,14 @@ struct engine_listener::impl {
          throw_engine(engine_error_kind::internal_error, "failed to encode QUIC Retry packet");
       }
       const auto error = co_await server_socket->async_send(
-          std::vector<std::uint8_t>{packet.begin(), packet.begin() + packet_length}, remote);
+          {.bytes = {packet.begin(), packet.begin() + packet_length}, .route = route});
       if (error && error != asio::error::operation_aborted) {
          throw_engine(engine_error_kind::internal_error, "failed to send QUIC Retry packet: " + error.message());
       }
    }
 
-   boost::asio::awaitable<void> send_invalid_token_close(const ngtcp2_pkt_hd& header, const udp::endpoint& remote) {
+   boost::asio::awaitable<void> send_invalid_token_close(const ngtcp2_pkt_hd& header,
+                                                         forge::net::transport::datagram_io::received route) {
       auto packet = std::array<std::uint8_t, max_udp_payload_size>{};
       const auto packet_length = ngtcp2_crypto_write_connection_close(
           packet.data(), packet.size(), header.version, &header.scid, &header.dcid, NGTCP2_INVALID_TOKEN, nullptr, 0);
@@ -3586,14 +3637,15 @@ struct engine_listener::impl {
          throw_engine(engine_error_kind::internal_error, "failed to encode QUIC INVALID_TOKEN connection close");
       }
       const auto error = co_await server_socket->async_send(
-          std::vector<std::uint8_t>{packet.begin(), packet.begin() + packet_length}, remote);
+          {.bytes = {packet.begin(), packet.begin() + packet_length}, .route = route});
       if (error && error != asio::error::operation_aborted) {
          throw_engine(engine_error_kind::internal_error,
                       "failed to send QUIC INVALID_TOKEN connection close: " + error.message());
       }
    }
 
-   boost::asio::awaitable<void> handle_packet(std::vector<std::uint8_t> packet, udp::endpoint from) {
+   boost::asio::awaitable<void> handle_packet(std::vector<std::uint8_t> packet,
+                                              forge::net::transport::datagram_io::received route) {
       auto vcid = ngtcp2_version_cid{};
       auto rv = ngtcp2_pkt_decode_version_cid(&vcid, packet.data(), packet.size(), cid_length);
       if (rv != 0) {
@@ -3610,7 +3662,7 @@ struct engine_listener::impl {
          }
          const auto token_bytes = hd.token == nullptr ? std::span<const std::uint8_t>{}
                                                       : std::span<const std::uint8_t>{hd.token, hd.tokenlen};
-         const auto path = make_path(server_socket->local_endpoint(), from);
+         const auto path = make_path(route.local, route.remote);
          const auto token = initial_tokens.validate(token_bytes, hd.version,
                                                     initial_token_remote_address{
                                                         .address = path.path.remote.addr,
@@ -3619,10 +3671,10 @@ struct engine_listener::impl {
                                                     hd.dcid, timestamp());
          switch (token.disposition) {
          case initial_token_disposition::retry:
-            co_await send_retry(hd, from);
+            co_await send_retry(hd, route);
             co_return;
          case initial_token_disposition::reject_invalid:
-            co_await send_invalid_token_close(hd, from);
+            co_await send_invalid_token_close(hd, route);
             co_return;
          case initial_token_disposition::internal_failure:
             throw_engine(engine_error_kind::internal_error, "QUIC initial token verifier failed internally");
@@ -3630,7 +3682,7 @@ struct engine_listener::impl {
             break;
          }
          try {
-            connection = create_server_connection(hd, token, from);
+            connection = create_server_connection(hd, token, route);
          } catch (const engine_failure& error) {
             if (error.kind() == engine_error_kind::internal_error) {
                pending_accept_error = error.kind();
@@ -3646,7 +3698,7 @@ struct engine_listener::impl {
          start_handshake_deadline(connection);
       }
       try {
-         co_await asio::co_spawn(connection->strand, connection->handle_packet(std::move(packet), std::move(from)),
+         co_await asio::co_spawn(connection->strand, connection->handle_packet(std::move(packet), std::move(route)),
                                  asio::use_awaitable);
       } catch (const engine_failure&) {
          asio::post(connection->strand, [connection] { connection->fail_all(); });
@@ -3654,7 +3706,8 @@ struct engine_listener::impl {
    }
 
    [[nodiscard]] std::shared_ptr<engine_connection::impl>
-   create_server_connection(const ngtcp2_pkt_hd& hd, const initial_token_validation& token, const udp::endpoint& from) {
+   create_server_connection(const ngtcp2_pkt_hd& hd, const initial_token_validation& token,
+                            const forge::net::transport::datagram_io::received& route) {
       if (!token.accepted()) {
          throw_engine(engine_error_kind::internal_error,
                       "cannot create QUIC server connection without token validation");
@@ -3664,10 +3717,7 @@ struct engine_listener::impl {
       }
       if (options.inbound_connection_filter) {
          try {
-            const auto local = server_socket->local_endpoint();
-            if (!options.inbound_connection_filter(
-                    engine_endpoint{.host = local.address().to_string(), .port = local.port()},
-                    engine_endpoint{.host = from.address().to_string(), .port = from.port()})) {
+            if (!options.inbound_connection_filter(from_udp_endpoint(route.local), from_udp_endpoint(route.remote))) {
                throw_engine(engine_error_kind::connection_rejected, "QUIC inbound connection rejected");
             }
          } catch (const engine_failure&) {
@@ -3687,8 +3737,8 @@ struct engine_listener::impl {
             throw_engine(engine_error_kind::backpressure_rejected, "QUIC inbound admission rejected");
          }
       }
-      auto connection = std::make_shared<engine_connection::impl>(
-          context, server_socket, server_socket->local_endpoint(), from, options.limits);
+      auto connection =
+          std::make_shared<engine_connection::impl>(context, server_socket, route.local, route.remote, options.limits);
       connection->inbound_admission = std::move(admission);
       connection->self = connection;
       connection->server_side = true;
@@ -3732,7 +3782,7 @@ struct engine_listener::impl {
          if (!listener) {
             return;
          }
-         const auto path = make_path(listener->server_socket->local_endpoint(), value.remote_endpoint);
+         const auto path = make_path(value.local_endpoint(), value.remote_endpoint);
          const auto token = listener->initial_tokens.generate_regular(
              initial_token_remote_address{.address = path.path.remote.addr, .length = path.path.remote.addrlen},
              timestamp());
@@ -3784,7 +3834,7 @@ struct engine_listener::impl {
                                                        reset_secret.size(), &scid) != 0) {
          throw_engine(engine_error_kind::tls_failed, "failed to generate stateless reset token");
       }
-      auto path = make_path(server_socket->local_endpoint(), from);
+      auto path = make_path(route.local, route.remote);
       const auto rv = ngtcp2_conn_server_new(&connection->conn, &hd.scid, &scid, &path.path, hd.version, &callbacks,
                                              &settings, &params, nullptr, connection.get());
       if (rv != 0) {
@@ -3802,17 +3852,14 @@ engine_listener::engine_listener(boost::asio::io_context& context, engine_endpoi
                                  engine_server_options options)
     : impl_(std::make_shared<impl>(context, std::move(bind_endpoint), std::move(options))) {
    impl_->self = impl_;
-   auto ec = boost::system::error_code{};
-   auto address = impl_->bind_endpoint.host.empty() ? asio::ip::make_address("127.0.0.1")
-                                                    : asio::ip::make_address(impl_->bind_endpoint.host, ec);
-   if (ec) {
-      throw_engine(engine_error_kind::invalid_endpoint, "invalid QUIC listener address: " + ec.message());
+   if (impl_->bind_endpoint.host.empty()) {
+      impl_->bind_endpoint.host = "127.0.0.1";
    }
+   const auto address = literal_address(impl_->bind_endpoint);
    auto endpoint = udp::endpoint{address, impl_->bind_endpoint.port};
    impl_->server_socket->open_and_bind(endpoint);
    const auto local = impl_->server_socket->local_endpoint();
-   impl_->bind_endpoint.host = local.address().to_string();
-   impl_->bind_endpoint.port = local.port();
+   impl_->bind_endpoint = from_udp_endpoint(local);
    impl_->start();
 }
 

@@ -278,6 +278,12 @@ node::options fixture_options(std::string_view name) {
 // The friendship permits this test TU to reach existing admission and session
 // state. No production option, runtime callback or alternate admission is added.
 struct node_session_fixture {
+   static void fail_next_connection_manager_prepare(node& owner) {
+      const auto self = owner.impl_;
+      const auto lock = std::scoped_lock{self->mutex};
+      self->connections.fail_next_prepare_for_test();
+   }
+
    static void autonat_local_upgrade_refusal_is_not_negative() {
       for (const auto v2 : {false, true}) {
          auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
@@ -1263,6 +1269,14 @@ struct node_session_fixture {
       reacquired.release();
    }
 };
+
+namespace detail {
+
+void fail_next_connection_manager_prepare_for_test(node& owner) {
+   node_session_fixture::fail_next_connection_manager_prepare(owner);
+}
+
+} // namespace detail
 
 BOOST_AUTO_TEST_CASE(p2p_dial_cancellation_interrupts_occupied_admission_and_awaits_native_close) {
    node_session_fixture::blocked_admission(false);

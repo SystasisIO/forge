@@ -47,6 +47,7 @@ module;
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/ip/host_name.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ip/udp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/read.hpp>
@@ -148,7 +149,7 @@ import forge.multiformats.multiaddr;
 #include "../../libraries/net/p2p/details/connection_manager.hxx"
 
 namespace forge::net::p2p::detail {
-void fail_next_connection_manager_prepare_for_test() noexcept;
+void fail_next_connection_manager_prepare_for_test(node& owner);
 void fail_next_connection_manager_peer_session_prepare_for_test() noexcept;
 }
 
@@ -8905,6 +8906,27 @@ BOOST_AUTO_TEST_CASE(p2p_connection_manager_single_session_honors_grace_and_prot
    BOOST_TEST(manager.size() == 1U);
 }
 
+BOOST_AUTO_TEST_CASE(p2p_connection_manager_prepare_failure_is_instance_scoped) {
+   const auto now = std::chrono::steady_clock::now();
+   auto target = connection_manager{connection_manager::policy{}};
+   auto other = connection_manager{connection_manager::policy{}};
+   const auto record = connection_manager::session_record{.id = 1, .peer = peer(249)};
+
+   target.fail_next_prepare_for_test();
+   BOOST_REQUIRE(other.remember(record, now).accepted);
+   BOOST_TEST(other.size() == 1U);
+   BOOST_CHECK_THROW(static_cast<void>(target.remember(record, now)), std::bad_alloc);
+   BOOST_TEST(target.size() == 0U);
+   BOOST_TEST(target.current(8).active_peers == 0U);
+   BOOST_TEST(other.size() == 1U);
+   BOOST_TEST(other.current(8).active_peers == 1U);
+
+   // Only the armed manager consumes the one-shot failure; its retry succeeds.
+   BOOST_REQUIRE(target.remember(record, now).accepted);
+   BOOST_TEST(target.size() == 1U);
+   BOOST_TEST(target.current(8).active_peers == 1U);
+}
+
 BOOST_AUTO_TEST_CASE(p2p_connection_manager_prepare_failure_preserves_sessions_and_retries) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    auto client_options = options_for(peer(249));
@@ -8926,7 +8948,7 @@ BOOST_AUTO_TEST_CASE(p2p_connection_manager_prepare_failure_preserves_sessions_a
        runtime, client.async_connect(first_endpoint, node::connect_options{.expected_peer = first.local_peer()}));
    const auto before = client.metrics();
 
-   detail::fail_next_connection_manager_prepare_for_test();
+   detail::fail_next_connection_manager_prepare_for_test(client);
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(
            runtime, client.async_connect(second_endpoint, node::connect_options{.expected_peer = second.local_peer()})),
@@ -16282,6 +16304,60 @@ BOOST_AUTO_TEST_CASE(p2p_path_manager_tries_next_direct_endpoint_after_attempt_t
       return current.address.to_string() == make_quic_endpoint(9).to_string();
    });
    auto succeeded = std::ranges::find_if(record->endpoints, [&](const peer_store::endpoint_record& current) {
+      return current.address.to_string() == server_endpoint.to_string();
+   });
+   BOOST_REQUIRE(failed != record->endpoints.end());
+   BOOST_REQUIRE(succeeded != record->endpoints.end());
+   BOOST_TEST(failed->failures >= 1U);
+   BOOST_TEST(failed->backoff_until > std::chrono::system_clock::now());
+   BOOST_TEST(succeeded->successes >= 1U);
+   BOOST_TEST(succeeded->backoff_until == std::chrono::system_clock::time_point{});
+
+   forge::asio::blocking::run(runtime, client.async_stop());
+   forge::asio::blocking::run(runtime, server.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_path_manager_tries_next_quic_endpoint_after_silent_udp_attempt_timeout) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto server = node{runtime, options_for(peer(64))};
+   auto client_options = options_for(peer(65));
+   client_options.direct_dial.max_concurrent_attempts = 1;
+   auto client = node{runtime, std::move(client_options)};
+   register_echo(server);
+
+   // Keep ownership of an ephemeral bound port throughout the dial. It cannot
+   // produce a closed-port ICMP refusal and deliberately never replies.
+   // IPv6 ranks before the working IPv4 endpoint regardless of ephemeral ports.
+   using udp = boost::asio::ip::udp;
+   auto silent = udp::socket{runtime.context(), udp::endpoint{boost::asio::ip::make_address("::1"), 0}};
+   const auto stalled_endpoint = endpoint{.transport = {.host_type = endpoint::host_kind::ip6,
+                                                       .protocol = endpoint::protocol_kind::quic_v1,
+                                                       .host = "::1",
+                                                       .port = silent.local_endpoint().port()}};
+   const auto server_endpoint = listen(server, runtime);
+   client.peers().learn_endpoint(server.local_peer(), stalled_endpoint,
+                                 capability_set{.bits = capabilities::direct_quic});
+   client.peers().learn_endpoint(server.local_peer(), server_endpoint,
+                                 capability_set{.bits = capabilities::direct_quic});
+
+   auto stream = forge::asio::blocking::run(
+       runtime, client.async_open_protocol_stream(server.local_peer(), builtins::echo,
+           node::open_options{.allow_relay = false,
+                              .timeout = std::chrono::milliseconds{2'000},
+                              .direct_attempt_timeout = std::chrono::milliseconds{100},
+                              .max_direct_endpoints = 2}));
+   const auto payload = std::vector<std::uint8_t>{'s', 'i', 'l', 'e', 'n', 't'};
+   forge::asio::blocking::run(runtime, stream.async_write_frame(payload));
+   const auto reply = forge::asio::blocking::run(runtime, stream.async_read_frame());
+   BOOST_TEST(reply == payload, boost::test_tools::per_element());
+   BOOST_TEST(client.metrics().path_direct_attempts >= 2U);
+   BOOST_TEST(client.metrics().path_direct_opens >= 1U);
+   const auto record = client.peers().find(server.local_peer());
+   BOOST_REQUIRE(record.has_value());
+   const auto failed = std::ranges::find_if(record->endpoints, [&](const auto& current) {
+      return current.address.to_string() == stalled_endpoint.to_string();
+   });
+   const auto succeeded = std::ranges::find_if(record->endpoints, [&](const auto& current) {
       return current.address.to_string() == server_endpoint.to_string();
    });
    BOOST_REQUIRE(failed != record->endpoints.end());

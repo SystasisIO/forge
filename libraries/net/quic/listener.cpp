@@ -101,7 +101,8 @@ namespace {
                    .family =
                        value.family == detail::engine_endpoint::address_family::ipv4   ? endpoint::address_family::ipv4
                        : value.family == detail::engine_endpoint::address_family::ipv6 ? endpoint::address_family::ipv6
-                                                                                       : endpoint::address_family::any};
+                                                                                       : endpoint::address_family::any,
+                   .zone = value.zone};
 }
 
 [[nodiscard]] detail::engine_server_options map_options(const server_options& options) {
@@ -128,10 +129,11 @@ namespace {
 
 struct listener::impl {
    impl(forge::asio::runtime& runtime_value, endpoint bind_endpoint_value, server_options options_value)
-       : runtime(runtime_value),
-         engine(runtime_value.context(),
-                detail::engine_endpoint{.host = std::move(bind_endpoint_value.host), .port = bind_endpoint_value.port},
-                map_options(options_value)) {}
+       : runtime(runtime_value), engine(runtime_value.context(),
+                                        detail::engine_endpoint{.host = std::move(bind_endpoint_value.host),
+                                                                .port = bind_endpoint_value.port,
+                                                                .zone = std::move(bind_endpoint_value.zone)},
+                                        map_options(options_value)) {}
 
    forge::asio::runtime& runtime;
    detail::engine_listener engine;
@@ -153,7 +155,7 @@ endpoint listener::local_endpoint() const {
       return endpoint{};
    }
    const auto local = impl_->engine.local_endpoint();
-   return endpoint{.host = local.host, .port = local.port};
+   return map_endpoint(local);
 }
 
 boost::asio::awaitable<connection> listener::async_accept() {
