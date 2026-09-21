@@ -4,6 +4,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <variant>
@@ -21,10 +22,12 @@ export namespace forge::chain::savanna {
 inline constexpr auto finality_witness_scheme = std::string_view{"spine.savanna.finality"};
 inline constexpr auto finality_witness_version = std::uint32_t{1};
 inline constexpr auto finality_witness_hard_max_blocks = std::uint32_t{4'096};
+inline constexpr auto finality_witness_hard_max_producer_slots = std::uint32_t{65'536};
 inline constexpr auto finality_witness_hard_max_bytes = std::uint32_t{8U << 20U};
 
 struct finality_witness_limits {
    std::uint32_t max_blocks = finality_witness_hard_max_blocks;
+   std::uint32_t max_producer_slots = finality_witness_hard_max_producer_slots;
    std::uint32_t max_bytes = finality_witness_hard_max_bytes;
 };
 
@@ -59,8 +62,18 @@ struct finality_trust_anchor {
    bool operator==(const finality_trust_anchor&) const = default;
 };
 
+struct producer_opportunity {
+   block_timestamp timestamp;
+   forge::chain::protocol::account_name expected_producer;
+   std::optional<block_id> produced_block;
+   std::optional<block_num> produced_block_num;
+
+   bool operator==(const producer_opportunity&) const = default;
+};
+
 struct finality_replay {
    std::vector<forge::chain::protocol::state_anchor> anchors;
+   std::vector<producer_opportunity> producer_opportunities;
    block_num finalized_block_num = 0;
    block_num validated_block_num = 0;
 };
@@ -110,13 +123,14 @@ void verify_finality_ancestry_witness(const finality_trust& trust, const forge::
                                       std::span<const forge::chain::protocol::state_anchor> intermediate,
                                       finality_witness_limits limits = {});
 
-BOOST_DESCRIBE_STRUCT(finality_witness_limits, (), (max_blocks, max_bytes))
+BOOST_DESCRIBE_STRUCT(finality_witness_limits, (), (max_blocks, max_producer_slots, max_bytes))
 BOOST_DESCRIBE_STRUCT(finality_witness_record, (), (header, block_extensions, action_receipt_root))
 BOOST_DESCRIBE_STRUCT(finality_witness, (), (chain, trusted_bootstrap, records))
 BOOST_DESCRIBE_STRUCT(finality_genesis_bootstrap, (), (configuration, commitment))
 BOOST_DESCRIBE_STRUCT(finality_checkpoint_bootstrap, (), (chain, value))
 BOOST_DESCRIBE_STRUCT(finality_trust_anchor, (), (chain, block))
-BOOST_DESCRIBE_STRUCT(finality_replay, (), (anchors, finalized_block_num, validated_block_num))
+BOOST_DESCRIBE_STRUCT(producer_opportunity, (), (timestamp, expected_producer, produced_block, produced_block_num))
+BOOST_DESCRIBE_STRUCT(finality_replay, (), (anchors, producer_opportunities, finalized_block_num, validated_block_num))
 BOOST_DESCRIBE_STRUCT(finality_trust_advance, (), (checkpoint, replay))
 
 } // namespace forge::chain::savanna

@@ -22,8 +22,7 @@ class savanna_finality_trust_store {
       savanna_trusted_position preferred;
    };
 
-   savanna_finality_trust_store(savanna::finality_trust trust,
-                                std::vector<savanna::finality_trust> additional_trusts,
+   savanna_finality_trust_store(savanna::finality_trust trust, std::vector<savanna::finality_trust> additional_trusts,
                                 savanna::finality_witness_limits limits);
 
    [[nodiscard]] savanna::finality_trust preferred_trust() const;
@@ -33,10 +32,12 @@ class savanna_finality_trust_store {
    [[nodiscard]] savanna::finality_witness_limits witness_limits() const;
    [[nodiscard]] std::shared_ptr<const savanna::header_state>
    cached_replay_state(const protocol::state_anchor& anchor, const protocol::digest& proof_digest) const;
+   [[nodiscard]] std::shared_ptr<const savanna::finality_replay>
+   cached_replay(const protocol::state_anchor& anchor, const protocol::digest& proof_digest) const;
    [[nodiscard]] snapshot take_snapshot(const protocol::state_anchor& expected,
                                         const savanna::finality_witness& witness) const;
 
-   void install_verified(savanna::finality_checkpoint_bootstrap checkpoint, const savanna::finality_replay& replay,
+   void install_verified(savanna::finality_checkpoint_bootstrap checkpoint, savanna::finality_replay replay,
                          const protocol::state_anchor& anchor, const protocol::digest& proof_digest,
                          savanna::header_state state);
 
@@ -57,6 +58,7 @@ class savanna_finality_trust_store {
       protocol::state_anchor anchor;
       protocol::digest proof_digest;
       std::shared_ptr<const savanna::header_state> state;
+      std::shared_ptr<const savanna::finality_replay> replay;
    };
 
    [[nodiscard]] static trusted_entry make_configured_entry(savanna::finality_trust trust);

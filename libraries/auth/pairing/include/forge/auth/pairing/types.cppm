@@ -1,5 +1,7 @@
 module;
 
+#include <boost/describe.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -120,4 +122,9 @@ struct credential {
    bool operator==(const credential&) const = default;
 };
 
+} // namespace forge::auth::pairing
+
+export namespace forge::auth::pairing {
+BOOST_DESCRIBE_ENUM(pending_state, pending, approved, rejected, superseded)
+BOOST_DESCRIBE_ENUM(credential_state, active, revoked)
 } // namespace forge::auth::pairing

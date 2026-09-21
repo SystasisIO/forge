@@ -4,11 +4,13 @@ module;
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <source_location>
 #include <string>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 module forge.log.logger;
@@ -18,6 +20,7 @@ import forge.log.appender;
 import forge.log.record;
 import forge.log.logger_config;
 import forge.core.utility;
+import forge.variant.value;
 
 namespace forge {
 
@@ -57,10 +60,58 @@ log_record make_record_from_message(const log_message& message, const std::strin
    return record;
 }
 
+log_message make_message_from_record(const log_record& record) {
+   const auto location = record.location;
+   auto context = log_context{
+       record.level,
+       location.file_name(),
+       static_cast<std::uint64_t>(location.line()),
+       location.function_name(),
+   };
+   context.append_context(record.logger);
+
+   // Legacy appenders have no structured-record overload. Preserve the canonical
+   // representation rather than silently dropping structured fields at that boundary.
+   return log_message{
+       std::move(context),
+       "${record}",
+       mutable_variant_object{}("record", format_text_log_record(record)),
+   };
+}
+
+struct route_targets {
+   std::vector<appender::ptr> appenders;
+   std::vector<std::shared_ptr<sink>> sinks;
+};
+
+void deliver(const std::vector<appender::ptr>& appenders, const log_message& message) {
+   for (const auto& current_appender : appenders) {
+      try {
+         current_appender->log(message);
+      } catch (const std::exception& error) {
+         std::cerr << "ERROR: logger::log appender std::exception: " << error.what() << std::endl;
+      } catch (...) {
+         std::cerr << "ERROR: logger::log appender unknown exception" << std::endl;
+      }
+   }
+}
+
+void deliver(const std::vector<std::shared_ptr<sink>>& sinks, const log_record& record) {
+   for (const auto& current_sink : sinks) {
+      try {
+         current_sink->log(record);
+      } catch (const std::exception& error) {
+         std::cerr << "ERROR: logger::log sink std::exception: " << error.what() << std::endl;
+      } catch (...) {
+         std::cerr << "ERROR: logger::log sink unknown exception" << std::endl;
+      }
+   }
+}
+
 } // namespace
 
 static void ensure_default_logging_configured() {
-   static const bool configured = configure_logging(logging_config::default_config());
+   static const bool configured = log_config::configure_logging(logging_config::default_config());
    (void)configured;
 }
 
@@ -74,6 +125,28 @@ class logger::impl {
 
    std::vector<appender::ptr> _appenders;
    std::vector<std::shared_ptr<sink>> _sinks;
+
+   [[nodiscard]] route_targets targets() const {
+      auto result = route_targets{};
+      auto seen_loggers = std::unordered_set<const impl*>{};
+      auto seen_appenders = std::unordered_set<appender*>{};
+      auto seen_sinks = std::unordered_set<sink*>{};
+
+      for (auto current = this; current != nullptr && seen_loggers.insert(current).second;
+           current = current->_parent.my.get()) {
+         for (const auto& current_appender : current->_appenders) {
+            if (current_appender && seen_appenders.insert(current_appender.get()).second) {
+               result.appenders.push_back(current_appender);
+            }
+         }
+         for (const auto& current_sink : current->_sinks) {
+            if (current_sink && seen_sinks.insert(current_sink.get()).second) {
+               result.sinks.push_back(current_sink);
+            }
+         }
+      }
+      return result;
+   }
 };
 
 logger::logger() : my(new impl()) {}
@@ -117,64 +190,39 @@ bool logger::is_enabled(log_level e) const {
 }
 
 void logger::log(log_message m) {
-   std::unique_lock g(log_config::get().log_mutex);
-   m.get_context().append_context(my->_name);
-   const auto has_local_appenders = !my->_appenders.empty();
-   const auto has_local_sinks = !my->_sinks.empty();
-
-   if (has_local_appenders) {
-      for (auto itr = my->_appenders.begin(); itr != my->_appenders.end(); ++itr) {
-         try {
-            (*itr)->log(m);
-         } catch (const std::exception& e) {
-            std::cerr << "ERROR: logger::log std::exception: " << e.what() << std::endl;
-         } catch (...) {
-            std::cerr << "ERROR: logger::log unknown exception: " << std::endl;
-         }
-      }
+   if (!is_enabled(m.get_context().get_log_level())) {
+      return;
    }
 
-   if (has_local_sinks) {
-      auto record = make_record_from_message(m, my->_name);
-      const auto sinks = my->_sinks;
-      g.unlock();
-      for (const auto& current_sink : sinks) {
-         try {
-            current_sink->log(record);
-         } catch (const std::exception& e) {
-            std::cerr << "ERROR: logger::log sink std::exception: " << e.what() << std::endl;
-         } catch (...) {
-            std::cerr << "ERROR: logger::log sink unknown exception" << std::endl;
-         }
-      }
-   } else if (!has_local_appenders && my->_parent != nullptr) {
-      logger parent = my->_parent;
-      g.unlock();
-      parent.log(m);
+   std::unique_lock g(log_config::get().log_mutex);
+   m.get_context().append_context(my->_name);
+   const auto targets = my->targets();
+   auto record = std::optional<log_record>{};
+   if (!targets.sinks.empty()) {
+      record = make_record_from_message(m, my->_name);
+   }
+   deliver(targets.appenders, m);
+   g.unlock();
+   if (record) {
+      deliver(targets.sinks, *record);
    }
 }
 
 void logger::log(log_record record) {
+   if (!is_enabled(record.level)) {
+      return;
+   }
+
    std::unique_lock g(log_config::get().log_mutex);
    record.logger = my->_name;
-
-   if (!my->_sinks.empty()) {
-      const auto sinks = my->_sinks;
-      g.unlock();
-      for (const auto& current_sink : sinks) {
-         try {
-            current_sink->log(record);
-         } catch (const std::exception& e) {
-            std::cerr << "ERROR: logger::log sink std::exception: " << e.what() << std::endl;
-         } catch (...) {
-            std::cerr << "ERROR: logger::log sink unknown exception" << std::endl;
-         }
-      }
-   } else if (my->_parent != nullptr) {
-      logger parent = my->_parent;
-      g.unlock();
-      parent.log(std::move(record));
+   const auto targets = my->targets();
+   const auto legacy_message = targets.appenders.empty() ? std::optional<log_message>{}
+                                                         : std::optional<log_message>{make_message_from_record(record)};
+   if (legacy_message) {
+      deliver(targets.appenders, *legacy_message);
    }
+   g.unlock();
+   deliver(targets.sinks, record);
 }
 
 void logger::log(log_level level, std::string message, log_fields fields, std::source_location location) {
@@ -231,6 +279,7 @@ logger& logger::default_logger() {
 }
 
 void logger::update(const std::string& name, logger& log) {
+   ensure_default_logging_configured();
    log_config::update_logger(name, log);
 }
 

@@ -17,6 +17,7 @@ export import forge.chain.protocol.finalizer_policy;
 export import forge.chain.protocol.finalizer_vote_record;
 export import forge.chain.protocol.producer_info;
 export import forge.chain.protocol.producer_authority;
+export import forge.chain.protocol.producer_rewards;
 export import forge.chain.protocol.producer_schedule;
 export import forge.chain.protocol.wasm_parameters;
 

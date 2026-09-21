@@ -106,6 +106,9 @@ class projection_verifier {
                        audit_verifier& verifier);
    virtual void verify(const protocol::producers_request& request, const protocol::producers_response& response,
                        const protocol::audit_bundle& audit, audit_verifier& verifier);
+   virtual void verify(const protocol::producer_rewards_request& request,
+                       const protocol::producer_rewards_response& response, const protocol::audit_bundle& audit,
+                       audit_verifier& verifier);
    virtual void verify(const protocol::anchored_request& request, const protocol::producer_schedule_response& response,
                        const protocol::audit_bundle& audit, audit_verifier& verifier);
    virtual void verify(const protocol::anchored_request& request, const protocol::finalizer_info_response& response,
@@ -155,6 +158,8 @@ class verified_client {
    boost::asio::awaitable<protocol::consensus_parameters_response>
    get_consensus_parameters(protocol::anchored_request request);
    boost::asio::awaitable<protocol::producers_response> get_producers(protocol::producers_request request);
+   boost::asio::awaitable<protocol::producer_rewards_response>
+   get_producer_rewards(protocol::producer_rewards_request request);
    boost::asio::awaitable<protocol::producer_schedule_response>
    get_producer_schedule(protocol::anchored_request request);
    boost::asio::awaitable<protocol::finalizer_info_response> get_finalizer_info(protocol::anchored_request request);

@@ -1494,27 +1494,32 @@ class binding_builder {
 
    [[nodiscard]] static response make_http_error_response(const request& request_value, std::string error,
                                                           std::string message, status status_code,
-                                                          const route_options& options) {
+                                                          const route_options& options,
+                                                          const std::shared_ptr<endpoint_state>& endpoint = {}) {
       const auto payload = make_http_error_payload(std::move(error), std::move(message), status_code);
       auto output =
           make_text_response(request_value, status_code, encode_error_payload(payload, options.error_body_codec),
                              std::string{detail::content_type(options.error_body_codec)});
+      merge_endpoint_headers(output, endpoint);
       apply_cache_policy(output, options);
       return output;
    }
 
    [[nodiscard]] static response make_error_response(const request& request_value,
                                                      const forge::api::core::error_payload& payload,
-                                                     const route_options& options) {
+                                                     const route_options& options,
+                                                     const std::shared_ptr<endpoint_state>& endpoint = {}) {
       auto output = make_text_response(request_value, http_status(payload.status_code),
                                        encode_error_payload(payload, options.error_body_codec),
                                        std::string{detail::content_type(options.error_body_codec)});
+      merge_endpoint_headers(output, endpoint);
       apply_cache_policy(output, options);
       return output;
    }
 
    [[nodiscard]] static response make_validation_response(const request& request_value, std::string_view message,
-                                                          const route_options& options) {
+                                                          const route_options& options,
+                                                          const std::shared_ptr<endpoint_state>& endpoint = {}) {
       auto output = make_text_response(request_value, static_cast<status>(422),
                                        encode_error_payload(
                                            forge::api::core::error_payload{
@@ -1530,6 +1535,7 @@ class binding_builder {
                                            },
                                            options.error_body_codec),
                                        std::string{detail::content_type(options.error_body_codec)});
+      merge_endpoint_headers(output, endpoint);
       apply_cache_policy(output, options);
       return output;
    }
@@ -2016,6 +2022,7 @@ class binding_builder {
                auto pinned = plan.pin(interface_type::ref());
                const auto& method_descriptor = canonical_method_descriptor;
                auto trusted = detail::trusted_invocation_for(request_value.context);
+               auto endpoint = std::shared_ptr<endpoint_state>{};
                try {
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
@@ -2036,8 +2043,7 @@ class binding_builder {
                                                                      {}, &request_value);
                   } else {
                      auto request = co_await make_request_from_stream<Request>(request_value, options);
-                     auto endpoint =
-                         make_endpoint_state<Request>(request_value.context.request, options.success_status);
+                     endpoint = make_endpoint_state<Request>(request_value.context.request, options.success_status);
                      attach_endpoint_state(request, endpoint);
                      auto value = co_await invoke_local<Method, interface_type, Request, Response>(
                          pinned, name, canonical_method_descriptor, std::move(request), trusted);
@@ -2048,15 +2054,17 @@ class binding_builder {
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "unsupported_media_type",
                                                               error.message(), status::unsupported_media_type,
-                                                              options));
+                                                              options, endpoint));
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "not_acceptable",
-                                                              error.message(), status::not_acceptable, options));
+                                                              error.message(), status::not_acceptable, options,
+                                                              endpoint));
                } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return buffered(make_validation_response(request_value.context.request, error.message(), options));
+                  co_return buffered(
+                      make_validation_response(request_value.context.request, error.message(), options, endpoint));
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
-                  co_return buffered(make_error_response(request_value.context.request, payload, options));
+                  co_return buffered(make_error_response(request_value.context.request, payload, options, endpoint));
                }
             };
             switch (verb) {
@@ -2091,6 +2099,7 @@ class binding_builder {
                }
                auto pinned = plan.pin(interface_type::ref());
                const auto& method_descriptor = canonical_method_descriptor;
+               auto endpoint = std::shared_ptr<endpoint_state>{};
                try {
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
@@ -2110,7 +2119,7 @@ class binding_builder {
                      co_return make_success_response(context.request, options.success_status, value, options);
                   } else {
                      auto request = make_request_from_http<Request>(context, options);
-                     auto endpoint = make_endpoint_state<Request>(context.request, options.success_status);
+                     endpoint = make_endpoint_state<Request>(context.request, options.success_status);
                      attach_endpoint_state(request, endpoint);
                      auto value = co_await invoke_local<Method, interface_type, Request, Response>(
                          pinned, name, canonical_method_descriptor, std::move(request), trusted);
@@ -2118,15 +2127,15 @@ class binding_builder {
                   }
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return make_http_error_response(context.request, "unsupported_media_type", error.message(),
-                                                     status::unsupported_media_type, options);
+                                                     status::unsupported_media_type, options, endpoint);
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return make_http_error_response(context.request, "not_acceptable", error.message(),
-                                                     status::not_acceptable, options);
+                                                     status::not_acceptable, options, endpoint);
                } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return make_validation_response(context.request, error.message(), options);
+                  co_return make_validation_response(context.request, error.message(), options, endpoint);
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
-                  co_return make_error_response(context.request, payload, options);
+                  co_return make_error_response(context.request, payload, options, endpoint);
                }
             };
             switch (verb) {

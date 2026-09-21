@@ -12,6 +12,7 @@ add_library(
    system.cpp
    producer_schedule.cpp
    producer_authority.cpp
+   producer_rewards.cpp
    finalizer_policy.cpp
    contract_commitment.cpp
    state_query.cpp

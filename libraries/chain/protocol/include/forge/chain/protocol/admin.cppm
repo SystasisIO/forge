@@ -12,6 +12,7 @@ export module forge.chain.protocol.admin;
 export import forge.chain.protocol.account_ram_correction;
 export import forge.chain.protocol.audit;
 export import forge.chain.protocol.block;
+export import forge.chain.protocol.finalizer_vote_record;
 export import forge.chain.protocol.protocol_feature;
 export import forge.crypto.bls.serialization;
 
@@ -97,6 +98,14 @@ struct producer_status_response {
    std::vector<digest> scheduled_protocol_features;
 
    bool operator==(const producer_status_response&) const = default;
+};
+
+struct finalizer_status {
+   bool enabled = false;
+   bool policy_member = false;
+   std::optional<finalizer_vote_record> last_emitted_vote;
+
+   bool operator==(const finalizer_status&) const = default;
 };
 
 struct supported_protocol_features_request {
@@ -314,6 +323,7 @@ BOOST_DESCRIBE_STRUCT(producer_access_policy, (),
                       (actor_whitelist, actor_blacklist, contract_whitelist, contract_blacklist, action_blacklist,
                        key_blacklist))
 BOOST_DESCRIBE_STRUCT(producer_status_response, (), (paused, options, greylist, access, scheduled_protocol_features))
+BOOST_DESCRIBE_STRUCT(finalizer_status, (), (enabled, policy_member, last_emitted_vote))
 BOOST_DESCRIBE_STRUCT(supported_protocol_features_request, (), (exclude_disabled, exclude_unactivatable))
 BOOST_DESCRIBE_STRUCT(protocol_feature_subjective_restrictions, (),
                       (enabled, preactivation_required, earliest_allowed_activation_time))

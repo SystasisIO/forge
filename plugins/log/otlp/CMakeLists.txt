@@ -27,4 +27,6 @@ target_link_libraries(
       forge_asio
       forge_exceptions
       Boost::asio
+   PRIVATE
+      forge_plugins_crypto_secrets
 )

@@ -3,6 +3,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <forge/api/core/macros.hpp>
 #include <forge/api/http/macros.hpp>
+#include <forge/exceptions/macros.hpp>
 #include <type_traits>
 
 export module forge.chain.api.block;
@@ -46,6 +47,10 @@ class block
    virtual boost::asio::awaitable<protocol::consensus_parameters_response>
    get_consensus_parameters(protocol::anchored_request value) = 0;
    virtual boost::asio::awaitable<protocol::producers_response> get_producers(protocol::producers_request value) = 0;
+   virtual boost::asio::awaitable<protocol::producer_rewards_response>
+   get_producer_rewards(protocol::producer_rewards_request) {
+      FORGE_THROW_EXCEPTION(exceptions::unavailable, "producer rewards are not implemented by this node");
+   }
    virtual boost::asio::awaitable<protocol::producer_schedule_response>
    get_producer_schedule(protocol::anchored_request value) = 0;
    virtual boost::asio::awaitable<protocol::finalizer_info_response>
@@ -68,13 +73,16 @@ template <> struct method_descriptor_customization<::forge::chain::api::block> {
          ::forge::chain::api::exceptions::descriptor::declare_not_found(method);
       } else if constexpr (std::is_same_v<decltype(Method), decltype(&::forge::chain::api::block::get_producers)>) {
          ::forge::chain::api::exceptions::descriptor::declare_not_found(method);
+      } else if constexpr (std::is_same_v<decltype(Method),
+                                          decltype(&::forge::chain::api::block::get_producer_rewards)>) {
+         ::forge::chain::api::exceptions::descriptor::declare_not_found(method);
       }
    }
 };
 
 } // namespace forge::api::core
 
-FORGE_EXPORT_API(::forge::chain::api::block, FORGE_API_CONTRACT("forge.chain.api.block", 2, 1),
+FORGE_EXPORT_API(::forge::chain::api::block, FORGE_API_CONTRACT("forge.chain.api.block", 2, 2),
                  FORGE_API_METHOD_TYPED(get_block, ::forge::chain::protocol::block_request,
                                         ::forge::chain::protocol::block_response),
                  FORGE_API_METHOD_TYPED(get_header, ::forge::chain::protocol::block_request,
@@ -90,6 +98,9 @@ FORGE_EXPORT_API(::forge::chain::api::block, FORGE_API_CONTRACT("forge.chain.api
                                         ::forge::chain::protocol::consensus_parameters_response),
                  FORGE_API_METHOD_TYPED(get_producers, ::forge::chain::protocol::producers_request,
                                         ::forge::chain::protocol::producers_response),
+                 FORGE_API_METHOD_TYPED_SINCE(get_producer_rewards,
+                                               ::forge::chain::protocol::producer_rewards_request,
+                                               ::forge::chain::protocol::producer_rewards_response, 2),
                  FORGE_API_METHOD_TYPED(get_producer_schedule, ::forge::chain::protocol::anchored_request,
                                         ::forge::chain::protocol::producer_schedule_response),
                  FORGE_API_METHOD_TYPED(get_finalizer_info, ::forge::chain::protocol::anchored_request,
@@ -119,6 +130,10 @@ FORGE_HTTP_API(
     FORGE_HTTP_GET(get_producers,
                    "/v1/chain/blocks/producers?lower_bound={lower_bound}&limit={limit}&cursor={cursor}&anchor={anchor}"
                    "&finality_from={finality_from}&audit={audit}",
+                   FORGE_HTTP_CACHE(no_store)),
+    FORGE_HTTP_GET(get_producer_rewards,
+                   "/v1/chain/blocks/producer-rewards?producer={producer}&anchor={anchor}&finality_from={finality_from}"
+                   "&audit={audit}",
                    FORGE_HTTP_CACHE(no_store)),
     FORGE_HTTP_GET(get_producer_schedule,
                    "/v1/chain/blocks/producer-schedule?anchor={anchor}&finality_from={finality_from}&audit={audit}",

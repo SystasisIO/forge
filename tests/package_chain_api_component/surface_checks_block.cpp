@@ -13,6 +13,7 @@ import forge.chain.protocol.chain_config;
 import forge.chain.protocol.finalizer_vote_record;
 import forge.chain.protocol.float64;
 import forge.chain.protocol.producer_info;
+import forge.chain.protocol.producer_rewards;
 import forge.chain.protocol.protocol_feature;
 import forge.chain.protocol.wasm_parameters;
 
@@ -36,6 +37,19 @@ void check_block_surface() {
    static_assert(std::is_same_v<decltype(protocol::producers_response{}.next), std::optional<protocol::bytes>>);
    static_assert(std::is_same_v<decltype(protocol::finalizer_info_response{}.last_votes),
                                 std::vector<protocol::finalizer_vote_record>>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_request{}.producer), protocol::account_name>);
+   static_assert(std::is_same_v<decltype(protocol::bpay_reward{}.owner), protocol::account_name>);
+   static_assert(std::is_same_v<decltype(protocol::bpay_reward{}.quantity), protocol::asset>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_response{}.anchor_header), protocol::block_header>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_response{}.reward.system),
+                                protocol::system_reward>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_response{}.reward.bpay), protocol::bpay_claim>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_response{}.reward.system.claim_action),
+                                protocol::action_name>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_response{}.reward.bpay.claimable),
+                                std::optional<protocol::asset>>);
+   static_assert(std::is_same_v<decltype(protocol::producer_rewards_response{}.reward.bpay.claim_action),
+                                protocol::action_name>);
 }
 
 } // namespace package_chain_api_component

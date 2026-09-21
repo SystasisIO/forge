@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <thread>
@@ -61,7 +62,7 @@ savanna::finalizer_vote make_vote(
 
 savanna::qc_signature make_qc_signature(
     const savanna::block_ref& candidate, std::size_t policy_size,
-    std::span<const bls::private_key> keys,
+    std::span<const std::reference_wrapper<const bls::private_key>> keys,
     std::span<const std::size_t> indices,
     std::span<const savanna::vote_kind> kinds) {
    BOOST_REQUIRE_EQUAL(keys.size(), kinds.size());
@@ -72,7 +73,7 @@ savanna::qc_signature make_qc_signature(
    for (auto index = std::size_t{}; index < keys.size(); ++index) {
       const auto message =
           savanna::message_for_vote(candidate.finality_digest, kinds[index]);
-      signature.add(keys[index].sign(message));
+      signature.add(keys[index].get().sign(message));
       (kinds[index] == savanna::vote_kind::strong ? strong : weak)
           .set(indices[index]);
    }
@@ -284,7 +285,7 @@ BOOST_AUTO_TEST_CASE(chain_savanna_vote_accumulator_tracks_donor_states) {
    const auto all_weak_qc = all_weak.best();
    BOOST_REQUIRE(all_weak_qc.has_value());
    BOOST_CHECK(!all_weak_qc->active.strong_votes.has_value());
-   const auto all_weak_keys = std::array{first, second};
+   const auto all_weak_keys = std::array{std::cref(first), std::cref(second)};
    const auto all_weak_indices = std::array<std::size_t, 2>{0U, 1U};
    const auto all_weak_kinds =
        std::array{savanna::vote_kind::weak, savanna::vote_kind::weak};
@@ -528,7 +529,7 @@ BOOST_AUTO_TEST_CASE(chain_savanna_received_qc_beats_local_weak_qc) {
 
    const auto strong_kinds =
        std::array{savanna::vote_kind::strong, savanna::vote_kind::strong};
-   const auto signing_keys = std::array{first, second};
+   const auto signing_keys = std::array{std::cref(first), std::cref(second)};
    const auto signer_indices = std::array<std::size_t, 2>{0U, 1U};
    const auto certificate = savanna::quorum_certificate{
        .block = candidate.num,
@@ -578,11 +579,11 @@ BOOST_AUTO_TEST_CASE(chain_savanna_dual_policy_best_keeps_qc_halves_paired) {
                savanna::accumulator_state::unrestricted);
 
    const auto weak_kind = std::array{savanna::vote_kind::weak};
-   const auto active_keys = std::array{shared};
+   const auto active_keys = std::array{std::cref(shared)};
    const auto active_indices = std::array<std::size_t, 1>{0U};
    const auto pending_kinds =
        std::array{savanna::vote_kind::weak, savanna::vote_kind::weak};
-   const auto pending_keys = std::array{shared, pending_only};
+   const auto pending_keys = std::array{std::cref(shared), std::cref(pending_only)};
    const auto pending_indices = std::array<std::size_t, 2>{0U, 1U};
    const auto received = savanna::quorum_certificate{
        .block = candidate.num,
@@ -684,7 +685,7 @@ BOOST_AUTO_TEST_CASE(chain_savanna_verified_qc_advances_finalizer_safety) {
    const auto core = hardening_core({ref0, ref1}, 1U);
    const auto candidate = hardening_ref(2U, 12U, 3U);
    const auto kinds = std::array{savanna::vote_kind::strong};
-   const auto signing_keys = std::array{key};
+   const auto signing_keys = std::array{std::cref(key)};
    const auto signer_indices = std::array<std::size_t, 1>{0U};
    const auto certificate = savanna::quorum_certificate{
        .block = candidate.num,

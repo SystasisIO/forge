@@ -252,6 +252,11 @@ void projection_verifier::verify(const protocol::producers_request&, const proto
    unsupported_projection("block.get_producers");
 }
 
+void projection_verifier::verify(const protocol::producer_rewards_request&, const protocol::producer_rewards_response&,
+                                 const protocol::audit_bundle&, audit_verifier&) {
+   unsupported_projection("block.get_producer_rewards");
+}
+
 void projection_verifier::verify(const protocol::anchored_request&, const protocol::producer_schedule_response&,
                                  const protocol::audit_bundle&, audit_verifier&) {
    unsupported_projection("block.get_producer_schedule");
@@ -559,6 +564,19 @@ verified_client::get_producers(protocol::producers_request request) {
    const auto& audit = verify_envelope(response);
    verify_requested_anchor(requested_anchor, response);
    verify_projection("block.get_producers", [&] { projections.verify(request, response, audit, *verifier_); });
+   co_return response;
+}
+
+boost::asio::awaitable<protocol::producer_rewards_response>
+verified_client::get_producer_rewards(protocol::producer_rewards_request request) {
+   auto& projections = require_projection(projections_, "block.get_producer_rewards");
+   require_audit(request, *verifier_, block_num(request.anchor));
+   const auto requested_anchor = request.anchor;
+   auto response = co_await invoke_service<protocol::producer_rewards_response>(
+       "block.get_producer_rewards", request, limits_, [&] { return client_.blocks().get_producer_rewards(request); });
+   const auto& audit = verify_envelope(response);
+   verify_requested_anchor(requested_anchor, response);
+   verify_projection("block.get_producer_rewards", [&] { projections.verify(request, response, audit, *verifier_); });
    co_return response;
 }
 

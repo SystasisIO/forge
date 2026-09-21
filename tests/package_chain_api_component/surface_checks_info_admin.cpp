@@ -1,6 +1,7 @@
 module;
 
 #include <concepts>
+#include <optional>
 #include <type_traits>
 #include <vector>
 
@@ -8,6 +9,7 @@ module package.chain_api_component.surface_checks;
 
 import forge.chain.protocol.account_ram_correction;
 import forge.chain.protocol.admin;
+import forge.chain.protocol.finalizer_vote_record;
 import forge.chain.protocol.info;
 import forge.chain.protocol.protocol_feature;
 import forge.chain.protocol.resource_limits_config;
@@ -26,6 +28,8 @@ void check_info_admin_surface() {
    static_assert(std::is_same_v<decltype(protocol::operator_identity{}.block_public_key), protocol::public_key>);
    static_assert(
        std::is_same_v<decltype(protocol::operator_identity{}.finalizer_public_key), forge::crypto::bls::public_key>);
+   static_assert(std::is_same_v<decltype(protocol::finalizer_status{}.last_emitted_vote),
+                                std::optional<protocol::finalizer_vote_record>>);
 }
 
 } // namespace package_chain_api_component

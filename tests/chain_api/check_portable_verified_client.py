@@ -81,7 +81,7 @@ def main() -> int:
     savanna_verifier = api / "include/forge/chain/api/savanna_finality_verifier.cppm"
     savanna_verifier_text = savanna_verifier.read_text(encoding="utf-8")
     for needle in ("class savanna_finality_verifier final : public finality_verifier",
-                   "preferred_trust() const", "replay_state(",
+                   "preferred_trust() const", "replay_state(", "verified_replay(",
                    "std::shared_ptr<savanna_finality_verifier>"):
         require(savanna_verifier_text, needle, savanna_verifier)
     forbid(savanna_verifier_text, "replay_savanna_finality_state", savanna_verifier)
@@ -97,6 +97,12 @@ def main() -> int:
             "return translate_finality_failure([&] {\n      const auto proof_digest = forge::crypto::digest::sha256::hash(proof);\n"
             "      const auto limits = impl_->trust_store.witness_limits();\n"
             "      if (const auto cached = impl_->trust_store.cached_replay_state(expected, proof_digest))",
+            savanna_verifier_impl)
+    require(savanna_verifier_impl_text,
+            "if (const auto cached = impl_->trust_store.cached_replay(expected, proof_digest))",
+            savanna_verifier_impl)
+    require(savanna_verifier_impl_text,
+            "savanna::advance_finality_trust_with_replay(*snapshot.source_trust, witness, expected, limits).replay",
             savanna_verifier_impl)
 
     verify_start = savanna_verifier_impl_text.index("void savanna_finality_verifier::verify(")

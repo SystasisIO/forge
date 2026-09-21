@@ -51,6 +51,9 @@ class admin
    }
    virtual boost::asio::awaitable<protocol::prune_response> prune(protocol::prune_request value) = 0;
    virtual boost::asio::awaitable<protocol::producer_status_response> producer_status(protocol::admin_query value) = 0;
+   virtual boost::asio::awaitable<protocol::finalizer_status> get_finalizer_status(protocol::admin_query) {
+      FORGE_THROW_EXCEPTION(exceptions::unavailable, "finalizer status is not implemented by this node");
+   }
    virtual boost::asio::awaitable<protocol::operator_identity> get_operator_identity(protocol::admin_query) {
       FORGE_THROW_EXCEPTION(exceptions::unavailable, "operator identity is not implemented by this node");
    }
@@ -112,7 +115,7 @@ template <> struct method_descriptor_customization<::forge::chain::api::admin> {
 } // namespace forge::api::core
 
 FORGE_EXPORT_API(
-    ::forge::chain::api::admin, FORGE_API_CONTRACT("forge.chain.api.admin", 2, 3),
+    ::forge::chain::api::admin, FORGE_API_CONTRACT("forge.chain.api.admin", 2, 4),
     FORGE_API_METHOD_TYPED(push_block, ::forge::chain::protocol::signed_block,
                            ::forge::chain::protocol::push_block_response),
     FORGE_API_METHOD(create_snapshot, name),
@@ -123,6 +126,8 @@ FORGE_EXPORT_API(
     FORGE_API_METHOD_TYPED(prune, ::forge::chain::protocol::prune_request, ::forge::chain::protocol::prune_response),
     FORGE_API_METHOD_TYPED(producer_status, ::forge::chain::protocol::admin_query,
                            ::forge::chain::protocol::producer_status_response),
+    FORGE_API_METHOD_TYPED_SINCE(get_finalizer_status, ::forge::chain::protocol::admin_query,
+                                 ::forge::chain::protocol::finalizer_status, 4),
     FORGE_API_METHOD_TYPED_SINCE(get_operator_identity, ::forge::chain::protocol::admin_query,
                                  ::forge::chain::protocol::operator_identity, 1),
     FORGE_API_METHOD_TYPED_SINCE(get_node_status, ::forge::chain::protocol::admin_query,
@@ -154,6 +159,7 @@ FORGE_HTTP_API(
     FORGE_HTTP_GET(snapshot_status, "/v1/chain/admin/snapshot-requests/{request_id}", FORGE_HTTP_CACHE(no_store)),
     FORGE_HTTP_POST(prune, "/v1/chain/admin/pruning", ok),
     FORGE_HTTP_GET(producer_status, "/v1/chain/admin/producer", FORGE_HTTP_CACHE(no_store)),
+    FORGE_HTTP_GET(get_finalizer_status, "/v1/chain/admin/finalizer", FORGE_HTTP_CACHE(no_store)),
     FORGE_HTTP_GET(get_operator_identity, "/v1/chain/admin/operator-identity", FORGE_HTTP_CACHE(no_store)),
     FORGE_HTTP_GET(get_node_status, "/v1/chain/admin/node-status", FORGE_HTTP_CACHE(no_store)),
     FORGE_HTTP_GET(supported_protocol_features,
