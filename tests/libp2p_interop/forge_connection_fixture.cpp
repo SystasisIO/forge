@@ -24,7 +24,8 @@ void require_fresh_identify(const forge::net::p2p::node& value, const forge::net
 
 forge::net::p2p::diagnostics::session
 capture_identified_connection(const forge::net::p2p::node& value, const forge::net::p2p::peer_id& peer,
-                              const forge::net::p2p::endpoint& remote) {
+                              const forge::net::p2p::endpoint& remote,
+                              forge::net::p2p::diagnostics::session_direction direction) {
    const auto snapshot = value.diagnostics();
    if (snapshot.metrics.sessions_opened != 1 || snapshot.metrics.sessions_closed != 0 ||
        snapshot.metrics.sessions_pruned != 0 || snapshot.sessions.size() != 1) {
@@ -32,7 +33,7 @@ capture_identified_connection(const forge::net::p2p::node& value, const forge::n
    }
    const auto& session = snapshot.sessions.front();
    if (session.closed || session.remote_peer != peer || session.path != forge::net::p2p::path::kind::direct ||
-       session.direction != forge::net::p2p::diagnostics::session_direction::outbound ||
+       session.direction != direction ||
        !session.remote_endpoint ||
        session.identify_state != forge::net::p2p::identify::state::identified || !session.identify_error.empty()) {
       throw std::runtime_error{"connection evidence lacks successful authenticated direct Identify"};
@@ -58,7 +59,7 @@ capture_identified_connection(const forge::net::p2p::node& value, const forge::n
 void require_same_connection(const forge::net::p2p::node& value,
                              const forge::net::p2p::diagnostics::session& expected) {
    if (!expected.remote_endpoint ||
-       capture_identified_connection(value, expected.remote_peer, *expected.remote_endpoint).id != expected.id) {
+       capture_identified_connection(value, expected.remote_peer, *expected.remote_endpoint, expected.direction).id != expected.id) {
       throw std::runtime_error{"application exchange did not retain its authenticated connection"};
    }
 }

@@ -22,6 +22,7 @@ struct discovery {
       dht = 2,
       rendezvous = 3,
       peer_exchange = 4,
+      mdns = 5, // Operational only; never persisted in peer-store records.
    };
 
    // Stable source compatibility policy. node normalizes non-default values

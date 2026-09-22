@@ -17,6 +17,21 @@
   },
   "cases": [
     {
+      "id": "interop.live_native_mdns",
+      "protocol": "Public and private fingerprinted mDNS",
+      "source": "donors/libp2p-specs/discovery/mdns.md",
+      "donor": "Pinned Go custom namespace and Rust public mDNS with authenticated same-connection echo",
+      "donor_file": [ "donors/libp2p-specs/discovery/mdns.md", "donors/go-libp2p/p2p/discovery/mdns/mdns.go", "donors/rust-libp2p/protocols/mdns/src/lib.rs" ],
+      "donor_case": [ "Public DNS-SD discovery", "Go private namespace isolation", "Local interface withdrawal and recovery" ],
+      "mapping_state": "mapped",
+      "forge_tests": [ "test_forge_libp2p_interop mdns_public", "test_forge_libp2p_interop mdns_private_fingerprinted_go" ],
+      "forge_live_scenario": [
+        { "profile": "tcp_stage6", "scenario": "mdns_public" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "mdns_private_fingerprinted_go" }
+      ],
+      "known_gap": "Executable registration only. Canonical --suite mdns acceptance requires all 38 cases: 28 hidden-peer authenticated positives, 8 quiet isolation cases with same-network fresh-process controls, and 2 same-PID/session churn cases. Pinned Rust private mDNS is unsupported. Go detached notifier callbacks cannot be fully joined; quiet evidence covers entered callbacks through final snapshot. Plugin wiring and full Stage 6 production support are not claimed."
+    },
+    {
       "id": "interop.live_native_autonat",
       "protocol": "AutoNAT v1/v2 native client and service",
       "source": "donors/libp2p-specs/autonat/autonat-v1.md and autonat-v2.md",

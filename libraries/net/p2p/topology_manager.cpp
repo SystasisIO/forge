@@ -199,6 +199,12 @@ std::chrono::steady_clock::time_point topology_manager::next_autonomous_wakeup()
    auto deadline = next_periodic_refresh_ == std::chrono::steady_clock::time_point{}
                        ? steady_now
                        : next_periodic_refresh_;
+   for (const auto& [_, state] : mdns_) {
+      for (const auto& lease : state.leases) {
+         deadline = std::min(deadline, lease.expires_at);
+      }
+      if (state.retry_after > steady_now) { deadline = std::min(deadline, state.retry_after); }
+   }
    if (policy_.rendezvous_enabled) {
       for (const auto& [_, state] : rendezvous_clients_) {
          if (state.retry_after != std::chrono::steady_clock::time_point{}) {
@@ -237,6 +243,7 @@ bool topology_manager::queue_due_refresh_locked(std::chrono::steady_clock::time_
 }
 
 topology_manager::status topology_manager::current() const {
+   const auto now = clocks_.steady_now();
    const auto lock = std::scoped_lock{mutex_};
    auto waiting = std::size_t{};
    for (const auto& [_, value] : waiters_) {
@@ -247,6 +254,9 @@ topology_manager::status topology_manager::current() const {
        .refresh_queued = refresh_queued_,
        .refresh_in_flight = refresh_running_,
        .observations = observations_.size(),
+       .mdns_observations = static_cast<std::size_t>(std::ranges::count_if(mdns_, [&](const auto& entry) {
+          return std::ranges::any_of(entry.second.leases, [&](const auto& lease) { return lease.expires_at > now; });
+       })),
        .active_operations = active_cancellations_.size(),
        .waiting_refreshes = waiting,
        .completed_refreshes = completed_refreshes_,
@@ -521,10 +531,24 @@ boost::asio::awaitable<void> topology_manager::async_run() {
       while (true) {
          const auto observed = changed_->epoch();
          auto generation = std::uint64_t{};
+         auto reconcile = false;
+         const auto now = clocks_.steady_now();
          {
             const auto lock = std::scoped_lock{mutex_};
             if (phase_ != phase::running) {
                break;
+            }
+            for (auto it = mdns_.begin(); it != mdns_.end();) {
+               const auto removed = std::erase_if(it->second.leases, [&](const auto& lease) { return lease.expires_at <= now; });
+               reconcile_pending_ = reconcile_pending_ || removed != 0;
+               if (it->second.leases.empty()) { it = mdns_.erase(it); }
+               else {
+                  if (it->second.retry_after != std::chrono::steady_clock::time_point{} && it->second.retry_after <= now) {
+                     it->second.retry_after = {};
+                     reconcile_pending_ = true;
+                  }
+                  ++it;
+               }
             }
             if (refresh_queued_) {
                generation = queued_generation_;
@@ -533,10 +557,21 @@ boost::asio::awaitable<void> topology_manager::async_run() {
                refresh_running_ = true;
                running_generation_ = generation;
             }
+            if (reconcile_pending_) {
+               reconcile_pending_ = false;
+               reconcile = true;
+            }
          }
 
          if (generation != 0) {
             co_await async_refresh_generation(generation);
+            continue;
+         }
+         if (reconcile) {
+            try { co_await async_reconcile_sessions(); }
+            catch (...) {
+               if (!stopping()) { forge::exceptions::capture_and_log("P2P mDNS reconciliation failed"); }
+            }
             continue;
          }
 

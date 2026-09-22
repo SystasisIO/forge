@@ -419,9 +419,14 @@ boost::asio::awaitable<void> async_stop_after_topology_join(auto self) {
           auto failure = std::exception_ptr{};
           self->request_lifecycle_stop();
           try {
-             co_await self->join_reachability();
+             co_await self->join_mdns();
           } catch (...) {
              failure = std::current_exception();
+          }
+          try {
+             co_await self->join_reachability();
+          } catch (...) {
+             if (!failure) { failure = std::current_exception(); }
           }
           try {
              co_await self->async_join_topology_manager();
@@ -471,6 +476,7 @@ node::node(forge::asio::runtime& runtime, node::options options) {
    impl_->initialize_dht_provider_registry();
    impl_->initialize_lifecycle();
    impl_->initialize_topology_manager();
+   impl_->initialize_mdns();
    impl_->initialize_reachability();
    // Launch the self-owning maintenance task only after every throwing
    // constructor step has completed.
@@ -650,6 +656,7 @@ forge::net::p2p::diagnostics::snapshot node::diagnostics(forge::net::p2p::diagno
        .refresh_queued = topology_status.refresh_queued,
        .refresh_in_flight = topology_status.refresh_in_flight,
        .observations = topology_status.observations,
+       .mdns_observations = topology_status.mdns_observations,
        .active_operations = topology_status.active_operations,
        .waiting_refreshes = topology_status.waiting_refreshes,
        .completed_refreshes = topology_status.completed_refreshes,

@@ -30,10 +30,12 @@ module;
 module forge.net.p2p.node;
 
 import forge.exceptions;
+import forge.asio.notification;
 import forge.net.p2p.discovery;
 import forge.net.p2p.exceptions;
 
 #include "details/cancellation_latch.hxx"
+#include "details/lifecycle_wakeup.hxx"
 #include "details/topology_manager.hxx"
 
 namespace forge::net::p2p::detail {
@@ -389,7 +391,7 @@ void topology_manager::merge_observations(const std::vector<discovery::result>& 
    const auto input_count = std::min(results.size(), policy_.max_candidates);
    for (auto index = std::size_t{}; index < input_count; ++index) {
       const auto& result = results[index];
-      if (result.peer.value.empty() || result.endpoints.empty()) {
+      if (result.discovered_by == discovery::source::mdns || result.peer.value.empty() || result.endpoints.empty()) {
          continue;
       }
       const auto key = observation_key{.peer = result.peer, .source = result.discovered_by};
@@ -419,7 +421,7 @@ void topology_manager::merge_observations(const std::vector<discovery::result>& 
    }
 }
 
-std::vector<discovery::result>
+std::vector<topology_manager::dial_candidate>
 topology_manager::candidates_for_dial(const connection_manager::snapshot& sessions) {
    const auto system_now = clocks_.system_now();
    const auto steady_now = clocks_.steady_now();
@@ -429,6 +431,7 @@ topology_manager::candidates_for_dial(const connection_manager::snapshot& sessio
    }
 
    auto by_peer = std::map<peer_id, discovery::result>{};
+   auto revisions = std::map<peer_id, std::uint64_t>{};
    {
       const auto lock = std::scoped_lock{mutex_};
       for (auto it = observations_.begin(); it != observations_.end();) {
@@ -449,6 +452,22 @@ topology_manager::candidates_for_dial(const connection_manager::snapshot& sessio
          }
          ++it;
       }
+      for (const auto& [peer, state] : mdns_) {
+         if (connected.contains(peer) || by_peer.contains(peer) || state.retry_after > steady_now) { continue; }
+         auto candidate = discovery::result{.peer = peer, .discovered_by = discovery::source::mdns};
+         const std::string* previous_address = nullptr;
+         for (const auto& lease : state.leases) {
+            if (lease.expires_at <= steady_now) { continue; }
+            if (!previous_address || *previous_address != lease.address_key) {
+               candidate.endpoints.push_back(lease.address);
+               previous_address = &lease.address_key;
+            }
+         }
+         if (!candidate.endpoints.empty()) {
+            by_peer.emplace(peer, std::move(candidate));
+            revisions.emplace(peer, state.revision);
+         }
+      }
    }
 
    auto candidates = std::vector<discovery::result>{};
@@ -468,7 +487,132 @@ topology_manager::candidates_for_dial(const connection_manager::snapshot& sessio
    if (candidates.size() > policy_.max_candidates) {
       candidates.resize(policy_.max_candidates);
    }
-   return candidates;
+   auto result = std::vector<dial_candidate>{};
+   for (auto& candidate : candidates) {
+      const auto found = revisions.find(candidate.peer);
+      const auto revision = found == revisions.end() ? 0 : found->second;
+      result.push_back({std::move(candidate), revision});
+   }
+   return result;
+}
+
+void topology_manager::replace_mdns_snapshot(std::vector<mdns_lease> leases) {
+   const auto now = clocks_.steady_now();
+   auto next = std::map<peer_id, mdns_observation>{};
+   auto count = std::size_t{};
+   auto bytes = std::size_t{};
+   for (auto& lease : leases) {
+      if (lease.expires_at <= now || !lease.interface_index || !lease.generation || lease.peer.value.empty()) { continue; }
+      auto key = lease.address.to_string();
+      lease.address_key.swap(key);
+      const auto size = 2 * lease.address_key.size() + lease.peer.value.size() + sizeof(mdns_lease);
+      if (count == 4096 || size > 1024 * 1024 - bytes) { break; }
+      if (!next.contains(lease.peer) && next.size() == policy_.max_candidates) { continue; }
+      next[lease.peer].leases.push_back(std::move(lease));
+      ++count;
+      bytes += size;
+   }
+   // Canonical identity excludes expiry. All formatting, sorting and duplicate
+   // storage work happens before taking the topology mutex.
+   for (auto& [peer, value] : next) {
+      std::sort(value.leases.begin(), value.leases.end(), [](const auto& a, const auto& b) {
+         if (a.address_key != b.address_key) { return a.address_key < b.address_key; }
+         if (a.interface_index != b.interface_index) { return a.interface_index < b.interface_index; }
+         return a.generation < b.generation;
+      });
+      auto unique = std::vector<mdns_lease>{};
+      unique.reserve(value.leases.size());
+      for (auto& lease : value.leases) {
+         if (!unique.empty() && unique.back().address_key == lease.address_key &&
+             unique.back().interface_index == lease.interface_index && unique.back().generation == lease.generation) {
+            unique.back().expires_at = std::max(unique.back().expires_at, lease.expires_at);
+         } else { unique.push_back(std::move(lease)); }
+      }
+      value.leases = std::move(unique);
+   }
+   auto canceled = std::vector<std::shared_ptr<cancellation_latch>>{};
+   canceled.reserve(std::min(policy_.max_parallel_dials, std::size_t{4096}));
+   const auto commit_now = clocks_.steady_now();
+   {
+      const auto lock = std::scoped_lock{mutex_};
+      if (phase_ == phase::stopping || phase_ == phase::stopped) { return; }
+      for (auto& [peer, value] : next) {
+         const auto previous = mdns_.find(peer);
+         const auto unchanged = previous != mdns_.end() && previous->second.leases.size() == value.leases.size() &&
+             std::ranges::equal(previous->second.leases, value.leases, [&](const auto& old, const auto& current) {
+                return old.interface_index == current.interface_index && old.generation == current.generation &&
+                    old.address_key == current.address_key && current.expires_at > commit_now &&
+                    old.expires_at > commit_now;
+             });
+         if (unchanged) {
+            value.retry_after = previous->second.retry_after;
+            value.failures = previous->second.failures;
+            value.revision = previous->second.revision;
+         } else {
+            value.revision = ++mdns_revision_;
+         }
+      }
+      for (auto& [cancel, attempt] : mdns_attempts_) {
+         const auto found = next.find(attempt.peer);
+         if (attempt.finished || attempt.expired) { continue; }
+         if (found == next.end() || found->second.revision != attempt.revision) {
+            attempt.expired = true;
+            canceled.push_back(cancel);
+         } else {
+            attempt.deadline = std::chrono::steady_clock::time_point::max();
+            for (const auto& lease : found->second.leases) {
+               attempt.deadline = std::min(attempt.deadline, lease.expires_at);
+            }
+         }
+      }
+      mdns_.swap(next); // Destroy the previous snapshot after unlocking.
+      reconcile_pending_ = true;
+   }
+   for (const auto& cancel : canceled) { cancel->request_stop(); }
+   changed_->notify();
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+topology_manager::admit_mdns_dial(dial_candidate& candidate, const std::shared_ptr<cancellation_latch>& cancellation) {
+   const auto now = clocks_.steady_now();
+   const auto lock = std::scoped_lock{mutex_};
+   const auto found = mdns_.find(candidate.result.peer);
+   if (phase_ != phase::running || found == mdns_.end() || found->second.revision != candidate.mdns_revision ||
+       mdns_attempts_.size() >= std::min(policy_.max_parallel_dials, std::size_t{4096})) {
+      return std::nullopt;
+   }
+   candidate.result.endpoints.clear();
+   auto deadline = std::chrono::steady_clock::time_point::max();
+   const std::string* previous_address = nullptr;
+   for (const auto& lease : found->second.leases) {
+      if (lease.expires_at <= now) { continue; }
+      deadline = std::min(deadline, lease.expires_at);
+      if (!previous_address || *previous_address != lease.address_key) {
+         candidate.result.endpoints.push_back(lease.address);
+         previous_address = &lease.address_key;
+      }
+   }
+   if (candidate.result.endpoints.empty()) { return std::nullopt; }
+   mdns_attempts_.emplace(cancellation, mdns_attempt{candidate.result.peer, candidate.mdns_revision, deadline});
+   return deadline;
+}
+
+void topology_manager::finish_mdns_dial(const dial_candidate& candidate,
+                                       const std::shared_ptr<cancellation_latch>& cancellation, bool succeeded) {
+   const auto now = clocks_.steady_now();
+   const auto lock = std::scoped_lock{mutex_};
+   mdns_attempts_.erase(cancellation);
+   const auto found = mdns_.find(candidate.result.peer);
+   if (found == mdns_.end() || found->second.revision != candidate.mdns_revision) { return; }
+   if (cancellation->stop_requested()) { return; }
+   if (succeeded) {
+      found->second.failures = 0;
+      found->second.retry_after = {};
+   } else {
+      found->second.failures = std::min(found->second.failures + 1, std::size_t{4});
+      found->second.retry_after = bounded_retry_deadline(now,
+          retry_delay(observation_key{candidate.result.peer, discovery::source::mdns}, found->second.failures));
+   }
 }
 
 std::chrono::milliseconds topology_manager::retry_delay(const observation_key& key, std::size_t failures) const {

@@ -1077,6 +1077,11 @@ add_executable(
    quic_p2p/ipns_tests.cpp
    quic_p2p/mdns_codec_tests.cpp
    quic_p2p/mdns_policy_tests.cpp
+   quic_p2p/mdns_registry_tests.cpp
+   quic_p2p/mdns_service_tests.cpp
+   quic_p2p/mdns_wire_tests.cpp
+   quic_p2p/interface_state_tests.cpp
+   quic_p2p/interface_watcher_tests.cpp
    quic_p2p/quic_tests.cpp
    quic_p2p/connection_gater_tests.cpp
    quic_p2p/resource_manager_tests.cpp
@@ -1201,10 +1206,12 @@ add_executable(
    libp2p_interop/forge_interop_fixture.cpp
    libp2p_interop/forge_autonat_fixture.cpp
    libp2p_interop/forge_connection_fixture.cpp
+   libp2p_interop/forge_mdns_fixture.hxx
+   libp2p_interop/forge_mdns_fixture.cpp
 )
 add_dependencies(forge_interop_fixture forge_interop_fixture_build_info)
 target_include_directories(forge_interop_fixture PRIVATE ${FORGE_INTEROP_BUILD_INFO_DIRECTORY})
-target_link_libraries(forge_interop_fixture forge_net_p2p forge_codec_hex forge_crypto_digest)
+target_link_libraries(forge_interop_fixture forge_net_p2p forge_codec_hex forge_codec_json forge_crypto_digest)
 
 add_test(
    NAME test_forge_libp2p_wire_fixture
@@ -1357,6 +1364,19 @@ add_test(
 )
 set_tests_properties(test_forge_libp2p_autonat_acceptance PROPERTIES TIMEOUT 120)
 add_test(
+   NAME test_forge_libp2p_mdns_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_mdns_acceptance
+      test_mdns_cases
+      test_mdns_churn_cases
+      test_mdns_evidence
+      test_mdns_isolation_cases
+      test_mdns_network
+      test_mdns_staged_evidence
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_mdns_evidence PROPERTIES TIMEOUT 120)
+add_test(
    NAME test_forge_libp2p_provider_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest test_provider_evidence
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
@@ -1430,11 +1450,32 @@ add_custom_target(
    VERBATIM
 )
 
+add_custom_target(
+   test_forge_p2p_mdns_acceptance
+   COMMAND ${Python3_EXECUTABLE}
+      ${FORGE_P2P_STAGE6_PROMOTION_WRAPPER}
+      --suite mdns
+      --runner ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/runner.py
+      --forge-fixture $<TARGET_FILE:forge_interop_fixture>
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+      --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/mdns
+      --forge-root ${CMAKE_SOURCE_DIR}
+      --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
+      --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json
+      --expected-head ${_forge_p2p_stage6_expected_head}
+   DEPENDS forge_interop_fixture test_forge_p2p_inventory
+   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+   VERBATIM
+)
+
 add_executable(
    test_forge_plugins
    unit/main.cpp
    quic_p2p/libp2p_identity_fixture.cpp
    plugins/plugins_tests.cpp
+   plugins/http_server_tests.cpp
+   plugins/config_assertions.cpp
+   plugins/details/config_assertions.hxx
    plugins/resolver_publication_race.cpp
    plugins/log_otlp_tests.cpp
    plugins/details/resolver_publication_race.hxx

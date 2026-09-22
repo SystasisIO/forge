@@ -51,6 +51,7 @@ class worker_terminal_owner;
 class reachability_manager;
 class observed_address_manager;
 class host_event_source;
+class mdns_service;
 
 } // namespace detail
 
@@ -261,6 +262,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    std::shared_ptr<detail::dht_routing_refresh> routing_refresh;
    std::shared_ptr<detail::dht_provider_registry> provider_registry;
    std::shared_ptr<detail::topology_manager> topology_manager_value;
+   std::shared_ptr<detail::mdns_service> mdns_service_value;
    mutable connection_manager connections{connection_policy_for(options.limits)};
    std::map<protocol_id, node::protocol_handler> handlers;
    std::map<std::uint64_t, std::shared_ptr<session_state>> sessions;
@@ -303,6 +305,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    bool peer_state_hydrated = false;
 
    void initialize_lifecycle();
+   void initialize_mdns();
+   void stop_mdns() noexcept;
+   boost::asio::awaitable<void> join_mdns();
    void initialize_dht_routing_refresh();
    void initialize_dht_provider_registry();
    void initialize_topology_manager();

@@ -65,6 +65,9 @@ void refresh_record_score(peer_store::record& record, path::kind kind, bool last
 }
 
 void normalize_for_storage(peer_store::record& value) {
+   if (value.discovered_by == discovery::source::mdns) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS observations cannot be persisted");
+   }
    for (auto& endpoint : value.endpoints) {
       refresh_endpoint_score(endpoint);
    }

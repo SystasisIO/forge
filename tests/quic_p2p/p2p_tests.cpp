@@ -10613,7 +10613,15 @@ BOOST_AUTO_TEST_CASE(p2p_node_queued_byte_budget_is_held_until_quic_ack) {
        client.async_open_protocol_stream(server.local_peer(), builtins::echo,
                                          node::open_options{.allow_relay = false, .allow_hole_punch = false}));
 
+   // Negotiation uses the same stream budget and can complete before its
+   // outbound bytes are acknowledged. Establish a drained baseline first.
+   const auto negotiation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+   while (client.diagnostics().resources.streams.memory != 0) {
+      BOOST_REQUIRE(std::chrono::steady_clock::now() < negotiation_deadline);
+      wait_on_runtime(client_runtime, std::chrono::milliseconds{5}, "P2P negotiation ACK release");
+   }
    auto release_server = block_runtime(server_runtime, "P2P queued-byte ACK barrier");
+   BOOST_REQUIRE(client.diagnostics().resources.streams.memory == 0U);
    const auto first = std::vector<std::uint8_t>(payload_size, 0x31);
    forge::asio::blocking::run(client_runtime, stream.async_write(first));
    BOOST_TEST(client.diagnostics().resources.streams.memory == first.size());
@@ -17868,6 +17876,52 @@ BOOST_AUTO_TEST_CASE(p2p_production_options_use_peer_state_persistence) {
    BOOST_TEST(persistence->applied_peer_upserts == 1U);
    BOOST_TEST(persistence->flush_attempts == 1U);
    BOOST_TEST(persistence->close_attempts == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_mdns_options_reject_static_only_before_io) {
+   auto options = options_for(peer(250));
+   BOOST_TEST(!options.mdns.enabled);
+   options.mdns.enabled = true;
+   options.limits.topology.operating_mode = topology::mode::managed;
+   BOOST_CHECK_NO_THROW(validate(options));
+   options.limits.topology.operating_mode = topology::mode::static_only;
+   BOOST_CHECK_THROW(validate(options), exceptions::invalid_options);
+   options.mdns.enabled = false;
+   BOOST_CHECK_NO_THROW(validate(options));
+}
+
+BOOST_AUTO_TEST_CASE(p2p_peer_store_rejects_operational_mdns_source_without_mutation) {
+   auto store = peer_store{};
+   const auto remote = peer(224);
+   const auto expiry = std::chrono::system_clock::now() + std::chrono::hours{2};
+   const auto original = peer_store::record{.peer = remote,
+       .discovered_by = discovery::source::rendezvous, .discovery_expires_at = expiry};
+   store.upsert(original);
+   auto transient = original;
+   transient.discovered_by = discovery::source::mdns;
+   BOOST_CHECK_THROW(store.upsert(transient), exceptions::invalid_options);
+   BOOST_CHECK_THROW(store.apply_discovery(remote, peer_store::discovery_update{
+       .source = discovery::source::mdns, .expires_at = expiry}), exceptions::invalid_options);
+   const auto retained = store.find(remote);
+   BOOST_REQUIRE(retained);
+   BOOST_TEST(static_cast<unsigned>(retained->discovered_by) ==
+              static_cast<unsigned>(discovery::source::rendezvous));
+   BOOST_TEST(retained->discovery_expires_at == expiry);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_peer_store_rejects_hydrated_mdns_source) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto persistence = peer_store::make_memory_persistence();
+   const auto remote = peer(225);
+   auto batch = peer_store::mutation_batch{};
+   batch.peer_upserts.push_back(peer_store::record{.peer = remote,
+       .discovered_by = discovery::source::mdns,
+       .discovery_expires_at = std::chrono::system_clock::now() + std::chrono::hours{1}});
+   static_cast<void>(forge::asio::blocking::run(runtime, persistence->async_apply(std::move(batch))));
+   auto store = peer_store{peer_store::options{.persistence = persistence}};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, store.async_hydrate()), exceptions::invalid_options);
+   BOOST_TEST(!store.find(remote).has_value());
+   forge::asio::blocking::run(runtime, store.async_close());
 }
 
 } // namespace forge::net::p2p

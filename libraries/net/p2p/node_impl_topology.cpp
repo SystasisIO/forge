@@ -215,7 +215,9 @@ void node::impl::initialize_topology_manager() {
               if (!self) {
                  co_return false;
               }
-              co_return co_await self->async_dial_topology_candidate(std::move(candidate), std::move(cancellation));
+              const auto provenance = candidate.discovered_by == discovery::source::mdns
+                  ? detail::direct_dial_provenance::transient_mdns : detail::direct_dial_provenance::persistent;
+              co_return co_await self->async_dial_topology_candidate(std::move(candidate), std::move(cancellation), provenance);
            },
            .refresh_connection_scores =
                [weak] {

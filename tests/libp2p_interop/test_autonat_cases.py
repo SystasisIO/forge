@@ -330,6 +330,8 @@ class AutonatRunnerBranchTests(unittest.TestCase):
         self.assertEqual(len(native["forge_live_scenario"]), 12)
 
     def test_common_preflight_and_final_identity_surround_full_or_focused_suite(self):
+        from mdns_acceptance import expected_cases
+        mdns_specs = expected_cases()
         for suite in ("autonat", "stage6"):
             for changed in (False, True):
                 with self.subTest(suite=suite, changed=changed), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
@@ -357,6 +359,10 @@ class AutonatRunnerBranchTests(unittest.TestCase):
                         "run_autonat_suite": [{"status": "passed", "suite": "autonat",
                                                "scenario_id": spec.identifier} for spec in cases.case_specs()],
                     }
+                    for kind, name in (("positive", "run_mdns_suite"), ("isolation", "run_mdns_isolation_suite"),
+                                       ("churn", "run_mdns_churn_suite")):
+                        returns[name] = [{"status": "passed", "suite": "mdns", "scenario_id": identifier}
+                                         for identifier, (case_kind, _) in mdns_specs.items() if case_kind == kind]
                     mocks = {name: stack.enter_context(patch.object(runner, name, return_value=value))
                              for name, value in returns.items()}
                     stack.enter_context(patch.object(runner, "worktree_identity", side_effect=[identity, end]))
@@ -370,6 +376,8 @@ class AutonatRunnerBranchTests(unittest.TestCase):
                     mocks["prepare_go_fixture"].assert_called_once()
                     mocks["prepare_rust_fixture"].assert_called_once()
                     mocks["run_autonat_suite"].assert_called_once()
+                    for name in ("run_mdns_suite", "run_mdns_isolation_suite", "run_mdns_churn_suite"):
+                        self.assertEqual(mocks[name].call_count, int(suite == "stage6"))
                     self.assertEqual(mocks["run_autonat_suite"].call_args.args,
                                      ({"forge": root / "forge", "go": root / "go", "rust": root / "rust"},
                                       root / "build" / ("autonat-run" if suite == "autonat" else "interop-run")))
@@ -385,11 +393,17 @@ class AutonatRunnerBranchTests(unittest.TestCase):
                         for call in mock.call_args_list:
                             self.assertNotIn("autonatv2", call.args)
                             self.assertNotIn("autonatv2", call.kwargs.values())
+                            self.assertNotIn("mdns_public", call.args)
+                            self.assertNotIn("mdns_private_fingerprinted_go", call.args)
                     artifact = json.loads((root / "build" / ("autonat-artifacts.json" if suite == "autonat" else "interop-artifacts.json")).read_text())
                     native = [record for record in artifact["artifacts"] if record.get("suite") == "autonat"]
                     self.assertEqual(len(native), 41)
                     self.assertEqual({record["scenario_id"] for record in native},
                                      {spec.identifier for spec in cases.case_specs()})
+                    mdns = [record for record in artifact["artifacts"] if record.get("suite") == "mdns"]
+                    self.assertEqual(len(mdns), 38 if suite == "stage6" else 0)
+                    self.assertEqual({record["scenario_id"] for record in mdns},
+                                     set(mdns_specs) if suite == "stage6" else set())
                     self.assertEqual(artifact["fixture_provenance"]["forge_worktree"]["changed_during_run"], changed)
                     self.assertEqual(artifact["fixture_provenance"]["binaries"]["forge"]["sha256"], "d" * 64)
 

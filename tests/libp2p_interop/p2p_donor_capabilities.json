@@ -347,11 +347,11 @@
         { "id": "gossipsub_v1_1_private_tcp_yamux_pnet", "runner_scenario_id": "private_tcp_yamux_pnet/gossipsub_v1_1_private_tcp_yamux_pnet", "profile": "private_network", "transport_stack": [ "tcp", "pnet", "yamux" ], "activation": "enabled", "registration": "planned", "requires_capabilities": [ "security.private_network_psk" ], "evidence_contract": "forge.p2p.evidence.gossipsub_v1_1_private_tcp_yamux_pnet.v1", "required_directions": [ "forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge" ], "expected_status": "passed" }
       ] },
       "discovery.mdns_public": { "scenarios": [
-        { "id": "mdns_public", "runner_scenario_id": "tcp_stage6/mdns_public", "profile": "native", "transport_stack": [ "tcp", "yamux" ], "activation": "enabled", "registration": "planned", "evidence_contract": "forge.p2p.evidence.mdns_public.v1", "required_directions": [ "forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge" ], "expected_status": "passed" }
+        { "id": "mdns_public", "runner_scenario_id": "tcp_stage6/mdns_public", "profile": "native", "transport_stack": [ "tcp", "yamux" ], "activation": "enabled", "registration": "registered", "source_case_id": "interop.live_native_mdns", "evidence_contract": "forge.p2p.evidence.mdns_public.v1", "required_directions": [ "forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge" ], "expected_status": "passed" }
       ] },
       "discovery.mdns_private_fingerprinted": {
         "scenarios": [
-          { "id": "mdns_private_fingerprinted_go", "runner_scenario_id": "private_tcp_yamux_pnet/mdns_private_fingerprinted_go", "profile": "private_network", "transport_stack": [ "tcp", "pnet", "yamux" ], "activation": "enabled", "registration": "planned", "requires_capabilities": [ "security.private_network_psk" ], "evidence_contract": "forge.p2p.evidence.mdns_private_fingerprinted_go.v1", "required_directions": [ "forge_to_go", "go_to_forge" ], "expected_status": "passed" }
+          { "id": "mdns_private_fingerprinted_go", "runner_scenario_id": "private_tcp_yamux_pnet/mdns_private_fingerprinted_go", "profile": "private_network", "transport_stack": [ "tcp", "pnet", "yamux" ], "activation": "enabled", "registration": "registered", "source_case_id": "interop.live_native_mdns", "requires_capabilities": [ "security.private_network_psk" ], "evidence_contract": "forge.p2p.evidence.mdns_private_fingerprinted_go.v1", "required_directions": [ "forge_to_go", "go_to_forge" ], "expected_status": "passed" }
         ],
         "limitation": { "implementation": "rust", "source_case_id": "mdns.private_fingerprinted_rust_limitation", "description": "Pinned Rust mDNS lacks the private fingerprinted service configuration." }
       },

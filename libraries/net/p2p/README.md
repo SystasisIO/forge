@@ -257,9 +257,24 @@ boundary, not fork P2P core. The private profile is TCP/Yamux plus a transport
 PSK layer before the normal secure channel, not a negotiated `/pnet` protocol
 ID. It excludes QUIC, Relay and DCUtR; AutoNAT lifecycle/client/service and
 UPnP each require explicit private-profile Internet egress, while native runs do
-not inherit that dependency. The planned public mDNS delivery requires Go/Rust
-interop; fingerprinted private mDNS requires Go evidence and a documented Rust
-limitation. Neither mDNS delivery is claimed by the reachability PR.
+not inherit that dependency. Optional public mDNS has a separate Go/Rust
+acceptance suite; fingerprinted private mDNS has Go evidence and an explicit
+pinned Rust limitation. Neither mDNS delivery is attributed to the reachability PR.
+
+The private `interface_watcher`/`interface_state` pairs provide the native
+interface prerequisite, not an mDNS service. A single owner-executor operation
+subscribes before taking a bounded snapshot (Linux netlink, macOS PF_ROUTE and
+sysctl), retaining address prefixes, IPv6 readiness flags and local scope.
+Updates replace the full table; interface generations invalidate stale owners
+after changes, deletion/reuse or a loss of notification continuity. They are
+local generations, not kernel incarnation identifiers. Darwin notifications
+can be lost silently, so a bounded owner Asio timer also resynchronizes and
+rotates generations. No worker thread or detached task is created. The caller
+must serialize calls and await `async_stop()` before destroying the watcher.
+Snapshot limits or exhausted resync attempts fail explicitly, never publish a
+partial table. Synchronous Darwin snapshot/ioctl calls are bounded in count and
+allocation, but cannot promise a hard syscall completion deadline. This layer
+does not yet claim native interface-churn or multicast interoperability evidence.
 
 IPv6 interface zones are local routing metadata. Explicit local endpoints may
 contain `ip6zone`, but network-learned addresses and DNSADDR results cannot
@@ -738,6 +753,64 @@ operation that requires a signature is used.
 - Do not implement AutoNAT, AutoRelay, DHT, rendezvous or pubsub loops in an
   infrastructure plugin. Network mechanics belong in `forge_net_p2p`; plugins only
   configure and consume them.
+
+## Private mDNS Service Boundary
+
+`details/mdns_service.hxx` owns the watcher, per-interface/family UDP sockets,
+bounded outbound queues and registry. Node integration is opt-in through
+`node::options::mdns`; enabled mDNS rejects `topology::mode::static_only` before
+I/O. It starts after listeners and joins before node resources are released.
+`start` tracks its lifetime; `request_stop` only signals the owner strand;
+`async_join` waits for every receive/send/watcher operation before releasing
+memory and descriptor reservations. The resource manager is retained by value
+with its shared ledger. Integration callbacks must use weak node ownership or
+independently owned state, not raw `node::impl` references.
+
+The caller supplies the public `_p2p._udp.local` or private service name and
+current listeners. Advertisements expand wildcard listeners to usable interface
+addresses and omit local IPv6 zones. Shared PTR records never set cache-flush;
+TXT/SRV/A/AAAA records may. Returned leases replace only the mDNS discovery
+source; they do not authorize peers or trigger synchronous dialing.
+
+Memberships and outbound routes select the interface explicitly. Darwin IPv4
+sockets retain `IP_BOUND_IF` for their entire lifetime; no send temporarily
+mutates socket routing. Received destination/interface metadata is checked;
+unicast reception additionally requires a known matching interface prefix.
+Removed generations are stopped before their workers are joined.
+
+Deliberate donor composition: pinned Rust uses an ephemeral sending socket for
+both queries and answers. Responses therefore are not rejected by source port,
+and query handling always retains a multicast answer, with an additional
+on-link legacy/QU unicast answer where appropriate. Answers never trigger
+answers. Known-answer suppression, per-worker response rate limiting, bounded
+queue coalescing and receive-batch yielding limit packet-driven work.
+
+Topology keeps mDNS-only snapshots with steady deadlines and interface
+generations, separate from persisted discovery observations. Packet updates wake
+the existing bounded reconciliation loop, not DHT discovery. Queued candidates
+are rechecked at admission; expiry and interface withdrawal cancel pending dials
+without closing authenticated sessions. Direct attempts use transient provenance:
+endpoint success/failure and discovery TTL are not persisted, while authenticated
+Identify facts remain. `discovery::source::mdns` is operational-only and peer-store
+writes reject it. Private networks use the separate 16-byte PNet network
+fingerprint in `_p2p-<hex>._udp.local`, not the operational diagnostic hash.
+This integration does not itself establish cross-platform or donor interop
+acceptance; those require the separate live matrix.
+
+Development Linux live runs passed the 38-case mDNS matrix: 28 authenticated
+hidden-peer exchanges across IPv4/IPv6, TCP Noise/TLS and QUIC (private Go uses
+TCP PNet/TLS), 8 explicit quiet namespace-isolation cases with same-network
+positive controls, and 2 same-process/session interface-churn cases. Component
+tests alone do not establish those results. Final-SHA acceptance still requires
+the canonical `promote_stage6_acceptance.py --suite mdns` invocation and the
+strict raw-evidence validator in `tests/libp2p_interop/mdns_acceptance.py`.
+
+Pinned Rust cannot configure private mDNS namespaces. Go quiet receipts count
+entered notifications and lifetime connection events, but its detached donor
+callbacks cannot all be joined; this limitation is retained in the evidence.
+Forge observation counts are runtime counts, not fabricated discovery-address
+snapshots. Plugin configuration, cross-platform live support, scoped link-local
+live routing and full Stage 6 production support are not claimed by this matrix.
 
 ## Typical Mistakes
 

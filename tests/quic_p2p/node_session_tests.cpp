@@ -103,6 +103,7 @@ import forge.net.yamux.session;
 #include "../../libraries/net/p2p/details/reachability_manager.hxx"
 #include "../../libraries/net/p2p/details/session_lifecycle.hxx"
 #include "../../libraries/net/p2p/details/session_retirement.hxx"
+#include "../../libraries/net/p2p/details/topology_manager.hxx"
 
 
 namespace forge::net::p2p {
@@ -279,6 +280,23 @@ node::options fixture_options(std::string_view name) {
 // The friendship permits this test TU to reach existing admission and session
 // state. No production option, runtime callback or alternate admission is added.
 struct node_session_fixture {
+   static void mdns_callbacks_do_not_retain_node() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto owner_weak = std::weak_ptr<node::impl>{};
+      auto service_weak = std::weak_ptr<detail::mdns_service>{};
+      {
+         auto options = fixture_options("mdns-weak-owner");
+         options.mdns.enabled = true;
+         auto owner = node{runtime, std::move(options)};
+         owner_weak = owner.impl_;
+         service_weak = owner.impl_->mdns_service_value;
+         BOOST_TEST(!service_weak.expired());
+         bounded_result(runtime, owner.async_stop());
+      }
+      BOOST_TEST(owner_weak.expired());
+      BOOST_TEST(service_weak.expired());
+   }
+
    static void fail_next_connection_manager_prepare(node& owner) {
       const auto self = owner.impl_;
       const auto lock = std::scoped_lock{self->mutex};
@@ -1428,13 +1446,17 @@ struct node_session_fixture {
       BOOST_TEST(client.metrics().path_direct_attempts == 1U);
    }
 
-   static void transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery() {
-      const auto run = [](bool existing_session) {
+   static void transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery(bool snapshot = false) {
+      const auto run = [snapshot](bool existing_session) {
          auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
          auto server = node{runtime, fixture_options(existing_session ? "transient-topology-existing-server"
                                                                        : "transient-topology-identify-server")};
-         auto client = node{runtime, fixture_options(existing_session ? "transient-topology-existing-client"
-                                                                       : "transient-topology-identify-client")};
+         auto options = fixture_options(existing_session ? "transient-topology-existing-client"
+                                                          : "transient-topology-identify-client");
+         options.limits.topology.dht_enabled = false;
+         options.limits.topology.peer_exchange_enabled = false;
+         options.limits.topology.rendezvous_enabled = false;
+         auto client = node{runtime, std::move(options)};
          const auto self = client.impl_;
          auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
             for (auto* owner : {&client, &server}) {
@@ -1460,17 +1482,31 @@ struct node_session_fixture {
          if (existing_session) {
             bounded_result(runtime, client.async_connect(*listening, direct_options(server.local_peer())));
          }
-         const auto dialed = bounded_result(
-             runtime,
-             self->async_dial_topology_candidate(
-                 discovery::result{
-                     .peer = server.local_peer(),
-                     .endpoints = {root},
-                     .discovered_by = discovery::source::dht,
-                     .expires_at = observed_at + std::chrono::hours{4},
-                 },
-                 {}, detail::direct_dial_provenance::transient_mdns));
-         BOOST_TEST(dialed);
+         if (snapshot) {
+            BOOST_REQUIRE(self->lifecycle.begin_start());
+            self->topology_manager_value->replace_mdns_snapshot({{
+                server.local_peer(), root, 7, 1, std::chrono::steady_clock::now() + std::chrono::hours{1}}});
+            BOOST_TEST(client.diagnostics().topology.mdns_observations == 1U);
+            self->start_topology_manager();
+            static_cast<void>(bounded_result(runtime, self->topology_manager_value->async_refresh()));
+            BOOST_REQUIRE(self->session_for_path(server.local_peer(), path::kind::direct));
+            self->topology_manager_value->replace_mdns_snapshot({});
+            BOOST_TEST(client.diagnostics().topology.mdns_observations == 0U);
+            static_cast<void>(bounded_result(runtime, self->topology_manager_value->async_refresh()));
+            BOOST_REQUIRE(self->session_for_path(server.local_peer(), path::kind::direct));
+         } else {
+            const auto dialed = bounded_result(
+                runtime,
+                self->async_dial_topology_candidate(
+                    discovery::result{
+                        .peer = server.local_peer(),
+                        .endpoints = {root},
+                        .discovered_by = discovery::source::dht,
+                        .expires_at = observed_at + std::chrono::hours{4},
+                    },
+                    {}, detail::direct_dial_provenance::transient_mdns));
+            BOOST_TEST(dialed);
+         }
          const auto record = client.peers().find(server.local_peer());
          BOOST_REQUIRE(record);
          BOOST_TEST(static_cast<int>(record->discovered_by) == static_cast<int>(discovery::source::rendezvous));
@@ -1637,6 +1673,14 @@ BOOST_AUTO_TEST_CASE(p2p_persistent_dns_root_owns_coalesced_direct_winner) {
 
 BOOST_AUTO_TEST_CASE(p2p_transient_mdns_topology_dial_preserves_discovery_observation) {
    node_session_fixture::transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_mdns_snapshot_dials_transiently_and_withdrawal_keeps_authenticated_session) {
+   node_session_fixture::transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery(true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_mdns_callbacks_do_not_retain_node) {
+   node_session_fixture::mdns_callbacks_do_not_retain_node();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_background_reachability_reuses_sessions_without_redial_or_path_attempts) {

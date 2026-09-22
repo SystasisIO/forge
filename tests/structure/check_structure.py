@@ -349,13 +349,13 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
       if token not in tls_http_tests:
          errors.append(f"tests/tls/http_server_tests.cpp: missing HTTP TLS regression ({token})")
 
-   plugin_tests = (root / "tests/plugins/plugins_tests.cpp").read_text(errors="ignore")
+   plugin_tests = (root / "tests/plugins/http_server_tests.cpp").read_text(errors="ignore")
    for token in (
       "http_server_plugin_tls_reload_preserves_live_context_and_cannot_publish_after_shutdown",
       "http_server_plugin_tls_reload_rejects_malformed_material_and_keeps_live_context",
    ):
       if token not in plugin_tests:
-         errors.append(f"tests/plugins/plugins_tests.cpp: missing TLS reload regression ({token})")
+         errors.append(f"tests/plugins/http_server_tests.cpp: missing TLS reload regression ({token})")
 
    http_source = (root / "libraries/net/http/connection.cpp").read_text(errors="ignore")
    for token in (
@@ -608,7 +608,7 @@ def check_http_cookie_asset_boundaries(root: Path, errors: list[str]) -> None:
    ):
       if token not in http_tests:
          errors.append(f"tests/http_websocket/network_tests.cpp: cookie/assets regression is missing ({token})")
-   plugin_tests = (root / "tests/plugins/plugins_tests.cpp").read_text(errors="ignore")
+   plugin_tests = (root / "tests/plugins/http_server_tests.cpp").read_text(errors="ignore")
    for token in (
       "http_server_plugin_preserves_repeated_set_cookie_from_middleware",
       "http_server_plugin_mounts_assets_without_shadowing_a_narrow_api_prefix",
@@ -616,7 +616,7 @@ def check_http_cookie_asset_boundaries(root: Path, errors: list[str]) -> None:
       "http_server_plugin_rejects_root_api_prefix_overlapping_asset_mount_before_listener_start",
    ):
       if token not in plugin_tests:
-         errors.append(f"tests/plugins/plugins_tests.cpp: plugin cookie/assets regression is missing ({token})")
+         errors.append(f"tests/plugins/http_server_tests.cpp: plugin cookie/assets regression is missing ({token})")
 
    migration = (root / "docs/iterations/forge-native-admin-foundation-v1.md").read_text(errors="ignore")
    for token in ("response.set_cookie(name, value)", "append_set_cookie(", "Stable source surface",

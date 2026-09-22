@@ -60,6 +60,7 @@ const pubsubPayload = "forge-gossipsub-live"
 type options struct {
 	command         string
 	scenario        string
+	mdnsOutcome     string
 	peerID          string
 	addr            string
 	relayAddr       string
@@ -99,6 +100,8 @@ func parseArgs() (options, error) {
 		switch key {
 		case "--scenario":
 			out.scenario = value
+		case "--mdns-outcome":
+			out.mdnsOutcome = value
 		case "--peer-id":
 			out.peerID = value
 		case "--addr":
@@ -156,6 +159,9 @@ func parseArgs() (options, error) {
 		default:
 			return options{}, fmt.Errorf("unknown argument %s", key)
 		}
+	}
+	if out.mdnsOutcome != "" && out.scenario != "mdns" {
+		return options{}, fmt.Errorf("--mdns-outcome requires --scenario mdns")
 	}
 	if out.payload == "" {
 		out.payload = pubsubPayload
@@ -285,7 +291,7 @@ func loadPnetKey(path string) (corepnet.PSK, error) {
 	return corepnet.DecodeV1PSK(input)
 }
 
-func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHost, error) {
+func newHost(transport string, pnetKeyFile string, dnsServer string, extra ...libp2p.Option) (*fixtureHost, error) {
 	var pnetState *pnetConnectionState
 	var upgrades *upgradeObserver
 	if transport == "tcp" || transport == "tcp-tls" {
@@ -349,6 +355,7 @@ func newHost(transport string, pnetKeyFile string, dnsServer string) (*fixtureHo
 	default:
 		return nil, fmt.Errorf("unsupported transport %s", transport)
 	}
+	options = append(options, extra...)
 	h, err := libp2p.New(options...)
 	if err != nil {
 		return nil, err
@@ -1475,7 +1482,9 @@ func main() {
 	if err == nil {
 		switch opts.command {
 		case "listen":
-			if isAutoNATScenario(opts.scenario) {
+			if opts.scenario == "mdns" {
+				err = runMDNS(opts)
+			} else if isAutoNATScenario(opts.scenario) {
 				err = runAutoNAT(opts)
 			} else {
 				err = listen(opts)
@@ -1483,7 +1492,9 @@ func main() {
 		case "destination":
 			err = destination(opts)
 		case "dial":
-			if isAutoNATScenario(opts.scenario) {
+			if opts.scenario == "mdns" {
+				err = runMDNS(opts)
+			} else if isAutoNATScenario(opts.scenario) {
 				err = runAutoNAT(opts)
 			} else {
 				err = dial(opts)

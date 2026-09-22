@@ -184,7 +184,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "56bff43fe6d22eabba252a7dac14f92ba2ef38a5e5c2498c37603a94d46068fb",
+      "sha256": "a194b2b6517f187b4dcbef37f4ee0ba8787e186d31b99caca3faa9da2516a1c1",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -950,9 +950,9 @@
       "state": "partial",
       "owner": "net.p2p.node",
       "normal_activation": "managed_node_lifecycle_and_coalesced_explicit_trigger",
-      "configuration": "topology mode, watermarks, refresh/query limits, DHT profiles, Rendezvous points and Forge PEX; bounded mDNS policy validation exists but is not yet connected to node lifecycle",
+      "configuration": "topology mode, watermarks, refresh/query limits, DHT profiles, Rendezvous points and Forge PEX; opt-in node::options::mdns starts a bounded per-interface service and rejects static-only mode; plugin configuration remains pending",
       "resource_ownership": "one node-owned manager with bounded source queries, observations, dials and pruning",
-      "persistence": "peer facts update peer_store; per-source trust, TTL, cookie and retry state remain operational",
+      "persistence": "authenticated peer facts update peer_store; mDNS endpoints, interface generations, steady TTL and transient dial outcomes remain operational and are never persisted",
       "maintenance": "periodic jittered refresh restores low watermark to target and prunes above high watermark",
       "diagnostics": "manager phase, queued/in-flight refreshes, observations and failure counters",
       "intended_disposition": "preserve_and_extend_with_stage6_reachability_sources",
@@ -962,11 +962,13 @@
         "layers": [ "state_machine", "raw_node" ],
         "source_paths": [
           "libraries/net/p2p/topology_manager.cpp", "libraries/net/p2p/topology_manager_discovery.cpp",
-          "libraries/net/p2p/topology_manager_sessions.cpp", "libraries/net/p2p/node_impl_topology.cpp"
+          "libraries/net/p2p/topology_manager_sessions.cpp", "libraries/net/p2p/node_impl_topology.cpp",
+          "libraries/net/p2p/mdns_service.cpp", "libraries/net/p2p/mdns_registry.cpp",
+          "libraries/net/p2p/mdns_wire.cpp", "libraries/net/p2p/interface_watcher.cpp"
         ],
         "tests": [ "test_forge_quic_p2p" ],
-        "donor_sources": [ "docs/donors/fcl-p2p-dht-rendezvous-v1.md" ],
-        "donor_cases": [ "rendezvous.refresh_cookie_and_discovery_feed" ]
+        "donor_sources": [ "docs/donors/fcl-p2p-dht-rendezvous-v1.md", "docs/donors/forge-p2p-mdns-v1.md" ],
+        "donor_cases": [ "rendezvous.refresh_cookie_and_discovery_feed", "interop.live_native_mdns" ]
       }
     },
     {

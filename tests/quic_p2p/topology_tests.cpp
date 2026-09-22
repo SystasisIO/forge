@@ -1855,6 +1855,381 @@ BOOST_AUTO_TEST_CASE(p2p_connection_manager_hard_admission_uses_tag_score_grace_
    BOOST_TEST(plan.victim_peers.front().to_string() == old_peer.to_string());
 }
 
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_replacement_cancels_old_generation_without_rediscovery) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
+   BOOST_REQUIRE(lifecycle.begin_start());
+   auto peers = std::vector{test_peer(101), test_peer(102)};
+   std::ranges::sort(peers, {}, [](const auto& peer) { return peer.to_string(); });
+   auto discoveries = std::atomic_size_t{};
+   auto dials = std::atomic_size_t{};
+   auto closed = std::atomic_size_t{};
+   auto connected = std::atomic_bool{};
+   auto idle_once = std::atomic_bool{};
+   auto idle = std::promise<void>{};
+   auto idle_future = idle.get_future();
+   auto started = std::promise<void>{};
+   auto started_future = started.get_future();
+   auto completed = std::promise<discovery::result>{};
+   auto completed_future = completed.get_future();
+   auto canceled = std::make_shared<forge::asio::notification>();
+   auto callbacks = topology_callbacks();
+   callbacks.discover = [&](std::shared_ptr<cancellation_latch>)
+       -> boost::asio::awaitable<std::vector<discovery::result>> {
+      ++discoveries;
+      co_return std::vector<discovery::result>{};
+   };
+   callbacks.dial = [&](discovery::result candidate, std::shared_ptr<cancellation_latch> cancellation)
+       -> boost::asio::awaitable<bool> {
+      if (dials.fetch_add(1) == 0) {
+         co_return co_await wait_for_dial_cancellation(canceled, &started, cancellation);
+      }
+      connected = true;
+      completed.set_value(std::move(candidate));
+      co_return true;
+   };
+   callbacks.sessions = [&] {
+      return connection_manager::snapshot{.active_sessions = connected ? 1U : 0U,
+                                           .active_peers = connected ? 1U : 0U};
+   };
+   callbacks.close_sessions = [&](std::vector<std::uint64_t>) -> boost::asio::awaitable<void> {
+      ++closed;
+      co_return;
+   };
+   auto policy = test_topology_policy();
+   policy.max_parallel_dials = 1;
+   policy.refresh_interval = std::chrono::hours{24};
+   auto manager = std::make_shared<detail::topology_manager>(policy, std::move(callbacks),
+       detail::topology_manager::clocks{.before_idle_wait = [&] {
+          if (!idle_once.exchange(true)) { idle.set_value(); }
+       }});
+   const auto cleanup = boost::scope::scope_exit{[&] { stop_topology_manager(runtime, *manager, lifecycle); }};
+   manager->start(lifecycle);
+   BOOST_REQUIRE(idle_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   const auto deadline = std::chrono::steady_clock::now() + std::chrono::hours{1};
+   manager->replace_mdns_snapshot({
+       {peers[0], discovered_rendezvous_address(peers[0], 4101), 7, 1, deadline},
+       {peers[1], discovered_rendezvous_address(peers[1], 4102), 7, 1, deadline}});
+   BOOST_REQUIRE(started_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   // One active and one queued old-generation candidate must both be withdrawn.
+   const auto replacement = discovered_rendezvous_address(peers[1], 4202);
+   manager->replace_mdns_snapshot({{peers[1], replacement, 7, 2, deadline}});
+   BOOST_REQUIRE(completed_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   const auto result = completed_future.get();
+   BOOST_TEST(static_cast<unsigned>(result.discovered_by) == 5U);
+   BOOST_REQUIRE_EQUAL(result.endpoints.size(), 1U);
+   BOOST_TEST(result.endpoints.front().to_string() == replacement.to_string());
+   manager->replace_mdns_snapshot({});
+   manager->request_stop();
+   auto joined = boost::asio::co_spawn(runtime.context(), manager->async_join(), boost::asio::use_future);
+   BOOST_REQUIRE(joined.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   joined.get();
+   BOOST_TEST(discoveries.load() == 1U);
+   BOOST_TEST(dials.load() == 2U);
+   BOOST_TEST(closed.load() == 0U);
+   BOOST_TEST(connected.load());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_steady_expiry_cancels_inflight_without_discovery) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
+   BOOST_REQUIRE(lifecycle.begin_start());
+   auto discoveries = std::atomic_size_t{};
+   auto dials = std::atomic_size_t{};
+   auto started = std::promise<void>{};
+   auto started_future = started.get_future();
+   auto expired = std::promise<void>{};
+   auto expired_future = expired.get_future();
+   auto canceled = std::make_shared<forge::asio::notification>();
+   auto callbacks = topology_callbacks();
+   callbacks.discover = [&](std::shared_ptr<cancellation_latch>)
+       -> boost::asio::awaitable<std::vector<discovery::result>> {
+      ++discoveries;
+      co_return std::vector<discovery::result>{};
+   };
+   callbacks.dial = [&](discovery::result, std::shared_ptr<cancellation_latch> cancellation)
+       -> boost::asio::awaitable<bool> {
+      ++dials;
+      co_await wait_for_dial_cancellation(canceled, &started, cancellation);
+      expired.set_value();
+      co_return false;
+   };
+   auto policy = test_topology_policy();
+   policy.refresh_interval = std::chrono::hours{24};
+   auto manager = std::make_shared<detail::topology_manager>(policy, std::move(callbacks));
+   const auto cleanup = boost::scope::scope_exit{[&] { stop_topology_manager(runtime, *manager, lifecycle); }};
+   const auto peer = test_peer(103);
+   manager->replace_mdns_snapshot({{peer, discovered_rendezvous_address(peer), 9, 1,
+                                   std::chrono::steady_clock::now() + std::chrono::seconds{1}}});
+   manager->start(lifecycle);
+   BOOST_REQUIRE(started_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_REQUIRE(expired_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   manager->request_stop();
+   auto joined = boost::asio::co_spawn(runtime.context(), manager->async_join(), boost::asio::use_future);
+   BOOST_REQUIRE(joined.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   joined.get();
+   BOOST_TEST(discoveries.load() == 1U);
+   BOOST_TEST(dials.load() == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_renewal_preserves_inflight_past_old_expiry) {
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
+   BOOST_REQUIRE(lifecycle.begin_start());
+   auto started = std::promise<void>{};
+   auto started_future = started.get_future();
+   auto first_canceled = std::promise<void>{};
+   auto canceled_future = first_canceled.get_future();
+   auto dials = std::atomic_size_t{};
+   auto completions = std::atomic_size_t{};
+   auto callbacks = topology_callbacks();
+   callbacks.dial = [&](discovery::result, std::shared_ptr<cancellation_latch> cancellation)
+       -> boost::asio::awaitable<bool> {
+      const auto first = dials.fetch_add(1) == 0;
+      auto wakeup = std::make_shared<forge::asio::notification>();
+      const auto epoch = wakeup->epoch();
+      auto subscription = cancellation_latch::subscribe(cancellation, [wakeup]() noexcept { wakeup->notify(); });
+      if (first) { started.set_value(); }
+      if (!cancellation->stop_requested()) { static_cast<void>(co_await wakeup->async_wait(epoch)); }
+      ++completions;
+      if (first) { first_canceled.set_value(); }
+      co_return false;
+   };
+   auto policy = test_topology_policy();
+   policy.max_parallel_dials = 1;
+   policy.refresh_interval = 24h;
+   auto manager = std::make_shared<detail::topology_manager>(policy, std::move(callbacks));
+   const auto cleanup = boost::scope::scope_exit{[&] { stop_topology_manager(runtime, *manager, lifecycle); }};
+   const auto peer = test_peer(104);
+   const auto address = discovered_rendezvous_address(peer);
+   const auto old_expiry = std::chrono::steady_clock::now() + 2s;
+   manager->replace_mdns_snapshot({{peer, address, 9, 1, old_expiry}});
+   manager->start(lifecycle);
+   BOOST_REQUIRE(started_future.wait_for(1s) == std::future_status::ready);
+   BOOST_REQUIRE(std::chrono::steady_clock::now() < old_expiry);
+   manager->replace_mdns_snapshot({{peer, address, 9, 1, old_expiry + 30s}});
+   // This observation window crosses the old timer deadline, but is independent
+   // of the renewed lease. No successful connection or retry can mask cancellation.
+   BOOST_CHECK_MESSAGE(canceled_future.wait_until(old_expiry + 250ms) == std::future_status::timeout,
+                       "continuous mDNS lease renewal canceled the original in-flight dial");
+   BOOST_TEST(dials.load() == 1U);
+   BOOST_TEST(completions.load() == 0U);
+   manager->request_stop();
+   lifecycle.request_stop();
+   auto joined = boost::asio::co_spawn(runtime.context(), manager->async_join(), boost::asio::use_future);
+   BOOST_REQUIRE(joined.wait_for(2s) == std::future_status::ready);
+   joined.get();
+   auto tracked = boost::asio::co_spawn(runtime.context(), lifecycle.wait(), boost::asio::use_future);
+   BOOST_REQUIRE(tracked.wait_for(2s) == std::future_status::ready);
+   tracked.get();
+   BOOST_TEST(completions.load() == dials.load());
+   BOOST_CHECK(canceled_future.wait_for(0ms) == std::future_status::ready);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_snapshot_order_and_duplicates_preserve_inflight) {
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
+   BOOST_REQUIRE(lifecycle.begin_start());
+   auto started = std::promise<void>{};
+   auto started_future = started.get_future();
+   auto first_canceled = std::promise<void>{};
+   auto canceled_future = first_canceled.get_future();
+   auto dials = std::atomic_size_t{};
+   auto completions = std::atomic_size_t{};
+   auto callbacks = topology_callbacks();
+   callbacks.dial = [&](discovery::result candidate, std::shared_ptr<cancellation_latch> cancellation)
+       -> boost::asio::awaitable<bool> {
+      const auto first = dials.fetch_add(1) == 0;
+      BOOST_TEST(candidate.endpoints.size() == 2U);
+      auto wakeup = std::make_shared<forge::asio::notification>();
+      const auto epoch = wakeup->epoch();
+      auto subscription = cancellation_latch::subscribe(cancellation, [wakeup]() noexcept { wakeup->notify(); });
+      if (first) { started.set_value(); }
+      if (!cancellation->stop_requested()) { static_cast<void>(co_await wakeup->async_wait(epoch)); }
+      ++completions;
+      if (first) { first_canceled.set_value(); }
+      co_return false;
+   };
+   auto policy = test_topology_policy();
+   policy.max_parallel_dials = 1;
+   policy.refresh_interval = 24h;
+   auto manager = std::make_shared<detail::topology_manager>(policy, std::move(callbacks));
+   const auto cleanup = boost::scope::scope_exit{[&] { stop_topology_manager(runtime, *manager, lifecycle); }};
+   const auto peer = test_peer(105);
+   const auto expiry = std::chrono::steady_clock::now() + 1h;
+   const auto first = detail::topology_manager::mdns_lease{peer, discovered_rendezvous_address(peer, 4101), 7, 1, expiry};
+   const auto second = detail::topology_manager::mdns_lease{peer, discovered_rendezvous_address(peer, 4102), 8, 3, expiry};
+   manager->replace_mdns_snapshot({first, second});
+   manager->start(lifecycle);
+   BOOST_REQUIRE(started_future.wait_for(2s) == std::future_status::ready);
+   manager->replace_mdns_snapshot({second, first});
+   BOOST_CHECK_MESSAGE(canceled_future.wait_for(100ms) == std::future_status::timeout,
+                       "snapshot permutation changed the active lease identity");
+   manager->replace_mdns_snapshot({second, first, second, first});
+   BOOST_CHECK_MESSAGE(canceled_future.wait_for(250ms) == std::future_status::timeout,
+                       "duplicate lease evidence changed revision and canceled the original dial");
+   BOOST_TEST(dials.load() == 1U);
+   BOOST_TEST(completions.load() == 0U);
+   manager->request_stop();
+   lifecycle.request_stop();
+   auto joined = boost::asio::co_spawn(runtime.context(), manager->async_join(), boost::asio::use_future);
+   BOOST_REQUIRE(joined.wait_for(2s) == std::future_status::ready);
+   joined.get();
+   auto tracked = boost::asio::co_spawn(runtime.context(), lifecycle.wait(), boost::asio::use_future);
+   BOOST_REQUIRE(tracked.wait_for(2s) == std::future_status::ready);
+   tracked.get();
+   BOOST_TEST(completions.load() == dials.load());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_observations_count_live_peers_not_duplicate_leases) {
+   using namespace std::chrono_literals;
+   auto now = std::chrono::steady_clock::now();
+   auto manager = std::make_shared<detail::topology_manager>(test_topology_policy(), topology_callbacks(),
+       detail::topology_manager::clocks{.steady_now = [&] { return now; }});
+   const auto first = detail::topology_manager::mdns_lease{
+       test_peer(106), discovered_rendezvous_address(test_peer(106)), 7, 1, now + 1s};
+   auto other_interface = first;
+   other_interface.interface_index = 8;
+   const auto second = detail::topology_manager::mdns_lease{
+       test_peer(107), discovered_rendezvous_address(test_peer(107)), 7, 1, now + 1s};
+   BOOST_TEST(manager->current().mdns_observations == 0U);
+   manager->replace_mdns_snapshot({first, first, other_interface, second});
+   BOOST_TEST(manager->current().mdns_observations == 2U);
+   BOOST_TEST(manager->current().observations == 0U);
+   manager->replace_mdns_snapshot({first, other_interface});
+   BOOST_TEST(manager->current().mdns_observations == 1U);
+   now += 1s;
+   // Diagnostics must not report stale evidence even before autonomous pruning.
+   BOOST_TEST(manager->current().mdns_observations == 0U);
+   auto renewed = first;
+   renewed.expires_at = now + 1s;
+   manager->replace_mdns_snapshot({renewed});
+   BOOST_TEST(manager->current().mdns_observations == 1U);
+   manager->replace_mdns_snapshot({});
+   BOOST_TEST(manager->current().mdns_observations == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_synchronous_dial_construction_failure_closes_batch) {
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
+   BOOST_REQUIRE(lifecycle.begin_start());
+   auto constructing = std::promise<void>{};
+   auto constructing_future = constructing.get_future();
+   auto release = std::promise<void>{};
+   auto released = release.get_future().share();
+   auto calls = std::atomic_size_t{};
+   auto callbacks = topology_callbacks();
+   // Deliberately not a coroutine: failure happens while obtaining awaitable.
+   callbacks.dial = [&](discovery::result, std::shared_ptr<cancellation_latch>) -> boost::asio::awaitable<bool> {
+      if (calls.fetch_add(1) == 0) {
+         constructing.set_value();
+         if (released.wait_for(3s) != std::future_status::ready) {
+            throw std::runtime_error{"mDNS construction test release deadline"};
+         }
+         throw std::bad_alloc{};
+      }
+      return successful_topology_dial();
+   };
+   auto policy = test_topology_policy();
+   policy.max_parallel_dials = 1;
+   policy.refresh_interval = 24h;
+   auto manager = std::make_shared<detail::topology_manager>(policy, std::move(callbacks));
+   const auto cleanup = boost::scope::scope_exit{[&] {
+      try { release.set_value(); } catch (const std::future_error&) {}
+      stop_topology_manager(runtime, *manager, lifecycle);
+   }};
+   const auto expiry = std::chrono::steady_clock::now() + 1h;
+   manager->replace_mdns_snapshot({
+       {test_peer(108), discovered_rendezvous_address(test_peer(108)), 7, 1, expiry},
+       {test_peer(109), discovered_rendezvous_address(test_peer(109)), 7, 1, expiry}});
+   manager->start(lifecycle);
+   BOOST_REQUIRE(constructing_future.wait_for(2s) == std::future_status::ready);
+   auto failed = boost::asio::co_spawn(runtime.context(), manager->async_refresh(), boost::asio::use_future);
+   const auto waiter_deadline = std::chrono::steady_clock::now() + 1s;
+   while (manager->current().waiting_refreshes == 0 && std::chrono::steady_clock::now() < waiter_deadline) {
+      std::this_thread::sleep_for(1ms);
+   }
+   const auto waiter_registered = manager->current().waiting_refreshes != 0;
+   release.set_value();
+   BOOST_REQUIRE(waiter_registered);
+   BOOST_REQUIRE(failed.wait_for(2s) == std::future_status::ready);
+   BOOST_CHECK_THROW(static_cast<void>(failed.get()), std::bad_alloc);
+   BOOST_TEST(calls.load() == 1U);
+   BOOST_TEST(manager->current().active_operations == 0U);
+   // A local construction failure must not impose peer backoff on either
+   // candidate. Both are immediately eligible in the next explicit refresh.
+   auto retry = boost::asio::co_spawn(runtime.context(), manager->async_refresh(), boost::asio::use_future);
+   BOOST_REQUIRE(retry.wait_for(2s) == std::future_status::ready);
+   BOOST_CHECK_NO_THROW(static_cast<void>(retry.get()));
+   BOOST_TEST(calls.load() == 3U);
+   manager->request_stop();
+   lifecycle.request_stop();
+   auto joined = boost::asio::co_spawn(runtime.context(), manager->async_join(), boost::asio::use_future);
+   BOOST_REQUIRE(joined.wait_for(2s) == std::future_status::ready);
+   joined.get();
+   auto tracked = boost::asio::co_spawn(runtime.context(), lifecycle.wait(), boost::asio::use_future);
+   BOOST_REQUIRE(tracked.wait_for(2s) == std::future_status::ready);
+   tracked.get();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_shortened_live_lease_waits_until_new_expiry) {
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lifecycle = detail::lifecycle_tracker{runtime.context().get_executor()};
+   BOOST_REQUIRE(lifecycle.begin_start());
+   auto started = std::promise<void>{};
+   auto started_future = started.get_future();
+   auto canceled = std::promise<void>{};
+   auto canceled_future = canceled.get_future();
+   auto calls = std::atomic_size_t{};
+   auto wakeup = std::make_shared<forge::asio::notification>();
+   auto callbacks = topology_callbacks();
+   callbacks.dial = [&](discovery::result, std::shared_ptr<cancellation_latch> stop)
+       -> boost::asio::awaitable<bool> {
+      const auto first = calls.fetch_add(1) == 0;
+      const auto epoch = wakeup->epoch();
+      auto subscription = cancellation_latch::subscribe(stop, [wakeup]() noexcept { wakeup->notify(); });
+      if (first) { started.set_value(); }
+      if (!stop->stop_requested()) { static_cast<void>(co_await wakeup->async_wait(epoch)); }
+      if (first) { canceled.set_value(); }
+      co_return false;
+   };
+   auto policy = test_topology_policy();
+   policy.refresh_interval = 24h;
+   policy.max_parallel_dials = 1;
+   auto manager = std::make_shared<detail::topology_manager>(policy, std::move(callbacks));
+   const auto cleanup = boost::scope::scope_exit{[&] { stop_topology_manager(runtime, *manager, lifecycle); }};
+   const auto peer = test_peer(110);
+   const auto address = discovered_rendezvous_address(peer);
+   manager->replace_mdns_snapshot({{peer, address, 7, 1, std::chrono::steady_clock::now() + 1h}});
+   manager->start(lifecycle);
+   BOOST_REQUIRE(started_future.wait_for(2s) == std::future_status::ready);
+   const auto expiry = std::chrono::steady_clock::now() + 1s;
+   manager->replace_mdns_snapshot({{peer, address, 7, 1, expiry}});
+   BOOST_CHECK_MESSAGE(canceled_future.wait_until(expiry - 200ms) == std::future_status::timeout,
+                       "shortened but live lease canceled dial before its new expiry");
+   BOOST_REQUIRE(canceled_future.wait_until(expiry + 1s) == std::future_status::ready);
+   BOOST_TEST(calls.load() == 1U);
+   manager->request_stop();
+   lifecycle.request_stop();
+   auto joined = boost::asio::co_spawn(runtime.context(), manager->async_join(), boost::asio::use_future);
+   BOOST_REQUIRE(joined.wait_for(2s) == std::future_status::ready);
+   joined.get();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_topology_mdns_snapshot_bounds_cancel_storage_independent_of_parallel_policy) {
+   auto policy = test_topology_policy();
+   policy.max_parallel_dials = std::numeric_limits<std::size_t>::max();
+   auto manager = std::make_shared<detail::topology_manager>(policy, topology_callbacks());
+   const auto peer = test_peer(111);
+   BOOST_CHECK_NO_THROW(manager->replace_mdns_snapshot({{peer, discovered_rendezvous_address(peer), 7, 1,
+       std::chrono::steady_clock::now() + std::chrono::hours{1}}}));
+   BOOST_TEST(manager->current().mdns_observations == 1U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace forge::net::p2p

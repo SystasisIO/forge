@@ -7,6 +7,16 @@ add_library(
    mdns_codec.cpp
    mdns_policy.cpp
    details/mdns_codec.hxx
+   mdns_registry.cpp
+   details/mdns_registry.hxx
+   mdns_service.cpp
+   details/mdns_service.hxx
+   mdns_wire.cpp
+   details/mdns_wire.hxx
+   interface_state.cpp
+   details/interface_state.hxx
+   interface_watcher.cpp
+   details/interface_watcher.hxx
    dns_address_expander.cpp
    details/dns_address_expander.hxx
    direct_attempt.cpp
