@@ -20,6 +20,7 @@ struct endpoint {
    std::string host;
    std::uint16_t port = 0;
    address_family family = address_family::any;
+   std::string zone;
 
    [[nodiscard]] std::string authority() const;
 };

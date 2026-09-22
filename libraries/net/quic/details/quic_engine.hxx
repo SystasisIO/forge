@@ -60,6 +60,7 @@ struct engine_endpoint {
    std::string host;
    std::uint16_t port = 0;
    address_family family = address_family::any;
+   std::string zone;
 };
 
 struct engine_transport_limits {

@@ -224,6 +224,8 @@ struct diagnostics {
       bool refresh_queued = false;
       bool refresh_in_flight = false;
       std::size_t observations = 0;
+      // Distinct peers with currently valid transient mDNS evidence.
+      std::size_t mdns_observations = 0;
       std::size_t active_operations = 0;
       std::size_t waiting_refreshes = 0;
       std::uint64_t completed_refreshes = 0;
@@ -311,7 +313,7 @@ BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::topology_state, (),
                       (mode, phase, low_watermark, target_watermark, high_watermark, refresh_interval, query_timeout,
                        max_candidates, max_parallel_queries, max_parallel_dials, configured_rendezvous_points,
                        max_peer_exchange_peers, dht_enabled, peer_exchange_enabled, refresh_queued, refresh_in_flight,
-                       observations, active_operations, waiting_refreshes, completed_refreshes, failed_refreshes))
+                       observations, mdns_observations, active_operations, waiting_refreshes, completed_refreshes, failed_refreshes))
 BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::snapshot, (),
                       (network, metrics, resources, pubsub, connections, peers, sessions, persistence, dht_profiles,
                        lifecycle, effective_limits, topology, black_holes, reachability))

@@ -308,7 +308,7 @@ local_identify_document_locked(const auto& self,
       state.cached_generation = state.generation;
    }
    auto document = state.cached_document;
-   if (observed_endpoint) {
+   if (observed_endpoint && !host_addresses::has_interface_zone(*observed_endpoint)) {
       document.observed_endpoint = std::move(observed_endpoint);
       if (identify::encode(document).size() > self.options.identify.max_own_message_size) {
          document.observed_endpoint.reset();
@@ -603,7 +603,9 @@ boost::asio::awaitable<void> node::impl::send_identify_push(const std::shared_pt
       if (found == sessions.end() || found->second != session || session->closed) {
          co_return;
       }
-      outgoing.observed_endpoint = session->remote_endpoint;
+      if (session->remote_endpoint && !host_addresses::has_interface_zone(*session->remote_endpoint)) {
+         outgoing.observed_endpoint = *session->remote_endpoint;
+      }
       if (identify::encode(outgoing).size() > options.identify.max_own_message_size) {
          outgoing.observed_endpoint.reset();
       }
@@ -669,7 +671,9 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
       }
       if (!received_push || document.present.observed_endpoint) {
          update.replace_observed_endpoint = true;
-         update.observed_endpoint = document.observed_endpoint;
+         if (document.observed_endpoint && !host_addresses::has_interface_zone(*document.observed_endpoint)) {
+            update.observed_endpoint = document.observed_endpoint;
+         }
       }
       if (certified) {
          update.signed_peer_record = document.signed_peer_record;
@@ -823,12 +827,21 @@ node::impl::identify_peer_for_discovery(const peer_id& peer, discovery::source s
    if (!record) {
       co_return std::nullopt;
    }
+   auto forwarded_record = record->signed_peer_record;
+   if (!forwarded_record.empty()) {
+      const auto certified = open_identify_peer_record(signed_envelope::decode(forwarded_record), peer);
+      if (std::ranges::any_of(certified.endpoints, [](const auto& address) {
+             return host_addresses::has_interface_zone(address);
+          })) {
+         forwarded_record.clear();
+      }
+   }
    co_return identify::document{
        .protocol_version = record->protocol_version,
        .agent_version = record->agent_version,
        .public_key = record->public_key,
        .protocols = record->protocols,
-       .signed_peer_record = record->signed_peer_record,
+       .signed_peer_record = std::move(forwarded_record),
    };
 }
 

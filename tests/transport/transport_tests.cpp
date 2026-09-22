@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -16,7 +18,16 @@
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/address_v6.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/system/system_error.hpp>
+
+#if defined(__APPLE__) || defined(__linux__)
+#include <array>
+#include <net/if.h>
+#endif
 
 import forge.asio.blocking;
 import forge.asio.runtime;
@@ -46,6 +57,60 @@ using bytes = std::vector<std::uint8_t>;
                                    .host = std::move(host),
                                    .port = port};
 }
+
+void check_invalid_literal(const forge::net::transport::endpoint& value) {
+   BOOST_CHECK_EXCEPTION(static_cast<void>(value.literal_address()), boost::system::system_error, [](const auto& error) {
+      return error.code() == boost::asio::error::invalid_argument;
+   });
+}
+
+#if defined(__APPLE__) || defined(__linux__)
+struct native_interface {
+   std::string name;
+   unsigned int index = 0;
+};
+
+[[nodiscard]] std::optional<native_interface> first_native_interface() {
+   auto* interfaces = if_nameindex();
+   if (interfaces == nullptr) {
+      return std::nullopt;
+   }
+
+   auto result = std::optional<native_interface>{};
+   for (auto* current = interfaces; current->if_index != 0; ++current) {
+      if (current->if_name == nullptr) {
+         continue;
+      }
+      const auto index = if_nametoindex(current->if_name);
+      if (index != 0) {
+         result = native_interface{.name = current->if_name, .index = index};
+         break;
+      }
+   }
+   if_freenameindex(interfaces);
+   return result;
+}
+
+[[nodiscard]] std::optional<std::string> missing_native_interface_name() {
+   for (auto suffix = 0U; suffix < 10000; ++suffix) {
+      auto name = "fg" + std::to_string(suffix);
+      if (if_nametoindex(name.c_str()) == 0) {
+         return name;
+      }
+   }
+   return std::nullopt;
+}
+
+[[nodiscard]] std::optional<unsigned int> missing_native_interface_index() {
+   for (auto index = 1U; index < 4096; ++index) {
+      auto name = std::array<char, IF_NAMESIZE>{};
+      if (if_indextoname(index, name.data()) == nullptr) {
+         return index;
+      }
+   }
+   return std::nullopt;
+}
+#endif
 
 class fake_stream final : public forge::net::transport::detail::stream_concept {
  public:
@@ -802,6 +867,125 @@ BOOST_AUTO_TEST_CASE(transport_endpoint_formats_authority_by_host_kind) {
    auto ip6 = endpoint("2001:db8::1", forge::net::transport::endpoint::protocol_kind::tcp, 443);
    ip6.host_type = forge::net::transport::endpoint::host_kind::ip6;
    BOOST_CHECK_EQUAL(ip6.authority(), "[2001:db8::1]:443");
+}
+
+BOOST_AUTO_TEST_CASE(transport_endpoint_requires_strict_native_literals) {
+   using endpoint_type = forge::net::transport::endpoint;
+
+   const auto ip4 = endpoint_type{.host_type = endpoint_type::host_kind::ip4,
+                                  .protocol = endpoint_type::protocol_kind::tcp,
+                                  .host = "127.0.0.1",
+                                  .port = 4001};
+   BOOST_CHECK(ip4.literal_address().is_v4());
+
+   auto embedded_nul = ip4;
+   embedded_nul.host = std::string{"127.0.0.1\0suffix", 16};
+   check_invalid_literal(embedded_nul);
+
+   auto scoped_ip4 = ip4;
+   scoped_ip4.zone = "1";
+   check_invalid_literal(scoped_ip4);
+
+   const auto dns = endpoint_type{.host_type = endpoint_type::host_kind::dns,
+                                  .protocol = endpoint_type::protocol_kind::tcp,
+                                  .host = "localhost",
+                                  .port = 4001,
+                                  .zone = "1"};
+   check_invalid_literal(dns);
+
+   const auto link_local = endpoint_type{.host_type = endpoint_type::host_kind::ip6,
+                                         .protocol = endpoint_type::protocol_kind::tcp,
+                                         .host = "fe80::1",
+                                         .port = 4001};
+   check_invalid_literal(link_local);
+
+   const auto empty_legacy_zone = endpoint_type{.host_type = endpoint_type::host_kind::ip6,
+                                                .protocol = endpoint_type::protocol_kind::tcp,
+                                                .host = "::1%",
+                                                .port = 4001};
+   check_invalid_literal(empty_legacy_zone);
+
+   auto nul_zone = endpoint_type{.host_type = endpoint_type::host_kind::ip6,
+                                 .protocol = endpoint_type::protocol_kind::tcp,
+                                 .host = "::1",
+                                 .port = 4001};
+   nul_zone.zone = std::string{"lo\0suffix", 9};
+   check_invalid_literal(nul_zone);
+
+#if defined(__APPLE__) || defined(__linux__)
+   const auto scope = first_native_interface();
+   if (!scope) {
+      BOOST_TEST_MESSAGE("no native interface available for scoped literal validation");
+      return;
+   }
+
+   const auto scoped = endpoint_type{.host_type = endpoint_type::host_kind::ip6,
+                                     .protocol = endpoint_type::protocol_kind::tcp,
+                                     .host = "::1",
+                                     .port = 4001,
+                                     .zone = scope->name};
+   BOOST_CHECK_EQUAL(scoped.literal_address().to_v6().scope_id(), scope->index);
+
+   auto numeric_scope = scoped;
+   numeric_scope.zone = std::to_string(scope->index);
+   BOOST_CHECK_EQUAL(numeric_scope.literal_address().to_v6().scope_id(), scope->index);
+
+   auto legacy_scope = scoped;
+   legacy_scope.host += "%" + scope->name;
+   legacy_scope.zone.clear();
+   BOOST_CHECK_EQUAL(legacy_scope.literal_address().to_v6().scope_id(), scope->index);
+
+   auto ambiguous_scope = scoped;
+   ambiguous_scope.host += "%" + scope->name;
+   check_invalid_literal(ambiguous_scope);
+
+   auto unknown_scope = scoped;
+   const auto unknown_name = missing_native_interface_name();
+   BOOST_REQUIRE(unknown_name.has_value());
+   unknown_scope.zone = *unknown_name;
+   check_invalid_literal(unknown_scope);
+
+   const auto unknown_index = missing_native_interface_index();
+   BOOST_REQUIRE(unknown_index.has_value());
+   auto unknown_numeric_scope = scoped;
+   unknown_numeric_scope.zone = std::to_string(*unknown_index);
+   check_invalid_literal(unknown_numeric_scope);
+
+   auto zero_scope = scoped;
+   zero_scope.zone = "0";
+   check_invalid_literal(zero_scope);
+
+   auto overflow_scope = scoped;
+   overflow_scope.zone = std::to_string(std::numeric_limits<unsigned int>::max()) + "0";
+   check_invalid_literal(overflow_scope);
+#else
+   const auto unsupported_scope = endpoint_type{.host_type = endpoint_type::host_kind::ip6,
+                                                .protocol = endpoint_type::protocol_kind::tcp,
+                                                .host = "::1",
+                                                .port = 4001,
+                                                .zone = "scope"};
+   BOOST_CHECK_EXCEPTION(static_cast<void>(unsupported_scope.literal_address()), boost::system::system_error,
+                         [](const auto& error) { return error.code() == boost::asio::error::operation_not_supported; });
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(transport_endpoint_from_address_preserves_numeric_scope_without_lookup) {
+   using endpoint_type = forge::net::transport::endpoint;
+   const auto scope = std::numeric_limits<boost::asio::ip::scope_id_type>::max();
+   const auto scoped_loopback = boost::asio::ip::address_v6{boost::asio::ip::address_v6::loopback().to_bytes(), scope};
+
+   const auto endpoint = endpoint_type::from_address(scoped_loopback, 4001, endpoint_type::protocol_kind::tcp);
+   BOOST_CHECK(endpoint.host_type == endpoint_type::host_kind::ip6);
+   BOOST_CHECK_EQUAL(endpoint.host, "::1");
+   BOOST_CHECK_EQUAL(endpoint.zone, std::to_string(scope));
+   BOOST_CHECK_EQUAL(endpoint.port, 4001U);
+   BOOST_CHECK(endpoint.protocol == endpoint_type::protocol_kind::tcp);
+
+   const auto ip4 = endpoint_type::from_address(boost::asio::ip::make_address_v4("192.0.2.1"), 4002,
+                                                endpoint_type::protocol_kind::quic_v1);
+   BOOST_CHECK(ip4.host_type == endpoint_type::host_kind::ip4);
+   BOOST_CHECK_EQUAL(ip4.host, "192.0.2.1");
+   BOOST_CHECK(ip4.zone.empty());
 }
 
 BOOST_AUTO_TEST_CASE(transport_connector_listener_wrappers_preserve_endpoints) {

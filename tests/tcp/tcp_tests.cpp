@@ -12,6 +12,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__) || defined(__linux__)
+#include <net/if.h>
+#endif
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -66,6 +70,34 @@ using bytes = std::vector<std::uint8_t>;
                                           .host = "127.0.0.1",
                                           .port = 1};
 }
+
+#if defined(__APPLE__) || defined(__linux__)
+struct native_interface {
+   std::string name;
+   unsigned int index = 0;
+};
+
+[[nodiscard]] std::optional<native_interface> first_native_interface() {
+   auto* interfaces = if_nameindex();
+   if (interfaces == nullptr) {
+      return std::nullopt;
+   }
+
+   auto result = std::optional<native_interface>{};
+   for (auto* current = interfaces; current->if_index != 0; ++current) {
+      if (current->if_name == nullptr) {
+         continue;
+      }
+      const auto index = if_nametoindex(current->if_name);
+      if (index != 0) {
+         result = native_interface{.name = current->if_name, .index = index};
+         break;
+      }
+   }
+   if_freenameindex(interfaces);
+   return result;
+}
+#endif
 
 boost::asio::awaitable<void> tcp_roundtrip() {
    auto executor = co_await boost::asio::this_coro::executor;
@@ -649,12 +681,85 @@ boost::asio::awaitable<void> late_foreign_thread_connector_request_cancel_preser
    co_await listener.async_close();
 }
 
+boost::asio::awaitable<void> tcp_scoped_loopback_preserves_numeric_reverse_zone() {
+#if defined(__APPLE__) || defined(__linux__)
+   const auto scope = first_native_interface();
+   if (!scope) {
+      BOOST_TEST_MESSAGE("no native interface available for scoped TCP loopback");
+      co_return;
+   }
+
+   auto executor = co_await boost::asio::this_coro::executor;
+   const auto requested = forge::net::transport::endpoint{
+       .host_type = forge::net::transport::endpoint::host_kind::ip6,
+       .protocol = forge::net::transport::endpoint::protocol_kind::tcp,
+       .host = "::1",
+       .port = 0,
+       .zone = scope->name};
+
+   auto listener = std::optional<forge::net::tcp::listener>{};
+   try {
+      listener.emplace(executor, requested);
+   } catch (const forge::net::tcp::exceptions::listen_failed&) {
+      BOOST_TEST_MESSAGE("native TCP does not support scoped loopback on this host");
+      co_return;
+   }
+
+   const auto local = listener->local_endpoint();
+   BOOST_CHECK_EQUAL(local.host, "::1");
+   BOOST_CHECK(local.host.find('%') == std::string::npos);
+   if (!local.zone.empty()) {
+      BOOST_CHECK_EQUAL(local.zone, std::to_string(scope->index));
+   }
+
+   auto remote = requested;
+   remote.port = local.port;
+   auto accept = boost::asio::co_spawn(executor, listener->async_accept(), boost::asio::use_awaitable);
+   auto connector = forge::net::tcp::connector{executor};
+   auto client = co_await connector.async_connect(remote);
+   auto server = co_await std::move(accept);
+
+   BOOST_CHECK(client.remote_endpoint.host.find('%') == std::string::npos);
+   BOOST_CHECK(server.local_endpoint.host.find('%') == std::string::npos);
+   if (!client.remote_endpoint.zone.empty()) {
+      BOOST_CHECK_EQUAL(client.remote_endpoint.zone, std::to_string(scope->index));
+   }
+   if (!server.local_endpoint.zone.empty()) {
+      BOOST_CHECK_EQUAL(server.local_endpoint.zone, std::to_string(scope->index));
+   }
+
+   co_await client.stream.async_close();
+   co_await server.stream.async_close();
+   co_await listener->async_close();
+#else
+   BOOST_TEST_MESSAGE("native TCP scope validation is unsupported on this platform");
+   co_return;
+#endif
+}
+
 boost::asio::awaitable<void> tcp_invalid_endpoint_checks() {
    auto executor = co_await boost::asio::this_coro::executor;
    auto connector = forge::net::tcp::connector{executor};
    BOOST_CHECK_THROW((void)co_await connector.async_connect(invalid_quic_endpoint()),
                      forge::net::tcp::exceptions::invalid_endpoint);
    BOOST_CHECK_THROW((void)co_await connector.async_connect(loopback(0)),
+                     forge::net::tcp::exceptions::invalid_endpoint);
+
+   auto link_local = forge::net::transport::endpoint{.host_type = forge::net::transport::endpoint::host_kind::ip6,
+                                                      .protocol = forge::net::transport::endpoint::protocol_kind::tcp,
+                                                      .host = "fe80::1",
+                                                      .port = 1};
+   BOOST_CHECK_THROW((void)co_await connector.async_connect(link_local),
+                     forge::net::tcp::exceptions::invalid_endpoint);
+
+   auto dns_with_zone = dns4_loopback(1);
+   dns_with_zone.zone = "1";
+   BOOST_CHECK_THROW((void)co_await connector.async_connect(dns_with_zone),
+                     forge::net::tcp::exceptions::invalid_endpoint);
+
+   auto nul_host = loopback(1);
+   nul_host.host = std::string{"127.0.0.1\0suffix", 16};
+   BOOST_CHECK_THROW((void)co_await connector.async_connect(nul_host),
                      forge::net::tcp::exceptions::invalid_endpoint);
 
    auto dns_listen = forge::net::transport::endpoint{.host_type = forge::net::transport::endpoint::host_kind::dns,
@@ -765,6 +870,12 @@ BOOST_AUTO_TEST_CASE(tcp_late_connector_request_cancel_preserves_handed_off_conn
    BOOST_CHECK(forge::asio::blocking::run_for(
        runtime, late_foreign_thread_connector_request_cancel_preserves_handed_off_connection(),
        std::chrono::seconds{2}));
+}
+
+BOOST_AUTO_TEST_CASE(tcp_scoped_loopback_uses_strict_literal_conversion_when_supported) {
+   auto runtime = forge::asio::runtime{};
+   BOOST_CHECK(forge::asio::blocking::run_for(runtime, tcp_scoped_loopback_preserves_numeric_reverse_zone(),
+                                              std::chrono::seconds{2}));
 }
 
 BOOST_AUTO_TEST_CASE(tcp_rejects_invalid_endpoints_and_refused_connects) {

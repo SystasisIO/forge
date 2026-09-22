@@ -3,6 +3,7 @@
 #include "connection_manager.hxx"
 #include "connection_gate.hxx"
 #include "connection_singleflight_registry.hxx"
+#include "direct_dial_root.hxx"
 #include "direct_transport.hxx"
 #include "dht_profile_state.hxx"
 #include "dht_provider_registry.hxx"
@@ -50,6 +51,7 @@ class worker_terminal_owner;
 class reachability_manager;
 class observed_address_manager;
 class host_event_source;
+class mdns_service;
 
 } // namespace detail
 
@@ -260,6 +262,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    std::shared_ptr<detail::dht_routing_refresh> routing_refresh;
    std::shared_ptr<detail::dht_provider_registry> provider_registry;
    std::shared_ptr<detail::topology_manager> topology_manager_value;
+   std::shared_ptr<detail::mdns_service> mdns_service_value;
    mutable connection_manager connections{connection_policy_for(options.limits)};
    std::map<protocol_id, node::protocol_handler> handlers;
    std::map<std::uint64_t, std::shared_ptr<session_state>> sessions;
@@ -302,6 +305,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    bool peer_state_hydrated = false;
 
    void initialize_lifecycle();
+   void initialize_mdns();
+   void stop_mdns() noexcept;
+   boost::asio::awaitable<void> join_mdns();
    void initialize_dht_routing_refresh();
    void initialize_dht_provider_registry();
    void initialize_topology_manager();
@@ -413,8 +419,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    topology_peer_prune_plan(std::size_t target_peers, std::size_t max_victims,
                             std::chrono::steady_clock::time_point now);
    boost::asio::awaitable<void> async_close_topology_sessions(std::vector<std::uint64_t> session_ids);
-   boost::asio::awaitable<bool> async_dial_topology_candidate(discovery::result candidate,
-                                                              std::shared_ptr<cancellation_latch> cancellation);
+   boost::asio::awaitable<bool>
+   async_dial_topology_candidate(discovery::result candidate, std::shared_ptr<cancellation_latch> cancellation,
+                                 detail::direct_dial_provenance provenance = detail::direct_dial_provenance::persistent);
    boost::asio::awaitable<std::vector<discovery::result>>
    async_collect_topology_discovery(std::shared_ptr<cancellation_latch> cancellation);
    boost::asio::awaitable<void>
@@ -637,6 +644,10 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<std::shared_ptr<session_state>>
    connect_direct(std::vector<forge::multiformats::multiaddr> roots, node::connect_options connect_options_value,
+                  std::shared_ptr<cancellation_latch> cancellation = {});
+
+   boost::asio::awaitable<std::shared_ptr<session_state>>
+   connect_direct(std::vector<detail::direct_dial_root> roots, node::connect_options connect_options_value,
                   std::shared_ptr<cancellation_latch> cancellation = {});
 
    static boost::asio::awaitable<node::session_info>

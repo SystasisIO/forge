@@ -92,6 +92,40 @@ BOOST_AUTO_TEST_CASE(observed_address_observer_group_is_numeric_and_shared_with_
    BOOST_TEST(!p2p::host_addresses::observer_group(invalid).has_value());
 }
 
+BOOST_AUTO_TEST_CASE(host_addresses_rejects_interface_zones_before_dnsaddr_fallback_and_egress) {
+   const auto local = peer(90);
+   const auto scoped = address("/ip6zone/receiver0/ip6/2001:4860::1/tcp/4001");
+   const auto public_address = address("/ip6/2001:4860::2/tcp/4001");
+   const auto context = p2p::host_addresses::learning_context{
+       .source = p2p::host_addresses::source_kind::authenticated,
+   };
+
+   BOOST_TEST(!p2p::host_addresses::learned(scoped, local, context).has_value());
+
+   auto mixed = forge::multiformats::multiaddr{};
+   mixed.push({.code = forge::multiformats::protocol_code::ip6zone, .value = "receiver0"});
+   mixed.push({.code = forge::multiformats::protocol_code::dnsaddr, .value = "bootstrap.example"});
+   BOOST_TEST(!p2p::host_addresses::learned(mixed, local, context).has_value());
+
+   const auto advertised = p2p::host_addresses::merge_advertised({scoped, public_address}, {scoped}, local);
+   BOOST_REQUIRE_EQUAL(advertised.size(), 1U);
+   BOOST_TEST(advertised.front().to_string() == public_address.to_string() + "/p2p/" + local.to_string());
+}
+
+BOOST_AUTO_TEST_CASE(observed_address_requires_listener_scope_match) {
+   const auto local = address("/ip6zone/1/ip6/fd00::2/tcp/4001");
+   const auto remote = address("/ip6zone/1/ip6/2001:4860::1/tcp/5001");
+   const auto reported = address("/ip6/2606:4700::1111/tcp/8000");
+   const auto listener = address("/ip6zone/1/ip6/fd00::2/tcp/4001");
+   const auto other_interface = address("/ip6zone/2/ip6/fd00::2/tcp/4001");
+
+   auto matched = manager{};
+   BOOST_REQUIRE(matched.observe(1, peer(1), local, remote, reported, std::array{listener}, start));
+
+   auto mismatched = manager{};
+   BOOST_TEST(!mismatched.observe(1, peer(1), local, remote, reported, std::array{other_interface}, start));
+}
+
 BOOST_AUTO_TEST_CASE(observed_address_requires_distinct_authenticated_peers_and_ipv4_addresses) {
    const auto reported = address("/ip4/8.8.8.8/tcp/8000");
    auto value = manager{};

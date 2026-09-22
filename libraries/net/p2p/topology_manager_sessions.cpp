@@ -22,6 +22,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
 
@@ -61,7 +62,7 @@ boost::asio::awaitable<void> topology_manager::async_reconcile_sessions() {
    }
 }
 
-boost::asio::awaitable<void> topology_manager::async_dial_candidates(std::vector<discovery::result> candidates,
+boost::asio::awaitable<void> topology_manager::async_dial_candidates(std::vector<dial_candidate> candidates,
                                                                       std::size_t required) {
    if (required == 0 || candidates.empty() || stopping()) {
       co_return;
@@ -209,8 +210,9 @@ boost::asio::awaitable<void> topology_manager::async_dial_candidates(std::vector
 }
 
 boost::asio::awaitable<void> topology_manager::async_dial_worker(const std::shared_ptr<dial_batch>& batch) {
+   using namespace boost::asio::experimental::awaitable_operators;
    while (!stopping() && !batch->cancellation->stop_requested()) {
-      auto candidate = std::optional<discovery::result>{};
+      auto candidate = std::optional<dial_candidate>{};
       auto claimed = false;
       auto settled = false;
       auto succeeded = false;
@@ -218,6 +220,7 @@ boost::asio::awaitable<void> topology_manager::async_dial_worker(const std::shar
       auto cancellation = std::shared_ptr<cancellation_latch>{};
       auto root_subscription = cancellation_latch::subscription{};
       auto registered = false;
+      auto mdns_registered = false;
 
       const auto settle = [&](bool success) noexcept {
          if (!claimed || settled) {
@@ -242,6 +245,10 @@ boost::asio::awaitable<void> topology_manager::async_dial_worker(const std::shar
          }
       };
       const auto cleanup = [&]() noexcept {
+         if (mdns_registered) {
+            try { finish_mdns_dial(*candidate, cancellation, succeeded); } catch (...) {}
+            mdns_registered = false;
+         }
          if (cancellation) {
             static_cast<void>(cancellation->finish());
          }
@@ -271,9 +278,30 @@ boost::asio::awaitable<void> topology_manager::async_dial_worker(const std::shar
          });
          add_cancellation(cancellation);
          registered = true;
-         auto dial = callbacks_.dial(*candidate, cancellation);
+         if (candidate->result.discovered_by == discovery::source::mdns) {
+            const auto expiry = admit_mdns_dial(*candidate, cancellation);
+            if (!expiry) {
+               settle(false);
+               cleanup();
+               continue;
+            }
+            mdns_registered = true;
+         }
+         if (cancellation->stop_requested()) {
+            settle(false);
+            cleanup();
+            continue;
+         }
+         auto dial = callbacks_.dial(candidate->result, cancellation);
          try {
-            succeeded = co_await std::move(dial);
+            if (mdns_registered) {
+               // Both branches are owned by this tracked worker; cleanup cannot
+               // erase the attempt or release lifecycle ownership before join.
+               succeeded = co_await (async_mdns_connect(std::move(dial), cancellation) &&
+                                      async_watch_mdns_expiry(cancellation));
+            } else {
+               succeeded = co_await std::move(dial);
+            }
          } catch (...) {
             dial_failure = std::current_exception();
          }
@@ -289,17 +317,73 @@ boost::asio::awaitable<void> topology_manager::async_dial_worker(const std::shar
                }
             }
          }
-         note_dial_result(*candidate, succeeded);
+         if (candidate->result.discovered_by != discovery::source::mdns) {
+            note_dial_result(candidate->result, succeeded);
+         }
       } catch (...) {
          const auto failure = std::current_exception();
          fail(failure);
-         cleanup();
+         // Local setup failure closes the batch, not the peer's retry window.
+         // Publish cancellation before cleanup classifies the mDNS result.
          batch->cancellation->request_stop();
+         cleanup();
          std::rethrow_exception(failure);
       }
    }
    if (clocks_.before_dial_worker_completion) {
       clocks_.before_dial_worker_completion();
+   }
+}
+
+boost::asio::awaitable<bool> topology_manager::async_mdns_connect(
+    boost::asio::awaitable<bool> dial, std::shared_ptr<cancellation_latch> cancellation) {
+   auto success = false;
+   auto failure = std::exception_ptr{};
+   try {
+      if (!cancellation->stop_requested()) { success = co_await std::move(dial); }
+   } catch (...) { failure = std::current_exception(); }
+   {
+      const auto lock = std::scoped_lock{mutex_};
+      if (const auto found = mdns_attempts_.find(cancellation); found != mdns_attempts_.end()) {
+         found->second.finished = true;
+      }
+   }
+   changed_->notify();
+   if (failure) { std::rethrow_exception(failure); }
+   co_return success;
+}
+
+boost::asio::awaitable<void> topology_manager::async_watch_mdns_expiry(
+    std::shared_ptr<cancellation_latch> cancellation) {
+   try {
+      while (true) {
+         const auto observed = changed_->epoch();
+         const auto now = clocks_.steady_now();
+         auto deadline = std::chrono::steady_clock::time_point{};
+         auto expired = false;
+         {
+            const auto lock = std::scoped_lock{mutex_};
+            const auto found = mdns_attempts_.find(cancellation);
+            if (found == mdns_attempts_.end() || found->second.finished || found->second.expired) { co_return; }
+            deadline = found->second.deadline;
+            if (deadline <= now) {
+               // Linearization point shared with renewal/withdrawal. Once
+               // expired, a later renewal must not resurrect this attempt.
+               found->second.expired = true;
+               expired = true;
+            }
+         }
+         if (expired) {
+            cancellation->request_stop();
+            co_return;
+         }
+         // Notification owns its timer on this coroutine's executor. Publishers
+         // only update state and notify, never mutate a timer from another thread.
+         static_cast<void>(co_await changed_->async_wait_until(observed, deadline));
+      }
+   } catch (...) {
+      cancellation->request_stop();
+      throw;
    }
 }
 

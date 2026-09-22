@@ -14,6 +14,7 @@ from autonat_acceptance import (
     SCENARIOS as AUTONAT_SCENARIOS,
 )
 from check_stage6_acceptance import EVIDENCE_CONTRACT_VALIDATORS, expected_launcher_transport
+from mdns_acceptance import SCENARIOS as MDNS_SCENARIOS, EVIDENCE_CONTRACTS as MDNS_EVIDENCE_CONTRACTS
 from provenance import (
     donor_checkout_head_errors,
     donor_revision_schema_errors,
@@ -105,6 +106,21 @@ def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError(f"duplicate JSON key {key!r}")
         result[key] = value
     return result
+
+
+def private_mdns_attribution_errors(capability: dict[str, object]) -> list[str]:
+    sources = capability.get("donor_sources", [])
+    required = (
+        "donors/libp2p-specs/discovery/mdns.md",
+        "donors/rust-libp2p/transports/pnet/src/lib.rs",
+    )
+    if (capability.get("origin") != "libp2p" or not isinstance(sources, list)
+            or not all(source in sources for source in required)):
+        return [
+            "donor capability discovery.mdns_private_fingerprinted: must attribute the namespace "
+            "to the libp2p specification and fingerprint computation to pinned Rust pnet"
+        ]
+    return []
 
 
 def extract_namespace_names(source: str, namespace: str, declaration: str) -> set[str]:
@@ -217,6 +233,7 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
             "LIVE_SCENARIO_PROFILES",
             "CURRENT_ACCEPTANCE_SCENARIOS",
             "AUTONAT_ACCEPTANCE_SCENARIOS",
+            "MDNS_ACCEPTANCE_SCENARIOS",
         }:
             continue
         if target.id in literal_maps:
@@ -253,9 +270,12 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
     autonat = literal_maps.get("AUTONAT_ACCEPTANCE_SCENARIOS", {})
     if autonat and autonat != {f"{value[4]}/{name}": (name,) for name, value in AUTONAT_SCENARIOS.items()}:
         raise ValueError("AutoNAT registration must cover all 12 exact role scenarios")
+    mdns = literal_maps.get("MDNS_ACCEPTANCE_SCENARIOS", {})
+    if mdns != {value[1]: (name,) for name, value in MDNS_SCENARIOS.items()}:
+        raise ValueError("mDNS registration must cover both exact focused-suite contracts")
     return {
         (runner_scenario_id, scenario_id)
-        for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat}.items()
+        for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat, **mdns}.items()
         for scenario_id in scenario_ids
     }
 
@@ -1225,8 +1245,8 @@ def main() -> int:
                 or evidence_contract != evidence_contract_for(scenario_id)
                 or evidence_contract not in declared_contract_set
                 or registration not in {"registered", "planned"}
-                or (registration == "registered" and evidence_contract not in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS))
-                or (registration == "planned" and evidence_contract in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS))
+                or (registration == "registered" and evidence_contract not in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS))
+                or (registration == "planned" and evidence_contract in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS))
                 or evidence_contract in seen_evidence_contracts
             ):
                 errors.append(
@@ -1279,7 +1299,7 @@ def main() -> int:
                 # Registration establishes an executable contract, not a live
                 # verdict. Only the new paired suite may register while staged.
                 if capability.get("decision") != "current" and not (
-                    capability.get("decision") == "stage_6" and scenario_id in AUTONAT_SCENARIOS
+                    capability.get("decision") == "stage_6" and scenario_id in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS))
                 ):
                     errors.append(
                         f"donor capability {capability_id}: staged scenario cannot claim current runner registration"
@@ -1389,7 +1409,7 @@ def main() -> int:
 
     if declared_contract_set != seen_evidence_contracts:
         errors.append("donor capabilities: evidence contract registry must cover acceptance scenarios exactly")
-    if registered_evidence_contracts != set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS:
+    if registered_evidence_contracts != set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS:
         errors.append(
             "donor capabilities: executable validator registry must match registered evidence contracts exactly"
         )
@@ -1607,7 +1627,6 @@ def main() -> int:
             )
 
     forge_policy_extensions = {
-        "discovery.mdns_private_fingerprinted",
         "reachability.private_internet_policy",
     }
     for capability_id in forge_policy_extensions:
@@ -1621,6 +1640,10 @@ def main() -> int:
             errors.append(
                 f"donor capability {capability_id}: must remain a Forge extension with its design source"
             )
+
+    errors.extend(private_mdns_attribution_errors(
+        capabilities_by_id.get("discovery.mdns_private_fingerprinted", {})
+    ))
 
     gossipsub_branch_owners = {
         "pubsub.gossipsub_v1_0_v1_1": "forge-p2p-gossipsub-scoring-v1",

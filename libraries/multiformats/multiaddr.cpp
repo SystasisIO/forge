@@ -125,6 +125,8 @@ void append_big_endian_port(bytes& out, std::uint16_t port) {
       return protocol_code::tcp;
    case multicodec_code::ip6:
       return protocol_code::ip6;
+   case multicodec_code::ip6zone:
+      return protocol_code::ip6zone;
    case multicodec_code::dns:
       return protocol_code::dns;
    case multicodec_code::dns4:
@@ -173,6 +175,14 @@ void validate_component(const multiaddr_component& component) {
          throw exceptions::invalid_format{"multiaddr protocol is missing a value"};
       }
       (void)parse_ip(component.value, AF_INET6, 16);
+      break;
+   case protocol_code::ip6zone:
+      if (component.value.empty()) {
+         throw exceptions::invalid_format{"multiaddr protocol is missing a value"};
+      }
+      if (component.value.contains('/')) {
+         throw exceptions::invalid_format{"multiaddr ip6zone value must not contain '/'"};
+      }
       break;
    case protocol_code::tcp:
    case protocol_code::udp:
@@ -230,6 +240,7 @@ multiaddr multiaddr::parse(std::string_view value) {
       switch (code) {
       case protocol_code::ip4:
       case protocol_code::ip6:
+      case protocol_code::ip6zone:
       case protocol_code::dns:
       case protocol_code::dns4:
       case protocol_code::dns6:
@@ -282,6 +293,9 @@ multiaddr multiaddr::from_bytes(std::span<const std::uint8_t> data) {
          offset += 16;
          break;
       }
+      case protocol_code::ip6zone:
+         result.push({.code = code, .value = read_prefixed_string(data, offset)});
+         break;
       case protocol_code::tcp:
       case protocol_code::udp:
          result.push({.code = code, .value = std::to_string(read_big_endian_port(data, offset))});
@@ -345,6 +359,11 @@ bytes multiaddr::to_bytes() const {
       case protocol_code::ip6: {
          auto parsed = parse_ip(component.value, AF_INET6, 16);
          out.insert(out.end(), parsed.begin(), parsed.end());
+         break;
+      }
+      case protocol_code::ip6zone: {
+         auto payload = bytes{component.value.begin(), component.value.end()};
+         append_prefixed(out, payload);
          break;
       }
       case protocol_code::tcp:

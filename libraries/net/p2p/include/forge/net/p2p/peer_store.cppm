@@ -67,6 +67,9 @@ class peer_store {
       std::string agent_version;
       std::vector<std::uint8_t> public_key;
       std::vector<protocol_id> protocols;
+      // Original envelope bytes. Identify verifies signatures and sequence;
+      // direct upsert and hydration do not authenticate these bytes. Consumers
+      // must verify and apply their address policy before forwarding.
       std::vector<std::uint8_t> signed_peer_record;
       std::vector<endpoint_record> endpoints;
       std::vector<relay_record> relay_reservations;

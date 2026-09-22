@@ -1,5 +1,10 @@
 module;
 
+#include "details/mdns_registry.hxx"
+#include "details/interface_watcher.hxx"
+#include "details/mdns_wire.hxx"
+#include <boost/asio/ip/udp.hpp>
+
 #include <forge/exceptions/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -44,7 +49,11 @@ module;
 
 module forge.net.p2p.node;
 
+import forge.exceptions;
+
 import forge.asio.gate;
+import forge.codec.hex;
+import forge.net.pnet.network_fingerprint;
 import forge.asio.notification;
 import forge.crypto.asymmetric;
 import forge.net.p2p.dht;
@@ -68,6 +77,7 @@ import forge.net.yamux.session;
 #include "details/bootstrap_service.hxx"
 #include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
+#include "details/mdns_service.hxx"
 
 namespace forge::net::p2p {
 namespace {
@@ -231,6 +241,7 @@ void node::impl::initialize_lifecycle() {
 }
 
 void node::impl::request_lifecycle_stop() noexcept {
+   stop_mdns();
    auto active_peer_exchange_operations = std::map<std::uint64_t, std::shared_ptr<peer_exchange_operation>>{};
    {
       const auto lock = std::scoped_lock{mutex};
@@ -312,6 +323,7 @@ void node::impl::listen(forge::net::p2p::endpoint endpoint) {
       provider_registry->notify_endpoints_changed();
    }
    notify_reachability_changed();
+   if (mdns_service_value) { mdns_service_value->notify_addresses_changed(); }
    if (launch_identify_push) {
       launch_identify_pushes();
    }
@@ -326,6 +338,7 @@ boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
    for (const auto& endpoint : options.lifecycle.listen) {
       listen(endpoint);
    }
+   if (mdns_service_value) { mdns_service_value->start(lifecycle); }
 
    lifecycle.set_phase(lifecycle_phase::bootstrapping);
    const auto connected = co_await bootstrap->async_initial_bootstrap();
@@ -346,6 +359,49 @@ boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
        .degraded = bootstrap->configured_count() != 0 && connected == 0,
        .last_bootstrap_failure = bootstrap->last_failure(),
    };
+}
+
+void node::impl::initialize_mdns() {
+   if (!options.mdns.enabled) { return; }
+   auto service = detail::mdns_codec::name{"_p2p", "_udp", "local"};
+   if (options.private_network) {
+      const auto fingerprint = options.private_network->protector->network_fingerprint();
+      service.front() += "-" + forge::codec::hex::encode(fingerprint.bytes);
+   }
+   const auto weak = weak_from_this();
+   mdns_service_value = std::make_shared<detail::mdns_service>(runtime.context().get_executor(), resources,
+       options.mdns, local, std::move(service), detail::mdns_service::callbacks{
+           .listeners = [weak] {
+              if (const auto self = weak.lock()) {
+                 const auto lock = std::scoped_lock{self->mutex};
+                 return self->direct_registry.local_endpoints();
+              }
+              return std::vector<endpoint>{};
+           },
+           .replace = [weak](std::vector<detail::mdns_registry::lease> leases) {
+              if (const auto self = weak.lock()) {
+                 auto values = std::vector<detail::topology_manager::mdns_lease>{};
+                 values.reserve(leases.size());
+                 for (auto& lease : leases) {
+                    values.push_back({std::move(lease.peer), lease.address.to_multiaddr(),
+                                      lease.interface_index, lease.generation, lease.expires_at});
+                 }
+                 self->topology_manager_value->replace_mdns_snapshot(std::move(values));
+              }
+           },
+           .error = [](std::exception_ptr failure) {
+              try { if (failure) { std::rethrow_exception(failure); } }
+              catch (...) { forge::exceptions::capture_and_log("P2P mDNS service failed"); }
+           },
+       });
+}
+
+void node::impl::stop_mdns() noexcept {
+   if (mdns_service_value) { mdns_service_value->request_stop(); }
+}
+
+boost::asio::awaitable<void> node::impl::join_mdns() {
+   if (mdns_service_value) { co_await mdns_service_value->async_join(); }
 }
 
 } // namespace forge::net::p2p

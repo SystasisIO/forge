@@ -132,11 +132,12 @@ void quic_client_token_cache::close() noexcept {
 }
 
 std::string quic_client_token_cache::make_key(std::span<const std::uint8_t> expected_peer, std::string_view host_kind,
-                                              std::string_view host, std::uint16_t port) {
+                                              std::string_view host, std::string_view zone, std::uint16_t port) {
    auto out = std::string{"forge-quic-v1"};
    append_component(out, std::string_view{reinterpret_cast<const char*>(expected_peer.data()), expected_peer.size()});
    append_component(out, host_kind);
    append_component(out, normalized_host(host));
+   append_component(out, zone);
    append_component(out, std::to_string(port));
    return out;
 }

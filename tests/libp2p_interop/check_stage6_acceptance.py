@@ -15,6 +15,8 @@ from dns_evidence import DNSADDR_SCENARIOS, validate_dnsaddr
 from provider_evidence import validate_provider_evidence
 from upgrade_evidence import validate_go_dial_upgrade, validate_go_listener_upgrade
 from rust_upgrade_evidence import validate_rust_dial_upgrade, validate_rust_listener_upgrade
+from mdns_acceptance import (SCENARIOS as MDNS_SCENARIOS, EVIDENCE_CONTRACTS as MDNS_EVIDENCE_CONTRACTS,
+                             validate_suite as validate_mdns_suite)
 from autonat_acceptance import (
     EVIDENCE_CONTRACTS as AUTONAT_EVIDENCE_CONTRACTS,
     ROLE_DIRECTIONS as AUTONAT_ROLE_DIRECTIONS,
@@ -170,7 +172,7 @@ def required_scenarios(
     list[str],
 ]:
     errors: list[str] = []
-    if suite not in ("stage6", "autonat"):
+    if suite not in ("stage6", "autonat", "mdns"):
         return {}, ["unknown acceptance suite"]
     if not isinstance(manifest, dict):
         return {}, ["manifest must be a JSON object"]
@@ -223,7 +225,8 @@ def required_scenarios(
             registration = scenario.get("registration")
             evidence_contract = scenario.get("evidence_contract")
             stack = tuple(transport_stack) if isinstance(transport_stack, list) else ()
-            selected = suite == "stage6" or (isinstance(scenario_id, str) and scenario_id in AUTONAT_SCENARIOS)
+            selected = suite == "stage6" or (isinstance(scenario_id, str) and scenario_id in (
+                MDNS_SCENARIOS if suite == "mdns" else AUTONAT_SCENARIOS))
             if selected and registration != "registered":
                 errors.append(
                     f"manifest {capability_id}/{scenario_id}: non-registered scenario is promotion-blocking "
@@ -264,7 +267,7 @@ def required_scenarios(
             else:
                 referenced_contracts.add(evidence_contract)
                 if registration == "registered" and evidence_contract not in (
-                    set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS
+                    set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
                 ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
@@ -289,6 +292,22 @@ def required_scenarios(
                 dependencies, evidence_contract_for(name),
             ):
                 errors.append(f"AutoNAT {name}: role directions or exact profile contract mismatch")
+    mdns_required = {key: value for key, value in required.items() if key[1] in MDNS_SCENARIOS}
+    if suite == "mdns" or mdns_required:
+        if {name for _, name in mdns_required} != set(MDNS_SCENARIOS):
+            errors.append("mDNS suite requires both registered public and private contracts")
+        for (capability, name), value in mdns_required.items():
+            owner, runner_scenario = MDNS_SCENARIOS[name]
+            private = name == "mdns_private_fingerprinted_go"
+            directions = {"forge_to_go", "go_to_forge"}
+            if not private:
+                directions |= {"forge_to_rust", "rust_to_forge"}
+            if capability != owner or value != (
+                directions, "passed", "private_network" if private else "native",
+                ("tcp", "pnet", "yamux") if private else ("tcp", "yamux"), runner_scenario,
+                ("security.private_network_psk",) if private else (), evidence_contract_for(name),
+            ):
+                errors.append(f"mDNS {name}: exact profile contract mismatch")
     return required, errors
 
 
@@ -343,7 +362,7 @@ def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path,
         "source_dir", "build_dir", "forge_root", "donors_root", "acceptance_manifest"
     }
     if (not isinstance(inputs, dict) or set(inputs) not in (path_keys, path_keys | {"suite"})
-            or inputs.get("suite", "stage6") != suite or suite not in ("stage6", "autonat")):
+            or inputs.get("suite", "stage6") != suite or suite not in ("stage6", "autonat", "mdns")):
         return {}, ["artifact runner input provenance has invalid schema"]
     paths = {key: absolute_path(inputs.get(key)) for key in path_keys}
     if any(path is None for path in paths.values()):
@@ -355,8 +374,8 @@ def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path,
         or resolved["forge_root"] != root.resolve()
         or resolved["acceptance_manifest"] != manifest_path.resolve()
         or not resolved["donors_root"].is_dir()
-        or artifact_root != build_dir / ("autonat-run" if suite == "autonat" else "interop-run")
-        or artifact_path.resolve() != build_dir / ("autonat-artifacts.json" if suite == "autonat" else "interop-artifacts.json")
+        or artifact_root != build_dir / (f"{suite}-run" if suite != "stage6" else "interop-run")
+        or artifact_path.resolve() != build_dir / (f"{suite}-artifacts.json" if suite != "stage6" else "interop-artifacts.json")
     ):
         return {}, ["artifact runner input provenance does not bind canonical roots and artifact paths"]
     return resolved, []
@@ -390,7 +409,7 @@ def validate_donor_provenance(root: Path, provenance: object, inputs: dict[str, 
 
 def validate_runner_argv(root: Path, argv: object, manifest_path: Path, inputs: dict[str, Path],
                          binary_paths: dict[str, Path], suite: str = "stage6") -> list[str]:
-    flags = RUNNER_FLAGS + (("--suite",) if suite == "autonat" else ())
+    flags = RUNNER_FLAGS + (("--suite",) if suite != "stage6" else ())
     if not isinstance(argv, list) or len(argv) != 2 + 2 * len(flags) or any(
         not isinstance(argument, str) or not argument for argument in argv
     ):
@@ -404,7 +423,7 @@ def validate_runner_argv(root: Path, argv: object, manifest_path: Path, inputs: 
     if tuple(argv[2::2]) != flags:
         return ["artifact runner argv flags differ from the canonical live runner mode"]
     values = dict(zip(flags, argv[3::2]))
-    if suite == "autonat" and values["--suite"] != suite:
+    if suite != "stage6" and values["--suite"] != suite:
         return ["artifact runner argv suite differs from canonical inputs"]
     if values["--enabled"] not in ENABLED_VALUES:
         return ["artifact runner argv does not prove an enabled live execution"]
@@ -580,7 +599,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                 visit(nested, child_process or (process and "log_file" not in value), isolated)
 
     for record in artifacts:
-        visit(record, isolated=isinstance(record, dict) and record.get("suite") == "autonat")
+        visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns"))
 
     def clean(view):
         terminal = view.get("terminal_status")
@@ -1998,7 +2017,7 @@ def validate(
     provenance = artifact.get("fixture_provenance")
     runner_inputs = provenance.get("runner_inputs") if isinstance(provenance, dict) else None
     suite = runner_inputs.get("suite", "stage6") if isinstance(runner_inputs, dict) else None
-    if suite not in ("stage6", "autonat") or (expected_suite is not None and suite != expected_suite):
+    if suite not in ("stage6", "autonat", "mdns") or (expected_suite is not None and suite != expected_suite):
         return [*errors, "artifact suite differs from requested canonical suite"], False
     required, manifest_errors = required_scenarios(manifest, suite)
     errors.extend(manifest_errors)
@@ -2061,9 +2080,11 @@ def validate(
     if not isinstance(artifacts, list) or not artifacts:
         return [*errors, "canonical runner artifacts must be a non-empty array"], False
     autonat_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "autonat"]
-    base_records = [record for record in artifacts if not isinstance(record, dict) or record.get("suite") != "autonat"]
+    mdns_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "mdns"]
+    base_records = [record for record in artifacts if not isinstance(record, dict) or record.get("suite") not in ("autonat", "mdns")]
     autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
-    base_required = {key: value for key, value in required.items() if key[1] not in AUTONAT_SCENARIOS}
+    mdns_required = {key: value for key, value in required.items() if key[1] in MDNS_SCENARIOS}
+    base_required = {key: value for key, value in required.items() if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS))}
     indexed_evidence, evidence_errors = validate_evidence_index(
         artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
@@ -2071,6 +2092,33 @@ def validate(
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
     used_evidence: set[Path] = set()
+    # Partial legacy parser manifests do not imply mDNS support. Registered
+    # contracts (or supplied mDNS records) always require the entire matrix.
+    if suite == "mdns" or mdns_required or mdns_records:
+        if {name for _, name in mdns_required} != set(MDNS_SCENARIOS):
+            errors.append("mDNS requires both registered public and private contracts")
+
+        def load_mdns_json(value):
+            path = path_within(value, artifact_root)
+            if path is None or path not in indexed_evidence:
+                raise ValueError("mDNS raw output absent from verified evidence index")
+            payload, failures = load_evidence_json(path, "mDNS raw output")
+            if failures or payload is None:
+                raise ValueError("; ".join(failures))
+            return payload
+
+        for record in mdns_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("mDNS cases reuse raw process/network evidence")
+            used_evidence.update(paths)
+        errors.extend(validate_mdns_suite(mdns_records, mdns_required, artifact_root, binary_paths, load_mdns_json,
+                                         root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key"))
+    if suite == "mdns":
+        if base_records or autonat_records:
+            errors.append("focused mDNS suite contains unrelated records")
+        return errors, False
+
     # Standalone legacy parser fixtures can have a partial manifest, but every
     # promotion receipt and every registered AutoNAT claim requires the full 41.
     if suite == "autonat" or autonat_required or autonat_records or execution_receipt is not None:
@@ -2094,7 +2142,7 @@ def validate(
             pnet_fingerprint_for_launcher_key, root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key",
         ))
     if suite == "autonat":
-        if base_records:
+        if base_records or mdns_records:
             errors.append("focused AutoNAT suite contains unrelated base records")
         return errors, False
 

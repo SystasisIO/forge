@@ -234,6 +234,9 @@ std::vector<endpoint> merge_advertised(const std::vector<endpoint>& configured, 
    auto out = std::vector<endpoint>{};
    auto seen = std::set<std::string>{};
    const auto append = [&](endpoint value) {
+      if (has_interface_zone(value)) {
+         return;
+      }
       value.peer = local;
       const auto key = value.to_string();
       if (seen.insert(key).second) {
@@ -254,6 +257,9 @@ std::optional<endpoint> learned(endpoint value, const peer_id& peer) {
 }
 
 std::optional<endpoint> learned(endpoint value, const peer_id& peer, learning_context context) {
+   if (has_interface_zone(value)) {
+      return std::nullopt;
+   }
    if (!peer_suffix_matches(value, peer)) {
       return std::nullopt;
    }
@@ -286,6 +292,9 @@ std::vector<endpoint> sanitize_discovered_endpoints(std::vector<endpoint> values
 
 std::optional<forge::multiformats::multiaddr>
 learned(forge::multiformats::multiaddr value, const peer_id& peer, learning_context context) {
+   if (has_interface_zone(value)) {
+      return std::nullopt;
+   }
    const auto suffix = validate_peer_suffix(value, peer);
    if (!suffix) {
       return std::nullopt;
@@ -308,6 +317,16 @@ learned(forge::multiformats::multiaddr value, const peer_id& peer, learning_cont
       }
       return value;
    }
+}
+
+bool has_interface_zone(const endpoint& value) noexcept {
+   return !value.transport.zone.empty();
+}
+
+bool has_interface_zone(const forge::multiformats::multiaddr& value) noexcept {
+   return std::ranges::any_of(value.components(), [](const auto& component) {
+      return component.code == forge::multiformats::protocol_code::ip6zone;
+   });
 }
 
 std::vector<forge::multiformats::multiaddr>

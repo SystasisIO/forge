@@ -260,7 +260,10 @@ boost::asio::awaitable<void> node::impl::join_reachability() {
 }
 
 void node::impl::observe_address(const std::shared_ptr<session_state>& session, const identify::document& document) {
-   if (!observed_addresses || !document.observed_endpoint) { return; }
+   if (!observed_addresses || !document.observed_endpoint ||
+       host_addresses::has_interface_zone(*document.observed_endpoint)) {
+      return;
+   }
    {
       const auto lock = std::scoped_lock{mutex};
       const auto found = sessions.find(session->id);

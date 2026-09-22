@@ -37,6 +37,7 @@ import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 
 #include "details/dns_address_expander.hxx"
+#include "details/host_addresses.hxx"
 
 namespace forge::net::p2p::detail {
 
@@ -166,6 +167,7 @@ void check_cancellation(std::chrono::steady_clock::time_point deadline, std::sto
    case protocol_code::dns4:
    case protocol_code::dns6:
    case protocol_code::dnsaddr:
+   case protocol_code::ip6zone:
    case protocol_code::p2p:
       // For p2p, the text form is a conservative upper bound on decoded bytes.
       return checked_add(result, checked_add(varint_size(component.value.size()), component.value.size(),
@@ -513,6 +515,9 @@ async_expand_candidate(const std::shared_ptr<dns_address_expansion_operation>& o
                        std::stop_token stop, std::size_t depth, bool discovered) {
    auto& state = operation->state;
    check_cancellation(deadline, stop);
+   if (discovered && host_addresses::has_interface_zone(candidate)) {
+      co_return std::vector<endpoint>{};
+   }
    const auto active_key = candidate.to_string();
    auto found = state.candidates.try_emplace(active_key).first;
    auto& cached = found->second;
@@ -614,6 +619,11 @@ async_expand_candidate(const std::shared_ptr<dns_address_expansion_operation>& o
                   } catch (const multiformats::exceptions::invalid_format&) {
                      // DNSADDR records are independently supplied candidates; malformed
                      // records must not poison other valid records in the same answer.
+                     continue;
+                  }
+                  if (host_addresses::has_interface_zone(parsed)) {
+                     // TXT answers are remote data. Interface scope belongs only to
+                     // the local host that supplied a literal root.
                      continue;
                   }
                   ensure_size_at_most(parsed.components(), state.limits.max_multiaddr_size);

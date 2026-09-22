@@ -101,6 +101,7 @@ class topology_manager : public std::enable_shared_from_this<topology_manager> {
       bool refresh_queued = false;
       bool refresh_in_flight = false;
       std::size_t observations = 0;
+      std::size_t mdns_observations = 0;
       std::size_t active_operations = 0;
       std::size_t waiting_refreshes = 0;
       std::uint64_t completed_refreshes = 0;
@@ -119,6 +120,17 @@ class topology_manager : public std::enable_shared_from_this<topology_manager> {
    boost::asio::awaitable<std::vector<discovery::result>> async_refresh();
    boost::asio::awaitable<void> async_join();
    [[nodiscard]] status current() const;
+
+   struct mdns_lease {
+      peer_id peer;
+      forge::multiformats::multiaddr address;
+      std::uint32_t interface_index = 0;
+      std::uint64_t generation = 0;
+      std::chrono::steady_clock::time_point expires_at;
+      std::string address_key{}; // Recomputed at snapshot admission, never trusted from callers.
+   };
+   // Serialized full-source replacement; callbacks/cancellation run after unlock.
+   void replace_mdns_snapshot(std::vector<mdns_lease> leases);
 
  private:
    struct observation_key {
@@ -160,9 +172,26 @@ class topology_manager : public std::enable_shared_from_this<topology_manager> {
       std::vector<std::uint8_t> cookie;
    };
 
+   struct mdns_observation {
+      std::vector<mdns_lease> leases;
+      std::chrono::steady_clock::time_point retry_after{};
+      std::size_t failures = 0;
+      std::uint64_t revision = 0;
+   };
+   struct dial_candidate {
+      discovery::result result;
+      std::uint64_t mdns_revision = 0;
+   };
+   struct mdns_attempt {
+      peer_id peer;
+      std::uint64_t revision = 0;
+      std::chrono::steady_clock::time_point deadline;
+      bool finished = false;
+      bool expired = false;
+   };
    struct dial_batch {
       mutable std::mutex mutex;
-      std::vector<discovery::result> candidates;
+      std::vector<dial_candidate> candidates;
       std::shared_ptr<lifecycle_wakeup> completed;
       std::shared_ptr<cancellation_latch> cancellation;
       std::size_t next = 0;
@@ -207,14 +236,21 @@ class topology_manager : public std::enable_shared_from_this<topology_manager> {
    async_collect_rendezvous(const std::shared_ptr<cancellation_latch>& cancellation, std::size_t limit);
    boost::asio::awaitable<void> async_unregister_rendezvous();
    void merge_observations(const std::vector<discovery::result>& results);
-   [[nodiscard]] std::vector<discovery::result> candidates_for_dial(const connection_manager::snapshot& sessions);
+   [[nodiscard]] std::vector<dial_candidate> candidates_for_dial(const connection_manager::snapshot& sessions);
+   [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+   admit_mdns_dial(dial_candidate& candidate, const std::shared_ptr<cancellation_latch>& cancellation);
+   void finish_mdns_dial(const dial_candidate& candidate, const std::shared_ptr<cancellation_latch>& cancellation,
+                         bool succeeded);
+   boost::asio::awaitable<void> async_watch_mdns_expiry(std::shared_ptr<cancellation_latch> cancellation);
+   boost::asio::awaitable<bool> async_mdns_connect(boost::asio::awaitable<bool> dial,
+                                                 std::shared_ptr<cancellation_latch> cancellation);
    void note_dial_result(const discovery::result& result, bool succeeded) noexcept;
    [[nodiscard]] std::chrono::milliseconds retry_delay(const observation_key& key, std::size_t failures) const;
    [[nodiscard]] std::chrono::milliseconds retry_delay(const rendezvous_key& key, std::size_t failures) const;
    void note_rendezvous_failure(const rendezvous_key& key) noexcept;
    void note_rendezvous_success(const rendezvous_key& key, std::vector<std::uint8_t> cookie) noexcept;
    boost::asio::awaitable<void> async_reconcile_sessions();
-   boost::asio::awaitable<void> async_dial_candidates(std::vector<discovery::result> candidates,
+   boost::asio::awaitable<void> async_dial_candidates(std::vector<dial_candidate> candidates,
                                                        std::size_t required);
    boost::asio::awaitable<void> async_dial_worker(const std::shared_ptr<dial_batch>& batch);
 
@@ -226,6 +262,10 @@ class topology_manager : public std::enable_shared_from_this<topology_manager> {
    lifecycle_tracker* lifecycle_ = nullptr;
    mutable std::mutex mutex_;
    std::map<observation_key, observation> observations_;
+   std::map<peer_id, mdns_observation> mdns_;
+   std::map<std::shared_ptr<cancellation_latch>, mdns_attempt> mdns_attempts_;
+   std::uint64_t mdns_revision_ = 0;
+   bool reconcile_pending_ = false;
    std::map<rendezvous_key, rendezvous_state> rendezvous_clients_;
    std::vector<std::shared_ptr<cancellation_latch>> active_cancellations_;
    phase phase_ = phase::idle;

@@ -1,6 +1,6 @@
 # libsodium 1.0.22 Vendor Manifest
 
-Forge vendors the official libsodium 1.0.22 release tree as a private XSalsa20
+Forge vendors the official libsodium 1.0.22 release tree as a private XSalsa20/Salsa20
 backend for `forge_crypto_symmetric`. Libsodium headers, types and symbols are
 not part of the Forge public C++ API.
 
@@ -22,13 +22,13 @@ The structure gate rejects any missing, extra, or changed upstream file.
 
 The private target applies the compile-time symbol prefix
 `forge_xsalsa20_private_` to every selected upstream `crypto_core_*`,
-`crypto_stream_*`, `randombytes_buf`, and `sodium_memzero` symbol. The sole
-unprefixed bridge name is not published through a Forge API and is checked only
-by the private test boundary.
+`crypto_stream_*`, `randombytes_buf`, and `sodium_memzero` symbol. The
+Forge-prefixed bridge names are not published through a Forge API and are checked
+only by the private test boundary.
 
 ## Compiled Upstream Subset
 
-The private object target compiles only the portable XSalsa20 path below. It
+The private object target compiles only the portable XSalsa20/Salsa20 path below. It
 does not configure or expose a general libsodium installation.
 
 | File | SHA-256 |
@@ -44,5 +44,5 @@ does not configure or expose a general libsodium installation.
 `integration/xsalsa20_support.c` is Forge-owned build glue, outside the
 unmodified upstream tree. It supplies the upstream portable implementation's
 secure-erase fallback, binds the selected reference Salsa20 implementation and
-makes the single internal XSalsa20 call available to Forge C++ code. It does
+makes internal XSalsa20 and Salsa20 keystream calls available to Forge C++ code. It does
 not publish a libsodium API or key-generation surface.

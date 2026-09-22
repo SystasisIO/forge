@@ -63,6 +63,8 @@ class connection_manager {
    void clear();
    [[nodiscard]] snapshot current(std::size_t max_sessions) const;
    [[nodiscard]] std::size_t size() const noexcept;
+   // Private test seam; callers use the same owner lock as remember().
+   void fail_next_prepare_for_test() noexcept;
 
  private:
    struct peer_prune_candidate {
@@ -86,6 +88,7 @@ class connection_manager {
    std::map<peer_id, std::set<std::uint64_t>> sessions_by_peer_;
    std::map<peer_id, double> network_scores_;
    std::optional<std::chrono::steady_clock::time_point> last_prune_;
+   bool fail_next_prepare_for_test_ = false;
 };
 
 [[nodiscard]] connection_manager::policy connection_policy_for(const node::limits& limits);

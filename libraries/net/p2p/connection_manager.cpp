@@ -28,7 +28,6 @@ import forge.net.p2p.identity;
 namespace forge::net::p2p {
 namespace {
 
-std::atomic_bool fail_next_prepare_for_test = false;
 std::atomic_bool fail_next_peer_session_prepare_for_test = false;
 
 [[nodiscard]] std::int64_t checked_tag_sum(std::int64_t left, std::int64_t right) {
@@ -332,7 +331,7 @@ connection_manager::admission connection_manager::remember(session_record record
    auto peer_session_inserted = false;
    auto score_inserted = false;
    try {
-      if (fail_next_prepare_for_test.exchange(false, std::memory_order_relaxed)) {
+      if (std::exchange(fail_next_prepare_for_test_, false)) {
          throw std::bad_alloc{};
       }
       const auto [session, inserted] = sessions_.emplace(id, std::move(record));
@@ -443,11 +442,11 @@ connection_manager::policy connection_policy_for(const node::limits& limits) {
    };
 }
 
-namespace detail {
-
-void fail_next_connection_manager_prepare_for_test() noexcept {
-   fail_next_prepare_for_test.store(true, std::memory_order_relaxed);
+void connection_manager::fail_next_prepare_for_test() noexcept {
+   fail_next_prepare_for_test_ = true;
 }
+
+namespace detail {
 
 void fail_next_connection_manager_peer_session_prepare_for_test() noexcept {
    fail_next_peer_session_prepare_for_test.store(true, std::memory_order_relaxed);

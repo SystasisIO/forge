@@ -49,6 +49,8 @@ module;
 
 module forge.net.p2p.node;
 
+import forge.net.p2p.mdns_policy;
+
 import forge.asio.gate;
 import forge.asio.notification;
 import forge.crypto.symmetric.chacha20_poly1305;
@@ -378,6 +380,10 @@ void normalize_topology_capacity(node::options& options) noexcept {
 }
 
 void validate(const node::options& options) {
+   validate(options.mdns);
+   if (options.mdns.enabled && options.limits.topology.operating_mode == topology::mode::static_only) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS requires managed topology");
+   }
    validate(options.reachability_policy);
    detail::dns_address_expander::validate_policy(options.dns_resolution);
    detail::dial_scheduler::validate_policy(dial_scheduler_policy(options));

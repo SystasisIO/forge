@@ -215,7 +215,9 @@ void node::impl::initialize_topology_manager() {
               if (!self) {
                  co_return false;
               }
-              co_return co_await self->async_dial_topology_candidate(std::move(candidate), std::move(cancellation));
+              const auto provenance = candidate.discovered_by == discovery::source::mdns
+                  ? detail::direct_dial_provenance::transient_mdns : detail::direct_dial_provenance::persistent;
+              co_return co_await self->async_dial_topology_candidate(std::move(candidate), std::move(cancellation), provenance);
            },
            .refresh_connection_scores =
                [weak] {
@@ -344,7 +346,8 @@ boost::asio::awaitable<void> node::impl::async_close_topology_sessions(std::vect
 
 boost::asio::awaitable<bool>
 node::impl::async_dial_topology_candidate(discovery::result candidate,
-                                          std::shared_ptr<cancellation_latch> cancellation) {
+                                          std::shared_ptr<cancellation_latch> cancellation,
+                                          detail::direct_dial_provenance provenance) {
    std::erase_if(candidate.endpoints, [](const auto& address) {
       return !path_selector::supported_direct(address);
    });
@@ -359,15 +362,22 @@ node::impl::async_dial_topology_candidate(discovery::result candidate,
                                                               }));
    };
    if (session_for_path(candidate.peer, path::kind::direct)) {
-      apply_discovery_observation();
+      if (provenance == detail::direct_dial_provenance::persistent) {
+         apply_discovery_observation();
+      }
       co_return true;
    }
    auto session = std::shared_ptr<session_state>{};
    try {
       {
          auto [direct_cancellation, parent_subscription] = make_topology_child_cancellation(cancellation);
+         auto roots = std::vector<detail::direct_dial_root>{};
+         roots.reserve(candidate.endpoints.size());
+         for (auto& address : candidate.endpoints) {
+            roots.push_back({.address = std::move(address), .provenance = provenance});
+         }
          session = co_await connect_direct(
-             std::move(candidate.endpoints),
+             std::move(roots),
              node::connect_options{.expected_peer = candidate.peer,
                                    .allow_relay = false,
                                    .timeout = options.limits.topology.query_timeout,
@@ -383,7 +393,9 @@ node::impl::async_dial_topology_candidate(discovery::result candidate,
          identified = !session->closed && session->info.identify_state == identify::state::identified;
       }
       if (identified) {
-         apply_discovery_observation();
+         if (provenance == detail::direct_dial_provenance::persistent) {
+            apply_discovery_observation();
+         }
          co_return true;
       }
    } catch (const forge::exceptions::base&) {

@@ -64,6 +64,7 @@ import forge.net.p2p.connection_gater;
 import forge.net.p2p.dht;
 import forge.net.p2p.discovery;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.envelope;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.hole_punch;
 import forge.net.p2p.host_event;
@@ -102,6 +103,7 @@ import forge.net.yamux.session;
 #include "../../libraries/net/p2p/details/reachability_manager.hxx"
 #include "../../libraries/net/p2p/details/session_lifecycle.hxx"
 #include "../../libraries/net/p2p/details/session_retirement.hxx"
+#include "../../libraries/net/p2p/details/topology_manager.hxx"
 
 
 namespace forge::net::p2p {
@@ -278,6 +280,86 @@ node::options fixture_options(std::string_view name) {
 // The friendship permits this test TU to reach existing admission and session
 // state. No production option, runtime callback or alternate admission is added.
 struct node_session_fixture {
+   static void mdns_callbacks_do_not_retain_node() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto owner_weak = std::weak_ptr<node::impl>{};
+      auto service_weak = std::weak_ptr<detail::mdns_service>{};
+      {
+         auto options = fixture_options("mdns-weak-owner");
+         options.mdns.enabled = true;
+         auto owner = node{runtime, std::move(options)};
+         owner_weak = owner.impl_;
+         service_weak = owner.impl_->mdns_service_value;
+         BOOST_TEST(!service_weak.expired());
+         bounded_result(runtime, owner.async_stop());
+      }
+      BOOST_TEST(owner_weak.expired());
+      BOOST_TEST(service_weak.expired());
+   }
+
+   static void fail_next_connection_manager_prepare(node& owner) {
+      const auto self = owner.impl_;
+      const auto lock = std::scoped_lock{self->mutex};
+      self->connections.fail_next_prepare_for_test();
+   }
+
+   static identify::document local_identify_document(node& owner, std::optional<endpoint> observed_endpoint) {
+      return owner.impl_->local_identify_document(std::move(observed_endpoint));
+   }
+
+   static void scoped_record_retains_sequence_without_forwarding() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      auto server = node{runtime, fixture_options("scoped-record-server")};
+      auto client = node{runtime, fixture_options("scoped-record-client")};
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{&client, [&](void*) noexcept {
+         for (auto* owner : {&client, &server}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (const std::exception& error) { BOOST_ERROR("scoped record cleanup: " << error.what()); }
+            catch (...) { BOOST_ERROR("scoped record cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto address = server.local_endpoint();
+      BOOST_REQUIRE(address);
+      static_cast<void>(bounded_result(runtime, client.async_connect(*address)));
+      const auto self = client.impl_;
+      const auto session = self->session_for_path(server.local_peer(), path::kind::direct);
+      BOOST_REQUIRE(session);
+      const auto previous = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(previous);
+      BOOST_REQUIRE(!previous->signed_peer_record.empty());
+      auto record = rendezvous::codec::decode_peer_record(
+          signed_envelope::decode(previous->signed_peer_record).payload);
+      ++record.sequence;
+      record.endpoints = {parse_endpoint("/ip6zone/foreign0/ip6/2001:4860::1/tcp/4001").to_multiaddr()};
+      const auto& identity = server.impl_->identity;
+      const auto envelope = rendezvous::codec::seal_peer_record(
+          record, decode_public_key(identity.public_key), *identity.private_key).encode();
+      auto document = identify::document{
+          .protocol_version = "/forge/scoped-evidence/1",
+          .protocols = {builtins::ping},
+          .signed_peer_record = envelope,
+      };
+      self->learn_from_identify(session, document, false);
+      const auto retained = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(retained);
+      BOOST_TEST(retained->signed_peer_record == envelope, boost::test_tools::per_element());
+      BOOST_TEST(std::ranges::none_of(retained->endpoints, [](const auto& item) {
+         return std::ranges::any_of(item.address.components(), [](const auto& component) {
+            return component.code == forge::multiformats::protocol_code::ip6zone;
+         });
+      }));
+      const auto forwarded = bounded_result(runtime, self->identify_peer_for_discovery(
+          server.local_peer(), discovery::source::dht, std::chrono::seconds{2}));
+      BOOST_REQUIRE(forwarded);
+      BOOST_TEST(forwarded->signed_peer_record.empty());
+      document.signed_peer_record = previous->signed_peer_record;
+      self->learn_from_identify(session, document, false);
+      const auto after_regression = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(after_regression);
+      BOOST_TEST(after_regression->signed_peer_record == envelope, boost::test_tools::per_element());
+   }
+
    static void autonat_local_upgrade_refusal_is_not_negative() {
       for (const auto v2 : {false, true}) {
          auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
@@ -1173,6 +1255,276 @@ struct node_session_fixture {
       BOOST_TEST(server_self->resources.current().system.inbound_streams == 1U);
    }
 
+   static node::connect_options direct_options(const peer_id& peer) {
+      return node::connect_options{
+          .expected_peer = peer,
+          .allow_relay = false,
+          .timeout = std::chrono::seconds{5},
+          .direct_attempt_timeout = std::chrono::seconds{3},
+          .max_direct_endpoints = 3,
+          .allow_hole_punch = false,
+      };
+   }
+
+   static void transient_mdns_dial_does_not_persist_root_or_late_failure() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto server = node{runtime, fixture_options("transient-mdns-server")};
+      auto client = node{runtime, fixture_options("transient-mdns-client")};
+      const auto self = client.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         for (auto* owner : {&client, &server}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (...) { BOOST_ERROR("transient mDNS dial fixture cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto listening = server.local_endpoint();
+      BOOST_REQUIRE(listening);
+      const auto root = listening->to_multiaddr();
+      const auto session = bounded_result(
+          runtime,
+          self->connect_direct(
+              {{.address = root, .provenance = detail::direct_dial_provenance::transient_mdns}},
+              direct_options(server.local_peer())));
+      bounded_result(runtime, self->identify_session(session));
+
+      BOOST_TEST(session->direct_roots.empty());
+      const auto identified = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(identified);
+      BOOST_TEST(!identified->public_key.empty());
+      BOOST_TEST(!identified->protocols.empty());
+      for (const auto& endpoint : identified->endpoints) {
+         BOOST_TEST(!endpoint.sources.learned);
+         BOOST_TEST(endpoint.successes == 0U);
+         BOOST_TEST(endpoint.failures == 0U);
+      }
+
+      self->record_direct_session_failure(session);
+      const auto after_failure = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(after_failure);
+      for (const auto& endpoint : after_failure->endpoints) {
+         BOOST_TEST(!endpoint.sources.learned);
+         BOOST_TEST(endpoint.successes == 0U);
+         BOOST_TEST(endpoint.failures == 0U);
+      }
+   }
+
+   static void transient_mdns_root_failure_does_not_backoff_existing_endpoint() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto server = node{runtime, fixture_options("transient-mdns-failure-server")};
+      auto client = node{runtime, fixture_options("transient-mdns-failure-client")};
+      const auto self = client.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         for (auto* owner : {&client, &server}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (...) { BOOST_ERROR("transient mDNS failure fixture cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto listening = server.local_endpoint();
+      BOOST_REQUIRE(listening);
+      const auto root = listening->to_multiaddr();
+      bounded_result(runtime, server.async_stop());
+      client.peers().learn_address(server.local_peer(), root);
+      const auto before_failures = client.metrics().direct_failures;
+
+      BOOST_CHECK_EXCEPTION(
+          static_cast<void>(bounded_result(
+              runtime,
+              self->connect_direct(
+                  {{.address = root, .provenance = detail::direct_dial_provenance::transient_mdns}},
+                  direct_options(server.local_peer())))),
+          forge::exceptions::base, [](const auto& error) {
+             return exceptions::code_of(error) == exceptions::code::peer_not_found;
+          });
+
+      const auto record = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(record);
+      const auto stored = std::ranges::find_if(record->endpoints, [&](const auto& endpoint) {
+         return endpoint.address.to_string() == root.to_string();
+      });
+      BOOST_REQUIRE(stored != record->endpoints.end());
+      BOOST_TEST(stored->sources.learned);
+      BOOST_TEST(stored->successes == 0U);
+      BOOST_TEST(stored->failures == 0U);
+      BOOST_TEST(stored->backoff_until == std::chrono::system_clock::time_point{});
+      BOOST_TEST(client.metrics().direct_failures == before_failures + 1U);
+   }
+
+   static void mixed_duplicate_and_dns_coalesced_roots_persist_any_persistent_input() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto server = node{runtime, fixture_options("mixed-root-server")};
+      auto client = node{runtime, fixture_options("mixed-root-client")};
+      const auto self = client.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         for (auto* owner : {&client, &server}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (...) { BOOST_ERROR("mixed direct-root fixture cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto listening = server.local_endpoint();
+      BOOST_REQUIRE(listening);
+      const auto literal = listening->to_multiaddr();
+      const auto dns = forge::multiformats::multiaddr::parse(
+          "/dns4/localhost/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
+      // The DNS and literal roots resolve to one local concrete dial. Only the
+      // canonical root with a persistent input may reach the peer store.
+      const auto session = bounded_result(
+          runtime,
+          self->connect_direct(
+              {{.address = literal, .provenance = detail::direct_dial_provenance::transient_mdns},
+               {.address = literal, .provenance = detail::direct_dial_provenance::persistent},
+               {.address = dns, .provenance = detail::direct_dial_provenance::transient_mdns}},
+              direct_options(server.local_peer())));
+      bounded_result(runtime, self->identify_session(session));
+
+      BOOST_REQUIRE_EQUAL(session->direct_roots.size(), 1U);
+      BOOST_TEST(session->direct_roots.front().to_string() == literal.to_string());
+      const auto record = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(record);
+      const auto persistent = std::ranges::find_if(record->endpoints, [&](const auto& endpoint) {
+         return endpoint.address.to_string() == literal.to_string();
+      });
+      BOOST_REQUIRE(persistent != record->endpoints.end());
+      BOOST_TEST(persistent->sources.learned);
+      BOOST_TEST(persistent->successes == 1U);
+      const auto dns_record = std::ranges::find_if(record->endpoints, [&](const auto& endpoint) {
+         return endpoint.address.to_string() == dns.to_string();
+      });
+      if (dns_record != record->endpoints.end()) {
+         BOOST_TEST(!dns_record->sources.learned);
+         BOOST_TEST(dns_record->successes == 0U);
+         BOOST_TEST(dns_record->failures == 0U);
+      }
+      BOOST_TEST(client.metrics().path_direct_attempts == 1U);
+   }
+
+   static void persistent_dns_root_owns_coalesced_direct_winner() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto server = node{runtime, fixture_options("persistent-dns-root-server")};
+      auto client = node{runtime, fixture_options("persistent-dns-root-client")};
+      const auto self = client.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         for (auto* owner : {&client, &server}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (...) { BOOST_ERROR("persistent DNS root fixture cleanup failed"); }
+         }
+      }};
+      bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto listening = server.local_endpoint();
+      BOOST_REQUIRE(listening);
+      const auto literal = listening->to_multiaddr();
+      server.set_advertised_endpoints({parse_endpoint(literal.to_string())});
+      const auto dns = forge::multiformats::multiaddr::parse(
+          "/dns4/localhost/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
+      const auto session = bounded_result(
+          runtime,
+          self->connect_direct(
+              {{.address = literal, .provenance = detail::direct_dial_provenance::transient_mdns},
+               {.address = dns, .provenance = detail::direct_dial_provenance::persistent}},
+              direct_options(server.local_peer())));
+      bounded_result(runtime, self->identify_session(session));
+
+      BOOST_REQUIRE_EQUAL(session->direct_roots.size(), 1U);
+      BOOST_TEST(session->direct_roots.front().to_string() == dns.to_string());
+      const auto record = client.peers().find(server.local_peer());
+      BOOST_REQUIRE(record);
+      const auto dns_record = std::ranges::find_if(record->endpoints, [&](const auto& endpoint) {
+         return endpoint.address.to_string() == dns.to_string();
+      });
+      BOOST_REQUIRE(dns_record != record->endpoints.end());
+      BOOST_TEST(dns_record->sources.learned);
+      BOOST_TEST(dns_record->successes == 1U);
+      const auto literal_record = std::ranges::find_if(record->endpoints, [&](const auto& endpoint) {
+         return endpoint.address.to_string() == literal.to_string();
+      });
+      BOOST_REQUIRE(literal_record != record->endpoints.end());
+      BOOST_TEST(!literal_record->sources.learned);
+      BOOST_TEST(literal_record->successes == 0U);
+      BOOST_TEST(literal_record->failures == 0U);
+      BOOST_TEST(client.metrics().path_direct_attempts == 1U);
+   }
+
+   static void transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery(bool snapshot = false) {
+      const auto run = [snapshot](bool existing_session) {
+         auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+         auto server = node{runtime, fixture_options(existing_session ? "transient-topology-existing-server"
+                                                                       : "transient-topology-identify-server")};
+         auto options = fixture_options(existing_session ? "transient-topology-existing-client"
+                                                          : "transient-topology-identify-client");
+         options.limits.topology.dht_enabled = false;
+         options.limits.topology.peer_exchange_enabled = false;
+         options.limits.topology.rendezvous_enabled = false;
+         auto client = node{runtime, std::move(options)};
+         const auto self = client.impl_;
+         auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+            for (auto* owner : {&client, &server}) {
+               try { bounded_result(runtime, owner->async_stop()); }
+               catch (...) { BOOST_ERROR("transient topology fixture cleanup failed"); }
+            }
+         }};
+         bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+         const auto listening = server.local_endpoint();
+         BOOST_REQUIRE(listening);
+         const auto root = listening->to_multiaddr();
+         const auto observed_at = std::chrono::system_clock::now();
+         const auto existing_expiry = observed_at + std::chrono::hours{2};
+         self->store.upsert(peer_store::record{.peer = server.local_peer()});
+         const auto seeded = self->store.apply_discovery(server.local_peer(), peer_store::discovery_update{
+                                                                       .source = discovery::source::rendezvous,
+                                                                       .observed_at = observed_at,
+                                                                       .expires_at = existing_expiry,
+                                                                   });
+         BOOST_REQUIRE(seeded);
+         BOOST_TEST(static_cast<int>(seeded->discovered_by) == static_cast<int>(discovery::source::rendezvous));
+         BOOST_TEST(seeded->discovery_expires_at == existing_expiry);
+         if (existing_session) {
+            bounded_result(runtime, client.async_connect(*listening, direct_options(server.local_peer())));
+         }
+         if (snapshot) {
+            BOOST_REQUIRE(self->lifecycle.begin_start());
+            self->topology_manager_value->replace_mdns_snapshot({{
+                server.local_peer(), root, 7, 1, std::chrono::steady_clock::now() + std::chrono::hours{1}}});
+            BOOST_TEST(client.diagnostics().topology.mdns_observations == 1U);
+            self->start_topology_manager();
+            static_cast<void>(bounded_result(runtime, self->topology_manager_value->async_refresh()));
+            BOOST_REQUIRE(self->session_for_path(server.local_peer(), path::kind::direct));
+            self->topology_manager_value->replace_mdns_snapshot({});
+            BOOST_TEST(client.diagnostics().topology.mdns_observations == 0U);
+            static_cast<void>(bounded_result(runtime, self->topology_manager_value->async_refresh()));
+            BOOST_REQUIRE(self->session_for_path(server.local_peer(), path::kind::direct));
+         } else {
+            const auto dialed = bounded_result(
+                runtime,
+                self->async_dial_topology_candidate(
+                    discovery::result{
+                        .peer = server.local_peer(),
+                        .endpoints = {root},
+                        .discovered_by = discovery::source::dht,
+                        .expires_at = observed_at + std::chrono::hours{4},
+                    },
+                    {}, detail::direct_dial_provenance::transient_mdns));
+            BOOST_TEST(dialed);
+         }
+         const auto record = client.peers().find(server.local_peer());
+         BOOST_REQUIRE(record);
+         BOOST_TEST(static_cast<int>(record->discovered_by) == static_cast<int>(discovery::source::rendezvous));
+         BOOST_TEST(record->discovery_expires_at == existing_expiry);
+         if (!existing_session) {
+            BOOST_TEST(!record->public_key.empty());
+            BOOST_TEST(!record->protocols.empty());
+            for (const auto& endpoint : record->endpoints) {
+               BOOST_TEST(!endpoint.sources.learned);
+               BOOST_TEST(endpoint.successes == 0U);
+               BOOST_TEST(endpoint.failures == 0U);
+            }
+         }
+      };
+      run(true);
+      run(false);
+   }
+
    static void blocked_admission(bool timeout) {
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
       auto owner = node{runtime, fixture_options("admission-owner")};
@@ -1264,6 +1616,14 @@ struct node_session_fixture {
    }
 };
 
+namespace detail {
+
+void fail_next_connection_manager_prepare_for_test(node& owner) {
+   node_session_fixture::fail_next_connection_manager_prepare(owner);
+}
+
+} // namespace detail
+
 BOOST_AUTO_TEST_CASE(p2p_dial_cancellation_interrupts_occupied_admission_and_awaits_native_close) {
    node_session_fixture::blocked_admission(false);
 }
@@ -1272,8 +1632,55 @@ BOOST_AUTO_TEST_CASE(p2p_dial_deadline_interrupts_occupied_admission_and_awaits_
    node_session_fixture::blocked_admission(true);
 }
 
+BOOST_AUTO_TEST_CASE(p2p_identify_egress_omits_interface_scoped_endpoints) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto options = fixture_options("identify-interface-scope");
+   const auto scoped = parse_endpoint("/ip6zone/receiver0/ip6/2001:4860::1/tcp/4001");
+   const auto public_address = parse_endpoint("/ip6/2001:4860::2/tcp/4001");
+   options.advertised_endpoints = {scoped, public_address};
+   auto owner = node{runtime, std::move(options)};
+
+   const auto document = node_session_fixture::local_identify_document(owner, scoped);
+   BOOST_TEST(!document.observed_endpoint.has_value());
+   BOOST_REQUIRE_EQUAL(document.listen_endpoints.size(), 1U);
+   BOOST_TEST(document.listen_endpoints.front().to_string() ==
+              public_address.to_string() + "/p2p/" + owner.local_peer().to_string());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_identify_scoped_record_retains_sequence_without_forwarding) {
+   node_session_fixture::scoped_record_retains_sequence_without_forwarding();
+}
+
 BOOST_AUTO_TEST_CASE(p2p_cached_session_removed_before_open_allows_only_one_fresh_handshaken_dial) {
    node_session_fixture::removed_cached_session_has_one_fresh_dial();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transient_mdns_dial_keeps_identify_facts_without_durable_root_mutation) {
+   node_session_fixture::transient_mdns_dial_does_not_persist_root_or_late_failure();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transient_mdns_failure_does_not_backoff_existing_direct_root) {
+   node_session_fixture::transient_mdns_root_failure_does_not_backoff_existing_endpoint();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_mixed_duplicate_and_dns_coalesced_roots_persist_when_any_input_is_persistent) {
+   node_session_fixture::mixed_duplicate_and_dns_coalesced_roots_persist_any_persistent_input();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_persistent_dns_root_owns_coalesced_direct_winner) {
+   node_session_fixture::persistent_dns_root_owns_coalesced_direct_winner();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transient_mdns_topology_dial_preserves_discovery_observation) {
+   node_session_fixture::transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_mdns_snapshot_dials_transiently_and_withdrawal_keeps_authenticated_session) {
+   node_session_fixture::transient_mdns_topology_dial_preserves_existing_and_post_identify_discovery(true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_mdns_callbacks_do_not_retain_node) {
+   node_session_fixture::mdns_callbacks_do_not_retain_node();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_background_reachability_reuses_sessions_without_redial_or_path_attempts) {

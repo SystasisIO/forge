@@ -2,6 +2,7 @@ module;
 
 #include <forge/exceptions/macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -26,8 +27,11 @@ import forge.asio.gate;
 import forge.asio.notification;
 import forge.crypto.core.secret_bytes;
 import forge.crypto.digest.sha256;
+import forge.crypto.digest.shake128;
 import forge.crypto.core.random;
 import forge.crypto.symmetric.xsalsa20;
+import forge.crypto.symmetric.salsa20;
+import forge.net.pnet.network_fingerprint;
 
 #include "details/protected_stream.hxx"
 
@@ -158,6 +162,23 @@ operational_fingerprint pre_shared_key::fingerprint() const {
    return {.bytes = encoder.result().extract_as_byte_array()};
 }
 
+forge::net::pnet::network_fingerprint pre_shared_key::network_fingerprint() const {
+   if (value_.size() != pre_shared_key_size) {
+      throw_invalid_key("pnet pre-shared key has no usable secret material");
+   }
+   const auto key = forge::crypto::symmetric::salsa20::key{value_.span()};
+   const auto nonce = forge::crypto::symmetric::salsa20::nonce{
+       .bytes = {'f', 'i', 'n', 'p', 'r', 'i', 'n', 't'}};
+   // Own the secret keystream immediately so exceptions also erase it.
+   const auto stream = forge::crypto::core::secret_bytes{
+       forge::crypto::symmetric::salsa20::keystream(key, nonce, 64)};
+   const auto digest = forge::crypto::core::secret_bytes{
+       forge::crypto::digest::shake128(stream.span(), forge::net::pnet::network_fingerprint::byte_size)};
+   auto result = forge::net::pnet::network_fingerprint{};
+   std::copy(digest.span().begin(), digest.span().end(), result.bytes.begin());
+   return result;
+}
+
 protector::protector(pre_shared_key key) : key_{std::make_shared<const pre_shared_key>(std::move(key))} {}
 
 protector::~protector() = default;
@@ -169,6 +190,13 @@ operational_fingerprint protector::fingerprint() const {
       throw_invalid_key("pnet protector has no usable secret material");
    }
    return key_->fingerprint();
+}
+
+forge::net::pnet::network_fingerprint protector::network_fingerprint() const {
+   if (!key_) {
+      throw_invalid_key("pnet protector has no usable secret material");
+   }
+   return key_->network_fingerprint();
 }
 
 boost::asio::awaitable<forge::net::transport::stream_connection>

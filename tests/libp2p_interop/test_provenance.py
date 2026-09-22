@@ -21,6 +21,7 @@ from provenance import (
 )
 from check_p2p_feature_inventory import (
     donor_case_source_errors,
+    private_mdns_attribution_errors,
     registered_runner_acceptance_pairs,
     registered_runner_pair_errors,
 )
@@ -363,6 +364,30 @@ class DonorCheckoutPinTest(unittest.TestCase):
                 "donors/go-libp2p/untracked.txt"
             ])
             self.assertEqual(promotion_status(0, errors), "FAILED")
+
+    def test_private_mdns_requires_spec_and_fingerprint_attribution(self) -> None:
+        root = Path(__file__).parents[2]
+        source = root / "tests/libp2p_interop"
+        original = json.loads((source / "p2p_donor_capabilities.json").read_text())
+        expected = (
+            "donor capability discovery.mdns_private_fingerprinted: must attribute the namespace "
+            "to the libp2p specification and fingerprint computation to pinned Rust pnet"
+        )
+        for mutation in ("none", "forge_origin", "missing_spec_donor", "missing_fingerprint_donor", "invalid_sources"):
+            with self.subTest(mutation=mutation):
+                document = json.loads(json.dumps(original))
+                entry = next(item for item in document["capabilities"]
+                             if item["id"] == "discovery.mdns_private_fingerprinted")
+                if mutation == "forge_origin":
+                    entry["origin"] = "forge_extension"
+                elif mutation == "missing_spec_donor":
+                    entry["donor_sources"].remove("donors/libp2p-specs/discovery/mdns.md")
+                elif mutation == "missing_fingerprint_donor":
+                    entry["donor_sources"].remove("donors/rust-libp2p/transports/pnet/src/lib.rs")
+                elif mutation == "invalid_sources":
+                    entry["donor_sources"] = None
+                self.assertEqual(private_mdns_attribution_errors(entry),
+                                 [] if mutation == "none" else [expected])
 
     def test_matching_invalid_revision_maps_block_inventory_and_donor_gates(self) -> None:
         root = Path(__file__).parents[2]

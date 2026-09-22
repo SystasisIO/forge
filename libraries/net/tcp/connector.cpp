@@ -22,6 +22,7 @@ module;
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.tcp.connector;
 
@@ -67,27 +68,28 @@ void validate_remote_endpoint(const transport::endpoint& endpoint) {
    if (endpoint.host.empty()) {
       throw_invalid_endpoint(endpoint, "tcp connector requires non-empty host");
    }
+   if (endpoint.host.find('\0') != std::string::npos) {
+      throw_invalid_endpoint(endpoint, "tcp connector host must not contain NUL");
+   }
    if (endpoint.port == 0) {
       throw_invalid_endpoint(endpoint, "tcp connector requires non-zero remote port");
    }
 
-   auto error = boost::system::error_code{};
    switch (endpoint.host_type) {
    case transport::endpoint::host_kind::ip4:
-      (void)boost::asio::ip::make_address_v4(endpoint.host, error);
-      if (error) {
-         throw_invalid_endpoint(endpoint, "tcp connector requires valid IPv4 host");
-      }
-      return;
    case transport::endpoint::host_kind::ip6:
-      (void)boost::asio::ip::make_address_v6(endpoint.host, error);
-      if (error) {
-         throw_invalid_endpoint(endpoint, "tcp connector requires valid IPv6 host");
+      try {
+         static_cast<void>(endpoint.literal_address());
+      } catch (const boost::system::system_error&) {
+         throw_invalid_endpoint(endpoint, "tcp connector requires valid scoped literal host");
       }
       return;
    case transport::endpoint::host_kind::dns:
    case transport::endpoint::host_kind::dns4:
    case transport::endpoint::host_kind::dns6:
+      if (!endpoint.zone.empty()) {
+         throw_invalid_endpoint(endpoint, "tcp connector cannot resolve DNS host with zone");
+      }
       return;
    }
    throw_invalid_endpoint(endpoint, "tcp connector received unsupported host kind");
@@ -194,18 +196,15 @@ struct connector::impl final : transport::detail::stream_connector_concept,
              self->sockets->emplace(generation, socket);
              try {
                 auto error = boost::system::error_code{};
-                if (remote.host_type == transport::endpoint::host_kind::ip4) {
-                   const auto address = asio::ip::make_address_v4(remote.host, error);
-                   if (error) {
-                      throw_invalid_endpoint(remote, "tcp connector requires valid IPv4 host");
-                   }
-                   co_await socket->async_connect(asio_tcp::endpoint{address, remote.port},
-                                                  asio::redirect_error(asio::use_awaitable, error));
-                } else if (remote.host_type == transport::endpoint::host_kind::ip6) {
-                   const auto address = asio::ip::make_address_v6(remote.host, error);
-                   if (error) {
-                      throw_invalid_endpoint(remote, "tcp connector requires valid IPv6 host");
-                   }
+                if (remote.host_type == transport::endpoint::host_kind::ip4 ||
+                    remote.host_type == transport::endpoint::host_kind::ip6) {
+                   const auto address = [&remote] {
+                      try {
+                         return remote.literal_address();
+                      } catch (const boost::system::system_error&) {
+                         throw_invalid_endpoint(remote, "tcp connector requires valid scoped literal host");
+                      }
+                   }();
                    co_await socket->async_connect(asio_tcp::endpoint{address, remote.port},
                                                   asio::redirect_error(asio::use_awaitable, error));
                 } else {

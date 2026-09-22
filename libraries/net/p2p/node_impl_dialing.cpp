@@ -91,6 +91,25 @@ import forge.net.yamux.session;
 
 namespace forge::net::p2p {
 
+namespace {
+
+[[nodiscard]] bool persistent_root(const detail::source_root& root,
+                                   std::span<const detail::direct_dial_provenance> input_provenance) {
+   if (root.input_indices.empty()) {
+      FORGE_THROW_EXCEPTION(exceptions::internal, "P2P direct dial root has no input provenance");
+   }
+   auto persistent = false;
+   for (const auto index : root.input_indices) {
+      if (index >= input_provenance.size()) {
+         FORGE_THROW_EXCEPTION(exceptions::internal, "P2P direct dial root provenance index is out of bounds");
+      }
+      persistent = persistent || input_provenance[index] == detail::direct_dial_provenance::persistent;
+   }
+   return persistent;
+}
+
+} // namespace
+
 boost::asio::awaitable<node::session_info>
 node::impl::async_connect_owned(std::shared_ptr<impl> self, forge::multiformats::multiaddr address,
                                 node::connect_options value) {
@@ -141,6 +160,25 @@ node::impl::connect_direct(forge::net::p2p::endpoint endpoint, node::connect_opt
 boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>
 node::impl::connect_direct(std::vector<forge::multiformats::multiaddr> roots, node::connect_options value,
                            std::shared_ptr<cancellation_latch> cancellation) {
+   auto direct_roots = std::vector<detail::direct_dial_root>{};
+   direct_roots.reserve(roots.size());
+   for (auto& root : roots) {
+      direct_roots.push_back({.address = std::move(root), .provenance = detail::direct_dial_provenance::persistent});
+   }
+   return connect_direct(std::move(direct_roots), std::move(value), std::move(cancellation));
+}
+
+boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>
+node::impl::connect_direct(std::vector<detail::direct_dial_root> roots, node::connect_options value,
+                           std::shared_ptr<cancellation_latch> cancellation) {
+   auto addresses = std::vector<forge::multiformats::multiaddr>{};
+   auto input_provenance = std::vector<detail::direct_dial_provenance>{};
+   addresses.reserve(roots.size());
+   input_provenance.reserve(roots.size());
+   for (auto& root : roots) {
+      addresses.push_back(std::move(root.address));
+      input_provenance.push_back(root.provenance);
+   }
    auto self = shared_from_this();
    validate_operation_timeout(value.timeout, "P2P connect timeout");
    validate_operation_timeout(value.direct_attempt_timeout, "P2P direct attempt timeout");
@@ -236,7 +274,7 @@ node::impl::connect_direct(std::vector<forge::multiformats::multiaddr> roots, no
    try {
       result.emplace(co_await dial_scheduler->async_dial(
           detail::dial_scheduler::request{
-              .roots = std::move(roots),
+              .roots = std::move(addresses),
               .expected_peer = value.expected_peer,
               .logical_deadline = deadline,
               .attempt_timeout = value.direct_attempt_timeout,
@@ -252,8 +290,10 @@ node::impl::connect_direct(std::vector<forge::multiformats::multiaddr> roots, no
       if (operation_peer) {
          for (const auto& outcome : terminal_roots) {
             if (outcome.outcome == dialing::outcome::failure) {
-               store.mark_address_failure(*operation_peer, outcome.root.canonical, path::kind::direct,
-                   endpoint_backoff_until(*operation_peer, outcome.root.canonical, path::kind::direct));
+               if (persistent_root(outcome.root, input_provenance)) {
+                  store.mark_address_failure(*operation_peer, outcome.root.canonical, path::kind::direct,
+                      endpoint_backoff_until(*operation_peer, outcome.root.canonical, path::kind::direct));
+               }
                increment_direct_failure();
             }
          }
@@ -285,12 +325,16 @@ node::impl::connect_direct(std::vector<forge::multiformats::multiaddr> roots, no
       }
       winner_roots.reserve(result->winner_roots.size());
       for (auto& root : result->winner_roots) {
-         winner_roots.push_back(std::move(root.canonical));
+         if (persistent_root(root, input_provenance)) {
+            winner_roots.push_back(std::move(root.canonical));
+         }
       }
       for (const auto& outcome : result->root_outcomes) {
          if (outcome.outcome == dialing::outcome::failure) {
-            store.mark_address_failure(result->attempt.connection.peer, outcome.root.canonical, path::kind::direct,
-                endpoint_backoff_until(result->attempt.connection.peer, outcome.root.canonical, path::kind::direct));
+            if (persistent_root(outcome.root, input_provenance)) {
+               store.mark_address_failure(result->attempt.connection.peer, outcome.root.canonical, path::kind::direct,
+                   endpoint_backoff_until(result->attempt.connection.peer, outcome.root.canonical, path::kind::direct));
+            }
             increment_direct_failure();
          }
       }

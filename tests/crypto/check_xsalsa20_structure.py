@@ -121,9 +121,15 @@ def main() -> int:
         if term in module:
             errors.append(f"public XSalsa20 module leaks private backend or P2P term: {term}")
 
+    salsa_module = (source / "libraries" / "crypto" / "symmetric" / "include" / "forge" / "crypto" / "symmetric" / "salsa20.cppm").read_text()
+    for term in forbidden_public_terms:
+        if term in salsa_module:
+            errors.append(f"public Salsa20 module leaks private backend or P2P term: {term}")
+
     library = source / "libraries" / "crypto" / "symmetric"
     required_pairs = (
         (library / "include" / "forge" / "crypto" / "symmetric" / "xsalsa20.cppm", library / "xsalsa20.cpp"),
+        (library / "include" / "forge" / "crypto" / "symmetric" / "salsa20.cppm", library / "salsa20.cpp"),
         (library / "details" / "counter_state.hxx", library / "counter_state.cpp"),
         (library / "details" / "stream_impl.hxx", library / "stream_impl.cpp"),
     )
@@ -136,6 +142,7 @@ def main() -> int:
         "counter_state.cpp",
         "stream_impl.cpp",
         "xsalsa20.cpp",
+        "salsa20.cpp",
         "$<TARGET_OBJECTS:forge_crypto_symmetric_xsalsa20_vendor>",
     ):
         if source_name not in cmake:
@@ -163,6 +170,8 @@ def main() -> int:
         'extern "C" void sodium_memzero(',
         'extern "C" void randombytes_buf(',
         'extern "C" int crypto_stream_xsalsa20(',
+        "forge.crypto.symmetric.salsa20",
+        'extern "C" int crypto_stream_salsa20(',
     )
     for term in required_consumer_terms:
         if term not in package_consumer:

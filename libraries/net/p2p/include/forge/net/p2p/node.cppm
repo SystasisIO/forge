@@ -33,6 +33,7 @@ import forge.net.p2p.identify;
 import forge.chrono.timestamp;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
+import forge.net.p2p.mdns_policy;
 import forge.net.p2p.peer_store;
 export import forge.net.p2p.private_network;
 import forge.net.p2p.protocol;
@@ -101,6 +102,7 @@ class node {
       lifecycle_options lifecycle;
       std::vector<dht::profile> dht_profiles;
       std::map<protocol_id, std::shared_ptr<dht::record_store::persistence>> dht_record_persistence;
+      forge::net::p2p::mdns_policy mdns{};
    };
 
    struct connect_options {

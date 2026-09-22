@@ -28,6 +28,10 @@ struct learning_context {
 
 [[nodiscard]] endpoint_scope classify_endpoint_scope(const forge::net::p2p::endpoint& value);
 
+// Interface scope belongs to the receiving host and must not cross a P2P trust boundary.
+[[nodiscard]] bool has_interface_zone(const forge::net::p2p::endpoint& value) noexcept;
+[[nodiscard]] bool has_interface_zone(const forge::multiformats::multiaddr& value) noexcept;
+
 // Numeric observer identity only, not a routability or authentication check.
 // IPv4 uses the address; IPv6 uses its /56 prefix (mapped IPv4 stays IPv4).
 [[nodiscard]] std::optional<std::string> observer_group(const forge::net::p2p::endpoint& value);

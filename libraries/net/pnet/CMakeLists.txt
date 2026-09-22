@@ -4,7 +4,15 @@ add_library(
    protected_stream.cpp
    details/protected_stream.hxx
 )
-forge_target_modules_at(forge_net_pnet net/pnet)
+target_sources(
+   forge_net_pnet PUBLIC
+      FILE_SET CXX_MODULES
+      BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      FILES
+         include/forge/net/pnet/network_fingerprint.cppm
+         include/forge/net/pnet/protector.cppm
+)
+target_compile_features(forge_net_pnet PUBLIC cxx_std_23)
 
 target_include_directories(forge_net_pnet PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
 

@@ -82,6 +82,7 @@ import forge.net.pnet.protector;
 
 #include "forge_autonat_fixture.hxx"
 #include "forge_connection_fixture.hxx"
+#include "forge_mdns_fixture.hxx"
 
 namespace {
 
@@ -534,6 +535,13 @@ forge::net::p2p::node::options autonat_node_options(std::string_view transport) 
    options.limits.topology.dht_enabled = false;
    options.limits.topology.rendezvous_enabled = false;
    options.limits.topology.peer_exchange_enabled = false;
+   return options;
+}
+
+forge::net::p2p::node::options make_mdns_options(const std::map<std::string, std::string>& args) {
+   const auto transport = required(args, "transport");
+   auto options = autonat_node_options(transport);
+   configure_private_network(options, args, transport);
    return options;
 }
 
@@ -2337,6 +2345,15 @@ int main(int argc, char** argv) {
          return build_info_mode();
       }
       const auto scenario = optional_value(args, "scenario");
+      if ((args.at("command") == "listen" || args.at("command") == "dial") && scenario == "mdns") {
+         return forge::test::libp2p_interop::forge_mdns_fixture::run(args, {
+             .make_options = make_mdns_options,
+             .frame = wrap_length_delimited,
+             .read = [](forge::net::p2p::stream& stream, std::size_t limit) {
+                return read_length_delimited(stream, limit);
+             },
+         });
+      }
       if ((args.at("command") == "listen" || args.at("command") == "dial") &&
           (scenario == "autonat_v1" || scenario == "autonat_v2")) {
          return forge::test::libp2p_interop::run_forge_autonat_fixture(

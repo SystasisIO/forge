@@ -59,7 +59,8 @@ namespace {
       return std::nullopt;
    }
    return endpoint{.transport = {.host_type = value.transport.host_type, .protocol = value.transport.protocol,
-                                 .host = address.to_string(), .port = value.transport.port}};
+                                 .host = address.to_string(), .port = value.transport.port,
+                                 .zone = value.transport.zone}};
 }
 
 [[nodiscard]] bool same_transport(const endpoint& left, const endpoint& right) {
@@ -102,6 +103,7 @@ bool observed_address_manager::observe(std::uint64_t session_id, const peer_id& 
    const auto is_listened = std::ranges::any_of(listened, [&](const auto& value) {
       const auto listener = normalized(value, true);
       return listener && same_transport(*local_address, *listener) &&
+             local_address->transport.zone == listener->transport.zone &&
              local_address->transport.port == listener->transport.port &&
              (local_address->transport.host == listener->transport.host ||
               boost::asio::ip::make_address(listener->transport.host).is_unspecified());

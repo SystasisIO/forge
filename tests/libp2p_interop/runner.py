@@ -3,6 +3,7 @@ import argparse
 from functools import wraps
 import hashlib
 import io
+from itertools import chain
 import json
 import os
 import re
@@ -18,6 +19,10 @@ sys.dont_write_bytecode = True
 
 from dns_fixture import DnsaddrServer
 from autonat_cases import run_suite as run_autonat_suite
+from mdns_cases import run_suite as run_mdns_suite
+from mdns_isolation_cases import run_suite as run_mdns_isolation_suite
+from mdns_churn_cases import run_suite as run_mdns_churn_suite
+from mdns_acceptance import claims_for as mdns_claims
 from autonat_acceptance import acceptance_id as autonat_acceptance_id, SCENARIOS as AUTONAT_SCENARIOS
 from process_lifecycle import Listener, current_scope, enter_scope, exit_scope, spawn_owned, tail_text
 from provider_evidence import validate_hidden_find_peer_evidence, validate_provider_evidence
@@ -81,6 +86,10 @@ CURRENT_ACCEPTANCE_SCENARIOS = {
 }
 # TLS Ping is transport smoke, not the separately registered QUIC Ping claim.
 UNCLAIMED_SMOKE_SCENARIOS = ("tcp_tls/ping",)
+MDNS_ACCEPTANCE_SCENARIOS = {
+    "tcp_stage6/mdns_public": ("mdns_public",),
+    "private_tcp_yamux_pnet/mdns_private_fingerprinted_go": ("mdns_private_fingerprinted_go",),
+}
 # Executable registration only. Capability support remains staged until the
 # clean-head promotion wrapper validates the entire bilateral 41-case suite.
 AUTONAT_ACCEPTANCE_SCENARIOS = {
@@ -119,6 +128,25 @@ def autonat_claims(spec):
     name = autonat_acceptance_id(spec)
     return [] if name is None else list(
         AUTONAT_ACCEPTANCE_SCENARIOS[f"{AUTONAT_SCENARIOS[name][4]}/{name}"])
+
+
+def run_paired_suites(suite, binaries, root, *, pnet_key, mismatch_key, pnet_fingerprint):
+    """Full Stage 6 composes both matrices; focused suites never run the other."""
+    if suite not in ("stage6", "autonat", "mdns"):
+        raise ValueError("unknown paired acceptance suite")
+    if suite in ("stage6", "autonat"):
+        yield from run_autonat_suite(binaries, root, pnet_key=pnet_key, pnet_fingerprint=pnet_fingerprint,
+                                    wait_json=wait_json, command_attempt=command_attempt,
+                                    claims_for_case=autonat_claims)
+    if suite in ("stage6", "mdns"):
+        for artifact in chain(
+                run_mdns_suite(binaries, root, pnet_key=pnet_key,
+                               wait_json=wait_json, command_attempt=command_attempt),
+                run_mdns_isolation_suite(binaries, root, pnet_key=pnet_key, mismatch_key=mismatch_key,
+                                         wait_json=wait_json, command_attempt=command_attempt),
+                run_mdns_churn_suite(binaries, root, command_attempt=command_attempt)):
+            artifact["acceptance_scenario_ids"] = mdns_claims(artifact)
+            yield artifact
 
 
 def command_option_values(command: object) -> dict[str, str]:
@@ -1508,7 +1536,7 @@ def referenced_evidence_paths(value: object) -> set[Path]:
     paths: set[Path] = set()
     if isinstance(value, dict):
         for key, nested in value.items():
-            if key in {"log_file", "result_file", "listener_result_file"} and isinstance(nested, str):
+            if key in {"log_file", "result_file", "listener_result_file", "evidence_file"} and isinstance(nested, str):
                 paths.add(Path(nested))
             paths.update(referenced_evidence_paths(nested))
     elif isinstance(value, list):
@@ -1578,7 +1606,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -1598,10 +1626,10 @@ def main() -> int:
     build_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict] = []
     failures: list[str] = []
-    root = build_dir / ("autonat-run" if args.suite == "autonat" else "interop-run")
+    root = build_dir / ({"autonat": "autonat-run", "mdns": "mdns-run"}.get(args.suite, "interop-run"))
     artifact_path = build_dir / (
         "interop-provenance-artifacts.json" if args.provenance_only else
-        "autonat-artifacts.json" if args.suite == "autonat" else "interop-artifacts.json"
+        {"autonat": "autonat-artifacts.json", "mdns": "mdns-artifacts.json"}.get(args.suite, "interop-artifacts.json")
     )
     provenance = {
         "forge_worktree": {"start": None, "end": None, "changed_during_run": None},
@@ -1860,11 +1888,9 @@ def main() -> int:
                           for name in LIVE_SCENARIO_PROFILES[profile] if name in AUTONAT_SCENARIOS}
             if registered != set(AUTONAT_ACCEPTANCE_SCENARIOS):
                 raise RuntimeError("AutoNAT executable registration differs from the full suite")
-            for artifact in run_autonat_suite(
-                binaries, root, pnet_key=pnet_key_file, pnet_fingerprint=pnet_fingerprint,
-                wait_json=wait_json, command_attempt=command_attempt,
-                claims_for_case=autonat_claims,
-            ):
+            paired_cases = run_paired_suites(args.suite, binaries, root, pnet_key=pnet_key_file,
+                                            mismatch_key=pnet_mismatch_key_file, pnet_fingerprint=pnet_fingerprint)
+            for artifact in paired_cases:
                 artifacts.append(artifact)
                 if artifact["status"] != "passed":
                     failures.append(f"{artifact['scenario_id']}: " +

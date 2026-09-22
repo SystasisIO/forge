@@ -94,6 +94,12 @@ namespace {
 
 forge::multiformats::multiaddr endpoint::to_multiaddr() const {
    auto out = forge::multiformats::multiaddr{};
+   if (!transport.zone.empty()) {
+      if (transport.host_type != host_kind::ip6) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P endpoint zone requires an IPv6 host");
+      }
+      out.push({.code = forge::multiformats::protocol_code::ip6zone, .value = transport.zone});
+   }
    out.push({.code = host_kind_code(transport.host_type), .value = transport.host});
    if (transport.protocol == protocol_kind::quic_v1) {
       out.push({.code = forge::multiformats::protocol_code::udp, .value = std::to_string(transport.port)});
@@ -133,29 +139,49 @@ endpoint parse_endpoint(std::string_view value) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P endpoint must include address and transport components");
    }
 
+   auto address_index = std::size_t{};
+   auto zone = std::string{};
+   if (components.front().code == forge::multiformats::protocol_code::ip6zone) {
+      if (components.size() < 3 || components[1].code != forge::multiformats::protocol_code::ip6) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P ip6zone must directly precede an ip6 component");
+      }
+      zone = components.front().value;
+      address_index = 1;
+   }
+   for (auto index = address_index + 1; index < components.size(); ++index) {
+      if (components[index].code == forge::multiformats::protocol_code::ip6zone) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P ip6zone must directly precede an ip6 component");
+      }
+   }
+
    auto result = endpoint{.transport = forge::net::transport::endpoint{
-                              .host_type = endpoint_host_kind(components[0].code),
-                              .host = components[0].value,
+                              .host_type = endpoint_host_kind(components[address_index].code),
+                              .host = components[address_index].value,
+                              .zone = std::move(zone),
                           }};
-   auto suffix = std::size_t{2};
-   if (components[1].code == forge::multiformats::protocol_code::udp) {
-      if (components.size() < 3) {
+   auto suffix = address_index + 2;
+   if (suffix > components.size()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P endpoint must include address and transport components");
+   }
+   const auto transport_index = address_index + 1;
+   if (components[transport_index].code == forge::multiformats::protocol_code::udp) {
+      if (components.size() < suffix + 1) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P UDP endpoint must include quic-v1 component");
       }
       try {
-         result.transport.port = static_cast<std::uint16_t>(std::stoul(components[1].value));
+         result.transport.port = static_cast<std::uint16_t>(std::stoul(components[transport_index].value));
       } catch (...) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P endpoint port is invalid");
       }
-      if (components[2].code != forge::multiformats::protocol_code::quic_v1) {
+      if (components[suffix].code != forge::multiformats::protocol_code::quic_v1) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P UDP endpoint is missing quic-v1 component");
       }
       result.transport.protocol = endpoint::protocol_kind::quic_v1;
-      suffix = 3;
+      ++suffix;
    } else {
-      result.transport.protocol = protocol_kind(components[1].code);
+      result.transport.protocol = protocol_kind(components[transport_index].code);
       try {
-         result.transport.port = static_cast<std::uint16_t>(std::stoul(components[1].value));
+         result.transport.port = static_cast<std::uint16_t>(std::stoul(components[transport_index].value));
       } catch (...) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P endpoint port is invalid");
       }

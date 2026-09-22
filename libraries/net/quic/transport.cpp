@@ -15,6 +15,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.quic.transport;
 
@@ -183,6 +184,17 @@ class quic_session_concept final : public forge::net::transport::detail::session
       throw_invalid_transport_endpoint(value, "QUIC transport connector requires non-zero remote port");
    }
 
+   try {
+      if (value.host_type == forge::net::transport::endpoint::host_kind::ip4 ||
+          value.host_type == forge::net::transport::endpoint::host_kind::ip6) {
+         static_cast<void>(value.literal_address());
+      } else if (!value.zone.empty()) {
+         throw_invalid_transport_endpoint(value, "QUIC DNS endpoint cannot carry an interface zone");
+      }
+   } catch (const boost::system::system_error&) {
+      throw_invalid_transport_endpoint(value, "invalid QUIC literal endpoint or interface zone");
+   }
+
    auto error = boost::system::error_code{};
    switch (value.host_type) {
    case forge::net::transport::endpoint::host_kind::ip4:
@@ -211,6 +223,11 @@ class quic_session_concept final : public forge::net::transport::detail::session
    }
    if (value.host.empty()) {
       throw_invalid_transport_endpoint(value, "QUIC transport listener requires non-empty host");
+   }
+   try {
+      static_cast<void>(value.literal_address());
+   } catch (const boost::system::system_error&) {
+      throw_invalid_transport_endpoint(value, "invalid QUIC listener literal endpoint or interface zone");
    }
    switch (value.host_type) {
    case forge::net::transport::endpoint::host_kind::ip4: {
@@ -385,6 +402,7 @@ forge::net::transport::endpoint to_transport_endpoint(const endpoint& value) {
        .protocol = forge::net::transport::endpoint::protocol_kind::quic_v1,
        .host = value.host,
        .port = value.port,
+       .zone = value.zone,
    };
 }
 
@@ -405,7 +423,7 @@ endpoint from_transport_endpoint(const forge::net::transport::endpoint& value) {
       family = endpoint::address_family::ipv6;
       break;
    }
-   return endpoint{.host = value.host, .port = value.port, .family = family};
+   return endpoint{.host = value.host, .port = value.port, .family = family, .zone = value.zone};
 }
 
 forge::net::transport::stream as_transport_stream(stream value) {

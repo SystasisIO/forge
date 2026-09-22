@@ -26,7 +26,7 @@ class quic_client_token_cache {
    void close() noexcept;
 
    [[nodiscard]] static std::string make_key(std::span<const std::uint8_t> expected_peer, std::string_view host_kind,
-                                             std::string_view host, std::uint16_t port);
+                                             std::string_view host, std::string_view zone, std::uint16_t port);
 
  private:
    using clock = std::chrono::steady_clock;

@@ -18,6 +18,7 @@ export module forge.net.pnet.protector;
 export import forge.exceptions;
 export import forge.net.transport.connector;
 import forge.crypto.core.secret_bytes;
+import forge.net.pnet.network_fingerprint;
 
 namespace forge::net::pnet::detail {
 struct pre_shared_key_access;
@@ -72,6 +73,7 @@ class pre_shared_key {
 
    [[nodiscard]] static pre_shared_key parse_swarm_key(std::string_view text);
    [[nodiscard]] operational_fingerprint fingerprint() const;
+   [[nodiscard]] forge::net::pnet::network_fingerprint network_fingerprint() const;
 
  private:
    friend struct detail::pre_shared_key_access;
@@ -93,6 +95,7 @@ class protector {
    [[nodiscard]] boost::asio::awaitable<forge::net::transport::stream_connection>
    async_protect(forge::net::transport::stream_connection connection, std::stop_token stop = {}) const;
    [[nodiscard]] operational_fingerprint fingerprint() const;
+   [[nodiscard]] forge::net::pnet::network_fingerprint network_fingerprint() const;
 
  private:
    std::shared_ptr<const pre_shared_key> key_;

@@ -19,6 +19,7 @@ module;
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.tcp.listener;
 
@@ -57,23 +58,18 @@ asio_tcp::endpoint to_bind_endpoint(const transport::endpoint& endpoint) {
    if (endpoint.host.empty()) {
       throw_invalid_endpoint(endpoint, "tcp listener requires non-empty host");
    }
+   if (endpoint.host.find('\0') != std::string::npos) {
+      throw_invalid_endpoint(endpoint, "tcp listener host must not contain NUL");
+   }
 
-   auto error = boost::system::error_code{};
    switch (endpoint.host_type) {
-   case transport::endpoint::host_kind::ip4: {
-      const auto address = boost::asio::ip::make_address_v4(endpoint.host, error);
-      if (error) {
-         throw_invalid_endpoint(endpoint, "tcp listener requires valid IPv4 host");
+   case transport::endpoint::host_kind::ip4:
+   case transport::endpoint::host_kind::ip6:
+      try {
+         return asio_tcp::endpoint{endpoint.literal_address(), endpoint.port};
+      } catch (const boost::system::system_error&) {
+         throw_invalid_endpoint(endpoint, "tcp listener requires valid scoped literal host");
       }
-      return asio_tcp::endpoint{address, endpoint.port};
-   }
-   case transport::endpoint::host_kind::ip6: {
-      const auto address = boost::asio::ip::make_address_v6(endpoint.host, error);
-      if (error) {
-         throw_invalid_endpoint(endpoint, "tcp listener requires valid IPv6 host");
-      }
-      return asio_tcp::endpoint{address, endpoint.port};
-   }
    case transport::endpoint::host_kind::dns:
    case transport::endpoint::host_kind::dns4:
    case transport::endpoint::host_kind::dns6:
@@ -83,12 +79,8 @@ asio_tcp::endpoint to_bind_endpoint(const transport::endpoint& endpoint) {
 }
 
 [[nodiscard]] transport::endpoint from_asio_endpoint(const asio_tcp::endpoint& endpoint) {
-   const auto address = endpoint.address();
-   return transport::endpoint{.host_type = address.is_v6() ? transport::endpoint::host_kind::ip6
-                                                           : transport::endpoint::host_kind::ip4,
-                              .protocol = transport::endpoint::protocol_kind::tcp,
-                              .host = address.to_string(),
-                              .port = endpoint.port()};
+   return transport::endpoint::from_address(endpoint.address(), endpoint.port(),
+                                            transport::endpoint::protocol_kind::tcp);
 }
 
 void configure_socket(asio_tcp::socket& socket, const options& tcp_options) {

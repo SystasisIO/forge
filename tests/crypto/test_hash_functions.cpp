@@ -1,5 +1,11 @@
 #include <boost/test/unit_test.hpp>
 #include <forge/exceptions/macros.hpp>
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <span>
 #include <string>
 
 import forge.codec.hex;
@@ -9,12 +15,33 @@ import forge.crypto.digest.sha224;
 import forge.crypto.digest.sha256;
 import forge.crypto.digest.sha3;
 import forge.crypto.digest.sha512;
+import forge.crypto.digest.shake128;
 import forge.core.utility;
 import forge.exceptions;
 
 using namespace forge;
 
 BOOST_AUTO_TEST_SUITE(hash_functions)
+
+BOOST_AUTO_TEST_CASE(shake128_variable_output_vectors_and_boundaries) {
+   const auto empty = forge::crypto::digest::shake128({}, 32);
+   BOOST_CHECK_EQUAL(forge::codec::hex::encode(empty),
+                     "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26");
+   const auto input = std::array<std::uint8_t, 3>{'a', 'b', 'c'};
+   const auto abc = forge::crypto::digest::shake128(input, 16);
+   BOOST_CHECK_EQUAL(forge::codec::hex::encode(abc), "5881092dd818bf5cf8a3ddb793fbcba7");
+   const auto full = forge::crypto::digest::shake128(input, 337);
+   // SHAKE128's 168-byte rate must not impose a fixed digest size.
+   for (const auto size : {0U, 1U, 16U, 32U, 167U, 168U, 169U, 336U, 337U}) {
+      const auto output = forge::crypto::digest::shake128(input, size);
+      BOOST_CHECK_EQUAL(output.size(), size);
+      BOOST_CHECK(std::equal(output.begin(), output.end(), full.begin()));
+   }
+   BOOST_CHECK(forge::crypto::digest::shake128({}, 0).empty());
+   BOOST_CHECK_THROW(static_cast<void>(forge::crypto::digest::shake128(
+                         input, std::numeric_limits<std::size_t>::max())),
+                     forge::crypto::digest::exceptions::invalid_size);
+}
 
 BOOST_AUTO_TEST_CASE(evp_digest_vectors) try {
    const std::string empty;

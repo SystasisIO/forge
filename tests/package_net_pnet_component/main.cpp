@@ -4,6 +4,7 @@
 #include <span>
 #include <utility>
 
+import forge.net.pnet.network_fingerprint;
 import forge.net.pnet.protector;
 
 template <typename type>
@@ -22,7 +23,9 @@ static_assert(!exposes_raw_key_bytes<forge::net::pnet::pre_shared_key>);
 int main() {
    auto key = forge::net::pnet::pre_shared_key{std::array<std::uint8_t, 32>{}};
    const auto fingerprint = key.fingerprint();
+   const auto network = key.network_fingerprint();
    auto protector = forge::net::pnet::protector{std::move(key)};
-   static_cast<void>(protector);
-   return fingerprint.bytes.size() == 32U ? 0 : 1;
+   return fingerprint.bytes.size() == 32U && network.bytes.size() == 16U &&
+                  protector.fingerprint() == fingerprint && protector.network_fingerprint() == network
+              ? 0 : 1;
 }

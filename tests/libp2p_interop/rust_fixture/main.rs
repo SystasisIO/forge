@@ -37,6 +37,8 @@ mod provider;
 mod task_owner;
 mod upgrade_observer;
 mod application_observer;
+#[path = "mdns.rs"]
+mod mdns_fixture;
 #[path = "autonat.rs"]
 mod autonat_fixture;
 
@@ -92,6 +94,7 @@ struct PnetObservation {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    mdns: Toggle<libp2p::mdns::tokio::Behaviour>,
     // Native AutoNAT owns a separate behaviour in autonat_fixture.
     relay: Toggle<relay::Behaviour>,
     relay_client: Toggle<relay::client::Behaviour>,
@@ -290,6 +293,7 @@ fn behaviour_for(
         kad::Behaviour::with_config(peer, kad::store::MemoryStore::new(peer), kad_config);
     kad_behaviour.set_mode(Some(kad::Mode::Server));
     Behaviour {
+        mdns: None.into(),
         relay: (!private_network)
             .then(|| relay::Behaviour::new(peer, Default::default()))
             .into(),
@@ -443,7 +447,9 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
         other => return Err(format!("unsupported transport {other}").into()),
     };
 
-    let listen_addr = if transport == "tcp" || transport == "tcp-tls" || transport == "tcp-pnet" {
+    let listen_addr = if opts.scenario == "mdns" {
+        mdns_fixture::listen_address(opts)?
+    } else if transport == "tcp" || transport == "tcp-tls" || transport == "tcp-pnet" {
         Multiaddr::empty()
             .with(Protocol::Ip4(Ipv4Addr::LOCALHOST))
             .with(Protocol::Tcp(0))
@@ -2810,6 +2816,9 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let opts = parse_args()?;
+    if opts.scenario == "mdns" {
+        return mdns_fixture::run(opts).await;
+    }
     if autonat_fixture::is_scenario(&opts.scenario) {
         return autonat_fixture::run(opts).await;
     }

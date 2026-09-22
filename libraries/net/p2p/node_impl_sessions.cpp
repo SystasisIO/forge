@@ -97,7 +97,8 @@ namespace asio = boost::asio;
    return std::ranges::any_of(active, [&](const auto& candidate) {
       return candidate.transport.host_type == endpoint.transport.host_type &&
              candidate.transport.protocol == endpoint.transport.protocol &&
-             candidate.transport.host == endpoint.transport.host && candidate.transport.port == endpoint.transport.port;
+             candidate.transport.host == endpoint.transport.host && candidate.transport.zone == endpoint.transport.zone &&
+             candidate.transport.port == endpoint.transport.port;
    });
 }
 

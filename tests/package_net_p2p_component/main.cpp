@@ -15,6 +15,7 @@ import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.identity;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
+import forge.net.p2p.mdns_policy;
 import forge.net.p2p.provider_registration;
 import forge.net.p2p.reachability;
 import forge.net.p2p.reachability_policy;
@@ -61,6 +62,12 @@ static_assert(requires(forge::net::p2p::node& node, forge::multiformats::multiad
 });
 
 int main() {
+   p2p::validate(p2p::mdns_policy{});
+   const auto scoped_text = "/ip6zone/en0/ip6/fe80::1/tcp/4001";
+   const auto scoped_address = forge::multiformats::multiaddr::parse(scoped_text);
+   if (forge::multiformats::multiaddr::from_bytes(scoped_address.to_bytes()).to_string() != scoped_text) {
+      return 1;
+   }
    const auto whole_seconds = std::chrono::sys_seconds{std::chrono::sys_days{
        std::chrono::year{9999} / std::chrono::December / 31}};
    const auto eol = forge::chrono::timestamp{whole_seconds, std::chrono::nanoseconds{999'999'999}};
