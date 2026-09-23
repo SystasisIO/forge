@@ -35,6 +35,7 @@ import forge.api.core.handle;
 import forge.api.core.connection;
 import forge.api.core.registry;
 import forge.api.core.binding;
+import forge.api.core.server_supplied;
 import forge.api.auth.authenticated_caller;
 import forge.net.http.exceptions;
 import forge.net.http.body;
@@ -882,6 +883,7 @@ class binding_builder {
    static constexpr auto is_plain_codec_body_argument_v =
        (forge::reflect::is_described_object_v<std::remove_cvref_t<T>> ||
         is_http_body_sequence<std::remove_cvref_t<T>>::value) &&
+       !forge::api::core::server_supplied_value<T> &&
        !detail::request_needs_stream_v<std::remove_cvref_t<T>> && !detail::is_header<std::remove_cvref_t<T>>::value &&
        !detail::is_query<std::remove_cvref_t<T>>::value && !detail::is_cookie<std::remove_cvref_t<T>>::value &&
        !detail::is_body<std::remove_cvref_t<T>>::value && !detail::is_form<std::remove_cvref_t<T>>::value &&
@@ -932,7 +934,22 @@ class binding_builder {
       (([&] {
           using argument_type = std::remove_cvref_t<std::tuple_element_t<Index, Tuple>>;
           const auto name = argument_name(method_descriptor, Index);
-          if constexpr (detail::is_header<argument_type>::value ||
+          if constexpr (forge::api::core::server_supplied_value<argument_type>) {
+             const auto explicitly_bound = path_uses_field(path, name) || query_uses_field(options, name) ||
+                                           std::ranges::any_of(options.headers, [name](const auto& field) {
+                                              return field.field == name;
+                                           }) ||
+                                           std::ranges::any_of(options.forms, [name](const auto& field) {
+                                              return field.field == name;
+                                           }) ||
+                                           (options.body_stream_field && *options.body_stream_field == name);
+             if (explicitly_bound) {
+                FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                      "HTTP server-supplied argument cannot be bound to a request field",
+                                      forge::exceptions::ctx("field", name));
+             }
+             return;
+          } else if constexpr (detail::is_header<argument_type>::value ||
                         detail::is_query<argument_type>::value ||
                         detail::is_cookie<argument_type>::value) {
              if (!allow_parameter_wrappers) {
@@ -1172,7 +1189,12 @@ class binding_builder {
                                                                     bool decode_plain_codec_body = false) {
       using clean = std::remove_cvref_t<Argument>;
       auto result = clean{};
-      if constexpr (detail::is_header<clean>::value) {
+      if constexpr (forge::api::core::server_supplied_value<clean>) {
+         static_cast<void>(context);
+         static_cast<void>(options);
+         static_cast<void>(name);
+         static_cast<void>(decode_plain_codec_body);
+      } else if constexpr (detail::is_header<clean>::value) {
          const auto header_name = mapped_name_or_default(options.headers, name, header_name_from_field);
          if (auto value = header_value(context.request, header_name); value.has_value()) {
             parse_http_field(result, *value, name);

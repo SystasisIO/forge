@@ -20,6 +20,8 @@ module;
 module forge.plugins.chain.signer.plugin;
 
 import forge.chain.protocol.time;
+import forge.chain.api.block_signer;
+import forge.chain.protocol.block_signing;
 import forge.plugins.chain.signer.exceptions;
 import forge.plugins.chain.signer.types;
 
@@ -129,6 +131,16 @@ signing_policy::finality_selection plugin::impl::select_finality() const {
       FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer plugin is not initialized");
    }
    return runtime->policy->select_finality();
+}
+
+signing_policy::block_selection
+plugin::impl::select_block(const forge::chain::protocol::block_sign_request& request,
+                           const forge::api::auth::authenticated_caller& caller) const {
+   const auto runtime = runtime_snapshot();
+   if (runtime == nullptr) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer plugin is not initialized");
+   }
+   return runtime->policy->select_block(request, caller);
 }
 
 void plugin::impl::audit(audit_entry value) const noexcept {

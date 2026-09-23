@@ -67,6 +67,7 @@ import forge.asio.exceptions;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.api.http.binding;
+import forge.api.http.client_request;
 import forge.net.http.base_url;
 import forge.api.http.parameters;
 import forge.net.http.body;
@@ -548,6 +549,8 @@ BOOST_DESCRIBE_STRUCT(http_required_authority, (), (value))
 BOOST_DESCRIBE_STRUCT(http_trusted_request, (), (value, authority))
 BOOST_DESCRIBE_STRUCT(authenticated_http_request, (), (caller))
 BOOST_DESCRIBE_STRUCT(authenticated_http_response, (), (source, fingerprint, authenticated))
+static_assert(forge::api::core::server_supplied_value<forge::api::auth::authenticated_caller>);
+static_assert(!forge::api::core::server_supplied_value<authenticated_http_request>);
 BOOST_DESCRIBE_STRUCT(macro_read_request, (), (ref, offset, limit))
 BOOST_DESCRIBE_STRUCT(macro_write_request, (), (ref, bytes))
 BOOST_DESCRIBE_STRUCT(optional_query_request, (), (ref, limit))
@@ -616,6 +619,26 @@ class authenticated_http_api
    virtual ~authenticated_http_api() = default;
 
    virtual boost::asio::awaitable<authenticated_http_response> inspect(authenticated_http_request request) = 0;
+};
+
+class positional_authenticated_api
+    : public forge::api::core::contract<positional_authenticated_api,
+                                        forge::api::core::surface::local | forge::api::core::surface::remote> {
+ public:
+   virtual ~positional_authenticated_api() = default;
+
+   virtual boost::asio::awaitable<authenticated_http_response>
+   inspect(positional_body_payload payload, forge::api::auth::authenticated_caller caller) = 0;
+};
+
+class single_authenticated_api
+    : public forge::api::core::contract<single_authenticated_api,
+                                        forge::api::core::surface::local | forge::api::core::surface::remote> {
+ public:
+   virtual ~single_authenticated_api() = default;
+
+   virtual boost::asio::awaitable<authenticated_http_response>
+   inspect(forge::api::auth::authenticated_caller caller) = 0;
 };
 
 class websocket_positional_api
@@ -973,6 +996,12 @@ FORGE_API(::forge::net::http::test_api::trusted_http_api, FORGE_API_CONTRACT("tr
 FORGE_API(::forge::net::http::test_api::authenticated_http_api, FORGE_API_CONTRACT("authenticated.http", 1, 0),
           FORGE_API_METHOD(inspect))
 
+FORGE_API(::forge::net::http::test_api::positional_authenticated_api,
+          FORGE_API_CONTRACT("positional.authenticated.http", 1, 0), FORGE_API_METHOD(inspect, payload, caller))
+
+FORGE_API(::forge::net::http::test_api::single_authenticated_api,
+          FORGE_API_CONTRACT("single.authenticated.http", 1, 0), FORGE_API_METHOD(inspect, caller))
+
 FORGE_API(::forge::net::http::test_api::macro_cache, FORGE_API_CONTRACT("cache.macro", 1, 0), FORGE_API_METHOD(read),
           FORGE_API_METHOD(write))
 
@@ -1233,6 +1262,15 @@ FORGE_HTTP_API(::forge::net::http::test_api::positional_query_append_api, FORGE_
 
 FORGE_HTTP_API(::forge::net::http::test_api::positional_plain_body_api, FORGE_HTTP_POST(write, "/plain/:ref", created))
 
+FORGE_HTTP_API(::forge::net::http::test_api::positional_authenticated_api,
+               FORGE_HTTP_POST(inspect, "/positional-authenticated", ok))
+
+FORGE_HTTP_API(::forge::net::http::test_api::authenticated_http_api,
+               FORGE_HTTP_POST(inspect, "/authenticated-caller", ok))
+
+FORGE_HTTP_API(::forge::net::http::test_api::single_authenticated_api,
+               FORGE_HTTP_POST(inspect, "/single-authenticated", ok))
+
 FORGE_HTTP_API(::forge::net::http::test_api::validated_single_body_api,
                FORGE_HTTP_POST(write, "/validated-single-body", created))
 
@@ -1400,8 +1438,11 @@ using test_api::api_chunk;
 using test_api::api_read_chunk;
 using test_api::api_routed_read_chunk;
 using test_api::authenticated_http_api;
+using test_api::positional_authenticated_api;
+using test_api::single_authenticated_api;
 using test_api::authenticated_http_request;
 using test_api::authenticated_http_response;
+using test_api::positional_body_payload;
 using test_api::colliding_headers_api;
 using test_api::colliding_parameters_api;
 using test_api::control_api;
@@ -1621,6 +1662,36 @@ class authenticated_http_api_impl final : public authenticated_http_api {
           .source = request.caller.source,
           .fingerprint = request.caller.fingerprint,
           .authenticated = request.caller.transport_authenticated(),
+      };
+   }
+};
+
+class positional_authenticated_api_impl final : public positional_authenticated_api {
+ public:
+   explicit positional_authenticated_api_impl(std::shared_ptr<std::string> observed) : observed_{std::move(observed)} {}
+
+   boost::asio::awaitable<authenticated_http_response>
+   inspect(positional_body_payload payload, forge::api::auth::authenticated_caller caller) override {
+      *observed_ = std::move(payload.value);
+      co_return authenticated_http_response{
+          .source = caller.source,
+          .fingerprint = caller.fingerprint,
+          .authenticated = caller.transport_authenticated(),
+      };
+   }
+
+ private:
+   std::shared_ptr<std::string> observed_;
+};
+
+class single_authenticated_api_impl final : public single_authenticated_api {
+ public:
+   boost::asio::awaitable<authenticated_http_response>
+   inspect(forge::api::auth::authenticated_caller caller) override {
+      co_return authenticated_http_response{
+          .source = caller.source,
+          .fingerprint = caller.fingerprint,
+          .authenticated = caller.transport_authenticated(),
       };
    }
 };
@@ -2942,6 +3013,178 @@ BOOST_AUTO_TEST_CASE(http_unary_binding_injects_verified_client_certificate_iden
    BOOST_CHECK(decoded.value.source == forge::api::auth::caller_source::tls_certificate);
    BOOST_TEST(decoded.value.fingerprint == verified);
    BOOST_TEST(decoded.value.fingerprint != spoofed);
+}
+
+BOOST_AUTO_TEST_CASE(http_positional_server_supplied_identity_uses_only_verified_transport) {
+   const auto verified = forge::crypto::digest::sha256::hash(std::string{"verified-positional-certificate"});
+   auto runtime = forge::asio::runtime{};
+   auto apis = forge::api::core::registry{};
+   auto observed = std::make_shared<std::string>();
+   apis.install<positional_authenticated_api>(positional_authenticated_api::describe(),
+                                              std::make_shared<positional_authenticated_api_impl>(observed));
+
+   auto router = forge::net::http::router{};
+   router.mount(forge::api::http::binding()
+                    .use(forge::api::core::binding().serve(apis).build())
+                    .bind<positional_authenticated_api>()
+                    .build());
+
+   auto request = make_request(method::post, "/positional-authenticated");
+   request.set(field::content_type, "application/json");
+   request.body() = R"({"value":"accepted"})";
+   request.prepare_payload();
+
+   auto context = make_route_context(request);
+   context.runtime = &runtime;
+   context.client_certificate_fingerprint = verified;
+   const auto response = handle(router, context);
+   const auto decoded = forge::codec::json::read<authenticated_http_response>(response.body());
+
+   BOOST_TEST(response.result_int() == static_cast<unsigned>(status::ok));
+   BOOST_REQUIRE(decoded.ok());
+   BOOST_TEST(*observed == "accepted");
+   BOOST_TEST(decoded.value.authenticated);
+   BOOST_CHECK(decoded.value.source == forge::api::auth::caller_source::tls_certificate);
+   BOOST_TEST(decoded.value.fingerprint == verified);
+
+   auto no_identity = make_route_context(request);
+   no_identity.runtime = &runtime;
+   const auto denied = handle(router, no_identity);
+   const auto error = forge::codec::json::read<forge::api::core::error_payload>(denied.body());
+   BOOST_TEST(denied.result_int() == static_cast<unsigned>(forge::api::core::status::failed_precondition));
+   BOOST_REQUIRE(error.ok());
+   BOOST_TEST(error.value.error == "server_supplied_unavailable");
+   BOOST_TEST(*observed == "accepted");
+
+   auto spoofed = make_request(method::post, "/positional-authenticated");
+   spoofed.set(field::content_type, "application/json");
+   spoofed.body() = R"({"value":"spoofed","caller":{"source":"p2p_peer"}})";
+   spoofed.prepare_payload();
+   auto spoofed_context = make_route_context(spoofed);
+   spoofed_context.runtime = &runtime;
+   spoofed_context.client_certificate_fingerprint = verified;
+   const auto rejected = handle(router, spoofed_context);
+   BOOST_TEST(rejected.result_int() == 422U);
+   BOOST_TEST(*observed == "accepted");
+}
+
+BOOST_AUTO_TEST_CASE(http_positional_server_supplied_identity_cannot_be_route_bound) {
+   auto apis = forge::api::core::registry{};
+   apis.install<positional_authenticated_api>(positional_authenticated_api::describe(),
+                                              std::make_shared<positional_authenticated_api_impl>(
+                                                  std::make_shared<std::string>()));
+   const auto local = forge::api::core::binding().serve(apis).build();
+   const auto rejects = [&](std::string path, forge::api::http::route_options options = {}) {
+      auto router = forge::net::http::router{};
+      auto mounted = forge::api::http::binding()
+                         .use(local)
+                         .post<&positional_authenticated_api::inspect,
+                               forge::api::http::detail::http_method_request_t<&positional_authenticated_api::inspect>,
+                               authenticated_http_response>(std::move(path), std::move(options))
+                         .build();
+      BOOST_CHECK_THROW(router.mount(mounted), forge::net::http::exceptions::bad_request);
+   };
+   rejects("/positional/:caller");
+   rejects("/positional", forge::api::http::route_options{.query = {{.field = "caller", .name = "caller"}}});
+   rejects("/positional", forge::api::http::route_options{.headers = {{.field = "caller", .name = "X-Caller"}}});
+   rejects("/positional", forge::api::http::route_options{.forms = {{.field = "caller", .name = "caller"}}});
+
+   using request_type = forge::api::http::detail::http_method_request_t<&positional_authenticated_api::inspect>;
+   const auto rejects_client = [](forge::api::http::route route) {
+      BOOST_CHECK_THROW((void)(forge::api::http::detail::make_route_call<
+                            &positional_authenticated_api::inspect, request_type, authenticated_http_response>(
+                            std::move(route))), forge::net::http::exceptions::bad_request);
+   };
+   auto route = forge::api::http::traits<positional_authenticated_api>::routes().front();
+   route.target = "/positional/:caller";
+   rejects_client(route);
+   route.target = "/positional?who={caller}";
+   rejects_client(route);
+   route.target = "/positional";
+   route.headers = {{.field = "caller", .name = "X-Caller"}};
+   rejects_client(route);
+   route.headers.clear();
+   route.forms = {{.field = "caller", .name = "caller"}};
+   rejects_client(route);
+}
+
+BOOST_AUTO_TEST_CASE(http_single_server_supplied_argument_has_no_request_body) {
+   const auto verified = forge::crypto::digest::sha256::hash(std::string{"single-verified-certificate"});
+   auto runtime = forge::asio::runtime{};
+   auto apis = forge::api::core::registry{};
+   apis.install<single_authenticated_api>(single_authenticated_api::describe(),
+                                          std::make_shared<single_authenticated_api_impl>());
+   auto router = forge::net::http::router{};
+   router.mount(forge::api::http::binding()
+                    .use(forge::api::core::binding().serve(apis).build())
+                    .bind<single_authenticated_api>()
+                    .build());
+
+   auto request = make_request(method::post, "/single-authenticated");
+   auto context = make_route_context(request);
+   context.runtime = &runtime;
+   context.client_certificate_fingerprint = verified;
+   const auto response = handle(router, context);
+   const auto decoded = forge::codec::json::read<authenticated_http_response>(response.body());
+   BOOST_TEST(response.result_int() == static_cast<unsigned>(status::ok));
+   BOOST_REQUIRE(decoded.ok());
+   BOOST_TEST(decoded.value.authenticated);
+   BOOST_TEST(decoded.value.fingerprint == verified);
+
+   const auto document = forge::api::http::openapi<single_authenticated_api>();
+   const auto& operation = document["paths"]["/single-authenticated"]["post"];
+   BOOST_TEST(!operation.get_object().contains("requestBody"));
+   BOOST_TEST(!operation.get_object().contains("parameters"));
+
+   auto client = forge::net::http::client{runtime, parse_base_url("http://127.0.0.1:12345")};
+   const auto route = forge::api::http::traits<single_authenticated_api>::routes().front();
+   auto arguments = std::tuple{forge::api::auth::authenticated_caller{
+       forge::api::auth::caller_source::p2p_peer, forge::crypto::digest::sha256::hash(std::string{"spoofed"})}};
+   auto outgoing = forge::api::http::detail::make_client_request(
+       client, route, arguments, std::vector<std::string>{"caller"});
+   BOOST_TEST(!forge::api::http::detail::bind_positional_request_body(outgoing.value, route, arguments,
+                                                                      outgoing.consumed)
+                   .has_value());
+   BOOST_TEST(outgoing.value.body().empty());
+}
+
+BOOST_AUTO_TEST_CASE(http_positional_server_supplied_identity_is_absent_from_client_body_and_openapi) {
+   auto runtime = forge::asio::runtime{};
+   auto client = forge::net::http::client{runtime, parse_base_url("http://127.0.0.1:12345")};
+   const auto route = forge::api::http::traits<positional_authenticated_api>::routes().front();
+   auto arguments = std::tuple{
+       positional_body_payload{.value = "payload"},
+       forge::api::auth::authenticated_caller{forge::api::auth::caller_source::p2p_peer,
+                                              forge::crypto::digest::sha256::hash(std::string{"spoofed"})},
+   };
+   auto outgoing = forge::api::http::detail::make_client_request(
+       client, route, arguments, std::vector<std::string>{"payload", "caller"});
+   BOOST_TEST(!forge::api::http::detail::bind_positional_request_body(outgoing.value, route, arguments,
+                                                                      outgoing.consumed)
+                   .has_value());
+   BOOST_TEST(outgoing.value.body().find("payload") != std::string::npos);
+   BOOST_TEST(outgoing.value.body().find("caller") == std::string::npos);
+   BOOST_CHECK(outgoing.value.find("X-Caller") == outgoing.value.end());
+
+   auto raw_arguments = forge::api::core::unpack_body<decltype(arguments)>(forge::api::core::pack_body(arguments));
+   auto raw_outgoing = forge::api::http::detail::make_client_request(
+       client, route, raw_arguments, std::vector<std::string>{"payload", "caller"});
+   BOOST_TEST(!forge::api::http::detail::bind_positional_request_body(raw_outgoing.value, route, raw_arguments,
+                                                                      raw_outgoing.consumed)
+                   .has_value());
+   BOOST_TEST(raw_outgoing.value.body().find("caller") == std::string::npos);
+
+   const auto positional = forge::api::http::openapi<positional_authenticated_api>();
+   const auto& operation = positional["paths"]["/positional-authenticated"]["post"];
+   BOOST_TEST(!operation.get_object().contains("parameters"));
+   const auto& schema = operation["requestBody"]["content"]["application/json"]["schema"];
+   BOOST_TEST(schema["properties"].get_object().contains("value"));
+   BOOST_TEST(!schema["properties"].get_object().contains("caller"));
+
+   const auto nested = forge::api::http::openapi<authenticated_http_api>();
+   const auto& nested_schema = nested["paths"]["/authenticated-caller"]["post"]["requestBody"]["content"]
+                                     ["application/json"]["schema"];
+   BOOST_TEST(nested_schema["properties"].get_object().contains("caller"));
 }
 
 BOOST_AUTO_TEST_CASE(http_api_plan_maps_custom_exception_to_native_status) {

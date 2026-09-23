@@ -7,6 +7,7 @@ add_library(
    plugin_impl.cpp
    signing_policy.cpp
    transaction_api_impl.cpp
+   block_api_impl.cpp
    finality_api_impl.cpp
 )
 forge_target_modules_at(forge_plugins_chain_signer plugins/chain/signer)

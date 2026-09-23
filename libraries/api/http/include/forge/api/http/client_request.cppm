@@ -24,6 +24,7 @@ export module forge.api.http.client_request;
 
 import forge.api.core.connection;
 import forge.api.core.descriptor;
+import forge.api.core.server_supplied;
 import forge.api.core.types;
 import forge.net.http.body;
 import forge.api.http.parameters;
@@ -164,7 +165,9 @@ template <typename Tuple>
           }
           const auto& argument = std::get<Index>(arguments);
           using argument_type = std::remove_cvref_t<decltype(argument)>;
-          if constexpr (detail::is_header<argument_type>::value ||
+          if constexpr (forge::api::core::server_supplied_value<argument_type>) {
+             return;
+          } else if constexpr (detail::is_header<argument_type>::value ||
                         detail::is_query<argument_type>::value ||
                         detail::is_cookie<argument_type>::value ||
                         detail::is_body<argument_type>::value ||
@@ -404,7 +407,9 @@ std::optional<std::string> positional_codec_body(const Tuple& arguments,
       (([&] {
           const auto& argument = std::get<Index>(arguments);
           using argument_type = std::remove_cvref_t<decltype(argument)>;
-          if constexpr (detail::is_body<argument_type>::value) {
+          if constexpr (forge::api::core::server_supplied_value<argument_type>) {
+             return;
+          } else if constexpr (detail::is_body<argument_type>::value) {
              if (!argument.present) {
                 return;
              }
@@ -437,7 +442,8 @@ std::size_t positional_plain_codec_body_candidate_count(const std::array<bool, s
    [&]<std::size_t... Index>(std::index_sequence<Index...>) {
       (([&] {
           using argument_type = std::remove_cvref_t<std::tuple_element_t<Index, Tuple>>;
-          if constexpr (forge::reflect::is_described_object_v<argument_type> &&
+          if constexpr (!forge::api::core::server_supplied_value<argument_type> &&
+                        forge::reflect::is_described_object_v<argument_type> &&
                         !detail::request_needs_stream_v<argument_type> &&
                         !is_http_parameter_v<argument_type>) {
              if (!consumed[Index]) {

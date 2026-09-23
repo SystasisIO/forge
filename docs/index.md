@@ -13,6 +13,7 @@ Documents below explain cross-library architecture decisions.
 
 | Document | Purpose |
 | --- | --- |
+| [releases/unreleased-chain-signer.md](releases/unreleased-chain-signer.md) | Proposed Chain signer pre-stabilization source migration; no version or release assigned. |
 | [releases/8.29.1.md](releases/8.29.1.md) | Forge 8.29.1 Linux portability, standard X.509 fingerprints, and verified protocol byte-array limits. |
 | [releases/8.29.0.md](releases/8.29.0.md) | Forge 8.29.0 Admin HTTP integration, plugin and snapshot contracts, canonical Raw bool streams, and portable verified Chain reads. |
 | [releases/8.28.0.md](releases/8.28.0.md) | Forge 8.28.0 native admin foundation, clean tooling and VM identities, and typed Chain state projections. |

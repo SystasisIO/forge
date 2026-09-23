@@ -39,9 +39,15 @@ import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.chain.api.exceptions;
+import forge.chain.api.block_signer;
 import forge.chain.api.finality_signer;
 import forge.chain.api.transaction_signer;
 import forge.chain.protocol.transaction;
+import forge.chain.protocol.block;
+import forge.chain.protocol.block_signing;
+import forge.chain.protocol.producer_authority;
+import forge.chain.savanna.admission;
+import forge.chain.savanna.exceptions;
 import forge.chain.savanna.vote;
 import forge.chain.transaction.types;
 import forge.config.core.component;
@@ -76,6 +82,8 @@ constexpr auto now_seconds = std::uint32_t{1'700'000'000U};
 
 static_assert(forge::api::core::local_interface<chain_api::transaction_signer>);
 static_assert(forge::api::core::remote_interface<chain_api::transaction_signer>);
+static_assert(forge::api::core::local_interface<chain_api::block_signer>);
+static_assert(forge::api::core::remote_interface<chain_api::block_signer>);
 static_assert(forge::api::core::local_interface<chain_api::finality_signer>);
 static_assert(!forge::api::core::remote_interface<chain_api::finality_signer>);
 static_assert(forge::api::core::server_supplied<forge::api::auth::authenticated_caller>::required);
@@ -119,7 +127,8 @@ require_field(const forge::config::core::component_descriptor& descriptor, std::
    return std::ranges::any_of(descriptor.fields, [&](const auto& field) { return field.name == name; });
 }
 
-[[nodiscard]] forge::config::core::document chain_signer_document(bool include_actions) {
+[[nodiscard]] forge::config::core::document chain_signer_document(bool include_actions,
+                                                                  std::string_view authorization = {}) {
    auto signing = forge::config::core::value::object_type{};
    signing["provider"] = "transaction";
    signing["key-id"] = "writer-key";
@@ -135,6 +144,9 @@ require_field(const forge::config::core::component_descriptor& descriptor, std::
    profile["name"] = "storage-writer";
    profile["chain-id"] = std::string(64U, '1');
    profile["signing"] = std::move(signing);
+   if (!authorization.empty()) {
+      profile["remote-authorization"] = std::string{authorization};
+   }
    profile["allow-local"] = true;
    profile["actions"] = include_actions
                             ? forge::config::core::value::array_type{forge::config::core::value{std::move(action)}}
@@ -254,7 +266,7 @@ plugin_options(chain_signer::config config, std::shared_ptr<crypto_signer::provi
                std::shared_ptr<bls::signer::provider> finality_provider = {},
                std::shared_ptr<chain_signer::semantic_authorization_provider> semantic_authorization = {}) {
    auto result = chain_signer::plugin_options{
-       .transaction_providers = {{
+       .providers = {{
            .name = "transaction",
            .value = std::move(transaction_provider),
        }},
@@ -311,6 +323,10 @@ class signer_harness {
       return apis_.get<chain_api::transaction_signer>(chain_api::transaction_signer::ref());
    }
 
+   [[nodiscard]] forge::api::core::handle<chain_api::block_signer> blocks() const {
+      return apis_.get<chain_api::block_signer>(chain_api::block_signer::ref());
+   }
+
    [[nodiscard]] forge::api::core::handle<chain_api::finality_signer> finality() const {
       return apis_.get<chain_api::finality_signer>(chain_api::finality_signer::ref());
    }
@@ -346,6 +362,56 @@ class signer_harness {
    };
 }
 
+[[nodiscard]] protocol::block_header allowed_block_header() {
+   auto header = protocol::block_header{};
+   header.producer = protocol::account_name{"writer"};
+   return header;
+}
+
+[[nodiscard]] chain_signer::block_profile exact_block_profile(
+    protocol::chain_id chain, const std::vector<transaction_material>& materials, bool allow_local,
+    std::vector<chain_signer::caller_rule> callers = {}) {
+   auto profile = chain_signer::block_profile{
+       .name = "writer-blocks",
+       .chain_id = chain.str(),
+       .producer = "writer",
+       .allow_local = allow_local,
+       .callers = std::move(callers),
+   };
+   for (auto index = std::size_t{}; index < materials.size(); ++index) {
+      profile.signing.push_back({
+          .provider = "key-" + std::to_string(index),
+          .key_id = materials[index].id.value,
+          .expected_public_key = asymmetric::encoding::forge().format(materials[index].public_key),
+      });
+   }
+   return profile;
+}
+
+class counting_provider final : public crypto_signer::provider {
+ public:
+   explicit counting_provider(std::shared_ptr<crypto_signer::provider> inner) : inner_{std::move(inner)} {}
+
+   boost::asio::awaitable<std::vector<crypto_signer::key_info>> keys() override {
+      co_return co_await inner_->keys();
+   }
+   boost::asio::awaitable<crypto_signer::key_info> describe(const crypto_signer::key_id& id) override {
+      describes.fetch_add(1U);
+      co_return co_await inner_->describe(id);
+   }
+   boost::asio::awaitable<crypto_signer::sign_digest_response>
+   sign_digest(crypto_signer::sign_digest_request request) override {
+      signs.fetch_add(1U);
+      co_return co_await inner_->sign_digest(std::move(request));
+   }
+
+   std::atomic_size_t describes{0};
+   std::atomic_size_t signs{0};
+
+ private:
+   std::shared_ptr<crypto_signer::provider> inner_;
+};
+
 void check_prepared_transaction(const transaction::unsigned_transaction& source,
                                 const transaction::prepared_transaction& prepared,
                                 const asymmetric::public_key& expected_key) {
@@ -366,6 +432,24 @@ void check_prepared_transaction(const transaction::unsigned_transaction& source,
        .kind = forge::api::core::frame_kind::request,
        .id = {.value = call_id},
        .api = chain_api::transaction_signer::ref(),
+       .method = "sign",
+       .codec = {.value = "forge.raw"},
+       .payload = forge::api::core::pack_body(std::tuple{value, std::move(wire_caller)}),
+   };
+   auto trusted = forge::api::core::trusted_invocation_builder{}.set(std::move(trusted_caller)).build();
+   return forge::asio::blocking::run(harness.runtime(),
+                                     harness.apis().dispatch_contextual(std::move(request), std::move(trusted)));
+}
+
+[[nodiscard]] forge::api::core::frame dispatch_block(signer_harness& harness,
+                                                     const protocol::block_sign_request& value,
+                                                     forge::api::auth::authenticated_caller wire_caller,
+                                                     forge::api::auth::authenticated_caller trusted_caller,
+                                                     std::uint64_t call_id) {
+   auto request = forge::api::core::frame{
+       .kind = forge::api::core::frame_kind::request,
+       .id = {.value = call_id},
+       .api = chain_api::block_signer::ref(),
        .method = "sign",
        .codec = {.value = "forge.raw"},
        .payload = forge::api::core::pack_body(std::tuple{value, std::move(wire_caller)}),
@@ -421,6 +505,33 @@ class mismatched_signature_provider final : public crypto_signer::provider {
    std::shared_ptr<crypto_signer::configured_provider> expected_;
    std::shared_ptr<crypto_signer::configured_provider> signing_;
    asymmetric::public_key expected_key_;
+};
+
+class mismatched_identity_provider final : public crypto_signer::provider {
+ public:
+   mismatched_identity_provider(std::shared_ptr<crypto_signer::provider> inner,
+                                asymmetric::public_key replacement)
+       : inner_{std::move(inner)}, replacement_{std::move(replacement)} {}
+
+   boost::asio::awaitable<std::vector<crypto_signer::key_info>> keys() override {
+      co_return co_await inner_->keys();
+   }
+   boost::asio::awaitable<crypto_signer::key_info> describe(const crypto_signer::key_id& id) override {
+      auto identity = co_await inner_->describe(id);
+      identity.public_key = replacement_;
+      co_return identity;
+   }
+   boost::asio::awaitable<crypto_signer::sign_digest_response>
+   sign_digest(crypto_signer::sign_digest_request request) override {
+      signs.fetch_add(1U);
+      co_return co_await inner_->sign_digest(std::move(request));
+   }
+
+   std::atomic_size_t signs{0};
+
+ private:
+   std::shared_ptr<crypto_signer::provider> inner_;
+   asymmetric::public_key replacement_;
 };
 
 class gated_transaction_provider final : public crypto_signer::provider {
@@ -518,6 +629,7 @@ BOOST_AUTO_TEST_CASE(config_schema_exposes_policy_bindings_without_key_material)
 
    BOOST_TEST(descriptor.section == "plugins.chain.signer");
    BOOST_TEST(require_field(descriptor, "transaction-profiles").required == false);
+   BOOST_TEST(require_field(descriptor, "block-profiles").required == false);
    BOOST_TEST(require_field(descriptor, "max-inflight").has_default);
    BOOST_TEST(require_field(descriptor, "max-queued").has_default);
    BOOST_TEST(require_field(descriptor, "max-queued-bytes").has_default);
@@ -548,6 +660,7 @@ BOOST_AUTO_TEST_CASE(config_decodes_exact_transaction_policy) {
    BOOST_TEST(profile.actions.front().actor == "writer");
    BOOST_TEST(profile.actions.front().permission == "active");
    BOOST_TEST(profile.max_delay_seconds == 0U);
+   BOOST_CHECK(profile.authorization == chain_signer::remote_authorization::semantic);
    BOOST_TEST(decoded.value.max_inflight == 3U);
    BOOST_TEST(decoded.value.max_queued == 5U);
    BOOST_TEST(decoded.value.max_queued_bytes == 8192U);
@@ -565,6 +678,45 @@ BOOST_AUTO_TEST_CASE(config_rejects_profile_without_exact_actions) {
    }));
 }
 
+BOOST_AUTO_TEST_CASE(config_decodes_block_bindings_and_explicit_profile_only_mode) {
+   auto document = chain_signer_document(true, "profile_only");
+   auto signing = forge::config::core::value::object_type{};
+   signing["provider"] = "key-0";
+   signing["key-id"] = "producer-key";
+   signing["expected-public-key"] = "PUB_K1_TEST";
+   auto caller = forge::config::core::value::object_type{};
+   caller["source"] = "p2p_peer";
+   caller["fingerprint"] = std::string(64U, 'a');
+   auto block = forge::config::core::value::object_type{};
+   block["name"] = "writer-block";
+   block["chain-id"] = std::string(64U, '1');
+   block["producer"] = "writer";
+   block["signing"] = forge::config::core::value::array_type{forge::config::core::value{std::move(signing)}};
+   block["callers"] = forge::config::core::value::array_type{forge::config::core::value{std::move(caller)}};
+   block["max-header-bytes"] = std::uint64_t{2U * 1024U * 1024U};
+   document.set("plugins.chain.signer.block-profiles",
+                forge::config::core::value::array_type{forge::config::core::value{std::move(block)}});
+   const auto decoded = forge::config::core::decode<chain_signer::config>(document, "plugins.chain.signer");
+   BOOST_REQUIRE(decoded.ok());
+   BOOST_CHECK(decoded.value.transaction_profiles.front().authorization ==
+               chain_signer::remote_authorization::profile_only);
+   BOOST_REQUIRE_EQUAL(decoded.value.block_profiles.size(), 1U);
+   const auto& profile = decoded.value.block_profiles.front();
+   BOOST_TEST(profile.producer == "writer");
+   BOOST_TEST(!profile.allow_local);
+   BOOST_TEST(profile.max_header_bytes == 2U * 1024U * 1024U);
+   BOOST_REQUIRE_EQUAL(profile.signing.size(), 1U);
+   BOOST_TEST(profile.signing.front().provider == "key-0");
+   BOOST_TEST(profile.signing.front().key_id == "producer-key");
+   BOOST_REQUIRE_EQUAL(profile.callers.size(), 1U);
+   BOOST_CHECK(profile.callers.front().source == forge::api::auth::caller_source::p2p_peer);
+   BOOST_TEST(profile.callers.front().fingerprint == std::string(64U, 'a'));
+
+   auto invalid_document = chain_signer_document(true, "unknown_mode");
+   const auto invalid = forge::config::core::decode<chain_signer::config>(invalid_document, "plugins.chain.signer");
+   BOOST_TEST(!invalid.ok());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(chain_signer_runtime_tests)
@@ -578,6 +730,246 @@ BOOST_AUTO_TEST_CASE(exact_local_profile_prepares_a_valid_canonical_transaction)
    const auto prepared = forge::asio::blocking::run(harness.runtime(), harness.transactions()->sign(value, {}));
 
    check_prepared_transaction(value, prepared, material.public_key);
+}
+
+BOOST_AUTO_TEST_CASE(block_signing_orders_multiple_keys_and_uses_block_id) {
+   auto first = make_transaction_material("first-block-key", "chain-signer-block-first");
+   auto second = make_transaction_material("second-block-key", "chain-signer-block-second");
+   const auto chain = test_digest("chain-signer-block-chain");
+   auto options = plugin_options({}, first.provider);
+   options.providers = {{.name = "key-0", .value = first.provider},
+                        {.name = "key-1", .value = second.provider}};
+   options.initial_config.block_profiles.push_back(exact_block_profile(chain, {first, second}, true));
+   auto audit = std::make_shared<collecting_audit>();
+   options.audit = audit;
+   auto harness = signer_harness{std::move(options)};
+   auto header = allowed_block_header();
+   auto request = protocol::block_sign_request{
+       .chain = chain,
+       .header = header,
+       .keys = {second.public_key, first.public_key},
+   };
+
+   const auto signatures = forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {}));
+   BOOST_REQUIRE_EQUAL(signatures.size(), 2U);
+   const auto block_id = protocol::calculate_block_id(header);
+   BOOST_TEST(asymmetric::recover(signatures[0], block_id) == second.public_key);
+   BOOST_TEST(asymmetric::recover(signatures[1], block_id) == first.public_key);
+   auto signed_block = protocol::signed_block{};
+   static_cast<protocol::block_header&>(signed_block) = header;
+   signed_block.producer_signature = signatures[0];
+   auto admission = savanna::prepared_admission{
+       .id = block_id,
+       .block = {.additional_signatures = {signatures[1]}},
+       .producer = {
+           .producer_name = header.producer,
+           .authority = protocol::block_signing_authority_v0{
+               .threshold = 3,
+               .keys = {{.key = second.public_key, .weight = 2},
+                        {.key = first.public_key, .weight = 1}},
+           },
+       },
+   };
+   savanna::verify_signature(signed_block, admission);
+   admission.block.additional_signatures.clear();
+   BOOST_CHECK_THROW(savanna::verify_signature(signed_block, admission), savanna::exceptions::invalid_header);
+   const auto entries = audit->entries();
+   BOOST_REQUIRE_EQUAL(entries.size(), 1U);
+   BOOST_CHECK(entries[0].operation == chain_signer::audit_operation::block);
+   BOOST_TEST(entries[0].block == block_id);
+   BOOST_CHECK(entries[0].producer == header.producer);
+   BOOST_TEST(entries[0].key_count == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(block_profile_denies_unlisted_duplicate_and_oversize_requests_before_crypto) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-policy");
+   auto counted = std::make_shared<counting_provider>(material.provider);
+   const auto chain = test_digest("chain-signer-block-policy-chain");
+   auto options = plugin_options({}, counted);
+   options.providers = {{.name = "key-0", .value = counted}};
+   auto profile = exact_block_profile(chain, {material}, true);
+   profile.max_header_bytes = forge::raw::pack_size(allowed_block_header());
+   options.initial_config.block_profiles.push_back(profile);
+   auto harness = signer_harness{std::move(options)};
+   auto request = protocol::block_sign_request{.chain = chain,
+                                                .header = allowed_block_header(),
+                                                .keys = {material.public_key}};
+   BOOST_REQUIRE_EQUAL(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {})).size(), 1U);
+   const auto baseline_describes = counted->describes.load();
+   const auto baseline_signs = counted->signs.load();
+   request.keys.push_back(material.public_key);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {})),
+                     chain_api::exceptions::authorization_denied);
+   request.keys.pop_back();
+   request.header.header_extensions.push_back({});
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {})),
+                     chain_api::exceptions::authorization_denied);
+   BOOST_TEST(counted->describes.load() == baseline_describes);
+   BOOST_TEST(counted->signs.load() == baseline_signs);
+}
+
+BOOST_AUTO_TEST_CASE(block_provider_metadata_and_later_signature_fail_without_partial_response) {
+   auto first = make_transaction_material("first-key", "chain-signer-block-mismatch-first");
+   auto second = make_transaction_material("second-key", "chain-signer-block-mismatch-second");
+   auto replacement = make_transaction_material("second-key", "chain-signer-block-mismatch-replacement");
+   const auto chain = test_digest("chain-signer-block-mismatch-chain");
+   auto request = protocol::block_sign_request{
+       .chain = chain,
+       .header = allowed_block_header(),
+       .keys = {first.public_key, second.public_key},
+   };
+
+   auto bad_identity = std::make_shared<mismatched_identity_provider>(second.provider, replacement.public_key);
+   auto metadata_first = std::make_shared<counting_provider>(first.provider);
+   auto metadata_options = plugin_options({}, metadata_first);
+   metadata_options.providers = {{.name = "key-0", .value = metadata_first},
+                                 {.name = "key-1", .value = bad_identity}};
+   metadata_options.initial_config.block_profiles.push_back(exact_block_profile(chain, {first, second}, true));
+   auto metadata_harness = signer_harness{std::move(metadata_options)};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(metadata_harness.runtime(), metadata_harness.blocks()->sign(request, {})),
+                     chain_api::exceptions::signing_failed);
+   BOOST_TEST(metadata_first->signs.load() == 0U);
+   BOOST_TEST(bad_identity->signs.load() == 0U);
+
+   auto first_counted = std::make_shared<counting_provider>(first.provider);
+   auto bad_signature = std::make_shared<mismatched_signature_provider>(second.provider, replacement.provider,
+                                                                        second.public_key);
+   auto signature_options = plugin_options({}, first_counted);
+   signature_options.providers = {{.name = "key-0", .value = first_counted},
+                                  {.name = "key-1", .value = bad_signature}};
+   signature_options.initial_config.block_profiles.push_back(exact_block_profile(chain, {first, second}, true));
+   auto signature_harness = signer_harness{std::move(signature_options)};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(signature_harness.runtime(), signature_harness.blocks()->sign(request, {})),
+                     chain_api::exceptions::signing_failed);
+   BOOST_TEST(first_counted->signs.load() == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(block_configuration_rejects_cross_chain_producer_key_reuse) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-reuse");
+   auto first = test_digest("chain-signer-block-reuse-first");
+   auto second = test_digest("chain-signer-block-reuse-second");
+   auto options = plugin_options({}, material.provider);
+   options.providers = {{.name = "key-0", .value = material.provider}};
+   options.initial_config.block_profiles.push_back(exact_block_profile(first, {material}, true));
+   auto duplicate = exact_block_profile(second, {material}, true);
+   duplicate.name = "other-chain";
+   duplicate.producer = "otherwriter";
+   options.initial_config.block_profiles.push_back(std::move(duplicate));
+   BOOST_CHECK_THROW(static_cast<void>(signer_harness{std::move(options)}),
+                     chain_signer::exceptions::invalid_config);
+}
+
+BOOST_AUTO_TEST_CASE(block_header_limit_accepts_configured_nondefault_and_rejects_invalid_limits) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-limit");
+   const auto chain = test_digest("chain-signer-block-limit-chain");
+   auto options = plugin_options({}, material.provider);
+   options.providers = {{.name = "key-0", .value = material.provider}};
+   auto profile = exact_block_profile(chain, {material}, true);
+   profile.max_header_bytes = 2U * 1024U * 1024U;
+   options.initial_config.block_profiles.push_back(profile);
+   auto harness = signer_harness{options};
+   auto request = protocol::block_sign_request{.chain = chain,
+                                                .header = allowed_block_header(),
+                                                .keys = {material.public_key}};
+   BOOST_REQUIRE_EQUAL(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {})).size(), 1U);
+   options.initial_config.block_profiles.front().max_header_bytes = 0U;
+   BOOST_CHECK_THROW(static_cast<void>(signer_harness{options}), chain_signer::exceptions::invalid_config);
+   options.initial_config.block_profiles.front().max_header_bytes = 64U * 1024U * 1024U + 1U;
+   BOOST_CHECK_THROW(static_cast<void>(signer_harness{options}), chain_signer::exceptions::invalid_config);
+}
+
+BOOST_AUTO_TEST_CASE(block_policy_denies_nonexact_dimensions_without_provider_calls) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-nonexact");
+   auto unlisted = make_transaction_material("unlisted", "chain-signer-block-unlisted");
+   const auto chain = test_digest("chain-signer-block-nonexact-chain");
+   auto counted = std::make_shared<counting_provider>(material.provider);
+   auto options = plugin_options({}, counted);
+   options.providers = {{.name = "key-0", .value = counted}};
+   options.initial_config.block_profiles.push_back(exact_block_profile(chain, {material}, true));
+   auto harness = signer_harness{options};
+   const auto baseline = protocol::block_sign_request{.chain = chain,
+                                                       .header = allowed_block_header(),
+                                                       .keys = {material.public_key}};
+   const auto denied = [&](auto mutate) {
+      auto request = baseline;
+      mutate(request);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {})),
+                        chain_api::exceptions::authorization_denied);
+   };
+   denied([](auto& request) { request.chain = test_digest("wrong-block-chain"); });
+   denied([](auto& request) { request.header.producer = protocol::account_name{"otherwriter"}; });
+   denied([](auto& request) { request.keys.clear(); });
+   denied([&](auto& request) { request.keys = std::vector<protocol::public_key>(65U, unlisted.public_key); });
+   denied([&](auto& request) { request.keys = {unlisted.public_key}; });
+   BOOST_TEST(counted->describes.load() == 0U);
+   BOOST_TEST(counted->signs.load() == 0U);
+
+   options.initial_config.block_profiles.front().allow_local = false;
+   auto remote_only = signer_harness{options};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(remote_only.runtime(), remote_only.blocks()->sign(baseline, {})),
+                     chain_api::exceptions::authorization_denied);
+   check_authorization_error(dispatch_block(remote_only, baseline, {},
+                                             {forge::api::auth::caller_source::p2p_peer, test_digest("unlisted-caller")},
+                                             451U));
+   BOOST_TEST(counted->describes.load() == 0U);
+   BOOST_TEST(counted->signs.load() == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(block_config_rejects_ambiguous_profiles_and_unknown_binding) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-ambiguous");
+   const auto chain = test_digest("chain-signer-block-ambiguous-chain");
+   auto options = plugin_options({}, material.provider);
+   options.providers = {{.name = "key-0", .value = material.provider}};
+   options.initial_config.block_profiles.push_back(exact_block_profile(chain, {material}, true));
+   auto duplicate = exact_block_profile(chain, {material}, true);
+   duplicate.name = "different-name";
+   options.initial_config.block_profiles.push_back(duplicate);
+   BOOST_CHECK_THROW(static_cast<void>(signer_harness{options}), chain_signer::exceptions::invalid_config);
+   options.initial_config.block_profiles.pop_back();
+   options.initial_config.block_profiles.front().signing.front().provider = "unknown-provider";
+   BOOST_CHECK_THROW(static_cast<void>(signer_harness{options}), chain_signer::exceptions::invalid_config);
+}
+
+BOOST_AUTO_TEST_CASE(block_remote_dispatch_uses_only_trusted_caller) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-remote");
+   const auto chain = test_digest("chain-signer-block-remote-chain");
+   const auto permitted = test_digest("chain-signer-block-permitted");
+   const auto impostor = test_digest("chain-signer-block-impostor");
+   auto options = plugin_options({}, material.provider);
+   options.providers = {{.name = "key-0", .value = material.provider}};
+   options.initial_config.block_profiles.push_back(exact_block_profile(
+       chain, {material}, false,
+       {{.source = forge::api::auth::caller_source::p2p_peer, .fingerprint = permitted.str()}}));
+   auto harness = signer_harness{std::move(options)};
+   const auto request = protocol::block_sign_request{.chain = chain,
+                                                      .header = allowed_block_header(),
+                                                      .keys = {material.public_key}};
+   const auto accepted = dispatch_block(harness, request,
+                                        {forge::api::auth::caller_source::p2p_peer, impostor},
+                                        {forge::api::auth::caller_source::p2p_peer, permitted}, 401U);
+   BOOST_REQUIRE(accepted.kind == forge::api::core::frame_kind::response);
+   const auto signatures = forge::api::core::unpack_body<std::vector<protocol::signature>>(accepted.payload);
+   BOOST_REQUIRE_EQUAL(signatures.size(), 1U);
+   BOOST_TEST(asymmetric::recover(signatures.front(), protocol::calculate_block_id(request.header)) ==
+              material.public_key);
+   check_authorization_error(dispatch_block(harness, request,
+                                             {forge::api::auth::caller_source::p2p_peer, permitted},
+                                             {forge::api::auth::caller_source::p2p_peer, impostor}, 402U));
+}
+
+BOOST_AUTO_TEST_CASE(block_signing_preserves_unavailable_after_plugin_stop) {
+   auto material = make_transaction_material("block-key", "chain-signer-block-stopped");
+   const auto chain = test_digest("chain-signer-block-stopped-chain");
+   auto options = plugin_options({}, material.provider);
+   options.providers = {{.name = "key-0", .value = material.provider}};
+   options.initial_config.block_profiles.push_back(exact_block_profile(chain, {material}, true));
+   auto harness = signer_harness{std::move(options)};
+   harness.plugin().request_stop();
+   const auto request = protocol::block_sign_request{.chain = chain,
+                                                      .header = allowed_block_header(),
+                                                      .keys = {material.public_key}};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(request, {})),
+                     chain_api::exceptions::unavailable);
 }
 
 BOOST_AUTO_TEST_CASE(transaction_policy_enforces_the_signed_packed_size) {
@@ -699,6 +1091,74 @@ BOOST_AUTO_TEST_CASE(remote_payloads_require_an_injected_semantic_authorizer) {
        harness, rejected, {forge::api::auth::caller_source::p2p_peer, test_digest("untrusted-wire-caller")},
        {forge::api::auth::caller_source::p2p_peer, caller}, 202U));
    BOOST_TEST(authorizer->calls() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(remote_profile_only_authorization_is_explicit_and_keeps_envelope_policy) {
+   const auto material = make_transaction_material("writer-key", "chain-signer-profile-only-key");
+   const auto chain = test_digest("chain-signer-profile-only-chain");
+   const auto fingerprint = test_digest("chain-signer-profile-only-caller");
+   auto config = exact_config(material, chain, false,
+                              {{.source = forge::api::auth::caller_source::p2p_peer,
+                                .fingerprint = fingerprint.str()}});
+   config.transaction_profiles.front().authorization = chain_signer::remote_authorization::profile_only;
+   auto harness = signer_harness{plugin_options(std::move(config), material.provider)};
+   auto value = allowed_transaction(chain);
+   auto response = dispatch_transaction(harness, value, {},
+                                        {forge::api::auth::caller_source::p2p_peer, fingerprint}, 301U);
+   BOOST_REQUIRE(response.kind == forge::api::core::frame_kind::response);
+   check_prepared_transaction(value,
+                              forge::api::core::unpack_body<transaction::prepared_transaction>(response.payload),
+                              material.public_key);
+   value.value.actions.front().account = protocol::account_name{"unlisted"};
+   check_authorization_error(dispatch_transaction(
+       harness, value, {}, {forge::api::auth::caller_source::p2p_peer, fingerprint}, 302U));
+}
+
+BOOST_AUTO_TEST_CASE(remote_authorization_unknown_enum_cannot_downgrade_semantic_gate) {
+   const auto material = make_transaction_material("writer-key", "chain-signer-unknown-auth-key");
+   const auto chain = test_digest("chain-signer-unknown-auth-chain");
+   auto config = exact_config(material, chain, false,
+                              {{.source = forge::api::auth::caller_source::p2p_peer,
+                                .fingerprint = test_digest("caller").str()}});
+   config.transaction_profiles.front().authorization = static_cast<chain_signer::remote_authorization>(255);
+   BOOST_CHECK_THROW(static_cast<void>(signer_harness{plugin_options(std::move(config), material.provider)}),
+                     chain_signer::exceptions::invalid_config);
+}
+
+BOOST_AUTO_TEST_CASE(transaction_packed_limit_preflight_rejects_without_provider_calls_for_none_and_zlib) {
+   for (const auto compression : {protocol::packed_transaction::compression::none,
+                                  protocol::packed_transaction::compression::zlib}) {
+      const auto material = make_transaction_material("writer-key", "chain-signer-preflight-key");
+      auto counted = std::make_shared<counting_provider>(material.provider);
+      const auto chain = test_digest("chain-signer-preflight-chain");
+      auto value = allowed_transaction(chain);
+      value.compression = compression;
+      if (compression == protocol::packed_transaction::compression::zlib) {
+         value.value.actions.front().data.resize(4096U, 0x41U);
+      }
+      auto baseline_config = exact_config(material, chain, true);
+      baseline_config.transaction_profiles.front().max_packed_bytes = 1024U * 1024U;
+      auto baseline = signer_harness{plugin_options(std::move(baseline_config), material.provider)};
+      const auto prepared = forge::asio::blocking::run(baseline.runtime(), baseline.transactions()->sign(value, {}));
+      const auto exact = forge::raw::pack_size(prepared.packed);
+      BOOST_REQUIRE_GT(exact, 1U);
+
+      auto config = exact_config(material, chain, true);
+      config.transaction_profiles.front().max_packed_bytes = exact - 1U;
+      auto limited = signer_harness{plugin_options(std::move(config), counted)};
+      BOOST_CHECK_THROW(forge::asio::blocking::run(limited.runtime(), limited.transactions()->sign(value, {})),
+                        chain_api::exceptions::authorization_denied);
+      BOOST_TEST(counted->describes.load() == 0U);
+      BOOST_TEST(counted->signs.load() == 0U);
+
+      auto exact_config_value = exact_config(material, chain, true);
+      exact_config_value.transaction_profiles.front().max_packed_bytes = exact;
+      auto equal = signer_harness{plugin_options(std::move(exact_config_value), counted)};
+      BOOST_REQUIRE_EQUAL(forge::raw::pack_size(
+                              forge::asio::blocking::run(equal.runtime(), equal.transactions()->sign(value, {})).packed),
+                          exact);
+      BOOST_TEST(counted->signs.load() == 1U);
+   }
 }
 
 BOOST_AUTO_TEST_CASE(transaction_policy_denies_every_non_exact_dimension) {
@@ -860,6 +1320,43 @@ BOOST_AUTO_TEST_CASE(admission_is_bounded_cancelable_and_drains_active_signing_o
    BOOST_REQUIRE(active.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
    BOOST_CHECK_THROW(static_cast<void>(active.get()), forge::api::core::exceptions::cancelled);
    BOOST_CHECK_NO_THROW(shutdown.get());
+}
+
+BOOST_AUTO_TEST_CASE(block_transaction_and_finality_share_admission_and_cancellation) {
+   auto material = make_transaction_material("writer-key", "chain-signer-mixed-admission-key");
+   auto finality_material = make_finality_material(71U);
+   const auto chain = test_digest("chain-signer-mixed-admission-chain");
+   auto config = exact_config(material, chain, true);
+   config.block_profiles.push_back(exact_block_profile(chain, {material}, true));
+   config.block_profiles.front().signing.front().provider = "transaction";
+   config.finality = chain_signer::finality_binding{
+       .provider = "finality",
+       .expected_public_key = bls::encoding::format(finality_material.public_key),
+   };
+   config.max_inflight = 1;
+   config.max_queued = 1;
+   auto gated = std::make_shared<gated_transaction_provider>(material.provider);
+   auto harness = signer_harness{plugin_options(std::move(config), gated, {}, finality_material.provider)};
+   auto release_on_exit = provider_release_guard{gated};
+   const auto block = protocol::block_sign_request{.chain = chain,
+                                                    .header = allowed_block_header(),
+                                                    .keys = {material.public_key}};
+   auto active = boost::asio::co_spawn(harness.runtime().context(), harness.blocks()->sign(block, {}),
+                                       boost::asio::use_future);
+   BOOST_REQUIRE(gated->wait_for_entered(1U));
+   auto cancellation = boost::asio::cancellation_signal{};
+   auto queued = boost::asio::co_spawn(
+       harness.runtime().context(), harness.transactions()->sign(allowed_transaction(chain), {}),
+       boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   flush_runtime(harness.runtime());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.finality()->identity()),
+                     chain_api::exceptions::resource_exhausted);
+   cancellation.emit(boost::asio::cancellation_type::all);
+   BOOST_CHECK_THROW(static_cast<void>(queued.get()), forge::api::core::exceptions::cancelled);
+   harness.plugin().request_stop();
+   BOOST_CHECK_THROW(static_cast<void>(active.get()), forge::api::core::exceptions::cancelled);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.finality()->identity()),
+                     chain_api::exceptions::unavailable);
 }
 
 BOOST_AUTO_TEST_CASE(admission_rejects_unknown_callers_before_a_saturated_queue) {

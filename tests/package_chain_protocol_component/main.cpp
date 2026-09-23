@@ -11,6 +11,7 @@ import forge.chain.protocol.account_authority;
 import forge.chain.protocol.activated_protocol_feature;
 import forge.chain.protocol.activated_protocol_feature_info;
 import forge.chain.protocol.block;
+import forge.chain.protocol.block_signing;
 import forge.chain.protocol.chain_config;
 import forge.chain.protocol.entity_selector;
 import forge.chain.protocol.fixed_key;
@@ -33,6 +34,8 @@ bool state_projection_package_contract();
 bool contract_commitment_package_contract();
 
 int main() {
+   static_assert(std::same_as<decltype(forge::chain::protocol::block_sign_request{}.keys),
+                              std::vector<forge::chain::protocol::public_key>>);
    static_assert(std::same_as<forge::chain::protocol::bytes, std::vector<std::uint8_t>>);
    static_assert(std::same_as<decltype(forge::chain::protocol::table_scope_request{}.cursor),
                               std::optional<forge::chain::protocol::bytes>>);

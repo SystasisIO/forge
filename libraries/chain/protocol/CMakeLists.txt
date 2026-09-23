@@ -7,6 +7,7 @@ add_library(
    action_receipt.cpp
    transaction.cpp
    block.cpp
+   block_signing.cpp
    abi.cpp
    authority.cpp
    system.cpp

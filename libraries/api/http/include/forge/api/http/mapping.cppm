@@ -18,6 +18,7 @@ export module forge.api.http.mapping;
 
 import forge.api.core.connection;
 import forge.api.core.descriptor;
+import forge.api.core.server_supplied;
 import forge.api.core.types;
 import forge.codec.json;
 import forge.api.http.parameters;
@@ -248,7 +249,8 @@ response_media_types(body_codec codec) noexcept {
 template <auto Method, typename Request>
 inline constexpr auto is_positional_http_method_v =
     std::tuple_size_v<http_method_argument_tuple_t<Method>> != 1U ||
-    !forge::reflect::is_described_object_v<std::remove_cvref_t<Request>>;
+    !forge::reflect::is_described_object_v<std::remove_cvref_t<Request>> ||
+    forge::api::core::server_supplied_value<Request>;
 
 template <typename T> struct optional_field : std::false_type {};
 template <typename T> struct optional_field<std::optional<T>> : std::true_type {
@@ -545,6 +547,36 @@ inline constexpr auto client_stream_transport_parameter_v =
    is_cookie<std::remove_cvref_t<T>>::value;
 
 template <auto Method, typename Request>
+void validate_server_supplied_route(const route& value) {
+   if constexpr (is_positional_http_method_v<Method, Request>) {
+      using interface_type = forge::api::core::method_class_t<Method>;
+      using argument_tuple = http_method_argument_tuple_t<Method>;
+      const auto descriptor = forge::api::core::api_traits<interface_type>::describe();
+      const auto* method = forge::api::core::find_method(descriptor, value.method_name);
+      if (method == nullptr || method->argument_names.size() != std::tuple_size_v<argument_tuple>) {
+         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                               "HTTP API positional method is missing argument metadata");
+      }
+      [&]<std::size_t... Index>(std::index_sequence<Index...>) {
+         (([&] {
+            using argument = std::tuple_element_t<Index, argument_tuple>;
+            if constexpr (forge::api::core::server_supplied_value<argument>) {
+               const auto& name = method->argument_names[Index];
+               if (route_uses_fixed_field(value, name) ||
+                   std::ranges::any_of(value.headers, [&](const auto& field) { return field.field == name; }) ||
+                   std::ranges::any_of(value.forms, [&](const auto& field) { return field.field == name; }) ||
+                   (value.body_stream_field && *value.body_stream_field == name)) {
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                        "HTTP server-supplied argument cannot be bound to a request field",
+                                        forge::exceptions::ctx("field", name));
+               }
+            }
+         }()), ...);
+      }(std::make_index_sequence<std::tuple_size_v<argument_tuple>>{});
+   }
+}
+
+template <auto Method, typename Request>
 void validate_live_stream_route(const route& value) {
    constexpr auto kind = forge::api::core::method_kind_v<Method>;
    if constexpr (kind == forge::api::core::method_kind::bidirectional_stream) {
@@ -571,7 +603,9 @@ void validate_live_stream_route(const route& value) {
             (([&] {
                using argument = std::tuple_element_t<Index, argument_tuple>;
                const auto& name = method->argument_names[Index];
-               if constexpr (client_stream_transport_parameter_v<argument>) {
+               if constexpr (forge::api::core::server_supplied_value<argument>) {
+                  return;
+               } else if constexpr (client_stream_transport_parameter_v<argument>) {
                   if (route_uses_fixed_field(value, name)) {
                      FORGE_THROW_EXCEPTION(
                         forge::net::http::exceptions::bad_request,

@@ -65,6 +65,15 @@ transport injection, and returns the canonical `prepared_transaction`. The API
 does not accept caller-provided digests, key identifiers or algorithms and does
 not submit the transaction.
 
+`forge.chain.api.block_signer` is a separate `1.0` local/remote contract. Its
+`sign(chain::protocol::block_sign_request{chain, header, keys}, authenticated_caller)` returns
+signatures in requested public-key order. It signs the canonical
+`calculate_block_id(header)`, never an arbitrary digest or the raw header
+digest. The HTTP routes are `/v1/signer/sign_transaction` and
+`/v1/signer/sign_block`; the same contracts may be published over authenticated
+P2P without a signer-owned listener. The required caller argument is supplied
+by trusted server dispatch, not by the HTTP body or client.
+
 `forge.chain.api.finality_signer` is a local-only `1.0` API. `identity()`
 returns the configured BLS public key and proof of possession, while
 `sign_vote()` accepts a canonical Savanna block reference and vote kind and
@@ -72,7 +81,7 @@ returns a canonical finalizer vote. Durable safety-state and vote planning stay
 with the consensus controller; this API never signs arbitrary bytes.
 
 The implementation owner is `forge.plugins.chain.signer`. Transport plugins
-may publish the transaction API, but the signer plugin opens no sockets and
+may publish either remote signer API, but the signer plugin opens no sockets and
 does not own HTTP or P2P routes.
 
 Each `method_capability` advertises its own HTTP and P2P publication state;

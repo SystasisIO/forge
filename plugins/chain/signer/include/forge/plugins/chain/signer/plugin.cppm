@@ -47,6 +47,7 @@ class plugin final : public forge::app::plugin {
  private:
    struct impl;
    class transaction_api_impl;
+   class block_api_impl;
    class finality_api_impl;
 
    std::shared_ptr<impl> impl_;

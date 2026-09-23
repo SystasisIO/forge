@@ -1095,6 +1095,7 @@ add_executable(
    quic_p2p/net_p2p_observed_address_tests.cpp
    p2p_reachability_codec_tests.cpp
    quic_p2p/p2p_tests.cpp
+   quic_p2p/chain_signer_tests.cpp
    quic_p2p/direct_transport_tests.cpp
    quic_p2p/address_resolution_tests.cpp
    quic_p2p/dialing_tests.cpp
@@ -1115,6 +1116,7 @@ target_link_libraries(
    test_forge_quic_p2p
    forge_api_p2p
    forge_api_transport
+   forge_plugins_chain_signer
    forge_net_p2p
    Boost::included_unit_test_framework
 )

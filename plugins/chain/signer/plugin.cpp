@@ -20,12 +20,15 @@ import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.asio.notification;
 import forge.chain.api.finality_signer;
+import forge.chain.api.block_signer;
 import forge.chain.api.transaction_signer;
+import forge.chain.protocol.block_signing;
 import forge.config.core.decode;
 import forge.plugins.chain.signer.exceptions;
 import forge.plugins.chain.signer.types;
 
 #include "details/config.hxx"
+#include "details/block_api_impl.hxx"
 #include "details/finality_api_impl.hxx"
 #include "details/plugin_impl.hxx"
 #include "details/transaction_api_impl.hxx"
@@ -64,6 +67,7 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
 
 boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
    provider.install<forge::chain::api::transaction_signer>(std::make_shared<transaction_api_impl>(impl_));
+   provider.install<forge::chain::api::block_signer>(std::make_shared<block_api_impl>(impl_));
    provider.install<forge::chain::api::finality_signer>(std::make_shared<finality_api_impl>(impl_));
    co_return;
 }

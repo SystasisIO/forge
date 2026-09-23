@@ -93,6 +93,9 @@ void apply_server_supplied_impl(T& value, const trusted_invocation& trusted) {
 
 } // namespace detail
 
+template <typename T>
+concept server_supplied_value = detail::declared_server_supplied<std::remove_cvref_t<T>>;
+
 template <typename T> void reset_server_supplied(T& value) {
    detail::reset_server_supplied_impl(value);
 }

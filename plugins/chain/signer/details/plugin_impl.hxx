@@ -23,6 +23,9 @@ struct plugin::impl {
    [[nodiscard]] signing_policy::transaction_selection
    select_transaction(const forge::chain::transaction::unsigned_transaction& transaction,
                       const forge::api::auth::authenticated_caller& caller) const;
+   [[nodiscard]] signing_policy::block_selection
+   select_block(const forge::chain::protocol::block_sign_request& request,
+                const forge::api::auth::authenticated_caller& caller) const;
    [[nodiscard]] signing_policy::finality_selection select_finality() const;
    void audit(audit_entry value) const noexcept;
 

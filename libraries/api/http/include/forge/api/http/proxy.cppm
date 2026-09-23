@@ -164,6 +164,7 @@ class route_invoker final : public forge::api::core::remote_invoker {
 }
 
 template <auto Method, typename Request, typename Response> route_call make_route_call(route route) {
+   validate_server_supplied_route<Method, Request>(route);
    validate_live_stream_route<Method, Request>(route);
    return route_call{
        .method = route.method_name,

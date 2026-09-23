@@ -21,8 +21,12 @@ module forge.plugins.chain.signer.plugin;
 
 import forge.api.core.exceptions;
 import forge.chain.api.exceptions;
+import forge.chain.api.block_signer;
 import forge.chain.api.transaction_signer;
+import forge.chain.protocol.block_signing;
+import forge.chain.protocol.transaction;
 import forge.chain.transaction.signing;
+import forge.crypto.asymmetric;
 import forge.crypto.signer.provider;
 import forge.exceptions;
 import forge.plugins.chain.signer.types;
@@ -72,12 +76,23 @@ sign_admitted(auto state, forge::chain::transaction::unsigned_transaction transa
       auto selected = state->select_transaction(transaction, caller);
 
       if (caller.transport_authenticated()) {
-         if (selected.semantic_authorization == nullptr ||
+         if (selected.semantic_authorization != nullptr &&
              !(co_await selected.semantic_authorization->authorize_remote(selected.profile, transaction, caller))) {
             FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
                                   "Chain signer semantic authorization denied the remote transaction");
          }
          co_await require_active_request(lease);
+      }
+
+      auto projected = forge::chain::protocol::signed_transaction{};
+      static_cast<forge::chain::protocol::transaction&>(projected) = transaction.value;
+      projected.context_free_data = transaction.context_free_data;
+      projected.signatures.emplace_back(forge::crypto::asymmetric::k1_signature{});
+      const auto prepared_size = forge::raw::pack_size(
+          forge::chain::transaction::pack(std::move(projected), transaction.compression).packed);
+      if (prepared_size > selected.max_packed_bytes) {
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
+                               "Chain signer prepared transaction exceeds the selected profile limit");
       }
 
       const auto key = co_await selected.provider->describe(selected.key.id);
@@ -91,7 +106,7 @@ sign_admitted(auto state, forge::chain::transaction::unsigned_transaction transa
           std::move(transaction), std::vector<forge::chain::transaction::signing_key>{std::move(selected.key)},
           *selected.provider);
       co_await require_active_request(lease);
-      if (forge::raw::pack(result.packed).size() > selected.max_packed_bytes) {
+      if (forge::raw::pack_size(result.packed) > selected.max_packed_bytes) {
          FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
                                "Chain signer prepared transaction exceeds the selected profile limit");
       }

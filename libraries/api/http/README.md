@@ -126,6 +126,14 @@ before invoking the handler when the emitted codec is not acceptable.
 
 ## Security And Boundaries
 
+- A positional argument whose exact type specializes
+  `forge::api::core::server_supplied<T>` is never an HTTP body, path, query,
+  header, cookie or form field. The client omits it; the server constructs a
+  default value and applies the trusted invocation before dispatch. A required
+  value without trusted transport identity fails closed. Explicit route
+  bindings for that argument are rejected when mounted, and OpenAPI omits it.
+  A normal request DTO containing a server-supplied member remains a DTO;
+  its member is still reset and replaced by the core dispatch boundary.
 - JSON/XML DTO codecs apply only to typed DTO bodies. `file_response`,
   `streaming_response`, `stream_response`, `bytes_response`, `empty_response`,
   `body_stream`, `body_bytes` and multipart/form-data bypass DTO codecs.
