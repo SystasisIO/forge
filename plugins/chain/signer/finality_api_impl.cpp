@@ -21,7 +21,9 @@ module forge.plugins.chain.signer.plugin;
 
 import forge.api.core.exceptions;
 import forge.chain.api.exceptions;
+import forge.chain.api.block_signer;
 import forge.chain.api.finality_signer;
+import forge.chain.protocol.block_signing;
 import forge.chain.savanna.vote;
 import forge.crypto.bls;
 import forge.plugins.chain.signer.types;

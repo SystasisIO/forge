@@ -197,6 +197,7 @@ struct request_body_description {
    case openapi_field_source::cookie:
    case openapi_field_source::form:
    case openapi_field_source::upload:
+   case openapi_field_source::server_supplied:
       return true;
    case openapi_field_source::body:
    case openapi_field_source::body_stream:
@@ -326,6 +327,9 @@ struct request_body_description {
       return {.present = true, .required = true, .schema = binary_schema(), .content_type = "*/*"};
    }
    if (fields.empty()) {
+      if (operation.positional_request) {
+         return {};
+      }
       if (empty_object_schema(operation.request_schema)) {
          return {};
       }
@@ -406,11 +410,28 @@ struct request_body_description {
       }
       for (auto index = std::size_t{}; index < request_fields.size(); ++index) {
          request_fields[index].name = method->argument_names[index];
-         if (request_fields[index].source != openapi_field_source::value) {
+         if (request_fields[index].source != openapi_field_source::value &&
+             request_fields[index].source != openapi_field_source::server_supplied) {
             throw forge::api::core::exceptions::protocol_error{
                 "OpenAPI positional methods cannot use HTTP parameter wrappers"};
          }
       }
+      const auto target = describe_target(operation.mapping.target);
+      for (const auto& field : request_fields) {
+         if (field.source != openapi_field_source::server_supplied) {
+            continue;
+         }
+         if (std::ranges::find(target.path_fields, field.name) != target.path_fields.end() ||
+             has_binding(target.query, field.name) || has_binding(operation.mapping.headers, field.name) ||
+             has_binding(operation.mapping.forms, field.name) ||
+             (operation.mapping.body_stream_field && *operation.mapping.body_stream_field == field.name)) {
+            throw forge::api::core::exceptions::protocol_error{
+                "OpenAPI server-supplied argument cannot be bound to a request field"};
+         }
+      }
+      std::erase_if(request_fields, [](const openapi_field& field) {
+         return field.source == openapi_field_source::server_supplied;
+      });
    }
    auto parameters = forge::variants{};
    struct parameter_identity {

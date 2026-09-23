@@ -24,6 +24,7 @@
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -44,6 +45,7 @@ import forge.api.transport.server;
 import forge.api.websocket.binding;
 import forge.api.websocket.connection;
 import forge.asio.blocking;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.net.http.base_url;
 import forge.net.http.router;
@@ -114,6 +116,7 @@ using live_api = transport_live_types::live_api;
 class live_impl final : public live_api {
  public:
    boost::asio::awaitable<item> echo(item value) override {
+      echo_calls.fetch_add(1, std::memory_order_release);
       co_return value;
    }
 
@@ -184,6 +187,7 @@ class live_impl final : public live_api {
       }
    }
 
+   std::atomic_uint32_t echo_calls{0};
    std::atomic_bool download_started{false};
    std::atomic_bool upload_started{false};
    std::atomic_bool hold_upload_reads{false};
@@ -309,6 +313,20 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
       return close_during_write_.load(std::memory_order_acquire);
    }
 
+   void pause_write_completion_after_delivery() noexcept {
+      hold_delivered_completion_.store(true, std::memory_order_release);
+   }
+
+   [[nodiscard]] bool delivered_completion_pending() const noexcept {
+      return delivered_completion_pending_.load(std::memory_order_acquire);
+   }
+
+   void complete_delivered_write(bool fail = false) noexcept {
+      fail_delivered_completion_.store(fail, std::memory_order_release);
+      hold_delivered_completion_.store(false, std::memory_order_release);
+      delivered_completion_wake_.notify();
+   }
+
  private:
    boost::asio::awaitable<void> deliver(bytes value) {
       write_active_.store(true, std::memory_order_release);
@@ -334,6 +352,22 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
             target->push(bytes{value.begin() + static_cast<std::ptrdiff_t>(split), value.end()});
          }
       }
+      if (hold_delivered_completion_.load(std::memory_order_acquire)) {
+         delivered_completion_pending_.store(true, std::memory_order_release);
+         while (hold_delivered_completion_.load(std::memory_order_acquire)) {
+            const auto observed = delivered_completion_wake_.epoch();
+            if (!hold_delivered_completion_.load(std::memory_order_acquire)) {
+               break;
+            }
+            static_cast<void>(co_await delivered_completion_wake_.async_wait(observed));
+         }
+         delivered_completion_pending_.store(false, std::memory_order_release);
+         if (fail_delivered_completion_.load(std::memory_order_acquire)) {
+            write_active_.store(false, std::memory_order_release);
+            FORGE_THROW_EXCEPTION(forge::net::transport::exceptions::closed,
+                                  "fake API transport write completion failed after delivery");
+         }
+      }
       write_active_.store(false, std::memory_order_release);
       co_return;
    }
@@ -348,6 +382,7 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
       if (wake) {
          wake->cancel();
       }
+      complete_delivered_write();
    }
 
    mutable std::mutex mutex_;
@@ -357,6 +392,10 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
    std::shared_ptr<boost::asio::steady_timer> read_wake_;
    std::weak_ptr<fake_stream> peer_;
    std::atomic_bool hold_writes_{false};
+   forge::asio::notification delivered_completion_wake_;
+   std::atomic_bool hold_delivered_completion_{false};
+   std::atomic_bool delivered_completion_pending_{false};
+   std::atomic_bool fail_delivered_completion_{false};
    std::atomic_bool write_active_{false};
    std::atomic_bool close_during_write_{false};
    bool open_ = true;
@@ -522,6 +561,53 @@ boost::asio::awaitable<void> wait_until(Predicate predicate, std::chrono::millis
    }
 }
 
+boost::asio::awaitable<void> exercise_delivered_hello_with_pending_write_completion(bool fail_completion) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto model = std::make_shared<fake_stream>();
+   model->pause_write_completion_after_delivery();
+   auto implementation = std::make_shared<live_impl>();
+   auto registry = forge::api::core::registry{};
+   registry.install<live_api>(live_api::describe(), implementation);
+   auto service = start_service(executor, forge::api::transport::serve_stream(
+                                              make_stream(model), forge::api::core::binding().serve(registry).build()));
+
+   co_await wait_until([model] { return model->delivered_completion_pending(); }, std::chrono::milliseconds{250});
+   BOOST_REQUIRE_EQUAL(model->write_count(), 1U);
+   BOOST_TEST(static_cast<int>(unpack_api_frame(model->written(0)).kind) ==
+              static_cast<int>(forge::api::core::frame_kind::session_hello));
+
+   model->push(pack_api_frame(hello_frame()));
+   model->push(pack_api_frame(forge::api::core::frame{
+       .kind = forge::api::core::frame_kind::request,
+       .id = {.value = 7},
+       .api = live_api::ref(),
+       .method = "echo",
+       .codec = {.value = "forge.raw"},
+       .payload = forge::raw::pack(item{.value = 17}),
+   }));
+   co_await wait_until([model] { return model->read_count() >= 2U; }, std::chrono::milliseconds{250});
+   co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   BOOST_TEST(!service->done);
+   BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 0U);
+   BOOST_TEST(model->write_count() == 1U);
+
+   model->complete_delivered_write(fail_completion);
+   if (fail_completion) {
+      co_await wait_until([service] { return service->done; }, std::chrono::milliseconds{250});
+      BOOST_TEST(static_cast<bool>(service->error));
+      BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 0U);
+      BOOST_TEST(model->write_count() == 1U);
+   } else {
+      co_await wait_until(
+          [model] { return count_written_frames(model, forge::api::core::frame_kind::response, "echo") == 1U; },
+          std::chrono::milliseconds{250});
+      BOOST_TEST(implementation->echo_calls.load(std::memory_order_acquire) == 1U);
+      BOOST_TEST(forge::raw::unpack_exact<item>(unpack_api_frame(model->written(1)).payload).value == 17U);
+      model->cancel();
+      co_await wait_service(service);
+   }
+}
+
 using exchange_call = forge::api::core::bidirectional_stream_call<item, item>;
 
 boost::asio::awaitable<void> produce_until_stopped(const std::shared_ptr<exchange_call>& call,
@@ -591,6 +677,16 @@ BOOST_AUTO_TEST_CASE(session_rejects_application_data_before_hello) {
        .payload = forge::raw::pack(item{.value = 1}),
    };
    BOOST_TEST((session_rejects<forge::api::core::exceptions::protocol_error>({pack_api_frame(request)})));
+}
+
+BOOST_AUTO_TEST_CASE(session_waits_for_delivered_hello_write_completion_before_dispatch) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, exercise_delivered_hello_with_pending_write_completion(false));
+}
+
+BOOST_AUTO_TEST_CASE(session_failed_hello_write_completion_never_dispatches_request) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, exercise_delivered_hello_with_pending_write_completion(true));
 }
 
 BOOST_AUTO_TEST_CASE(session_rejects_duplicate_or_non_control_hello) {

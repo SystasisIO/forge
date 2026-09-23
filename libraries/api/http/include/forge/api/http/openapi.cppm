@@ -26,6 +26,7 @@ export module forge.api.http.openapi;
 
 import forge.api.core.descriptor;
 import forge.api.core.connection;
+import forge.api.core.server_supplied;
 import forge.api.http.mapping;
 import forge.api.http.parameters;
 import forge.core.type_name;
@@ -52,6 +53,7 @@ enum class openapi_field_source {
    body_stream,
    body_bytes,
    upload,
+   server_supplied,
 };
 
 struct openapi_field {
@@ -359,7 +361,14 @@ template <typename Tuple, std::size_t... Index>
 [[nodiscard]] std::vector<openapi_field> positional_fields(std::index_sequence<Index...>) {
    auto output = std::vector<openapi_field>{};
    output.reserve(sizeof...(Index));
-   (output.push_back(request_field<std::tuple_element_t<Index, Tuple>>()), ...);
+   (output.push_back([] {
+      using argument_type = clean_type<std::tuple_element_t<Index, Tuple>>;
+      if constexpr (forge::api::core::server_supplied_value<argument_type>) {
+         return openapi_field{.required = false, .source = openapi_field_source::server_supplied};
+      } else {
+         return request_field<argument_type>();
+      }
+   }()), ...);
    return output;
 }
 

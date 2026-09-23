@@ -42,6 +42,24 @@
 
 import forge.asio.runtime;
 import forge.asio.blocking;
+import forge.asio.task;
+import forge.api.core.binding;
+import forge.api.core.registry;
+import forge.api.http.binding;
+import forge.api.http.proxy;
+import forge.app.events;
+import forge.app.plugin_context;
+import forge.app.signals;
+import forge.chain.api.block_signer;
+import forge.chain.api.exceptions;
+import forge.chain.api.transaction_signer;
+import forge.chain.protocol.block;
+import forge.chain.protocol.transaction;
+import forge.chain.transaction.types;
+import forge.crypto.asymmetric;
+import forge.crypto.core.secret_string;
+import forge.crypto.digest.sha256;
+import forge.crypto.signer.configured_provider;
 import forge.crypto.pki.x509;
 import forge.net.http.body;
 import forge.net.http.client;
@@ -56,6 +74,8 @@ import forge.net.tls.context;
 import forge.net.tls.exceptions;
 import forge.net.websocket.client;
 import forge.net.websocket.connection;
+import forge.plugins.chain.signer.plugin;
+import forge.plugins.chain.signer.types;
 
 namespace {
 
@@ -102,6 +122,7 @@ struct mutual_tls_material {
    identity_material ca;
    identity_material server;
    identity_material client;
+   identity_material unlisted_client;
 };
 
 [[nodiscard]] evp_pkey_ptr make_key() {
@@ -194,17 +215,23 @@ void add_extension(X509* certificate, X509* issuer, int nid, std::string_view va
    const auto ca_key = make_key();
    const auto server_key = make_key();
    const auto client_key = make_key();
+   const auto unlisted_client_key = make_key();
    const auto ca_certificate = make_certificate(ca_key.get(), "forge http tls test CA", 1, nullptr, nullptr, true);
    const auto server_certificate = make_certificate(server_key.get(), "forge http tls server", 2, ca_certificate.get(),
                                                     ca_key.get(), false, "serverAuth");
    const auto client_certificate = make_certificate(client_key.get(), "forge http tls client", 3, ca_certificate.get(),
                                                     ca_key.get(), false, "clientAuth");
+   const auto unlisted_client_certificate = make_certificate(unlisted_client_key.get(), "forge http tls unlisted", 4,
+                                                              ca_certificate.get(), ca_key.get(), false, "clientAuth");
    auto ca = encode_identity(ca_certificate.get(), ca_key.get());
    auto client = encode_identity(client_certificate.get(), client_key.get());
    client.certificate += ca.certificate;
+   auto unlisted_client = encode_identity(unlisted_client_certificate.get(), unlisted_client_key.get());
+   unlisted_client.certificate += ca.certificate;
    return {.ca = std::move(ca),
            .server = encode_identity(server_certificate.get(), server_key.get()),
-           .client = std::move(client)};
+           .client = std::move(client),
+           .unlisted_client = std::move(unlisted_client)};
 }
 
 [[nodiscard]] forge::net::tls::context_options server_options(const identity_material& identity, bool mutual = false,
@@ -503,6 +530,145 @@ BOOST_AUTO_TEST_CASE(http_client_options_use_mtls_identity_from_tls_context_prov
    BOOST_TEST(response.body() == "ready");
 
    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(http_mtls_roundtrips_transaction_and_block_signer_with_one_plugin) {
+   namespace chain_api = forge::chain::api;
+   namespace protocol = forge::chain::protocol;
+   namespace signer = forge::plugins::chain::signer;
+   const auto material = make_mutual_tls_material();
+   const auto caller_fingerprint = forge::crypto::pki::x509::certificate::from_pem(material.client.certificate)
+                                       .fingerprint_sha256_text();
+   const auto chain = forge::crypto::digest::sha256::hash(std::string{"mtls-signer-chain"});
+   const auto private_key = forge::crypto::asymmetric::private_key::regenerate(
+       forge::crypto::digest::sha256::hash(std::string{"mtls-signer-test-key"}));
+   const auto public_key = private_key.get_public_key();
+   const auto provider = forge::crypto::signer::configured_provider::from_private_key(
+       {.value = "producer-key"},
+       forge::crypto::core::secret_string{forge::crypto::asymmetric::encoding::forge().format(private_key)});
+
+   auto settings = signer::config{};
+   settings.transaction_profiles.push_back({
+       .name = "writer-transaction",
+       .chain_id = chain.str(),
+       .signing = {.provider = "k1", .key_id = "producer-key",
+                   .expected_public_key = forge::crypto::asymmetric::encoding::forge().format(public_key)},
+       .authorization = signer::remote_authorization::profile_only,
+       .callers = {{.source = forge::api::auth::caller_source::tls_certificate,
+                    .fingerprint = caller_fingerprint}},
+       .actions = {{.account = "storage", .action = "write", .actor = "writer", .permission = "active"}},
+   });
+   settings.block_profiles.push_back({
+       .name = "writer-block",
+       .chain_id = chain.str(),
+       .producer = "writer",
+       .signing = {{.provider = "k1", .key_id = "producer-key",
+                    .expected_public_key = forge::crypto::asymmetric::encoding::forge().format(public_key)}},
+       .callers = {{.source = forge::api::auth::caller_source::tls_certificate,
+                    .fingerprint = caller_fingerprint}},
+   });
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto registry = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto plugin = signer::plugin{signer::plugin_options{
+       .providers = {{.name = "k1", .value = provider}},
+       .initial_config = std::move(settings),
+       .now = [] { return protocol::time_point_sec{1'700'000'000U}; },
+   }};
+   auto installer = forge::api::core::installer{registry};
+   forge::asio::blocking::run(runtime, plugin.provide(installer));
+   auto plugin_context = forge::app::plugin_context{scheduler, registry, signals, events};
+   forge::asio::blocking::run(runtime, plugin.initialize(plugin_context));
+   forge::asio::blocking::run(runtime, plugin.startup());
+
+   auto router = forge::net::http::router{};
+   router.mount(forge::api::http::binding()
+                    .use(forge::api::core::binding().serve(registry).build())
+                    .bind<chain_api::transaction_signer>()
+                    .bind<chain_api::block_signer>()
+                    .build());
+   auto server = forge::net::http::server{
+       runtime,
+       {.max_request_body_bytes = 2048,
+        .tls_context_provider = std::make_shared<forge::net::tls::context_provider>(
+            server_options(material.server, true, material.ca.certificate)),
+        .handshake_timeout = std::chrono::seconds{1}},
+       std::move(router),
+   };
+   server.start();
+
+   auto client_context = forge::net::tls::context_options{};
+   client_context.role = forge::net::tls::endpoint_role::client;
+   client_context.protocols = forge::net::tls::protocol_policy::tls13_only;
+   client_context.verification = forge::net::tls::peer_verification::verify_peer;
+   client_context.certificate_chain_pem = material.client.certificate;
+   client_context.private_key_pem = material.client.private_key;
+   client_context.trust_anchors_pem = {material.ca.certificate};
+   client_context.alpn_protocols = {"http/1.1"};
+   client_context.use_default_verify_paths = false;
+   auto unlisted_context = client_context;
+   unlisted_context.certificate_chain_pem = material.unlisted_client.certificate;
+   unlisted_context.private_key_pem = material.unlisted_client.private_key;
+   auto client = forge::net::http::client{
+       runtime,
+       forge::net::http::parse_base_url("https://127.0.0.1:" + std::to_string(wait_for_port(server))),
+       {.tls_context_provider = std::make_shared<forge::net::tls::context_provider>(std::move(client_context)),
+        .hostname = "forge http tls server"},
+   };
+   auto transaction_api = forge::asio::blocking::run(runtime, forge::api::http::remote<chain_api::transaction_signer>(client));
+   auto block_api = forge::asio::blocking::run(runtime, forge::api::http::remote<chain_api::block_signer>(client));
+   auto transaction = forge::chain::transaction::unsigned_transaction{};
+   transaction.chain = chain;
+   transaction.value.expiration = protocol::time_point_sec{1'700'000'030U};
+   auto action = protocol::action{};
+   action.account = protocol::account_name{"storage"};
+   action.name = protocol::action_name{"write"};
+   action.authorization = {{.actor = protocol::account_name{"writer"},
+                            .permission = protocol::permission_name{"active"}}};
+   transaction.value.actions.push_back(std::move(action));
+   const auto spoofed = forge::api::auth::authenticated_caller{
+       forge::api::auth::caller_source::p2p_peer,
+       forge::crypto::digest::sha256::hash(std::string{"spoofed-http-caller"})};
+   const auto prepared = forge::asio::blocking::run(runtime, transaction_api->sign(transaction, spoofed));
+   BOOST_REQUIRE_EQUAL(prepared.packed.signatures.size(), 1U);
+   BOOST_TEST(forge::crypto::asymmetric::recover(prepared.packed.signatures.front(),
+                                                 transaction.value.sig_digest(chain, transaction.context_free_data)) ==
+              public_key);
+
+   auto header = protocol::block_header{};
+   header.producer = protocol::account_name{"writer"};
+   const auto signatures = forge::asio::blocking::run(
+       runtime, block_api->sign({.chain = chain, .header = header, .keys = {public_key}}, spoofed));
+   BOOST_REQUIRE_EQUAL(signatures.size(), 1U);
+   BOOST_TEST(forge::crypto::asymmetric::recover(signatures.front(), protocol::calculate_block_id(header)) == public_key);
+
+   auto unlisted_client = forge::net::http::client{
+       runtime,
+       forge::net::http::parse_base_url("https://127.0.0.1:" + std::to_string(wait_for_port(server))),
+       {.tls_context_provider = std::make_shared<forge::net::tls::context_provider>(std::move(unlisted_context)),
+        .hostname = "forge http tls server"},
+   };
+   auto unlisted_transactions = forge::asio::blocking::run(
+       runtime, forge::api::http::remote<chain_api::transaction_signer>(unlisted_client));
+   auto unlisted_blocks = forge::asio::blocking::run(
+       runtime, forge::api::http::remote<chain_api::block_signer>(unlisted_client));
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, unlisted_transactions->sign(transaction, spoofed)),
+                     chain_api::exceptions::authorization_denied);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(
+                         runtime, unlisted_blocks->sign({.chain = chain, .header = header, .keys = {public_key}}, spoofed)),
+                     chain_api::exceptions::authorization_denied);
+
+   const auto oversized = forge::asio::blocking::run(
+       runtime, client.async_post_json("/v1/signer/sign_block", std::string(4096U, 'x')));
+   BOOST_TEST(oversized.result_int() == static_cast<unsigned>(forge::net::http::status::payload_too_large));
+
+   const auto no_cert = tls_handshake_succeeds(wait_for_port(server), nullptr);
+   BOOST_TEST(!no_cert.request_completed);
+   server.stop();
+   plugin.request_stop();
+   forge::asio::blocking::run(runtime, plugin.shutdown());
 }
 
 BOOST_AUTO_TEST_CASE(http_server_mutual_tls_verifies_client_chain) {

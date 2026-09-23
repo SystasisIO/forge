@@ -16,6 +16,8 @@ module forge.plugins.chain.signer.plugin;
 
 import forge.api.auth.authenticated_caller;
 import forge.chain.api.exceptions;
+import forge.chain.api.block_signer;
+import forge.chain.protocol.block_signing;
 import forge.chain.protocol.transaction;
 import forge.chain.protocol.values;
 import forge.chain.transaction.types;
@@ -73,20 +75,20 @@ namespace {
    }
 }
 
-[[nodiscard]] forge::crypto::asymmetric::public_key parse_transaction_public_key(std::string_view value) {
+[[nodiscard]] forge::crypto::asymmetric::public_key parse_signing_public_key(std::string_view value) {
    try {
       auto result = forge::crypto::asymmetric::encoding::forge().parse_public(value);
       if (forge::crypto::asymmetric::encoding::forge().format(result) != value) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer transaction public key is not canonical");
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer public key is not canonical");
       }
       if (forge::crypto::asymmetric::type(result) != forge::crypto::asymmetric::algorithm::secp256k1) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer transaction public key must use K1");
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer public key must use K1");
       }
       return result;
    } catch (const exceptions::invalid_config&) {
       throw;
    } catch (const std::exception&) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer transaction public key is invalid");
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer public key is invalid");
    }
 }
 
@@ -170,8 +172,18 @@ struct signing_policy::compiled_profile {
    bool allow_extensions = false;
 };
 
+struct signing_policy::compiled_block_profile {
+   std::string name;
+   forge::chain::protocol::chain_id chain;
+   forge::chain::protocol::account_name producer;
+   std::vector<block_key_selection> keys;
+   bool allow_local = false;
+   std::vector<compiled_caller> callers;
+   std::uint64_t max_header_bytes = 0;
+};
+
 signing_policy::signing_policy(const plugin_options& options, const config& settings) {
-   validate_providers(options.transaction_providers, "transaction");
+   validate_providers(options.providers, "K1");
    validate_providers(options.finality_providers, "finality");
 
    profiles_.reserve(settings.transaction_profiles.size());
@@ -185,7 +197,14 @@ signing_policy::signing_policy(const plugin_options& options, const config& sett
       }
 
       const auto remote_enabled = !source.callers.empty();
-      if (remote_enabled && options.semantic_authorization == nullptr) {
+      if (source.authorization != remote_authorization::semantic &&
+          source.authorization != remote_authorization::profile_only) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config,
+                               "Chain signer remote authorization mode is invalid",
+                               forge::exceptions::ctx("profile", source.name));
+      }
+      if (remote_enabled && source.authorization == remote_authorization::semantic &&
+          options.semantic_authorization == nullptr) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_config,
                                "Chain signer remote profile requires a semantic authorization provider",
                                forge::exceptions::ctx("profile", source.name));
@@ -194,13 +213,14 @@ signing_policy::signing_policy(const plugin_options& options, const config& sett
       auto profile = compiled_profile{
           .name = source.name,
           .chain = parse_digest(source.chain_id, "chain-id"),
-          .provider = find_provider<forge::crypto::signer::provider>(options.transaction_providers,
-                                                                     source.signing.provider, "transaction"),
-          .semantic_authorization = remote_enabled ? options.semantic_authorization : nullptr,
+          .provider = find_provider<forge::crypto::signer::provider>(options.providers, source.signing.provider, "K1"),
+          .semantic_authorization = remote_enabled && source.authorization == remote_authorization::semantic
+                                        ? options.semantic_authorization
+                                        : nullptr,
           .key =
               {
                   .id = {.value = source.signing.key_id},
-                  .public_key = parse_transaction_public_key(source.signing.expected_public_key),
+                  .public_key = parse_signing_public_key(source.signing.expected_public_key),
               },
           .allow_local = source.allow_local,
           .max_expiration_seconds = source.max_expiration_seconds,
@@ -271,6 +291,65 @@ signing_policy::signing_policy(const plugin_options& options, const config& sett
          profile.context_free_actions.push_back(std::move(value));
       }
       profiles_.push_back(std::move(profile));
+   }
+
+   block_profiles_.reserve(settings.block_profiles.size());
+   for (const auto& source : settings.block_profiles) {
+      if (source.name.empty() || source.signing.empty() || source.signing.size() > 64U ||
+          source.max_header_bytes == 0U || source.max_header_bytes > 64U * 1024U * 1024U) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer block profile is incomplete or exceeds limits");
+      }
+      auto profile = compiled_block_profile{
+          .name = source.name,
+          .chain = parse_digest(source.chain_id, "chain-id"),
+          .producer = parse_name(source.producer, "producer"),
+          .allow_local = source.allow_local,
+          .max_header_bytes = source.max_header_bytes,
+      };
+      for (const auto& existing : block_profiles_) {
+         if (existing.name == profile.name || (existing.chain == profile.chain && existing.producer == profile.producer)) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer block profile is duplicated or ambiguous",
+                                  forge::exceptions::ctx("profile", source.name));
+         }
+      }
+      profile.keys.reserve(source.signing.size());
+      for (const auto& binding : source.signing) {
+         if (binding.key_id.empty()) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer block key id is empty");
+         }
+         auto key = block_key_selection{
+             .provider = find_provider<forge::crypto::signer::provider>(options.providers, binding.provider, "K1"),
+             .key = {.id = {.value = binding.key_id},
+                     .public_key = parse_signing_public_key(binding.expected_public_key)},
+         };
+         if (std::ranges::any_of(profile.keys, [&key](const auto& prior) {
+                return prior.key.public_key == key.key.public_key ||
+                       (prior.provider == key.provider && prior.key.id == key.key.id);
+             })) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer block key binding is duplicated");
+         }
+         for (const auto& prior_profile : block_profiles_) {
+            if (prior_profile.chain != profile.chain &&
+                std::ranges::any_of(prior_profile.keys, [&key](const auto& prior) {
+                   return prior.key.public_key == key.key.public_key;
+                })) {
+               FORGE_THROW_EXCEPTION(exceptions::invalid_config,
+                                     "Chain signer producer key must not be shared across chains");
+            }
+         }
+         profile.keys.push_back(std::move(key));
+      }
+      for (const auto& caller : source.callers) {
+         auto allowed = compiled_caller{.source = caller.source,
+                                        .fingerprint = parse_digest(caller.fingerprint, "caller.fingerprint")};
+         if (std::ranges::any_of(profile.callers, [&allowed](const auto& prior) {
+                return prior.source == allowed.source && prior.fingerprint == allowed.fingerprint;
+             })) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer block caller is duplicated");
+         }
+         profile.callers.push_back(std::move(allowed));
+      }
+      block_profiles_.push_back(std::move(profile));
    }
 
    if (settings.finality) {
@@ -372,6 +451,55 @@ signing_policy::select_transaction(const forge::chain::transaction::unsigned_tra
        .key = selected->key,
        .max_packed_bytes = selected->max_packed_bytes,
    };
+}
+
+signing_policy::block_selection
+signing_policy::select_block(const forge::chain::protocol::block_sign_request& request,
+                             const forge::api::auth::authenticated_caller& caller) const {
+   if (request.keys.empty() || request.keys.size() > 64U) {
+      FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
+                            "Chain signer block key count must be between 1 and 64");
+   }
+   for (auto index = std::size_t{}; index < request.keys.size(); ++index) {
+      if (forge::crypto::asymmetric::type(request.keys[index]) != forge::crypto::asymmetric::algorithm::secp256k1 ||
+          std::ranges::find(request.keys.begin(), request.keys.begin() + static_cast<std::ptrdiff_t>(index),
+                            request.keys[index]) != request.keys.begin() + static_cast<std::ptrdiff_t>(index)) {
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
+                               "Chain signer block keys must be unique K1 keys");
+      }
+   }
+
+   for (const auto& profile : block_profiles_) {
+      if (profile.chain != request.chain || profile.producer != request.header.producer) {
+         continue;
+      }
+      if (!caller.transport_authenticated()) {
+         if (!profile.allow_local) {
+            break;
+         }
+      } else if (std::ranges::none_of(profile.callers, [&caller](const auto& allowed) {
+                    return allowed.source == caller.source && allowed.fingerprint == caller.fingerprint;
+                 })) {
+         break;
+      }
+      auto result = block_selection{.profile = profile.name,
+                                    .producer = profile.producer,
+                                    .max_header_bytes = profile.max_header_bytes};
+      result.keys.reserve(request.keys.size());
+      for (const auto& requested : request.keys) {
+         const auto found = std::ranges::find_if(profile.keys, [&requested](const auto& configured) {
+            return configured.key.public_key == requested;
+         });
+         if (found == profile.keys.end()) {
+            FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
+                                  "Chain signer block key is not in the selected profile");
+         }
+         result.keys.push_back(*found);
+      }
+      return result;
+   }
+   FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
+                         "Chain signer block does not match an exact profile");
 }
 
 signing_policy::finality_selection signing_policy::select_finality() const {

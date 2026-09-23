@@ -156,8 +156,8 @@ boost::asio::awaitable<void> session::impl::handle_inbound_frame(forge::api::cor
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "invalid API stream control frame");
    }
    if (!hello_sent) {
-      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
-                            "API stream peer sent application data before symmetric hello");
+      // The peer can reply to our delivered hello before its async_write completion resumes.
+      co_await ensure_handshake_on_strand();
    }
    if (value.codec != settings.codec) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::codec_failed, "API stream frame codec is not negotiated",
