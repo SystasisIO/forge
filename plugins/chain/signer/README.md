@@ -5,6 +5,18 @@ the Chain transaction, block and finality signer contracts. It owns no private
 keys, transport listener, HTTP/P2P publication, consensus state, or durable
 block-signing safety record.
 
+Composition can optionally supply `plugin_options.resolve_provider(name, apis)`.
+At initialization it resolves each missing transaction/block profile provider
+name exactly once into the existing named-provider list, before policy compilation.
+Explicit providers are never replaced. Unknown/null providers and callback errors
+fail configuration; diagnostics do not forward callback exception text. This is
+a local initialization hook, not request-time fallback or a remote registry.
+The application must declare the source plugin dependency. The analogous optional
+`resolve_finality_provider(name, apis)` is awaitable and resolves the single missing
+configured BLS provider during initialization. Explicit BLS providers still win;
+empty names, null results and failures are rejected without leaking source diagnostics.
+Neither hook changes the wire API or creates request-time fallback.
+
 ## Identity
 
 - Target: `forge_plugins_chain_signer`
@@ -18,6 +30,7 @@ block-signing safety record.
   - `forge.plugins.chain.signer.descriptor`
   - `forge.plugins.chain.signer.types`
   - `forge.plugins.chain.signer.exceptions`
+  - `forge.plugins.chain.signer.block_execution_handler`
 
 ## Composition
 
@@ -105,8 +118,36 @@ serialized signing attempts per `(chain, producer)` and independent progress
 for different pairs. It must maintain exactly one bounded, durable last-slot
 record for each pair, containing the canonical header, execution state
 (pending intent or completed), and result. This is not a growing journal.
-Persist signing intent before calling this API and the returned result before
-replying. After restart, a pending intent must be resolved conservatively:
+Inject the optional local `plugin_options.block_execution` handler to persist
+intent **inside** the existing signer API after policy, admission and all key
+identity checks. Persist the completed result before returning from the handler.
+Forge then verifies signature count, order, algorithm and recovery again, even
+for a cached response. Denied requests never enter the handler. No second signer
+registration or wrapper in front of policy checks is needed.
+
+```cpp
+import forge.plugins.chain.signer.plugin;
+import forge.plugins.chain.signer.block_execution_handler;
+
+// durable_guard implements block_execution_handler::execute(request, signing).
+// signing is a lazy move-only awaitable: await it once after durable intent,
+// or discard it and return the exact previously persisted signatures.
+auto descriptor = forge::plugins::chain::signer::descriptor({
+   .providers = providers,
+   .block_execution = durable_guard,
+   .initial_config = {.block_profiles = profiles},
+});
+```
+
+The handler participates in the existing request cancellation and drain scope.
+It must await all work it starts and must not detach cryptography or durable
+writes. The supplied operation expires on handler completion or failure;
+retaining it cannot retain admission or authorize later signing. Cancellation
+does not undo signatures already produced or durable writes already committed.
+The product must resolve those uncertain outcomes conservatively on retry.
+This extension is local composition only; it changes no remote signer contract.
+
+After restart, a pending intent must be resolved conservatively:
 only an exact retry of that same canonical header may continue, while a
 conflicting block at the same slot, an older slot, or a storage error fails
 closed. Local and remote entry points must pass through the same guard. Two

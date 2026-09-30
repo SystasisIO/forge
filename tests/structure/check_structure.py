@@ -284,51 +284,51 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
       if token not in source:
          errors.append(f"{path}: TLS WebSocket handoff must retain the accepted context snapshot")
 
-   plugin_types = (root / "plugins/http/server/include/forge/plugins/http/server/types.cppm").read_text(errors="ignore")
-   plugin_config = (root / "plugins/http/server/config.cpp").read_text(errors="ignore")
-   plugin_source = (root / "plugins/http/server/plugin.cpp").read_text(errors="ignore")
-   plugin_impl = (root / "plugins/http/server/plugin_impl.cpp").read_text(errors="ignore")
+   plugin_types = (root / "plugins/net/http/server/include/forge/plugins/net/http/server/types.cppm").read_text(errors="ignore")
+   plugin_config = (root / "plugins/net/http/server/config.cpp").read_text(errors="ignore")
+   plugin_source = (root / "plugins/net/http/server/plugin.cpp").read_text(errors="ignore")
+   plugin_impl = (root / "plugins/net/http/server/plugin_impl.cpp").read_text(errors="ignore")
    tls_secret_material_header = (
-      root / "plugins/http/server/details/tls_secret_material.hxx").read_text(errors="ignore")
-   tls_secret_material_source = (root / "plugins/http/server/tls_secret_material.cpp").read_text(errors="ignore")
-   plugin_api = (root / "plugins/http/server/include/forge/plugins/http/server/api.cppm").read_text(errors="ignore")
-   plugin_impl_header = (root / "plugins/http/server/details/plugin_impl.hxx").read_text(errors="ignore")
+      root / "plugins/net/http/server/details/tls_secret_material.hxx").read_text(errors="ignore")
+   tls_secret_material_source = (root / "plugins/net/http/server/tls_secret_material.cpp").read_text(errors="ignore")
+   plugin_api = (root / "plugins/net/http/server/include/forge/plugins/net/http/server/api.cppm").read_text(errors="ignore")
+   plugin_impl_header = (root / "plugins/net/http/server/details/plugin_impl.hxx").read_text(errors="ignore")
    for path, source, tokens in (
-      ("plugins/http/server/include/forge/plugins/http/server/types.cppm", plugin_types,
+      ("plugins/net/http/server/include/forge/plugins/net/http/server/types.cppm", plugin_types,
        ("tls.mode", "tls.certificate-chain-secret", "tls.private-key-secret", "tls.client-ca-secret",
         "tls.handshake-timeout-ms", "tls.max-pending-handshakes")),
-      ("plugins/http/server/config.cpp", plugin_config,
+      ("plugins/net/http/server/config.cpp", plugin_config,
        ("address.is_loopback()", 'value.bind_address == "localhost"', "validate_tls_config")),
-      ("plugins/http/server/plugin.cpp", plugin_source,
+      ("plugins/net/http/server/plugin.cpp", plugin_source,
        ("settings.tls_mode_value != tls_mode::disabled", "make_tls_context_provider", "lifecycle_generation")),
-      ("plugins/http/server/plugin_impl.cpp", plugin_impl,
+      ("plugins/net/http/server/plugin_impl.cpp", plugin_impl,
        ("http.server.tls.certificate-chain", "http.server.tls.private-key", "http.server.tls.client-ca",
         "provider->replace(std::move(replacement))", "lifecycle_generation != reload_generation",
         '"details/tls_secret_material.hxx"', "tls_secret_material", "clear_tls_context_options", "secure_erase")),
-      ("plugins/http/server/details/tls_secret_material.hxx", tls_secret_material_header,
+      ("plugins/net/http/server/details/tls_secret_material.hxx", tls_secret_material_header,
        ("struct tls_secret_material", "~tls_secret_material();",
         "operator=(tls_secret_material&& other) noexcept;")),
-      ("plugins/http/server/tls_secret_material.cpp", tls_secret_material_source,
+      ("plugins/net/http/server/tls_secret_material.cpp", tls_secret_material_source,
        ("tls_secret_material::~tls_secret_material()", "tls_secret_material::operator=(tls_secret_material&& other)",
         "secure_erase")),
-      ("plugins/http/server/details/plugin_impl.hxx", plugin_impl_header,
+      ("plugins/net/http/server/details/plugin_impl.hxx", plugin_impl_header,
        ("std::shared_ptr<forge::plugins::crypto::secrets::api>", "lifecycle_generation")),
-      ("plugins/http/server/include/forge/plugins/http/server/api.cppm", plugin_api,
-       ("reload_tls", 'FORGE_API_CONTRACT("forge.plugins.http.server", 2, 0)')),
+      ("plugins/net/http/server/include/forge/plugins/net/http/server/api.cppm", plugin_api,
+       ("reload_tls", 'FORGE_API_CONTRACT("forge.plugins.net.http.server", 2, 0)')),
    ):
       for token in tokens:
          if token not in source:
             errors.append(f"{path}: HTTP Server plugin TLS invariant is missing ({token})")
 
-   plugin_cmake = (root / "plugins/http/server/CMakeLists.txt").read_text(errors="ignore")
+   plugin_cmake = (root / "plugins/net/http/server/CMakeLists.txt").read_text(errors="ignore")
    if "forge_plugins_crypto_secrets" not in plugin_cmake:
-      errors.append("plugins/http/server/CMakeLists.txt: TLS-enabled HTTP Server plugin must link Crypto Secrets")
+      errors.append("plugins/net/http/server/CMakeLists.txt: TLS-enabled HTTP Server plugin must link Crypto Secrets")
    if "tls_secret_material.cpp" not in plugin_cmake:
-      errors.append("plugins/http/server/CMakeLists.txt: private TLS secret material implementation is not compiled")
+      errors.append("plugins/net/http/server/CMakeLists.txt: private TLS secret material implementation is not compiled")
    if "struct tls_secret_material" in plugin_impl:
-      errors.append("plugins/http/server/plugin_impl.cpp: private TLS secret material needs its exact details pair")
+      errors.append("plugins/net/http/server/plugin_impl.cpp: private TLS secret material needs its exact details pair")
    if "load_tls_context_options" in plugin_impl or "co_return forge::net::tls::context_options" in plugin_impl:
-      errors.append("plugins/http/server/plugin_impl.cpp: TLS secret material must not escape in context_options")
+      errors.append("plugins/net/http/server/plugin_impl.cpp: TLS secret material must not escape in context_options")
 
    tls_http_tests = (root / "tests/tls/http_server_tests.cpp").read_text(errors="ignore")
    for token in (
@@ -457,9 +457,9 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
       errors.append("cmake/ForgeConfig.cmake.in: net_tls package component must resolve crypto_pki")
    if 'elseif("${component}" STREQUAL "net_websocket")\n         _forge_add_component(exceptions)\n         _forge_add_component(asio)\n         _forge_add_component(net_tls)' not in package_config:
       errors.append("cmake/ForgeConfig.cmake.in: net_websocket package component must resolve net_tls")
-   if 'elseif("${component}" STREQUAL "plugins_http_server")' not in package_config or \
-      '_forge_add_component(plugins_crypto_secrets)' not in package_config.partition('elseif("${component}" STREQUAL "plugins_http_server")')[2].partition('elseif("${component}" STREQUAL "plugins_log_otlp")')[0]:
-      errors.append("cmake/ForgeConfig.cmake.in: plugins_http_server package component must resolve Crypto Secrets")
+   if 'elseif("${component}" STREQUAL "plugins_net_http_server")' not in package_config or \
+      '_forge_add_component(plugins_crypto_secrets)' not in package_config.partition('elseif("${component}" STREQUAL "plugins_net_http_server")')[2].partition('elseif("${component}" STREQUAL "plugins_log_otlp")')[0]:
+      errors.append("cmake/ForgeConfig.cmake.in: plugins_net_http_server package component must resolve Crypto Secrets")
    if 'elseif("${component}" STREQUAL "plugins_log_otlp")' not in package_config or \
       '_forge_add_component(plugins_crypto_secrets)' not in package_config.partition('elseif("${component}" STREQUAL "plugins_log_otlp")')[2].partition('elseif("${component}" STREQUAL "plugins_db_store")')[0]:
       errors.append("cmake/ForgeConfig.cmake.in: plugins_log_otlp package component must resolve Crypto Secrets")
@@ -561,31 +561,31 @@ def check_http_cookie_asset_boundaries(root: Path, errors: list[str]) -> None:
       if token not in router_preflight:
          errors.append(f"libraries/net/http/router_server_access.cpp: asset preflight handling is incomplete ({token})")
 
-   plugin_api = (root / "plugins/http/server/include/forge/plugins/http/server/api.cppm").read_text(errors="ignore")
-   plugin_source = (root / "plugins/http/server/plugin.cpp").read_text(errors="ignore")
-   plugin_impl = (root / "plugins/http/server/plugin_impl.cpp").read_text(errors="ignore")
+   plugin_api = (root / "plugins/net/http/server/include/forge/plugins/net/http/server/api.cppm").read_text(errors="ignore")
+   plugin_source = (root / "plugins/net/http/server/plugin.cpp").read_text(errors="ignore")
+   plugin_impl = (root / "plugins/net/http/server/plugin_impl.cpp").read_text(errors="ignore")
    for token in ("mount_assets", "forge.net.http.assets"):
       if token not in plugin_api:
-         errors.append(f"plugins/http/server/include/forge/plugins/http/server/api.cppm: typed asset mount is missing ({token})")
+         errors.append(f"plugins/net/http/server/include/forge/plugins/net/http/server/api.cppm: typed asset mount is missing ({token})")
    if "result.insert" not in plugin_source or '"Set-Cookie"' not in plugin_source:
-      errors.append("plugins/http/server/plugin.cpp: repeated Set-Cookie projection must use insert")
+      errors.append("plugins/net/http/server/plugin.cpp: repeated Set-Cookie projection must use insert")
    if "HTTP asset mounts must not overlap" not in plugin_impl:
-      errors.append("plugins/http/server/plugin_impl.cpp: plugin asset overlap validation is missing")
+      errors.append("plugins/net/http/server/plugin_impl.cpp: plugin asset overlap validation is missing")
    for token in ("context.has_compute()", "context.compute()", "file_read_executor"):
       if token not in plugin_source:
-         errors.append(f"plugins/http/server/plugin.cpp: asset compute ownership is incomplete ({token})")
+         errors.append(f"plugins/net/http/server/plugin.cpp: asset compute ownership is incomplete ({token})")
    for token in ("asset_bundle{std::move(value), std::move(executor)}",
                  "HTTP asset mounts require the application compute executor"):
       if token not in plugin_impl:
-         errors.append(f"plugins/http/server/plugin_impl.cpp: asset compute injection is incomplete ({token})")
+         errors.append(f"plugins/net/http/server/plugin_impl.cpp: asset compute injection is incomplete ({token})")
 
    package_http = (root / "tests/package_net_http_component/main.cpp").read_text(errors="ignore")
-   package_plugin = (root / "tests/package_plugins_http_server/main.cpp").read_text(errors="ignore")
+   package_plugin = (root / "tests/package_plugins_net_http_server/main.cpp").read_text(errors="ignore")
    for token in ("import forge.net.http.cookie;", "import forge.net.http.assets;"):
       if token not in package_http:
          errors.append(f"tests/package_net_http_component/main.cpp: direct package import is missing ({token})")
    if "import forge.net.http.assets;" not in package_plugin:
-      errors.append("tests/package_plugins_http_server/main.cpp: plugin package consumer must import asset mount directly")
+      errors.append("tests/package_plugins_net_http_server/main.cpp: plugin package consumer must import asset mount directly")
    if "import forge.asio.compute;" not in package_http:
       errors.append("tests/package_net_http_component/main.cpp: low-level file package consumer must import compute")
 
@@ -1433,6 +1433,39 @@ def check_contract_tooling_boundaries(root: Path, files: list[Path], errors: lis
             errors.append(f"{relative}: legacy Contract Tooling package component {component} is forbidden")
 
 
+def check_net_plugin_families(root: Path, errors: list[str]) -> None:
+   leaves = ("http/server", "p2p/node", "p2p/resolver", "p2p/diagnostics", "p2p/pubsub")
+   for retired in ("http", "p2p"):
+      if (root / "plugins" / retired).exists():
+         errors.append(f"plugins/{retired}: retired network plugin family")
+   for leaf in leaves:
+      package = root / "plugins/net" / leaf
+      identity = "forge.plugins.net." + leaf.replace("/", ".")
+      target = identity.replace(".", "_")
+      cmake = package / "CMakeLists.txt"
+      if not cmake.is_file() or not re.search(rf"add_library\s*\(\s*{target}\s+STATIC\b", cmake.read_text()):
+         errors.append(f"{package.relative_to(root)}: missing network plugin leaf target {target}")
+      interface = package / "include/forge/plugins/net" / leaf / "plugin.cppm"
+      if not interface.is_file() or f"export module {identity}.plugin;" not in interface.read_text():
+         errors.append(f"{package.relative_to(root)}: network plugin module does not match its path")
+   for family in ("net", "net/http", "net/p2p"):
+      cmake = root / "plugins" / family / "CMakeLists.txt"
+      if not cmake.is_file() or re.sub(r"add_subdirectory\([a-z][a-z0-9_]*\)\s*", "", cmake.read_text()).strip():
+         errors.append(f"plugins/{family}: grouping may only add leaf subdirectories")
+   retired_identity = re.compile(
+      r"forge[.]plugins[.](?:http|p2p)[.]|forge::plugins::(?:http|p2p)::|"
+      r"forge_plugins_(?:http|p2p)_|forge/plugins/(?:http|p2p)/"
+   )
+   candidates = source_files(root, SCAN_ROOTS)
+   candidates += [root / "CMakeLists.txt", root / "cmake/ForgeConfig.cmake.in"]
+   candidates += sorted((root / "plugins").rglob("CMakeLists.txt"))
+   candidates += sorted((root / "tests").rglob("CMakeLists.txt"))
+   for path in (path for path in candidates if path.is_file()):
+      for line_number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+         if retired_identity.search(line):
+            errors.append(f"{path.relative_to(root)}:{line_number}: retired network plugin identity")
+
+
 def check_plugin_impl_ownership(root: Path, errors: list[str]) -> None:
    for path in sorted((root / "plugins").rglob("details/plugin_impl.hxx")):
       for line_number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
@@ -1485,6 +1518,7 @@ def check_chain_savanna_boundaries(root: Path, errors: list[str]) -> None:
       "extensions.cpp",
       "genesis.cpp",
       "header_state.cpp",
+      "checkpoint.cpp",
       "admission.cpp",
       "finality_witness.cpp",
    }
@@ -2194,6 +2228,7 @@ def check_crypto_family(root: Path, files: list[Path], errors: list[str]) -> Non
       "core",
       "digest",
       "keystore",
+      "wallet",
       "math",
       "pki",
       "signer",
@@ -2412,6 +2447,7 @@ def main() -> int:
    check_vm_wasm_interpret_identities(root, files, errors)
    check_contract_tooling_boundaries(root, files, errors)
    check_plugin_impl_ownership(root, errors)
+   check_net_plugin_families(root, errors)
    check_chain_savanna_boundaries(root, errors)
    check_bls_value_ownership(root, files, errors)
    check_chain_api_shape(root, errors)

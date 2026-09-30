@@ -6,7 +6,7 @@ routing, middleware, server and client/connection primitives. It uses Boost.Beas
 FORGE-owned public message, route and lifecycle semantics.
 
 Application-level server lifecycle can be owned directly with `forge::net::http::server`
-or composed through the official `forge.plugins.http.server` plugin. The library
+or composed through the official `forge.plugins.net.http.server` plugin. The library
 still owns HTTP mechanics; the plugin owns app lifecycle/config composition.
 
 ## When To Use

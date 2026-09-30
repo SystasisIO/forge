@@ -22,8 +22,8 @@ find_package(
       net_http
       net_p2p
       plugins_crypto_secrets
-      plugins_p2p_node
-      plugins_p2p_resolver
+      plugins_net_p2p_node
+      plugins_net_p2p_resolver
 )
 
 if(NOT Forge_BUILT_WITH_PORTABLE_VERIFIED_CLIENT)
@@ -109,6 +109,6 @@ target_link_libraries(
       Forge::forge_net_http
       Forge::forge_net_p2p
       Forge::forge_plugins_crypto_secrets
-      Forge::forge_plugins_p2p_node
-      Forge::forge_plugins_p2p_resolver
+      Forge::forge_plugins_net_p2p_node
+      Forge::forge_plugins_net_p2p_resolver
 )

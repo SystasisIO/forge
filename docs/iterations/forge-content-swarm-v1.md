@@ -186,7 +186,7 @@ auto availability = co_await async_provide(profile, dht::key);
 async_find_providers(dht::key);
 ```
 
-They are not exposed through the safe local `plugins.p2p.node` API. Add a
+They are not exposed through the safe local `plugins.net.p2p.node` API. Add a
 focused provider-discovery slice that exposes only typed provide and provider
 lookup operations with bounded results, cancellation and deadlines.
 
@@ -371,9 +371,9 @@ pieces are never serialized as one unbounded DTO.
 `forge_plugins_swarm_node` is the lifecycle-owned reference runtime. It:
 
 - installs local control and remote peer APIs;
-- publishes the peer API through `plugins.p2p.node`;
+- publishes the peer API through `plugins.net.p2p.node`;
 - announces and discovers providers through the DHT slice;
-- opens typed remote APIs through `plugins.p2p.resolver`;
+- opens typed remote APIs through `plugins.net.p2p.resolver`;
 - owns active peer sessions, transfer orchestration and timers;
 - applies global and per-peer connection, stream, request and bandwidth limits;
 - runs picker decisions and verification work against a registered content
@@ -551,7 +551,7 @@ allowing reads and writes to progress independently.
 3. Complete P2P Stage 6 and fix its contracts before parallel Swarm development
    starts alongside Stage 7. Earlier partial P2P delivery is insufficient.
 4. During Stage 7, expose validated configuration and focused DHT provider
-   discovery through `plugins.p2p.node`.
+   discovery through `plugins.net.p2p.node`.
 5. Prove `find provider -> resolver -> typed duplex API` through the official
    plugin before enabling Swarm network integration.
 

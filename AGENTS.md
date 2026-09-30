@@ -410,7 +410,10 @@ implementation-library namespaces. For plugin family/role decisions, follow
 
 - `forge::crypto` is an empty family root. Public symbols and dependencies live
   in focused `core`, `digest`, `symmetric`, `asymmetric`, `pki`, `math`, `bls`,
-  `bn256`, `signer` and `keystore` leaf libraries.
+  `bn256`, `signer`, `keystore` and `wallet` leaf libraries.
+- `forge.crypto.wallet` owns neutral wallet management protocol/API/errors only;
+  `forge.plugins.crypto.wallet` owns wallet lifecycle and provider composition.
+  Neither layer owns Chain transaction policy or a durable block-signing record.
 - There is no Crypto aggregate target or package component. Consumers must link
   the smallest owning leaf target.
 - OpenSSL 3+ is the crypto backend baseline.
@@ -451,7 +454,7 @@ implementation-library namespaces. For plugin family/role decisions, follow
   such as codec, frame size, max inflight, deadline, peer policy or middleware
   must affect runtime behavior and be covered by tests.
 - HTTP-specific middleware belongs to `forge_net_http` router composition or the
-  `forge::plugins::http::server` plugin facade.
+  `forge::plugins::net::http::server` plugin facade.
   Protocol-neutral trace/authz/metrics/limits logic belongs to
   `forge::api::core::interceptor(...)`.
 - Do not create `libraries/network`, legacy net-prefixed target, module, or namespace forms.
@@ -459,6 +462,17 @@ implementation-library namespaces. For plugin family/role decisions, follow
 - Do not introduce `std::async`, ad hoc polling loops, or unmanaged background threads as core runtime behavior.
 
 ## Plugins
+
+- Network plugins live in the nested families `net.http` and `net.p2p`:
+  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver,diagnostics,pubsub}`.
+  The `net`, `net.http` and `net.p2p` grouping namespaces contain no types or
+  aggregate modules/targets; each leaf keeps its own dependencies and lifecycle.
+- This approved clean rename changes plugin/module/namespace/target/component
+  identities and configuration paths together, without compatibility aliases.
+  Library families `forge.net.*` and API bindings `forge.api.*`, protocol routes,
+  transport security and persisted layouts remain unchanged. Published
+  plugin-owned API identities also change and require coordinated peer upgrades;
+  see the net-plugin migration note before deployment.
 
 Структура и нейминг плагинов заданы скиллом `create-plugin` (который расширяет
 `create-library`). Перед созданием, переименованием ИЛИ правкой плагина — загрузи
@@ -483,13 +497,13 @@ implementation-library namespaces. For plugin family/role decisions, follow
 - Plugin-specific exception families live with the owning plugin module, not in
   a shared catch-all plugin exceptions module. Concrete module/namespace layout
   is governed by `create-plugin`.
-- `forge::plugins::p2p::node` is the production owner for a shared P2P node inside
+- `forge::plugins::net::p2p::node` is the production owner for a shared P2P node inside
   an application. It owns bootstrap, route/API contribution mounting, local
   endpoint reporting and typed remote API access; product plugins must not
   create parallel P2P nodes or call raw `p2p::node` path/relay primitives when
   the plugin owns the node.
 - Production P2P network mechanics belong to `forge_net_p2p`, not to
-  `forge::plugins::p2p::node`. FORGE's P2P direction is a clean C++23
+  `forge::plugins::net::p2p::node`. FORGE's P2P direction is a clean C++23
   libp2p-compatible implementation: FORGE public APIs stay FORGE/Boost-style, but
   declared libp2p protocols must be wire-compatible with go-libp2p and
   rust-libp2p. Endpoint/address encoding, Peer ID, supported key families
@@ -513,7 +527,7 @@ implementation-library namespaces. For plugin family/role decisions, follow
   above the network layer.
 - Durable P2P delivery in FORGE is pluggable, not storage-bound. If needed, it
   belongs to a focused future plugin or product service, not to the
-  `forge::plugins::p2p::node` host facade.
+  `forge::plugins::net::p2p::node` host facade.
 - Plugin enable/disable is application-shell-owned config under
   `plugins.<family>.<name>.enabled`. Products must not manually distribute plugin
   selection from their own monolithic config object as the primary path.

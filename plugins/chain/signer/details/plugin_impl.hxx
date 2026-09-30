@@ -14,7 +14,9 @@ struct plugin::impl {
    ~impl();
 
    void set_config(config value);
-   void initialize();
+   boost::asio::awaitable<void> initialize(forge::api::core::view apis);
+   void resolve_providers(const forge::api::core::view& apis);
+   boost::asio::awaitable<void> resolve_finality_provider(const forge::api::core::view& apis);
    boost::asio::awaitable<admission_lease> acquire(std::string caller, std::size_t bytes);
    void request_stop() noexcept;
    boost::asio::awaitable<void> wait_for_drain();
@@ -27,6 +29,7 @@ struct plugin::impl {
    select_block(const forge::chain::protocol::block_sign_request& request,
                 const forge::api::auth::authenticated_caller& caller) const;
    [[nodiscard]] signing_policy::finality_selection select_finality() const;
+   [[nodiscard]] std::shared_ptr<block_execution_handler> block_execution() const noexcept;
    void audit(audit_entry value) const noexcept;
 
  private:

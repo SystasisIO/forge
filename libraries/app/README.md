@@ -124,6 +124,13 @@ A plugin owns its own config. The application owns only app-level config. The
 shell merges defaults from every registered descriptor with the input document
 before calling `on_configure(...)` and plugin `configure(...)`.
 
+Coroutine hosts use `co_await shell.async_configure(document)` on their existing
+runtime. It owns the input document and follows the same defaults, validation
+and created-state requirements as `configure(document)`. The synchronous method
+is the blocking convenience boundary for callers outside the runtime; do not
+call it from a runtime worker. Configuration/lifecycle calls remain serialized
+by the host, not a concurrent reconfiguration API.
+
 ```cpp
 #include <boost/describe.hpp>
 
@@ -189,8 +196,9 @@ Every registered plugin gets a shell-owned selection key:
 
 ```yaml
 plugins:
-   http:
-      enabled: true
+   net:
+     http:
+        enabled: true
    metrics:
       enabled: false
 ```
@@ -482,8 +490,9 @@ service:
    workers: 4
 
 plugins:
-   http:
-      enabled: true
+   net:
+     http:
+        enabled: true
 ```
 
 The merge order is fixed:

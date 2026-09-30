@@ -218,12 +218,13 @@ bool savanna_finality_trust_store::replay_contains(const savanna::finality_repla
 }
 
 savanna_finality_trust_store::trusted_entry
-savanna_finality_trust_store::make_configured_entry(savanna::finality_trust trust) {
+savanna_finality_trust_store::make_configured_entry(savanna::finality_trust trust) const {
+   const auto anchor = savanna::trust_anchor(trust, limits_);
    auto checkpoint_bytes = std::optional<protocol::bytes>{};
    if (const auto* checkpoint = std::get_if<savanna::finality_checkpoint_bootstrap>(&trust)) {
-      checkpoint_bytes = forge::raw::pack(checkpoint->value);
+      checkpoint_bytes =
+          forge::raw::pack(savanna::make_checkpoint(checkpoint->value.state, checkpoint->value.validation));
    }
-   const auto anchor = savanna::trust_anchor(trust);
    return {
        .position =
            {
@@ -237,20 +238,8 @@ savanna_finality_trust_store::make_configured_entry(savanna::finality_trust trus
 }
 
 savanna_finality_trust_store::trusted_entry
-savanna_finality_trust_store::make_checkpoint_entry(savanna::finality_checkpoint_bootstrap checkpoint) {
-   auto checkpoint_bytes = forge::raw::pack(checkpoint.value);
-   auto trust = savanna::finality_trust{std::move(checkpoint)};
-   const auto anchor = savanna::trust_anchor(trust);
-   return {
-       .position =
-           {
-               .chain = anchor.chain,
-               .block = anchor.block,
-               .finalized_block_num = operational_block_num(trust),
-           },
-       .checkpoint_bytes = std::move(checkpoint_bytes),
-       .trust = std::make_shared<const savanna::finality_trust>(std::move(trust)),
-   };
+savanna_finality_trust_store::make_checkpoint_entry(savanna::finality_checkpoint_bootstrap checkpoint) const {
+   return make_configured_entry(savanna::finality_trust{std::move(checkpoint)});
 }
 
 std::vector<protocol::state_anchor>
@@ -295,7 +284,9 @@ void savanna_finality_trust_store::add_configured_root(savanna::finality_trust t
 
    for (const auto& configured : configured_roots_) {
       if (configured.position.block == entry.position.block) {
-         if (forge::raw::pack(*configured.trust) == forge::raw::pack(*entry.trust)) {
+         if ((configured.checkpoint_bytes && entry.checkpoint_bytes &&
+              *configured.checkpoint_bytes == *entry.checkpoint_bytes) ||
+             forge::raw::pack(*configured.trust) == forge::raw::pack(*entry.trust)) {
             return;
          }
          FORGE_THROW_EXCEPTION(exceptions::invalid_request,

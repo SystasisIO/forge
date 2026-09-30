@@ -26,6 +26,7 @@ target_link_libraries(
       forge_app
       forge_asio
       forge_chain_api
+      forge_chain_protocol
       forge_chain_savanna
       forge_chain_transaction
       forge_config_core

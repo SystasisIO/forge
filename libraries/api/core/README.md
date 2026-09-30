@@ -273,7 +273,7 @@ auto plan = forge::api::core::binding()
    .build();
 ```
 
-HTTP-specific request middleware stays in `forge_net_http` or the `forge::plugins::http::server`
+HTTP-specific request middleware stays in `forge_net_http` or the `forge::plugins::net::http::server`
 plugin facade; API interceptors do not parse HTTP headers, routes or upgrade
 state.
 

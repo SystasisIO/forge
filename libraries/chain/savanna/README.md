@@ -129,11 +129,38 @@ advancing the state whenever finality moves. Looking up a pruned root throws
 `advance_finality_trust()` derives a checkpoint bootstrap solely from a
 caller-trusted genesis or checkpoint bootstrap, a decoded witness (or its Raw
 proof) and a finalized `state_anchor`. It replays headers, producer signatures,
-QC, policy transitions and validation state before it advances validation to
+QC, policy transitions and validation state before it creates a checkpoint for
 the finalized target. The returned checkpoint is local replay output; witness
 bytes never supply a checkpoint as trust material. Use
 `advance_finality_trust_with_replay()` when the verified replay anchors are
 also needed for an ancestry-aware trust promotion.
+
+The anchor remains the finalized block `N`. `validation_start(header_state)`
+selects the earliest root needed by its next admissible QC claim: latest QC `Q`,
+or `min(N, Q + 1)` when `Q` is genesis (the genesis claim uses an empty action root).
+`make_checkpoint()` retains exactly this range through `N`; trimming to `[N,N]`
+is not generally safe. QC claims cannot regress, so older roots are unnecessary.
+The same rule applies separately to every retained descendant's own state.
+
+`validate(checkpoint)` checks identity, policies and internally consistent Merkle
+history covering that range; a longer complete prefix is accepted.
+`equivalent()` compares the entire header state and canonical normalized history,
+not only the height, block ID or final root. Neither function establishes trust:
+the caller must have independently authenticated both inputs on the same chain.
+`trust_anchor()` and witness replay bound each checkpoint before validation/copy:
+`max_blocks` limits its retained roots and `max_bytes` its canonical Raw bytes,
+as well as separately limiting the witness. Exceeding a cap rejects the operation;
+required roots are never discarded to fit. Applications retaining a smaller
+window must apply their own explicit limit before persistence/recovery.
+
+The checkpoint field layout and validation Raw version remain unchanged, but
+old readers requiring `[N,N]` are semantically incompatible with wider ranges.
+Upgrade readers and producers together; do not share new checkpoints with old
+readers. An old checkpoint is accepted only if its retained history is already
+complete. Missing history fails closed as `untrusted_finality_bootstrap` (Chain
+API `trust_required`). Recovery requires an earlier independently trusted seed
+and verified canonical history. There is no automatic reset to genesis, inferred
+root, automatic migration or change to consensus/block/signature formats.
 
 `finality_replay::producer_opportunities` records every expected timestamp
 slot between replayed headers. Each value is selected from the replayed proposer

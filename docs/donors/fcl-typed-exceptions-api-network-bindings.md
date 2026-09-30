@@ -78,7 +78,7 @@ that can work both in process and over transports.
 - `fcl.p2p.api` owns protocol artifact creation, peer requirement checks, codec,
   per-peer max inflight calls and continuous API sessions. It does not own peer
   identity, relay, hole punching, peer store lifecycle or node bootstrap.
-- `fcl.plugins.p2p.node` owns one P2P node lifecycle for an application and
+- `fcl.plugins.net.p2p.node` owns one P2P node lifecycle for an application and
   publishes a narrow contribution API. It does not replace `fcl.p2p.api`; it
   consumes built bindings/routes and mounts them centrally before startup.
 

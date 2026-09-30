@@ -173,7 +173,7 @@ struct replay_seed {
    block_num finalized = 0;
 };
 
-replay_seed make_seed(const finality_genesis_bootstrap& bootstrap) {
+replay_seed make_seed(const finality_genesis_bootstrap& bootstrap, finality_witness_limits) {
    if (bootstrap.commitment.version != state_commitment_version) {
       FORGE_THROW_EXCEPTION(exceptions::untrusted_finality_bootstrap,
                             "Savanna trusted genesis uses an unsupported state commitment version");
@@ -187,38 +187,36 @@ replay_seed make_seed(const finality_genesis_bootstrap& bootstrap) {
    };
 }
 
-void validate_policy_state(const finalizer_policy_state& value) {
-   static_cast<void>(validate(value));
+void validate_checkpoint_limits(const checkpoint& value, finality_witness_limits limits) {
+   if (value.validation.retained_size() > limits.max_blocks) {
+      FORGE_THROW_EXCEPTION(exceptions::finality_witness_limit_exceeded,
+                            "Savanna checkpoint validation history exceeds the configured block limit",
+                            forge::exceptions::ctx("roots", value.validation.retained_size()),
+                            forge::exceptions::ctx("limit", limits.max_blocks));
+   }
+   auto stream = forge::datastream<std::size_t>{};
+   forge::raw::pack(stream, value);
+   if (stream.tellp() > limits.max_bytes) {
+      FORGE_THROW_EXCEPTION(
+          exceptions::finality_witness_limit_exceeded, "Savanna checkpoint exceeds the configured byte limit",
+          forge::exceptions::ctx("bytes", stream.tellp()), forge::exceptions::ctx("limit", limits.max_bytes));
+   }
 }
 
-replay_seed make_seed(const finality_checkpoint_bootstrap& bootstrap) {
+replay_seed make_seed(const finality_checkpoint_bootstrap& bootstrap, finality_witness_limits limits) {
    const auto& value = bootstrap.value;
-   if (bootstrap.chain.empty() || value.finalized.empty() || value.state.id != value.finalized.id ||
-       value.state.num() != value.finalized.num || protocol::calculate_block_id(value.state.header) != value.state.id ||
-       value.state.block != value.finalized || value.state.make_block_ref() != value.finalized) {
+   if (bootstrap.chain.empty()) {
+      FORGE_THROW_EXCEPTION(exceptions::untrusted_finality_bootstrap, "Savanna trusted checkpoint chain id is empty");
+   }
+   // Bound the supplied history before replaying, copying or normalizing it.
+   validate_checkpoint_limits(value, limits);
+   try {
+      forge::chain::savanna::validate(value);
+   } catch (const forge::exceptions::base& error) {
       FORGE_THROW_EXCEPTION(exceptions::untrusted_finality_bootstrap,
-                            "Savanna trusted checkpoint identity is inconsistent");
+                            "Savanna trusted checkpoint is incomplete or inconsistent; recovery is required",
+                            forge::exceptions::ctx("reason", error.message()));
    }
-
-   forge::chain::savanna::validate(value.state.finality);
-   forge::chain::savanna::validate(value.validation);
-   if (value.validation.first_block_num() != value.finalized.num ||
-       value.validation.current_block_num() != value.finalized.num) {
-      FORGE_THROW_EXCEPTION(exceptions::untrusted_finality_bootstrap,
-                            "Savanna trusted checkpoint validation range is inconsistent");
-   }
-   validate_policy_state(value.state.active_finalizers);
-   for (const auto& [block, policy] : value.state.proposed_finalizers) {
-      static_cast<void>(block);
-      validate_policy_state(policy);
-   }
-   if (value.state.pending_finalizers) {
-      validate_policy_state(value.state.pending_finalizers->second);
-   }
-   if (value.state.latest_qc_finalizers) {
-      validate_policy_state(*value.state.latest_qc_finalizers);
-   }
-   static_cast<void>(decode_header_extensions(value.state.header.header_extensions));
 
    return {
        .chain = bootstrap.chain,
@@ -236,8 +234,8 @@ replay_seed make_seed(const finality_checkpoint_bootstrap& bootstrap) {
    };
 }
 
-replay_seed make_seed(const finality_trust& trust) {
-   return std::visit([](const auto& value) { return make_seed(value); }, trust);
+replay_seed make_seed(const finality_trust& trust, finality_witness_limits limits) {
+   return std::visit([&](const auto& value) { return make_seed(value, limits); }, trust);
 }
 
 const protocol::state_anchor& require_anchor(const finality_replay& replay, const protocol::state_anchor& expected,
@@ -282,7 +280,7 @@ replay_result replay(const finality_trust& trust, const finality_witness& witnes
    validate_shape(witness, limits);
    static_cast<void>(measure_payload(witness, limits));
 
-   auto seed = make_seed(trust);
+   auto seed = make_seed(trust, limits);
    if (seed.chain != witness.chain) {
       FORGE_THROW_EXCEPTION(exceptions::finality_witness_wrong_chain,
                             "Savanna finality witness belongs to another chain");
@@ -422,16 +420,13 @@ finality_trust_advance advance_finality_trust_with_replay(const finality_trust& 
    }
 
    auto candidate = std::move(*result.expected);
+   auto checkpoint = make_checkpoint(std::move(candidate.state), std::move(candidate.validation));
+   validate_checkpoint_limits(checkpoint, limits);
    return {
        .checkpoint =
            {
                .chain = finalized.chain,
-               .value =
-                   {
-                       .finalized = candidate.state.make_block_ref(),
-                       .state = std::move(candidate.state),
-                       .validation = advance_finalized(std::move(candidate.validation), finalized.block_num),
-                   },
+               .value = std::move(checkpoint),
            },
        .replay = std::move(result.replay),
    };
@@ -449,8 +444,9 @@ finality_checkpoint_bootstrap advance_finality_trust(const finality_trust& trust
    return advance_finality_trust(trust, decode_finality_witness(proof, limits), finalized, limits);
 }
 
-finality_trust_anchor trust_anchor(const finality_trust& trust) {
-   auto seed = make_seed(trust);
+finality_trust_anchor trust_anchor(const finality_trust& trust, finality_witness_limits limits) {
+   validate_limits(limits);
+   auto seed = make_seed(trust, limits);
    return {
        .chain = std::move(seed.chain),
        .block = std::move(seed.root.id),

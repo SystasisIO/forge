@@ -14,6 +14,7 @@ add_library(
    extensions.cpp
    genesis.cpp
    header_state.cpp
+   checkpoint.cpp
    admission.cpp
    finality_witness.cpp
 )

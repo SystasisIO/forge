@@ -37,8 +37,8 @@ application plugins need to contribute behavior to it.
    their owned resources and expose the composed runtime behavior.
 
 ```cpp
-registry.register_plugin(forge::plugins::http::server::descriptor());
-registry.register_plugin(forge::plugins::p2p::node::descriptor());
+registry.register_plugin(forge::plugins::net::http::server::descriptor());
+registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
 registry.register_plugin(forge::plugins::chain::signer::descriptor());
 registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
 registry.register_plugin(forge::plugins::log::otlp::descriptor());
@@ -46,8 +46,8 @@ registry.register_plugin(forge::plugins::db::store::descriptor());
 ```
 
 ```cpp
-auto http = context.apis().get<forge::plugins::http::server::api>(
-   {.id = {"forge.plugins.http.server"}, .major = 2});
+auto http = context.apis().get<forge::plugins::net::http::server::api>(
+   {.id = {"forge.plugins.net.http.server"}, .major = 2});
 
 co_await http->publish<catalog_api>();
 ```
@@ -55,10 +55,10 @@ co_await http->publish<catalog_api>();
 Use focused plugin components in small consumers:
 
 ```cmake
-find_package(Forge REQUIRED COMPONENTS plugins_http_server plugins_chain_signer)
+find_package(Forge REQUIRED COMPONENTS plugins_net_http_server plugins_chain_signer)
 
 target_link_libraries(app PRIVATE
-   Forge::forge_plugins_http_server
+   Forge::forge_plugins_net_http_server
    Forge::forge_plugins_chain_signer)
 ```
 
@@ -66,11 +66,11 @@ target_link_libraries(app PRIVATE
 
 | Plugin | Target | Config section | Purpose |
 | --- | --- | --- | --- |
-| [`forge::plugins::http::server`](http/server/README.md) | `forge_plugins_http_server` | `plugins.http.server` | Runs one HTTP server, composes TLS from scoped Secrets material and accepts typed HTTP API and middleware contributions. |
-| [`forge::plugins::p2p::node`](p2p/node/README.md) | `forge_plugins_p2p_node` | `plugins.p2p.node` | Runs one P2P node and lets plugins publish protocols and typed remote APIs. |
-| [`forge::plugins::p2p::resolver`](p2p/resolver/README.md) | `forge_plugins_p2p_resolver` | `plugins.p2p.resolver` | Publishes and resolves peer API metadata over the P2P node. |
-| [`forge::plugins::p2p::diagnostics`](p2p/diagnostics/README.md) | `forge_plugins_p2p_diagnostics` | `plugins.p2p.diagnostics` | Exposes read-only P2P network/resource/pubsub diagnostics. |
-| [`forge::plugins::p2p::pubsub`](p2p/pubsub/README.md) | `forge_plugins_p2p_pubsub` | `plugins.p2p.pubsub` | Exposes topic publish/subscribe over the shared P2P node. |
+| [`forge::plugins::net::http::server`](http/server/README.md) | `forge_plugins_net_http_server` | `plugins.net.http.server` | Runs one HTTP server, composes TLS from scoped Secrets material and accepts typed HTTP API and middleware contributions. |
+| [`forge::plugins::net::p2p::node`](p2p/node/README.md) | `forge_plugins_net_p2p_node` | `plugins.net.p2p.node` | Runs one P2P node and lets plugins publish protocols and typed remote APIs. |
+| [`forge::plugins::net::p2p::resolver`](p2p/resolver/README.md) | `forge_plugins_net_p2p_resolver` | `plugins.net.p2p.resolver` | Publishes and resolves peer API metadata over the P2P node. |
+| [`forge::plugins::net::p2p::diagnostics`](p2p/diagnostics/README.md) | `forge_plugins_net_p2p_diagnostics` | `plugins.net.p2p.diagnostics` | Exposes read-only P2P network/resource/pubsub diagnostics. |
+| [`forge::plugins::net::p2p::pubsub`](p2p/pubsub/README.md) | `forge_plugins_net_p2p_pubsub` | `plugins.net.p2p.pubsub` | Exposes topic publish/subscribe over the shared P2P node. |
 | [`forge::plugins::chain::signer`](chain/signer/README.md) | `forge_plugins_chain_signer` | `plugins.chain.signer` | Composes named transaction and finality providers behind typed Chain signer APIs and exact caller/action policy. |
 | [`forge::plugins::crypto::secrets`](crypto/secrets/README.md) | `forge_plugins_crypto_secrets` | `plugins.crypto.secrets` | Provides bounded secret retrieval, derivation and symmetric encryption operations. |
 | [`forge::plugins::log::otlp`](log/otlp/README.md) | `forge_plugins_log_otlp` | `plugins.log.otlp` | Exports configured FORGE logger routes to OTLP/HTTP JSON. |
@@ -82,8 +82,8 @@ propagate the leaf plugin usage requirements. Prefer focused targets/components
 in small consumers:
 
 ```cmake
-find_package(Forge REQUIRED COMPONENTS plugins_http_server)
-target_link_libraries(app PRIVATE Forge::forge_plugins_http_server)
+find_package(Forge REQUIRED COMPONENTS plugins_net_http_server)
+target_link_libraries(app PRIVATE Forge::forge_plugins_net_http_server)
 ```
 
 ## Public Module Shape
@@ -98,7 +98,7 @@ Each official plugin follows the same public module layout:
 
 Plugins that need an extra public slice, such as HTTP middleware, keep that
 slice under the same leaf namespace. Grouping namespaces like
-`forge::plugins::p2p`, `forge::plugins::http`, `forge::plugins::crypto` and
+`forge::plugins::net::p2p`, `forge::plugins::net::http`, `forge::plugins::crypto` and
 `forge::plugins::db` are empty.
 
 ## Boundaries
@@ -137,10 +137,10 @@ transport mutation APIs. Their public APIs are typed contribution surfaces:
 ## Tests
 
 - `test_forge_plugins`
-- Focused package tests such as `test_forge_package_plugins_http_server`,
+- Focused package tests such as `test_forge_package_plugins_net_http_server`,
   `test_forge_package_plugins_chain_signer`,
   `test_forge_package_plugins_crypto_signer_removed`,
   `test_forge_package_plugins_crypto_secrets`,
   `test_forge_package_plugins_log_otlp`,
-  `test_forge_package_plugins_p2p_node` and
+  `test_forge_package_plugins_net_p2p_node` and
   `test_forge_package_plugins_db_store`.

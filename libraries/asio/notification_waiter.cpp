@@ -40,12 +40,15 @@ notification_waiter::wait_until_impl(std::chrono::steady_clock::time_point deadl
                                      cancellation_mode mode) {
    auto error = boost::system::error_code{};
    auto initiate = [self = shared_from_this(), deadline](auto handler) mutable {
-      auto lock = std::scoped_lock{self->mutex_};
-      const auto wake_requested = self->wake_requested_;
-      self->timer_.expires_at(wake_requested ? boost::asio::steady_timer::time_point::max() : deadline);
-      self->timer_.async_wait(std::move(handler));
+      // Completion on another worker can destroy the initiating closure before
+      // this call returns. Keep ownership on this stack through mutex unlock.
+      const auto owner = std::move(self);
+      auto lock = std::scoped_lock{owner->mutex_};
+      const auto wake_requested = owner->wake_requested_;
+      owner->timer_.expires_at(wake_requested ? boost::asio::steady_timer::time_point::max() : deadline);
+      owner->timer_.async_wait(std::move(handler));
       if (wake_requested) {
-         static_cast<void>(self->timer_.cancel());
+         static_cast<void>(owner->timer_.cancel());
       }
    };
    auto wait_token = boost::asio::redirect_error(boost::asio::use_awaitable, error);

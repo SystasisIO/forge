@@ -1052,7 +1052,7 @@ class shell_official_plugin_selection_application final : public forge::app::app
 
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(descriptor("forge.plugins.p2p.node", *log_));
+      registry.register_plugin(descriptor("forge.plugins.net.p2p.node", *log_));
    }
 
  private:
@@ -1535,6 +1535,36 @@ BOOST_AUTO_TEST_CASE(application_shell_compute_is_opt_in) {
    BOOST_CHECK_THROW(static_cast<void>(app.compute()), forge::asio::exceptions::invalid_state);
 }
 
+BOOST_AUTO_TEST_CASE(application_shell_configures_on_its_single_worker_without_nested_blocking) {
+   bool configured = false;
+   auto builder = forge::app::application_builder{};
+   builder.runtime({.worker_threads = 1}).configure([&](forge::app::configure_context& context) {
+      const auto* value = context.document().try_get("test.marker");
+      BOOST_REQUIRE(value);
+      BOOST_CHECK_EQUAL(std::get<std::string>(value->storage), "original");
+      configured = true;
+   });
+   auto app = std::move(builder).build();
+   forge::config::core::document document;
+   document.set("test.marker", "original");
+   auto configuration = app->async_configure(document);
+   document.set("test.marker", "changed");
+   auto execute = [&]() -> boost::asio::awaitable<void> {
+      co_await std::move(configuration);
+      co_await app->startup();
+      bool rejected = false;
+      try {
+         co_await app->async_configure({});
+      } catch (const std::logic_error&) {
+         rejected = true;
+      }
+      BOOST_CHECK(rejected);
+      co_await app->shutdown();
+   };
+   forge::asio::blocking::run(app->runtime(), execute());
+   BOOST_CHECK(configured);
+}
+
 BOOST_AUTO_TEST_CASE(application_shell_keeps_compute_available_through_plugin_shutdown) {
    auto log = lifecycle_log{};
    auto app = shell_compute_cleanup_application{log};
@@ -1749,13 +1779,13 @@ BOOST_AUTO_TEST_CASE(application_shell_uses_nested_official_plugin_selection_pat
       if (component.section == "plugins") {
          found_plugins_section = true;
          BOOST_REQUIRE_EQUAL(component.fields.size(), 1U);
-         BOOST_TEST(component.fields[0].name == "p2p.node.enabled");
+         BOOST_TEST(component.fields[0].name == "net.p2p.node.enabled");
       }
    }
    BOOST_TEST(found_plugins_section);
 
    auto document = forge::config::core::document{};
-   document.set("plugins.p2p.node.enabled", false);
+   document.set("plugins.net.p2p.node.enabled", false);
    app.configure(document);
    forge::asio::blocking::run(app.runtime(), app.startup());
    forge::asio::blocking::run(app.runtime(), app.shutdown());

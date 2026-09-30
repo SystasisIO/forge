@@ -76,10 +76,10 @@ import forge.plugins.db.store.api;
 import forge.plugins.db.store.exceptions;
 import forge.plugins.db.store.plugin;
 import forge.plugins.db.store.types;
-import forge.plugins.p2p.node.api;
-import forge.plugins.p2p.node.exceptions;
-import forge.plugins.p2p.node.plugin;
-import forge.plugins.p2p.node.types;
+import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.plugin;
+import forge.plugins.net.p2p.node.types;
 import forge.raw.raw;
 
 #if FORGE_HAS_ROCKSDB
@@ -94,7 +94,7 @@ import forge.db.mdbx.driver;
 namespace {
 
 namespace crypto_secrets = forge::plugins::crypto::secrets;
-namespace p2p_node = forge::plugins::p2p::node;
+namespace p2p_node = forge::plugins::net::p2p::node;
 namespace store_plugin = forge::plugins::db::store;
 
 struct by_id;
@@ -519,18 +519,18 @@ p2p_production_config(const forge::tests::p2p::identity_fixture& identity,
 
    auto document = forge::config::core::document{};
    document.set("plugins.crypto.secrets.secrets", std::move(secrets));
-   document.set("plugins.p2p.node.listen", forge::config::core::value::array_type{
+   document.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
                                                forge::config::core::value{"/ip4/127.0.0.1/udp/0/quic-v1"},
                                            });
-   document.set("plugins.p2p.node.peer-store.store", std::move(peer_store));
-   document.set("plugins.p2p.node.identity.certificate-secret", std::string{p2p_certificate_secret_id});
-   document.set("plugins.p2p.node.identity.private-key-secret", std::string{p2p_private_key_secret_id});
+   document.set("plugins.net.p2p.node.peer-store.store", std::move(peer_store));
+   document.set("plugins.net.p2p.node.identity.certificate-secret", std::string{p2p_certificate_secret_id});
+   document.set("plugins.net.p2p.node.identity.private-key-secret", std::string{p2p_private_key_secret_id});
    return document;
 }
 
 void set_p2p_bootstrap(forge::config::core::document& document, const std::optional<std::string>& bootstrap) {
    if (bootstrap) {
-      document.set("plugins.p2p.node.bootstrap", forge::config::core::value::array_type{
+      document.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{
                                                      forge::config::core::value{*bootstrap},
                                                  });
    }
@@ -772,17 +772,17 @@ template <typename AppFactory> void check_p2p_private_peer_state_reopens(AppFact
 
 #if FORGE_HAS_MDBX || FORGE_HAS_ROCKSDB
 void configure_static_topology(forge::config::core::document& document) {
-   document.set("plugins.p2p.node.topology.mode", std::string{"static-only"});
-   document.set("plugins.p2p.node.topology.peers.low", std::uint64_t{3});
-   document.set("plugins.p2p.node.topology.peers.target", std::uint64_t{5});
-   document.set("plugins.p2p.node.topology.peers.high", std::uint64_t{7});
-   document.set("plugins.p2p.node.topology.refresh-interval-ms", std::uint64_t{321});
-   document.set("plugins.p2p.node.topology.query-timeout-ms", std::uint64_t{123});
-   document.set("plugins.p2p.node.topology.max-candidates", std::uint64_t{11});
-   document.set("plugins.p2p.node.topology.max-parallel-queries", std::uint64_t{2});
-   document.set("plugins.p2p.node.topology.max-parallel-dials", std::uint64_t{1});
-   document.set("plugins.p2p.node.peer-exchange.enabled", true);
-   document.set("plugins.p2p.node.peer-exchange.max-peers", std::uint64_t{2});
+   document.set("plugins.net.p2p.node.topology.mode", std::string{"static-only"});
+   document.set("plugins.net.p2p.node.topology.peers.low", std::uint64_t{3});
+   document.set("plugins.net.p2p.node.topology.peers.target", std::uint64_t{5});
+   document.set("plugins.net.p2p.node.topology.peers.high", std::uint64_t{7});
+   document.set("plugins.net.p2p.node.topology.refresh-interval-ms", std::uint64_t{321});
+   document.set("plugins.net.p2p.node.topology.query-timeout-ms", std::uint64_t{123});
+   document.set("plugins.net.p2p.node.topology.max-candidates", std::uint64_t{11});
+   document.set("plugins.net.p2p.node.topology.max-parallel-queries", std::uint64_t{2});
+   document.set("plugins.net.p2p.node.topology.max-parallel-dials", std::uint64_t{1});
+   document.set("plugins.net.p2p.node.peer-exchange.enabled", true);
+   document.set("plugins.net.p2p.node.peer-exchange.max-peers", std::uint64_t{2});
 }
 
 void check_static_topology_snapshot(forge::app::application_shell& app) {
@@ -865,7 +865,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_descriptor_api_and_config_are_nested) {
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_and_api_major) {
    const auto descriptor = p2p_node::descriptor();
-   BOOST_TEST(descriptor.id.value == "forge.plugins.p2p.node");
+   BOOST_TEST(descriptor.id.value == "forge.plugins.net.p2p.node");
    BOOST_REQUIRE_EQUAL(descriptor.dependencies.size(), 2U);
    BOOST_TEST(descriptor.dependencies[0].value == "forge.plugins.db.store");
    BOOST_TEST(descriptor.dependencies[1].value == "forge.plugins.crypto.secrets");
@@ -875,11 +875,11 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_an
    BOOST_TEST(plugin->version() == "6.0.0");
 
    const auto api_descriptor = p2p_node::api::describe();
-   BOOST_TEST(api_descriptor.id.value == "forge.plugins.p2p.node");
+   BOOST_TEST(api_descriptor.id.value == "forge.plugins.net.p2p.node");
    BOOST_TEST(api_descriptor.version.major == 2U);
 
    const auto diagnostics_source_descriptor = p2p_node::diagnostics_source::describe();
-   BOOST_TEST(diagnostics_source_descriptor.id.value == "forge.plugins.p2p.node.diagnostics_source");
+   BOOST_TEST(diagnostics_source_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics_source");
    BOOST_TEST(diagnostics_source_descriptor.version.major == 2U);
 }
 

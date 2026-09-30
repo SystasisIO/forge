@@ -64,35 +64,35 @@ REQUIRED_OWNERS = {
     },
     "plugin.p2p.node": {
         "kind": "plugin",
-        "path": "plugins/p2p/node",
-        "target": "forge_plugins_p2p_node",
-        "component": "plugins_p2p_node",
-        "module_prefix": "forge.plugins.p2p.node",
-        "module_root": "plugins/p2p/node",
+        "path": "plugins/net/p2p/node",
+        "target": "forge_plugins_net_p2p_node",
+        "component": "plugins_net_p2p_node",
+        "module_prefix": "forge.plugins.net.p2p.node",
+        "module_root": "plugins/net/p2p/node",
     },
     "plugin.p2p.resolver": {
         "kind": "plugin",
-        "path": "plugins/p2p/resolver",
-        "target": "forge_plugins_p2p_resolver",
-        "component": "plugins_p2p_resolver",
-        "module_prefix": "forge.plugins.p2p.resolver",
-        "module_root": "plugins/p2p/resolver",
+        "path": "plugins/net/p2p/resolver",
+        "target": "forge_plugins_net_p2p_resolver",
+        "component": "plugins_net_p2p_resolver",
+        "module_prefix": "forge.plugins.net.p2p.resolver",
+        "module_root": "plugins/net/p2p/resolver",
     },
     "plugin.p2p.pubsub": {
         "kind": "plugin",
-        "path": "plugins/p2p/pubsub",
-        "target": "forge_plugins_p2p_pubsub",
-        "component": "plugins_p2p_pubsub",
-        "module_prefix": "forge.plugins.p2p.pubsub",
-        "module_root": "plugins/p2p/pubsub",
+        "path": "plugins/net/p2p/pubsub",
+        "target": "forge_plugins_net_p2p_pubsub",
+        "component": "plugins_net_p2p_pubsub",
+        "module_prefix": "forge.plugins.net.p2p.pubsub",
+        "module_root": "plugins/net/p2p/pubsub",
     },
     "plugin.p2p.diagnostics": {
         "kind": "plugin",
-        "path": "plugins/p2p/diagnostics",
-        "target": "forge_plugins_p2p_diagnostics",
-        "component": "plugins_p2p_diagnostics",
-        "module_prefix": "forge.plugins.p2p.diagnostics",
-        "module_root": "plugins/p2p/diagnostics",
+        "path": "plugins/net/p2p/diagnostics",
+        "target": "forge_plugins_net_p2p_diagnostics",
+        "component": "plugins_net_p2p_diagnostics",
+        "module_prefix": "forge.plugins.net.p2p.diagnostics",
+        "module_root": "plugins/net/p2p/diagnostics",
     },
     "application": {"kind": "external"},
     "none": {"kind": "none"},
@@ -1926,8 +1926,8 @@ def main() -> int:
     )
     p2p_sources = list((root / "libraries/net/p2p").glob("*.cpp"))
     p2p_sources.extend((root / "libraries/net/p2p/include").glob("**/*.cppm"))
-    p2p_sources.extend((root / "plugins/p2p").glob("**/*.cpp"))
-    p2p_sources.extend((root / "plugins/p2p").glob("**/*.cppm"))
+    p2p_sources.extend((root / "plugins/net/p2p").glob("**/*.cpp"))
+    p2p_sources.extend((root / "plugins/net/p2p").glob("**/*.cppm"))
     protocol_literals = {
         value
         for source in p2p_sources
@@ -1948,7 +1948,7 @@ def main() -> int:
     }
 
     plugin_sources = "\n".join(
-        source.read_text() for source in (root / "plugins/p2p/node").glob("*.cpp")
+        source.read_text() for source in (root / "plugins/net/p2p/node").glob("*.cpp")
     )
     if "start_maintenance" in plugin_sources or "async_refresh_discovery" in plugin_sources:
         errors.append("plugin.p2p.node: network maintenance must be owned by forge_net_p2p")

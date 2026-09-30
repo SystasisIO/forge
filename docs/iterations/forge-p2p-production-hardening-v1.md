@@ -15,7 +15,7 @@ handler, low-level `forge_net_p2p` method or interoperability test exists. A
 production claim additionally requires:
 
 - configuration through both `forge_net_p2p` options and the official
-  `plugins.p2p.node` adapter;
+  `plugins.net.p2p.node` adapter;
 - autonomous activation and deterministic shutdown through the node lifecycle,
   with the plugin delegating to that lifecycle;
 - bounded scheduling, cancellation, retry and backoff;
@@ -129,7 +129,7 @@ network mechanics and their maintenance:
 - staged connection gating and scoped host resource accounting;
 - connection watermarks, scoring, liveness sampling and GossipSub heartbeat.
 
-`plugins.p2p.node` is an application adapter. It decodes configuration, prepares
+`plugins.net.p2p.node` is an application adapter. It decodes configuration, prepares
 or injects durable dependencies, constructs the node, delegates start/stop and
 exports narrow local APIs. It must not implement parallel protocol loops,
 inspect diagnostics as control state or become required for a programmatic
@@ -176,7 +176,7 @@ roadmap.
 | GossipSub peer scoring | `partial` | Invalid and duplicate counters change scores, delivered score input is unused, and mesh admission/pruning selects by container order instead of score. | Implement donor-consistent thresholds, decay, mesh selection, opportunistic grafting and score retention. |
 | Discovery refresh facade | `manual-only` | `async_refresh_discovery()` combines one-shot DHT/Rendezvous work, but no node lifecycle invokes it. | Replace one-shot orchestration with managed topology services while retaining explicit diagnostics/admin triggers where useful. |
 | Bootstrap maintenance | `partial`, wrong owner | Official plugin performs sequential startup and its own retry loop. | Move bounded bootstrap lifecycle into node. |
-| Official `plugins.p2p.node` | `partial` | Does not configure DHT/Rendezvous/AutoNAT roles or persistent storage and duplicates bootstrap maintenance. | Reduce to configuration/dependency adapter over complete node lifecycle. |
+| Official `plugins.net.p2p.node` | `partial` | Does not configure DHT/Rendezvous/AutoNAT roles or persistent storage and duplicates bootstrap maintenance. | Reduce to configuration/dependency adapter over complete node lifecycle. |
 | Diagnostics | `partial` | Snapshots exist, but control loops use projections and missing protocol lifecycle leaves health ambiguous. | Keep diagnostics read-only and expose effective mode, state, limits and degradation causes. |
 
 ### 4.1 Donor-First Completeness And Production Profiles
@@ -363,7 +363,7 @@ registrations, are durably completed before the response. High-frequency
 observational updates may be coalesced only through a node-owned bounded queue
 with explicit backpressure, failure diagnostics and deterministic shutdown.
 
-For the official application path, `plugins.p2p.node` references a dedicated
+For the official application path, `plugins.net.p2p.node` references a dedicated
 named Object layer supplied through `plugins.db.store`, registers the private
 models during `after_initialize` and injects the prepared persistence adapter
 before node startup. The node opens no listener until hydration succeeds.
@@ -694,14 +694,14 @@ Rendezvous, Relay, DCUtR, GossipSub, scoring, resource-manager mechanics and the
 autonomous maintenance loops that keep those mechanisms operational. Its node
 lifecycle must be complete for both direct library consumers and plugins.
 
-`plugins.p2p.node` owns configuration mapping, dependency preparation, the
+`plugins.net.p2p.node` owns configuration mapping, dependency preparation, the
 application-owned shared-node lifetime and narrow local APIs for other official
 plugins. It calls the node lifecycle but does not reimplement bootstrap,
 discovery, reachability, relay, liveness or gossip maintenance. It must not
 expose an unrestricted raw-node escape hatch.
 
 Product plugins own authorization, network/realm membership, application
-protocols and business routing. `plugins.p2p.resolver` continues to open a typed
+protocols and business routing. `plugins.net.p2p.resolver` continues to open a typed
 API on an already known peer; it does not become peer or content discovery.
 
 ## 7. Donor And Forge Reuse Discipline
@@ -936,7 +936,7 @@ complete only after its exact-head review and evidence gates pass.
   latency does not grow as the sum of every endpoint timeout.
 - Simultaneous bootstrap loss does not produce synchronized retry storms.
 - A programmatically constructed node performs the same configured bootstrap,
-  discovery, reachability and relay maintenance without `plugins.p2p.node`.
+  discovery, reachability and relay maintenance without `plugins.net.p2p.node`.
 - The official plugin contains no independent protocol maintenance loops and
   delegates lifecycle to that node behavior.
 - Three nodes given only bootstrap entry points discover and connect to each
@@ -1029,7 +1029,7 @@ do not replace it.
 ### Production gate: after Stage 8
 
 - P2P stages through Stage 8 are complete for the required deployment profiles;
-- `forge_net_p2p` and `plugins.p2p.node` satisfy every production acceptance
+- `forge_net_p2p` and `plugins.net.p2p.node` satisfy every production acceptance
   gate above;
 - provider publication has an owned registration lifetime and automatic
   renewal/withdrawal;
@@ -1066,9 +1066,9 @@ phase lands:
   contain the isolated generic stream/dial counters;
 - [`hole_punch.cppm`](../../libraries/net/p2p/include/forge/net/p2p/hole_punch.cppm)
   contains the orphan public attempt state;
-- [`plugin.cpp`](../../plugins/p2p/node/plugin.cpp) contains plugin-owned
+- [`plugin.cpp`](../../plugins/net/p2p/node/plugin.cpp) contains plugin-owned
   bootstrap startup and maintenance activation;
-- [`config.cpp`](../../plugins/p2p/node/config.cpp) shows the currently mapped
+- [`config.cpp`](../../plugins/net/p2p/node/config.cpp) shows the currently mapped
   node capabilities and the missing production discovery-role configuration;
 - [`p2p_tests.cpp`](../../tests/quic_p2p/p2p_tests.cpp) contains both valuable
   protocol fixtures and isolated tests that must be supplemented by lifecycle
@@ -1080,7 +1080,7 @@ phase lands:
 
 - product authorization or chain/network membership;
 - content-provider key design, seeding policy or transfer scheduling;
-- replacing Forge API or `plugins.p2p.resolver`;
+- replacing Forge API or `plugins.net.p2p.resolver`;
 - a parallel peer-state database or model outside the canonical `peer_store`
   boundary;
 - DB Revision, BlobDB or product content storage inside the peer store;

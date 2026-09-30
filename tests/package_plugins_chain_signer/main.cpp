@@ -2,18 +2,23 @@
 
 #include <concepts>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 import forge.api.core.types;
 import forge.api.core.connection;
+import forge.api.core.registry;
+import forge.crypto.signer.provider;
 import forge.chain.api.finality_signer;
 import forge.chain.api.block_signer;
 import forge.chain.protocol.block_signing;
 import forge.chain.api.transaction_signer;
 import forge.plugins.chain.signer.descriptor;
 import forge.plugins.chain.signer.types;
+import forge.plugins.chain.signer.block_execution_handler;
 
 int main() {
    using transaction_signer = forge::chain::api::transaction_signer;
@@ -42,7 +47,15 @@ int main() {
                               forge::plugins::chain::signer::key_binding>);
    static_assert(std::same_as<decltype(forge::plugins::chain::signer::plugin_options::providers),
                               std::vector<forge::plugins::chain::signer::named_provider>>);
+   static_assert(std::same_as<decltype(forge::plugins::chain::signer::plugin_options::resolve_provider),
+                              std::function<std::shared_ptr<forge::crypto::signer::provider>(
+                                  std::string_view, const forge::api::core::view&)>>);
    static_assert(std::same_as<decltype(forge::plugins::chain::signer::config::max_inflight), std::uint64_t>);
+   static_assert(
+       std::same_as<decltype(std::declval<forge::plugins::chain::signer::block_execution_handler&>().execute(
+                        std::declval<forge::chain::protocol::block_sign_request>(),
+                        std::declval<boost::asio::awaitable<std::vector<forge::chain::protocol::signature>>>())),
+                    boost::asio::awaitable<std::vector<forge::chain::protocol::signature>>>);
 
    const auto descriptor = forge::plugins::chain::signer::default_descriptor();
    return descriptor.id.value == std::string_view{"forge.plugins.chain.signer"} ? 0 : 1;

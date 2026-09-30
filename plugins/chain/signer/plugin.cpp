@@ -72,8 +72,8 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context&) {
-   impl_->initialize();
+boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+   co_await impl_->initialize(context.apis());
    co_return;
 }
 

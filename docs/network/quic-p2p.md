@@ -63,7 +63,7 @@ P2P does not promise exactly-once delivery, durable storage or product
 authorization. DHT/rendezvous discovery belongs in `forge_net_p2p`; product plugins
 must not replace it with parallel discovery loops.
 
-For application/plugin composition, `forge::plugins::p2p::node` is the production
+For application/plugin composition, `forge::plugins::net::p2p::node` is the production
 host facade above `forge_net_p2p`. It applies config, starts the node and mounts
 protocol/API contributions. G.2 narrows the API around typed remote access and
 local network information. Durable queues, application fan-out and read-only
@@ -89,7 +89,7 @@ over a multiaddr, not a parallel source of truth.
 Production network mechanics belong in `forge_net_p2p`, not in plugin-local
 workarounds: identity, keys, endpoint/address encoding, protocol negotiation,
 Identify, Ping, peer/path store, relay, AutoNAT, DHT and pubsub. The
-`forge::plugins::p2p::node` plugin only maps config into the node, owns application
+`forge::plugins::net::p2p::node` plugin only maps config into the node, owns application
 lifecycle, mounts route/API contributions and exposes safe application APIs.
 Product extensions must not build parallel network-discovery, relay or gossip loops.
 
@@ -411,7 +411,7 @@ READMEs may link here, but must not define a second block order.
   explicit as `known_gap`; they are not treated as live compatibility claims.
 - `/ws` and `/wss` remain multiaddr parse/store only. There is no P2P
   dial/listen path for browser/proxy transports in Block F.
-- `forge::plugins::p2p::node` and focused friend plugins come after core behavior is proven.
+- `forge::plugins::net::p2p::node` and focused friend plugins come after core behavior is proven.
   Plugins configure and expose the shared node; they do not implement network
   algorithms.
 
@@ -440,28 +440,28 @@ READMEs may link here, but must not define a second block order.
   `forge.api.transport`, because WebSocket is message-oriented and not a
   `transport::stream`.
 - HTTP remains a separate request/response binding.
-- G.2 implemented checkpoint: `forge::plugins::p2p::node` is a narrow host facade
+- G.2 implemented checkpoint: `forge::plugins::net::p2p::node` is a narrow host facade
   over `forge_net_p2p`. It owns lifecycle, config-to-node mapping, local endpoint
   reporting, protocol/API route mounting and typed remote API access. Durable
   queues, application fan-out and raw network diagnostics are outside this host
   facade and move to focused plugins or product layers.
-- G.3 implemented checkpoint: `forge::plugins::p2p::resolver` is a separate plugin for
+- G.3 implemented checkpoint: `forge::plugins::net::p2p::resolver` is a separate plugin for
   API-over-P2P metadata discovery and compatible remote opening. Product
   plugins publish discoverable APIs through the resolver; it mounts the actual
-  API route through `forge::plugins::p2p::node`, stores a serializable descriptor projection
+  API route through `forge::plugins::net::p2p::node`, stores a serializable descriptor projection
   (API id/version, protocol id string, codec, limits, methods and errors), and
   lets clients resolve a compatible API without hardcoded product protocol ids.
   Identify continues to advertise protocol ids; the resolver adds typed FORGE API
   metadata above P2P instead of expanding core Identify semantics. Its network
   metadata protocol `/forge/api/resolver/2` is FORGE-specific and does not extend
   Go/Rust libp2p support claims.
-- G.4 implemented checkpoint: `forge::plugins::p2p::diagnostics` is a read-only in-process
+- G.4 implemented checkpoint: `forge::plugins::net::p2p::diagnostics` is a read-only in-process
   plugin for peer/path/session/relay/DHT/Rendezvous/pubsub/connection-manager
   health. `forge_net_p2p` owns immutable diagnostics snapshots; the plugin exposes
   capped operator/test projections through `forge_app`. It does not add a network
   diagnostics protocol, product authorization, remediation, routing policy or
   retry decisions.
-- G.5 implemented checkpoint: `forge::plugins::p2p::pubsub` is an in-process plugin facade over
+- G.5 implemented checkpoint: `forge::plugins::net::p2p::pubsub` is an in-process plugin facade over
   core GossipSub. It offers raw and typed topic publish/subscribe, bounded
   local handlers, handler deadlines, topic allow/deny policy, deterministic
   subscriptions and capped plugin snapshots for application plugins. It is not a
@@ -500,7 +500,7 @@ READMEs may link here, but must not define a second block order.
   acknowledgement semantics.
 - H.0 implemented checkpoint: Storlane-level products do not need generic
   delivery acknowledgements for ordinary request/response work. Product plugins
-  publish typed APIs through `forge::plugins::p2p::resolver`, clients resolve compatible
+  publish typed APIs through `forge::plugins::net::p2p::resolver`, clients resolve compatible
   remotes without hardcoded protocol ids, and domain methods return product
   receipts with idempotency keys. The receipt proves the application-level
   operation result for that protocol; authorization, durable state and
@@ -510,7 +510,7 @@ READMEs may link here, but must not define a second block order.
   `forge_net_p2p` support claims.
 
 AutoNAT, AutoRelay, DHT and pubsub algorithms must live in `forge_net_p2p`.
-`forge::plugins::p2p::node` configures and runs the shared node, then exposes the
+`forge::plugins::net::p2p::node` configures and runs the shared node, then exposes the
 network capabilities through narrow application APIs. If a network behavior is
 not implemented yet, expose a typed unsupported/limited result instead of hiding
 the gap above the network layer.
@@ -543,7 +543,7 @@ Test layers:
   Identify and peer/path store behavior.
 - `interop`: FORGE client/server against go-libp2p and rust-libp2p in both
   directions.
-- `plugin/system`: realistic scenarios through `forge::plugins::p2p::node` and
+- `plugin/system`: realistic scenarios through `forge::plugins::net::p2p::node` and
   small focused friend plugins, not a parallel fake test runtime.
 - `performance/stability`: latency, throughput, long sessions, reconnect, many
   peers, backpressure and peerstore recovery.
@@ -641,7 +641,7 @@ Accepted:
   symbolication/redaction/export happens outside the crashing signal context.
 - Durable asynchronous retry as an application/plugin-level pattern, not a
   storage dependency inside `forge_net_p2p`.
-- Typed request/receipt protocols over `forge::plugins::p2p::resolver` as the baseline for
+- Typed request/receipt protocols over `forge::plugins::net::p2p::resolver` as the baseline for
   synchronous product operations. Idempotency keys and domain receipts belong to
   the product API contract, while FORGE supplies discovery, stream opening and API
   frame transport.

@@ -18,6 +18,8 @@ enum class code : std::uint16_t {
    unknown_key = 6,
    password_unavailable = 7,
    durability_unknown = 8,
+   in_use = 9,
+   ownership_lost = 10,
 };
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.crypto.keystore")
@@ -30,5 +32,7 @@ using duplicate_key = forge::exceptions::coded_exception<code, code::duplicate_k
 using unknown_key = forge::exceptions::coded_exception<code, code::unknown_key>;
 using password_unavailable = forge::exceptions::coded_exception<code, code::password_unavailable>;
 using durability_unknown = forge::exceptions::coded_exception<code, code::durability_unknown>;
+using in_use = forge::exceptions::coded_exception<code, code::in_use>;
+using ownership_lost = forge::exceptions::coded_exception<code, code::ownership_lost>;
 
 } // namespace forge::crypto::keystore::exceptions

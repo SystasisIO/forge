@@ -401,11 +401,11 @@ endif()
 
 set(FORGE_PLUGINS_CHAIN_SIGNER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/chain/signer/include")
 set(FORGE_PLUGINS_CRYPTO_SECRETS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/crypto/secrets/include")
-set(FORGE_PLUGINS_P2P_NODE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/p2p/node/include")
-set(FORGE_PLUGINS_P2P_RESOLVER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/p2p/resolver/include")
-set(FORGE_PLUGINS_P2P_DIAGNOSTICS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/p2p/diagnostics/include")
-set(FORGE_PLUGINS_P2P_PUBSUB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/p2p/pubsub/include")
-set(FORGE_PLUGINS_HTTP_SERVER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/http/server/include")
+set(FORGE_PLUGINS_NET_P2P_NODE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/node/include")
+set(FORGE_PLUGINS_NET_P2P_RESOLVER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/resolver/include")
+set(FORGE_PLUGINS_NET_P2P_DIAGNOSTICS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/diagnostics/include")
+set(FORGE_PLUGINS_NET_P2P_PUBSUB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/pubsub/include")
+set(FORGE_PLUGINS_NET_HTTP_SERVER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/http/server/include")
 set(FORGE_PLUGINS_LOG_OTLP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/log/otlp/include")
 set(FORGE_PLUGINS_DB_STORE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/db/store/include")
 
@@ -890,11 +890,13 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_crypto_bls_signer
       forge_plugins_chain_signer
       forge_plugins_crypto_secrets
-      forge_plugins_p2p_node
-      forge_plugins_p2p_resolver
-      forge_plugins_p2p_diagnostics
-      forge_plugins_p2p_pubsub
-      forge_plugins_http_server
+      forge_plugins_crypto_wallet
+      forge_crypto_wallet
+      forge_plugins_net_p2p_node
+      forge_plugins_net_p2p_resolver
+      forge_plugins_net_p2p_diagnostics
+      forge_plugins_net_p2p_pubsub
+      forge_plugins_net_http_server
       forge_plugins_log_otlp
       forge_plugins_db_store
       forge_plugins
@@ -1033,13 +1035,15 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       net_p2p
       cli
       crypto_bls_signer
+      crypto_wallet
       plugins_chain_signer
       plugins_crypto_secrets
-      plugins_p2p_node
-      plugins_p2p_resolver
-      plugins_p2p_diagnostics
-      plugins_p2p_pubsub
-      plugins_http_server
+      plugins_crypto_wallet
+      plugins_net_p2p_node
+      plugins_net_p2p_resolver
+      plugins_net_p2p_diagnostics
+      plugins_net_p2p_pubsub
+      plugins_net_http_server
       plugins_log_otlp
       plugins_db_store
       plugins
@@ -1207,11 +1211,11 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/app/include/forge
       plugins/chain/signer/include/forge
       plugins/crypto/secrets/include/forge
-      plugins/p2p/node/include/forge
-      plugins/p2p/resolver/include/forge
-      plugins/p2p/diagnostics/include/forge
-      plugins/p2p/pubsub/include/forge
-      plugins/http/server/include/forge
+      plugins/net/p2p/node/include/forge
+      plugins/net/p2p/resolver/include/forge
+      plugins/net/p2p/diagnostics/include/forge
+      plugins/net/p2p/pubsub/include/forge
+      plugins/net/http/server/include/forge
       plugins/log/otlp/include/forge
       plugins/db/store/include/forge
    )

@@ -8,6 +8,9 @@
 
 ## 1. Objective
 
+Open downstream integration incident: [shutdown sync wait handoff](p2p-shutdown-sync-handoff.md).
+Its P2P-backed task boundary is localized; the owning defect is not yet proven.
+
 Bring `forge_net_p2p` and the official P2P plugins to one production path in
 which every advertised protocol is either:
 
@@ -188,7 +191,7 @@ full durable-store scan.
 
 ### 5.4 ObjectDB adapter
 
-`plugins.p2p.node` owns private ObjectDB adapter components over a dedicated
+`plugins.net.p2p.node` owns private ObjectDB adapter components over a dedicated
 named `plugins.db.store` Object layer. The Stage 2 schema v1 stores peer and
 endpoint facts, Identify data, Rendezvous registrations, relay metadata and
 monotonic sequence state. Indexes cover hydration priority, expiry,
@@ -423,7 +426,7 @@ dependency: Ping, AutoNAT and observed-address evidence consume configured or
 Identify-observed endpoints and do not resolve `/dnsaddr`.
 
 The runtime PRs use `create-library` ownership. They may establish raw-node
-typed options, but `plugins.p2p.node` schema and configuration mapping wait for
+typed options, but `plugins.net.p2p.node` schema and configuration mapping wait for
 Stage 7, after those contracts are stable. `c-ares` and `libsodium` are explicit
 build/test prerequisites of their named PRs, not incidental transitive
 dependencies.

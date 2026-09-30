@@ -8,18 +8,21 @@ module;
 #include <boost/asio/use_awaitable.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 
 module forge.plugins.chain.signer.plugin;
 
 import forge.chain.protocol.time;
+import forge.api.core.registry;
 import forge.chain.api.block_signer;
 import forge.chain.protocol.block_signing;
 import forge.plugins.chain.signer.exceptions;
@@ -50,7 +53,10 @@ void plugin::impl::set_config(config value) {
    options_.initial_config = std::move(value);
 }
 
-void plugin::impl::initialize() {
+boost::asio::awaitable<void> plugin::impl::initialize(forge::api::core::view apis) {
+   if (runtime_snapshot()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer is already initialized");
+   }
    const auto& settings = options_.initial_config;
    if (settings.max_inflight == 0U) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Chain signer max-inflight must be positive");
@@ -61,6 +67,8 @@ void plugin::impl::initialize() {
    if (!options_.now) {
       options_.now = system_now;
    }
+   resolve_providers(apis);
+   co_await resolve_finality_provider(apis);
 
    auto runtime = std::make_shared<runtime_state>(runtime_state{
        .policy = std::make_shared<signing_policy>(options_, settings),
@@ -78,6 +86,75 @@ void plugin::impl::initialize() {
    }
    if (close_admission) {
       runtime->admission->close();
+   }
+   co_return;
+}
+
+boost::asio::awaitable<void> plugin::impl::resolve_finality_provider(const forge::api::core::view& apis) {
+   const auto& binding = options_.initial_config.finality;
+   if (!binding || !options_.resolve_finality_provider ||
+       std::ranges::any_of(options_.finality_providers,
+                           [&](const auto& value) { return value.name == binding->provider; })) {
+      co_return;
+   }
+   if (binding->provider.empty()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Finality provider name is empty");
+   }
+   std::shared_ptr<forge::crypto::bls::signer::provider> provider;
+   try {
+      provider = co_await options_.resolve_finality_provider(binding->provider, apis);
+   } catch (...) {
+      // A key source may expose secret contents in its native diagnostic text.
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Finality provider source failed");
+   }
+   if (!provider) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Finality provider source returned no provider");
+   }
+   options_.finality_providers.push_back({binding->provider, std::move(provider)});
+}
+
+void plugin::impl::resolve_providers(const forge::api::core::view& apis) {
+   if (!options_.resolve_provider) {
+      return;
+   }
+   std::set<std::string> present;
+   for (const auto& provider : options_.providers) {
+      // The existing policy compiler remains the single validator of explicit
+      // providers, including duplicate names and null implementations.
+      present.insert(provider.name);
+   }
+   std::set<std::string> referenced;
+   for (const auto& profile : options_.initial_config.transaction_profiles) {
+      referenced.insert(profile.signing.provider);
+   }
+   for (const auto& profile : options_.initial_config.block_profiles) {
+      for (const auto& key : profile.signing) {
+         referenced.insert(key.provider);
+      }
+   }
+   auto resolved = std::vector<named_provider>{};
+   for (const auto& name : referenced) {
+      if (name.empty()) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Signer provider name is empty");
+      }
+      if (present.contains(name)) {
+         continue;
+      }
+      std::shared_ptr<forge::crypto::signer::provider> provider;
+      try {
+         provider = options_.resolve_provider(name, apis);
+      } catch (...) {
+         // Provider sources may read private configuration; never forward their
+         // diagnostic text into daemon/configure errors.
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Signer provider source failed");
+      }
+      if (!provider) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Signer provider source returned no provider");
+      }
+      resolved.push_back({name, std::move(provider)});
+   }
+   for (auto& provider : resolved) {
+      options_.providers.push_back(std::move(provider));
    }
 }
 
@@ -133,9 +210,8 @@ signing_policy::finality_selection plugin::impl::select_finality() const {
    return runtime->policy->select_finality();
 }
 
-signing_policy::block_selection
-plugin::impl::select_block(const forge::chain::protocol::block_sign_request& request,
-                           const forge::api::auth::authenticated_caller& caller) const {
+signing_policy::block_selection plugin::impl::select_block(const forge::chain::protocol::block_sign_request& request,
+                                                           const forge::api::auth::authenticated_caller& caller) const {
    const auto runtime = runtime_snapshot();
    if (runtime == nullptr) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer plugin is not initialized");
@@ -147,6 +223,10 @@ void plugin::impl::audit(audit_entry value) const noexcept {
    if (options_.audit != nullptr) {
       options_.audit->record(value);
    }
+}
+
+std::shared_ptr<block_execution_handler> plugin::impl::block_execution() const noexcept {
+   return options_.block_execution;
 }
 
 std::shared_ptr<const runtime_state> plugin::impl::runtime_snapshot() const {

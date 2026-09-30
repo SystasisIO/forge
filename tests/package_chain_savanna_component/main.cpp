@@ -5,6 +5,7 @@
 #include <variant>
 
 import forge.chain.savanna.finality_witness;
+import forge.chain.savanna.checkpoint;
 import forge.chain.savanna.genesis;
 import forge.chain.savanna.finality_core;
 import forge.chain.savanna.finalizer_safety;
@@ -40,6 +41,8 @@ int main() {
    const auto verified = savanna::validate(policy, std::array{key.proof_of_possession()});
 
    const auto finality = savanna::finality_core::genesis(1U, 1U);
+   const auto checkpoint_start = savanna::validation_start(
+       savanna::header_state{.id = protocol::calculate_block_id(protocol::block_header{}), .finality = finality});
    const auto block = savanna::block_ref{
        .num = 1U,
        .id = id,
@@ -57,8 +60,9 @@ int main() {
    const auto safety = savanna::make_finalizer_safety(block);
    const auto message = savanna::message_for_vote(id, savanna::vote_kind::strong);
    const auto chain = savanna::calculate_chain_id(savanna::genesis{});
-   return verified.get().threshold == 1U && rank.block == 1U && validation.retained_size() == 1U &&
-                  !votes.status().quorum_reached() && safety.lock().id == id && message.size() == 32U && !chain.empty()
+   return checkpoint_start == 1U && verified.get().threshold == 1U && rank.block == 1U &&
+                  validation.retained_size() == 1U && !votes.status().quorum_reached() && safety.lock().id == id &&
+                  message.size() == 32U && !chain.empty()
               ? 0
               : 1;
 }

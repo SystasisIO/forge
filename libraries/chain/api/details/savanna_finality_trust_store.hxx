@@ -61,8 +61,8 @@ class savanna_finality_trust_store {
       std::shared_ptr<const savanna::finality_replay> replay;
    };
 
-   [[nodiscard]] static trusted_entry make_configured_entry(savanna::finality_trust trust);
-   [[nodiscard]] static trusted_entry make_checkpoint_entry(savanna::finality_checkpoint_bootstrap checkpoint);
+   [[nodiscard]] trusted_entry make_configured_entry(savanna::finality_trust trust) const;
+   [[nodiscard]] trusted_entry make_checkpoint_entry(savanna::finality_checkpoint_bootstrap checkpoint) const;
    [[nodiscard]] static std::vector<protocol::state_anchor>
    canonical_anchors(const savanna::finality_replay& replay, const savanna_trusted_position& checkpoint,
                      savanna::finality_witness_limits limits);

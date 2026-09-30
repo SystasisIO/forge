@@ -16,6 +16,10 @@ add_test(
    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 add_test(
+   NAME test_forge_net_plugin_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/net_plugins_tests.py
+)
+add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
    COMMAND
       ${CMAKE_COMMAND}
@@ -357,18 +361,18 @@ add_test(
 )
 
 add_executable(
-   test_forge_plugins_http_server
+   test_forge_plugins_net_http_server
    unit/main.cpp
    http_server_auth/bearer_auth_tests.cpp
 )
 target_link_libraries(
-   test_forge_plugins_http_server
-   forge_plugins_http_server
+   test_forge_plugins_net_http_server
+   forge_plugins_net_http_server
    Boost::included_unit_test_framework
 )
 add_test(
-   NAME test_forge_plugins_http_server
-   COMMAND test_forge_plugins_http_server
+   NAME test_forge_plugins_net_http_server
+   COMMAND test_forge_plugins_net_http_server
    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
@@ -381,10 +385,10 @@ target_link_libraries(
       forge_plugins_crypto_secrets
       forge_plugins_chain_signer
       forge_plugins_db_store
-      forge_plugins_http_server
-      forge_plugins_p2p_node
-      forge_plugins_p2p_pubsub
-      forge_plugins_p2p_resolver
+      forge_plugins_net_http_server
+      forge_plugins_net_p2p_node
+      forge_plugins_net_p2p_pubsub
+      forge_plugins_net_p2p_resolver
 )
 add_test(
    NAME test_forge_plugins_descriptor_surfaces
@@ -843,6 +847,17 @@ target_link_libraries(
 )
 add_test(NAME test_forge_crypto_keystore COMMAND test_forge_crypto_keystore WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_executable(test_forge_crypto_wallet unit/main.cpp crypto_wallet/wallet_tests.cpp crypto_wallet/composition_tests.cpp)
+target_link_libraries(test_forge_crypto_wallet forge_plugins_crypto_wallet forge_plugins_chain_signer Boost::included_unit_test_framework)
+add_test(NAME test_forge_crypto_wallet COMMAND test_forge_crypto_wallet WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_crypto_wallet PROPERTIES TIMEOUT 90)
+if(UNIX)
+   add_executable(test_forge_crypto_wallet_faults unit/main.cpp crypto_wallet/fault_tests.cpp crypto_wallet/fsync_failure.cpp)
+   target_link_libraries(test_forge_crypto_wallet_faults forge_plugins_crypto_wallet Boost::included_unit_test_framework ${CMAKE_DL_LIBS})
+   add_test(NAME test_forge_crypto_wallet_faults COMMAND test_forge_crypto_wallet_faults WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+   set_tests_properties(test_forge_crypto_wallet_faults PROPERTIES TIMEOUT 30)
+endif()
+
 add_executable(test_forge_crypto_pki unit/main.cpp crypto/test_pki.cpp)
 target_link_libraries(test_forge_crypto_pki forge_crypto_pki Boost::included_unit_test_framework)
 add_test(NAME test_forge_crypto_pki COMMAND test_forge_crypto_pki WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -1096,6 +1111,7 @@ add_executable(
    p2p_reachability_codec_tests.cpp
    quic_p2p/p2p_tests.cpp
    quic_p2p/chain_signer_tests.cpp
+   quic_p2p/chain_signer_fixture.cpp
    quic_p2p/direct_transport_tests.cpp
    quic_p2p/address_resolution_tests.cpp
    quic_p2p/dialing_tests.cpp
@@ -1476,6 +1492,7 @@ add_executable(
    quic_p2p/libp2p_identity_fixture.cpp
    plugins/plugins_tests.cpp
    plugins/http_server_tests.cpp
+   plugins/net_identity_tests.cpp
    plugins/config_assertions.cpp
    plugins/details/config_assertions.hxx
    plugins/resolver_publication_race.cpp
@@ -1492,12 +1509,12 @@ target_link_libraries(
    forge_config_program_options
    forge_crypto_bls
    forge_plugins_crypto_secrets
-   forge_plugins_http_server
+   forge_plugins_net_http_server
    forge_plugins_log_otlp
-   forge_plugins_p2p_diagnostics
-   forge_plugins_p2p_node
-   forge_plugins_p2p_pubsub
-   forge_plugins_p2p_resolver
+   forge_plugins_net_p2p_diagnostics
+   forge_plugins_net_p2p_node
+   forge_plugins_net_p2p_pubsub
+   forge_plugins_net_p2p_resolver
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_plugins COMMAND test_forge_plugins WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -1510,13 +1527,13 @@ add_executable(
 )
 target_link_libraries(
    test_forge_p2p_managed_remote
-   forge_plugins_p2p_resolver
-   forge_plugins_p2p_node
+   forge_plugins_net_p2p_resolver
+   forge_plugins_net_p2p_node
    forge_plugins_crypto_secrets
    forge_asio
    Boost::included_unit_test_framework
 )
-target_include_directories(test_forge_p2p_managed_remote PRIVATE ${CMAKE_SOURCE_DIR}/plugins/p2p/resolver)
+target_include_directories(test_forge_p2p_managed_remote PRIVATE ${CMAKE_SOURCE_DIR}/plugins/net/p2p/resolver)
 add_test(
    NAME test_forge_p2p_managed_remote
    COMMAND test_forge_p2p_managed_remote
@@ -1534,10 +1551,10 @@ target_link_libraries(
    test_forge_plugins_db_store
    forge_plugins_db_store
    forge_plugins_crypto_secrets
-   forge_plugins_p2p_node
+   forge_plugins_net_p2p_node
    Boost::included_unit_test_framework
 )
-target_include_directories(test_forge_plugins_db_store PRIVATE ${PROJECT_SOURCE_DIR}/plugins/p2p/node)
+target_include_directories(test_forge_plugins_db_store PRIVATE ${PROJECT_SOURCE_DIR}/plugins/net/p2p/node)
 target_compile_definitions(test_forge_plugins_db_store PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
 target_compile_definitions(test_forge_plugins_db_store PRIVATE FORGE_HAS_MDBX=$<BOOL:${FORGE_HAS_MDBX}>)
 if(FORGE_HAS_ROCKSDB)
@@ -2472,25 +2489,25 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
-   test_forge_package_plugins_p2p_node
+   test_forge_package_plugins_net_p2p_node
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_p2p_node
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-p2p-node
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_node
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-node
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_p2p_node
+      --test-command forge_package_plugins_net_p2p_node
    DEPENDS test_forge_package_install
 )
 add_custom_target(
-   test_forge_package_plugins_p2p_resolver
+   test_forge_package_plugins_net_p2p_resolver
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_p2p_resolver
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-p2p-resolver
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_resolver
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-resolver
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_p2p_resolver
+      --test-command forge_package_plugins_net_p2p_resolver
    DEPENDS test_forge_package_install
 )
 add_custom_target(
@@ -2545,14 +2562,14 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
-   test_forge_package_plugins_http_server
+   test_forge_package_plugins_net_http_server
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_http_server
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-http-server
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_http_server
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-http-server
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_http_server
+      --test-command forge_package_plugins_net_http_server
    DEPENDS test_forge_package_install
 )
 add_custom_target(
@@ -3131,6 +3148,25 @@ add_test(
       --test-command forge_package_crypto_keystore_component
 )
 set_tests_properties(test_forge_package_crypto_keystore_component PROPERTIES DEPENDS test_forge_package_install)
+
+foreach(wallet_component IN ITEMS crypto_wallet_component plugins_crypto_wallet)
+   add_custom_target(test_forge_package_${wallet_component}
+      COMMAND ${CMAKE_CTEST_COMMAND} --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_${wallet_component}
+         ${CMAKE_BINARY_DIR}/forge-package-${wallet_component}
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_${wallet_component}
+      DEPENDS test_forge_package_install)
+   add_test(NAME test_forge_package_${wallet_component}
+      COMMAND ${CMAKE_CTEST_COMMAND} --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_${wallet_component}
+         ${CMAKE_BINARY_DIR}/forge-package-${wallet_component}
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_${wallet_component})
+   set_tests_properties(test_forge_package_${wallet_component} PROPERTIES DEPENDS test_forge_package_install)
+endforeach()
 add_test(
    NAME test_forge_package_crypto_asymmetric_values_component
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -3540,27 +3576,27 @@ add_test(
 )
 set_tests_properties(test_forge_package_plugins_descriptor_surfaces PROPERTIES DEPENDS test_forge_package_install)
 add_test(
-   NAME test_forge_package_plugins_p2p_node
+   NAME test_forge_package_plugins_net_p2p_node
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_p2p_node
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-p2p-node
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_node
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-node
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_p2p_node
+      --test-command forge_package_plugins_net_p2p_node
 )
-set_tests_properties(test_forge_package_plugins_p2p_node PROPERTIES DEPENDS test_forge_package_install)
+set_tests_properties(test_forge_package_plugins_net_p2p_node PROPERTIES DEPENDS test_forge_package_install)
 add_test(
-   NAME test_forge_package_plugins_p2p_resolver
+   NAME test_forge_package_plugins_net_p2p_resolver
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_p2p_resolver
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-p2p-resolver
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_resolver
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-resolver
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_p2p_resolver
+      --test-command forge_package_plugins_net_p2p_resolver
 )
-set_tests_properties(test_forge_package_plugins_p2p_resolver PROPERTIES DEPENDS test_forge_package_install)
+set_tests_properties(test_forge_package_plugins_net_p2p_resolver PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_plugins_chain_signer
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -3613,16 +3649,16 @@ add_test(
 )
 set_tests_properties(test_forge_package_plugins_crypto_secrets PROPERTIES DEPENDS test_forge_package_install)
 add_test(
-   NAME test_forge_package_plugins_http_server
+   NAME test_forge_package_plugins_net_http_server
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_http_server
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-http-server
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_http_server
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-http-server
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_http_server
+      --test-command forge_package_plugins_net_http_server
 )
-set_tests_properties(test_forge_package_plugins_http_server PROPERTIES DEPENDS test_forge_package_install)
+set_tests_properties(test_forge_package_plugins_net_http_server PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_plugins_log_otlp
    COMMAND ${CMAKE_CTEST_COMMAND}

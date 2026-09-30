@@ -4,10 +4,14 @@ namespace forge::crypto::keystore {
 
 class store::impl {
  public:
-   impl(std::filesystem::path path, core::secret_string password, store_options options);
+   impl(std::shared_ptr<ownership> owner, core::secret_string password, store_options options);
 
    static std::unique_ptr<impl> create(std::filesystem::path path, core::secret_string password, store_options options);
    static std::unique_ptr<impl> open(std::filesystem::path path, core::secret_string password, store_options options);
+   static std::unique_ptr<impl> create(std::shared_ptr<ownership> owner, core::secret_string password,
+                                       store_options options);
+   static std::unique_ptr<impl> open(std::shared_ptr<ownership> owner, core::secret_string password,
+                                     store_options options);
 
    void put(signer::key_id id, asymmetric::private_key key, bool replace);
    void erase(const signer::key_id& id);
@@ -17,6 +21,7 @@ class store::impl {
    signer::sign_digest_response sign_digest(const signer::sign_digest_request& request) const;
 
    const std::filesystem::path& path() const noexcept;
+   std::shared_ptr<ownership> owner() const noexcept;
 
  private:
    struct entry {
@@ -33,6 +38,8 @@ class store::impl {
    void save_locked() const;
 
    std::filesystem::path path_;
+   std::shared_ptr<ownership> owner_;
+   std::shared_ptr<ownership::access> access_;
    core::secret_string password_;
    store_options options_;
    entries entries_;

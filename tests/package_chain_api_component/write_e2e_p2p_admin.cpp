@@ -19,15 +19,15 @@ import forge.app.application;
 import forge.asio.blocking;
 import forge.config.core.value;
 import forge.net.p2p.protocol;
-import forge.plugins.p2p.node.api;
-import forge.plugins.p2p.resolver.api;
+import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.resolver.api;
 
 namespace package_chain_api_component {
 
 write_p2p_admin_responses run_p2p_admin_e2e(std::shared_ptr<write_p2p_admin_fixture> state) {
    const auto server_peer = test_peer(0x53);
    auto server_config = p2p_config(server_peer);
-   server_config.set("plugins.p2p.node.listen", forge::config::core::value::array_type{
+   server_config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
                                                     forge::config::core::value{"/ip4/127.0.0.1/udp/0/quic-v1"},
                                                 });
    auto server = p2p_server_application{make_p2p_admin_publication(state)};
@@ -38,19 +38,19 @@ write_p2p_admin_responses run_p2p_admin_e2e(std::shared_ptr<write_p2p_admin_fixt
       server.configure(server_config);
       forge::asio::blocking::run(server.runtime(), server.startup());
       server_started = true;
-      auto server_node = server.apis().get<forge::plugins::p2p::node::api>(
-          {.id = {"forge.plugins.p2p.node"}, .major = 2, .min_revision = 0});
+      auto server_node = server.apis().get<forge::plugins::net::p2p::node::api>(
+          {.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0});
       const auto server_endpoint = server_node->local_endpoint();
       require(server_endpoint.has_value(), "P2P chain API server did not publish a local endpoint");
       auto client_config = p2p_config(test_peer(0x54));
-      client_config.set("plugins.p2p.node.bootstrap", forge::config::core::value::array_type{
+      client_config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{
                                                           forge::config::core::value{server_endpoint->to_string()},
                                                       });
       client.configure(client_config);
       forge::asio::blocking::run(client.runtime(), client.startup());
       client_started = true;
-      auto resolver = client.apis().get<forge::plugins::p2p::resolver::api>(
-          {.id = {"forge.plugins.p2p.resolver"}, .major = 2, .min_revision = 0});
+      auto resolver = client.apis().get<forge::plugins::net::p2p::resolver::api>(
+          {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
       const auto remote_apis = forge::asio::blocking::run(client.runtime(), resolver->peer_apis(server_peer));
       require(remote_apis.size() == 1, "P2P resolver did not advertise the admin API");
       require(remote_apis.front().id.value == "forge.chain.api.admin", "P2P resolver omitted forge.chain.api.admin");
@@ -62,8 +62,8 @@ write_p2p_admin_responses run_p2p_admin_e2e(std::shared_ptr<write_p2p_admin_fixt
           client.runtime(),
           resolver->resolve(server_peer, {.id = {"forge.chain.api.admin"}, .major = 2, .min_revision = 0}));
       require(resolution.api.protocol == chain_api_protocol, "P2P resolver selected the wrong chain API protocol");
-      auto node = client.apis().get<forge::plugins::p2p::node::api>(
-          {.id = {"forge.plugins.p2p.node"}, .major = 2, .min_revision = 0});
+      auto node = client.apis().get<forge::plugins::net::p2p::node::api>(
+          {.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0});
       auto connection = forge::asio::blocking::run(
           client.runtime(),
           node->open_api_connection(server_peer, forge::net::p2p::protocol_id{.value = resolution.api.protocol}));

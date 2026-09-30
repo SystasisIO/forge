@@ -95,7 +95,7 @@ Forge already provides the required foundations:
 | HTTP client, server, router and files | `forge_net_http`, Boost.Beast, Boost.URL |
 | TLS contexts and PKI validation | OpenSSL, Forge Crypto PKI and existing STCP donor mechanics |
 | Typed API and OpenAPI | `forge_api_core`, `forge_api_http` |
-| HTTP lifecycle and middleware | `forge_plugins_http_server` |
+| HTTP lifecycle and middleware | `forge_plugins_net_http_server` |
 | Cryptographic random | `forge_crypto_core`, backed by OpenSSL `RAND_bytes` |
 | Token digests | `forge_crypto_digest` |
 | Base64URL | `forge_codec_base64` |
@@ -205,7 +205,7 @@ The library depends on `forge_auth_session` and `forge_net_http`. Generic
 Cookie and Set-Cookie parsing and formatting remain owned exclusively by
 `forge.net.http.cookie`; `forge_auth_http` neither duplicates nor wraps a
 second parser. It does not
-depend on `forge_plugins_http_server`: libraries must not import product or
+depend on `forge_plugins_net_http_server`: libraries must not import product or
 plugin runtime APIs. A product constructs a server-plugin middleware descriptor
 around these neutral functions.
 
@@ -317,7 +317,7 @@ HTTP TLS server requirements:
 immutable TLS context provider. It does not receive Forge Secret ids because a
 network library must not depend on a runtime plugin.
 
-### `forge_plugins_http_server`
+### `forge_plugins_net_http_server`
 
 Extend the local-only server API with a constrained asset mount operation:
 
@@ -346,8 +346,8 @@ rules before implementation; the ownership and behavior above are fixed.
 A product plugin composes the asset mount and typed API independently:
 
 ```cpp
-auto http = context.apis().get<forge::plugins::http::server::api>(
-   forge::plugins::http::server::api::ref());
+auto http = context.apis().get<forge::plugins::net::http::server::api>(
+   forge::plugins::net::http::server::api::ref());
 
 co_await http->mount_assets({
    .path = "/admin",
@@ -396,16 +396,17 @@ product configuration is:
 
 ```yaml
 plugins:
-  http:
-    server:
-      bind-address: 0.0.0.0
-      port: 443
-      tls:
-        mode: server
-        certificate-chain-secret: admin-http-certificate
-        private-key-secret: admin-http-private-key
-        minimum-version: tls1.3
-        handshake-timeout-ms: 10000
+  net:
+    http:
+      server:
+        bind-address: 0.0.0.0
+        port: 443
+        tls:
+          mode: server
+          certificate-chain-secret: admin-http-certificate
+          private-key-secret: admin-http-private-key
+          minimum-version: tls1.3
+          handshake-timeout-ms: 10000
 ```
 
 `mode` is `disabled`, `server` or `mutual`. Mutual TLS additionally requires a
@@ -551,7 +552,7 @@ the browser an opaque Secure HttpOnly session cookie.
 1. Extract the reusable `forge_net_tls` context and verification substrate from
    existing STCP mechanics without changing STCP behavior.
 2. Add Boost.Beast server-side TLS to `forge_net_http` and schema-driven TLS
-   lifecycle to `forge_plugins_http_server`.
+   lifecycle to `forge_plugins_net_http_server`.
 3. Add `forge.crypto.core` constant-time comparison and migrate Bearer auth.
 4. Add `forge_auth_pairing` with deterministic transition and adversarial
    tests.

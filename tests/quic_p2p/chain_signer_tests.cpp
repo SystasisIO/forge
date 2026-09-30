@@ -15,12 +15,8 @@ import forge.api.core.binding;
 import forge.api.core.registry;
 import forge.api.p2p.binding;
 import forge.api.transport.connection;
-import forge.app.events;
-import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.runtime;
-import forge.asio.task;
 import forge.chain.api.block_signer;
 import forge.chain.api.exceptions;
 import forge.chain.api.transaction_signer;
@@ -29,21 +25,18 @@ import forge.chain.protocol.block_signing;
 import forge.chain.protocol.transaction;
 import forge.chain.transaction.types;
 import forge.crypto.asymmetric;
-import forge.crypto.core.secret_string;
 import forge.crypto.digest.sha256;
-import forge.crypto.signer.configured_provider;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.stream;
-import forge.plugins.chain.signer.plugin;
-import forge.plugins.chain.signer.types;
+
+#include "chain_signer_fixture.hxx"
 
 namespace {
 
 namespace chain_api = forge::chain::api;
 namespace protocol = forge::chain::protocol;
-namespace signer = forge::plugins::chain::signer;
 namespace p2p = forge::net::p2p;
 
 boost::asio::awaitable<void> exercise_signer_api(forge::api::transport::connection& connection,
@@ -111,43 +104,9 @@ BOOST_AUTO_TEST_CASE(p2p_authenticated_quic_roundtrips_both_chain_signer_methods
    const auto private_key = forge::crypto::asymmetric::private_key::regenerate(
        forge::crypto::digest::sha256::hash(std::string{"p2p-live-signer-key"}));
    const auto public_key = private_key.get_public_key();
-   const auto provider = forge::crypto::signer::configured_provider::from_private_key(
-       {.value = "producer-key"},
-       forge::crypto::core::secret_string{forge::crypto::asymmetric::encoding::forge().format(private_key)});
    const auto fingerprint = forge::crypto::digest::sha256::hash(client.local_peer().to_bytes());
-   auto settings = signer::config{};
-   settings.transaction_profiles.push_back({
-       .name = "writer-transaction",
-       .chain_id = chain.str(),
-       .signing = {.provider = "k1", .key_id = "producer-key",
-                   .expected_public_key = forge::crypto::asymmetric::encoding::forge().format(public_key)},
-       .authorization = signer::remote_authorization::profile_only,
-       .callers = {{.source = forge::api::auth::caller_source::p2p_peer, .fingerprint = fingerprint.str()}},
-       .actions = {{.account = "storage", .action = "write", .actor = "writer", .permission = "active"}},
-   });
-   settings.block_profiles.push_back({
-       .name = "writer-block",
-       .chain_id = chain.str(),
-       .producer = "writer",
-       .signing = {{.provider = "k1", .key_id = "producer-key",
-                    .expected_public_key = forge::crypto::asymmetric::encoding::forge().format(public_key)}},
-       .callers = {{.source = forge::api::auth::caller_source::p2p_peer, .fingerprint = fingerprint.str()}},
-   });
-   auto scheduler = forge::asio::task::scheduler{runtime};
-   auto registry = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto plugin = signer::plugin{signer::plugin_options{
-       .providers = {{.name = "k1", .value = provider}},
-       .initial_config = std::move(settings),
-       .now = [] { return protocol::time_point_sec{1'700'000'000U}; },
-   }};
-   auto installer = forge::api::core::installer{registry};
-   forge::asio::blocking::run(runtime, plugin.provide(installer));
-   auto context = forge::app::plugin_context{scheduler, registry, signals, events};
-   forge::asio::blocking::run(runtime, plugin.initialize(context));
-   forge::asio::blocking::run(runtime, plugin.startup());
-   auto binding = forge::api::p2p::api(server).use(forge::api::core::binding().serve(registry).build()).build();
+   auto plugin = forge::tests::p2p::chain_signer_fixture{runtime, chain, private_key, fingerprint};
+   auto binding = forge::api::p2p::api(server).use(forge::api::core::binding().serve(plugin.apis()).build()).build();
    server.register_protocol_handler(binding.protocol(), binding.handler());
 
    forge::asio::blocking::run(runtime, server.async_listen(p2p::endpoint{
@@ -196,6 +155,4 @@ BOOST_AUTO_TEST_CASE(p2p_authenticated_quic_roundtrips_both_chain_signer_methods
    forge::asio::blocking::run(runtime, unlisted.async_stop());
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, server.async_stop());
-   plugin.request_stop();
-   forge::asio::blocking::run(runtime, plugin.shutdown());
 }

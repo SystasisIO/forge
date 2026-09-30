@@ -19,8 +19,10 @@ export import forge.chain.protocol.values;
 export import forge.chain.transaction.types;
 export import forge.crypto.bls.signer.provider;
 export import forge.crypto.signer.provider;
+export import forge.plugins.chain.signer.block_execution_handler;
 
 import forge.schema.enums;
+import forge.api.core.registry;
 import forge.schema.object;
 
 export namespace forge::plugins::chain::signer {
@@ -155,9 +157,19 @@ struct plugin_options {
    std::vector<named_provider> providers;
    std::vector<named_finality_provider> finality_providers;
    std::shared_ptr<semantic_authorization_provider> semantic_authorization;
+   std::shared_ptr<block_execution_handler> block_execution;
    config initial_config;
    std::shared_ptr<audit_sink> audit;
    std::function<forge::chain::protocol::time_point_sec()> now;
+   // Local composition at initialize only; resolves missing, profile-referenced
+   // names into the same provider set. Never used as a per-request fallback.
+   std::function<std::shared_ptr<forge::crypto::signer::provider>(std::string_view, const forge::api::core::view&)>
+       resolve_provider;
+   // An optional local source for the one configured BLS provider. Invoked only
+   // during initialize, never as signing fallback or from a remote request.
+   std::function<boost::asio::awaitable<std::shared_ptr<forge::crypto::bls::signer::provider>>(
+       std::string, const forge::api::core::view&)>
+       resolve_finality_provider;
 };
 
 BOOST_DESCRIBE_STRUCT(caller_rule, (), (source, fingerprint))
@@ -171,8 +183,8 @@ BOOST_DESCRIBE_STRUCT(transaction_profile, (),
 BOOST_DESCRIBE_STRUCT(block_profile, (), (name, chain_id, producer, signing, allow_local, callers, max_header_bytes))
 BOOST_DESCRIBE_STRUCT(finality_binding, (), (provider, expected_public_key))
 BOOST_DESCRIBE_STRUCT(config, (),
-                      (transaction_profiles, block_profiles, finality, max_inflight, max_queued, max_queued_bytes, max_per_caller,
-                       shutdown_timeout_ms))
+                      (transaction_profiles, block_profiles, finality, max_inflight, max_queued, max_queued_bytes,
+                       max_per_caller, shutdown_timeout_ms))
 BOOST_DESCRIBE_ENUM(audit_decision, allowed, denied, failed)
 BOOST_DESCRIBE_ENUM(audit_operation, transaction, block, finality)
 BOOST_DESCRIBE_ENUM(remote_authorization, semantic, profile_only)
@@ -212,9 +224,7 @@ export template <> struct forge::schema::rules<forge::plugins::chain::signer::co
 export template <> struct forge::schema::rules<forge::plugins::chain::signer::key_binding> {
    [[nodiscard]] static forge::schema::object_schema<forge::plugins::chain::signer::key_binding> define() {
       auto schema = forge::schema::object<forge::plugins::chain::signer::key_binding>();
-      schema.field<&forge::plugins::chain::signer::key_binding::provider>("provider")
-          .required()
-          .non_empty();
+      schema.field<&forge::plugins::chain::signer::key_binding::provider>("provider").required().non_empty();
       schema.field<&forge::plugins::chain::signer::key_binding::key_id>("key-id").required().non_empty();
       schema.field<&forge::plugins::chain::signer::key_binding::expected_public_key>("expected-public-key")
           .required()
@@ -274,12 +284,15 @@ export template <> struct forge::schema::rules<forge::plugins::chain::signer::bl
       schema.field<&forge::plugins::chain::signer::block_profile::chain_id>("chain-id").required().non_empty();
       schema.field<&forge::plugins::chain::signer::block_profile::producer>("producer").required().non_empty();
       schema.field<&forge::plugins::chain::signer::block_profile::signing>("signing")
-          .items<forge::plugins::chain::signer::key_binding>().min_items(1).max_items(64);
+          .items<forge::plugins::chain::signer::key_binding>()
+          .min_items(1)
+          .max_items(64);
       schema.field<&forge::plugins::chain::signer::block_profile::allow_local>("allow-local").default_value(false);
       schema.field<&forge::plugins::chain::signer::block_profile::callers>("callers")
           .items<forge::plugins::chain::signer::caller_rule>();
       schema.field<&forge::plugins::chain::signer::block_profile::max_header_bytes>("max-header-bytes")
-          .default_value(std::uint64_t{1024U * 1024U}).range(1, 64U * 1024U * 1024U);
+          .default_value(std::uint64_t{1024U * 1024U})
+          .range(1, 64U * 1024U * 1024U);
       return schema;
    }
 };

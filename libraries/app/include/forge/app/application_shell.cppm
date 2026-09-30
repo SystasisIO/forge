@@ -98,6 +98,7 @@ class application_shell : public application_base {
 
    [[nodiscard]] forge::config::core::component_registry describe_config();
    void configure(const forge::config::core::document& document);
+   boost::asio::awaitable<void> async_configure(forge::config::core::document document);
    boost::asio::awaitable<void> initialize() final;
    boost::asio::awaitable<void> startup() final;
    boost::asio::awaitable<void> shutdown() final;

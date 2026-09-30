@@ -11,10 +11,10 @@ find_package(
       plugins_crypto_secrets
       plugins_chain_signer
       plugins_db_store
-      plugins_http_server
-      plugins_p2p_node
-      plugins_p2p_pubsub
-      plugins_p2p_resolver
+      plugins_net_http_server
+      plugins_net_p2p_node
+      plugins_net_p2p_pubsub
+      plugins_net_p2p_resolver
 )
 
 add_executable(forge_package_plugins_descriptor_surfaces main.cpp)
@@ -23,8 +23,8 @@ target_link_libraries(
       Forge::forge_plugins_crypto_secrets
       Forge::forge_plugins_chain_signer
       Forge::forge_plugins_db_store
-      Forge::forge_plugins_http_server
-      Forge::forge_plugins_p2p_node
-      Forge::forge_plugins_p2p_pubsub
-      Forge::forge_plugins_p2p_resolver
+      Forge::forge_plugins_net_http_server
+      Forge::forge_plugins_net_p2p_node
+      Forge::forge_plugins_net_p2p_pubsub
+      Forge::forge_plugins_net_p2p_resolver
 )

@@ -45,7 +45,43 @@ boost::asio::awaitable<void> notify(forge::asio::notification* signal) {
    co_return;
 }
 
+boost::asio::awaitable<bool> wait_owned_early_completion(bool sticky) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto waiter = std::make_shared<forge::asio::detail::notification_waiter>(executor);
+   if (sticky) {
+      waiter->wake();
+   }
+   const auto error = co_await waiter->wait_until(sticky ? boost::asio::steady_timer::time_point::max()
+                                                         : std::chrono::steady_clock::now());
+   // No owner survives the coroutine: completion can release the timer while
+   // its initiating function is still returning on another runtime worker.
+   co_return sticky ? error == boost::asio::error::operation_aborted : !error;
+}
+
+boost::asio::awaitable<std::size_t> repeat_owned_early_completion(std::size_t count) {
+   auto completed = std::size_t{};
+   for (auto index = std::size_t{}; index < count; ++index) {
+      completed += co_await wait_owned_early_completion(index % 2 == 0);
+   }
+   co_return completed;
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(asio_notification_waiter_survives_early_completion_releasing_last_external_owner) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   constexpr auto count = std::size_t{10000};
+   auto results = std::vector<std::future<std::size_t>>{};
+   for (auto index = 0; index < 4; ++index) {
+      results.push_back(
+          boost::asio::co_spawn(runtime.context(), repeat_owned_early_completion(count), boost::asio::use_future));
+   }
+   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+   for (auto& result : results) {
+      BOOST_REQUIRE(result.wait_until(deadline) == std::future_status::ready);
+      BOOST_CHECK_EQUAL(result.get(), count);
+   }
+}
 
 BOOST_AUTO_TEST_CASE(asio_async_waiter_keeps_sticky_wake_before_wait_arm) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

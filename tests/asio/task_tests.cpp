@@ -343,6 +343,50 @@ BOOST_AUTO_TEST_CASE(task_shutdown_cancels_pending_work) {
    BOOST_CHECK_EQUAL(scheduler.snapshot().pending, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(cancel_releases_delayed_queue_capacity_before_its_deadline) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scheduler = scheduler_type{runtime, scheduler_type::options{.max_awaitable_tasks = 1, .max_pending_tasks = 1}};
+   for (unsigned iteration = 0; iteration < 32; ++iteration) {
+      auto delayed = scheduler.submit_after(task{.name = "canceled-deadline", .work = [] {}}, std::chrono::hours{1});
+      BOOST_REQUIRE(delayed.accepted());
+      BOOST_CHECK_EQUAL(scheduler.pending_count(), 1U);
+      BOOST_CHECK(delayed.cancel());
+      BOOST_CHECK(!delayed.cancel());
+      BOOST_CHECK_EQUAL(scheduler.pending_count(), 0U);
+      BOOST_CHECK_EQUAL(scheduler.pending_count(priority{}), 0U);
+      BOOST_CHECK_THROW(wait_task(runtime, delayed), forge::asio::exceptions::canceled);
+   }
+   BOOST_CHECK_EQUAL(scheduler.snapshot().canceled, 32U);
+   BOOST_CHECK_EQUAL(scheduler.snapshot().rejected, 0U);
+   auto replacement = scheduler.submit(task{.name = "replacement", .work = [] {}});
+   BOOST_REQUIRE(replacement.accepted());
+   BOOST_CHECK_NO_THROW(wait_task(runtime, replacement));
+}
+
+BOOST_AUTO_TEST_CASE(canceled_completion_allows_a_waiter_to_replace_the_queued_task) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto scheduler = scheduler_type{runtime, scheduler_type::options{.max_pending_tasks = 1}};
+   for (unsigned iteration = 0; iteration < 128; ++iteration) {
+      auto delayed = scheduler.submit_after(task{.name = "old-deadline", .work = [] {}}, std::chrono::hours{1});
+      BOOST_REQUIRE(delayed.accepted());
+      const auto replace_after_completion = [&]() -> boost::asio::awaitable<bool> {
+         try {
+            co_await delayed.wait();
+         } catch (const forge::asio::exceptions::canceled&) {
+         }
+         auto replacement = scheduler.submit_after(task{.name = "new-deadline", .work = [] {}}, std::chrono::hours{1});
+         const auto accepted = replacement.accepted();
+         replacement.cancel();
+         co_return accepted;
+      };
+      auto replacement = boost::asio::co_spawn(runtime.context(), replace_after_completion(), boost::asio::use_future);
+      delayed.cancel();
+      BOOST_REQUIRE(replacement.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+      BOOST_CHECK(replacement.get());
+   }
+   BOOST_CHECK_EQUAL(scheduler.snapshot().rejected, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(task_runs_awaitable_tasks) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto scheduler = scheduler_type{runtime, scheduler_type::options{.max_blocking_tasks = 1, .max_pending_tasks = 4}};

@@ -26,10 +26,10 @@ import forge.net.p2p.identity;
 import forge.net.p2p.protocol;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
-import forge.plugins.p2p.node.plugin;
-import forge.plugins.p2p.resolver.api;
-import forge.plugins.p2p.resolver.plugin;
-import forge.plugins.p2p.resolver.types;
+import forge.plugins.net.p2p.node.plugin;
+import forge.plugins.net.p2p.resolver.api;
+import forge.plugins.net.p2p.resolver.plugin;
+import forge.plugins.net.p2p.resolver.types;
 
 namespace package_chain_api_component {
 
@@ -163,7 +163,7 @@ void register_p2p_stack(forge::app::plugin_registry& registry) {
        .id = forge::app::plugin_id{.value = "forge.plugins.crypto.secrets"},
        .factory = [] { return std::make_unique<p2p_secrets_plugin>(); },
    });
-   registry.register_plugin(forge::plugins::p2p::node::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
 }
 
 chain_api_publisher::chain_api_publisher(std::shared_ptr<const p2p_publication_callbacks> callbacks)
@@ -178,11 +178,11 @@ std::string chain_api_publisher::version() const {
 }
 
 boost::asio::awaitable<void> chain_api_publisher::initialize(forge::app::plugin_context& context) {
-   auto resolver = context.apis().get<forge::plugins::p2p::resolver::api>(
-       {.id = {"forge.plugins.p2p.resolver"}, .major = 2, .min_revision = 0});
+   auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
+       {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
    publication_ = resolver->publish_api(
        callbacks_->binding(context), forge::net::p2p::protocol_id{.value = std::string{chain_api_protocol}},
-       forge::plugins::p2p::resolver::publish_options{
+       forge::plugins::net::p2p::resolver::publish_options{
            .transport = forge::api::transport::options{.max_frame_size = chain_api_max_frame_size},
        });
    co_return;
@@ -201,10 +201,10 @@ p2p_server_application::p2p_server_application(p2p_publication_callbacks callbac
 
 void p2p_server_application::on_register_plugins(forge::app::plugin_registry& registry) {
    register_p2p_stack(registry);
-   registry.register_plugin(forge::plugins::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
    registry.register_plugin(forge::app::plugin_descriptor{
        .id = forge::app::plugin_id{.value = "chain-api-publisher"},
-       .dependencies = {forge::app::plugin_id{.value = "forge.plugins.p2p.resolver"}},
+       .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.resolver"}},
        .factory = [callbacks = callbacks_] { return std::make_unique<chain_api_publisher>(callbacks); },
    });
 }
@@ -215,7 +215,7 @@ boost::asio::awaitable<void> p2p_server_application::on_provide(forge::app::appl
 
 void p2p_client_application::on_register_plugins(forge::app::plugin_registry& registry) {
    register_p2p_stack(registry);
-   registry.register_plugin(forge::plugins::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
 }
 
 forge::net::p2p::peer_id test_peer(std::uint8_t seed) {
@@ -225,10 +225,10 @@ forge::net::p2p::peer_id test_peer(std::uint8_t seed) {
 
 forge::config::core::document p2p_config(const forge::net::p2p::peer_id& peer) {
    auto config = forge::config::core::document{};
-   config.set("plugins.p2p.node.allow-insecure-test-mode", true);
-   config.set("plugins.p2p.node.identity.certificate-secret", "p2p/test-certificate");
-   config.set("plugins.p2p.node.identity.private-key-secret", "p2p/test-private-key");
-   config.set("plugins.p2p.node.peer-id", peer.to_string());
+   config.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
+   config.set("plugins.net.p2p.node.identity.certificate-secret", "p2p/test-certificate");
+   config.set("plugins.net.p2p.node.identity.private-key-secret", "p2p/test-private-key");
+   config.set("plugins.net.p2p.node.peer-id", peer.to_string());
    return config;
 }
 

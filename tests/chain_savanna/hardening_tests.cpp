@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <thread>
@@ -12,6 +14,7 @@
 #include <vector>
 
 import forge.chain.savanna.finalizer_safety;
+import forge.chain.savanna.checkpoint;
 import forge.chain.savanna.vote_accumulator;
 import forge.chain.savanna.validation;
 import forge.crypto.digest.sha256;
@@ -116,6 +119,19 @@ savanna::finality_core hardening_core(
    };
    savanna::validate(result);
    return result;
+}
+
+BOOST_AUTO_TEST_CASE(chain_savanna_checkpoint_genesis_boundary_does_not_overflow) {
+   const auto maximum = std::numeric_limits<savanna::block_num>::max();
+   auto state = savanna::header_state{};
+   state.id._hash[0] = std::byteswap(maximum);
+   state.finality = {.links = {{.source = maximum, .target = maximum}}, .genesis_slot = 10U};
+   BOOST_CHECK_EQUAL(savanna::validation_start(state), maximum);
+   state.finality = {
+       .links = {{.source = maximum - 1U, .target = maximum - 1U}, {.source = maximum, .target = maximum - 1U}},
+       .refs = {hardening_ref(maximum - 1U, 10U, 1U)},
+       .genesis_slot = 10U};
+   BOOST_CHECK_EQUAL(savanna::validation_start(state), maximum);
 }
 
 BOOST_AUTO_TEST_CASE(chain_savanna_validation_state_is_bounded_and_versioned) {

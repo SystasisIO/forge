@@ -41,8 +41,8 @@ plugins:
       # ...
 ```
 
-Examples include `plugins.crypto.secrets`, `plugins.http.server`, and
-`plugins.p2p.node`. The removed `plugins.crypto.signer` section is not accepted;
+Examples include `plugins.crypto.secrets`, `plugins.net.http.server`, and
+`plugins.net.p2p.node`. The removed `plugins.crypto.signer` section is not accepted;
 transaction signing moves to the deny-by-default `plugins.chain.signer` policy.
 The replacement intentionally accepts canonical K1 Chain transaction keys only;
 generic R1, WebAuthn and raw-digest signing remain low-level provider concerns.

@@ -42,6 +42,7 @@ import forge.chain.protocol.contract_commitment;
 import forge.chain.savanna.finality_witness;
 import forge.chain.savanna.qc;
 import forge.chain.savanna.validation;
+import forge.raw.exceptions;
 import forge.codec.hex;
 import forge.crypto.asymmetric.secp256k1;
 import forge.crypto.asymmetric.values;
@@ -518,7 +519,8 @@ struct rolling_witness_chain_fixture {
    }
 };
 
-rolling_witness_chain_fixture make_rolling_witness_chain(protocol::block_num last_block_num = 21U) {
+rolling_witness_chain_fixture make_rolling_witness_chain(protocol::block_num last_block_num = 21U,
+                                                         protocol::block_num delayed_qc_block = 0U) {
    if (last_block_num < 4U) {
       throw std::logic_error{"rolling witness fixture requires at least four blocks"};
    }
@@ -547,7 +549,7 @@ rolling_witness_chain_fixture make_rolling_witness_chain(protocol::block_num las
 
    for (auto block_num = protocol::block_num{2U}; block_num <= last_block_num; ++block_num) {
       const auto& parent = fixture.candidates.back();
-      auto block = block_num == 2U
+      auto block = block_num == 2U || block_num == delayed_qc_block
                        ? make_child(parent, producer, savanna::state_commitment{})
                        : make_child(parent, producer, savanna::state_commitment{}, make_current_qc(parent, finalizer));
       const auto receipt = make_digest(800U + block_num);
@@ -1163,11 +1165,7 @@ rich_portable_fixture make_rich_portable_fixture() {
        make_record(fifth_block, fifth_receipt),
        make_record(sixth_block, sixth_receipt),
    };
-   const auto checkpoint = savanna::checkpoint{
-       .finalized = second.state.make_block_ref(),
-       .state = second.state,
-       .validation = savanna::advance_finalized(second.validation, second.num),
-   };
+   const auto checkpoint = savanna::make_checkpoint(second.state, second.validation);
    const auto genesis_witness = savanna::make_finality_witness(chain, genesis.value.id, all_records);
    const auto checkpoint_witness = savanna::make_finality_witness(chain, second.id, checkpoint_records);
    const auto first_block_mutations = std::vector<protocol::table_mutation>{
@@ -1575,6 +1573,108 @@ BOOST_AUTO_TEST_CASE(portable_savanna_pure_advance_derives_checkpoint_and_reject
    BOOST_CHECK_THROW(static_cast<void>(savanna::advance_finality_trust(
                          fixture.genesis_trust, savanna::encode_finality_witness(bad_signature), fixture.anchor(2U))),
                      savanna::exceptions::invalid_header);
+}
+
+BOOST_AUTO_TEST_CASE(portable_savanna_rolling_checkpoint_replays_delayed_qc_below_its_anchor) {
+   const auto fixture = make_rolling_witness_chain(8U, 4U);
+   const auto initial = savanna::make_finality_witness(fixture.chain, fixture.candidate(1U).id, fixture.records);
+   BOOST_REQUIRE_EQUAL(fixture.candidate(3U).state.finality.latest_qc_claim().block, 2U);
+   BOOST_REQUIRE_EQUAL(fixture.candidate(4U).state.finality.latest_qc_claim().block, 2U);
+   BOOST_REQUIRE_NO_THROW(savanna::verify_finality_witness(
+       fixture.genesis_trust, savanna::encode_finality_witness(initial), fixture.anchor(5U)));
+   const auto checkpoint = savanna::advance_finality_trust(fixture.genesis_trust, initial, fixture.anchor(3U));
+   BOOST_CHECK_EQUAL(checkpoint.value.validation.first_block_num(), 2U);
+   BOOST_CHECK_EQUAL(checkpoint.value.validation.current_block_num(), 3U);
+   const auto restored = forge::raw::unpack_exact<savanna::finality_checkpoint_bootstrap>(forge::raw::pack(checkpoint));
+   const auto continuation =
+       savanna::make_finality_witness(fixture.chain, fixture.candidate(3U).id,
+                                      std::span<const savanna::finality_witness_record>{fixture.records}.subspan(2U));
+   savanna::verify_finality_witness(savanna::finality_trust{restored}, savanna::encode_finality_witness(continuation),
+                                    fixture.anchor(5U));
+   const auto next =
+       savanna::advance_finality_trust(savanna::finality_trust{restored}, continuation, fixture.anchor(5U));
+   BOOST_CHECK_EQUAL(next.value.validation.first_block_num(), 4U);
+   savanna::verify_finality_witness(savanna::finality_trust{next}, fixture.proof(5U, 6U), fixture.anchor(6U));
+}
+
+BOOST_AUTO_TEST_CASE(portable_savanna_checkpoint_normalizes_only_complete_trusted_history) {
+   const auto fixture = make_rolling_witness_chain(8U, 4U);
+   const auto& candidate = fixture.candidate(3U);
+   const auto canonical = savanna::finality_checkpoint_bootstrap{
+       .chain = fixture.chain,
+       .value = savanna::make_checkpoint(candidate.state, candidate.validation),
+   };
+   auto richer = canonical;
+   richer.value.validation = candidate.validation;
+   BOOST_REQUIRE_EQUAL(richer.value.validation.first_block_num(), 1U);
+   BOOST_CHECK(savanna::equivalent(richer.value, canonical.value));
+   const auto verifier = api::make_savanna_finality_verifier_with_trusts(savanna::finality_trust{richer},
+                                                                         {savanna::finality_trust{canonical}});
+   BOOST_CHECK_NO_THROW(verifier->verify(fixture.anchor(5U), fixture.proof(3U, 5U)));
+
+   // Replay from a configured genesis may derive the same anchor with a shorter prefix.
+   auto store = api::detail::savanna_finality_trust_store{savanna::finality_trust{richer}, {}, {}};
+   const auto proof = savanna::encode_finality_witness(
+       savanna::make_finality_witness(fixture.chain, fixture.candidate(1U).id, fixture.records));
+   auto advanced = savanna::advance_finality_trust_with_replay(
+       fixture.genesis_trust, savanna::decode_finality_witness(proof), fixture.anchor(3U));
+   BOOST_CHECK_NO_THROW(store.install_verified(advanced.checkpoint, advanced.replay, fixture.anchor(3U),
+                                               forge::crypto::digest::sha256::hash(proof), candidate.state));
+
+   auto incomplete = canonical;
+   incomplete.value.validation = savanna::advance_finalized(incomplete.value.validation, candidate.num);
+   BOOST_CHECK_THROW(static_cast<void>(savanna::equivalent(incomplete.value, canonical.value)),
+                     savanna::exceptions::invalid_validation_state);
+   BOOST_CHECK_THROW(static_cast<void>(savanna::trust_anchor(savanna::finality_trust{incomplete})),
+                     savanna::exceptions::untrusted_finality_bootstrap);
+   BOOST_CHECK_THROW(static_cast<void>(api::make_savanna_finality_verifier_with_trusts(
+                         fixture.genesis_trust, {savanna::finality_trust{incomplete}})),
+                     api::exceptions::trust_required);
+
+   auto conflicting = richer;
+   conflicting.value.state.active_proposers.proposal_time.slot += 1U;
+   conflicting.value.state.block = conflicting.value.state.make_block_ref();
+   conflicting.value.finalized = conflicting.value.state.block;
+   BOOST_CHECK(!savanna::equivalent(conflicting.value, canonical.value));
+   BOOST_CHECK_THROW(static_cast<void>(api::make_savanna_finality_verifier_with_trusts(
+                         savanna::finality_trust{canonical}, {savanna::finality_trust{conflicting}})),
+                     api::exceptions::invalid_request);
+   BOOST_CHECK_THROW(store.install_verified(conflicting, advanced.replay, fixture.anchor(3U),
+                                            forge::crypto::digest::sha256::hash(proof), candidate.state),
+                     api::exceptions::invalid_finality);
+
+   auto corrupted = forge::raw::pack(richer);
+   corrupted.back() ^= 1U;
+   BOOST_CHECK_THROW(static_cast<void>(forge::raw::unpack_exact<savanna::finality_checkpoint_bootstrap>(corrupted)),
+                     forge::raw::exceptions::codec_error);
+}
+
+BOOST_AUTO_TEST_CASE(portable_savanna_checkpoint_history_and_bytes_have_explicit_limits) {
+   const auto fixture = make_rolling_witness_chain(8U, 4U);
+   const auto checkpoint = savanna::finality_checkpoint_bootstrap{
+       .chain = fixture.chain,
+       .value = savanna::make_checkpoint(fixture.candidate(4U).state, fixture.candidate(4U).validation),
+   };
+   BOOST_REQUIRE_EQUAL(checkpoint.value.validation.retained_size(), 3U);
+   auto limits = savanna::finality_witness_limits{};
+   limits.max_blocks = 3U;
+   limits.max_bytes = static_cast<std::uint32_t>(forge::raw::pack(checkpoint.value).size());
+   BOOST_CHECK_NO_THROW(static_cast<void>(savanna::trust_anchor(savanna::finality_trust{checkpoint}, limits)));
+   BOOST_CHECK_NO_THROW(static_cast<void>(api::savanna_finality_verifier{savanna::finality_trust{checkpoint}, limits}));
+   --limits.max_blocks;
+   BOOST_CHECK_THROW(static_cast<void>(savanna::trust_anchor(savanna::finality_trust{checkpoint}, limits)),
+                     savanna::exceptions::finality_witness_limit_exceeded);
+   BOOST_CHECK_THROW(static_cast<void>(api::savanna_finality_verifier{savanna::finality_trust{checkpoint}, limits}),
+                     api::exceptions::resource_exhausted);
+   ++limits.max_blocks;
+   --limits.max_bytes;
+   BOOST_CHECK_THROW(static_cast<void>(savanna::trust_anchor(savanna::finality_trust{checkpoint}, limits)),
+                     savanna::exceptions::finality_witness_limit_exceeded);
+   limits.max_bytes = savanna::finality_witness_hard_max_bytes;
+   auto richer = checkpoint;
+   richer.value.validation = fixture.candidate(4U).validation;
+   BOOST_CHECK_THROW(static_cast<void>(savanna::trust_anchor(savanna::finality_trust{richer}, limits)),
+                     savanna::exceptions::finality_witness_limit_exceeded);
 }
 
 BOOST_AUTO_TEST_CASE(portable_savanna_replay_reports_skipped_slot_policy_opportunities_and_rejects_wrong_producer) {

@@ -1,11 +1,14 @@
 #include <boost/test/unit_test.hpp>
 
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -186,8 +189,10 @@ BOOST_AUTO_TEST_CASE(store_creates_private_durable_directory_chain) {
    const auto second = first / "keystore";
    const auto path = second / "keys.fks";
 
-   auto value = keystore::store::create(path, password());
-   value.put({.value = "devnet"}, forge::crypto::asymmetric::private_key::generate());
+   {
+      auto value = keystore::store::create(path, password());
+      value.put({.value = "devnet"}, forge::crypto::asymmetric::private_key::generate());
+   }
 
    for (const auto& component : {first, second}) {
       struct stat status{};
@@ -209,8 +214,10 @@ BOOST_AUTO_TEST_CASE(store_resynchronizes_a_preexisting_private_directory_chain)
    std::filesystem::permissions(second, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
 
    const auto path = second / "keys.fks";
-   auto value = keystore::store::create(path, password());
-   value.put({.value = "devnet"}, forge::crypto::asymmetric::private_key::generate());
+   {
+      auto value = keystore::store::create(path, password());
+      value.put({.value = "devnet"}, forge::crypto::asymmetric::private_key::generate());
+   }
 
    auto reopened = keystore::store::open(path, password());
    auto runtime = forge::asio::runtime{};
@@ -220,10 +227,12 @@ BOOST_AUTO_TEST_CASE(store_resynchronizes_a_preexisting_private_directory_chain)
 BOOST_AUTO_TEST_CASE(store_rejects_duplicate_ids_and_tampered_files) {
    auto directory = temporary_directory{};
    const auto path = directory.path / "keys.fks";
-   auto value = keystore::store::create(path, password());
-   value.put({.value = "key"}, forge::crypto::asymmetric::private_key::generate());
-   BOOST_CHECK_THROW(value.put({.value = "key"}, forge::crypto::asymmetric::private_key::generate()),
-                     keystore::exceptions::duplicate_key);
+   {
+      auto value = keystore::store::create(path, password());
+      value.put({.value = "key"}, forge::crypto::asymmetric::private_key::generate());
+      BOOST_CHECK_THROW(value.put({.value = "key"}, forge::crypto::asymmetric::private_key::generate()),
+                        keystore::exceptions::duplicate_key);
+   }
 
    auto data = std::ifstream{path, std::ios::binary};
    auto bytes = std::string{std::istreambuf_iterator<char>{data}, std::istreambuf_iterator<char>{}};
@@ -303,6 +312,90 @@ BOOST_AUTO_TEST_CASE(store_rejects_insecure_directory_permissions) {
                      keystore::exceptions::invalid_file);
    std::filesystem::permissions(directory.path, std::filesystem::perms::owner_all,
                                 std::filesystem::perm_options::replace);
+}
+
+BOOST_AUTO_TEST_CASE(ownership_survives_atomic_replacement_and_locked_store_lifetime) {
+   auto directory = temporary_directory{};
+   const auto path = directory.path / "keys.fks";
+   std::shared_ptr<keystore::ownership> owner;
+   {
+      auto value = keystore::store::create(path, password());
+      owner = value.owner();
+      value.put({.value = "key"}, forge::crypto::asymmetric::private_key::generate());
+      BOOST_CHECK_THROW((void)keystore::store::open(path, password()), keystore::exceptions::in_use);
+      BOOST_CHECK_THROW((void)keystore::store::open(owner, password()), keystore::exceptions::in_use);
+   }
+   BOOST_CHECK_THROW((void)keystore::store::open(path, password()), keystore::exceptions::in_use);
+   BOOST_CHECK_THROW((void)keystore::store::open(owner, password("wrong")), keystore::exceptions::invalid_file);
+   {
+      auto reopened = keystore::store::open(owner, password());
+      auto runtime = forge::asio::runtime{};
+      BOOST_TEST(forge::asio::blocking::run(runtime, reopened.keys()).size() == 1U);
+   }
+   owner.reset();
+   BOOST_CHECK_NO_THROW((void)keystore::store::open(path, password()));
+   BOOST_TEST(std::filesystem::exists(path.string() + ".lock"));
+}
+
+BOOST_AUTO_TEST_CASE(legacy_open_from_nonprivate_directory_requires_explicit_migration) {
+   auto directory = temporary_directory{};
+   const auto path = directory.path / "keys.fks";
+   {
+      auto value = keystore::store::create(path, password());
+   }
+   std::filesystem::permissions(directory.path,
+                                std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+                                    std::filesystem::perms::group_exec,
+                                std::filesystem::perm_options::replace);
+   BOOST_CHECK_THROW((void)keystore::store::open(path, password()), keystore::exceptions::invalid_file);
+   std::filesystem::permissions(directory.path, std::filesystem::perms::owner_all,
+                                std::filesystem::perm_options::replace);
+   BOOST_CHECK_NO_THROW((void)keystore::store::open(path, password()));
+}
+
+BOOST_AUTO_TEST_CASE(ownership_is_exclusive_across_processes_and_rejects_inherited_use) {
+   auto directory = temporary_directory{};
+   const auto path = directory.path / "keys.fks";
+   auto value = keystore::store::create(path, password());
+   const auto child = ::fork();
+   BOOST_REQUIRE(child >= 0);
+   if (child == 0) {
+      auto denied = false;
+      try {
+         static_cast<void>(keystore::ownership::acquire(path));
+      } catch (const keystore::exceptions::in_use&) {
+         denied = true;
+      } catch (...) {
+         ::_exit(2);
+      }
+      try {
+         value.owner()->verify();
+         ::_exit(3);
+      } catch (const keystore::exceptions::ownership_lost&) {
+         ::_exit(denied ? 0 : 4);
+      } catch (...) {
+         ::_exit(5);
+      }
+   }
+   auto status = int{};
+   BOOST_REQUIRE(::waitpid(child, &status, 0) == child);
+   BOOST_REQUIRE(WIFEXITED(status));
+   BOOST_TEST(WEXITSTATUS(status) == 0);
+   BOOST_CHECK_NO_THROW(value.owner()->verify());
+}
+
+BOOST_AUTO_TEST_CASE(ownership_file_replacement_fails_closed_before_signing) {
+   auto directory = temporary_directory{};
+   const auto path = directory.path / "keys.fks";
+   auto value = keystore::store::create(path, password());
+   value.put({.value = "key"}, forge::crypto::asymmetric::private_key::generate());
+   const auto lock_path = std::filesystem::path{path.string() + ".lock"};
+   std::filesystem::rename(lock_path, directory.path / "old.lock");
+   write_private_file(lock_path, {});
+   BOOST_CHECK_THROW(value.owner()->verify(), keystore::exceptions::ownership_lost);
+   auto runtime = forge::asio::runtime{};
+   BOOST_CHECK_THROW((void)forge::asio::blocking::run(runtime, value.sign_digest({.id = {.value = "key"}})),
+                     keystore::exceptions::ownership_lost);
 }
 
 BOOST_AUTO_TEST_CASE(password_file_input_is_private_single_line_and_bounded) {

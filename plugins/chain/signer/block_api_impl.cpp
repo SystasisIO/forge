@@ -8,8 +8,11 @@ module;
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <forge/exceptions/macros.hpp>
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -56,10 +59,69 @@ boost::asio::awaitable<void> require_active_request(const admission_lease& lease
 }
 
 boost::asio::awaitable<std::vector<forge::chain::protocol::signature>>
+sign_selected(signing_policy::block_selection selected, forge::chain::protocol::block_id digest,
+              std::weak_ptr<admission_lease> lease, std::shared_ptr<std::atomic_bool> active) {
+   auto result = std::vector<forge::chain::protocol::signature>{};
+   result.reserve(selected.keys.size());
+   for (const auto& key : selected.keys) {
+      {
+         const auto admitted = lease.lock();
+         if (!admitted || !active->load(std::memory_order_acquire)) {
+            FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "Block signing operation has expired");
+         }
+         co_await require_active_request(*admitted);
+      }
+      auto response = co_await key.provider->sign_digest({.id = key.key.id, .digest = digest});
+      {
+         const auto admitted = lease.lock();
+         if (!admitted || !active->load(std::memory_order_acquire)) {
+            FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "Block signing operation has expired");
+         }
+         co_await require_active_request(*admitted);
+      }
+      auto valid = response.public_key == key.key.public_key && forge::crypto::asymmetric::type(response.signature) ==
+                                                                    forge::crypto::asymmetric::algorithm::secp256k1;
+      try {
+         valid = valid && forge::crypto::asymmetric::recover(response.signature, digest) == key.key.public_key;
+      } catch (const forge::exceptions::base&) {
+         valid = false;
+      }
+      if (!valid) {
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::signing_failed,
+                               "Chain signer provider returned an invalid block signature");
+      }
+      result.push_back(std::move(response.signature));
+   }
+   co_return result;
+}
+
+void validate_result(const std::vector<forge::chain::protocol::signature>& result,
+                     const forge::chain::protocol::block_sign_request& request) {
+   if (result.size() != request.keys.size()) {
+      FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::signing_failed,
+                            "Chain signer block execution returned an invalid signature count");
+   }
+   const auto digest = forge::chain::protocol::calculate_block_id(request.header);
+   for (auto index = std::size_t{}; index < result.size(); ++index) {
+      auto valid = forge::crypto::asymmetric::type(result[index]) == forge::crypto::asymmetric::algorithm::secp256k1;
+      try {
+         valid = valid && forge::crypto::asymmetric::recover(result[index], digest) == request.keys[index];
+      } catch (const forge::exceptions::base&) {
+         valid = false;
+      }
+      if (!valid) {
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::signing_failed,
+                               "Chain signer block execution returned an invalid signature");
+      }
+   }
+}
+
+boost::asio::awaitable<std::vector<forge::chain::protocol::signature>>
 sign_admitted(auto state, forge::chain::protocol::block_sign_request request,
-              forge::api::auth::authenticated_caller caller, admission_lease lease) {
+              forge::api::auth::authenticated_caller caller, admission_lease admitted) {
+   auto lease = std::make_shared<admission_lease>(std::move(admitted));
    try {
-      co_await require_active_request(lease);
+      co_await require_active_request(*lease);
       auto selected = state->select_block(request, caller);
       if (forge::raw::pack_size(request.header) > selected.max_header_bytes) {
          FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::authorization_denied,
@@ -69,7 +131,7 @@ sign_admitted(auto state, forge::chain::protocol::block_sign_request request,
       // Resolve every configured identity before any cryptographic operation can occur.
       for (const auto& key : selected.keys) {
          const auto identity = co_await key.provider->describe(key.key.id);
-         co_await require_active_request(lease);
+         co_await require_active_request(*lease);
          if (identity.id != key.key.id || identity.public_key != key.key.public_key) {
             FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::signing_failed,
                                   "Chain signer provider identity does not match its configured block binding");
@@ -77,28 +139,17 @@ sign_admitted(auto state, forge::chain::protocol::block_sign_request request,
       }
 
       const auto digest = forge::chain::protocol::calculate_block_id(request.header);
-      auto result = std::vector<forge::chain::protocol::signature>{};
-      result.reserve(selected.keys.size());
-      for (const auto& key : selected.keys) {
-         auto response = co_await key.provider->sign_digest({.id = key.key.id, .digest = digest});
-         co_await require_active_request(lease);
-         auto valid = response.public_key == key.key.public_key &&
-                      forge::crypto::asymmetric::type(response.signature) ==
-                          forge::crypto::asymmetric::algorithm::secp256k1;
-         try {
-            valid = valid && forge::crypto::asymmetric::recover(response.signature, digest) == key.key.public_key;
-         } catch (const forge::exceptions::base&) {
-            valid = false;
-         }
-         if (!valid) {
-            FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::signing_failed,
-                                  "Chain signer provider returned an invalid block signature");
-         }
-         result.push_back(std::move(response.signature));
-      }
+      const auto handler = state->block_execution();
+      const auto active = std::make_shared<std::atomic_bool>(true);
+      const auto revoke = boost::scope::scope_exit{[active] { active->store(false, std::memory_order_release); }};
+      auto signing = sign_selected(std::move(selected), digest, lease, active);
+      auto result = handler ? co_await handler->execute(request, std::move(signing)) : co_await std::move(signing);
+      active->store(false, std::memory_order_release);
+      co_await require_active_request(*lease);
+      validate_result(result, request);
       co_return result;
    } catch (const boost::system::system_error&) {
-      if (lease.cancelled()) {
+      if (lease->cancelled()) {
          FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "Chain signer request was canceled");
       }
       throw;

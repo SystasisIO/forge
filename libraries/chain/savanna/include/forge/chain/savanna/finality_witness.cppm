@@ -26,6 +26,7 @@ inline constexpr auto finality_witness_hard_max_producer_slots = std::uint32_t{6
 inline constexpr auto finality_witness_hard_max_bytes = std::uint32_t{8U << 20U};
 
 struct finality_witness_limits {
+   // Also bound the retained roots and canonical bytes of each trusted checkpoint.
    std::uint32_t max_blocks = finality_witness_hard_max_blocks;
    std::uint32_t max_producer_slots = finality_witness_hard_max_producer_slots;
    std::uint32_t max_bytes = finality_witness_hard_max_bytes;
@@ -113,7 +114,7 @@ advance_finality_trust_with_replay(const finality_trust& trust, const finality_w
 advance_finality_trust(const finality_trust& trust, const forge::chain::protocol::proof_blob& proof,
                        const forge::chain::protocol::state_anchor& finalized, finality_witness_limits limits = {});
 
-[[nodiscard]] finality_trust_anchor trust_anchor(const finality_trust& trust);
+[[nodiscard]] finality_trust_anchor trust_anchor(const finality_trust& trust, finality_witness_limits limits = {});
 
 void verify_finality_witness(const finality_trust& trust, const forge::chain::protocol::proof_blob& proof,
                              const forge::chain::protocol::state_anchor& expected, finality_witness_limits limits = {});

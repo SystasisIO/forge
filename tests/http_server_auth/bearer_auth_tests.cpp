@@ -9,12 +9,12 @@
 import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.net.http.types;
-import forge.plugins.http.server.bearer_auth;
-import forge.plugins.http.server.exceptions;
+import forge.plugins.net.http.server.bearer_auth;
+import forge.plugins.net.http.server.exceptions;
 
 namespace {
 
-namespace http = forge::plugins::http::server;
+namespace http = forge::plugins::net::http::server;
 
 http::middleware_response invoke(const http::middleware_descriptor& middleware, std::string authorization,
                                  bool& called) {

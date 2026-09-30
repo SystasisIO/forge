@@ -337,8 +337,12 @@ forge::config::core::component_registry application_shell::describe_config() {
 }
 
 void application_shell::configure(const forge::config::core::document& document) {
+   forge::asio::blocking::run(impl_->runtime, async_configure(document));
+}
+
+boost::asio::awaitable<void> application_shell::async_configure(forge::config::core::document document) {
    impl_->require_created("configure");
-   forge::asio::blocking::run(impl_->runtime, apply_effective_config(make_effective_config(document)));
+   co_await apply_effective_config(make_effective_config(document));
 }
 
 boost::asio::awaitable<void> application_shell::initialize() {

@@ -74,6 +74,15 @@ concept affine_work = requires(forge::asio::affine::executor executor, Work work
 
 static_assert(!affine_work<awaitable_work>);
 
+boost::asio::awaitable<std::size_t> run_fast_affine_operations(forge::asio::affine::executor executor,
+                                                               std::size_t count) {
+   auto completed = std::size_t{};
+   for (auto index = std::size_t{}; index < count; ++index) {
+      completed += co_await executor.execute({.name = "fast-completion"}, [] { return std::size_t{1}; });
+   }
+   co_return completed;
+}
+
 boost::asio::awaitable<void>
 expect_affine_canceled(forge::asio::affine::executor executor, std::atomic_bool& observed) {
    try {
@@ -133,6 +142,18 @@ BOOST_AUTO_TEST_CASE(asio_affine_runs_every_operation_on_one_owned_thread) {
    }
    BOOST_CHECK(ids.front() != std::this_thread::get_id());
    BOOST_CHECK_EQUAL(lane.snapshot().completed, ids.size());
+   forge::asio::blocking::run(runtime, lane.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(asio_affine_fast_completion_returns_to_multiple_runtime_workers) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto lane = forge::asio::affine::lane{};
+   constexpr auto count = std::size_t{10000};
+   auto result = boost::asio::co_spawn(runtime.context(), run_fast_affine_operations(lane.get_executor(), count),
+                                       boost::asio::use_future);
+   BOOST_REQUIRE(result.wait_for(std::chrono::seconds{10}) == std::future_status::ready);
+   BOOST_CHECK_EQUAL(result.get(), count);
+   BOOST_CHECK_EQUAL(lane.snapshot().completed, count);
    forge::asio::blocking::run(runtime, lane.shutdown());
 }
 

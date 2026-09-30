@@ -364,7 +364,7 @@
         "test_forge_plugins p2p_diagnostics_plugin_reports_live_p2p_node_state"
       ],
       "known_gap":
-          "`forge::plugins::p2p::diagnostics` is an FORGE in-process operator/test API over local snapshots; no Go/Rust libp2p wire interop claim is made."
+          "`forge::plugins::net::p2p::diagnostics` is an FORGE in-process operator/test API over local snapshots; no Go/Rust libp2p wire interop claim is made."
     },
     {
       "id": "plugin.p2p_pubsub_facade",
@@ -383,7 +383,7 @@
         "test_forge_plugins p2p_pubsub_plugin_enforces_topic_policy_and_handler_bounds"
       ],
       "known_gap":
-          "`forge::plugins::p2p::pubsub` is an FORGE in-process plugin facade over core GossipSub; Go/Rust wire compatibility remains tracked by the core GossipSub live cases."
+          "`forge::plugins::net::p2p::pubsub` is an FORGE in-process plugin facade over core GossipSub; Go/Rust wire compatibility remains tracked by the core GossipSub live cases."
     },
     {
       "id": "interop.live_ping_identify_relay",

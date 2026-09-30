@@ -319,16 +319,30 @@ void write_atomic(const std::filesystem::path& path, std::span<const std::uint8_
 
 } // namespace
 
-store::impl::impl(std::filesystem::path path, core::secret_string password, store_options options)
-    : path_(std::move(path)), password_(std::move(password)), options_(options) {
+store::impl::impl(std::shared_ptr<ownership> owner, core::secret_string password, store_options options)
+    : owner_(std::move(owner)), password_(std::move(password)), options_(options) {
    validate_options(options_);
-   if (path_.empty() || password_.empty()) {
+   if (!owner_ || password_.empty()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "keystore path and password must not be empty");
    }
+   owner_->verify();
+   path_ = owner_->path();
+   access_ = owner_->claim();
 }
 
 std::unique_ptr<store::impl> store::impl::create(std::filesystem::path path, core::secret_string password,
                                                  store_options options) {
+   if (path.empty()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "keystore path must not be empty");
+   }
+   ensure_private_directory(path.parent_path().empty() ? "." : path.parent_path());
+   return create(ownership::acquire(std::move(path)), std::move(password), options);
+}
+
+std::unique_ptr<store::impl> store::impl::create(std::shared_ptr<ownership> owner, core::secret_string password,
+                                                 store_options options) {
+   auto result = std::make_unique<impl>(std::move(owner), std::move(password), options);
+   const auto& path = result->path_;
    auto error = std::error_code{};
    const auto exists = std::filesystem::exists(path, error);
    if (error) {
@@ -338,14 +352,18 @@ std::unique_ptr<store::impl> store::impl::create(std::filesystem::path path, cor
       FORGE_THROW_EXCEPTION(exceptions::io_error, "keystore file already exists",
                             forge::exceptions::ctx("path", path.string()));
    }
-   auto result = std::make_unique<impl>(std::move(path), std::move(password), options);
    result->write_entries(result->entries_, false);
    return result;
 }
 
 std::unique_ptr<store::impl> store::impl::open(std::filesystem::path path, core::secret_string password,
                                                store_options options) {
-   auto result = std::make_unique<impl>(std::move(path), std::move(password), options);
+   return open(ownership::acquire(std::move(path)), std::move(password), options);
+}
+
+std::unique_ptr<store::impl> store::impl::open(std::shared_ptr<ownership> owner, core::secret_string password,
+                                               store_options options) {
+   auto result = std::make_unique<impl>(std::move(owner), std::move(password), options);
    result->load();
    return result;
 }
@@ -370,6 +388,7 @@ void store::impl::validate_id(const signer::key_id& id) const {
 }
 
 void store::impl::load() {
+   owner_->verify();
    auto container = read_file(path_, options_.limits.max_plaintext_bytes + 4U * 1024U);
    auto plaintext = decrypt_file(container, password_, options_.limits);
    serialized_entries serialized;
@@ -407,6 +426,7 @@ void store::impl::load() {
 }
 
 void store::impl::write_entries(const entries& value, bool replace) const {
+   owner_->verify();
    auto serialized = serialized_entries{};
    serialized.reserve(value.size());
    for (const auto& [id, key] : value) {
@@ -483,6 +503,7 @@ void store::impl::erase(const signer::key_id& id) {
 }
 
 std::vector<signer::key_info> store::impl::keys() const {
+   owner_->verify();
    auto lock = std::scoped_lock{mutex_};
    auto result = std::vector<signer::key_info>{};
    result.reserve(entries_.size());
@@ -493,6 +514,7 @@ std::vector<signer::key_info> store::impl::keys() const {
 }
 
 signer::key_info store::impl::describe(const signer::key_id& id) const {
+   owner_->verify();
    auto lock = std::scoped_lock{mutex_};
    const auto iterator = entries_.find(id.value);
    if (iterator == entries_.end()) {
@@ -502,6 +524,7 @@ signer::key_info store::impl::describe(const signer::key_id& id) const {
 }
 
 signer::sign_digest_response store::impl::sign_digest(const signer::sign_digest_request& request) const {
+   owner_->verify();
    auto lock = std::scoped_lock{mutex_};
    const auto iterator = entries_.find(request.id.value);
    if (iterator == entries_.end()) {
@@ -516,6 +539,10 @@ signer::sign_digest_response store::impl::sign_digest(const signer::sign_digest_
 
 const std::filesystem::path& store::impl::path() const noexcept {
    return path_;
+}
+
+std::shared_ptr<ownership> store::impl::owner() const noexcept {
+   return owner_;
 }
 
 } // namespace forge::crypto::keystore

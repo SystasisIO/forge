@@ -15,6 +15,11 @@ description: Use when creating, renaming, moving, refactoring, or reviewing an o
 семействе плагин и верен ли его namespace/target.
 
 ## 1. Расположение и namespace
+- `<family>` — доменный путь, а не обязательно один сегмент. Разрешённые вложенные
+  семейства задаёт repo-root `AGENTS.md`: сейчас `net/http` и `net/p2p`.
+  Например, leaf `plugins/net/http/server` владеет namespace
+  `forge::plugins::net::http::server`; дополнительные уровни ради реализации
+  или отдельной программы не добавляются.
 - Плагин живёт под `plugins/<family>/<name>/` (а не `libraries/<lib>/`).
 - Владеет **листовым** namespace `<ns>::plugins::<family>::<name>`.
 - Структура файлов внутри — по `create-library` (`include/<ns>/plugins/<family>/<name>/*.cppm`,
@@ -34,6 +39,11 @@ description: Use when creating, renaming, moving, refactoring, or reviewing an o
 | каталог / include | `plugins/<family>/<name>/` · `include/<ns>/plugins/<family>/<name>/` |
 
 Все 5 форм обязаны соответствовать листу — рассинхрон любой из них = баг.
+Для вложенного семейства каждый сегмент участвует в маппинге:
+`net/http/server` → `net::http::server` → `net_http_server` →
+`net.http.server`. Пример target: `forge_plugins_net_http_server`;
+config section: `plugins.net.http.server`. Все промежуточные уровни пусты,
+конфигурация и lifecycle принадлежат конечному плагину.
 
 ## 3. Правила семейства
 
@@ -53,8 +63,10 @@ description: Use when creating, renaming, moving, refactoring, or reviewing an o
 `forge::api` и не выводит порядок `api`/channel самостоятельно. При выборе namespace
 API binding сначала применяй актуальное правило API family из repo-root `AGENTS.md`.
 
-**P5. Промежуточный уровень пуст.** `<ns>::plugins::<family>` — пустая группировка; типы
-только в листе `<ns>::plugins::<family>::<name>`.
+**P5. Промежуточные уровни пусты.** Каждый промежуточный namespace в
+`<ns>::plugins::<family>` — пустая группировка; типы только в конечном листе
+`<ns>::plugins::<family>::<name>`. Вложенность не создаёт aggregate plugin,
+module или target и не объединяет независимые lifecycle.
 
 **P6. Размещение по слою (produces/consumes).** Плагин живёт в домене, который **обслуживает**:
 производит/держит состояние домена X → `X`; потребляет нижний слой, чтобы обслужить домен Y

@@ -131,7 +131,7 @@ shared runtime service, such as an HTTP server, a P2P node, a signer, a secrets
 service or an OTLP exporter.
 
 ```cpp
-registry.register_plugin(forge::plugins::http::server::descriptor());
+registry.register_plugin(forge::plugins::net::http::server::descriptor());
 registry.register_plugin(forge::plugins::chain::signer::descriptor());
 registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
 ```

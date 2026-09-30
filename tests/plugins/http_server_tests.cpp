@@ -94,11 +94,11 @@ import forge.net.http.types;
 import forge.net.http.upload;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.crypto.secrets.api;
-import forge.plugins.http.server.types;
-import forge.plugins.http.server.exceptions;
-import forge.plugins.http.server.middleware;
-import forge.plugins.http.server.api;
-import forge.plugins.http.server.plugin;
+import forge.plugins.net.http.server.types;
+import forge.plugins.net.http.server.exceptions;
+import forge.plugins.net.http.server.middleware;
+import forge.plugins.net.http.server.api;
+import forge.plugins.net.http.server.plugin;
 import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;
@@ -114,7 +114,7 @@ using forge::tests::plugins::require_field;
 
 template <typename T>
 concept accepts_raw_http_binding = requires(T& api, forge::api::http::binding_plan binding) {
-   api.publish(std::move(binding), forge::plugins::http::server::publish_options{});
+   api.publish(std::move(binding), forge::plugins::net::http::server::publish_options{});
 };
 
 namespace raw_http = forge::net::http;
@@ -127,9 +127,9 @@ concept accepts_raw_http_middleware =
 template <typename T>
 concept accepts_asset_mount = requires(T& api, raw_http::asset_mount mount) { api.mount_assets(std::move(mount)); };
 
-static_assert(!accepts_raw_http_binding<forge::plugins::http::server::api>);
-static_assert(!accepts_raw_http_middleware<forge::plugins::http::server::api>);
-static_assert(accepts_asset_mount<forge::plugins::http::server::api>);
+static_assert(!accepts_raw_http_binding<forge::plugins::net::http::server::api>);
+static_assert(!accepts_raw_http_middleware<forge::plugins::net::http::server::api>);
+static_assert(accepts_asset_mount<forge::plugins::net::http::server::api>);
 
 [[nodiscard]] bool has_internal_forge_header(const forge::net::http::response& value) {
    for (const auto& header : value.headers()) {
@@ -208,7 +208,7 @@ using plugin_test_contract::http_cache_api;
 using plugin_test_contract::http_empty_api;
 using plugin_test_contract::http_stream_api;
 namespace crypto_secrets = forge::plugins::crypto::secrets;
-namespace http_server = forge::plugins::http::server;
+namespace http_server = forge::plugins::net::http::server;
 
 class http_cache_api_impl final : public http_cache_api {
  public:
@@ -224,6 +224,7 @@ class http_cache_api_impl final : public http_cache_api {
 
 struct http_publish_state {
    std::string base_path;
+   bool require_mutual_tls = false;
    std::vector<std::string> middleware_events;
    bool short_circuit = false;
    bool replace_stream_after_next = false;
@@ -303,7 +304,8 @@ class http_cache_publisher_plugin final : public forge::app::plugin {
 
    boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
-      co_await http->publish<http_cache_api>(http_server::publish_options{.base_path = state_->base_path});
+      co_await http->publish<http_cache_api>(http_server::publish_options{
+          .base_path = state_->base_path, .require_mutual_tls = state_->require_mutual_tls});
    }
 
    boost::asio::awaitable<void> startup() override {
@@ -726,13 +728,13 @@ class http_server_application final : public forge::app::application_shell {
       if (middleware_) {
          registry.register_plugin(forge::app::plugin_descriptor{
              .id = forge::app::plugin_id{.value = "http-middleware"},
-             .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+             .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
              .factory = [state = state_] { return std::make_unique<http_middleware_plugin>(state); },
          });
       }
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-cache-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = state_] { return std::make_unique<http_cache_publisher_plugin>(state); },
       });
    }
@@ -759,12 +761,12 @@ class http_assets_server_application final : public forge::app::application_shel
       registry.register_plugin(http_server::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-cache-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = publish_] { return std::make_unique<http_cache_publisher_plugin>(state); },
       });
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-asset-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = assets_] { return std::make_unique<http_asset_publisher_plugin>(state); },
       });
    }
@@ -788,12 +790,12 @@ class http_stream_server_application final : public forge::app::application_shel
       registry.register_plugin(http_server::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-middleware"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = state_] { return std::make_unique<http_middleware_plugin>(state); },
       });
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-stream-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = state_] { return std::make_unique<http_stream_publisher_plugin>(state); },
       });
    }
@@ -817,12 +819,12 @@ class http_empty_server_application final : public forge::app::application_shell
       registry.register_plugin(http_server::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-middleware"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = state_] { return std::make_unique<http_middleware_plugin>(state); },
       });
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-empty-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [state = state_] { return std::make_unique<http_empty_publisher_plugin>(state); },
       });
    }
@@ -842,7 +844,7 @@ class duplicate_http_server_application final : public forge::app::application_s
       registry.register_plugin(http_server::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "duplicate-http-cache-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [] { return std::make_unique<duplicate_http_cache_publisher_plugin>(); },
       });
    }
@@ -859,7 +861,7 @@ class late_http_server_application final : public forge::app::application_shell 
       registry.register_plugin(http_server::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "late-http-publisher"},
-          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.http.server"}},
+          .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
           .factory = [] { return std::make_unique<late_http_publish_plugin>(); },
       });
    }
@@ -886,7 +888,7 @@ BOOST_AUTO_TEST_CASE(http_server_config_is_described_from_schema) {
    auto plugin = http_server::plugin{};
    const auto descriptor = plugin.describe_config();
    BOOST_REQUIRE(descriptor.has_value());
-   BOOST_TEST(descriptor->section == "plugins.http.server");
+   BOOST_TEST(descriptor->section == "plugins.net.http.server");
 
    const auto& bind_address = require_field(*descriptor, "bind-address");
    BOOST_TEST(bind_address.has_default);
@@ -920,11 +922,11 @@ BOOST_AUTO_TEST_CASE(http_server_config_is_described_from_schema) {
 BOOST_AUTO_TEST_CASE(http_server_rejects_invalid_schema_config) {
    auto plugin = http_server::plugin{};
    auto document = forge::config::core::document{};
-   document.set("plugins.http.server.port", std::uint64_t{70000});
+   document.set("plugins.net.http.server.port", std::uint64_t{70000});
 
    auto runtime = forge::asio::runtime{};
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.configure(forge::config::core::component_view{
-                                                             document, "plugins.http.server"})),
+                                                             document, "plugins.net.http.server"})),
                      http_server::exceptions::invalid_config);
 }
 
@@ -933,16 +935,16 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_rejects_invalid_api_base_path_during_con
 
    auto empty = http_server::plugin{};
    auto empty_document = forge::config::core::document{};
-   empty_document.set("plugins.http.server.api-base-path", std::string{});
+   empty_document.set("plugins.net.http.server.api-base-path", std::string{});
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, empty.configure(forge::config::core::component_view{
-                                                             empty_document, "plugins.http.server"})),
+                                                             empty_document, "plugins.net.http.server"})),
                      http_server::exceptions::invalid_config);
 
    auto relative = http_server::plugin{};
    auto relative_document = forge::config::core::document{};
-   relative_document.set("plugins.http.server.api-base-path", std::string{"api"});
+   relative_document.set("plugins.net.http.server.api-base-path", std::string{"api"});
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, relative.configure(forge::config::core::component_view{
-                                                             relative_document, "plugins.http.server"})),
+                                                             relative_document, "plugins.net.http.server"})),
                      http_server::exceptions::invalid_config);
 }
 
@@ -951,26 +953,26 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_rejects_plaintext_non_loopback_and_incom
 
    auto plaintext = http_server::plugin{};
    auto plaintext_document = forge::config::core::document{};
-   plaintext_document.set("plugins.http.server.bind-address", std::string{"0.0.0.0"});
+   plaintext_document.set("plugins.net.http.server.bind-address", std::string{"0.0.0.0"});
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plaintext.configure(forge::config::core::component_view{
-                                                             plaintext_document, "plugins.http.server"})),
+                                                             plaintext_document, "plugins.net.http.server"})),
                      http_server::exceptions::invalid_config);
 
    auto server_tls = http_server::plugin{};
    auto server_tls_document = forge::config::core::document{};
-   server_tls_document.set("plugins.http.server.tls.mode", std::string{"server"});
-   server_tls_document.set("plugins.http.server.tls.certificate-chain-secret", std::string{"certificate"});
+   server_tls_document.set("plugins.net.http.server.tls.mode", std::string{"server"});
+   server_tls_document.set("plugins.net.http.server.tls.certificate-chain-secret", std::string{"certificate"});
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, server_tls.configure(forge::config::core::component_view{
-                                                             server_tls_document, "plugins.http.server"})),
+                                                             server_tls_document, "plugins.net.http.server"})),
                      http_server::exceptions::invalid_config);
 
    auto mutual_tls = http_server::plugin{};
    auto mutual_tls_document = forge::config::core::document{};
-   mutual_tls_document.set("plugins.http.server.tls.mode", std::string{"mutual"});
-   mutual_tls_document.set("plugins.http.server.tls.certificate-chain-secret", std::string{"certificate"});
-   mutual_tls_document.set("plugins.http.server.tls.private-key-secret", std::string{"private-key"});
+   mutual_tls_document.set("plugins.net.http.server.tls.mode", std::string{"mutual"});
+   mutual_tls_document.set("plugins.net.http.server.tls.certificate-chain-secret", std::string{"certificate"});
+   mutual_tls_document.set("plugins.net.http.server.tls.private-key-secret", std::string{"private-key"});
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, mutual_tls.configure(forge::config::core::component_view{
-                                                             mutual_tls_document, "plugins.http.server"})),
+                                                             mutual_tls_document, "plugins.net.http.server"})),
                      http_server::exceptions::invalid_config);
 }
 
@@ -978,9 +980,9 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_requires_secrets_api_only_when_tls_i
    auto state = std::make_shared<http_publish_state>();
    auto app = http_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.tls.mode", std::string{"server"});
-   config.set("plugins.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
-   config.set("plugins.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
+   config.set("plugins.net.http.server.tls.mode", std::string{"server"});
+   config.set("plugins.net.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
+   config.set("plugins.net.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
 
    app.configure(config);
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), http_server::exceptions::startup_failed);
@@ -990,11 +992,11 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_uses_distinct_secret_purposes
    auto state = std::make_shared<http_tls_secret_state>();
    auto app = http_tls_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{0});
-   config.set("plugins.http.server.tls.mode", std::string{"mutual"});
-   config.set("plugins.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
-   config.set("plugins.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
-   config.set("plugins.http.server.tls.client-ca-secret", std::string{"http/test-client-ca"});
+   config.set("plugins.net.http.server.port", std::uint64_t{0});
+   config.set("plugins.net.http.server.tls.mode", std::string{"mutual"});
+   config.set("plugins.net.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
+   config.set("plugins.net.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
+   config.set("plugins.net.http.server.tls.client-ca-secret", std::string{"http/test-client-ca"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1034,10 +1036,10 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_preserves_live_context_and_ca
    auto app = http_tls_server_application{state};
    const auto port = reserve_loopback_port();
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", static_cast<std::uint64_t>(port));
-   config.set("plugins.http.server.tls.mode", std::string{"server"});
-   config.set("plugins.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
-   config.set("plugins.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
+   config.set("plugins.net.http.server.port", static_cast<std::uint64_t>(port));
+   config.set("plugins.net.http.server.tls.mode", std::string{"server"});
+   config.set("plugins.net.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
+   config.set("plugins.net.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1086,10 +1088,10 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_rejects_malformed_material_an
    auto app = http_tls_server_application{state};
    const auto port = reserve_loopback_port();
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", static_cast<std::uint64_t>(port));
-   config.set("plugins.http.server.tls.mode", std::string{"server"});
-   config.set("plugins.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
-   config.set("plugins.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
+   config.set("plugins.net.http.server.port", static_cast<std::uint64_t>(port));
+   config.set("plugins.net.http.server.tls.mode", std::string{"server"});
+   config.set("plugins.net.http.server.tls.certificate-chain-secret", std::string{"http/test-certificate"});
+   config.set("plugins.net.http.server.tls.private-key-secret", std::string{"http/test-private-key"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1122,8 +1124,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_publishes_typed_api_under_configured_bas
    auto state = std::make_shared<http_publish_state>();
    auto app = http_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1138,14 +1140,24 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_publishes_typed_api_under_configured_bas
    forge::asio::blocking::run(app.runtime(), app.shutdown());
 }
 
+BOOST_AUTO_TEST_CASE(http_server_sensitive_publication_refuses_plaintext_listener) {
+   auto state = std::make_shared<http_publish_state>();
+   state->require_mutual_tls = true;
+   auto app = http_server_application{state};
+   auto config = forge::config::core::document{};
+   config.set("plugins.net.http.server.port", std::uint64_t{0});
+   app.configure(config);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), http_server::exceptions::invalid_config);
+}
+
 BOOST_AUTO_TEST_CASE(http_server_plugin_preserves_repeated_set_cookie_from_middleware) {
    const auto port = reserve_loopback_port();
    auto state = std::make_shared<http_publish_state>();
    state->append_cookies_after_next = true;
    auto app = http_server_application{state, true};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1176,8 +1188,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_mounts_assets_without_shadowing_a_narrow
    assets->root = files.path();
    auto app = http_assets_server_application{publish, assets};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/admin-ui/v1"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/admin-ui/v1"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1208,7 +1220,7 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_rejects_asset_publication_without_applic
    assets->root = files.path();
    auto app = http_assets_server_application{publish, assets, false};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{reserve_loopback_port()});
+   config.set("plugins.net.http.server.port", std::uint64_t{reserve_loopback_port()});
 
    app.configure(config);
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), http_server::exceptions::startup_failed);
@@ -1222,8 +1234,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_rejects_root_api_prefix_overlapping_asse
    assets->root = files.path();
    auto app = http_assets_server_application{publish, assets};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{reserve_loopback_port()});
-   config.set("plugins.http.server.api-base-path", std::string{"/"});
+   config.set("plugins.net.http.server.port", std::uint64_t{reserve_loopback_port()});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/"});
 
    app.configure(config);
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), forge::net::http::exceptions::conflict);
@@ -1235,8 +1247,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_uses_publish_base_path_override) {
    state->base_path = "/custom";
    auto app = http_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1257,8 +1269,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_applies_middleware_order_and_short_circu
    state->short_circuit = true;
    auto app = http_server_application{state, true};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1290,8 +1302,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_preserves_stream_framing_through_middlew
    state->base_path = "/api";
    auto app = http_stream_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1326,8 +1338,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_stream_middleware_content_type_preserves
    state->set_stream_content_type_after_next = true;
    auto app = http_stream_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1362,8 +1374,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_preserves_absent_content_type_through_mi
    state->base_path = "/api";
    auto app = http_empty_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1395,8 +1407,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_stream_middleware_replacement_does_not_l
    state->replace_stream_after_next = true;
    auto app = http_stream_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1429,8 +1441,8 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_empty_stream_middleware_replacement_clea
    state->empty_replace_stream_after_next = true;
    auto app = http_stream_server_application{state};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
-   config.set("plugins.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1460,7 +1472,7 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_rejects_duplicate_publication_on_startup
    const auto port = reserve_loopback_port();
    auto app = duplicate_http_server_application{};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
 
    app.configure(config);
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), forge::net::http::exceptions::conflict);
@@ -1470,7 +1482,7 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_rejects_late_publication_after_startup_c
    const auto port = reserve_loopback_port();
    auto app = late_http_server_application{};
    auto config = forge::config::core::document{};
-   config.set("plugins.http.server.port", std::uint64_t{port});
+   config.set("plugins.net.http.server.port", std::uint64_t{port});
 
    app.configure(config);
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()),

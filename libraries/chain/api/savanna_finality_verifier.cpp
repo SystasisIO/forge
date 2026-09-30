@@ -121,6 +121,8 @@ savanna_finality_verifier::make_impl(savanna::finality_trust trust,
                                      savanna::finality_witness_limits limits) {
    try {
       return std::make_unique<impl>(std::move(trust), std::move(additional_trusts), limits);
+   } catch (const savanna::exceptions::finality_witness_limit_exceeded& error) {
+      throw_public<exceptions::resource_exhausted>(error);
    } catch (const std::bad_alloc&) {
       FORGE_THROW_EXCEPTION(exceptions::resource_exhausted, "Savanna finality verifier allocation failed");
    } catch (const std::length_error& error) {

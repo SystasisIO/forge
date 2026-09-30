@@ -22,7 +22,7 @@ module;
 
 #include "../quic_p2p/libp2p_identity_fixture.hxx"
 
-module forge.plugins.p2p.node.plugin;
+module forge.plugins.net.p2p.node.plugin;
 
 import forge.app.application_builder;
 import forge.app.application_shell;
@@ -56,10 +56,10 @@ import forge.plugins.db.store.plugin;
 namespace {
 
 namespace p2p = forge::net::p2p;
-namespace p2p_node = forge::plugins::p2p::node;
+namespace p2p_node = forge::plugins::net::p2p::node;
 namespace secrets_plugin = forge::plugins::crypto::secrets;
 namespace store_plugin = forge::plugins::db::store;
-using p2p_state_schema = forge::plugins::p2p::node::detail::p2p_state_schema;
+using p2p_state_schema = forge::plugins::net::p2p::node::detail::p2p_state_schema;
 
 constexpr auto peer_store_name = std::string_view{"p2p-peer-state"};
 
@@ -128,12 +128,12 @@ struct root_guard {
                     secret(std::string{certificate_id}, identity.certificate_pem, "p2p.identity.certificate"),
                     secret(std::string{private_key_id}, identity.private_key_pem, "p2p.identity.private-key"),
                 });
-   document.set("plugins.p2p.node.listen", forge::config::core::value::array_type{
+   document.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
                                                forge::config::core::value{"/ip4/127.0.0.1/udp/0/quic-v1"},
                                            });
-   document.set("plugins.p2p.node.peer-store.store", std::string{peer_store_name});
-   document.set("plugins.p2p.node.identity.certificate-secret", std::string{certificate_id});
-   document.set("plugins.p2p.node.identity.private-key-secret", std::string{private_key_id});
+   document.set("plugins.net.p2p.node.peer-store.store", std::string{peer_store_name});
+   document.set("plugins.net.p2p.node.identity.certificate-secret", std::string{certificate_id});
+   document.set("plugins.net.p2p.node.identity.private-key-secret", std::string{private_key_id});
    return document;
 }
 
@@ -967,7 +967,7 @@ void check_plugin_startup_rolls_back_open_peer_state(std::string driver, const s
    const auto identity = forge::tests::p2p::make_identity_fixture("p2p-startup-rollback");
    const auto foreign = forge::tests::p2p::make_identity_fixture("p2p-startup-rollback-foreign");
    auto document = p2p_document_for(driver, path, identity);
-   document.set("plugins.p2p.node.peer-id",
+   document.set("plugins.net.p2p.node.peer-id",
                 p2p::make_peer_id_from_certificate_pem(foreign.certificate_pem).to_string());
 
    {

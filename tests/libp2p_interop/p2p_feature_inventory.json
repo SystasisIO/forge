@@ -14,35 +14,35 @@
     },
     "plugin.p2p.node": {
       "kind": "plugin",
-      "path": "plugins/p2p/node",
-      "target": "forge_plugins_p2p_node",
-      "component": "plugins_p2p_node",
-      "module_prefix": "forge.plugins.p2p.node",
-      "module_root": "plugins/p2p/node"
+      "path": "plugins/net/p2p/node",
+      "target": "forge_plugins_net_p2p_node",
+      "component": "plugins_net_p2p_node",
+      "module_prefix": "forge.plugins.net.p2p.node",
+      "module_root": "plugins/net/p2p/node"
     },
     "plugin.p2p.resolver": {
       "kind": "plugin",
-      "path": "plugins/p2p/resolver",
-      "target": "forge_plugins_p2p_resolver",
-      "component": "plugins_p2p_resolver",
-      "module_prefix": "forge.plugins.p2p.resolver",
-      "module_root": "plugins/p2p/resolver"
+      "path": "plugins/net/p2p/resolver",
+      "target": "forge_plugins_net_p2p_resolver",
+      "component": "plugins_net_p2p_resolver",
+      "module_prefix": "forge.plugins.net.p2p.resolver",
+      "module_root": "plugins/net/p2p/resolver"
     },
     "plugin.p2p.pubsub": {
       "kind": "plugin",
-      "path": "plugins/p2p/pubsub",
-      "target": "forge_plugins_p2p_pubsub",
-      "component": "plugins_p2p_pubsub",
-      "module_prefix": "forge.plugins.p2p.pubsub",
-      "module_root": "plugins/p2p/pubsub"
+      "path": "plugins/net/p2p/pubsub",
+      "target": "forge_plugins_net_p2p_pubsub",
+      "component": "plugins_net_p2p_pubsub",
+      "module_prefix": "forge.plugins.net.p2p.pubsub",
+      "module_root": "plugins/net/p2p/pubsub"
     },
     "plugin.p2p.diagnostics": {
       "kind": "plugin",
-      "path": "plugins/p2p/diagnostics",
-      "target": "forge_plugins_p2p_diagnostics",
-      "component": "plugins_p2p_diagnostics",
-      "module_prefix": "forge.plugins.p2p.diagnostics",
-      "module_root": "plugins/p2p/diagnostics"
+      "path": "plugins/net/p2p/diagnostics",
+      "target": "forge_plugins_net_p2p_diagnostics",
+      "component": "plugins_net_p2p_diagnostics",
+      "module_prefix": "forge.plugins.net.p2p.diagnostics",
+      "module_root": "plugins/net/p2p/diagnostics"
     },
     "application": {
       "kind": "external"
@@ -223,16 +223,16 @@
       "owner": "plugin.p2p.node",
       "module_count": 5,
       "modules": [
-        "forge.plugins.p2p.node.api", "forge.plugins.p2p.node.descriptor",
-        "forge.plugins.p2p.node.exceptions", "forge.plugins.p2p.node.plugin", "forge.plugins.p2p.node.types"
+        "forge.plugins.net.p2p.node.api", "forge.plugins.net.p2p.node.descriptor",
+        "forge.plugins.net.p2p.node.exceptions", "forge.plugins.net.p2p.node.plugin", "forge.plugins.net.p2p.node.types"
       ],
       "headers": [],
       "module_features": {
-        "forge.plugins.p2p.node.api": [ "plugin.node" ],
-        "forge.plugins.p2p.node.descriptor": [ "plugin.node" ],
-        "forge.plugins.p2p.node.exceptions": [ "plugin.node" ],
-        "forge.plugins.p2p.node.plugin": [ "plugin.node" ],
-        "forge.plugins.p2p.node.types": [ "plugin.node" ]
+        "forge.plugins.net.p2p.node.api": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.descriptor": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.exceptions": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.plugin": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.types": [ "plugin.node" ]
       },
       "header_features": {},
       "sha256": "aa4e6b99d7843a3392de3e92c4a6bc04545411e43d9284353192e580fd2a9195",
@@ -242,19 +242,19 @@
       "owner": "plugin.p2p.resolver",
       "module_count": 6,
       "modules": [
-        "forge.plugins.p2p.resolver.api", "forge.plugins.p2p.resolver.descriptor",
-        "forge.plugins.p2p.resolver.exceptions",
-        "forge.plugins.p2p.resolver.managed_api", "forge.plugins.p2p.resolver.plugin",
-        "forge.plugins.p2p.resolver.types"
+        "forge.plugins.net.p2p.resolver.api", "forge.plugins.net.p2p.resolver.descriptor",
+        "forge.plugins.net.p2p.resolver.exceptions",
+        "forge.plugins.net.p2p.resolver.managed_api", "forge.plugins.net.p2p.resolver.plugin",
+        "forge.plugins.net.p2p.resolver.types"
       ],
       "headers": [],
       "module_features": {
-        "forge.plugins.p2p.resolver.api": [ "plugin.resolver" ],
-        "forge.plugins.p2p.resolver.descriptor": [ "plugin.resolver" ],
-        "forge.plugins.p2p.resolver.exceptions": [ "plugin.resolver" ],
-        "forge.plugins.p2p.resolver.managed_api": [ "plugin.resolver" ],
-        "forge.plugins.p2p.resolver.plugin": [ "plugin.resolver" ],
-        "forge.plugins.p2p.resolver.types": [ "plugin.resolver" ]
+        "forge.plugins.net.p2p.resolver.api": [ "plugin.resolver" ],
+        "forge.plugins.net.p2p.resolver.descriptor": [ "plugin.resolver" ],
+        "forge.plugins.net.p2p.resolver.exceptions": [ "plugin.resolver" ],
+        "forge.plugins.net.p2p.resolver.managed_api": [ "plugin.resolver" ],
+        "forge.plugins.net.p2p.resolver.plugin": [ "plugin.resolver" ],
+        "forge.plugins.net.p2p.resolver.types": [ "plugin.resolver" ]
       },
       "header_features": {},
       "sha256": "9f8a28b5915845450d6ef9da0da12782265f05e581f4dc9b60ffded27b4b14f3",
@@ -264,16 +264,16 @@
       "owner": "plugin.p2p.pubsub",
       "module_count": 5,
       "modules": [
-        "forge.plugins.p2p.pubsub.api", "forge.plugins.p2p.pubsub.descriptor",
-        "forge.plugins.p2p.pubsub.exceptions", "forge.plugins.p2p.pubsub.plugin", "forge.plugins.p2p.pubsub.types"
+        "forge.plugins.net.p2p.pubsub.api", "forge.plugins.net.p2p.pubsub.descriptor",
+        "forge.plugins.net.p2p.pubsub.exceptions", "forge.plugins.net.p2p.pubsub.plugin", "forge.plugins.net.p2p.pubsub.types"
       ],
       "headers": [],
       "module_features": {
-        "forge.plugins.p2p.pubsub.api": [ "plugin.pubsub" ],
-        "forge.plugins.p2p.pubsub.descriptor": [ "plugin.pubsub" ],
-        "forge.plugins.p2p.pubsub.exceptions": [ "plugin.pubsub" ],
-        "forge.plugins.p2p.pubsub.plugin": [ "plugin.pubsub" ],
-        "forge.plugins.p2p.pubsub.types": [ "plugin.pubsub" ]
+        "forge.plugins.net.p2p.pubsub.api": [ "plugin.pubsub" ],
+        "forge.plugins.net.p2p.pubsub.descriptor": [ "plugin.pubsub" ],
+        "forge.plugins.net.p2p.pubsub.exceptions": [ "plugin.pubsub" ],
+        "forge.plugins.net.p2p.pubsub.plugin": [ "plugin.pubsub" ],
+        "forge.plugins.net.p2p.pubsub.types": [ "plugin.pubsub" ]
       },
       "header_features": {},
       "sha256": "749ead0ef8434d8245c8e45162de5f287f550c4bf8ca16701c6ec87180328921",
@@ -283,15 +283,15 @@
       "owner": "plugin.p2p.diagnostics",
       "module_count": 4,
       "modules": [
-        "forge.plugins.p2p.diagnostics.api", "forge.plugins.p2p.diagnostics.exceptions",
-        "forge.plugins.p2p.diagnostics.plugin", "forge.plugins.p2p.diagnostics.types"
+        "forge.plugins.net.p2p.diagnostics.api", "forge.plugins.net.p2p.diagnostics.exceptions",
+        "forge.plugins.net.p2p.diagnostics.plugin", "forge.plugins.net.p2p.diagnostics.types"
       ],
       "headers": [],
       "module_features": {
-        "forge.plugins.p2p.diagnostics.api": [ "plugin.diagnostics" ],
-        "forge.plugins.p2p.diagnostics.exceptions": [ "plugin.diagnostics" ],
-        "forge.plugins.p2p.diagnostics.plugin": [ "plugin.diagnostics" ],
-        "forge.plugins.p2p.diagnostics.types": [ "plugin.diagnostics" ]
+        "forge.plugins.net.p2p.diagnostics.api": [ "plugin.diagnostics" ],
+        "forge.plugins.net.p2p.diagnostics.exceptions": [ "plugin.diagnostics" ],
+        "forge.plugins.net.p2p.diagnostics.plugin": [ "plugin.diagnostics" ],
+        "forge.plugins.net.p2p.diagnostics.types": [ "plugin.diagnostics" ]
       },
       "header_features": {},
       "sha256": "7853971093c78a8855410568e8a6850826b7c216729588621f00e1397a942cad",
@@ -314,7 +314,7 @@
       "capabilities": [ "direct_quic" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "official_plugin", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/direct_transport_quic.cpp", "plugins/p2p/node/plugin.cpp" ],
+        "source_paths": [ "libraries/net/p2p/direct_transport_quic.cpp", "plugins/net/p2p/node/plugin.cpp" ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-multi-transport-host-v1.md" ],
         "donor_cases": [ "p2p.host_multi_transport_orchestration" ]
@@ -336,7 +336,7 @@
       "negotiated_protocol_ids": [ "/tls/1.0.0", "/noise", "/yamux/1.0.0" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "official_plugin", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/direct_transport_tcp.cpp", "plugins/p2p/node/plugin.cpp" ],
+        "source_paths": [ "libraries/net/p2p/direct_transport_tcp.cpp", "plugins/net/p2p/node/plugin.cpp" ],
         "tests": [ "test_forge_stcp", "test_forge_yamux", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-tcp-noise-yamux-v1.md", "docs/donors/fcl-p2p-tcp-tls-yamux-v1.md" ],
         "donor_cases": [ "transport.tcp_noise_yamux_direct", "transport.tcp_tls_yamux_direct" ]
@@ -488,7 +488,7 @@
         "layers": [ "codec", "state_machine", "raw_node", "official_plugin", "donor_interop" ],
         "source_paths": [
           "libraries/net/p2p/negotiation.cpp", "libraries/net/p2p/include/forge/net/p2p/negotiation.cppm",
-          "plugins/p2p/node/plugin.cpp"
+          "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-node-plugin-delivery-automation.md" ],
@@ -515,7 +515,7 @@
           "libraries/net/p2p/identity.cpp",
           "libraries/net/p2p/node.cpp",
           "libraries/net/p2p/include/forge/net/p2p/node.cppm",
-          "plugins/p2p/node/plugin.cpp"
+          "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_stcp", "test_forge_quic_p2p" ],
         "donor_sources": [ "docs/donors/fcl-p2p-libp2p-foundation-v1.md" ],
@@ -796,7 +796,7 @@
         "source_paths": [
           "libraries/net/p2p/dht.cpp", "libraries/net/p2p/dht_record_store.cpp",
           "libraries/net/p2p/dht_routing_refresh.cpp", "libraries/net/p2p/node_dht.cpp",
-          "libraries/net/p2p/ipns.cpp", "plugins/p2p/node/object_dht_record_store_adapter.cpp"
+          "libraries/net/p2p/ipns.cpp", "plugins/net/p2p/node/object_dht_record_store_adapter.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins_db_store", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-dht-rendezvous-v1.md" ],
@@ -849,7 +849,7 @@
       "capabilities": [ "pubsub" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "official_plugin", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/pubsub.cpp", "plugins/p2p/pubsub/plugin.cpp" ],
+        "source_paths": [ "libraries/net/p2p/pubsub.cpp", "plugins/net/p2p/pubsub/plugin.cpp" ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-gossipsub-v1.md" ],
         "donor_cases": [
@@ -878,8 +878,8 @@
         "source_paths": [
           "libraries/net/p2p/peer_store.cpp", "libraries/net/p2p/peer_store_impl.cpp",
           "libraries/net/p2p/memory_peer_store_persistence.cpp", "libraries/net/p2p/details/peer_store_impl.hxx",
-          "libraries/net/p2p/include/forge/net/p2p/peer_store.cppm", "plugins/p2p/node/object_peer_state_adapter.cpp",
-          "plugins/p2p/node/details/object_peer_state_adapter.hxx", "plugins/p2p/node/details/p2p_state_schema.hxx"
+          "libraries/net/p2p/include/forge/net/p2p/peer_store.cppm", "plugins/net/p2p/node/object_peer_state_adapter.cpp",
+          "plugins/net/p2p/node/details/object_peer_state_adapter.hxx", "plugins/net/p2p/node/details/p2p_state_schema.hxx"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins_db_store" ],
         "donor_sources": [ "docs/donors/fcl-p2p-dht-rendezvous-v1.md" ],
@@ -934,10 +934,10 @@
         "source_paths": [
           "libraries/net/p2p/include/forge/net/p2p/lifecycle.cppm",
           "libraries/net/p2p/bootstrap_service.cpp", "libraries/net/p2p/node_impl_lifecycle.cpp",
-          "libraries/net/p2p/node_lifecycle.cpp", "plugins/p2p/node/plugin.cpp",
-          "plugins/p2p/node/config.cpp",
-          "plugins/p2p/node/object_peer_state_adapter.cpp", "plugins/p2p/node/details/object_peer_state_adapter.hxx",
-          "plugins/p2p/node/details/p2p_state_schema.hxx",
+          "libraries/net/p2p/node_lifecycle.cpp", "plugins/net/p2p/node/plugin.cpp",
+          "plugins/net/p2p/node/config.cpp",
+          "plugins/net/p2p/node/object_peer_state_adapter.cpp", "plugins/net/p2p/node/details/object_peer_state_adapter.hxx",
+          "plugins/net/p2p/node/details/p2p_state_schema.hxx",
           "tests/quic_p2p/node_bootstrap_addressing_tests.cpp", "tests/quic_p2p/p2p_lifecycle_tests.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins", "test_forge_plugins_db_store" ],
@@ -989,7 +989,7 @@
         "layers": [ "state_machine", "raw_node", "official_plugin", "adversarial" ],
         "source_paths": [
           "libraries/net/p2p/resource_manager.cpp", "libraries/net/p2p/node_impl_sessions.cpp",
-          "plugins/p2p/node/plugin.cpp"
+          "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
@@ -1015,7 +1015,7 @@
         "layers": [ "state_machine", "raw_node", "official_plugin", "adversarial" ],
         "source_paths": [
           "libraries/net/p2p/resource_manager.cpp", "libraries/net/p2p/resource_stream.cpp",
-          "libraries/net/p2p/node_impl_streams.cpp", "plugins/p2p/node/plugin.cpp"
+          "libraries/net/p2p/node_impl_streams.cpp", "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
@@ -1040,7 +1040,7 @@
         "layers": [ "state_machine", "raw_node", "official_plugin", "adversarial" ],
         "source_paths": [
           "libraries/net/p2p/resource_manager.cpp", "libraries/net/p2p/node_impl_sessions.cpp",
-          "plugins/p2p/node/plugin.cpp"
+          "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
@@ -1065,7 +1065,7 @@
         "layers": [ "state_machine", "raw_node", "official_plugin", "adversarial" ],
         "source_paths": [
           "libraries/net/p2p/resource_manager.cpp", "libraries/net/p2p/node_impl_identify.cpp",
-          "libraries/net/quic/quic_engine.cpp", "libraries/net/yamux/session.cpp", "plugins/p2p/node/plugin.cpp"
+          "libraries/net/quic/quic_engine.cpp", "libraries/net/yamux/session.cpp", "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_yamux", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
@@ -1097,7 +1097,7 @@
           "libraries/net/p2p/resource_manager.cpp",
           "libraries/net/p2p/resource_manager_state.cpp",
           "libraries/net/p2p/resource_service.cpp",
-          "plugins/p2p/node/plugin.cpp"
+          "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/forge-p2p-host-protection-v1.md" ],
@@ -1122,7 +1122,7 @@
         "source_paths": [
           "libraries/net/p2p/connection_manager.cpp", "libraries/net/p2p/topology_manager.cpp",
           "libraries/net/p2p/topology_manager_sessions.cpp", "libraries/net/p2p/node_impl_topology.cpp",
-          "plugins/p2p/node/plugin.cpp"
+          "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-connection-manager-v1.md" ],
@@ -1146,9 +1146,9 @@
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
         "source_paths": [
-          "plugins/p2p/node/plugin.cpp", "plugins/p2p/node/plugin_impl.cpp",
-          "plugins/p2p/node/api_impl.cpp", "plugins/p2p/node/api_publication_generation.cpp",
-          "plugins/p2p/node/api_publication_slot.cpp", "plugins/p2p/node/api_publication_registry.cpp"
+          "plugins/net/p2p/node/plugin.cpp", "plugins/net/p2p/node/plugin_impl.cpp",
+          "plugins/net/p2p/node/api_impl.cpp", "plugins/net/p2p/node/api_publication_generation.cpp",
+          "plugins/net/p2p/node/api_publication_slot.cpp", "plugins/net/p2p/node/api_publication_registry.cpp"
         ],
         "tests": [ "test_forge_plugins", "test_forge_package_chain_api_component" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
@@ -1172,8 +1172,8 @@
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
         "source_paths": [
-          "plugins/p2p/resolver/plugin.cpp", "plugins/p2p/resolver/plugin_impl.cpp",
-          "plugins/p2p/resolver/api_impl.cpp", "plugins/p2p/resolver/publication_catalog.cpp"
+          "plugins/net/p2p/resolver/plugin.cpp", "plugins/net/p2p/resolver/plugin_impl.cpp",
+          "plugins/net/p2p/resolver/api_impl.cpp", "plugins/net/p2p/resolver/publication_catalog.cpp"
         ],
         "tests": [ "test_forge_plugins", "test_forge_package_chain_api_component" ],
         "donor_sources": [ "docs/donors/fcl-p2p-resolver-v1.md" ],
@@ -1195,7 +1195,7 @@
       "capabilities": [],
       "evidence": {
         "layers": [ "state_machine", "raw_node", "official_plugin", "donor_interop" ],
-        "source_paths": [ "plugins/p2p/pubsub/plugin.cpp" ],
+        "source_paths": [ "plugins/net/p2p/pubsub/plugin.cpp" ],
         "tests": [ "test_forge_plugins", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-gossipsub-v1.md" ],
         "donor_cases": [ "plugin.p2p_pubsub_facade", "gossipsub.live_publish_delivery" ]
@@ -1216,7 +1216,7 @@
       "capabilities": [],
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
-        "source_paths": [ "plugins/p2p/diagnostics/plugin.cpp" ],
+        "source_paths": [ "plugins/net/p2p/diagnostics/plugin.cpp" ],
         "tests": [ "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-node-plugin-delivery-automation.md" ],
         "donor_cases": [ "plugin.p2p_diagnostics_snapshot" ]

@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <coroutine>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -32,6 +33,8 @@
 #include <boost/beast/ssl.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/system_error.hpp>
+#include <boost/scope/scope_exit.hpp>
+#include <unistd.h>
 #include <openssl/asn1.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -43,6 +46,7 @@
 import forge.asio.runtime;
 import forge.asio.blocking;
 import forge.asio.task;
+import forge.asio.compute;
 import forge.api.core.binding;
 import forge.api.core.registry;
 import forge.api.http.binding;
@@ -60,6 +64,7 @@ import forge.crypto.asymmetric;
 import forge.crypto.core.secret_string;
 import forge.crypto.digest.sha256;
 import forge.crypto.signer.configured_provider;
+import forge.crypto.wallet.api;
 import forge.crypto.pki.x509;
 import forge.net.http.body;
 import forge.net.http.client;
@@ -76,6 +81,7 @@ import forge.net.websocket.client;
 import forge.net.websocket.connection;
 import forge.plugins.chain.signer.plugin;
 import forge.plugins.chain.signer.types;
+import forge.plugins.crypto.wallet.plugin;
 
 namespace {
 
@@ -669,6 +675,129 @@ BOOST_AUTO_TEST_CASE(http_mtls_roundtrips_transaction_and_block_signer_with_one_
    server.stop();
    plugin.request_stop();
    forge::asio::blocking::run(runtime, plugin.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(http_mtls_wallet_lifecycle_authorization_and_secret_redaction) {
+   namespace wallet = forge::crypto::wallet;
+   namespace wallet_plugin = forge::plugins::crypto::wallet;
+   const auto material = make_mutual_tls_material();
+   auto path = (std::filesystem::temp_directory_path() / "forge-wallet-http-XXXXXX").string();
+   BOOST_REQUIRE(::mkdtemp(path.data()) != nullptr);
+   auto cleanup = boost::scope::scope_exit{[&] {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+   }};
+   const auto fingerprint =
+       forge::crypto::pki::x509::certificate::from_pem(material.client.certificate).fingerprint_sha256_text();
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto registry = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto plugin = wallet_plugin::plugin{
+       {.initial_config = {
+            .directory = path,
+            .permissions = {{.fingerprint = fingerprint,
+                             .wallets = {"alice"},
+                             .operations = {wallet::operation::create, wallet::operation::open, wallet::operation::list,
+                                            wallet::operation::status, wallet::operation::list_public_keys,
+                                            wallet::operation::unlock, wallet::operation::lock,
+                                            wallet::operation::lock_all, wallet::operation::set_timeout,
+                                            wallet::operation::create_key, wallet::operation::import_key,
+                                            wallet::operation::remove_key}}},
+        }}};
+   auto installer = forge::api::core::installer{registry};
+   forge::asio::blocking::run(runtime, plugin.provide(installer));
+   auto compute = forge::asio::compute::pool{{.worker_threads = 2}};
+   auto context = forge::app::plugin_context{scheduler, registry, signals, events, nullptr, {}, compute.get_executor()};
+   forge::asio::blocking::run(runtime, plugin.initialize(context));
+   forge::asio::blocking::run(runtime, plugin.startup());
+   auto stop = boost::scope::scope_exit{[&] { forge::asio::blocking::run(runtime, plugin.shutdown()); }};
+
+   auto router = forge::net::http::router{};
+   router.mount(forge::api::http::binding()
+                    .use(forge::api::core::binding().serve(registry).build())
+                    .bind<wallet::api>()
+                    .build());
+   auto server = forge::net::http::server{runtime,
+                                          {.max_request_body_bytes = 8192,
+                                           .tls_context_provider = std::make_shared<forge::net::tls::context_provider>(
+                                               server_options(material.server, true, material.ca.certificate)),
+                                           .handshake_timeout = std::chrono::seconds{1}},
+                                          std::move(router)};
+   server.start();
+   auto server_stop = boost::scope::scope_exit{[&] { server.stop(); }};
+   auto client_options = forge::net::tls::context_options{};
+   client_options.role = forge::net::tls::endpoint_role::client;
+   client_options.protocols = forge::net::tls::protocol_policy::tls13_only;
+   client_options.verification = forge::net::tls::peer_verification::verify_peer;
+   client_options.certificate_chain_pem = material.client.certificate;
+   client_options.private_key_pem = material.client.private_key;
+   client_options.trust_anchors_pem = {material.ca.certificate};
+   client_options.alpn_protocols = {"http/1.1"};
+   client_options.use_default_verify_paths = false;
+   const auto endpoint = "https://127.0.0.1:" + std::to_string(wait_for_port(server));
+   auto client = forge::net::http::client{
+       runtime,
+       forge::net::http::parse_base_url(endpoint),
+       {.tls_context_provider = std::make_shared<forge::net::tls::context_provider>(client_options),
+        .hostname = "forge http tls server"}};
+   auto api = forge::asio::blocking::run(runtime, forge::api::http::remote<wallet::api>(client));
+   const auto spoofed = forge::api::auth::authenticated_caller{
+       forge::api::auth::caller_source::p2p_peer, forge::crypto::digest::sha256::hash(std::string{"not-the-client"})};
+   BOOST_CHECK(forge::asio::blocking::run(runtime, api->create({"alice", "wallet-test-password"}, spoofed)).status ==
+               wallet::state::locked);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, api->list_public_keys({"alice"}, {})),
+                     wallet::exceptions::locked);
+   forge::asio::blocking::run(runtime, api->unlock({"alice", "wallet-test-password"}, {}));
+   const auto key = forge::asio::blocking::run(runtime, api->create_key({"alice", "producer"}, {}));
+   BOOST_TEST(!key.key.empty());
+   BOOST_TEST(forge::asio::blocking::run(runtime, api->list_public_keys({"alice"}, {})).size() == 1U);
+   forge::asio::blocking::run(runtime, api->remove_key({"alice", "producer"}, {}));
+   BOOST_TEST(forge::asio::blocking::run(runtime, api->list_public_keys({"alice"}, {})).empty());
+
+   // These are network DTO failures, not configuration decoding. No secret
+   // values or private server path may appear in any response diagnostic.
+   for (const auto& body : {R"({"wallet":"alice","id":"key","private_key":"redaction-secret-sentinel"})",
+                            R"({"wallet":"alice","id":"key","private_key":{"secret":"redaction-secret-sentinel"}})",
+                            R"({"wallet":"alice","id":"key","private_key":"redaction-secret-sentinel")"}) {
+      const auto response = forge::asio::blocking::run(runtime, client.async_post_json("/v1/wallet/import_key", body));
+      BOOST_TEST(response.result_int() >= 400U);
+      BOOST_TEST(response.body().find("redaction-secret-sentinel") == std::string::npos);
+      BOOST_TEST(response.body().find(path) == std::string::npos);
+   }
+   const auto injected = forge::asio::blocking::run(
+       runtime,
+       client.async_post_json(
+           "/v1/wallet/status",
+           R"({"wallet":"alice","caller":{"source":"tls_certificate","fingerprint":"redaction-secret-sentinel"}})"));
+   // A server-supplied caller in a body is ignored, never trusted. The real
+   // certificate is authorized, so this request is allowed under its identity.
+   BOOST_TEST(injected.result_int() == 200U);
+   BOOST_TEST(injected.body().find("redaction-secret-sentinel") == std::string::npos);
+
+   client_options.certificate_chain_pem = material.unlisted_client.certificate;
+   client_options.private_key_pem = material.unlisted_client.private_key;
+   auto unlisted = forge::net::http::client{
+       runtime,
+       forge::net::http::parse_base_url(endpoint),
+       {.tls_context_provider = std::make_shared<forge::net::tls::context_provider>(client_options),
+        .hostname = "forge http tls server"}};
+   auto unlisted_api = forge::asio::blocking::run(runtime, forge::api::http::remote<wallet::api>(unlisted));
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, unlisted_api->status({"alice"}, spoofed)),
+                     wallet::exceptions::permission_denied);
+   const auto forged = forge::asio::blocking::run(
+       runtime,
+       unlisted.async_post_json("/v1/wallet/status",
+                                "{\"wallet\":\"alice\",\"caller\":{\"source\":\"tls_certificate\",\"fingerprint\":\"" +
+                                    fingerprint + "\"}}"));
+   BOOST_TEST(forged.result_int() == 403U);
+   BOOST_TEST(!tls_handshake_succeeds(wait_for_port(server), nullptr).request_completed);
+   const auto oversized =
+       forge::asio::blocking::run(runtime, client.async_post_json("/v1/wallet/import_key", std::string(9000, 'x')));
+   BOOST_TEST(oversized.result_int() == static_cast<unsigned>(forge::net::http::status::payload_too_large));
+   forge::asio::blocking::run(runtime, api->lock_all({}));
+   BOOST_CHECK(forge::asio::blocking::run(runtime, api->status({"alice"}, {})).status == wallet::state::locked);
 }
 
 BOOST_AUTO_TEST_CASE(http_server_mutual_tls_verifies_client_chain) {

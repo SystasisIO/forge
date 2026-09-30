@@ -43,14 +43,14 @@ class resolver_publish_barrier final {
    std::map<std::string, std::size_t, std::less<>> publish_calls_;
 };
 
-class resolver_publication_race_node final : public forge::plugins::p2p::node::api {
+class resolver_publication_race_node final : public forge::plugins::net::p2p::node::api {
  public:
    explicit resolver_publication_race_node(std::shared_ptr<resolver_publish_barrier> barrier);
 
    [[nodiscard]] forge::net::p2p::peer_id local_peer() const override;
    [[nodiscard]] std::optional<forge::net::p2p::endpoint> local_endpoint() const override;
    [[nodiscard]] std::vector<forge::net::p2p::endpoint> local_endpoints() const override;
-   [[nodiscard]] forge::plugins::p2p::node::info network_info() const override;
+   [[nodiscard]] forge::plugins::net::p2p::node::info network_info() const override;
    [[nodiscard]] forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol) override;
    [[nodiscard]] forge::api::p2p::publication
@@ -59,7 +59,7 @@ class resolver_publication_race_node final : public forge::plugins::p2p::node::a
    void publish_protocol(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) override;
    boost::asio::awaitable<forge::api::transport::connection>
    open_api_connection(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol,
-                       forge::plugins::p2p::node::remote_options options) override;
+                       forge::plugins::net::p2p::node::remote_options options) override;
 
  private:
    std::shared_ptr<resolver_publish_barrier> barrier_;

@@ -87,6 +87,7 @@ struct handle::state {
    std::atomic_bool completed = false;
    mutable std::mutex completion_mutex;
    std::exception_ptr completion_error;
+   std::function<void()> remove_pending;
 
    void notify_waiters() noexcept {
       if (completion_waiter == nullptr) {
@@ -170,6 +171,14 @@ bool handle::cancel() noexcept {
    }
    const auto changed = state_->stop_state.request_stop();
    if (changed && !state_->started.load(std::memory_order_acquire)) {
+      if (state_->remove_pending) {
+         try {
+            state_->remove_pending();
+         } catch (...) {
+            // cancel is noexcept; completion remains observable even if posting
+            // the subsequent scheduler drain fails during resource exhaustion.
+         }
+      }
       state_->complete_exception(make_error(exceptions::code::canceled, "scheduled task was canceled"));
    }
    return changed;
@@ -279,6 +288,11 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
    }
 
    handle submit_queued(queued_task queued, std::shared_ptr<handle::state> state) {
+      state->remove_pending = [weak = weak_from_this(), id = state->id] {
+         if (auto self = weak.lock()) {
+            self->remove_pending(id);
+         }
+      };
       {
          const auto lock = std::scoped_lock{mutex};
          if (stopped) {
@@ -306,6 +320,32 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
 
       schedule_drain();
       return handle{std::move(state)};
+   }
+
+   void remove_pending(std::uint64_t id) {
+      std::optional<queued_task> removed;
+      {
+         const auto lock = std::scoped_lock{mutex};
+         const auto erase = [id, &removed](auto& tasks, auto compare) {
+            const auto found = std::find_if(tasks.begin(), tasks.end(),
+                                            [id](const queued_task& task) { return task.state->id == id; });
+            if (found == tasks.end()) {
+               return false;
+            }
+            removed.emplace(std::move(*found));
+            tasks.erase(found);
+            std::make_heap(tasks.begin(), tasks.end(), compare);
+            return true;
+         };
+         static_cast<void>(erase(ready_heap, ready_priority_less{}) || erase(delayed_heap, delayed_time_less{}));
+         if (removed) {
+            ++current_metrics.canceled;
+            refresh_metrics_locked();
+         }
+      }
+      if (removed) {
+         schedule_drain();
+      }
    }
 
    std::size_t pending_count(std::optional<priority> priority_value = std::nullopt) const {

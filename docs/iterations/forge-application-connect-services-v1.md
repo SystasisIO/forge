@@ -36,7 +36,7 @@ builder.connect(
       -> boost::asio::awaitable<void>
    {
       auto resolver =
-         context.api<forge::plugins::p2p::resolver::api>();
+         context.api<forge::plugins::net::p2p::resolver::api>();
 
       auto client =
          co_await forge::chain::api::connect_verified(
@@ -170,7 +170,7 @@ make accidental verification bypass easier.
   not resolve a remote API by itself.
 - `publish` stores ordinary long-lived runtime objects, not API descriptors or
   transport routes.
-- `forge::plugins::p2p::resolver::publish_api` remains server-side network
+- `forge::plugins::net::p2p::resolver::publish_api` remains server-side network
   export and is unrelated to process-local service publication.
 - A product plugin must own real behavior. A plugin whose only job is to place
   a client in a registry is forbidden.

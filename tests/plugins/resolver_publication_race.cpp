@@ -24,9 +24,9 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.protocol;
-import forge.plugins.p2p.node.api;
-import forge.plugins.p2p.node.types;
-import forge.plugins.p2p.resolver.plugin;
+import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.resolver.plugin;
 
 #include "details/resolver_publication_race.hxx"
 
@@ -127,7 +127,7 @@ std::vector<forge::net::p2p::endpoint> resolver_publication_race_node::local_end
    return {};
 }
 
-forge::plugins::p2p::node::info resolver_publication_race_node::network_info() const {
+forge::plugins::net::p2p::node::info resolver_publication_race_node::network_info() const {
    return {.local_peer = local_peer(), .local_endpoints = {}, .started = true};
 }
 
@@ -167,7 +167,7 @@ void resolver_publication_race_node::publish_protocol(forge::net::p2p::protocol_
 boost::asio::awaitable<forge::api::transport::connection>
 resolver_publication_race_node::open_api_connection(forge::net::p2p::peer_id peer,
                                                      forge::net::p2p::protocol_id protocol,
-                                                     forge::plugins::p2p::node::remote_options options) {
+                                                     forge::plugins::net::p2p::node::remote_options options) {
    static_cast<void>(peer);
    static_cast<void>(protocol);
    static_cast<void>(options);
@@ -180,7 +180,7 @@ resolver_publication_race_node_plugin::resolver_publication_race_node_plugin(
     : barrier_{std::move(barrier)} {}
 
 forge::app::plugin_id resolver_publication_race_node_plugin::id() const {
-   return {.value = "forge.plugins.p2p.node"};
+   return {.value = "forge.plugins.net.p2p.node"};
 }
 
 std::string resolver_publication_race_node_plugin::version() const {
@@ -189,7 +189,7 @@ std::string resolver_publication_race_node_plugin::version() const {
 
 boost::asio::awaitable<void>
 resolver_publication_race_node_plugin::provide(forge::api::core::provider& provider) {
-   provider.install<forge::plugins::p2p::node::api>(std::make_shared<resolver_publication_race_node>(barrier_));
+   provider.install<forge::plugins::net::p2p::node::api>(std::make_shared<resolver_publication_race_node>(barrier_));
    co_return;
 }
 
@@ -214,10 +214,10 @@ resolver_publication_race_application::resolver_publication_race_application(
 
 void resolver_publication_race_application::on_register_plugins(forge::app::plugin_registry& registry) {
    registry.register_plugin(forge::app::plugin_descriptor{
-       .id = {.value = "forge.plugins.p2p.node"},
+       .id = {.value = "forge.plugins.net.p2p.node"},
        .factory = [barrier = barrier_] { return std::make_unique<resolver_publication_race_node_plugin>(barrier); },
    });
-   registry.register_plugin(forge::plugins::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
 }
 
 } // namespace forge::tests::plugins

@@ -183,7 +183,7 @@ Exchange facts do not call it and remain capability-free until Identify.
 - Direct transports should be tried first, with explicit relay/hole-punch
   fallback.
 - Application/plugin composition needs a shared P2P transport owner; use
-  `forge::plugins::p2p::node` as the lifecycle/config/route facade above this
+  `forge::plugins::net::p2p::node` as the lifecycle/config/route facade above this
   low-level engine.
 
 ## When Not To Use
@@ -309,7 +309,7 @@ Network-level behaviors that must not be pushed into plugins:
 Stage 6 PR-6 implements typed host events and periodic Ping liveness within
 `forge_net_p2p`; its final-head live evidence gate is still open. This host-local
 policy is distinct from the already current Ping wire protocol.
-`plugins.p2p.node` may map the validated configuration and
+`plugins.net.p2p.node` may map the validated configuration and
 consume narrow local events, but it must not own Ping, observed-address,
 AutoNAT lifecycle, mDNS, UPnP or topology maintenance loops. Coordinated direct
 dial and port reuse replace the deprecated `/libp2p/simultaneous-connect`
@@ -627,7 +627,7 @@ node.register_protocol_handler(forge::net::p2p::protocol_id{.value = "/example/1
 
 Application protocols that need request/response, typed errors and idempotent
 operation receipts should expose an `forge_api_core` contract and mount it through the
-P2P API binding or `forge::plugins::p2p::resolver`. P2P opens the stream and
+P2P API binding or `forge::plugins::net::p2p::resolver`. P2P opens the stream and
 enforces peer/path policy; API dispatch owns method calls and error projection;
 the application handler owns authorization and durable state.
 
@@ -643,7 +643,7 @@ protocol id, known-peer checks and discovery scope.
 ### Connect And Open A Protocol Stream
 
 This is the low-level engine path for custom transport owners and tests.
-Application plugins should use `forge::plugins::p2p::node::api` instead of calling these
+Application plugins should use `forge::plugins::net::p2p::node::api` instead of calling these
 methods directly.
 
 ```cpp
