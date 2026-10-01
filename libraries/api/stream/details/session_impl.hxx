@@ -97,6 +97,7 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
 
    [[nodiscard]] forge::api::core::session_hello local_hello() const;
    void negotiate_hello(const forge::api::core::session_hello& peer);
+   void throw_if_terminated_on_strand(const std::shared_ptr<call_state>& call = {}) const;
    boost::asio::awaitable<void> ensure_handshake_on_strand(const std::shared_ptr<call_state>& call = {});
    boost::asio::awaitable<void> wait_receipt_on_strand(const std::shared_ptr<write_receipt>& receipt);
 

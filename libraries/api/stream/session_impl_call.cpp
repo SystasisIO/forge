@@ -231,6 +231,7 @@ session::impl::async_call_on_strand(forge::api::core::frame request, forge::api:
          call->descriptor->request_decoder(request.payload,
                                            payload_limits(request.payload.size(), negotiated_limits.max_frame_bytes));
       }
+      throw_if_terminated_on_strand(call);
       auto receipt = enqueue_call_frame(call, request);
       co_await wait_receipt_on_strand(receipt);
       call->request_written = true;

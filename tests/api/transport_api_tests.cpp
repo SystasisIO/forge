@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -231,11 +232,16 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
       while (true) {
          std::shared_ptr<boost::asio::steady_timer> wake;
          {
-            const auto lock = std::scoped_lock{mutex_};
+            auto lock = std::unique_lock{mutex_};
             if (!reads_.empty()) {
                auto value = std::move(reads_.front());
                reads_.pop_front();
                ++read_count_;
+               auto callback = std::exchange(before_read_return_, {});
+               lock.unlock();
+               if (callback) {
+                  callback();
+               }
                co_return forge::net::transport::chunk{std::move(value)};
             }
             if (!open_) {
@@ -272,6 +278,11 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
 
    void connect(const std::shared_ptr<fake_stream>& value) {
       peer_ = value;
+   }
+
+   void before_next_read_return(std::function<void()> callback) {
+      const auto lock = std::scoped_lock{mutex_};
+      before_read_return_ = std::move(callback);
    }
 
    void push(bytes value) {
@@ -389,6 +400,7 @@ class fake_stream final : public forge::net::transport::detail::stream_concept {
    std::deque<bytes> reads_;
    std::vector<bytes> writes_;
    std::size_t read_count_ = 0;
+   std::function<void()> before_read_return_;
    std::shared_ptr<boost::asio::steady_timer> read_wake_;
    std::weak_ptr<fake_stream> peer_;
    std::atomic_bool hold_writes_{false};
@@ -608,6 +620,71 @@ boost::asio::awaitable<void> exercise_delivered_hello_with_pending_write_complet
    }
 }
 
+boost::asio::awaitable<void> exercise_cancelled_outgoing_request(bool during_hello) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto model = std::make_shared<fake_stream>();
+   if (!during_hello) {
+      model->push(pack_api_frame(hello_frame()));
+   }
+   auto client = std::make_shared<forge::api::stream::session>(make_stream(model));
+   auto observed = std::make_shared<std::atomic_bool>(false);
+   auto cancel = [client = std::weak_ptr{client}, observed] {
+      if (auto live = client.lock()) {
+         observed->store(true, std::memory_order_release);
+         live->cancel();
+      }
+   };
+   const auto api = live_api::describe();
+   const auto* method = forge::api::core::find_method(api, "echo");
+   BOOST_REQUIRE(method != nullptr);
+   auto descriptor = *method;
+   if (!during_hello) {
+      descriptor.request_decoder = [decode = descriptor.request_decoder, cancel](auto payload, auto limits) {
+         decode(payload, limits);
+         cancel();
+      };
+   }
+   auto pending = std::make_shared<service_state>(executor);
+   boost::asio::co_spawn(executor,
+                         client->async_call(
+                             forge::api::core::frame{
+                                 .kind = forge::api::core::frame_kind::request,
+                                 .api = live_api::ref(),
+                                 .method = "echo",
+                                 .codec = {.value = "forge.raw"},
+                                 .payload = forge::raw::pack(item{.value = 1}),
+                             },
+                             forge::api::stream::call_options{.deadline = std::chrono::milliseconds{500}}, descriptor),
+                         [pending](std::exception_ptr error, forge::api::core::frame) {
+                            pending->error = std::move(error);
+                            pending->done = true;
+                            pending->wake.cancel();
+                         });
+   if (during_hello) {
+      co_await wait_until([model] { return model->write_count() == 1U && !model->write_active(); },
+                          std::chrono::milliseconds{250});
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+      BOOST_TEST(!pending->done);
+      BOOST_TEST(model->read_count() == 0U);
+      // One worker and synchronous initialization put the call in its hello
+      // wait before this turn. Cancel on the session strand while returning
+      // the final hello chunk, so both hello flags precede the resumed wait.
+      model->before_next_read_return(std::move(cancel));
+      model->push(pack_api_frame(hello_frame()));
+   }
+   co_await wait_until([pending] { return pending->done; }, std::chrono::milliseconds{250});
+   auto cancelled = false;
+   try {
+      co_await wait_service(pending);
+   } catch (const forge::api::core::exceptions::cancelled&) {
+      cancelled = true;
+   }
+   BOOST_TEST(observed->load(std::memory_order_acquire));
+   BOOST_TEST(cancelled);
+   BOOST_TEST(model->write_count() == 1U);
+   BOOST_TEST(count_written_frames(model, forge::api::core::frame_kind::request, "echo") == 0U);
+}
+
 using exchange_call = forge::api::core::bidirectional_stream_call<item, item>;
 
 boost::asio::awaitable<void> produce_until_stopped(const std::shared_ptr<exchange_call>& call,
@@ -632,6 +709,16 @@ boost::asio::awaitable<void> consume_until_closed(const std::shared_ptr<exchange
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(transport_api_tests)
+
+BOOST_AUTO_TEST_CASE(session_cancelled_during_hello_does_not_enqueue_request) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   forge::asio::blocking::run(runtime, exercise_cancelled_outgoing_request(true));
+}
+
+BOOST_AUTO_TEST_CASE(session_cancelled_by_decoder_does_not_enqueue_request) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   forge::asio::blocking::run(runtime, exercise_cancelled_outgoing_request(false));
+}
 
 BOOST_AUTO_TEST_CASE(session_rejects_incompatible_hello_before_request) {
    auto runtime = forge::asio::runtime{};

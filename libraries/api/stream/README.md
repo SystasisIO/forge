@@ -32,6 +32,13 @@ deadline and 5 seconds disconnect grace. Protocol violations, deadlines and
 cancellation wake blocked reads, writes and credit waits without terminating
 unrelated calls.
 
+Completing hello negotiation does not revive a failed or cancelled call. The
+session checks terminal state before accepting handshake completion and again
+before queuing an outgoing request, preserving the original typed error without
+creating an unreachable write receipt. Terminal server responses remain queued
+after their call is marked complete; call completion alone is not a blanket ban
+on response writes.
+
 The advertised inflight limit is conservatively capped by aggregate bytes
 divided by the initial byte window. Every admitted inbound stream therefore
 receives one complete initial window; an idle stream cannot reserve all credit

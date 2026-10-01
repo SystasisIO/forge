@@ -294,20 +294,27 @@ boost::asio::awaitable<void> session::impl::idle_watchdog() {
    }
 }
 
+void session::impl::throw_if_terminated_on_strand(const std::shared_ptr<call_state>& call) const {
+   if (call && call->done) {
+      if (call->error) {
+         std::rethrow_exception(call->error);
+      }
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "API stream call already ended");
+   }
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
+   if (closed.load(std::memory_order_acquire)) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "API stream session is closed");
+   }
+}
+
 boost::asio::awaitable<void> session::impl::ensure_handshake_on_strand(const std::shared_ptr<call_state>& call) {
-   while (!hello_sent || !peer_hello_received) {
+   while (true) {
       const auto observed = session_wake.epoch();
-      if (call && call->done) {
-         if (call->error) {
-            std::rethrow_exception(call->error);
-         }
-         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "API stream call ended during hello");
-      }
-      if (failure) {
-         std::rethrow_exception(failure);
-      }
-      if (closed.load(std::memory_order_acquire)) {
-         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "API stream session closed during hello");
+      throw_if_terminated_on_strand(call);
+      if (hello_sent && peer_hello_received) {
+         co_return;
       }
       auto wait_cancelled = false;
       try {
