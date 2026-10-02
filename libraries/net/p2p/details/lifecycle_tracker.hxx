@@ -11,10 +11,9 @@
 #include <mutex>
 #include <vector>
 
-#include "lifecycle_stop_listener.hxx"
-
 namespace forge::net::p2p::detail {
 
+class lifecycle_stop_listener;
 class lifecycle_wakeup;
 class lifecycle_stop_subscription;
 

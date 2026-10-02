@@ -98,7 +98,7 @@
   "evidence_sources": {
     "donor_cases.json": "cffa8704b4b93c6697fa3fb95a155f52fa09795453d0fc1f99203c09457f8990",
     "p2p_donor_capabilities.json": "8956013738e8ac667d80c22fdc234d737ae8452847447190a94f6bd923c2f123",
-    "p2p_feature_inventory.json": "20956914582691a40b355838838920e2838a3a6824d85954debfaac31e4e91a6"
+    "p2p_feature_inventory.json": "b49c097c9b15496bce851f77989a6b5ba50d6d0b3d3ee88880f40f73445fad23"
   },
   "regression_sources": {
     "test_autonat_acceptance.py": "f9fd3048ef4566aefd7b2402e9e4b5e1aa182551239324f249154169febfe37f",

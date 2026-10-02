@@ -49,6 +49,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.net.p2p.mdns_policy;
 
 import forge.asio.gate;

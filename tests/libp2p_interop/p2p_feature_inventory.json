@@ -184,7 +184,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "e7cae55c3d2de02b70ac11fcd71ee9b63c8306532767389357d3a7e5328a0c13",
+      "sha256": "f0949845386eab8faf5773624c0f8b599132c44f39517388e276b8a40994b054",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",

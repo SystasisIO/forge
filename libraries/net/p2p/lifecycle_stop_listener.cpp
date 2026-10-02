@@ -2,7 +2,7 @@ module;
 
 module forge.net.p2p.node;
 
-#include "details/lifecycle_stop_listener.hxx"
+import :lifecycle_stop_listener;
 
 namespace forge::net::p2p::detail {
 

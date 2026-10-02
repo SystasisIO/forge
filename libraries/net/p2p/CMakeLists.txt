@@ -171,7 +171,6 @@ add_library(
    lifecycle_tracker.cpp
    details/lifecycle_tracker.hxx
    lifecycle_stop_listener.cpp
-   details/lifecycle_stop_listener.hxx
    lifecycle_wakeup.cpp
    details/lifecycle_wakeup.hxx
    identify_service.cpp

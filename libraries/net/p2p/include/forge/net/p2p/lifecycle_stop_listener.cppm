@@ -1,4 +1,4 @@
-#pragma once
+export module forge.net.p2p.node:lifecycle_stop_listener;
 
 namespace forge::net::p2p::detail {
 

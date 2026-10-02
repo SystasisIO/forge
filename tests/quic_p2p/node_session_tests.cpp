@@ -54,6 +54,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.exceptions;
 import forge.asio.blocking;
 import forge.asio.runtime;

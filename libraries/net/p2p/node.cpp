@@ -46,6 +46,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.asio.gate;
 import forge.asio.notification;
 import forge.crypto.symmetric.chacha20_poly1305;
