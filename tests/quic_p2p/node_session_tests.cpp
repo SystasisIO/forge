@@ -648,26 +648,21 @@ struct node_session_fixture {
    }
 
    static boost::asio::awaitable<void> periodic_worker_wakeup_rounds(
-       std::shared_ptr<node::impl> self, bool relay, peer_id stale_peer) {
+       std::shared_ptr<node::impl> self, peer_id stale_peer) {
       constexpr auto period = std::chrono::milliseconds{400};
       const auto executor = co_await boost::asio::this_coro::executor;
       auto earliest_start = std::chrono::steady_clock::now();
       for (auto round = 0; round != 2; ++round) {
-         auto refreshes = std::uint64_t{};
          {
             const auto lock = std::scoped_lock{self->mutex};
-            refreshes = self->metrics_value.relay_discovery_refreshes;
-            if (!relay) {
-               // No message dispatch: only the actual heartbeat may prune this
-               // stale mesh member from the fixture's subscribed topic.
-               self->pubsub_value.handlers.try_emplace("periodic-wakeup");
-               self->pubsub_value.mesh["periodic-wakeup"].insert(stale_peer);
-            }
+            // No message dispatch: only the actual heartbeat may prune this
+            // stale mesh member from the fixture's subscribed topic.
+            self->pubsub_value.handlers.try_emplace("periodic-wakeup");
+            self->pubsub_value.mesh["periodic-wakeup"].insert(stale_peer);
          }
          if (round == 0) {
             earliest_start = std::chrono::steady_clock::now();
-            if (relay) { self->launch_relay_discovery_maintenance(); }
-            else { self->launch_pubsub_heartbeat(); }
+            self->launch_pubsub_heartbeat();
          }
          auto last_pending = earliest_start;
          auto ran = false;
@@ -683,8 +678,7 @@ struct node_session_fixture {
             auto sampled = std::chrono::steady_clock::time_point{};
             {
                const auto lock = std::scoped_lock{self->mutex};
-               ran = relay ? self->metrics_value.relay_discovery_refreshes > refreshes
-                           : !self->pubsub_value.mesh.at("periodic-wakeup").contains(stale_peer);
+               ran = !self->pubsub_value.mesh.at("periodic-wakeup").contains(stale_peer);
                sampled = std::chrono::steady_clock::now();
             }
             if (ran) {
@@ -699,13 +693,13 @@ struct node_session_fixture {
          }
          BOOST_CHECK_MESSAGE(ran, "unrelated admission epochs starved periodic work, round " << round);
       }
-      if (!relay) {
+      {
          const auto lock = std::scoped_lock{self->mutex};
          self->pubsub_value.mesh["periodic-wakeup"].insert(stale_peer);
       }
    }
 
-   static void periodic_worker_ignores_unrelated_epochs(bool relay) {
+   static void periodic_worker_ignores_unrelated_epochs() {
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
       auto options = passive_reachability_options("periodic-wakeup-owner");
       options.capabilities.bits |= capabilities::pubsub;
@@ -725,21 +719,108 @@ struct node_session_fixture {
          try { if (joined.valid()) { joined.get(); } }
          catch (...) { BOOST_ERROR("periodic worker lifecycle join failed"); }
       }};
-      bounded_result(runtime, periodic_worker_wakeup_rounds(self, relay, stale_peer));
-      const auto refreshes = owner.metrics().relay_discovery_refreshes;
+      bounded_result(runtime, periodic_worker_wakeup_rounds(self, stale_peer));
       owner.request_stop();
       joined = boost::asio::co_spawn(runtime.context(), self->lifecycle.wait(), boost::asio::use_future);
       BOOST_CHECK_MESSAGE(joined.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
                           "periodic worker did not exit on lifecycle stop");
       {
          const auto lock = std::scoped_lock{self->mutex};
-         if (relay) {
-            BOOST_TEST(self->metrics_value.relay_discovery_refreshes == refreshes);
-         } else {
-            BOOST_CHECK_MESSAGE(self->pubsub_value.mesh.at("periodic-wakeup").contains(stale_peer),
-                                "lifecycle stop triggered an extra heartbeat");
-         }
+         BOOST_CHECK_MESSAGE(self->pubsub_value.mesh.at("periodic-wakeup").contains(stale_peer),
+                             "lifecycle stop triggered an extra heartbeat");
       }
+   }
+
+   static boost::asio::awaitable<void> autorelay_expiry_wakeup_rounds(
+       std::shared_ptr<node::impl> self, std::shared_ptr<node::impl::session_state> session) {
+      constexpr auto ttl = std::chrono::milliseconds{400};
+      const auto executor = co_await boost::asio::this_coro::executor;
+      for (auto round = 0; round != 2; ++round) {
+         BOOST_REQUIRE(self->remember_inbound_relay_reservation(session, relay::reservation::options{.ttl = ttl}));
+         auto expires_at = std::chrono::steady_clock::time_point{};
+         auto expirations = std::uint64_t{};
+         {
+            const auto lock = std::scoped_lock{self->mutex};
+            expires_at = self->inbound_relay_reservations.at(session->info.remote_peer).expires_at;
+            expirations = self->metrics_value.relay_reservation_expirations;
+         }
+         if (round == 0) { self->start_autorelay(); }
+         auto expired = false;
+         const auto limit = expires_at + ttl;
+         while (std::chrono::steady_clock::now() < limit) {
+            // Only unrelated node epochs are broadcast. Do not call a getter,
+            // cleanup or manager notify that could rescue a lost expiry timer.
+            self->lifecycle_wakeup->notify();
+            auto timer = boost::asio::steady_timer{executor};
+            timer.expires_after(std::chrono::milliseconds{10});
+            co_await timer.async_wait(boost::asio::use_awaitable);
+            {
+               const auto lock = std::scoped_lock{self->mutex};
+               expired = !self->inbound_relay_reservations.contains(session->info.remote_peer);
+               if (expired) {
+                  BOOST_CHECK_MESSAGE(std::chrono::steady_clock::now() >= expires_at,
+                                      "unrelated admission epoch accelerated AutoRelay expiry, round " << round);
+                  BOOST_TEST(self->metrics_value.relay_reservation_expirations == expirations + 1);
+                  BOOST_TEST(self->metrics_value.active_relay_reservations == 0U);
+               }
+            }
+            if (expired) { break; }
+         }
+         BOOST_REQUIRE_MESSAGE(expired, "unrelated admission epochs starved AutoRelay expiry, round " << round);
+         BOOST_TEST(self->autorelay_manager_value->stats().running);
+      }
+   }
+
+   static void autorelay_expiry_ignores_unrelated_epochs() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = passive_reachability_options("autorelay-expiry-wakeup-owner");
+      options.relay_policy.service_enabled = true;
+      options.relay_policy.client_enabled = false;
+      options.limits.relay.reservation_ttl = std::chrono::seconds{5};
+      auto owner = node{runtime, std::move(options)};
+      const auto self = owner.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         try { bounded_result(runtime, owner.async_stop()); }
+         catch (...) { BOOST_ERROR("AutoRelay expiry node cleanup failed"); }
+      }};
+      BOOST_REQUIRE(self->autorelay_manager_value);
+      auto session = std::make_shared<node::impl::session_state>();
+      session->id = 1;
+      session->info.remote_peer = make_peer_id(public_key{public_key::type::ed25519, std::vector<std::uint8_t>(32, 59)});
+      session->info.path = path::kind::direct;
+      session->info.identify_state = identify::state::identified;
+      session->authentication = peer_authentication::noise;
+      session->remote_endpoint = parse_endpoint("/ip4/127.0.0.1/tcp/4059");
+      session->connection = forge::net::transport::detail::session_access::make(
+          std::make_shared<reachability_transport>(forge::net::transport::stream{}));
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         self->sessions.emplace(session->id, session);
+      }
+      bounded_result(runtime, autorelay_expiry_wakeup_rounds(self, session));
+      BOOST_TEST(owner.metrics().relay_discovery_refreshes == 0U);
+      BOOST_TEST(owner.metrics().relay_discovery_attempts == 0U);
+      // Stop must interrupt the manager's real future deadline, not wait for it.
+      BOOST_REQUIRE(self->remember_inbound_relay_reservation(
+          session, relay::reservation::options{.ttl = std::chrono::seconds{5}}));
+      const auto refreshed = bounded_result(runtime,
+          self->autorelay_manager_value->async_refresh(std::chrono::seconds{1}));
+      BOOST_TEST(refreshed.empty());
+      const auto expirations = owner.metrics().relay_reservation_expirations;
+      owner.request_stop();
+      auto manager_joined = boost::asio::co_spawn(runtime.context(), self->join_autorelay(), boost::asio::use_future);
+      auto lifecycle_joined = boost::asio::co_spawn(runtime.context(), self->lifecycle.wait(), boost::asio::use_future);
+      BOOST_REQUIRE_MESSAGE(manager_joined.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
+                            "AutoRelay manager waited for reservation expiry after stop");
+      BOOST_REQUIRE_MESSAGE(lifecycle_joined.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
+                            "AutoRelay manager retained its lifecycle ticket after stop");
+      BOOST_CHECK_NO_THROW(manager_joined.get());
+      BOOST_CHECK_NO_THROW(lifecycle_joined.get());
+      const auto terminal = self->autorelay_manager_value->stats();
+      BOOST_TEST(!terminal.running);
+      BOOST_TEST(terminal.stopping);
+      BOOST_TEST(terminal.pending_reservations == 0U);
+      BOOST_TEST(owner.metrics().relay_reservation_expirations == expirations);
    }
 
    static boost::asio::awaitable<bool> dcutr_direct_wait_owned(
@@ -1704,11 +1785,11 @@ BOOST_AUTO_TEST_CASE(p2p_dcutr_direct_wait_observes_quic_session_admission) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_heartbeat_ignores_unrelated_wakeup_epochs) {
-   node_session_fixture::periodic_worker_ignores_unrelated_epochs(false);
+   node_session_fixture::periodic_worker_ignores_unrelated_epochs();
 }
 
-BOOST_AUTO_TEST_CASE(p2p_relay_discovery_ignores_unrelated_wakeup_epochs) {
-   node_session_fixture::periodic_worker_ignores_unrelated_epochs(true);
+BOOST_AUTO_TEST_CASE(p2p_autorelay_expiry_ignores_unrelated_wakeup_epochs) {
+   node_session_fixture::autorelay_expiry_ignores_unrelated_epochs();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_preserves_close_error_after_joined_cleanup) {
