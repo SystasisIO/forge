@@ -2,7 +2,7 @@ import copy
 import hashlib
 import unittest
 
-from autorelay_evidence import ECHO, HOP, IDENTIFY, PUSH, _connection, _native_pushes, circuit, validate_case
+from autorelay_evidence import ECHO, HOP, IDENTIFY, PUSH, _connection, _echo, _native_pushes, circuit, validate_case
 from autorelay_wire import address_bytes, varint, validate_push_frame
 from rust_upgrade_evidence import BASE58, _peer
 
@@ -316,6 +316,22 @@ class AutoRelayEvidenceTests(unittest.TestCase):
         receipt.pop("negotiated_muxer")
         with self.assertRaises(ValueError):
             _connection(receipt, TARGET, "tcp-tls")
+
+    def test_go_tls_outer_noise_inner_echo_does_not_allow_outer_noise(self):
+        proof = echo("service_echo", RELAY, 2000)
+        command = proof["process"]["command"]
+        command[command.index("--transport") + 1] = "tcp-tls"
+        result = proof["result"]
+        result["relayed_addr"] = result["relayed_addr"].replace("/udp/", "/tcp/").replace("/quic-v1", "")
+        for key, security in (("relay_connection", "/tls/1.0.0"), ("echo_connection", "/noise")):
+            row = result[key]
+            row.update(remote_addr=row["remote_addr"].replace("/udp/", "/tcp/").replace("/quic-v1", ""),
+                       negotiated_transport="tcp", negotiated_security=security, negotiated_muxer="/yamux/1.0.0")
+        command[command.index("--relay-addr") + 1] = result["relayed_addr"].split("/p2p-circuit")[0]
+        _echo(proof, "go", RELAY, TARGET, "tcp-tls")
+        result["relay_connection"]["negotiated_security"] = "/noise"
+        with self.assertRaises(ValueError):
+            _echo(proof, "go", RELAY, TARGET, "tcp-tls")
 
     def test_rust_exact_native_security_and_muxer(self):
         receipt = {"peer_id": TARGET, "connection_id": "swarm-1", "remote_addr": "/ip4/127.0.0.1/tcp/12345",

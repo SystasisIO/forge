@@ -17,6 +17,7 @@ class autorelay_manager_fixture {
       bool released = false;
       bool fail = false;
       bool canceled = false;
+      bool cancellation_observed = false;
       bool completed = false;
    };
 
@@ -41,10 +42,12 @@ class autorelay_manager_fixture {
    void hold_canceled(bool value = true);
    void immediate_success(bool value = true);
    void fail_snapshot(bool value = true);
+   void fail_snapshot(std::exception_ptr error);
    void start();
    void release(std::size_t index, bool fail = false);
    void wait_started(std::size_t count);
    void wait_canceled(std::size_t count);
+   void wait_cancellation_observed(std::size_t count);
    void wait_state(std::function<bool(const forge::net::p2p::diagnostics::autorelay_state&)> predicate);
    std::future<result> refresh(std::chrono::milliseconds timeout = std::chrono::seconds{2});
    std::future<void> join();
@@ -74,7 +77,7 @@ class autorelay_manager_fixture {
    std::size_t _peak_active = 0;
    bool _hold_canceled = false;
    bool _immediate_success = false;
-   bool _fail_snapshot = false;
+   std::exception_ptr _snapshot_error;
 };
 
 } // namespace forge::tests::p2p

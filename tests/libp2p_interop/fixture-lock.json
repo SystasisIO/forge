@@ -30,11 +30,11 @@
     "fixtures/pnet/swarm.key": "a2602305a7773371a5232eb73d3ee4af3fba1efee04c03afa981554a6bebd176",
     "go_fixture/autonat.go": "a0e4b5ca68c5ae2f0315856f338f9184f9d422d570d29d72abbe8075460f517a",
     "go_fixture/autonat_test.go": "e58c54d81e53ca3f2bb6a53bda3688326b71180295190e4fde6bf0591ae121fd",
-    "go_fixture/autorelay.go": "c69af9d302232d74d6c68e60d0c12ba1e9aba94125563555fbc0c46afd3dc7f8",
-    "go_fixture/autorelay_test.go": "1d32b9821b447d6ea5236add9095f269286f0e2d9b6f86d11873138ff4f3179a",
+    "go_fixture/autorelay.go": "a8b73cc1980d7af9b29be2d7e3e72f73a4421938195c30e284ec159260a9ded0",
+    "go_fixture/autorelay_test.go": "682004606cc274836cc803320912e8b797597f3ba0f049df0eb22eef89daa722",
     "go_fixture/go.mod": "421b08324d37ad51f3978c9049f9aa579014e193ca9e7485730f68349f4c2661",
     "go_fixture/go.sum": "e52ba7219de2fa9a1c39ad8e0e3761d7897b71d25438049f788dc1feaefb3b87",
-    "go_fixture/main.go": "86aa9cd03e03dd2651a93047abc722444b19b7e13fdd97b1f9a8b2506a285513",
+    "go_fixture/main.go": "3ce71e0c350e128fec7fcff38d677bdadd3d8ee8e0b66d91ce489e332c4f2056",
     "go_fixture/mdns.go": "112d7bdc00fbd91c2c6f520652588f023796f17be39ddb5429626c79d78f495b",
     "go_fixture/mdns_test.go": "21170c1635a09a0acd678d6c9526229008f994cef2d504238375fd24b3f14cce",
     "go_fixture/provider_evidence.go": "11a0261658220273fbec4c0a0978505a465a78eb45017117c8c7b84b6bef11eb",
@@ -98,7 +98,7 @@
   "evidence_sources": {
     "donor_cases.json": "cffa8704b4b93c6697fa3fb95a155f52fa09795453d0fc1f99203c09457f8990",
     "p2p_donor_capabilities.json": "8956013738e8ac667d80c22fdc234d737ae8452847447190a94f6bd923c2f123",
-    "p2p_feature_inventory.json": "5d05eb4000edca7636c7719dc033dffc35582ad24af9dcaa5245892000c42176"
+    "p2p_feature_inventory.json": "20956914582691a40b355838838920e2838a3a6824d85954debfaac31e4e91a6"
   },
   "regression_sources": {
     "test_autonat_acceptance.py": "f9fd3048ef4566aefd7b2402e9e4b5e1aa182551239324f249154169febfe37f",
@@ -107,7 +107,7 @@
     "test_autonat_network.py": "7ebde3d9724a443b126a30242f2570719d6067a53204e25393cceb398e772cb5",
     "test_autorelay_acceptance.py": "05d2055848fb4324a2624550983a63437dd8bf2ff02e4940e23e45159c3d3637",
     "test_autorelay_cases.py": "622de175aca35ffadfb64e3f36af9b45e191c82df06ad0f7ce1e7a87102ebbec",
-    "test_autorelay_evidence.py": "9ba2d6f1597007b9ecdf49ff8158f344f155cb67d3445dfcead80e43bbd44d3e",
+    "test_autorelay_evidence.py": "28a31f9ab16971f14648e8ecf38373f1bcbf98f740bea595c2c577ddfbdc6059",
     "test_dns_fixture.py": "9f4fae8f9b313d3621e9ef24f20bc33bbd87b1ecde2271e607ba6a283a9e442e",
     "test_identify_evidence.py": "161c5c441150662f9f2709a485e3e10014c4073c93fef0c01db252a956d96d68",
     "test_mdns_acceptance.py": "b487a08e5f1fba03cbcb7e7dc655c7ab03b5ba8724293463b7b7eaa209a4f575",

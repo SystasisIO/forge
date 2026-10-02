@@ -99,6 +99,7 @@ import forge.net.yamux.session;
 #include "../../libraries/net/p2p/details/path_selector.hxx"
 #include "../../libraries/net/p2p/details/peer_exchange_codec.hxx"
 #include "../../libraries/net/p2p/details/peer_failure.hxx"
+#include "../../libraries/net/p2p/details/relay_pair.hxx"
 #include "../../libraries/net/p2p/details/resource_stream.hxx"
 #include "../../libraries/net/p2p/details/reachability_manager.hxx"
 #include "../../libraries/net/p2p/details/session_lifecycle.hxx"
@@ -821,6 +822,222 @@ struct node_session_fixture {
       BOOST_TEST(terminal.stopping);
       BOOST_TEST(terminal.pending_reservations == 0U);
       BOOST_TEST(owner.metrics().relay_reservation_expirations == expirations);
+   }
+
+   static void relay_pre_handoff_closed_releases_guarded_admission(bool preserve_other) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = passive_reachability_options("relay-pre-handoff-closed");
+      options.relay_policy.service_enabled = true;
+      options.relay_policy.client_enabled = false;
+      options.limits.relay.require_reservation = true;
+      options.limits.relay.max_active_relays = 2;
+      options.limits.relay.max_streams_per_reservation = 2;
+      options.limits.relay.max_circuits_per_peer = 2;
+      auto owner = node{runtime, std::move(options)};
+      const auto self = owner.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         try { bounded_result(runtime, owner.async_stop()); }
+         catch (...) { BOOST_ERROR("relay pre-handoff failure node cleanup failed"); }
+      }};
+      auto session = std::make_shared<node::impl::session_state>();
+      session->id = 1;
+      session->info.remote_peer = make_peer_id(public_key{public_key::type::ed25519, std::vector<std::uint8_t>(32, 61)});
+      session->info.path = path::kind::direct;
+      session->info.identify_state = identify::state::identified;
+      session->authentication = peer_authentication::noise;
+      session->remote_endpoint = parse_endpoint("/ip4/127.0.0.1/tcp/4061");
+      session->connection = forge::net::transport::detail::session_access::make(
+          std::make_shared<reachability_transport>(forge::net::transport::stream{}));
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         self->sessions.emplace(session->id, session);
+      }
+      const auto target = session->info.remote_peer;
+      const auto source = make_peer_id(public_key{public_key::type::ed25519, std::vector<std::uint8_t>(32, 62)});
+      const auto initial_budget = self->resources.current();
+      BOOST_REQUIRE(self->remember_inbound_relay_reservation(session, relay::reservation::options{.max_streams = 2}));
+      const auto grant_budget = self->resources.current();
+      BOOST_TEST(grant_budget.active_relay_reservations == initial_budget.active_relay_reservations + 1);
+      const auto check_count = [&](std::size_t expected) {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_TEST(self->metrics_value.active_relays == expected);
+         BOOST_TEST(self->inbound_relay_reservations.at(target).active_streams == expected);
+         if (expected == 0) {
+            BOOST_TEST(self->relay_peer_active.empty());
+         } else {
+            BOOST_REQUIRE_EQUAL(self->relay_peer_active.size(), 2U);
+            BOOST_TEST(self->relay_peer_active.at(source) == expected);
+            BOOST_TEST(self->relay_peer_active.at(target) == expected);
+         }
+      };
+      const auto check_budget = [&](std::size_t circuits) {
+         const auto current = self->resources.current();
+         BOOST_TEST(current.active_relay_reservations == grant_budget.active_relay_reservations + circuits);
+         BOOST_TEST(current.relay_reservation_scopes == grant_budget.relay_reservation_scopes);
+         BOOST_TEST(current.invalid_transitions == initial_budget.invalid_transitions);
+      };
+      auto status = relay::status::unused;
+      auto admission = self->begin_relay(target, source, status);
+      BOOST_REQUIRE(admission);
+      BOOST_CHECK(status == relay::status::ok);
+      BOOST_REQUIRE(admission->circuit.active());
+      BOOST_REQUIRE(admission->reservation_id);
+      const auto reservation_id = *admission->reservation_id;
+      check_count(1);
+      check_budget(1);
+      auto other = std::optional<node::impl::relay_admission>{};
+      if (preserve_other) {
+         // Shared peer counters make a second logical release observable, not saturated at zero.
+         other = self->begin_relay(target, source, status);
+         BOOST_REQUIRE(other);
+         BOOST_CHECK(status == relay::status::ok);
+         check_count(2);
+         check_budget(2);
+      }
+      self->lifecycle.request_stop();
+      BOOST_TEST(self->lifecycle.stop_requested());
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_TEST(!self->stopped);
+         BOOST_TEST(!self->session_admission_closed);
+         BOOST_TEST(!session->closed);
+      }
+      auto logical_releases = std::size_t{};
+      const auto finish_on_exit = [&](void*) noexcept {
+         ++logical_releases;
+         self->finish_relay(target, reservation_id, source);
+      };
+      const auto guarded_handoff = [&] {
+         // The caller relinquishes this guard only after a normal handoff return.
+         auto relay_guard = std::unique_ptr<void, decltype(finish_on_exit)>{self.get(), finish_on_exit};
+         self->launch_relay_pumps(target, forge::net::p2p::stream{}, forge::net::p2p::stream{}, std::move(*admission));
+         static_cast<void>(relay_guard.release());
+      };
+      BOOST_CHECK_THROW(guarded_handoff(), exceptions::closed);
+      BOOST_TEST(logical_releases == 1U);
+      const auto remaining = preserve_other ? std::size_t{1} : std::size_t{0};
+      check_count(remaining);
+      check_budget(remaining);
+      BOOST_TEST(!admission->circuit.active());
+      admission.reset();
+      check_count(remaining);
+      check_budget(remaining);
+      bounded_result(runtime, self->lifecycle.wait());
+      if (other) {
+         BOOST_TEST(other->circuit.active());
+         self->finish_relay(target, other->reservation_id, source);
+         other.reset();
+      }
+      check_count(0);
+      check_budget(0);
+      BOOST_REQUIRE(self->cancel_inbound_relay_reservation(target, reservation_id));
+      const auto released = self->resources.current();
+      BOOST_TEST(released.active_relay_reservations == initial_budget.active_relay_reservations);
+      BOOST_TEST(released.relay_reservation_scopes == initial_budget.relay_reservation_scopes);
+      BOOST_TEST(released.invalid_transitions == initial_budget.invalid_transitions);
+   }
+
+   static boost::asio::awaitable<void> relay_worker_body(
+       std::shared_ptr<detail::relay_pair::worker> completion, std::shared_ptr<std::atomic_size_t> invocations) {
+      completion->enter();
+      ++*invocations;
+      co_return;
+   }
+
+   static void relay_worker_closures_drain_before_lifecycle_release(bool skipped) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto owner = node{runtime, passive_reachability_options("relay-worker-closure-lifetime")};
+      const auto self = owner.impl_;
+      auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
+         try { bounded_result(runtime, owner.async_stop()); }
+         catch (...) { BOOST_ERROR("relay worker closure node cleanup failed"); }
+      }};
+      const auto target = make_peer_id(public_key{public_key::type::ed25519, std::vector<std::uint8_t>(32, 63)});
+      const auto initial_budget = self->resources.current();
+      auto circuit = self->resources.reserve_relay(target);
+      BOOST_REQUIRE(circuit);
+      auto operation = self->lifecycle.track();
+      BOOST_REQUIRE(operation.active());
+      auto releases = std::make_shared<std::atomic_size_t>(0);
+      auto invocations = std::make_shared<std::atomic_size_t>(0);
+      auto pair = std::make_shared<detail::relay_pair>(
+          target, forge::net::p2p::stream{}, forge::net::p2p::stream{}, std::move(*circuit),
+          runtime.context().get_executor(), std::chrono::seconds{60}, 1024,
+          [releases]() noexcept { ++*releases; }, std::move(operation));
+      pair->take_ownership();
+      using worker = detail::relay_pair::worker;
+      auto deadline_completion = std::make_shared<worker>(pair, worker::kind::deadline);
+      const auto deadline_weak = std::weak_ptr<worker>{deadline_completion};
+      auto deadline_work = std::function<boost::asio::awaitable<void>()>{[deadline_completion, invocations] {
+         return relay_worker_body(deadline_completion, invocations);
+      }};
+      auto left_work = std::function<boost::asio::awaitable<void>()>{
+          [completion = std::make_shared<worker>(pair, worker::kind::pump), invocations] {
+             return relay_worker_body(completion, invocations);
+          }};
+      auto right_work = std::function<boost::asio::awaitable<void>()>{
+          [completion = std::make_shared<worker>(pair, worker::kind::pump), invocations] {
+             return relay_worker_body(completion, invocations);
+          }};
+      const auto pair_weak = std::weak_ptr<detail::relay_pair>{pair};
+      deadline_completion.reset();
+      pair.reset();
+      // Unit evidence for actual worker/closure ownership, not an injected launch_relay_pumps fault.
+      if (skipped) {
+         auto unblock = std::make_shared<std::promise<void>>();
+         auto gate = unblock->get_future().share();
+         auto entered = std::make_shared<std::promise<void>>();
+         auto entered_future = entered->get_future();
+         auto finished = std::make_shared<std::promise<bool>>();
+         auto finished_future = finished->get_future();
+         const auto release_gate = [unblock](void*) noexcept {
+            try { unblock->set_value(); } catch (...) {}
+         };
+         auto gate_guard = std::unique_ptr<void, decltype(release_gate)>{unblock.get(), release_gate};
+         // Park the sole test executor worker: admission happens before stop, dispatch after it.
+         boost::asio::post(runtime.context(), [entered, gate, finished] {
+            entered->set_value();
+            finished->set_value(gate.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+         });
+         BOOST_REQUIRE(entered_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+         entered_future.get();
+         BOOST_TEST(self->launch_tracked(std::move(deadline_work)));
+         self->lifecycle.request_stop();
+         gate_guard.reset();
+         BOOST_REQUIRE(finished_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+         BOOST_TEST(finished_future.get());
+      } else {
+         self->lifecycle.request_stop();
+         BOOST_TEST(!self->launch_tracked(std::move(deadline_work)));
+      }
+      deadline_work = {};
+      auto context = boost::asio::io_context{};
+      BOOST_REQUIRE(drive_until(context, [&] { return deadline_weak.expired(); }));
+      auto tracked = boost::asio::co_spawn(runtime.context(),
+          [self, releases]() -> boost::asio::awaitable<std::pair<resource_manager::snapshot, std::size_t>> {
+             co_await self->lifecycle.wait();
+             co_return std::pair{self->resources.current(), releases->load()};
+          }, boost::asio::use_future);
+      const auto check_retained = [&] {
+         BOOST_TEST(!pair_weak.expired());
+         BOOST_TEST(invocations->load() == 0U);
+         BOOST_TEST(releases->load() == 0U);
+         BOOST_TEST(self->resources.current().active_relay_reservations == initial_budget.active_relay_reservations + 1);
+         BOOST_CHECK(tracked.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+      };
+      check_retained();
+      left_work = {};
+      check_retained();
+      right_work = {};
+      BOOST_REQUIRE(tracked.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+      const auto terminal = tracked.get();
+      BOOST_TEST(terminal.first.active_relay_reservations == initial_budget.active_relay_reservations);
+      BOOST_TEST(terminal.first.relay_reservation_scopes == initial_budget.relay_reservation_scopes);
+      BOOST_TEST(terminal.second == 1U);
+      BOOST_TEST(pair_weak.expired());
+      BOOST_TEST(invocations->load() == 0U);
+      BOOST_TEST(releases->load() == 1U);
+      BOOST_TEST(self->resources.current().invalid_transitions == initial_budget.invalid_transitions);
    }
 
    static boost::asio::awaitable<bool> dcutr_direct_wait_owned(
@@ -1790,6 +2007,22 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_heartbeat_ignores_unrelated_wakeup_epochs) {
 
 BOOST_AUTO_TEST_CASE(p2p_autorelay_expiry_ignores_unrelated_wakeup_epochs) {
    node_session_fixture::autorelay_expiry_ignores_unrelated_epochs();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_pre_handoff_closed_releases_guarded_admission_and_budget) {
+   node_session_fixture::relay_pre_handoff_closed_releases_guarded_admission(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_pre_handoff_closed_preserves_other_admission) {
+   node_session_fixture::relay_pre_handoff_closed_releases_guarded_admission(true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_pair_rejected_worker_closure_drains_before_lifecycle_release) {
+   node_session_fixture::relay_worker_closures_drain_before_lifecycle_release(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_pair_skipped_worker_closure_drains_before_lifecycle_release) {
+   node_session_fixture::relay_worker_closures_drain_before_lifecycle_release(true);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_preserves_close_error_after_joined_cleanup) {

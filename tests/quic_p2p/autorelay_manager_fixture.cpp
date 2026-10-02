@@ -72,7 +72,7 @@ autorelay_manager_fixture::~autorelay_manager_fixture() {
    }
    try { joined.get(); }
    catch (...) {
-      if (!_fail_snapshot) { BOOST_ERROR("unexpected AutoRelay parent failure during cleanup"); }
+      if (!_snapshot_error) { BOOST_ERROR("unexpected AutoRelay parent failure during cleanup"); }
    }
 }
 
@@ -138,8 +138,12 @@ void autorelay_manager_fixture::immediate_success(bool value) {
    _immediate_success = value;
 }
 void autorelay_manager_fixture::fail_snapshot(bool value) {
+   fail_snapshot(value ? std::make_exception_ptr(std::logic_error{"scripted snapshot failure"})
+                       : std::exception_ptr{});
+}
+void autorelay_manager_fixture::fail_snapshot(std::exception_ptr error) {
    const auto lock = std::scoped_lock{_mutex};
-   _fail_snapshot = value;
+   _snapshot_error = std::move(error);
 }
 void autorelay_manager_fixture::start() { _owner->start(_tracker); }
 
@@ -148,7 +152,7 @@ autorelay_manager_fixture::manager::snapshot autorelay_manager_fixture::current(
    auto callback = std::function<void()>{};
    {
       const auto lock = std::scoped_lock{_mutex};
-      if (_fail_snapshot) { throw std::logic_error{"scripted snapshot failure"}; }
+      if (_snapshot_error) { std::rethrow_exception(_snapshot_error); }
       value = _snapshot;
       callback = std::exchange(_after_snapshot, {});
    }
@@ -191,7 +195,12 @@ asio::awaitable<net::relay::reservation::info> autorelay_manager_fixture::reserv
       const auto epoch = _changed.epoch();
       {
          const auto lock = std::scoped_lock{_mutex};
-         canceled = cancellation->stop_requested() && !_hold_canceled;
+         const auto stop_requested = cancellation->stop_requested();
+         if (stop_requested && !item->cancellation_observed) {
+            item->cancellation_observed = true;
+            _progress.notify_all();
+         }
+         canceled = stop_requested && !_hold_canceled;
          timed_out = std::chrono::steady_clock::now() >= deadline;
          if (item->released || canceled || timed_out) {
             fail = item->fail;
@@ -237,6 +246,15 @@ void autorelay_manager_fixture::wait_canceled(std::size_t count) {
    BOOST_REQUIRE(_progress.wait_for(lock, 4s, [&] {
       return static_cast<std::size_t>(std::ranges::count_if(_requests, [](const auto& item) {
          return item->canceled;
+      })) >= count;
+   }));
+}
+
+void autorelay_manager_fixture::wait_cancellation_observed(std::size_t count) {
+   auto lock = std::unique_lock{_mutex};
+   BOOST_REQUIRE(_progress.wait_for(lock, 4s, [&] {
+      return static_cast<std::size_t>(std::ranges::count_if(_requests, [](const auto& item) {
+         return item->cancellation_observed;
       })) >= count;
    }));
 }

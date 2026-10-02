@@ -21,6 +21,7 @@ module;
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -181,6 +182,18 @@ node::impl::request_relay_reservation(const peer_id& relay_peer, relay::reservat
    auto operation = std::make_shared<relay_reservation_operation>();
    operation->cancellation = std::make_shared<cancellation_latch>();
    operation->automatic = automatic;
+   auto release = [self, relay_peer = peer_id{relay_peer}, operation](void*) noexcept {
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         const auto found = self->relay_reservation_operations.find(relay_peer);
+         if (found != self->relay_reservation_operations.end() && found->second == operation) {
+            self->relay_reservation_operations.erase(found);
+         }
+      }
+      self->notify_autorelay_changed();
+   };
+   static_assert(std::is_nothrow_move_constructible_v<decltype(release)>);
+   const auto guard = std::unique_ptr<void, decltype(release)>{this, std::move(release)};
    {
       const auto lock = std::scoped_lock{mutex};
       if (stopped || session_admission_closed) { FORGE_THROW_EXCEPTION(exceptions::closed, "P2P node is stopped"); }
@@ -201,17 +214,6 @@ node::impl::request_relay_reservation(const peer_id& relay_peer, relay::reservat
       }
       relay_reservation_operations.emplace(relay_peer, operation);
    }
-   const auto release = [self, relay_peer, operation](void*) noexcept {
-      {
-         const auto lock = std::scoped_lock{self->mutex};
-         const auto found = self->relay_reservation_operations.find(relay_peer);
-         if (found != self->relay_reservation_operations.end() && found->second == operation) {
-            self->relay_reservation_operations.erase(found);
-         }
-      }
-      self->notify_autorelay_changed();
-   };
-   const auto guard = std::unique_ptr<void, decltype(release)>{this, release};
    const auto stop = std::make_shared<detail::worker_stop_bridge>();
    auto parent_subscription = cancellation_latch::subscribe(parent,
        [cancellation = operation->cancellation]() noexcept { cancellation->request_stop(); });

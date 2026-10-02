@@ -13,6 +13,7 @@ module;
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -287,6 +288,71 @@ BOOST_AUTO_TEST_CASE(snapshot_error_with_pending_children_drains_before_join_and
    BOOST_TEST(value.owner()->stats().failures == 0U);
    BOOST_TEST(value.requests().size() == 3U);
    BOOST_TEST(std::ranges::all_of(value.requests(), [](const auto& item) { return item.canceled && item.completed; }));
+}
+
+BOOST_AUTO_TEST_CASE(snapshot_bad_alloc_keeps_canceled_children_owned_until_completion) {
+   auto value = fixture{policy(2, 2, 2)};
+   value.hold_canceled();
+   value.set_snapshot(fixture::snapshot({1, 2}));
+   value.start();
+   value.wait_started(2);
+   auto refreshed = value.refresh(1min);
+   value.wait_state([](const auto& stats) { return stats.waiting_refreshes == 1; });
+   auto joined = value.join();
+   auto tracked = value.tracked_state();
+
+   // Script a callback error, not an allocator fault in the manager's drain waiter.
+   value.fail_snapshot(std::make_exception_ptr(std::bad_alloc{}));
+   value.owner()->notify();
+   value.wait_cancellation_observed(2);
+   BOOST_CHECK_THROW(ready(refreshed), p2p::exceptions::closed);
+   BOOST_TEST(std::ranges::all_of(value.requests(), [](const auto& item) {
+      return item.canceled && item.cancellation_observed && !item.released && !item.completed;
+   }));
+   auto late_joined = value.join();
+   auto late_tracked = value.tracked_state();
+   auto rejected = value.refresh();
+   BOOST_CHECK_THROW(ready(rejected), p2p::exceptions::closed);
+   // Tracker stop is required by wait(); parent failure already canceled the children.
+   auto stopped = value.stop(true);
+   ready(stopped);
+
+   const auto check_retained = [&] {
+      BOOST_CHECK(joined.wait_for(25ms) == std::future_status::timeout);
+      BOOST_CHECK(late_joined.wait_for(25ms) == std::future_status::timeout);
+      BOOST_CHECK(tracked.wait_for(25ms) == std::future_status::timeout);
+      BOOST_CHECK(late_tracked.wait_for(25ms) == std::future_status::timeout);
+      const auto stats = value.owner()->stats();
+      BOOST_TEST(stats.running);
+      BOOST_TEST(stats.stopping);
+      BOOST_TEST(!stats.permitted);
+   };
+   check_retained();
+   BOOST_TEST(value.owner()->stats().pending_reservations == 2U);
+   value.release(0);
+   value.wait_state([](const auto& stats) { return stats.pending_reservations == 1; });
+   const auto requests = value.requests();
+   BOOST_REQUIRE_EQUAL(requests.size(), 2U);
+   BOOST_TEST(requests[0].completed);
+   BOOST_TEST(!requests[1].completed);
+   check_retained();
+
+   value.release(1);
+   for (auto* waiter : {&tracked, &late_tracked}) {
+      const auto terminal = ready(*waiter);
+      BOOST_TEST(!terminal.running);
+      BOOST_TEST(terminal.stopping);
+      BOOST_TEST(!terminal.permitted);
+      BOOST_TEST(terminal.pending_reservations == 0U);
+   }
+   BOOST_CHECK_THROW(ready(joined), std::bad_alloc);
+   BOOST_CHECK_THROW(ready(late_joined), std::bad_alloc);
+   BOOST_TEST(value.owner()->stats().failures == 0U);
+   BOOST_TEST(value.owner()->stats().waiting_refreshes == 0U);
+   BOOST_TEST(value.requests().size() == 2U);
+   BOOST_TEST(std::ranges::all_of(value.requests(), [](const auto& item) {
+      return item.canceled && item.cancellation_observed && item.released && item.completed;
+   }));
 }
 
 BOOST_AUTO_TEST_CASE(tracker_wait_observes_terminal_state_before_join_is_consumed) {

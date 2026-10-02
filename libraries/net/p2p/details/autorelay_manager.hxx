@@ -76,6 +76,7 @@ class autorelay_manager final : public lifecycle_stop_listener,
       std::uint64_t generation = 0;
       std::shared_ptr<cancellation_latch> cancellation;
       bool done = false;
+      bool registered = false;
       bool invalidated = false;
       bool renewal = false;
       std::optional<exceptions::code> error;
@@ -93,11 +94,12 @@ class autorelay_manager final : public lifecycle_stop_listener,
    };
 
    static boost::asio::awaitable<void> run_owned(std::shared_ptr<autorelay_manager> self);
-   static boost::asio::awaitable<void> run_loop(std::shared_ptr<autorelay_manager> self);
    static boost::asio::awaitable<void> reserve_owned(std::shared_ptr<autorelay_manager> self,
                                                     std::shared_ptr<work> item);
    [[nodiscard]] time_point tick();
    void complete(const std::shared_ptr<work>& item, std::optional<exceptions::code> error) noexcept;
+   void parent_complete(std::exception_ptr error) noexcept;
+   void finish_if_ready() noexcept;
    void reap_locked(time_point now);
    [[nodiscard]] time_point backoff_locked(candidate_state& value, time_point now);
 
@@ -111,12 +113,16 @@ class autorelay_manager final : public lifecycle_stop_listener,
    // Bounded retry history survives rotating a candidate out of the active set.
    std::map<peer_id, retry_state> _backoffs;
    std::map<peer_id, std::shared_ptr<work>> _pending_cancellations;
+   lifecycle_tracker::operation _operation;
+   lifecycle_stop_subscription _subscription;
    diagnostics::autorelay_state _stats;
    std::uint64_t _round = 0;
    std::uint64_t _random = 0;
+   std::uint64_t _children = 0;
    bool _started = false;
    bool _stopping = false;
    bool _finished = false;
+   bool _parent_done = false;
    std::exception_ptr _failure;
 };
 

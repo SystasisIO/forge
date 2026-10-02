@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -18,6 +19,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	relaypb "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 	idpb "github.com/libp2p/go-libp2p/p2p/protocol/identify/pb"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	sectls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	ma "github.com/multiformats/go-multiaddr"
 	"google.golang.org/protobuf/proto"
 )
@@ -70,6 +73,16 @@ type autoRelayHostConfig struct {
 	service bool
 	ttl     time.Duration
 	trace   *autoRelayTrace
+}
+
+func autoRelayTLSSecurityOptions(auto *autoRelayHostConfig) []libp2p.Option {
+	options := []libp2p.Option{libp2p.Security(sectls.ID, observedTLS)}
+	if auto != nil {
+		// The native circuit transport shares this upgrader; Forge/Rust use inner Noise.
+		// TLS stays first for outer TCP, whose actual negotiation is checked separately.
+		options = append(options, libp2p.Security(noise.ID, observedNoise))
+	}
+	return options
 }
 
 // Observe the selected stream while delegating every byte to the native handler.

@@ -1,3 +1,5 @@
+module;
+
 #include <boost/test/unit_test.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -18,6 +20,8 @@
 
 #include "libp2p_identity_fixture.hxx"
 
+module forge.net.p2p.node;
+
 import forge.asio.runtime;
 import forge.asio.notification;
 import forge.exceptions;
@@ -26,12 +30,13 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.lifecycle;
-import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.relay;
 import forge.net.p2p.stream;
 import forge.net.p2p.topology;
+
+#include "details/length_delimited.hxx"
 
 namespace {
 namespace p2p = forge::net::p2p;
@@ -108,7 +113,9 @@ boost::asio::awaitable<std::optional<p2p::relay::status>> unsolicited_stop(
           .kind = p2p::relay::stop_message::message_kind::connect,
           .source = p2p::relay::peer{.id = relay.local_peer()},
       }));
-      const auto response = p2p::relay::codec::decode_stop(co_await stream.async_read());
+      auto buffered = std::vector<std::uint8_t>{};
+      const auto response = p2p::relay::codec::decode_stop(
+          co_await p2p::async_read_length_delimited(stream, buffered, 4096));
       co_await stream.async_close();
       co_return response.status;
    } catch (const forge::exceptions::base&) {
@@ -123,8 +130,11 @@ boost::asio::awaitable<std::pair<p2p::relay::status, p2p::stream>> hop_connect(
        .kind = p2p::relay::hop_message::message_kind::connect,
        .target = p2p::relay::peer{.id = destination.local_peer()},
    }));
-   const auto response = p2p::relay::codec::decode_hop(co_await stream.async_read());
-   co_return std::pair{response.status, std::move(stream)};
+   auto buffered = std::vector<std::uint8_t>{};
+   const auto response = p2p::relay::codec::decode_hop(
+       co_await p2p::async_read_length_delimited(stream, buffered, 4096));
+   co_return std::pair{response.status, p2p::detail::stream_access::with_buffer(
+       std::move(stream), std::move(buffered))};
 }
 } // namespace
 
@@ -510,6 +520,53 @@ BOOST_AUTO_TEST_CASE(stalled_stop_handshake_expires_and_releases_service_admissi
    BOOST_TEST(service.metrics().active_sessions == sessions);
    bounded(runtime, source.async_stop());
    bounded(runtime, target.async_stop());
+   bounded(runtime, service.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(stop_status_coalesced_payload_survives_handshake_once) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto service_options = options_for("autorelay-coalesced-service", true);
+   service_options.limits.relay.reservation_ttl = 10s;
+   auto service = p2p::node{runtime, std::move(service_options)};
+   auto destination_options = options_for("autorelay-coalesced-destination");
+   destination_options.relay_policy.auto_discovery_enabled = false;
+   auto destination = p2p::node{runtime, std::move(destination_options)};
+   auto source_options = options_for("autorelay-coalesced-source");
+   source_options.relay_policy.auto_discovery_enabled = false;
+   auto source = p2p::node{runtime, std::move(source_options)};
+   const auto payload = std::vector<std::uint8_t>{11, 22, 33, 44};
+   const auto marker = std::vector<std::uint8_t>{55, 66};
+   destination.register_protocol_handler(p2p::builtins::relay_stop,
+       [payload, marker](p2p::node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+          auto stream = std::move(incoming.stream);
+          auto buffered = std::vector<std::uint8_t>{};
+          static_cast<void>(p2p::relay::codec::decode_stop(
+              co_await p2p::async_read_length_delimited(stream, buffered, 4096)));
+          auto response = p2p::relay::codec::encode_stop(p2p::relay::stop_message{
+              .kind = p2p::relay::stop_message::message_kind::status,
+              .status = p2p::relay::status::ok,
+          });
+          response.insert(response.end(), payload.begin(), payload.end());
+          co_await stream.async_write(std::move(response));
+          static_cast<void>(co_await stream.async_read());
+          co_await stream.async_write(marker);
+          co_await stream.async_close();
+       });
+   static_cast<void>(bounded(runtime, service.async_start()));
+   static_cast<void>(bounded(runtime, destination.async_start()));
+   static_cast<void>(bounded(runtime, source.async_start()));
+   static_cast<void>(bounded(runtime, destination.async_connect(service.local_endpoints().front())));
+   static_cast<void>(bounded(runtime, destination.async_reserve_relay(service.local_peer())));
+   static_cast<void>(bounded(runtime, source.async_connect(service.local_endpoints().front())));
+   auto [status, stream] = bounded(runtime, hop_connect(source, service, destination));
+   BOOST_CHECK(status == p2p::relay::status::ok);
+   BOOST_CHECK(bounded(runtime, stream.async_read()) == payload);
+   bounded(runtime, stream.async_write(std::vector<std::uint8_t>{1}));
+   BOOST_CHECK(bounded(runtime, stream.async_read()) == marker);
+   bounded(runtime, stream.async_close());
+   BOOST_TEST(eventually(runtime, [&] { return service.metrics().active_relays == 0; }));
+   bounded(runtime, source.async_stop());
+   bounded(runtime, destination.async_stop());
    bounded(runtime, service.async_stop());
 }
 

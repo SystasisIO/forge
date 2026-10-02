@@ -350,10 +350,10 @@ func newFixtureHost(transport string, pnetKeyFile string, dnsServer string, auto
 	case "tcp-tls":
 		options = append(options,
 			libp2p.Transport(observedTCP(upgrades)),
-			libp2p.Security(sectls.ID, observedTLS),
 			libp2p.Muxer(yamux.ID, observedYamux()),
 			libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
 		)
+		options = append(options, autoRelayTLSSecurityOptions(auto)...)
 	case "tcp-pnet":
 		pnetState = &pnetConnectionState{}
 		options = append(options,

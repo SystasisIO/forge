@@ -81,33 +81,54 @@ void autorelay_manager::start(lifecycle_tracker& tracker) {
       auto self = shared_from_this();
       auto operation = tracker.track();
       if (!operation.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "P2P AutoRelay lifecycle is closed"); }
-      auto subscription = lifecycle_tracker::subscribe_stop(operation.stop_source(), self);
-      boost::asio::co_spawn(_strand, run_owned(self),
-          [self, operation = std::move(operation), subscription = std::move(subscription)](
-              std::exception_ptr error) mutable noexcept {
-             subscription.reset();
-             {
-                const auto lock = std::scoped_lock{self->_mutex};
-                self->_finished = true;
-                self->_stats.running = false;
-                self->_failure = error;
-             }
-             self->_wakeup->notify();
-             self->_changed->notify();
-             operation.release();
-          });
-   } catch (...) {
-      request_stop();
+      const auto stop_source = operation.stop_source();
       {
          const auto lock = std::scoped_lock{_mutex};
-         _finished = true;
-         _stats.running = false;
-         _failure = std::current_exception();
+         _operation = std::move(operation);
       }
-      _wakeup->notify();
-      _changed->notify();
+      auto subscription = lifecycle_tracker::subscribe_stop(stop_source, self);
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _subscription = std::move(subscription);
+      }
+      boost::asio::co_spawn(_strand, run_owned(self),
+          [self](std::exception_ptr error) noexcept {
+             self->parent_complete(error);
+          });
+   } catch (...) {
+      parent_complete(std::current_exception());
       throw;
    }
+}
+
+void autorelay_manager::parent_complete(std::exception_ptr error) noexcept {
+   request_stop();
+   {
+      const auto lock = std::scoped_lock{_mutex};
+      if (_parent_done) { return; }
+      _parent_done = true;
+      _failure = error;
+   }
+   finish_if_ready();
+}
+
+void autorelay_manager::finish_if_ready() noexcept {
+   auto operation = lifecycle_tracker::operation{};
+   auto subscription = lifecycle_stop_subscription{};
+   {
+      const auto lock = std::scoped_lock{_mutex};
+      if (!_parent_done || _children != 0 || _finished) { return; }
+      // Parent completion has invalidated every claim; this reap cannot allocate.
+      reap_locked(std::chrono::steady_clock::now());
+      _finished = true;
+      _stats.running = false;
+      operation = std::move(_operation);
+      subscription = std::move(_subscription);
+   }
+   subscription.reset();
+   _wakeup->notify();
+   _changed->notify();
+   operation.release();
 }
 
 void autorelay_manager::notify() noexcept { _wakeup->notify(); }
@@ -287,6 +308,8 @@ autorelay_manager::time_point autorelay_manager::tick() {
          launches.push_back(item);
          _pending_cancellations.emplace(peer, item);
          value.pending = item;
+         item->registered = true;
+         ++_children;
          ++_stats.pending_reservations;
          if (!renewal) { ++new_pending; }
          increment(_stats.attempts);
@@ -328,35 +351,18 @@ boost::asio::awaitable<void> autorelay_manager::reserve_owned(std::shared_ptr<au
 void autorelay_manager::complete(const std::shared_ptr<work>& item, std::optional<exceptions::code> error) noexcept {
    {
       const auto lock = std::scoped_lock{_mutex};
+      if (item->done) { return; }
       item->error = error;
       item->done = true;
+      if (item->registered) { --_children; }
       const auto found = _pending_cancellations.find(item->source.peer);
       if (found != _pending_cancellations.end() && found->second == item) { _pending_cancellations.erase(found); }
    }
    _wakeup->notify();
+   finish_if_ready();
 }
 
 boost::asio::awaitable<void> autorelay_manager::run_owned(std::shared_ptr<autorelay_manager> self) {
-   auto failure = std::exception_ptr{};
-   try { co_await run_loop(self); }
-   catch (...) { failure = std::current_exception(); }
-   if (failure) {
-      self->request_stop();
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
-      while (true) {
-         const auto observed = self->_wakeup->epoch();
-         {
-            const auto lock = std::scoped_lock{self->_mutex};
-            self->reap_locked(std::chrono::steady_clock::now());
-            if (self->_stats.pending_reservations == 0) { break; }
-         }
-         co_await self->_wakeup->async_wait(observed);
-      }
-      std::rethrow_exception(failure);
-   }
-}
-
-boost::asio::awaitable<void> autorelay_manager::run_loop(std::shared_ptr<autorelay_manager> self) {
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    auto failure = std::exception_ptr{};
    while (true) {
@@ -366,28 +372,21 @@ boost::asio::awaitable<void> autorelay_manager::run_loop(std::shared_ptr<autorel
       {
          const auto lock = std::scoped_lock{self->_mutex};
          stopping = self->_stopping;
-         if (stopping) {
-            // Stopped items are invalidated, so reaping needs no clock callback.
-            self->reap_locked(std::chrono::steady_clock::now());
-            if (self->_stats.pending_reservations == 0) { break; }
-         }
       }
-      if (!stopping) {
-         try {
-            deadline = self->tick();
-            if (deadline != time_point::max()) {
-               const auto delay = std::max(time_point::duration::zero(), deadline - self->_callbacks.now());
-               deadline = std::chrono::steady_clock::now() + delay;
-            }
+      // Child terminal callbacks, not another allocating waiter, own the drain.
+      if (stopping) { break; }
+      try {
+         deadline = self->tick();
+         if (deadline != time_point::max()) {
+            const auto delay = std::max(time_point::duration::zero(), deadline - self->_callbacks.now());
+            deadline = std::chrono::steady_clock::now() + delay;
          }
-         catch (...) {
-            failure = std::current_exception();
-            self->request_stop();
-            continue;
-         }
+      } catch (...) {
+         failure = std::current_exception();
+         self->request_stop();
+         continue;
       }
-      if (stopping) { co_await self->_wakeup->async_wait(observed); }
-      else if (deadline == time_point::max()) { co_await self->_wakeup->async_wait(observed); }
+      if (deadline == time_point::max()) { co_await self->_wakeup->async_wait(observed); }
       else {
          co_await self->_wakeup->async_wait_until(observed, deadline);
       }

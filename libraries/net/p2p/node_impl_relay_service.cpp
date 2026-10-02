@@ -437,6 +437,7 @@ boost::asio::awaitable<void> node::impl::handle_relay_hop(std::shared_ptr<node::
                 if (stop_status.kind != relay::stop_message::message_kind::status || stop_status.status != relay::status::ok) {
                    FORGE_THROW_EXCEPTION(exceptions::relay_rejected, "P2P relay STOP rejected");
                 }
+                *owned = detail::stream_access::with_buffer(std::move(*owned), std::move(stop_buffer));
              } catch (...) { failure = std::current_exception(); }
              if (failure) {
                 co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
@@ -498,22 +499,30 @@ void node::impl::launch_relay_pumps(peer_id owner, forge::net::p2p::stream left,
    auto self = shared_from_this();
    const auto byte_limit = relay_byte_limit(owner);
    const auto reservation_id = admission.reservation_id;
-   const auto source = admission.source;
+   auto operation = lifecycle.track();
+   if (!operation.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "P2P relay lifecycle is closed"); }
+   auto release = std::function<void()>{[self, owner, reservation_id, source = std::move(admission.source)]() noexcept {
+      self->finish_relay(owner, reservation_id, source);
+   }};
    auto pair = std::make_shared<detail::relay_pair>(
        std::move(owner), std::move(left), std::move(right), std::move(admission.circuit),
        runtime.context().get_executor(),
-       std::chrono::duration_cast<std::chrono::seconds>(options.limits.relay.max_duration), byte_limit);
-   auto finish = [self, pair, reservation_id, source] {
-      if (pair->mark_finished()) {
-         self->finish_relay(pair->owner, reservation_id, source);
-      }
-   };
-   auto deadline_work = std::function<asio::awaitable<void>()>{[pair]() -> asio::awaitable<void> {
-          if (co_await pair->async_wait_deadline()) {
+       std::chrono::duration_cast<std::chrono::seconds>(options.limits.relay.max_duration), byte_limit,
+       std::move(release), std::move(operation));
+   using worker = detail::relay_pair::worker;
+   auto deadline_completion = std::make_shared<worker>(pair, worker::kind::deadline);
+   auto left_completion = std::make_shared<worker>(pair, worker::kind::pump);
+   auto right_completion = std::make_shared<worker>(pair, worker::kind::pump);
+   auto deadline_work = std::function<asio::awaitable<void>()>{[self, pair, deadline_completion]() -> asio::awaitable<void> {
+          try {
+             if (co_await pair->async_wait_deadline()) { pair->cancel_streams(); }
+          } catch (...) {
+             self->record_relay_failure();
              pair->cancel_streams();
           }
        }};
-   auto left_work = std::function<asio::awaitable<void>()>{[self, pair, finish]() -> asio::awaitable<void> {
+   auto left_work = std::function<asio::awaitable<void>()>{[self, pair, left_completion]() -> asio::awaitable<void> {
+          left_completion->enter();
           try {
              while (true) {
                 auto chunk = co_await pair->left.async_read_chunk();
@@ -543,9 +552,9 @@ void node::impl::launch_relay_pumps(peer_id owner, forge::net::p2p::stream left,
           } catch (...) {
              // Relay cleanup is best-effort after either side closes or fails.
           }
-          finish();
        }};
-   auto right_work = std::function<asio::awaitable<void>()>{[self, pair, finish]() -> asio::awaitable<void> {
+   auto right_work = std::function<asio::awaitable<void>()>{[self, pair, right_completion]() -> asio::awaitable<void> {
+          right_completion->enter();
           try {
              while (true) {
                 auto chunk = co_await pair->right.async_read_chunk();
@@ -575,16 +584,16 @@ void node::impl::launch_relay_pumps(peer_id owner, forge::net::p2p::stream left,
           } catch (...) {
              // Relay cleanup is best-effort after either side closes or fails.
           }
-          finish();
        }};
-   // Complete all throwing task staging before any worker can own completion.
+   // After staging, ownership transfer and every launch/rejection path are nonthrowing.
+   // The pair releases logical admission once all task closures have drained.
+   pair->take_ownership();
    if (!launch_tracked(std::move(deadline_work))) {
       pair->cancel_streams();
-      finish();
       return;
    }
-   if (!launch_tracked(std::move(left_work))) { pair->cancel_streams(); finish(); }
-   if (!launch_tracked(std::move(right_work))) { pair->cancel_streams(); finish(); }
+   if (!launch_tracked(std::move(left_work))) { pair->cancel_streams(); }
+   if (!launch_tracked(std::move(right_work))) { pair->cancel_streams(); }
 }
 
 
