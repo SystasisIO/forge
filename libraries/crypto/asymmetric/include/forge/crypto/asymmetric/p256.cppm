@@ -164,4 +164,8 @@ inline bool verify_message(const public_key& key, std::span<const std::uint8_t> 
 [[nodiscard]] der_signature sign_der(const private_key& key, std::span<const std::uint8_t> message);
 [[nodiscard]] bool verify_der(const public_key& key, std::span<const std::uint8_t> message,
                               std::span<const std::uint8_t> signature);
+[[nodiscard]] constexpr bool diagnostic_is_secret(const private_key&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::asymmetric::p256

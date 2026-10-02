@@ -191,6 +191,10 @@ void to_variant(const private_key& value, forge::variant& output,
                 const forge::yield_function_t& yield = forge::yield_function_t());
 void from_variant(const forge::variant& value, private_key& output);
 
+[[nodiscard]] constexpr bool diagnostic_is_secret(const private_key&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::asymmetric
 
 export namespace forge::raw {

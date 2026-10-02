@@ -39,7 +39,7 @@ import forge.net.http.base_url;
 import forge.net.http.client;
 import forge.net.http.types;
 import forge.codec.json;
-import forge.log.log_message;
+import forge.log.record;
 
 namespace forge::otlp {
 namespace {

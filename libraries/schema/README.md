@@ -169,6 +169,26 @@ Boost exceptions are confined to their implementation boundaries.
   document.
 - Do not mark a field `secret()` and then print the raw document. Redaction is an
   explicit config/log/UI step.
+- For typed diagnostic output, use `forge::variant_schema::encode_diagnostic`
+  from `forge.variant.schema`. It checks `.secret()` before serialization and
+  applies canonical names recursively. Ordinary Schema/JSON/YAML encoding keeps
+  the original data.
+
+## Encoding Policy Boundary
+
+`object_schema::encode_object_with(input, encoder, base_path)` shares the normal
+field/path iteration with consumers that need a different field encoding
+policy. The callback receives `field_rule<T>`, the object and the canonical path,
+and returns `input_value`. `member_name`, `member_address` and `type` let a typed
+reflection consumer match a field without invoking `read_input`.
+
+`has_explicit_rules_v<T>` distinguishes the default absent rules from an explicit
+specialization, including an intentionally empty Schema. Diagnostics respect an
+empty Schema as an empty object. Diagnostic field matching uses Describe names
+or compatible PFR member addresses with type and uniqueness checks; a secret
+field is masked before matching. Nonsecret members of an otherwise opaque
+Schema-only object receive an unsupported marker. Schema remains independent of
+Variant and Crypto and does not implement a second diagnostic serializer.
 
 ## Typical Mistakes
 

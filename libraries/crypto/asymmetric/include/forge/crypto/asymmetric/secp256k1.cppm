@@ -179,4 +179,8 @@ using recover_bytes = forge::crypto::core::bytes;
 
 recover_bytes recover(const recover_bytes& signature, const recover_bytes& digest);
 
+[[nodiscard]] constexpr bool diagnostic_is_secret(const private_key&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::asymmetric::secp256k1

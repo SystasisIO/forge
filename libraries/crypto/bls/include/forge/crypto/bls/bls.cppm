@@ -127,4 +127,8 @@ struct aggregate_verification_group {
 void to_variant(const private_key& value, variant& output);
 void from_variant(const variant& value, private_key& output);
 
+[[nodiscard]] constexpr bool diagnostic_is_secret(const private_key&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::bls

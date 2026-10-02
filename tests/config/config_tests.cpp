@@ -47,6 +47,8 @@ struct nested_key_config {
    std::string input_profile = "forge";
    std::vector<std::string> purposes;
 };
+BOOST_DESCRIBE_STRUCT(nested_key_config, (), (id, private_key, input_profile, purposes))
+static_assert(boost::describe::has_describe_members<nested_key_config>::value);
 
 struct nested_signer_config {
    std::vector<nested_key_config> keys;
@@ -79,7 +81,6 @@ BOOST_DESCRIBE_ENUM(scalar_test_mode, fast_mode, safe_mode)
 BOOST_DESCRIBE_STRUCT(http_config, (), (bind_port, bind_host, tls_enabled, tags, token))
 BOOST_DESCRIBE_STRUCT(flat_config, (), (log_level))
 BOOST_DESCRIBE_STRUCT(optional_default_config, (), (wrapped_port, raw_port))
-BOOST_DESCRIBE_STRUCT(nested_key_config, (), (id, private_key, input_profile, purposes))
 BOOST_DESCRIBE_STRUCT(nested_signer_config, (), (keys, default_output_profile))
 BOOST_DESCRIBE_STRUCT(defaulted_nested_signer_config, (), (keys))
 BOOST_DESCRIBE_STRUCT(string_shorthand_item_config, (), (name))

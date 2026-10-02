@@ -1,6 +1,6 @@
 # forge_reflect
 
-`forge_reflect` is a thin Boost.Describe utility layer. It centralizes described
+`forge_reflect` is a thin Boost.Describe and diagnostic Boost.PFR utility layer. It centralizes described
 type detection, member traversal and enum conversion so `raw`, `variant`,
 `schema` and other libraries do not each write their own reflection boilerplate.
 
@@ -9,6 +9,7 @@ type detection, member traversal and enum conversion so `raw`, `variant`,
 - You need to iterate Boost.Describe members in stable order.
 - You need base-first traversal for described derived types.
 - You need enum name/int conversion for diagnostics or codecs.
+- You need named traversal of a compatible, undescribed aggregate for diagnostics.
 
 ## When Not To Use
 
@@ -23,7 +24,7 @@ type detection, member traversal and enum conversion so `raw`, `variant`,
 
 Target: `forge_reflect`.
 
-Dependencies: `forge_core` and Boost.Describe headers. `forge_reflect` must not link
+Dependencies: `forge_core`, Boost.Describe and Boost.PFR headers. `forge_reflect` must not link
 or import `forge_variant`.
 
 ## Examples
@@ -67,6 +68,37 @@ auto ok = forge::reflect::enum_from_string("passive", parsed);
 For types that replace old `FC_REFLECT(TYPE, (a)(b)(c))`, the new
 `BOOST_DESCRIBE_*` member list must keep the same order. `forge_raw` uses that
 order for byte-compatible packing.
+
+## Diagnostic Aggregates
+
+`is_diagnostic_aggregate_v<T>` admits aggregate classes with standard layout,
+excludes unions, and respects Boost.PFR's `is_reflectable` customization.
+`for_each_aggregate_member(value, visitor)` supplies each field's name and const
+reference. A compatible aggregate containing `std::string` does not need
+Boost.Describe or an opt-in. Value mapping belongs to `forge_variant`; this
+traversal never defines wire order or changes Raw serialization.
+
+Boost.PFR's potential-reflection trait does not prove that an arbitrary C++
+aggregate is supported. Bitfields, reference members, inheritance and C-array
+members may require explicit Describe metadata or an opt-out before diagnostic
+instantiation. Do not rely on the potential trait to reject every incompatible
+shape automatically. For example:
+
+```cpp
+#include <boost/pfr/traits.hpp>
+#include <type_traits>
+
+struct bitfield_record { unsigned flags : 3; };
+
+import forge.reflect.reflect;
+
+template <>
+struct boost::pfr::is_reflectable<bitfield_record, forge::reflect::diagnostic_aggregate_tag>
+   : std::false_type {};
+```
+
+Variant diagnostics return an explicit unsupported marker for an opted-out
+undescribed type without a custom conversion.
 
 ## Risks And Anti-Patterns
 

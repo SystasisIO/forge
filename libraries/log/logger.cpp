@@ -15,8 +15,6 @@ module;
 
 module forge.log.logger;
 
-import forge.log.log_message;
-import forge.log.appender;
 import forge.log.record;
 import forge.log.logger_config;
 import forge.core.utility;
@@ -30,70 +28,6 @@ std::string current_thread_id() {
    auto out = std::ostringstream{};
    out << std::this_thread::get_id();
    return out.str();
-}
-
-log_record make_record_from_message(const log_message& message, const std::string& logger_name) {
-   auto context = message.get_context();
-   auto fields = log_fields{};
-   auto data = message.get_data();
-   fields.reserve(data.size());
-   for (const auto& entry : data) {
-      try {
-         fields.push_back(log_ctx(entry.key(), entry.value().as_string()));
-      } catch (...) {
-         fields.push_back(log_ctx(entry.key(), std::string{"<unprintable>"}));
-      }
-   }
-
-   auto record = log_record{
-       .level = context.get_log_level(),
-       .logger = logger_name,
-       .message = message.get_limited_message(),
-       .fields = std::move(fields),
-       .timestamp = context.get_timestamp(),
-       .thread_id = current_thread_id(),
-       .thread_name = context.get_thread_name(),
-   };
-   if (static_cast<int>(record.level) >= static_cast<int>(log_level::error)) {
-      record.stacktrace = capture_stacktrace(1);
-   }
-   return record;
-}
-
-log_message make_message_from_record(const log_record& record) {
-   const auto location = record.location;
-   auto context = log_context{
-       record.level,
-       location.file_name(),
-       static_cast<std::uint64_t>(location.line()),
-       location.function_name(),
-   };
-   context.append_context(record.logger);
-
-   // Legacy appenders have no structured-record overload. Preserve the canonical
-   // representation rather than silently dropping structured fields at that boundary.
-   return log_message{
-       std::move(context),
-       "${record}",
-       mutable_variant_object{}("record", format_text_log_record(record)),
-   };
-}
-
-struct route_targets {
-   std::vector<appender::ptr> appenders;
-   std::vector<std::shared_ptr<sink>> sinks;
-};
-
-void deliver(const std::vector<appender::ptr>& appenders, const log_message& message) {
-   for (const auto& current_appender : appenders) {
-      try {
-         current_appender->log(message);
-      } catch (const std::exception& error) {
-         std::cerr << "ERROR: logger::log appender std::exception: " << error.what() << std::endl;
-      } catch (...) {
-         std::cerr << "ERROR: logger::log appender unknown exception" << std::endl;
-      }
-   }
 }
 
 void deliver(const std::vector<std::shared_ptr<sink>>& sinks, const log_record& record) {
@@ -123,25 +57,18 @@ class logger::impl {
    bool _enabled;
    log_level _level;
 
-   std::vector<appender::ptr> _appenders;
    std::vector<std::shared_ptr<sink>> _sinks;
 
-   [[nodiscard]] route_targets targets() const {
-      auto result = route_targets{};
+   [[nodiscard]] std::vector<std::shared_ptr<sink>> targets() const {
+      auto result = std::vector<std::shared_ptr<sink>>{};
       auto seen_loggers = std::unordered_set<const impl*>{};
-      auto seen_appenders = std::unordered_set<appender*>{};
       auto seen_sinks = std::unordered_set<sink*>{};
 
       for (auto current = this; current != nullptr && seen_loggers.insert(current).second;
            current = current->_parent.my.get()) {
-         for (const auto& current_appender : current->_appenders) {
-            if (current_appender && seen_appenders.insert(current_appender.get()).second) {
-               result.appenders.push_back(current_appender);
-            }
-         }
          for (const auto& current_sink : current->_sinks) {
             if (current_sink && seen_sinks.insert(current_sink.get()).second) {
-               result.sinks.push_back(current_sink);
+               result.push_back(current_sink);
             }
          }
       }
@@ -183,29 +110,10 @@ void logger::set_enabled(bool e) {
    my->_enabled = e;
 }
 bool logger::is_enabled() const {
-   return my->_enabled;
+   return my && my->_enabled;
 }
 bool logger::is_enabled(log_level e) const {
-   return my->_enabled && e >= my->_level;
-}
-
-void logger::log(log_message m) {
-   if (!is_enabled(m.get_context().get_log_level())) {
-      return;
-   }
-
-   std::unique_lock g(log_config::get().log_mutex);
-   m.get_context().append_context(my->_name);
-   const auto targets = my->targets();
-   auto record = std::optional<log_record>{};
-   if (!targets.sinks.empty()) {
-      record = make_record_from_message(m, my->_name);
-   }
-   deliver(targets.appenders, m);
-   g.unlock();
-   if (record) {
-      deliver(targets.sinks, *record);
-   }
+   return my && my->_enabled && e >= my->_level && e < log_level::off;
 }
 
 void logger::log(log_record record) {
@@ -216,13 +124,14 @@ void logger::log(log_record record) {
    std::unique_lock g(log_config::get().log_mutex);
    record.logger = my->_name;
    const auto targets = my->targets();
-   const auto legacy_message = targets.appenders.empty() ? std::optional<log_message>{}
-                                                         : std::optional<log_message>{make_message_from_record(record)};
-   if (legacy_message) {
-      deliver(targets.appenders, *legacy_message);
-   }
    g.unlock();
-   deliver(targets.sinks, record);
+   for (auto& field : record.fields) {
+      if (field.redacted) {
+         field.value = "<redacted>";
+      }
+   }
+   record.message = interpolate_log_message(record.message, record.fields);
+   deliver(targets, record);
 }
 
 void logger::log(log_level level, std::string message, log_fields fields, std::source_location location) {
@@ -245,24 +154,21 @@ void logger::log(log_level level, std::string message, log_fields fields, std::s
    log(std::move(record));
 }
 
+void logger::set_name(const std::string& n) {
+   my->_name = n;
+}
+
 void logger::debug(std::string message, log_fields fields, std::source_location location) {
    log(log_level::debug, std::move(message), std::move(fields), location);
 }
-
 void logger::info(std::string message, log_fields fields, std::source_location location) {
    log(log_level::info, std::move(message), std::move(fields), location);
 }
-
 void logger::warn(std::string message, log_fields fields, std::source_location location) {
    log(log_level::warn, std::move(message), std::move(fields), location);
 }
-
 void logger::error(std::string message, log_fields fields, std::source_location location) {
    log(log_level::error, std::move(message), std::move(fields), location);
-}
-
-void logger::set_name(const std::string& n) {
-   my->_name = n;
 }
 std::string logger::get_name() const {
    return my->_name;
@@ -299,10 +205,6 @@ logger& logger::set_log_level(log_level ll) {
    return *this;
 }
 
-void logger::add_appender(const std::shared_ptr<appender>& a) {
-   my->_appenders.push_back(a);
-}
-
 void logger::add_sink(std::shared_ptr<sink> sink) {
    if (!sink) {
       throw std::invalid_argument{"cannot add null log sink"};
@@ -317,6 +219,35 @@ void logger::remove_sink(const std::shared_ptr<sink>& sink) {
    }
    std::lock_guard g(log_config::get().log_mutex);
    my->_sinks.erase(std::remove(my->_sinks.begin(), my->_sinks.end(), sink), my->_sinks.end());
+}
+
+logger resolve_log_logger(const logger& value) {
+   return value;
+}
+logger resolve_log_logger(std::string_view name) {
+   return logger::get(std::string{name});
+}
+logger resolve_log_logger(const std::string& name) {
+   return logger::get(name);
+}
+logger resolve_log_logger(const char* name) {
+   return logger::get(name ? name : default_logger_name);
+}
+
+void emit_log(logger& route, log_level level, std::string message, std::source_location location) {
+   route.log(level, std::move(message), {}, location);
+}
+
+void emit_log(logger& route, log_level level, std::string message, log_fields fields, std::source_location location) {
+   route.log(level, std::move(message), std::move(fields), location);
+}
+
+void emit_log(logger& route, log_level level, log_record record, std::source_location location) {
+   record.level = level;
+   if (record.location.line() == 0) {
+      record.location = location;
+   }
+   route.log(std::move(record));
 }
 
 } // namespace forge

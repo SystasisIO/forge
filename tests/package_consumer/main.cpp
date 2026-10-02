@@ -8,9 +8,8 @@ import forge.app.application;
 import forge.app.service_registry;
 import forge.crypto.digest.sha256;
 import forge.exceptions;
-import forge.log.log_message;
-import forge.log.logger;
 import forge.log.record;
+import forge.log.logger;
 import forge.raw.raw;
 
 class capture_sink final : public forge::sink {
@@ -31,7 +30,7 @@ int main() {
    logger.set_log_level(forge::log_level::debug);
    auto sink = std::make_shared<capture_sink>();
    logger.add_sink(sink);
-   logger.info("package works", {forge::log_ctx("component", "smoke")});
+   ilog(logger, "package works", ("component", "smoke"));
 
    const auto digest = forge::crypto::digest::sha256::hash(std::string{"package works"});
    const auto bytes = forge::raw::pack(std::string{digest});

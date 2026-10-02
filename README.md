@@ -183,7 +183,7 @@ registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
 | [crypto/bls](libraries/crypto/bls/README.md) | `forge_crypto_bls` | BLS values, signatures and contract primitives. | `forge_crypto_digest`, BLS12-381, OpenSSL::Crypto. |
 | [crypto/bls/signer](libraries/crypto/bls/signer/README.md) | `forge_crypto_bls_signer` | Low-level BLS provider contract and configured provider. | `forge_crypto_bls`, `forge_exceptions`. |
 | [crypto/bn256](libraries/crypto/bn256/README.md) | `forge_crypto_bn256` | BN254 operations. | Internal BN256 backend. |
-| [log](libraries/log/README.md) | `forge_log` | Logging core, messages, console/appender boundary. | `forge_chrono`, `forge_variant`, Boost.DLL privately. |
+| [log](libraries/log/README.md) | `forge_log` | Compact logging macros, diagnostic fields, records and synchronous sinks. | `forge_chrono`, `forge_variant`, Boost.DLL privately. |
 | [otlp](libraries/otlp/README.md) | `forge_otlp` | OTLP/HTTP JSON log export and crash-spool resend. | `forge_log`, `forge_net_http`, `forge_asio`. |
 | [asio](libraries/asio/README.md) | `forge_asio` | Asio runtime, priority task scheduler and bounded CPU compute pool. | Boost.Asio, threads. |
 | [app](libraries/app/README.md) | `forge_app` | Opinionated application shell, plugins, ports, config and diagnostics. | `forge_asio`, `forge_config_core`. |

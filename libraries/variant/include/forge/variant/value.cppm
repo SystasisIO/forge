@@ -52,6 +52,7 @@ void to_variant(const unsigned __int128& var, variant& vo);
 void from_variant(const variant& var, unsigned __int128& vo);
 void to_variant(const __int128& var, variant& vo);
 void from_variant(const variant& var, __int128& vo);
+void to_variant(const long double& var, variant& vo);
 void to_variant(const uint128& var, variant& vo);
 void from_variant(const variant& var, uint128& vo);
 void to_variant(const variant_object& var, variant& vo);

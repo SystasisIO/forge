@@ -1,9 +1,6 @@
 add_library(
    forge_log STATIC
-   appender.cpp
-   console_appender.cpp
    record.cpp
-   log_message.cpp
    logger.cpp
    logger_config.cpp
 )

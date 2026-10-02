@@ -2,40 +2,111 @@ module;
 
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <mutex>
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 module forge.log.logger_config;
 
-import forge.log.appender;
-import forge.log.console_appender;
 import forge.log.exceptions;
-import forge.variant.described;
+import forge.variant.value;
 
 namespace forge {
+namespace {
 
-log_config& log_config::get() {
-   // allocate dynamically which will leak on exit but allow loggers to be used until the very end of execution
-   static log_config* the = new log_config;
-   return *the;
+void validate_sink_config(const sink_config& config) {
+   const auto args = config.args.is_null() ? variant_object{} : config.args.get_object();
+   if (config.type == "console") {
+      if (args.contains("stream")) {
+         const auto name = args["stream"].as_string();
+         if (name != "std_error" && name != "std_out" && name != "by_level") {
+            throw log::exceptions::invalid_config{"unknown console sink stream"};
+         }
+      }
+   } else if (config.type == "file" || config.type == "jsonl") {
+      if (!args.contains("path") || args["path"].as_string().empty()) {
+         throw log::exceptions::invalid_config{"file sink requires a non-empty path"};
+      }
+      if (args.contains("append")) {
+         static_cast<void>(args["append"].as_bool());
+      }
+   } else {
+      throw log::exceptions::invalid_config{"unknown logging sink type"};
+   }
 }
 
-bool log_config::register_appender(const std::string& type, const appender_factory::ptr& f) {
-   std::lock_guard g(log_config::get().log_mutex);
-   log_config::get().appender_factory_map[type] = f;
-   return true;
+void validate_config(const logging_config& config) {
+   auto names = std::unordered_set<std::string>{};
+   for (const auto& value : config.sinks) {
+      if (value.name.empty() || !names.insert(value.name).second) {
+         throw log::exceptions::invalid_config{"logging sink names must be non-empty and unique"};
+      }
+      validate_sink_config(value);
+   }
+   auto loggers = std::unordered_set<std::string>{};
+   for (const auto& value : config.loggers) {
+      if (value.name.empty() || !loggers.insert(value.name).second) {
+         throw log::exceptions::invalid_config{"logger names must be non-empty and unique"};
+      }
+      if (value.level && (*value.level < log_level::all || *value.level > log_level::off)) {
+         throw log::exceptions::invalid_config{"logger level is invalid"};
+      }
+      for (const auto& name : value.sinks) {
+         if (!names.contains(name)) {
+            throw log::exceptions::invalid_config{"logger references an unknown sink"};
+         }
+      }
+   }
+}
+
+std::shared_ptr<sink> create_sink(const sink_config& config) {
+   const auto args = config.args.is_null() ? variant_object{} : config.args.get_object();
+   if (config.type == "console") {
+      auto stream = console_stream::by_level;
+      if (args.contains("stream")) {
+         const auto name = args["stream"].as_string();
+         if (name == "std_error") {
+            stream = console_stream::standard_error;
+         } else if (name == "std_out") {
+            stream = console_stream::standard_out;
+         } else if (name != "by_level") {
+            throw log::exceptions::invalid_config{"unknown console sink stream"};
+         }
+      }
+      return std::make_shared<console_sink>(stream);
+   }
+   if (config.type == "file" || config.type == "jsonl") {
+      if (!args.contains("path")) {
+         throw log::exceptions::invalid_config{"file sink requires path"};
+      }
+      const auto path = std::filesystem::path{args["path"].as_string()};
+      const auto append = !args.contains("append") || args["append"].as_bool();
+      if (config.type == "jsonl") {
+         return std::make_shared<jsonl_sink>(path, append);
+      }
+      return std::make_shared<file_sink>(path, append);
+   }
+   throw log::exceptions::invalid_config{"unknown logging sink type"};
+}
+
+} // namespace
+
+log_config& log_config::get() {
+   // Keep named loggers usable during static object destruction.
+   static auto* config = new log_config;
+   return *config;
 }
 
 logger log_config::get_logger(const std::string& name) {
-   std::lock_guard g(log_config::get().log_mutex);
-   auto& loggers = log_config::get().logger_map;
+   std::lock_guard lock(get().log_mutex);
+   auto& loggers = get().logger_map;
    if (const auto existing = loggers.find(name); existing != loggers.end()) {
       return existing->second;
    }
-
    auto result = logger{name};
    if (name != default_logger_name) {
       if (const auto parent = loggers.find(default_logger_name); parent != loggers.end()) {
@@ -49,132 +120,81 @@ logger log_config::get_logger(const std::string& name) {
 }
 
 void log_config::update_logger(const std::string& name, logger& log) {
-   std::lock_guard g(log_config::get().log_mutex);
+   std::lock_guard lock(get().log_mutex);
    if (log.get_name().empty()) {
       log.set_name(name);
    }
-   if (name != default_logger_name && log.get_parent() == nullptr &&
-       log_config::get().logger_map.find(default_logger_name) != log_config::get().logger_map.end()) {
-      log.set_parent(log_config::get().logger_map[default_logger_name]);
+   if (name != default_logger_name && log.get_parent() == nullptr) {
+      if (const auto parent = get().logger_map.find(default_logger_name); parent != get().logger_map.end()) {
+         log.set_parent(parent->second);
+      }
    }
-   log_config::get().logger_map[name] = log;
+   get().logger_map[name] = log;
    if (name == default_logger_name) {
       logger::default_logger() = log;
    }
 }
 
-void log_config::update_logger_with_default(const std::string& name, logger& log, const std::string& default_name) {
-   std::lock_guard g(log_config::get().log_mutex);
-   if (log_config::get().logger_map.find(name) != log_config::get().logger_map.end()) {
-      log = log_config::get().logger_map[name];
-   } else {
-      // no entry for logger, so setup with default logger if it exists, otherwise do nothing since default logger not
-      // configured
-      if (log_config::get().logger_map.find(default_name) != log_config::get().logger_map.end()) {
-         log = log_config::get().logger_map[default_name];
-         log_config::get().logger_map.emplace(name, log);
-      }
-   }
-}
-
-void log_config::initialize_appenders() {
-   std::lock_guard g(log_config::get().log_mutex);
-   for (auto& iter : log_config::get().appender_map)
-      iter.second->initialize();
-}
-
-void configure_logging(const std::filesystem::path& lc) {
-   static_cast<void>(lc);
-   throw log::exceptions::invalid_config{"file-based logging config parsing is not part of forge_log"};
-}
-bool configure_logging(const logging_config& cfg) {
+bool configure_logging(const logging_config& config) {
    static_cast<void>(logger::get());
-   return log_config::configure_logging(cfg);
+   return log_config::configure_logging(config);
 }
 
-bool log_config::configure_logging(const logging_config& cfg) {
+bool log_config::configure_logging(const logging_config& config) {
    try {
-      static bool reg_console_appender = log_config::register_appender<console_appender>("console");
-
-      std::lock_guard g(log_config::get().log_mutex);
-      log_config::get().logger_map.clear();
-      log_config::get().appender_map.clear();
-
-      logger::default_logger() = log_config::get().logger_map[default_logger_name];
-      logger& default_logger = logger::default_logger();
-
-      for (size_t i = 0; i < cfg.appenders.size(); ++i) {
-         // create appender
-         auto fact_itr = log_config::get().appender_factory_map.find(cfg.appenders[i].type);
-         if (fact_itr == log_config::get().appender_factory_map.end()) {
-            // wlog( "Unknown appender type '%s'", type.c_str() );
-            continue;
-         }
-         auto ap = fact_itr->second->create(cfg.appenders[i].args);
-         log_config::get().appender_map[cfg.appenders[i].name] = ap;
+      // Validate the whole document before constructors may open or truncate files.
+      validate_config(config);
+      auto sinks = std::unordered_map<std::string, std::shared_ptr<sink>>{};
+      for (const auto& value : config.sinks) {
+         sinks.emplace(value.name, create_sink(value));
       }
-      for (bool first_pass = true;; first_pass = false) { // process default first
-         for (size_t i = 0; i < cfg.loggers.size(); ++i) {
-            auto lgr = log_config::get().logger_map[cfg.loggers[i].name];
-            if (first_pass && cfg.loggers[i].name != default_logger_name)
-               continue;
-            if (!first_pass && cfg.loggers[i].name == default_logger_name)
-               continue;
 
-            lgr.set_name(cfg.loggers[i].name);
-            if (lgr.get_name() != default_logger_name) {
-               lgr.set_parent(default_logger);
+      auto loggers = std::unordered_map<std::string, logger>{};
+      auto parent = logger{default_logger_name};
+      const auto configure = [&](logger& route, const logger_config& value) {
+         route.set_enabled(value.enabled.value_or(parent.is_enabled()));
+         route.set_log_level(value.level.value_or(parent.get_log_level()));
+         for (const auto& name : value.sinks) {
+            const auto found = sinks.find(name);
+            if (found == sinks.end()) {
+               throw log::exceptions::invalid_config{"logger references an unknown sink"};
             }
-            if (cfg.loggers[i].enabled) {
-               lgr.set_enabled(*cfg.loggers[i].enabled);
-            } else {
-               lgr.set_enabled(default_logger.is_enabled());
-            }
-            if (cfg.loggers[i].level) {
-               lgr.set_log_level(*cfg.loggers[i].level);
-            } else {
-               lgr.set_log_level(default_logger.get_log_level());
-            }
-
-            for (auto a = cfg.loggers[i].appenders.begin(); a != cfg.loggers[i].appenders.end(); ++a) {
-               auto ap_it = log_config::get().appender_map.find(*a);
-               if (ap_it != log_config::get().appender_map.end()) {
-                  lgr.add_appender(ap_it->second);
-               }
-            }
+            route.add_sink(found->second);
          }
-         if (!first_pass)
-            break;
+      };
+      for (const auto& value : config.loggers) {
+         if (value.name == default_logger_name) {
+            configure(parent, value);
+         }
       }
-      return reg_console_appender;
-   } catch (const std::exception& e) {
-      std::cerr << e.what() << "\n";
+      loggers.emplace(default_logger_name, parent);
+      for (const auto& value : config.loggers) {
+         if (value.name != default_logger_name) {
+            auto route = logger{value.name, parent};
+            configure(route, value);
+            loggers.emplace(value.name, route);
+         }
+      }
+
+      std::lock_guard lock(get().log_mutex);
+      get().logger_map = std::move(loggers);
+      logger::default_logger() = parent;
+      return true;
+   } catch (const std::exception& error) {
+      std::cerr << "logging configuration failed: " << error.what() << '\n';
+      return false;
    }
-   return false;
 }
 
 logging_config logging_config::default_config() {
-   // slog( "default cfg" );
-   logging_config cfg;
-   cfg.appenders.reserve(2);
-   cfg.loggers.reserve(1);
-
-   variants c;
-   c.push_back(mutable_variant_object("level", "debug")("color", "green"));
-   c.push_back(mutable_variant_object("level", "warn")("color", "brown"));
-   c.push_back(mutable_variant_object("level", "error")("color", "red"));
-
-   cfg.appenders.push_back(
-       appender_config("stderr", "console", mutable_variant_object()("stream", "std_error")("level_colors", c)));
-   cfg.appenders.push_back(
-       appender_config("stdout", "console", mutable_variant_object()("stream", "std_out")("level_colors", c)));
-
-   logger_config dlc;
-   dlc.name = default_logger_name;
-   dlc.level = log_level::info;
-   dlc.appenders.push_back("stderr");
-   cfg.loggers.push_back(std::move(dlc));
-   return cfg;
+   auto config = logging_config{};
+   config.sinks.push_back(
+       {.name = "stderr", .type = "console", .args = mutable_variant_object{}("stream", "std_error")});
+   auto route = logger_config{default_logger_name};
+   route.level = log_level::info;
+   route.sinks.push_back("stderr");
+   config.loggers.push_back(std::move(route));
+   return config;
 }
 
 } // namespace forge

@@ -18,7 +18,7 @@ import forge.config.core.value;
 import forge.net.http.base_url;
 import forge.net.http.client;
 import forge.net.http.types;
-import forge.log.log_message;
+import forge.log.record;
 import forge.otlp.options;
 import forge.otlp.crash;
 import forge.plugins.log.otlp.exceptions;

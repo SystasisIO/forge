@@ -1,7 +1,9 @@
 module;
 
 #include <boost/multi_index_container.hpp>
+#include <forge/core/macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -9,6 +11,7 @@ module;
 #include <deque>
 #include <exception>
 #include <flat_map>
+#include <initializer_list>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -19,6 +22,7 @@ module;
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <typeindex>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -101,6 +105,14 @@ struct sequence_traits<std::unordered_set<T, Hash, Equal, Allocator>> {
 
 template <typename T> inline constexpr bool is_sequence_v = sequence_traits<clean_type<T>>::value;
 
+template <typename T> struct diagnostic_sequence_traits : sequence_traits<T> {};
+
+template <typename T> struct diagnostic_sequence_traits<std::initializer_list<T>> {
+   static constexpr bool value = true;
+};
+
+template <typename T> inline constexpr bool is_diagnostic_sequence_v = diagnostic_sequence_traits<clean_type<T>>::value;
+
 template <typename T> inline constexpr bool is_unsigned_byte_vector_v = false;
 
 template <typename Allocator>
@@ -175,6 +187,152 @@ template <typename... T> struct variant_traits<std::variant<T...>> {
 
 template <typename T> inline constexpr bool is_variant_v = variant_traits<clean_type<T>>::value;
 
+namespace adl {
+
+void diagnostic_is_secret() = delete;
+void to_variant() = delete;
+
+struct output_reference {
+   variant& value;
+   operator variant&() const noexcept {
+      return value;
+   }
+};
+
+template <typename T> [[nodiscard]] bool is_secret(const T& input) {
+   if constexpr (requires {
+                    { diagnostic_is_secret(input) } -> std::convertible_to<bool>;
+                 }) {
+      return diagnostic_is_secret(input);
+   } else {
+      return false;
+   }
+}
+
+template <typename T>
+concept custom_conversion = requires(const T& input, variant& output) { to_variant(input, output_reference{output}); };
+
+template <custom_conversion T> void convert(const T& input, variant& output) {
+   to_variant(input, output_reference{output});
+}
+
+} // namespace adl
+
+inline constexpr auto diagnostic_depth_limit = std::size_t{64};
+
+struct diagnostic_limit {};
+
+struct diagnostic_identity {
+   const void* address = nullptr;
+   const void* type = nullptr;
+   bool operator==(const diagnostic_identity&) const = default;
+};
+
+template <typename T> inline constexpr auto diagnostic_type_key = char{};
+
+struct diagnostic_context {
+   std::size_t remaining = MAX_NUM_ARRAY_ELEMENTS;
+   bool exhausted = false;
+   std::array<diagnostic_identity, diagnostic_depth_limit> path{};
+   std::size_t path_size = 0;
+
+   constexpr void consume() {
+      if (remaining == 0) {
+         exhausted = true;
+         throw diagnostic_limit{};
+      }
+      --remaining;
+   }
+
+   [[nodiscard]] constexpr bool contains(diagnostic_identity identity) const noexcept {
+      for (std::size_t index = 0; index < path_size; ++index) {
+         if (path[index] == identity) {
+            return true;
+         }
+      }
+      return false;
+   }
+};
+
+struct diagnostic_pointer_scope {
+   diagnostic_context& context;
+
+   constexpr diagnostic_pointer_scope(diagnostic_context& current, diagnostic_identity identity) : context{current} {
+      if (context.path_size == context.path.size()) {
+         throw diagnostic_limit{};
+      }
+      context.path[context.path_size++] = identity;
+   }
+
+   diagnostic_pointer_scope(const diagnostic_pointer_scope&) = delete;
+   diagnostic_pointer_scope& operator=(const diagnostic_pointer_scope&) = delete;
+
+   constexpr ~diagnostic_pointer_scope() {
+      --context.path_size;
+   }
+};
+
+template <typename Pointer> [[nodiscard]] diagnostic_identity pointer_identity(const Pointer& input) {
+   using value_type = clean_type<typename pointer_traits<clean_type<Pointer>>::value_type>;
+   return {input.get(), std::addressof(diagnostic_type_key<value_type>)};
+}
+
+template <typename T, typename Visitor> void for_each_diagnostic_member(const T& input, Visitor&& visitor) {
+   if constexpr (reflect::is_described_object_v<T>) {
+      reflect::for_each_member<T>([&](const char* name, auto member) { visitor(name, input.*member); });
+   } else if constexpr (reflect::is_diagnostic_aggregate_v<T>) {
+      reflect::for_each_aggregate_member(input, std::forward<Visitor>(visitor));
+   }
+}
+
+template <typename T>
+[[nodiscard]] bool requires_diagnostic_walk(const T& input, std::size_t depth, diagnostic_context& context) {
+   using value_type = clean_type<T>;
+   context.consume();
+   if (depth >= diagnostic_depth_limit || adl::is_secret(input)) {
+      return true;
+   }
+   if constexpr (is_optional_v<value_type>) {
+      return input && requires_diagnostic_walk(*input, depth + 1, context);
+   } else if constexpr (is_pointer_v<value_type>) {
+      if (!input) {
+         return false;
+      }
+      const auto identity = pointer_identity(input);
+      if (context.contains(identity)) {
+         return true;
+      }
+      const auto scope = diagnostic_pointer_scope{context, identity};
+      return requires_diagnostic_walk(*input, depth + 1, context);
+   } else if constexpr (is_variant_v<value_type>) {
+      return std::visit([&](const auto& value) { return requires_diagnostic_walk(value, depth + 1, context); }, input);
+   } else if constexpr (is_diagnostic_sequence_v<value_type> || is_multi_index_v<value_type> ||
+                        is_associative_v<value_type>) {
+      for (const auto& entry : input) {
+         if (requires_diagnostic_walk(entry, depth + 1, context)) {
+            return true;
+         }
+      }
+      return false;
+   } else if constexpr (is_pair_v<value_type>) {
+      return requires_diagnostic_walk(input.first, depth + 1, context) ||
+             requires_diagnostic_walk(input.second, depth + 1, context);
+   } else if constexpr (std::is_class_v<value_type> && !std::same_as<value_type, variant>) {
+      if (schema::has_explicit_rules_v<value_type> || !schema::rules<value_type>::define().fields().empty()) {
+         return true;
+      }
+      auto result = false;
+      for_each_diagnostic_member(input, [&](std::string_view, const auto& member) {
+         if (!result) {
+            result = requires_diagnostic_walk(member, depth + 1, context);
+         }
+      });
+      return result;
+   } else {
+      return false;
+   }
+}
+
 [[nodiscard]] inline std::string field_path(std::string_view path, std::string_view field) {
    if (path.empty()) {
       return std::string{field};
@@ -245,6 +403,201 @@ template <typename T> inline constexpr bool is_variant_v = variant_traits<clean_
           }
        },
        source.storage);
+}
+
+template <typename T>
+[[nodiscard]] variant encode_diagnostic_value(const T& input, std::size_t depth, diagnostic_context& context);
+
+template <typename T>
+[[nodiscard]] schema::input_value encode_diagnostic_field(const schema::field_rule<T>& field, const T& input,
+                                                          std::size_t depth, diagnostic_context& context) {
+   if (context.exhausted) {
+      throw diagnostic_limit{};
+   }
+   if (field.secret) {
+      return schema::input_value{std::string{"<redacted>"}};
+   }
+
+   auto matches = std::size_t{};
+   const auto* address = field.member_address ? field.member_address(input) : nullptr;
+   const auto matches_member = [&](std::string_view name, const auto& member) {
+      using member_type = clean_type<decltype(member)>;
+      if (field.type != std::type_index{typeid(member_type)}) {
+         return false;
+      }
+      if constexpr (reflect::is_described_object_v<T>) {
+         return !field.member_name.empty() && field.member_name == name;
+      } else {
+         return address && address == std::addressof(member);
+      }
+   };
+
+   for_each_diagnostic_member(input, [&](std::string_view name, const auto& member) {
+      if (matches_member(name, member)) {
+         ++matches;
+      }
+   });
+   if (matches != 1) {
+      return schema::input_value{std::string{"<unsupported>"}};
+   }
+
+   auto output = schema::input_value{};
+   for_each_diagnostic_member(input, [&](std::string_view name, const auto& member) {
+      if (matches_member(name, member)) {
+         if constexpr (is_optional_v<decltype(member)>) {
+            if (!member) {
+               return;
+            }
+         }
+         output = to_schema_input(encode_diagnostic_value(member, depth + 1, context));
+      }
+   });
+   return output;
+}
+
+template <typename T>
+[[nodiscard]] variant encode_diagnostic_unchecked(const T& input, std::size_t depth, diagnostic_context& context) {
+   using value_type = clean_type<T>;
+   context.consume();
+   if (adl::is_secret(input)) {
+      return variant{"<redacted>"};
+   }
+   if (depth >= diagnostic_depth_limit) {
+      return variant{"<diagnostic-depth-limit>"};
+   }
+
+   if constexpr (std::same_as<value_type, std::nullptr_t> || std::same_as<value_type, std::monostate>) {
+      return {};
+   } else if constexpr (std::same_as<value_type, __int128> || std::same_as<value_type, unsigned __int128>) {
+      auto output = variant{};
+      forge::to_variant(input, output);
+      return output;
+   } else if constexpr (std::is_arithmetic_v<value_type>) {
+      if constexpr (std::same_as<value_type, long double>) {
+         auto output = variant{};
+         forge::to_variant(input, output);
+         return output;
+      } else if constexpr (std::same_as<value_type, char> || std::same_as<value_type, wchar_t> ||
+                           std::same_as<value_type, char8_t> || std::same_as<value_type, char16_t> ||
+                           std::same_as<value_type, char32_t>) {
+         return variant{static_cast<std::int64_t>(input)};
+      } else {
+         return variant{input};
+      }
+   } else if constexpr (std::same_as<value_type, std::string> || std::same_as<value_type, std::string_view>) {
+      return variant{std::string{input}};
+   } else if constexpr (std::same_as<value_type, char*> || std::same_as<value_type, const char*> ||
+                        (std::is_array_v<value_type> &&
+                         std::same_as<std::remove_cv_t<std::remove_extent_t<value_type>>, char>)) {
+      return input ? variant{static_cast<const char*>(input)} : variant{};
+   } else if constexpr (std::same_as<value_type, wchar_t*> || std::same_as<value_type, const wchar_t*> ||
+                        (std::is_array_v<value_type> &&
+                         std::same_as<std::remove_cv_t<std::remove_extent_t<value_type>>, wchar_t>)) {
+      return input ? variant{static_cast<const wchar_t*>(input)} : variant{};
+   } else if constexpr (is_optional_v<value_type>) {
+      return input ? encode_diagnostic_value(*input, depth + 1, context) : variant{};
+   } else if constexpr (is_pointer_v<value_type>) {
+      if (!input) {
+         return {};
+      }
+      const auto identity = pointer_identity(input);
+      if (context.contains(identity)) {
+         return variant{"<diagnostic-depth-limit>"};
+      }
+      const auto scope = diagnostic_pointer_scope{context, identity};
+      return encode_diagnostic_value(*input, depth + 1, context);
+   } else if constexpr (std::same_as<value_type, blob> || std::same_as<value_type, std::vector<char>>) {
+      auto output = variant{};
+      forge::to_variant(input, output);
+      return output;
+   } else if constexpr (std::same_as<value_type, variant>) {
+      if (input.is_array()) {
+         return encode_diagnostic_value(input.get_array(), depth + 1, context);
+      }
+      if (input.is_object()) {
+         return encode_diagnostic_value(input.get_object(), depth + 1, context);
+      }
+      return input;
+   } else if constexpr (std::same_as<value_type, variant_object> || std::same_as<value_type, mutable_variant_object>) {
+      auto output = mutable_variant_object{};
+      for (const auto& entry : input) {
+         output.set(entry.key(), encode_diagnostic_value(entry.value(), depth + 1, context));
+         if (context.exhausted) {
+            break;
+         }
+      }
+      return variant{std::move(output)};
+   } else if constexpr (is_variant_v<value_type>) {
+      return variant{variants{
+          variant{static_cast<std::uint64_t>(input.index())},
+          std::visit([&](const auto& value) { return encode_diagnostic_value(value, depth + 1, context); }, input)}};
+   } else if constexpr (is_diagnostic_sequence_v<value_type> || is_multi_index_v<value_type> ||
+                        is_associative_v<value_type>) {
+      constexpr auto max_elements =
+          is_unsigned_byte_vector_v<value_type> ? MAX_SIZE_OF_BYTE_ARRAYS : MAX_NUM_ARRAY_ELEMENTS;
+      if (input.size() > max_elements) {
+         return variant{"<diagnostic-size-limit>"};
+      }
+      auto output = variants{};
+      output.reserve(std::min(input.size(), context.remaining + 1));
+      for (const auto& entry : input) {
+         output.push_back(encode_diagnostic_value(entry, depth + 1, context));
+         if (context.exhausted) {
+            break;
+         }
+      }
+      return variant{std::move(output)};
+   } else if constexpr (is_pair_v<value_type>) {
+      return variant{variants{encode_diagnostic_value(input.first, depth + 1, context),
+                              encode_diagnostic_value(input.second, depth + 1, context)}};
+   } else {
+      const auto rules = schema::rules<value_type>::define();
+      if (schema::has_explicit_rules_v<value_type> || !rules.fields().empty()) {
+         return from_schema_input(schema::input_value{
+             rules.encode_object_with(input, [&](const auto& field, const auto& object, std::string_view) {
+                return encode_diagnostic_field(field, object, depth, context);
+             })});
+      }
+      if constexpr (adl::custom_conversion<value_type>) {
+         if (!requires_diagnostic_walk(input, depth, context)) {
+            auto output = variant{};
+            adl::convert(input, output);
+            return encode_diagnostic_value(output, depth + 1, context);
+         }
+      }
+      if constexpr (reflect::is_described_object_v<value_type> || reflect::is_diagnostic_aggregate_v<value_type>) {
+         auto output = mutable_variant_object{};
+         for_each_diagnostic_member(input, [&](std::string_view name, const auto& member) {
+            if (context.exhausted) {
+               return;
+            }
+            if constexpr (is_optional_v<decltype(member)>) {
+               if (!member) {
+                  return;
+               }
+            }
+            output.set(std::string{name}, encode_diagnostic_value(member, depth + 1, context));
+         });
+         return variant{std::move(output)};
+      } else if constexpr (requires(variant& output) { forge::to_variant(input, output); }) {
+         auto output = variant{};
+         forge::to_variant(input, output);
+         return encode_diagnostic_value(output, depth + 1, context);
+      } else {
+         return variant{"<unsupported>"};
+      }
+   }
+}
+
+template <typename T>
+[[nodiscard]] variant encode_diagnostic_value(const T& input, std::size_t depth, diagnostic_context& context) {
+   try {
+      return encode_diagnostic_unchecked(input, depth, context);
+   } catch (const diagnostic_limit&) {
+      return variant{"<diagnostic-depth-limit>"};
+   } catch (...) {
+      return variant{"<diagnostic-error>"};
+   }
 }
 
 template <typename T> void apply_encoding(const T& input, variant& output, std::string_view path);
@@ -462,6 +815,11 @@ template <typename T> [[nodiscard]] variant encode(const T& input) {
    to_variant(input, output);
    detail::apply_encoding(input, output, {});
    return output;
+}
+
+template <typename T> [[nodiscard]] variant encode_diagnostic(const T& input) {
+   auto context = detail::diagnostic_context{};
+   return detail::encode_diagnostic_value(input, 0, context);
 }
 
 template <typename T>
