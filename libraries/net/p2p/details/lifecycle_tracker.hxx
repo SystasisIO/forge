@@ -11,16 +11,12 @@
 #include <mutex>
 #include <vector>
 
+#include "lifecycle_stop_listener.hxx"
+
 namespace forge::net::p2p::detail {
 
 class lifecycle_wakeup;
 class lifecycle_stop_subscription;
-
-class lifecycle_stop_listener {
- public:
-   virtual ~lifecycle_stop_listener() = default;
-   virtual void request_lifecycle_stop() noexcept = 0;
-};
 
 class lifecycle_stop_source final : public std::enable_shared_from_this<lifecycle_stop_source> {
  private:
