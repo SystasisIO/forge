@@ -294,6 +294,7 @@ connection_manager::peer_prune_plan node::impl::topology_peer_prune_plan(std::si
                                                                          std::size_t max_victims,
                                                                          std::chrono::steady_clock::time_point now) {
    const auto lock = std::scoped_lock{mutex};
+   cleanup_expired_relay_reservations_locked();
    return connections.plan_peer_prune(target_peers, max_victims, now);
 }
 

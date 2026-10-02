@@ -81,7 +81,7 @@
         "forge.net.p2p.diagnostics": [
           "state.peer_store", "resource.sessions", "resource.streams", "resource.dials", "resource.queued_bytes",
           "topology.connection_manager", "dialing.ipv6_black_hole_detection", "dialing.udp_black_hole_detection",
-          "protocol.autonat", "protocol.ping", "security.private_network_psk"
+          "protocol.autonat", "protocol.ping", "protocol.relay", "security.private_network_psk"
         ],
         "forge.net.p2p.discovery": [
           "protocol.peer_exchange", "protocol.kademlia", "protocol.rendezvous", "protocol.relay", "lifecycle.discovery"
@@ -184,7 +184,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "a194b2b6517f187b4dcbef37f4ee0ba8787e186d31b99caca3faa9da2516a1c1",
+      "sha256": "5354373dec77bc329349511cd7c81104a70be6bc597095a5b6c53cf2658ee811",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -235,7 +235,7 @@
         "forge.plugins.net.p2p.node.types": [ "plugin.node" ]
       },
       "header_features": {},
-      "sha256": "aa4e6b99d7843a3392de3e92c4a6bc04545411e43d9284353192e580fd2a9195",
+      "sha256": "b17be31bdd8aca7ce798de8cd9a6c4234ce877d998ef2adb5d4e1bd4228bf443",
       "feature_ids": [ "plugin.node" ]
     },
     "plugin.p2p.resolver": {
@@ -257,7 +257,7 @@
         "forge.plugins.net.p2p.resolver.types": [ "plugin.resolver" ]
       },
       "header_features": {},
-      "sha256": "9f8a28b5915845450d6ef9da0da12782265f05e581f4dc9b60ffded27b4b14f3",
+      "sha256": "60ad06e5655a71e0dc44c9a343cc6813b36da6fbaa8a5ebb7ecfdd26a21d1b20",
       "feature_ids": [ "plugin.resolver" ]
     },
     "plugin.p2p.pubsub": {
@@ -276,7 +276,7 @@
         "forge.plugins.net.p2p.pubsub.types": [ "plugin.pubsub" ]
       },
       "header_features": {},
-      "sha256": "749ead0ef8434d8245c8e45162de5f287f550c4bf8ca16701c6ec87180328921",
+      "sha256": "1824f2bce4d13cfa41fe370b057f6012e5f727755a858d4ca277fb3d2d963227",
       "feature_ids": [ "plugin.pubsub" ]
     },
     "plugin.p2p.diagnostics": {
@@ -294,7 +294,7 @@
         "forge.plugins.net.p2p.diagnostics.types": [ "plugin.diagnostics" ]
       },
       "header_features": {},
-      "sha256": "7853971093c78a8855410568e8a6850826b7c216729588621f00e1397a942cad",
+      "sha256": "895cfc0f6b0fdeab9d2db5a3eacbcdac2cd4947b0775e829efdf9c53427cc6ed",
       "feature_ids": [ "plugin.diagnostics" ]
     }
   },
@@ -706,16 +706,16 @@
       "id": "protocol.relay",
       "state": "partial",
       "owner": "net.p2p.node",
-      "normal_activation": "node_lifecycle_with_incomplete_candidates",
+      "normal_activation": "node_owned_autorelay_lifecycle_and_opt_in_service_pending_acceptance",
       "configuration":
-          "low-level options and partial official plugin policy; some IDs are advertised without an effective role gate",
+          "native node AutoRelay policy and opt-in Relay v2 service; private PSK relay is unsupported; official plugin policy remains partial",
       "resource_ownership":
           "scoped relay reservations and streams; each circuit owns independent byte budgets per direction and an enforced duration",
       "persistence": "reservation observations are process-local or peer_store records",
       "maintenance":
-          "circuit duration and per-direction byte limits reset both streams; AutoRelay candidate supply remains incomplete",
+          "native node owns bounded candidate selection, reservation renewal/replacement and shutdown; clean-head live lifecycle/service acceptance is pending; unknown-reachability cases do not prove public/private transitions or every discovery source",
       "diagnostics": "relay reservations and path metrics",
-      "intended_disposition": "complete_candidate_and_lifetime_ownership",
+      "intended_disposition": "retain_partial_until_canonical_autorelay12_and_stage8_acceptance",
       "builtin_protocols": [ "relay_hop", "relay_stop" ],
       "capabilities": [ "relay", "relay_reservation" ],
       "public_components": [ "resource_manager::relay_reservation" ],
@@ -723,6 +723,9 @@
         "layers": [ "codec", "state_machine", "raw_node", "donor_interop" ],
         "source_paths": [
           "libraries/net/p2p/relay.cpp", "libraries/net/p2p/node_impl_relay.cpp",
+          "libraries/net/p2p/autorelay_manager.cpp", "libraries/net/p2p/node_impl_autorelay.cpp",
+          "tests/libp2p_interop/autorelay_acceptance.py", "tests/libp2p_interop/autorelay_evidence.py",
+          "tests/libp2p_interop/test_autorelay_acceptance.py",
           "libraries/net/p2p/relay_pair.cpp", "libraries/net/p2p/relay_budget.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_libp2p_interop" ],
@@ -1140,12 +1143,17 @@
       "persistence": "private ObjectDB schema and async adapter over plugins.db.store",
       "maintenance": "delegates the complete network lifecycle to node::async_start and node::async_stop, closing and draining tracked API publication generations before node teardown",
       "diagnostics": "exports lifecycle, Identify, reservation and persistence snapshots; publication lifecycle remains local lease state with no new wire diagnostic",
-      "intended_disposition": "preserve_as_configuration_and_dependency_adapter",
+      "intended_disposition": "preserve configuration/dependency ownership after the inspected net-plugin identity migration; grouped consumer APIs and complete capability coverage remain Stage 7 requirements, not current delivery claims",
       "builtin_protocols": [],
       "capabilities": [],
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
         "source_paths": [
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/api.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/descriptor.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/exceptions.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/plugin.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/types.cppm",
           "plugins/net/p2p/node/plugin.cpp", "plugins/net/p2p/node/plugin_impl.cpp",
           "plugins/net/p2p/node/api_impl.cpp", "plugins/net/p2p/node/api_publication_generation.cpp",
           "plugins/net/p2p/node/api_publication_slot.cpp", "plugins/net/p2p/node/api_publication_registry.cpp"
@@ -1165,13 +1173,19 @@
       "persistence": "none",
       "maintenance": "explicit publication replaces generations safely; retirement closes and drains exact generations, while shutdown waits for inflight publication and retirement before deterministic fallback close; resolver does not discover peers",
       "diagnostics": "local API catalog snapshots and typed duplicate, stopping and retirement failures; no additional resolver wire diagnostic",
-      "intended_disposition": "preserve_application_metadata_role",
+      "intended_disposition": "preserve explicit application API metadata publication/resolution after the inspected net-plugin identity migration; resolver is not peer discovery or the missing Stage 7 DHT/provider consumer API",
       "builtin_protocols": [],
       "capabilities": [],
       "negotiated_protocol_ids": [ "/forge/api/resolver/2" ],
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
         "source_paths": [
+          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/api.cppm",
+          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/descriptor.cppm",
+          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/exceptions.cppm",
+          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/managed_api.cppm",
+          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/plugin.cppm",
+          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/types.cppm",
           "plugins/net/p2p/resolver/plugin.cpp", "plugins/net/p2p/resolver/plugin_impl.cpp",
           "plugins/net/p2p/resolver/api_impl.cpp", "plugins/net/p2p/resolver/publication_catalog.cpp"
         ],
@@ -1190,12 +1204,19 @@
       "persistence": "none by protocol design",
       "maintenance": "node heartbeat over managed transport topology; donor-consistent GossipSub scoring and autonomous mesh selection remain incomplete",
       "diagnostics": "pubsub source API",
-      "intended_disposition": "preserve_facade_and_complete_core",
+      "intended_disposition": "preserve shared-node topic facade after the inspected net-plugin identity migration and complete the network core; retain partial readiness until acceptance, without consumer-owned maintenance loops",
       "builtin_protocols": [],
       "capabilities": [],
       "evidence": {
         "layers": [ "state_machine", "raw_node", "official_plugin", "donor_interop" ],
-        "source_paths": [ "plugins/net/p2p/pubsub/plugin.cpp" ],
+        "source_paths": [
+          "plugins/net/p2p/pubsub/include/forge/plugins/net/p2p/pubsub/api.cppm",
+          "plugins/net/p2p/pubsub/include/forge/plugins/net/p2p/pubsub/descriptor.cppm",
+          "plugins/net/p2p/pubsub/include/forge/plugins/net/p2p/pubsub/exceptions.cppm",
+          "plugins/net/p2p/pubsub/include/forge/plugins/net/p2p/pubsub/plugin.cppm",
+          "plugins/net/p2p/pubsub/include/forge/plugins/net/p2p/pubsub/types.cppm",
+          "plugins/net/p2p/pubsub/plugin.cpp"
+        ],
         "tests": [ "test_forge_plugins", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-gossipsub-v1.md" ],
         "donor_cases": [ "plugin.p2p_pubsub_facade", "gossipsub.live_publish_delivery" ]
@@ -1211,12 +1232,18 @@
       "persistence": "none",
       "maintenance": "none",
       "diagnostics": "existing snapshot omits several inactive lifecycle and degradation causes",
-      "intended_disposition": "expand_read_only_effective_state",
+      "intended_disposition": "preserve bounded read-only snapshots after the inspected net-plugin identity migration and expand effective-state coverage; snapshots do not supply the missing Stage 7 host-event consumer API or mutable node access",
       "builtin_protocols": [],
       "capabilities": [],
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
-        "source_paths": [ "plugins/net/p2p/diagnostics/plugin.cpp" ],
+        "source_paths": [
+          "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/api.cppm",
+          "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/exceptions.cppm",
+          "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/plugin.cppm",
+          "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/types.cppm",
+          "plugins/net/p2p/diagnostics/plugin.cpp"
+        ],
         "tests": [ "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-node-plugin-delivery-automation.md" ],
         "donor_cases": [ "plugin.p2p_diagnostics_snapshot" ]

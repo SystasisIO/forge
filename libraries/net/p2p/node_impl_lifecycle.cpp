@@ -253,6 +253,7 @@ void node::impl::request_lifecycle_stop() noexcept {
    }
    request_dial_scheduler_stop();
    stop_reachability();
+   stop_autorelay();
    for (const auto& [_, operation] : active_peer_exchange_operations) {
       operation->cancellation.request_stop();
    }
@@ -329,7 +330,7 @@ void node::impl::listen(forge::net::p2p::endpoint endpoint) {
    }
    launch_accept_loop(std::move(local_endpoint));
    launch_pubsub_heartbeat();
-   launch_relay_discovery_maintenance();
+   start_autorelay();
 }
 
 boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
@@ -349,6 +350,7 @@ boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
 
    start_topology_manager();
    start_reachability();
+   start_autorelay();
    lifecycle.set_phase(lifecycle_phase::maintenance);
    bootstrap->start_maintenance(lifecycle);
    co_return lifecycle_status{

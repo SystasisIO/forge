@@ -97,9 +97,14 @@ The following surfaces are not production claims yet:
   UDP black-hole detection are integrated into node-owned dialing; their
   inventory readiness remains `unverified` pending final-head acceptance;
 - observed-address confidence/expiry, public mDNS, private fingerprinted mDNS
-  and optional native UPnP mapping remain separate Stage 6 work;
-- AutoRelay and DCUtR mechanics lack the complete verified discovery and
-  reachability feed;
+  remain separately tracked Stage 6 capabilities;
+- automatic UPnP router port mapping is unsupported and deferred beyond the
+  initial production profile. It does not gate AutoRelay or Stages 7/8;
+  direct reachable/manually forwarded addresses and relay/DCUtR paths still
+  require their own acceptance evidence;
+- AutoRelay owns bounded candidate verification, reservation renewal and relay
+  replacement within the node lifecycle. Its execution evidence is tracked
+  independently from the still-pending autonomous DCUtR path manager;
 - `node::options::connection_gater` is a synchronous, concurrent-callable
   host policy hook. Its five donor-aligned stages run before logical peer
   dial, each concrete address dial, inbound acceptance, authenticated security
@@ -142,9 +147,11 @@ current donor run. The canonical Stage 6 registry is the exact ordered
 `forge-p2p-host-protection-v1`, `forge-crypto-xsalsa20-v1`,
 `forge-p2p-private-network-v1`, `forge-p2p-address-resolution-v1`,
 `forge-p2p-reachability-v1`, `forge-p2p-mdns-v1`,
-`forge-p2p-nat-mapping-v1`, `forge-p2p-autorelay-v1`,
+`forge-p2p-autorelay-v1`,
 `forge-p2p-path-management-v1`, `forge-p2p-gossipsub-scoring-v1` and
-`forge-p2p-gossipsub-extensions-v1`. These are PR0 through PR12 respectively.
+`forge-p2p-gossipsub-extensions-v1`. These retain PR0 through PR7 and PR9
+through PR12. Former PR8, `forge-p2p-nat-mapping-v1`, moves to the
+[subsequent router configuration block](../../../docs/iterations/forge-p2p-production-implementation-v1.md#subsequent-block-automatic-router-configuration).
 The registry also fixes dependencies and allowed capability owners; the roadmap,
 chrono and crypto prerequisite PRs own none.
 
@@ -256,9 +263,9 @@ Future transports must plug into the same multiaddr and transport session
 boundary, not fork P2P core. The private profile is TCP/Yamux plus a transport
 PSK layer before the normal secure channel, not a negotiated `/pnet` protocol
 ID. It excludes QUIC, Relay and DCUtR; AutoNAT lifecycle/client/service and
-UPnP each require explicit private-profile Internet egress, while native runs do
-not inherit that dependency. Optional public mDNS has a separate Go/Rust
-acceptance suite; fingerprinted private mDNS has Go evidence and an explicit
+any future UPnP each require explicit private-profile Internet egress, while
+native runs do not inherit that dependency. Optional public mDNS has a separate
+Go/Rust acceptance suite; fingerprinted private mDNS has Go evidence and an explicit
 pinned Rust limitation. Neither mDNS delivery is attributed to the reachability PR.
 
 The private `interface_watcher`/`interface_state` pairs provide the native
@@ -362,6 +369,42 @@ session disconnect releases the reservation. Configured relay duration must be
 positive and exactly representable in the whole seconds advertised on the wire.
 Per-direction byte limits close the direction as soon as its final permitted
 byte is forwarded.
+
+### Node-Owned AutoRelay
+
+With `relay_policy.client_enabled` and `auto_discovery_enabled`, startup enables
+AutoRelay on unknown/private reachability. The manager consumes bounded topology
+and indexed peer-store hints; only an authenticated direct session with verified
+Identify HOP support can acquire a reservation. It does not run another discovery
+loop. `async_refresh_relay_candidates()` triggers this same manager.
+
+`target_reservations`, `max_candidates_per_refresh` and
+`max_parallel_reservations` independently bound retained leases, candidates and
+concurrent operations. Renewal follows the accepted expiry. Failed candidates
+back off without indefinitely hiding later candidates. Public reachability
+withdraws automatic ownership and circuit addresses; `public_relay_allowed`
+permits only manual reservations on a public host, not automatic advertising.
+
+Generated circuit addresses are separate from caller-configured addresses and
+exist only while their reservation and direct relay session remain valid.
+Changes update the signed peer record and Identify Push. Cancellation and
+shutdown invalidate pending grants, stop admission and join the workers before
+peer persistence closes. `async_cancel_relay(peer)` cancels local outbound
+ownership without closing the shared authenticated connection.
+
+Circuit Relay v2 service is opt-in through `relay_policy.service_enabled`;
+capability bits alone do not enable it. Service admission requires connected
+direct owners, bounds request rates/reservations/circuits, and counts both
+participants against per-peer limits. `limits.relay.handshake_timeout` bounds
+the STOP handshake independently of the subsequent circuit duration. Absent or
+zero remote duration/data limits retain their standard unlimited wire meaning;
+local byte/stream/queue caps still apply. A voucher may be absent, as in Rust;
+any supplied voucher must validate against the authenticated relay and client.
+
+Diagnostics expose bounded live reservation owners separately from historical
+peer cache facts. Private PSK configurations continue to reject Relay/DCUtR.
+See [the AutoRelay donor note](../../../docs/donors/forge-p2p-autorelay-v1.md)
+for scope, ownership and the required independent three-peer acceptance proof.
 
 `forge_net_p2p` remains free of application plugins, storage and authorization
 policy. Application protocols own idempotency, acknowledgement and

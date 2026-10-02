@@ -126,6 +126,25 @@ BOOST_AUTO_TEST_CASE(observed_address_requires_listener_scope_match) {
    BOOST_TEST(!mismatched.observe(1, peer(1), local, remote, reported, std::array{other_interface}, start));
 }
 
+BOOST_AUTO_TEST_CASE(advertised_circuit_preserves_relay_identity_and_local_destination) {
+   const auto local = peer(90);
+   const auto relay = peer(91);
+   auto circuit = address("/ip4/127.0.0.1/tcp/4001/p2p/" + relay.to_string() +
+                          "/p2p-circuit/p2p/" + local.to_string());
+   const auto merged = p2p::host_addresses::merge_advertised({circuit, circuit}, {}, local);
+   BOOST_REQUIRE_EQUAL(merged.size(), 1U);
+   BOOST_TEST(merged.front().to_string() == circuit.to_string());
+   BOOST_CHECK(merged.front().peer == relay);
+   BOOST_REQUIRE(merged.front().relayed);
+   BOOST_CHECK(merged.front().relayed->target == local);
+
+   circuit.relayed->target = peer(92);
+   BOOST_TEST(p2p::host_addresses::merge_advertised({circuit}, {}, local).empty());
+   circuit.relayed->target = local;
+   circuit.peer.reset();
+   BOOST_TEST(p2p::host_addresses::merge_advertised({circuit}, {}, local).empty());
+}
+
 BOOST_AUTO_TEST_CASE(observed_address_requires_distinct_authenticated_peers_and_ipv4_addresses) {
    const auto reported = address("/ip4/8.8.8.8/tcp/8000");
    auto value = manager{};

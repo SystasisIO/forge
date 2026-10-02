@@ -91,6 +91,8 @@ add_library(
    host_event_source.cpp
    details/host_event_source.hxx
    relay.cpp
+   autorelay_manager.cpp
+   details/autorelay_manager.hxx
    length_delimited.cpp
    details/length_delimited.hxx
    relay_hop_exchange.cpp
@@ -151,6 +153,11 @@ add_library(
    node_impl_sessions.cpp
    node_impl_dialing.cpp
    node_impl_relay.cpp
+   node_impl_relay_reservation.cpp
+   node_impl_relay_service.cpp
+   node_impl_relay_transport.cpp
+   node_impl_relay_dcutr.cpp
+   node_impl_autorelay.cpp
    node_impl_dht.cpp
    node_impl_dht_maintenance.cpp
    node_impl_identify.cpp

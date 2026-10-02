@@ -1105,6 +1105,9 @@ add_executable(
    quic_p2p/reachability_state_tests.cpp
    quic_p2p/reachability_manager_tests.cpp
    quic_p2p/node_reachability_tests.cpp
+   quic_p2p/node_autorelay_tests.cpp
+   quic_p2p/autorelay_manager_tests.cpp
+   quic_p2p/autorelay_manager_fixture.cpp
    quic_p2p/node_autonat_service_tests.cpp
    quic_p2p/autonat_exchange_tests.cpp
    quic_p2p/net_p2p_observed_address_tests.cpp
@@ -1223,6 +1226,7 @@ add_executable(
    forge_interop_fixture
    libp2p_interop/forge_interop_fixture.cpp
    libp2p_interop/forge_autonat_fixture.cpp
+   libp2p_interop/forge_autorelay_fixture.cpp
    libp2p_interop/forge_connection_fixture.cpp
    libp2p_interop/forge_mdns_fixture.hxx
    libp2p_interop/forge_mdns_fixture.cpp

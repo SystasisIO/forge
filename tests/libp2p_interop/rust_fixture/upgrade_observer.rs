@@ -1,4 +1,4 @@
-//! Passive native TCP evidence; application-side correlation lives in application_observer.
+//! Passive native transport evidence; application correlation lives in application_observer.
 use std::{
     io,
     pin::Pin,
@@ -455,6 +455,7 @@ struct Selection {
     drop_observed: bool,
     upgrade_completed_sequence: Option<usize>,
     response_completed_sequence: Option<usize>,
+    receipt_frames: [Vec<u8>; 2],
 }
 
 impl Selection {
@@ -478,6 +479,7 @@ impl Selection {
             drop_observed: false,
             upgrade_completed_sequence: None,
             response_completed_sequence: None,
+            receipt_frames: Default::default(),
         }
     }
 
@@ -486,7 +488,7 @@ impl Selection {
             return None;
         }
         if self.selected.is_some() || self.decoders[direction].paused {
-            // After a proposal only framing/hash is allowed, never raw payload storage.
+            // Only bounded Push/HOP receipts retain bytes for native event correlation.
             if self.selected.is_none() {
                 self.ambiguous_tail = true;
             }
@@ -497,11 +499,15 @@ impl Selection {
                     .or(self.proposal.as_ref())
                     .or(self.reply.as_ref());
                 let limit = match protocol.map(String::as_str) {
-                    Some("/ipfs/id/1.0.0") => 4098, // 4096-byte payload plus its actual varint prefix.
+                    Some("/ipfs/id/1.0.0" | "/ipfs/id/push/1.0.0" | "/libp2p/circuit/relay/0.2.0/hop") => 4098,
                     Some("/forge/interop/relay-echo/1") => BODY_LIMIT,
                     _ => return None,
                 };
                 self.bodies[direction].byte(byte, limit);
+                if matches!(protocol.map(String::as_str), Some("/ipfs/id/push/1.0.0" | "/libp2p/circuit/relay/0.2.0/hop"))
+                    && self.receipt_frames[direction].len() < limit {
+                    self.receipt_frames[direction].push(byte);
+                }
             }
             return None;
         }
@@ -614,7 +620,7 @@ impl Selection {
     }
 
     fn snapshot(&self) -> Value {
-        json!({"direction": direction(self.outbound), "protocol": self.selected,
+        let mut value = json!({"direction": direction(self.outbound), "protocol": self.selected,
             "proposed_protocol": self.proposal,
             "parser_error": self.error, "io_failed": self.io_failed,
             "drop_observed": self.drop_observed,
@@ -623,7 +629,14 @@ impl Selection {
             "read_eof": self.read_eof, "write_close_returned": self.write_closed,
             "response_write_complete": self.application && self.selected.is_some() && self.error.is_none()
                 && !self.io_failed && self.write_closed && self.bodies[1].complete(),
-            "read": self.bodies[0].snapshot(), "write": self.bodies[1].snapshot()})
+            "read": self.bodies[0].snapshot(), "write": self.bodies[1].snapshot()});
+        if self.selected.as_deref() == Some("/ipfs/id/push/1.0.0") {
+            value["push_read_framed_hex"] = json!(self.receipt_frames[0].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        } else if self.selected.as_deref() == Some("/libp2p/circuit/relay/0.2.0/hop") {
+            value["hop_read_framed_hex"] = json!(self.receipt_frames[0].iter().map(|b| format!("{b:02x}")).collect::<String>());
+            value["hop_write_framed_hex"] = json!(self.receipt_frames[1].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        }
+        value
     }
 }
 
@@ -963,6 +976,25 @@ pub(crate) fn native_transport(
     })
 }
 
+// Opt-in only for AutoRelay: native QUIC authenticates the connection; reuse the
+// existing bounded passive substream observer, without inventing TLS/yamux frames.
+pub(crate) fn native_quic_transport(
+    key: &identity::Keypair, observer: Observer,
+) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn std::error::Error + Send + Sync>> {
+    let local = key.public().to_peer_id();
+    Ok(libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(key))
+        .and_then(move |(peer, muxer), point| {
+            let trace = observer.begin(&point, String::new(), point.get_remote_address().to_string(), local);
+            trace.update(|connection| {
+                connection.remote_peer = peer.to_string();
+                connection.event(0, "native_quic_authenticated_output", json!({"peer_id": peer.to_string()}));
+            });
+            async move {
+                Ok::<_, io::Error>((peer, StreamMuxerBox::new(ObservedMuxer { inner: Box::pin(muxer), trace })))
+            }
+        }).boxed())
+}
+
 fn bind_transport_output(
     (peer, muxer, trace): (PeerId, StreamMuxerBox, Trace),
     point: ConnectedPoint,
@@ -1001,6 +1033,30 @@ mod tests {
     use super::*;
     use futures::{AsyncReadExt, AsyncWriteExt, FutureExt, future, task::noop_waker};
     use libp2p::core::{Endpoint, upgrade::UpgradeInfo};
+
+    #[test]
+    fn autorelay_native_push_and_hop_capture_only_consumed_bounded_frames() {
+        for protocol in ["/ipfs/id/push/1.0.0", "/libp2p/circuit/relay/0.2.0/hop"] {
+            let mut selection = Selection::new(false, true);
+            for side in 0..2 {
+                for byte in frame(HEADER.as_bytes()).into_iter().chain(frame(format!("{protocol}\n").as_bytes())) {
+                    selection.byte(side, byte);
+                }
+            }
+            let body = frame(&[8, 1]);
+            selection.byte(0, body[0]);
+            assert_eq!(selection.snapshot()["read"]["complete_frames"], false);
+            for byte in &body[1..] { selection.byte(0, *byte); }
+            let snapshot = selection.snapshot();
+            assert_eq!(snapshot["read"]["complete_frames"], true);
+            assert_eq!(snapshot["read"]["framed_bytes"], body.len());
+            let field = if protocol.contains("push") { "push_read_framed_hex" } else { "hop_read_framed_hex" };
+            assert_eq!(snapshot[field], body.iter().map(|b| format!("{b:02x}")).collect::<String>());
+            for _ in 0..4100 { selection.byte(0, 0); }
+            assert_eq!(selection.snapshot()["read"]["invalid_or_over_limit"], true);
+            assert!(selection.receipt_frames[0].len() <= 4098);
+        }
+    }
 
     fn frame(text: &[u8]) -> Vec<u8> {
         let mut length = text.len();

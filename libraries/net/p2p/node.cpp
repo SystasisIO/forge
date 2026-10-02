@@ -429,6 +429,11 @@ boost::asio::awaitable<void> async_stop_after_topology_join(auto self) {
              if (!failure) { failure = std::current_exception(); }
           }
           try {
+             co_await self->join_autorelay();
+          } catch (...) {
+             if (!failure) { failure = std::current_exception(); }
+          }
+          try {
              co_await self->async_join_topology_manager();
           } catch (...) {
              if (!failure) { failure = std::current_exception(); }
@@ -470,6 +475,10 @@ node::impl::exchange_rendezvous(const peer_id& peer, rendezvous::message request
 node::node(forge::asio::runtime& runtime, node::options options) {
    normalize_legacy_discovery(options);
    validate(options);
+   // Relay roles are policy-owned; advertised capability bits are derived facts.
+   constexpr auto relay_service_bits = capabilities::relay | capabilities::relay_reservation;
+   options.capabilities.bits &= ~relay_service_bits;
+   if (options.relay_policy.service_enabled) { options.capabilities.bits |= relay_service_bits; }
    normalize_topology_capacity(options);
    impl_ = std::make_shared<impl>(runtime, std::move(options));
    impl_->validate_local_identify_document();
@@ -478,6 +487,7 @@ node::node(forge::asio::runtime& runtime, node::options options) {
    impl_->initialize_topology_manager();
    impl_->initialize_mdns();
    impl_->initialize_reachability();
+   impl_->initialize_autorelay();
    // Launch the self-owning maintenance task only after every throwing
    // constructor step has completed.
    impl_->initialize_dht_routing_refresh();
@@ -546,6 +556,7 @@ forge::net::p2p::diagnostics::snapshot node::diagnostics(forge::net::p2p::diagno
    // Snapshot the detector under its own lock before entering the node mutex.
    const auto black_holes = impl_->dial_black_hole_status();
    const auto reachability = impl_->reachability_diagnostics();
+   const auto autorelay = impl_->autorelay_manager_value->stats();
    const auto persistence = impl_->store.persistence_state();
    const auto lifecycle = lifecycle_state();
    const auto retained_identify_attempts = impl_->identify_service.retained();
@@ -601,6 +612,21 @@ forge::net::p2p::diagnostics::snapshot node::diagnostics(forge::net::p2p::diagno
    const auto& topology_policy = impl_->options.limits.topology;
    auto lock = std::scoped_lock{impl_->mutex};
    auto out = forge::net::p2p::diagnostics::snapshot{};
+   out.autorelay = autorelay;
+   out.autorelay.reservations = 0;
+   out.autorelay.automatic_reservations = 0;
+   const auto relay_now = std::chrono::steady_clock::now();
+   if (!impl_->stopped && !impl_->session_admission_closed) {
+      for (const auto& [peer, reservation] : impl_->outbound_relay_reservations) {
+         const auto live = impl_->sessions.find(reservation.session_id);
+         if (reservation.canceled || reservation.expires_at <= relay_now || live == impl_->sessions.end() ||
+             live->second->closed || live->second->info.path != path::kind::direct ||
+             live->second->info.remote_peer != peer) { continue; }
+         ++out.autorelay.reservations;
+         if (reservation.automatic) { ++out.autorelay.automatic_reservations; }
+         if (out.relay_reservations.size() < options.max_peers) { out.relay_reservations.push_back(reservation.info); }
+      }
+   }
    out.network = forge::net::p2p::diagnostics::network_state{
        .local_peer = impl_->local,
        .local_endpoints = impl_->local_endpoints_for_control_locked(),

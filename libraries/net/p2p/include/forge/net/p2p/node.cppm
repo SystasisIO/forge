@@ -84,7 +84,8 @@ class node {
       std::shared_ptr<connection_gater> connection_gater;
       capability_set capabilities{.bits = capabilities::direct_quic | capabilities::peer_exchange};
       limits limits{};
-      relay::policy relay_policy{.service_enabled = true, .client_enabled = true, .public_relay_allowed = false};
+      // Relay service policy owns HOP and the effective relay/relay_reservation bits.
+      relay::policy relay_policy{};
       path::policy path_policy{};
       forge::net::p2p::reachability_policy reachability_policy{};
       std::optional<forge::net::p2p::private_network::options> private_network;

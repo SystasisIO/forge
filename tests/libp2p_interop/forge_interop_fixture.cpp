@@ -81,6 +81,7 @@ import forge.net.p2p.topology;
 import forge.net.pnet.protector;
 
 #include "forge_autonat_fixture.hxx"
+#include "forge_autorelay_fixture.hxx"
 #include "forge_connection_fixture.hxx"
 #include "forge_mdns_fixture.hxx"
 
@@ -444,6 +445,7 @@ forge::net::p2p::node::options node_options(const std::filesystem::path& store_p
        .allow_insecure_test_mode = true,
    };
    out.dht_profiles.push_back(forge::net::p2p::amino_v1(forge::net::p2p::dht::mode::server));
+   out.relay_policy.service_enabled = true;
    out.limits.rendezvous.operating_role = forge::net::p2p::rendezvous::role::client_and_server;
    return out;
 }
@@ -2345,6 +2347,38 @@ int main(int argc, char** argv) {
          return build_info_mode();
       }
       const auto scenario = optional_value(args, "scenario");
+      if (args.at("command") == "autorelay-destination" || args.at("command") == "autorelay-service") {
+         return forge::test::libp2p_interop::forge_autorelay_fixture::run(args, {
+             .make_options = [](const auto& arguments) {
+                auto options = node_options({}, generate_libp2p_identity());
+                const auto service = arguments.at("command") == "autorelay-service";
+                options.dht_profiles.clear();
+                options.capabilities = forge::net::p2p::capability_set{.bits =
+                    forge::net::p2p::capabilities::direct_quic | forge::net::p2p::capabilities::relay_reservation |
+                    (service ? forge::net::p2p::capabilities::relay : 0)};
+                options.relay_policy.service_enabled = service;
+                options.relay_policy.client_enabled = !service;
+                options.relay_policy.auto_discovery_enabled = !service;
+                options.relay_policy.target_reservations = 1;
+                options.relay_policy.max_parallel_reservations = 1;
+                options.relay_policy.max_candidates_per_refresh = 4;
+                options.relay_policy.refresh_margin = 3s;
+                options.relay_policy.candidate_backoff = 1s;
+                options.limits.relay.reservation_ttl = 8s;
+                options.reachability_policy.client_v1_enabled = false;
+                options.reachability_policy.client_v2_enabled = false;
+                options.reachability_policy.service_v1_enabled = false;
+                options.reachability_policy.service_v2_enabled = false;
+                options.limits.topology.dht_enabled = false;
+                options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+                options.limits.topology.rendezvous_enabled = false;
+                options.limits.topology.peer_exchange_enabled = false;
+                return options;
+             },
+             .listen_endpoint = loopback_endpoint_for,
+             .register_echo = register_echo,
+         });
+      }
       if ((args.at("command") == "listen" || args.at("command") == "dial") && scenario == "mdns") {
          return forge::test::libp2p_interop::forge_mdns_fixture::run(args, {
              .make_options = make_mdns_options,

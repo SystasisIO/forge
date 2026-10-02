@@ -130,6 +130,7 @@ node::impl::retire_session_locked(const std::shared_ptr<session_state>& session,
       std::terminate();
    }
    auto retired = transferred.position->second;
+   invalidate_relay_session_locked(retired->id);
    remove_address_observation_locked(retired->id);
    if (track_close) {
       try {
@@ -347,6 +348,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
             }
             const auto now = std::chrono::steady_clock::now();
             if (rejected == rejection::none) {
+               cleanup_expired_relay_reservations_locked();
                auto admission = connections.remember(
                    connection_manager::session_record{
                        .id = assigned_id,
@@ -450,6 +452,9 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
    }
 
    lifecycle_wakeup->notify();
+   start_autorelay();
+   refresh_relay_publication();
+   notify_autorelay_changed();
    co_return;
 }
 

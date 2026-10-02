@@ -1,5 +1,7 @@
 module;
 
+#include <span>
+
 #include <boost/asio/awaitable.hpp>
 
 #include <chrono>
@@ -152,7 +154,12 @@ std::vector<peer_store::record> peer_store::snapshot(std::size_t limit) const {
 }
 
 std::vector<peer_store::record> peer_store::candidates(std::uint64_t capability, std::size_t limit) const {
-   return impl_->candidates(capability, limit);
+   return impl_->candidates(capability, limit, {});
+}
+
+std::vector<peer_store::record> peer_store::candidates(std::uint64_t capability, std::size_t limit,
+                                                     std::span<const peer_id> excluded_peers) const {
+   return impl_->candidates(capability, limit, excluded_peers);
 }
 
 std::vector<peer_store::record> peer_store::scored_candidates(std::size_t limit) const {

@@ -370,6 +370,8 @@ void node::impl::publish_host_state(host_event) {
       }
    }
    if (push) { launch_identify_pushes(); }
+   refresh_relay_publication();
+   notify_autorelay_changed();
 }
 
 host_event node::impl::current_host_state() const {

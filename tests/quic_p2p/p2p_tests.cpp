@@ -803,6 +803,7 @@ node::options options_for(peer_id id, capability_set capabilities = capability_s
        .private_key_pem = std::string{test_private_key()},
        .explicit_peer_id = std::move(id),
        .capabilities = capabilities,
+       .relay_policy = relay::policy{.service_enabled = capabilities.has(capabilities::relay)},
        .allow_insecure_test_mode = true,
    };
 }
@@ -986,6 +987,7 @@ node::options options_for(const test_certificate_identity& identity,
        .certificate_pem = identity.certificate_pem,
        .private_key_pem = identity.private_key_pem,
        .capabilities = capabilities,
+       .relay_policy = relay::policy{.service_enabled = capabilities.has(capabilities::relay)},
        .allow_insecure_test_mode = true,
    };
 }

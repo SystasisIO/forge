@@ -54,7 +54,12 @@ void connection_manager::protect(const peer_id& peer, std::string tag) {
    if (peer.value.empty() || tag.empty()) {
       return;
    }
-   protected_[peer].insert(std::move(tag));
+   const auto [entry, inserted] = protected_.try_emplace(peer);
+   try { entry->second.insert(std::move(tag)); }
+   catch (...) {
+      if (inserted) { protected_.erase(entry); }
+      throw;
+   }
 }
 
 bool connection_manager::unprotect(const peer_id& peer, std::string_view tag) {
@@ -63,7 +68,8 @@ bool connection_manager::unprotect(const peer_id& peer, std::string_view tag) {
       return false;
    }
    if (!tag.empty()) {
-      found->second.erase(std::string{tag});
+      const auto entry = std::find(found->second.begin(), found->second.end(), tag);
+      if (entry != found->second.end()) { found->second.erase(entry); }
    }
    if (tag.empty() || found->second.empty()) {
       protected_.erase(found);
