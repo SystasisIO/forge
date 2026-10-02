@@ -36,7 +36,7 @@ import forge.net.p2p.relay;
 import forge.net.p2p.stream;
 import forge.net.p2p.topology;
 
-#include "details/length_delimited.hxx"
+#include "../../libraries/net/p2p/details/length_delimited.hxx"
 
 namespace {
 namespace p2p = forge::net::p2p;
