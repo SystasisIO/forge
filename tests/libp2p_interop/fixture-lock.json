@@ -31,7 +31,7 @@
     "go_fixture/autonat.go": "a0e4b5ca68c5ae2f0315856f338f9184f9d422d570d29d72abbe8075460f517a",
     "go_fixture/autonat_test.go": "e58c54d81e53ca3f2bb6a53bda3688326b71180295190e4fde6bf0591ae121fd",
     "go_fixture/autorelay.go": "a8b73cc1980d7af9b29be2d7e3e72f73a4421938195c30e284ec159260a9ded0",
-    "go_fixture/autorelay_test.go": "682004606cc274836cc803320912e8b797597f3ba0f049df0eb22eef89daa722",
+    "go_fixture/autorelay_test.go": "a540b10fb8bd793ac953eecd05db9aae966cd5710662446c102552d721dfa0c9",
     "go_fixture/go.mod": "421b08324d37ad51f3978c9049f9aa579014e193ca9e7485730f68349f4c2661",
     "go_fixture/go.sum": "e52ba7219de2fa9a1c39ad8e0e3761d7897b71d25438049f788dc1feaefb3b87",
     "go_fixture/main.go": "3ce71e0c350e128fec7fcff38d677bdadd3d8ee8e0b66d91ce489e332c4f2056",
