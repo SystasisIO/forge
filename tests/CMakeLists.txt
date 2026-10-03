@@ -1107,6 +1107,9 @@ add_executable(
    quic_p2p/reachability_state_tests.cpp
    quic_p2p/reachability_manager_tests.cpp
    quic_p2p/node_reachability_tests.cpp
+   quic_p2p/node_autorelay_tests.cpp
+   quic_p2p/autorelay_manager_tests.cpp
+   quic_p2p/autorelay_manager_fixture.cpp
    quic_p2p/node_autonat_service_tests.cpp
    quic_p2p/autonat_exchange_tests.cpp
    quic_p2p/net_p2p_observed_address_tests.cpp
@@ -1141,6 +1144,19 @@ target_link_libraries(
 target_compile_definitions(test_forge_quic_p2p PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
 add_test(NAME test_forge_quic_p2p COMMAND test_forge_quic_p2p WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_quic_p2p PROPERTIES TIMEOUT 300)
+
+add_executable(
+   test_forge_p2p_autorelay
+   unit/main.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/autorelay_manager_fixture.cpp
+   quic_p2p/autorelay_manager_tests.cpp
+   quic_p2p/node_autorelay_tests.cpp
+   quic_p2p/node_session_tests.cpp
+)
+target_link_libraries(test_forge_p2p_autorelay forge_net_p2p Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_autorelay COMMAND test_forge_p2p_autorelay WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_autorelay PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_net_pnet
@@ -1225,6 +1241,7 @@ add_executable(
    forge_interop_fixture
    libp2p_interop/forge_interop_fixture.cpp
    libp2p_interop/forge_autonat_fixture.cpp
+   libp2p_interop/forge_autorelay_fixture.cpp
    libp2p_interop/forge_connection_fixture.cpp
    libp2p_interop/forge_mdns_fixture.hxx
    libp2p_interop/forge_mdns_fixture.cpp
@@ -1461,6 +1478,24 @@ add_custom_target(
       --forge-fixture $<TARGET_FILE:forge_interop_fixture>
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
       --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/autonat
+      --forge-root ${CMAKE_SOURCE_DIR}
+      --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
+      --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json
+      --expected-head ${_forge_p2p_stage6_expected_head}
+   DEPENDS forge_interop_fixture test_forge_p2p_inventory
+   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+   VERBATIM
+)
+
+add_custom_target(
+   test_forge_p2p_autorelay_acceptance
+   COMMAND ${Python3_EXECUTABLE}
+      ${FORGE_P2P_STAGE6_PROMOTION_WRAPPER}
+      --suite autorelay
+      --runner ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/runner.py
+      --forge-fixture $<TARGET_FILE:forge_interop_fixture>
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+      --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/autorelay
       --forge-root ${CMAKE_SOURCE_DIR}
       --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
       --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json

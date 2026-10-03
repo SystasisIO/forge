@@ -19,6 +19,8 @@ sys.dont_write_bytecode = True
 
 from dns_fixture import DnsaddrServer
 from autonat_cases import run_suite as run_autonat_suite
+from autorelay_cases import run_suite as run_autorelay_suite
+from autorelay_acceptance import claims_for as autorelay_claims, SCENARIOS as AUTORELAY_SCENARIOS
 from mdns_cases import run_suite as run_mdns_suite
 from mdns_isolation_cases import run_suite as run_mdns_isolation_suite
 from mdns_churn_cases import run_suite as run_mdns_churn_suite
@@ -33,6 +35,7 @@ from provenance import (
     load_canonical_donor_revisions,
     sha256_file,
     worktree_identity,
+    reject_duplicate_json_keys,
 )
 
 
@@ -48,8 +51,11 @@ LIVE_SCENARIO_PROFILES = {
     "tcp_stage6": (
         "dnsaddr", "autonat_v1_client_native_tcp_yamux", "autonat_v1_service_native_tcp_yamux",
         "autonat_v2_client_native_tcp_yamux", "autonat_v2_service_native_tcp_yamux",
+        "autorelay_lifecycle_native_tcp_yamux", "relay_v2_service_native_tcp_yamux",
     ),
-    "quic_stage6": ("autonat_v1_client", "autonat_v1_service", "autonat_v2_client", "autonat_v2_service"),
+    "tcp_tls_stage6": ("autorelay_lifecycle_native_tcp_tls_yamux", "relay_v2_service_native_tcp_tls_yamux"),
+    "quic_stage6": ("autonat_v1_client", "autonat_v1_service", "autonat_v2_client", "autonat_v2_service",
+                    "autorelay_lifecycle", "relay_v2_service"),
     "quic_dht": (
         "dht_find_peer",
         "dht_provide_find_provider",
@@ -105,6 +111,14 @@ AUTONAT_ACCEPTANCE_SCENARIOS = {
     "private_tcp_yamux_pnet/autonat_v1_service_private_tcp_yamux_pnet": ("autonat_v1_service_private_tcp_yamux_pnet",),
     "private_tcp_yamux_pnet/autonat_v2_client_private_tcp_yamux_pnet": ("autonat_v2_client_private_tcp_yamux_pnet",),
     "private_tcp_yamux_pnet/autonat_v2_service_private_tcp_yamux_pnet": ("autonat_v2_service_private_tcp_yamux_pnet",),
+}
+AUTORELAY_ACCEPTANCE_SCENARIOS = {
+    "quic_stage6/autorelay_lifecycle": ("autorelay_lifecycle",),
+    "quic_stage6/relay_v2_service": ("relay_v2_service",),
+    "tcp_stage6/autorelay_lifecycle_native_tcp_yamux": ("autorelay_lifecycle_native_tcp_yamux",),
+    "tcp_stage6/relay_v2_service_native_tcp_yamux": ("relay_v2_service_native_tcp_yamux",),
+    "tcp_tls_stage6/autorelay_lifecycle_native_tcp_tls_yamux": ("autorelay_lifecycle_native_tcp_tls_yamux",),
+    "tcp_tls_stage6/relay_v2_service_native_tcp_tls_yamux": ("relay_v2_service_native_tcp_tls_yamux",),
 }
 DIAL_TIMEOUT_SECONDS = 90
 PNET_FINGERPRINT_DOMAIN = b"forge.net.pnet.operational-fingerprint.v1\0"
@@ -613,7 +627,8 @@ def start_listener(binary: Path, implementation: str, work: Path, scenario: Opti
     return owned
 
 
-def start_destination(binary: Path, implementation: str, relay_addr: str, relay_peer_id: str, work: Path) -> Listener:
+def start_destination(binary: Path, implementation: str, relay_addr: str, relay_peer_id: str, work: Path,
+                      transport: str = "quic", scenario: Optional[str] = None) -> Listener:
     ready_file = work / f"{implementation}-destination-ready.json"
     stop_file = work / f"{implementation}-destination.stop"
     log_file = work / f"{implementation}-destination.log"
@@ -631,7 +646,11 @@ def start_destination(binary: Path, implementation: str, relay_addr: str, relay_
         relay_peer_id,
         "--store-dir",
         str(store_dir),
+        "--transport",
+        transport,
     ]
+    if scenario is not None:
+        command.extend(["--scenario", scenario])
     owned = spawn_owned(command, log_file, stop_file)
     try:
         owned.ready = wait_json(ready_file, 30)
@@ -901,7 +920,7 @@ def run_pubsub_mixed_mesh_stress(binaries: dict[str, Path], root: Path) -> dict:
 
 @owned_case
 def run_relay_dial(binary: Path, implementation: str, scenario: str, target_peer_id: str, relay_peer_id: str,
-                   relay_addr: str, work: Path) -> dict:
+                   relay_addr: str, work: Path, transport: str = "quic") -> dict:
     result_file = work / f"{implementation}-relay-dial-{scenario}.json"
     log_file = work / f"{implementation}-relay-dial-{scenario}.log"
     store_dir = work / f"{implementation}-relay-dial-{scenario}-store"
@@ -920,9 +939,13 @@ def run_relay_dial(binary: Path, implementation: str, scenario: str, target_peer
         str(result_file),
         "--store-dir",
         str(store_dir),
+        "--transport",
+        transport,
     ]
     try:
-        attempts = run_command_with_attempts(command, log_file, scenario, "relay_dial", 60)
+        attempts = (run_command_once(command, log_file, scenario, "relay_dial", 15)
+                    if scenario == "autorelay" else
+                    run_command_with_attempts(command, log_file, scenario, "relay_dial", 60))
     except RuntimeError as error:
         detail = str(error)
         if result_file.exists():
@@ -1574,6 +1597,15 @@ def acceptance_manifest_metadata(path: Optional[str]) -> Optional[dict]:
     return {"path": str(manifest), "sha256": sha256_file(manifest)}
 
 
+def manifest_registers_autorelay(path: Optional[str]) -> bool:
+    if path is None:
+        return False
+    manifest = json.loads(Path(path).read_text(), object_pairs_hook=reject_duplicate_json_keys)
+    capabilities = manifest.get("interop_acceptance_registry", {}).get("capabilities", {})
+    return any(scenario.get("id") in AUTORELAY_SCENARIOS and scenario.get("registration") == "registered"
+               for entry in capabilities.values() for scenario in entry.get("scenarios", []))
+
+
 def write_artifact(path: Path, root: Path, provenance: dict, artifacts: list[dict], failures: list[str],
                    runner_argv: list[str], started_at_unix: float, acceptance_manifest: Optional[dict]) -> None:
     path.write_text(
@@ -1606,7 +1638,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -1626,10 +1658,10 @@ def main() -> int:
     build_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict] = []
     failures: list[str] = []
-    root = build_dir / ({"autonat": "autonat-run", "mdns": "mdns-run"}.get(args.suite, "interop-run"))
+    root = build_dir / ({"autonat": "autonat-run", "mdns": "mdns-run", "autorelay": "autorelay-run"}.get(args.suite, "interop-run"))
     artifact_path = build_dir / (
         "interop-provenance-artifacts.json" if args.provenance_only else
-        {"autonat": "autonat-artifacts.json", "mdns": "mdns-artifacts.json"}.get(args.suite, "interop-artifacts.json")
+        {"autonat": "autonat-artifacts.json", "mdns": "mdns-artifacts.json", "autorelay": "autorelay-artifacts.json"}.get(args.suite, "interop-artifacts.json")
     )
     provenance = {
         "forge_worktree": {"start": None, "end": None, "changed_during_run": None},
@@ -1794,8 +1826,8 @@ def main() -> int:
                 for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
                     for transport, profile in (("tcp", "tcp_noise"), ("tcp-tls", "tcp_tls"), ("tcp", "tcp_stage6")):
                         for scenario in LIVE_SCENARIO_PROFILES[profile]:
-                            if scenario in AUTONAT_SCENARIOS:
-                                continue  # The paired suite below owns native AutoNAT once per invocation.
+                            if scenario in AUTONAT_SCENARIOS or scenario in AUTORELAY_SCENARIOS:
+                                continue  # Each bounded role suite below owns its native cases once.
                             for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
                                 f"{profile}/{scenario}",
                                 (None,) if f"{profile}/{scenario}" in UNCLAIMED_SMOKE_SCENARIOS else (scenario,),
@@ -1888,13 +1920,26 @@ def main() -> int:
                           for name in LIVE_SCENARIO_PROFILES[profile] if name in AUTONAT_SCENARIOS}
             if registered != set(AUTONAT_ACCEPTANCE_SCENARIOS):
                 raise RuntimeError("AutoNAT executable registration differs from the full suite")
-            paired_cases = run_paired_suites(args.suite, binaries, root, pnet_key=pnet_key_file,
+            paired_cases = () if args.suite == "autorelay" else run_paired_suites(args.suite, binaries, root, pnet_key=pnet_key_file,
                                             mismatch_key=pnet_mismatch_key_file, pnet_fingerprint=pnet_fingerprint)
             for artifact in paired_cases:
                 artifacts.append(artifact)
                 if artifact["status"] != "passed":
                     failures.append(f"{artifact['scenario_id']}: " +
                                     "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+            if args.suite == "autorelay" or args.suite == "stage6" and manifest_registers_autorelay(args.acceptance_manifest):
+                registered = {f"{profile}/{name}"
+                              for profile in ("quic_stage6", "tcp_stage6", "tcp_tls_stage6")
+                              for name in LIVE_SCENARIO_PROFILES[profile] if name in AUTORELAY_SCENARIOS}
+                if registered != set(AUTORELAY_ACCEPTANCE_SCENARIOS):
+                    raise RuntimeError("AutoRelay executable registration differs from the full suite")
+                for artifact in run_autorelay_suite(binaries, root, wait_json=wait_json,
+                        command_attempt=command_attempt, start_destination=start_destination,
+                        run_relay_dial=run_relay_dial, claims_for_case=autorelay_claims):
+                    artifacts.append(artifact)
+                    if artifact["status"] != "passed":
+                        failures.append(f"{artifact['scenario_id']}: " +
+                                        "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
     except Exception as error:
         failures.append(f"preflight: {error}")
     finally:

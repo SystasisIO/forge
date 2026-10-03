@@ -7,6 +7,7 @@ module;
 #include <span>
 #include <string_view>
 #include <vector>
+#include <boost/describe.hpp>
 
 export module forge.net.p2p.relay;
 
@@ -39,6 +40,13 @@ struct relay {
       std::chrono::milliseconds max_duration{60'000};
       std::chrono::milliseconds reservation_ttl{60'000};
       bool require_reservation = true;
+      std::size_t max_reservations_per_ip = 8;
+      std::size_t max_circuits_per_peer = 16;
+      std::size_t max_service_requests = 4096;
+      std::size_t max_service_requests_per_peer = 32;
+      std::size_t max_service_requests_per_ip = 128;
+      std::chrono::milliseconds service_request_window{60'000};
+      std::chrono::milliseconds handshake_timeout{10'000};
    };
 
    struct limit {
@@ -69,6 +77,9 @@ struct relay {
          std::size_t max_queued_bytes = 0;
          std::vector<endpoint> relay_endpoints;
          std::optional<signed_envelope> voucher;
+         // Exact remote wire semantics: absent or zero fields mean unlimited.
+         // max_bytes/max_streams/max_queued_bytes above remain local caps.
+         std::optional<limit> remote_limit;
       };
 
       std::uint64_t expires_at = 0;
@@ -89,14 +100,18 @@ struct relay {
    };
 
    struct policy {
+      // Explicit service role; node derives HOP and relay service capability bits.
       bool service_enabled = false;
       bool client_enabled = true;
+      // Allows manual outbound reservations on a publicly reachable host only.
+      // AutoRelay ownership and circuit advertising always stop on public.
       bool public_relay_allowed = false;
       bool auto_discovery_enabled = true;
       std::size_t target_reservations = 2;
       std::chrono::milliseconds refresh_margin{15'000};
       std::size_t max_candidates_per_refresh = 20;
       std::size_t max_parallel_reservations = 2;
+      // Cap for exponential per-candidate retry delay with bounded jitter.
       std::chrono::milliseconds candidate_backoff{3'600'000};
    };
 
@@ -142,5 +157,10 @@ struct relay {
                                                             std::uint64_t now_unix_seconds);
    };
 };
+
+BOOST_DESCRIBE_STRUCT(relay::limit, (), (duration, data))
+// Signed envelope bytes remain available to C++ callers, not generic diagnostics.
+BOOST_DESCRIBE_STRUCT(relay::reservation::info, (),
+                      (relay_peer, id, expires_at, ttl, max_streams, max_bytes, max_queued_bytes, relay_endpoints, remote_limit))
 
 } // namespace forge::net::p2p

@@ -1,5 +1,7 @@
 module;
 
+#include <span>
+
 #include <boost/asio/awaitable.hpp>
 
 #include <chrono>
@@ -222,6 +224,9 @@ class peer_store {
    [[nodiscard]] std::optional<public_key> find_public_key(const peer_id& peer) const;
    [[nodiscard]] std::vector<record> snapshot(std::size_t limit) const;
    [[nodiscard]] std::vector<record> candidates(std::uint64_t capability, std::size_t limit) const;
+   // Filters the existing candidate index before applying the result bound.
+   [[nodiscard]] std::vector<record> candidates(std::uint64_t capability, std::size_t limit,
+                                                 std::span<const peer_id> excluded_peers) const;
    [[nodiscard]] std::vector<record> scored_candidates(std::size_t limit) const;
    [[nodiscard]] std::vector<record> scored_candidates(discovery::source source, std::size_t limit) const;
    [[nodiscard]] std::vector<rendezvous::registration>

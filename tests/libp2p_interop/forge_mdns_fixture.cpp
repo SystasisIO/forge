@@ -142,9 +142,21 @@ boost::asio::awaitable<void> bounded(boost::asio::awaitable<void> operation,
    using namespace boost::asio::experimental::awaitable_operators;
    auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
    timer.expires_after(timeout);
-   const auto completed = co_await (std::move(operation) || timer.async_wait(boost::asio::use_awaitable));
+   // OR waits for success; capture failure as completion rather than masking it with the timer.
+   auto operation_failure = std::exception_ptr{};
+   auto run_operation = [&]() -> boost::asio::awaitable<void> {
+      try {
+         co_await std::move(operation);
+      } catch (...) {
+         operation_failure = std::current_exception();
+      }
+   };
+   const auto completed = co_await (run_operation() || timer.async_wait(boost::asio::use_awaitable));
    if (completed.index() != 0) {
       throw std::runtime_error{"mDNS fixture deadline expired"};
+   }
+   if (operation_failure) {
+      std::rethrow_exception(operation_failure);
    }
 }
 
@@ -549,6 +561,7 @@ int run(const arguments& args, const support& helpers) {
    } catch (...) {
       before_stop.capture_error = "non-standard exception during diagnostic capture";
    }
+   auto shutdown_failure = std::exception_ptr{};
    try {
       forge::asio::blocking::run(runtime, bounded(owner->async_stop(), 5s));
       if (quiet) {
@@ -558,11 +571,27 @@ int run(const arguments& args, const support& helpers) {
          quiet_result.cleanup_complete = true;
       }
    } catch (...) {
-      failure = std::current_exception();
+      shutdown_failure = std::current_exception();
+      if (!failure) {
+         failure = shutdown_failure;
+      }
    }
    // Join workers while every object referenced by handlers is still alive,
    // including the failure path where the shutdown deadline was exceeded.
    runtime.stop();
+   if (shutdown_failure) {
+      // Diagnostic allocation is best-effort after joins; it cannot replace the primary failure.
+      try {
+         try {
+            std::rethrow_exception(shutdown_failure);
+         } catch (const std::exception& error) {
+            before_stop.shutdown_error = error.what();
+         } catch (...) {
+            before_stop.shutdown_error = "non-standard shutdown exception";
+         }
+      } catch (...) {
+      }
+   }
    if (quiet) {
       quiet_result.capture_phase = "after_stop";
       quiet_result.status = failure ? "error" : "ok";

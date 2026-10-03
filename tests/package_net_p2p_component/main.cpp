@@ -3,6 +3,7 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 #include <boost/asio/awaitable.hpp>
 
 import forge.chrono.timestamp;
@@ -19,6 +20,7 @@ import forge.net.p2p.mdns_policy;
 import forge.net.p2p.provider_registration;
 import forge.net.p2p.reachability;
 import forge.net.p2p.reachability_policy;
+import forge.net.p2p.relay;
 import forge.net.p2p.topology;
 import forge.net.p2p.node;
 import forge.multiformats.multiaddr;
@@ -54,6 +56,16 @@ static_assert(p2p::reachability_policy{}.max_observations == 1024);
 static_assert(p2p::reachability_policy{}.max_candidates == 256);
 static_assert(p2p::reachability_policy{}.max_confirmed_per_local == 3);
 static_assert(p2p::reachability_policy{}.max_pending_probes == 4);
+static_assert(!p2p::relay::policy{}.service_enabled);
+static_assert(p2p::relay::policy{}.client_enabled);
+static_assert(p2p::relay::policy{}.target_reservations == 2);
+static_assert(std::is_same_v<decltype(p2p::node::options{}.relay_policy), p2p::relay::policy>);
+static_assert(requires(p2p::node& node, p2p::peer_id peer) {
+   { node.async_reserve_relay(peer) } -> std::same_as<boost::asio::awaitable<p2p::relay::reservation::info>>;
+   { node.async_refresh_relay_candidates() }
+       -> std::same_as<boost::asio::awaitable<std::vector<p2p::relay::reservation::info>>>;
+   { node.async_cancel_relay(peer) } -> std::same_as<boost::asio::awaitable<void>>;
+});
 
 static_assert(requires(forge::net::p2p::node& node, forge::multiformats::multiaddr address) {
    node.async_connect(address);

@@ -83,6 +83,8 @@ type options struct {
 	pnetFingerprint string
 	pnetControl     string
 	pnetCorrelation string
+	relayTTL        int
+	probeFile       string
 }
 
 func parseArgs() (options, error) {
@@ -110,6 +112,14 @@ func parseArgs() (options, error) {
 			out.relayAddr = value
 		case "--relay-peer-id":
 			out.relayPeerID = value
+		case "--relay-ttl-seconds":
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 3 || n > 30 || !strings.HasPrefix(out.command, "autorelay-") {
+				return options{}, fmt.Errorf("short relay TTL requires autorelay fixture and 3..30 seconds")
+			}
+			out.relayTTL = n
+		case "--probe-file":
+			out.probeFile = value
 		case "--ready-file":
 			out.readyFile = value
 		case "--stop-file":
@@ -228,12 +238,13 @@ func installEchoHandler(h host.Host, pnetState *pnetConnectionState) {
 
 type fixtureHost struct {
 	host.Host
-	holePunch *holepunch.Service
-	kad       *kad.IpfsDHT
-	dhtStore  ds.Batching
-	pubsub    *pubsub.PubSub
-	pnet      *pnetConnectionState
-	upgrades  *upgradeObserver
+	relayService *relayv2.Relay
+	holePunch    *holepunch.Service
+	kad          *kad.IpfsDHT
+	dhtStore     ds.Batching
+	pubsub       *pubsub.PubSub
+	pnet         *pnetConnectionState
+	upgrades     *upgradeObserver
 }
 
 type pnetConnectionState struct {
@@ -270,6 +281,9 @@ func (g *pnetConnectionGater) InterceptUpgraded(network.Conn) (bool, control.Dis
 
 func (h *fixtureHost) Close() error {
 	var closeErr error
+	if h.relayService != nil {
+		closeErr = errors.Join(closeErr, h.relayService.Close())
+	}
 	if h.pnet != nil {
 		h.Network().StopNotify(h.pnet.notifier)
 	}
@@ -292,6 +306,10 @@ func loadPnetKey(path string) (corepnet.PSK, error) {
 }
 
 func newHost(transport string, pnetKeyFile string, dnsServer string, extra ...libp2p.Option) (*fixtureHost, error) {
+	return newFixtureHost(transport, pnetKeyFile, dnsServer, nil, extra...)
+}
+
+func newFixtureHost(transport string, pnetKeyFile string, dnsServer string, auto *autoRelayHostConfig, extra ...libp2p.Option) (*fixtureHost, error) {
 	var pnetState *pnetConnectionState
 	var upgrades *upgradeObserver
 	if transport == "tcp" || transport == "tcp-tls" {
@@ -332,10 +350,10 @@ func newHost(transport string, pnetKeyFile string, dnsServer string, extra ...li
 	case "tcp-tls":
 		options = append(options,
 			libp2p.Transport(observedTCP(upgrades)),
-			libp2p.Security(sectls.ID, observedTLS),
 			libp2p.Muxer(yamux.ID, observedYamux()),
 			libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
 		)
+		options = append(options, autoRelayTLSSecurityOptions(auto)...)
 	case "tcp-pnet":
 		pnetState = &pnetConnectionState{}
 		options = append(options,
@@ -371,9 +389,27 @@ func newHost(transport string, pnetKeyFile string, dnsServer string, extra ...li
 		return &fixtureHost{Host: h, pnet: pnetState}, nil
 	}
 	installEchoHandler(h, nil)
-	if _, err := relayv2.New(h, relayv2.WithReservationAddressFilter(fixtureReservationAddressFilter(h))); err != nil {
-		h.Close()
-		return nil, err
+	var relayService *relayv2.Relay
+	if auto == nil || auto.service {
+		relayHost := host.Host(h)
+		relayOptions := []relayv2.Option{relayv2.WithReservationAddressFilter(fixtureReservationAddressFilter(h))}
+		if auto != nil {
+			resources := relayv2.DefaultResources()
+			resources.ReservationTTL = auto.ttl
+			relayOptions = append(relayOptions, relayv2.WithResources(resources))
+			relayHost = &autoRelayObservedHost{Host: h, trace: auto.trace}
+		}
+		service, err := relayv2.New(relayHost, relayOptions...)
+		if err != nil {
+			h.Close()
+			return nil, err
+		}
+		if auto != nil {
+			relayService = service
+		}
+	}
+	if auto != nil {
+		return &fixtureHost{Host: h, upgrades: upgrades, relayService: relayService}, nil
 	}
 	dhtStore := dssync.MutexWrap(ds.NewMapDatastore())
 	dht, err := kad.New(context.Background(), h, kad.Mode(kad.ModeServer), kad.DisableAutoRefresh(),
@@ -846,7 +882,11 @@ func listen(opts options) (err error) {
 }
 
 func destination(opts options) error {
-	h, err := newHost(opts.transport, opts.pnetKeyFile, opts.dnsServer)
+	var auto *autoRelayHostConfig
+	if opts.scenario == "autorelay" {
+		auto = &autoRelayHostConfig{}
+	}
+	h, err := newFixtureHost(opts.transport, opts.pnetKeyFile, opts.dnsServer, auto)
 	if err != nil {
 		return err
 	}
@@ -889,7 +929,7 @@ func destination(opts options) error {
 		voucherPeer = reservation.Voucher.Peer.String()
 		voucherExpiration = reservation.Voucher.Expiration.Unix()
 	}
-	if err := writeJSON(opts.readyFile, map[string]any{
+	ready := map[string]any{
 		"implementation":         "go",
 		"role":                   "destination",
 		"peer_id":                h.ID().String(),
@@ -903,7 +943,24 @@ func destination(opts options) error {
 		"voucher_peer":           voucherPeer,
 		"voucher_expiration":     voucherExpiration,
 		"status":                 "ready",
-	}); err != nil {
+	}
+	if opts.scenario == "autorelay" {
+		controls := h.Network().ConnsToPeer(relayInfo.ID)
+		if len(controls) != 1 || controls[0].RemotePeer() != relayInfo.ID {
+			return fmt.Errorf("native reservation control absent/ambiguous")
+		}
+		if reservation.Voucher != nil && (voucherRelay != relayInfo.ID.String() || voucherPeer != h.ID().String() ||
+			voucherExpiration != reservation.Expiration.Unix() || voucherPayloadBytes == 0) {
+			return fmt.Errorf("signed voucher reservation identity/expiry mismatch")
+		}
+		ready["reservation_basis"] = "native_relayclient.Reserve"
+		ready["protocol"] = string(autoRelayHop)
+		ready["expires_unix_ms"] = reservation.Expiration.UnixMilli()
+		ready["voucher_validated"] = reservation.Voucher != nil
+		ready["voucher_validation_basis"] = "native_Reserve_ConsumeEnvelope_signature_then_fixture_identity_expiry_checks"
+		ready["relay_connection"] = autoRelayConnection(controls[0])
+	}
+	if err := writeJSON(opts.readyFile, ready); err != nil {
 		return err
 	}
 	for {
@@ -1394,7 +1451,11 @@ func waitDirectConnection(ctx context.Context, h host.Host, target peer.ID) bool
 }
 
 func dialRelay(opts options) error {
-	h, err := newHost(opts.transport, opts.pnetKeyFile, opts.dnsServer)
+	var auto *autoRelayHostConfig
+	if opts.scenario == "autorelay" {
+		auto = &autoRelayHostConfig{}
+	}
+	h, err := newFixtureHost(opts.transport, opts.pnetKeyFile, opts.dnsServer, auto)
 	if err != nil {
 		return err
 	}
@@ -1447,6 +1508,16 @@ func dialRelay(opts options) error {
 	if err != nil {
 		return fmt.Errorf("open relayed echo failed: %w", err)
 	}
+	if opts.scenario == "autorelay" {
+		if stream.Conn().RemotePeer() != targetPeer || !strings.Contains(stream.Conn().RemoteMultiaddr().String(), "/p2p-circuit") {
+			_ = stream.Reset()
+			return fmt.Errorf("AutoRelay echo selected a non-circuit connection")
+		}
+		result["echo_connection"] = autoRelayConnection(stream.Conn())
+		result["protocol"] = string(stream.Protocol())
+		result["relay_connection"] = autoRelayConnection(h.Network().ConnsToPeer(relayPeer)[0])
+		result["unix_ms"] = time.Now().UnixMilli()
+	}
 	payload := []byte("relay-echo")
 	if err := writeFrame(stream, payload); err != nil {
 		_ = stream.Reset()
@@ -1462,6 +1533,7 @@ func dialRelay(opts options) error {
 		return fmt.Errorf("relay echo mismatch: %q", string(echoed))
 	}
 	result["relay_echo"] = true
+	result["echo_bytes"] = len(echoed)
 	if opts.scenario == "dcutr_relay_topology" {
 		if h.holePunch == nil {
 			return fmt.Errorf("hole punch service is unavailable")
@@ -1479,6 +1551,14 @@ func dialRelay(opts options) error {
 
 func main() {
 	opts, err := parseArgs()
+	if err == nil && strings.HasPrefix(opts.command, "autorelay-") {
+		err = runAutoRelay(opts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err == nil {
 		switch opts.command {
 		case "listen":

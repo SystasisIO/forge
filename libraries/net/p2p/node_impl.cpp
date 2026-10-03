@@ -49,6 +49,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.net.p2p.mdns_policy;
 
 import forge.asio.gate;
@@ -512,8 +514,22 @@ void validate(const node::options& options) {
    }
    if (options.relay_policy.target_reservations == 0 || options.relay_policy.refresh_margin.count() <= 0 ||
        options.relay_policy.max_candidates_per_refresh == 0 || options.relay_policy.max_parallel_reservations == 0 ||
-       options.relay_policy.candidate_backoff.count() <= 0) {
+       options.relay_policy.candidate_backoff.count() <= 0 ||
+       options.relay_policy.max_candidates_per_refresh > 4096 ||
+       options.relay_policy.target_reservations > options.relay_policy.max_candidates_per_refresh ||
+       options.relay_policy.target_reservations > options.limits.relay.max_reservations ||
+       options.relay_policy.max_parallel_reservations > options.relay_policy.max_candidates_per_refresh ||
+       options.relay_policy.refresh_margin > std::chrono::hours{24} ||
+       options.relay_policy.candidate_backoff > std::chrono::hours{24}) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P AutoRelay policy limits must be positive");
+   }
+   const auto& relay_limits = options.limits.relay;
+   if (relay_limits.max_reservations_per_ip == 0 || relay_limits.max_circuits_per_peer == 0 ||
+       relay_limits.max_service_requests == 0 || relay_limits.max_service_requests > 65'536 ||
+       relay_limits.max_service_requests_per_peer == 0 || relay_limits.max_service_requests_per_ip == 0 ||
+       relay_limits.service_request_window.count() <= 0 || relay_limits.service_request_window > std::chrono::hours{1} ||
+       relay_limits.handshake_timeout.count() <= 0 || relay_limits.handshake_timeout > std::chrono::minutes{5}) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P relay service admission limits are invalid");
    }
    const auto& lifecycle = options.lifecycle;
    if (lifecycle.listen.size() > 1'024 || lifecycle.startup_budget.count() <= 0 ||
@@ -707,6 +723,8 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control()
 std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_locked() const {
    auto configured = options.advertised_endpoints;
    configured.insert(configured.end(), confirmed_observed_addresses.begin(), confirmed_observed_addresses.end());
+   const auto circuits = relay_advertised_endpoints_locked();
+   configured.insert(configured.end(), circuits.begin(), circuits.end());
    return host_addresses::merge_advertised(configured, direct_registry.local_endpoints(), local);
 }
 
@@ -728,47 +746,50 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_l
    auto out = std::vector<protocol_id>{builtins::ping,
                                        builtins::identify,
                                        builtins::identify_push};
+   const auto append = [&out](const protocol_id& protocol) {
+      if (std::ranges::find(out, protocol) == out.end()) { out.push_back(protocol); }
+   };
    if (!private_network_enabled() ||
        options.private_network->internet_egress == private_network::internet_egress_policy::allow_internet) {
       if (options.reachability_policy.service_v2_enabled) {
-         out.push_back(builtins::autonat_v2_dial_request);
+         append(builtins::autonat_v2_dial_request);
       }
       if (options.reachability_policy.client_v2_enabled) {
-         out.push_back(builtins::autonat_v2_dial_back);
+         append(builtins::autonat_v2_dial_back);
       }
       if (options.reachability_policy.service_v1_enabled) {
-         out.push_back(builtins::autonat_v1);
+         append(builtins::autonat_v1);
       }
    }
    if (!private_network_enabled()) {
-      out.push_back(builtins::relay_stop);
-      out.push_back(builtins::dcutr);
+      append(builtins::relay_stop);
+      append(builtins::dcutr);
    }
-   if (options.capabilities.has(capabilities::relay) || options.capabilities.has(capabilities::relay_reservation)) {
-      out.push_back(builtins::relay_hop);
+   if (!private_network_enabled() && options.relay_policy.service_enabled) {
+      append(builtins::relay_hop);
    }
    if (options.capabilities.has(capabilities::peer_exchange)) {
-      out.push_back(builtins::peer_exchange);
+      append(builtins::peer_exchange);
    }
    for (const auto& [protocol, state] : dht_profiles) {
       if (state->profile.operating_mode == dht::mode::server) {
-         out.push_back(protocol);
+         append(protocol);
       }
    }
    if (options.capabilities.has(capabilities::rendezvous) &&
        (options.limits.rendezvous.operating_role == rendezvous::role::server ||
         options.limits.rendezvous.operating_role == rendezvous::role::client_and_server)) {
-      out.push_back(builtins::rendezvous);
+      append(builtins::rendezvous);
    }
    if (options.capabilities.has(capabilities::pubsub)) {
-      out.push_back(builtins::meshsub_v11);
+      append(builtins::meshsub_v11);
       if (options.limits.pubsub.allow_v1_0_fallback) {
-         out.push_back(builtins::meshsub_v10);
+         append(builtins::meshsub_v10);
       }
    }
    out.reserve(out.size() + handlers.size());
    for (const auto& [protocol, _] : handlers) {
-      out.push_back(protocol);
+      append(protocol);
    }
    return out;
 }

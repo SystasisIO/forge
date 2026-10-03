@@ -57,7 +57,7 @@ def main() -> int:
     parser.add_argument("--donors-root", required=True)
     parser.add_argument("--acceptance-manifest", required=True)
     parser.add_argument("--expected-head", required=True)
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay"), default="stage6")
     args = parser.parse_args()
 
     root = Path(args.forge_root).resolve()
@@ -111,7 +111,8 @@ def main() -> int:
     if has_limitations:
         print("PASS_WITH_DOCUMENTED_LIMITATIONS: canonical runner executed and was validated in this promotion")
     else:
-        scope = ("full Stage 6 including AutoNAT41 and mDNS38" if args.suite == "stage6" else
+        scope = ("full registered Stage 6 including AutoNAT41, mDNS38 and AutoRelay12" if args.suite == "stage6" else
+                 "focused AutoRelay12 only, not full Stage 6 or production support" if args.suite == "autorelay" else
                  "focused mDNS38 only, not full Stage 6 or production support" if args.suite == "mdns" else
                  "focused AutoNAT41 only, not full Stage 6")
         print(f"PASS: {scope}; canonical runner executed and was validated in this promotion")

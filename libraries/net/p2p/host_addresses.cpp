@@ -237,7 +237,13 @@ std::vector<endpoint> merge_advertised(const std::vector<endpoint>& configured, 
       if (has_interface_zone(value)) {
          return;
       }
-      value.peer = local;
+      if (value.relayed) {
+         if (!value.peer || !valid_peer_id(*value.peer) || *value.peer == local ||
+             (!value.relayed->target.value.empty() && value.relayed->target != local)) { return; }
+         value.relayed->target = local;
+      } else {
+         value.peer = local;
+      }
       const auto key = value.to_string();
       if (seen.insert(key).second) {
          out.push_back(std::move(value));

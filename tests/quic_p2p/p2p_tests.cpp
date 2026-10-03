@@ -803,6 +803,7 @@ node::options options_for(peer_id id, capability_set capabilities = capability_s
        .private_key_pem = std::string{test_private_key()},
        .explicit_peer_id = std::move(id),
        .capabilities = capabilities,
+       .relay_policy = relay::policy{.service_enabled = capabilities.has(capabilities::relay)},
        .allow_insecure_test_mode = true,
    };
 }
@@ -986,6 +987,7 @@ node::options options_for(const test_certificate_identity& identity,
        .certificate_pem = identity.certificate_pem,
        .private_key_pem = identity.private_key_pem,
        .capabilities = capabilities,
+       .relay_policy = relay::policy{.service_enabled = capabilities.has(capabilities::relay)},
        .allow_insecure_test_mode = true,
    };
 }
@@ -1041,6 +1043,18 @@ node::options dht_options_for(const test_identity& identity, dht::profile profil
    auto out = options_for(identity, capabilities);
    out.dht_profiles.push_back(std::move(profile));
    return out;
+}
+
+node::options authenticated_options(node::options options, bool automatic_discovery = false) {
+   options.allow_insecure_test_mode = false;
+   options.peer_state.persistence = peer_store::make_memory_persistence();
+   options.relay_policy.auto_discovery_enabled = automatic_discovery;
+   for (const auto& profile : options.dht_profiles) {
+      if (!options.dht_record_persistence.contains(profile.protocol)) {
+         options.dht_record_persistence.emplace(profile.protocol, dht::record_store::make_memory_persistence());
+      }
+   }
+   return options;
 }
 
 public_key test_rsa_public_key() {
@@ -1641,6 +1655,25 @@ peer_store::record wait_for_identified_peer(node& value, const peer_id& peer, fo
                                             std::string_view label) {
    return wait_for_peer_record(value, peer, runtime, label,
                                [](const auto& record) { return !record.signed_peer_record.empty(); });
+}
+
+std::vector<relay::reservation::info> refresh_and_wait_for_relay_reservations(
+    node& value, forge::asio::runtime& runtime, std::size_t expected) {
+   auto refresh = boost::asio::co_spawn(runtime.context(), value.async_refresh_relay_candidates(),
+                                       boost::asio::use_future);
+   BOOST_REQUIRE(refresh.wait_for(std::chrono::seconds{6}) == std::future_status::ready);
+   static_cast<void>(refresh.get());
+   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+   while (std::chrono::steady_clock::now() < deadline) {
+      const auto state = value.diagnostics();
+      if (state.autorelay.pending_reservations == 0U && state.autorelay.automatic_reservations == expected &&
+          state.autorelay.successes == expected && state.relay_reservations.size() == expected) {
+         return state.relay_reservations;
+      }
+      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "AutoRelay owned reservation completion");
+   }
+   BOOST_FAIL("AutoRelay did not complete the expected live automatic reservations within its bound");
+   return {};
 }
 
 std::shared_ptr<std::promise<void>> block_runtime(forge::asio::runtime& runtime, std::string_view label) {
@@ -9456,11 +9489,16 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_loopback_does_not_claim_public_reachability) {
 
 BOOST_AUTO_TEST_CASE(p2p_relay_reservation_persists_candidate) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   const auto relay_identity = make_test_certificate_identity("relay-persist-candidate-relay");
+   const auto client_identity = make_test_certificate_identity("relay-persist-candidate-client");
    auto relay_node =
-       node{runtime, options_for(peer(102), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
-   auto client = node{runtime, options_for(peer(103), capability_set{.bits = capabilities::direct_quic |
-                                                                             capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                   capabilities::relay_reservation}))};
+   auto client_options = authenticated_options(options_for(
+       client_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}));
+   const auto persistence = client_options.peer_state.persistence;
+   auto client = node{runtime, std::move(client_options)};
 
    const auto relay_endpoint = listen(relay_node, runtime);
    client.peers().learn_endpoint(
@@ -9469,13 +9507,35 @@ BOOST_AUTO_TEST_CASE(p2p_relay_reservation_persists_candidate) {
 
    const auto info = forge::asio::blocking::run(runtime, client.async_reserve_relay(relay_node.local_peer()));
    BOOST_TEST(info.relay_peer.to_string() == relay_node.local_peer().to_string());
-   BOOST_TEST(!info.voucher.has_value());
+   BOOST_REQUIRE(info.voucher.has_value());
+   const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+       std::chrono::system_clock::now().time_since_epoch());
+   const auto voucher = relay::codec::open_reservation_voucher(
+       *info.voucher, relay_identity.peer, static_cast<std::uint64_t>(now.count()));
+   BOOST_TEST(voucher.relay_peer.to_string() == relay_identity.peer.to_string());
+   BOOST_TEST(voucher.peer.to_string() == client_identity.peer.to_string());
+   BOOST_TEST(voucher.expires_at == static_cast<std::uint64_t>(info.expires_at.count()));
 
    const auto stored = client.peers().find(relay_node.local_peer());
    BOOST_REQUIRE(stored.has_value());
    BOOST_REQUIRE_EQUAL(stored->relay_reservations.size(), 1U);
    BOOST_TEST(stored->relay_reservations.front().relay.to_string() == relay_node.local_peer().to_string());
-   BOOST_TEST(stored->relay_reservations.front().voucher.empty());
+   BOOST_TEST(stored->relay_reservations.front().voucher == info.voucher->encode(), boost::test_tools::per_element());
+   const auto persisted = signed_envelope::decode(stored->relay_reservations.front().voucher);
+   const auto persisted_voucher = relay::codec::open_reservation_voucher(
+       persisted, relay_identity.peer, static_cast<std::uint64_t>(now.count()));
+   BOOST_TEST(persisted_voucher.peer.to_string() == client_identity.peer.to_string());
+   BOOST_TEST(persisted_voucher.expires_at == voucher.expires_at);
+
+   forge::asio::blocking::run(runtime, client.peers().async_flush());
+   const auto page = forge::asio::blocking::run(runtime, persistence->async_hydrate(peer_store::hydration_request{}));
+   const auto hydrated = std::ranges::find_if(page.peers, [&](const peer_store::record& record) {
+      return record.peer == relay_identity.peer;
+   });
+   BOOST_REQUIRE(hydrated != page.peers.end());
+   BOOST_REQUIRE_EQUAL(hydrated->relay_reservations.size(), 1U);
+   BOOST_TEST(hydrated->relay_reservations.front().voucher == info.voucher->encode(),
+              boost::test_tools::per_element());
 
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, relay_node.async_stop());
@@ -9489,14 +9549,15 @@ BOOST_AUTO_TEST_CASE(p2p_relay_hop_timeout_preserves_shared_authenticated_sessio
    const auto target_identity = make_test_certificate_identity("relay-hop-session-target");
    auto relay_node =
        node{relay_runtime,
-            options_for(relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                               capabilities::relay_reservation})};
+            authenticated_options(options_for(
+                relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                         capabilities::relay_reservation}))};
    auto source = node{client_runtime,
-                      options_for(source_identity,
-                                  capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation})};
+                      authenticated_options(options_for(source_identity,
+                          capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    auto target = node{client_runtime,
-                      options_for(target_identity,
-                                  capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation})};
+                      authenticated_options(options_for(target_identity,
+                          capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    relay_node.register_protocol_handler(
        builtins::echo, [](node::incoming_protocol_stream incoming) mutable -> boost::asio::awaitable<void> {
           for (auto request = 0U; request < 2U; ++request) {
@@ -9530,6 +9591,7 @@ BOOST_AUTO_TEST_CASE(p2p_relay_hop_timeout_preserves_shared_authenticated_sessio
                                                              .direct_attempt_timeout = std::chrono::seconds{2},
                                                              .max_direct_endpoints = 1,
                                                          }));
+   BOOST_REQUIRE(sibling.authentication() == peer_authentication::quic_tls);
    const auto first_payload = std::vector<std::uint8_t>{'b', 'e', 'f', 'o', 'r', 'e'};
    forge::asio::blocking::run(client_runtime, sibling.async_write_frame(first_payload));
    BOOST_TEST(forge::asio::blocking::run(client_runtime, sibling.async_read_frame()) == first_payload,
@@ -9560,6 +9622,7 @@ BOOST_AUTO_TEST_CASE(p2p_relay_hop_timeout_preserves_shared_authenticated_sessio
    }));
    release_relay->set_value();
 
+   BOOST_REQUIRE(sibling.authentication() == peer_authentication::quic_tls);
    const auto second_payload = std::vector<std::uint8_t>{'a', 'f', 't', 'e', 'r'};
    forge::asio::blocking::run(client_runtime, sibling.async_write_frame(second_payload));
    BOOST_TEST(forge::asio::blocking::run(client_runtime, sibling.async_read_frame()) == second_payload,
@@ -9577,22 +9640,25 @@ BOOST_AUTO_TEST_CASE(p2p_relay_hop_timeout_preserves_shared_authenticated_sessio
 
 BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_reserves_peer_store_candidate) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   const auto relay_identity = make_test_certificate_identity("autorelay-refresh-store-relay");
+   const auto client_identity = make_test_certificate_identity("autorelay-refresh-store-client");
    auto relay_node =
-       node{runtime, options_for(peer(104), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                   capabilities::relay_reservation}))};
    auto client_options =
-       options_for(peer(105), capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
+       options_for(client_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
    client_options.relay_policy.target_reservations = 1;
    client_options.relay_policy.max_candidates_per_refresh = 2;
    client_options.relay_policy.max_parallel_reservations = 1;
-   auto client = node{runtime, std::move(client_options)};
+   auto client = node{runtime, authenticated_options(std::move(client_options), true)};
 
    const auto relay_endpoint = listen(relay_node, runtime);
    client.peers().learn_endpoint(
        relay_node.local_peer(), relay_endpoint,
        capability_set{.bits = capabilities::direct_quic | capabilities::relay | capabilities::relay_reservation});
 
-   const auto reservations = forge::asio::blocking::run(runtime, client.async_refresh_relay_candidates());
+   const auto reservations = refresh_and_wait_for_relay_reservations(client, runtime, 1);
    BOOST_REQUIRE_EQUAL(reservations.size(), 1U);
    BOOST_TEST(reservations.front().relay_peer.to_string() == relay_node.local_peer().to_string());
 
@@ -9603,6 +9669,7 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_reserves_peer_store_candidate) {
    BOOST_TEST(client.metrics().relay_discovery_refreshes == 1U);
    BOOST_TEST(client.metrics().relay_discovery_attempts == 1U);
    BOOST_TEST(client.metrics().relay_discovery_successes == 1U);
+   BOOST_TEST(relay_node.metrics().active_relay_reservations == 1U);
 
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, relay_node.async_stop());
@@ -9610,20 +9677,90 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_reserves_peer_store_candidate) {
 
 BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_backs_off_failed_candidate_and_tries_next) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto bad_options = options_for(peer(106), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                    capabilities::relay_reservation});
-   bad_options.relay_policy.service_enabled = false;
-   auto bad_relay = node{runtime, std::move(bad_options)};
+   const auto bad_identity = make_test_certificate_identity("autorelay-backoff-rejector");
+   const auto good_identity = make_test_certificate_identity("autorelay-backoff-good");
+   const auto client_identity = make_test_certificate_identity("autorelay-backoff-client");
+   auto bad_relay = node{runtime, authenticated_options(options_for(
+       bad_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                               capabilities::relay_reservation}))};
    auto good_relay =
-       node{runtime, options_for(peer(107), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           good_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                    capabilities::relay_reservation}))};
    auto client_options =
-       options_for(peer(108), capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
-   client_options.relay_policy.target_reservations = 1;
+       options_for(client_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
+   // Keep a spare slot: a filled target would suppress retries independently of backoff.
+   client_options.relay_policy.target_reservations = 2;
    client_options.relay_policy.max_candidates_per_refresh = 2;
    client_options.relay_policy.max_parallel_reservations = 1;
    client_options.relay_policy.candidate_backoff = std::chrono::seconds{30};
-   auto client = node{runtime, std::move(client_options)};
+   auto client = node{runtime, authenticated_options(std::move(client_options), true)};
+   struct reserve_observations {
+      std::mutex mutex;
+      std::vector<std::chrono::steady_clock::time_point> received;
+      std::size_t replies_allowed = 1;
+      forge::asio::notification reply_ready;
+      std::promise<void> retry_received;
+   };
+   auto observed = std::make_shared<reserve_observations>();
+   struct reply_release_guard {
+      std::shared_ptr<reserve_observations> observed;
+
+      ~reply_release_guard() {
+         {
+            auto lock = std::scoped_lock{observed->mutex};
+            observed->replies_allowed = std::numeric_limits<std::size_t>::max();
+         }
+         observed->reply_ready.notify();
+      }
+   };
+   const auto release_replies_on_exit = reply_release_guard{observed};
+   auto retry_received = observed->retry_received.get_future();
+   bad_relay.register_protocol_handler(
+       builtins::relay_hop,
+       [observed, expected_client = client.local_peer()](node::incoming_protocol_stream incoming)
+           -> boost::asio::awaitable<void> {
+          if (incoming.protocol != builtins::relay_hop || incoming.session.remote_peer != expected_client ||
+              incoming.session.path != path::kind::direct ||
+              incoming.stream.authentication() != peer_authentication::quic_tls) {
+             throw std::runtime_error("RESERVE did not arrive over the authenticated direct HOP session");
+          }
+          const auto payload = co_await read_length_delimited(incoming.stream, 4 * 1024);
+          const auto request = relay::codec::decode_hop(wrap_length_delimited(payload));
+          if (request.kind != relay::hop_message::message_kind::reserve || request.target ||
+              request.reservation_value || request.limit_value || request.status != relay::status::unused) {
+             throw std::runtime_error("rejector expected a fully decoded RESERVE request");
+          }
+          auto request_number = std::size_t{};
+          {
+             auto lock = std::scoped_lock{observed->mutex};
+             observed->received.push_back(std::chrono::steady_clock::now());
+             request_number = observed->received.size();
+          }
+          if (request_number == 2U) {
+             observed->retry_received.set_value();
+          }
+          // The retry has reached the wire; hold its reply, not the manager's clock.
+          const auto reply_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+          while (true) {
+             const auto epoch = observed->reply_ready.epoch();
+             {
+                auto lock = std::scoped_lock{observed->mutex};
+                if (request_number <= observed->replies_allowed) {
+                   break;
+                }
+             }
+             if (std::chrono::steady_clock::now() >= reply_deadline) {
+                FORGE_THROW_EXCEPTION(exceptions::timeout, "test AutoRelay reply barrier deadline expired");
+             }
+             co_await observed->reply_ready.async_wait_until(epoch, reply_deadline);
+          }
+          co_await incoming.stream.async_write(relay::codec::encode_hop(relay::hop_message{
+              .kind = relay::hop_message::message_kind::status,
+              .status = relay::status::reservation_refused,
+          }));
+          co_await incoming.stream.async_close();
+       });
 
    const auto bad_endpoint = listen(bad_relay, runtime);
    const auto good_endpoint = listen(good_relay, runtime);
@@ -9637,16 +9774,61 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_backs_off_failed_candidate_and_tries_
    bad_record.score = 100.0;
    client.peers().upsert(std::move(bad_record));
 
-   const auto reservations = forge::asio::blocking::run(runtime, client.async_refresh_relay_candidates());
+   auto refresh = boost::asio::co_spawn(runtime.context(), client.async_refresh_relay_candidates(),
+                                       boost::asio::use_future);
+   BOOST_REQUIRE(retry_received.wait_for(std::chrono::seconds{6}) == std::future_status::ready);
+   retry_received.get();
+   const auto checkpoint = client.diagnostics();
+   const auto& reservations = checkpoint.relay_reservations;
    BOOST_REQUIRE_EQUAL(reservations.size(), 1U);
    BOOST_TEST(reservations.front().relay_peer.to_string() == good_relay.local_peer().to_string());
-   BOOST_TEST(client.metrics().relay_discovery_attempts == 2U);
-   BOOST_TEST(client.metrics().relay_discovery_failures == 1U);
-   BOOST_TEST(client.metrics().relay_discovery_successes == 1U);
+   const auto& state = checkpoint.autorelay;
+   BOOST_TEST(state.target_reservations == 2U);
+   BOOST_TEST(state.automatic_reservations == 1U);
+   BOOST_TEST(state.pending_reservations == 1U);
+   BOOST_TEST(state.attempts == 3U);
+   BOOST_TEST(state.failures == 1U);
+   BOOST_TEST(state.successes == 1U);
+   BOOST_REQUIRE(state.last_error.has_value());
+   BOOST_CHECK(*state.last_error == exceptions::code::relay_rejected);
+   BOOST_TEST(checkpoint.metrics.relay_discovery_attempts == 3U);
+   BOOST_TEST(checkpoint.metrics.relay_discovery_failures == 1U);
+   BOOST_TEST(checkpoint.metrics.relay_discovery_successes == 1U);
+   BOOST_TEST(good_relay.metrics().active_relay_reservations == 1U);
+   BOOST_TEST(bad_relay.metrics().active_relay_reservations == 0U);
+   auto identify_stream = forge::asio::blocking::run(
+       runtime, client.async_open_protocol_stream(bad_relay.local_peer(), builtins::identify));
+   BOOST_CHECK(identify_stream.authentication() == peer_authentication::quic_tls);
+   const auto document = identify::decode(
+       forge::asio::blocking::run(runtime, read_length_delimited(identify_stream, 16 * 1024)));
+   BOOST_TEST(make_peer_id(decode_public_key(document.public_key)).to_string() == bad_relay.local_peer().to_string());
+   BOOST_TEST(std::ranges::count(document.protocols, builtins::relay_hop) == 1);
+   forge::asio::blocking::run(runtime, identify_stream.async_close());
 
-   const auto failed = client.peers().find(bad_relay.local_peer());
-   BOOST_REQUIRE(failed.has_value());
-   BOOST_TEST(failed->discovery_backoff_until > std::chrono::system_clock::now());
+   {
+      auto lock = std::scoped_lock{observed->mutex};
+      BOOST_REQUIRE_EQUAL(observed->received.size(), 2U);
+      BOOST_TEST(std::chrono::duration_cast<std::chrono::milliseconds>(
+          observed->received[1] - observed->received[0]).count() >= 750);
+      observed->replies_allowed = 2;
+   }
+   observed->reply_ready.notify();
+
+   BOOST_REQUIRE(refresh.wait_for(std::chrono::seconds{6}) == std::future_status::ready);
+   static_cast<void>(refresh.get());
+   const auto retry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+   while (client.diagnostics().autorelay.failures != 2U && std::chrono::steady_clock::now() < retry_deadline) {
+      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "AutoRelay resumed retry rejection completion");
+   }
+   const auto completed = client.diagnostics();
+   BOOST_TEST(completed.autorelay.failures == 2U);
+   BOOST_TEST(completed.autorelay.successes == 1U);
+   BOOST_TEST(completed.autorelay.automatic_reservations == 1U);
+   BOOST_REQUIRE(completed.autorelay.last_error.has_value());
+   BOOST_CHECK(*completed.autorelay.last_error == exceptions::code::relay_rejected);
+   BOOST_TEST(completed.metrics.relay_discovery_failures == 2U);
+   BOOST_TEST(completed.metrics.relay_discovery_successes == 1U);
+   BOOST_TEST(good_relay.metrics().active_relay_reservations == 1U);
 
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, good_relay.async_stop());
@@ -9655,18 +9837,23 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_backs_off_failed_candidate_and_tries_
 
 BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_accepts_dht_and_rendezvous_sourced_candidates) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   const auto dht_identity = make_test_certificate_identity("autorelay-refresh-dht-relay");
+   const auto rendezvous_identity = make_test_certificate_identity("autorelay-refresh-rendezvous-relay");
+   const auto client_identity = make_test_certificate_identity("autorelay-refresh-sourced-client");
    auto dht_relay =
-       node{runtime, options_for(peer(116), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           dht_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                 capabilities::relay_reservation}))};
    auto rendezvous_relay =
-       node{runtime, options_for(peer(117), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           rendezvous_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                        capabilities::relay_reservation}))};
    auto client_options =
-       options_for(peer(120), capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
+       options_for(client_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
    client_options.relay_policy.target_reservations = 2;
    client_options.relay_policy.max_candidates_per_refresh = 2;
    client_options.relay_policy.max_parallel_reservations = 1;
-   auto client = node{runtime, std::move(client_options)};
+   auto client = node{runtime, authenticated_options(std::move(client_options), true)};
 
    const auto dht_endpoint = listen(dht_relay, runtime);
    const auto rendezvous_endpoint = listen(rendezvous_relay, runtime);
@@ -9690,10 +9877,12 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_accepts_dht_and_rendezvous_sourced_ca
        .discovery_expires_at = std::chrono::system_clock::now() + std::chrono::minutes{5},
    });
 
-   const auto reservations = forge::asio::blocking::run(runtime, client.async_refresh_relay_candidates());
+   const auto reservations = refresh_and_wait_for_relay_reservations(client, runtime, 2);
    BOOST_REQUIRE_EQUAL(reservations.size(), 2U);
    BOOST_TEST(client.metrics().relay_discovery_attempts == 2U);
    BOOST_TEST(client.metrics().relay_discovery_successes == 2U);
+   BOOST_TEST(dht_relay.metrics().active_relay_reservations == 1U);
+   BOOST_TEST(rendezvous_relay.metrics().active_relay_reservations == 1U);
 
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, rendezvous_relay.async_stop());
@@ -9702,18 +9891,23 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_accepts_dht_and_rendezvous_sourced_ca
 
 BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_respects_candidate_and_target_limits) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   const auto first_identity = make_test_certificate_identity("autorelay-refresh-limit-first");
+   const auto second_identity = make_test_certificate_identity("autorelay-refresh-limit-second");
+   const auto client_identity = make_test_certificate_identity("autorelay-refresh-limit-client");
    auto first =
-       node{runtime, options_for(peer(113), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           first_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                   capabilities::relay_reservation}))};
    auto second =
-       node{runtime, options_for(peer(114), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       node{runtime, authenticated_options(options_for(
+           second_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                    capabilities::relay_reservation}))};
    auto client_options =
-       options_for(peer(115), capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
+       options_for(client_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
    client_options.relay_policy.target_reservations = 1;
    client_options.relay_policy.max_candidates_per_refresh = 1;
    client_options.relay_policy.max_parallel_reservations = 1;
-   auto client = node{runtime, std::move(client_options)};
+   auto client = node{runtime, authenticated_options(std::move(client_options), true)};
 
    const auto first_endpoint = listen(first, runtime);
    const auto second_endpoint = listen(second, runtime);
@@ -9724,10 +9918,14 @@ BOOST_AUTO_TEST_CASE(p2p_autorelay_refresh_respects_candidate_and_target_limits)
        second.local_peer(), second_endpoint,
        capability_set{.bits = capabilities::direct_quic | capabilities::relay | capabilities::relay_reservation});
 
-   const auto reservations = forge::asio::blocking::run(runtime, client.async_refresh_relay_candidates());
+   const auto reservations = refresh_and_wait_for_relay_reservations(client, runtime, 1);
    BOOST_REQUIRE_EQUAL(reservations.size(), 1U);
    BOOST_TEST(client.metrics().relay_discovery_attempts == 1U);
    BOOST_TEST(client.metrics().relay_discovery_successes == 1U);
+   const auto state = client.diagnostics().autorelay;
+   BOOST_TEST(state.max_candidates == 1U);
+   BOOST_TEST(state.max_parallel_reservations == 1U);
+   BOOST_TEST(first.metrics().active_relay_reservations + second.metrics().active_relay_reservations == 1U);
 
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, second.async_stop());
@@ -9740,16 +9938,17 @@ BOOST_AUTO_TEST_CASE(p2p_relay_fallback_refreshes_candidate_without_explicit_rel
    const auto source_identity = make_test_certificate_identity("autorelay-fallback-source");
    const auto target_identity = make_test_certificate_identity("autorelay-fallback-target");
    auto relay_node = node{
-       runtime, options_for(relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       runtime, authenticated_options(options_for(
+           relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                    capabilities::relay_reservation}))};
    auto source_options = options_for(
        source_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
    source_options.relay_policy.target_reservations = 1;
    source_options.relay_policy.max_candidates_per_refresh = 2;
    source_options.relay_policy.max_parallel_reservations = 1;
-   auto source = node{runtime, std::move(source_options)};
-   auto target = node{runtime, options_for(target_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                   capabilities::relay_reservation})};
+   auto source = node{runtime, authenticated_options(std::move(source_options), true)};
+   auto target = node{runtime, authenticated_options(options_for(
+       target_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    register_echo(target);
 
    const auto relay_endpoint = listen(relay_node, runtime);
@@ -9765,6 +9964,11 @@ BOOST_AUTO_TEST_CASE(p2p_relay_fallback_refreshes_candidate_without_explicit_rel
        capability_set{.bits = capabilities::direct_quic | capabilities::relay | capabilities::relay_reservation});
    (void)forge::asio::blocking::run(runtime, target.async_reserve_relay(relay_node.local_peer()));
 
+   BOOST_REQUIRE(source.diagnostics().relay_reservations.empty());
+   BOOST_TEST(source.metrics().relay_discovery_attempts == 0U);
+   BOOST_TEST(source.metrics().relay_discovery_successes == 0U);
+   BOOST_TEST(relay_node.metrics().active_relay_reservations == 1U);
+
    auto stream = forge::asio::blocking::run(
        runtime, source.async_open_protocol_stream(target.local_peer(), builtins::echo,
                                                   node::open_options{
@@ -9777,6 +9981,10 @@ BOOST_AUTO_TEST_CASE(p2p_relay_fallback_refreshes_candidate_without_explicit_rel
    forge::asio::blocking::run(runtime, stream.async_write_frame(payload));
    const auto reply = forge::asio::blocking::run(runtime, stream.async_read_frame());
 
+   const auto reservations = source.diagnostics().relay_reservations;
+   BOOST_REQUIRE_EQUAL(reservations.size(), 1U);
+   BOOST_TEST(reservations.front().relay_peer.to_string() == relay_node.local_peer().to_string());
+   BOOST_REQUIRE(stream.authentication() == peer_authentication::noise);
    BOOST_TEST(reply == payload, boost::test_tools::per_element());
    BOOST_TEST(source.metrics().relay_discovery_refreshes >= 1U);
    BOOST_TEST(source.metrics().relay_discovery_successes >= 1U);
@@ -9789,36 +9997,55 @@ BOOST_AUTO_TEST_CASE(p2p_relay_fallback_refreshes_candidate_without_explicit_rel
 
 BOOST_AUTO_TEST_CASE(p2p_relay_policy_options_are_behavioral) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
-   auto relay_options = options_for(peer(110), capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                      capabilities::relay_reservation});
+   const auto relay_identity = make_test_certificate_identity("relay-policy-disabled-service");
+   const auto client_identity = make_test_certificate_identity("relay-policy-client");
+   const auto disabled_identity = make_test_certificate_identity("relay-policy-disabled-client");
+   auto relay_options = options_for(
+       relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                capabilities::relay_reservation});
    relay_options.relay_policy.service_enabled = false;
-   auto relay_node = node{runtime, std::move(relay_options)};
-   auto client = node{runtime, options_for(peer(111), capability_set{.bits = capabilities::direct_quic |
-                                                                             capabilities::relay_reservation})};
+   auto relay_node = node{runtime, authenticated_options(std::move(relay_options))};
+   auto client = node{runtime, authenticated_options(options_for(
+       client_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
 
    const auto relay_endpoint = listen(relay_node, runtime);
    client.peers().learn_endpoint(
        relay_node.local_peer(), relay_endpoint,
        capability_set{.bits = capabilities::direct_quic | capabilities::relay | capabilities::relay_reservation});
 
+   static_cast<void>(forge::asio::blocking::run(
+       runtime, client.async_connect(relay_endpoint, node::connect_options{.expected_peer = relay_node.local_peer()})));
+   auto identify_stream = forge::asio::blocking::run(
+       runtime, client.async_open_protocol_stream(relay_node.local_peer(), builtins::identify));
+   BOOST_CHECK(identify_stream.authentication() == peer_authentication::quic_tls);
+   const auto document = identify::decode(
+       forge::asio::blocking::run(runtime, read_length_delimited(identify_stream, 16 * 1024)));
+   BOOST_TEST(make_peer_id(decode_public_key(document.public_key)).to_string() == relay_node.local_peer().to_string());
+   BOOST_TEST(std::ranges::count(document.protocols, builtins::relay_hop) == 0);
+   forge::asio::blocking::run(runtime, identify_stream.async_close());
+
    try {
       (void)forge::asio::blocking::run(runtime, client.async_reserve_relay(relay_node.local_peer()));
-      BOOST_FAIL("expected relay service policy rejection");
+      BOOST_FAIL("disabled relay service must not negotiate HOP");
    } catch (const forge::exceptions::base& error) {
-      BOOST_TEST(static_cast<int>(forge::net::p2p::exceptions::code_of(error).value()) ==
-                 static_cast<int>(exceptions::code::relay_rejected));
+      BOOST_CHECK(exceptions::is(error, exceptions::code::unsupported_protocol));
    }
+   BOOST_TEST(relay_node.metrics().relay_reservations == 0U);
+   BOOST_TEST(relay_node.metrics().active_relay_reservations == 0U);
 
-   auto disabled_client_options = options_for(peer(112), capability_set{.bits = capabilities::direct_quic});
+   auto disabled_client_options = options_for(disabled_identity, capability_set{.bits = capabilities::direct_quic});
    disabled_client_options.relay_policy.client_enabled = false;
-   auto disabled_client = node{runtime, std::move(disabled_client_options)};
+   auto disabled_client = node{runtime, authenticated_options(std::move(disabled_client_options))};
+   const auto attempts_before = disabled_client.metrics().path_direct_attempts;
    try {
       (void)forge::asio::blocking::run(runtime, disabled_client.async_reserve_relay(relay_node.local_peer()));
       BOOST_FAIL("expected relay client policy rejection");
    } catch (const forge::exceptions::base& error) {
-      BOOST_TEST(static_cast<int>(forge::net::p2p::exceptions::code_of(error).value()) ==
-                 static_cast<int>(exceptions::code::relay_not_available));
+      BOOST_CHECK(exceptions::is(error, exceptions::code::relay_not_available));
    }
+   BOOST_TEST(disabled_client.metrics().path_direct_attempts == attempts_before);
+   BOOST_TEST(relay_node.metrics().relay_reservations == 0U);
+   BOOST_TEST(relay_node.metrics().active_relay_reservations == 0U);
 
    forge::asio::blocking::run(runtime, disabled_client.async_stop());
    forge::asio::blocking::run(runtime, client.async_stop());
@@ -9882,11 +10109,13 @@ BOOST_AUTO_TEST_CASE(p2p_relay_stop_connect_passes_frames_after_target_reservati
    const auto source_identity = make_test_certificate_identity("relay-stop-connect-source");
    const auto target_identity = make_test_certificate_identity("relay-stop-connect-target");
    auto relay_node = node{
-       runtime, options_for(relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
-   auto source = node{runtime, options_for(source_identity, capability_set{.bits = capabilities::direct_quic})};
-   auto target = node{runtime, options_for(target_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                   capabilities::relay_reservation})};
+       runtime, authenticated_options(options_for(
+           relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                    capabilities::relay_reservation}))};
+   auto source = node{runtime, authenticated_options(options_for(
+       source_identity, capability_set{.bits = capabilities::direct_quic}))};
+   auto target = node{runtime, authenticated_options(options_for(
+       target_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    register_echo(target);
 
    const auto relay_endpoint = listen(relay_node, runtime);
@@ -9927,8 +10156,9 @@ BOOST_AUTO_TEST_CASE(p2p_relay_hop_and_stop_apply_connection_gater_without_inven
    const auto source_identity = make_test_certificate_identity("relay-gater-source");
    const auto target_identity = make_test_certificate_identity("relay-gater-target");
    auto relay_node = node{
-       runtime, options_for(relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
+       runtime, authenticated_options(options_for(
+           relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                    capabilities::relay_reservation}))};
    auto source_gater = std::make_shared<recording_connection_gater>();
    auto target_gater = std::make_shared<recording_connection_gater>();
    auto source_options = options_for(source_identity, capability_set{.bits = capabilities::direct_quic});
@@ -9938,8 +10168,8 @@ BOOST_AUTO_TEST_CASE(p2p_relay_hop_and_stop_apply_connection_gater_without_inven
    auto target_options = options_for(
        target_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
    target_options.connection_gater = target_gater;
-   auto source = node{runtime, std::move(source_options)};
-   auto target = node{runtime, std::move(target_options)};
+   auto source = node{runtime, authenticated_options(std::move(source_options))};
+   auto target = node{runtime, authenticated_options(std::move(target_options))};
    register_echo(target);
 
    const auto relay_endpoint = listen(relay_node, runtime);
@@ -10084,10 +10314,11 @@ BOOST_AUTO_TEST_CASE(p2p_relay_duration_closes_circuit_and_releases_resources) {
        options_for(relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
                                                           capabilities::relay_reservation});
    relay_options.limits.relay.max_duration = std::chrono::seconds{1};
-   auto relay_node = node{runtime, std::move(relay_options)};
-   auto source = node{runtime, options_for(source_identity, capability_set{.bits = capabilities::direct_quic})};
-   auto target = node{runtime, options_for(target_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                   capabilities::relay_reservation})};
+   auto relay_node = node{runtime, authenticated_options(std::move(relay_options))};
+   auto source = node{runtime, authenticated_options(options_for(
+       source_identity, capability_set{.bits = capabilities::direct_quic}))};
+   auto target = node{runtime, authenticated_options(options_for(
+       target_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    register_echo(target);
 
    const auto relay_endpoint = listen(relay_node, runtime);
@@ -10163,11 +10394,13 @@ BOOST_AUTO_TEST_CASE(p2p_relay_renewal_preserves_active_circuit_limit) {
                                                           capabilities::relay_reservation});
    relay_options.limits.relay.max_streams_per_reservation = 1;
    relay_options.limits.relay.max_duration = std::chrono::seconds{10};
-   auto relay_node = node{runtime, std::move(relay_options)};
-   auto first = node{runtime, options_for(first_identity, capability_set{.bits = capabilities::direct_quic})};
-   auto second = node{runtime, options_for(second_identity, capability_set{.bits = capabilities::direct_quic})};
-   auto target = node{runtime, options_for(target_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                   capabilities::relay_reservation})};
+   auto relay_node = node{runtime, authenticated_options(std::move(relay_options))};
+   auto first = node{runtime, authenticated_options(options_for(
+       first_identity, capability_set{.bits = capabilities::direct_quic}))};
+   auto second = node{runtime, authenticated_options(options_for(
+       second_identity, capability_set{.bits = capabilities::direct_quic}))};
+   auto target = node{runtime, authenticated_options(options_for(
+       target_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    register_echo(target);
 
    const auto relay_endpoint = listen(relay_node, runtime);
@@ -10230,11 +10463,12 @@ BOOST_AUTO_TEST_CASE(p2p_relay_reservation_is_released_after_last_disconnect) {
                                                           capabilities::relay_reservation});
    relay_options.limits.relay.max_reservations = 1;
    relay_options.limits.resources.max_relay_reservations = 1;
-   auto relay_node = node{runtime, std::move(relay_options)};
-   auto first = node{runtime, options_for(first_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                 capabilities::relay_reservation})};
-   auto second = node{runtime, options_for(second_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                   capabilities::relay_reservation})};
+   relay_options.relay_policy.target_reservations = 1;
+   auto relay_node = node{runtime, authenticated_options(std::move(relay_options))};
+   auto first = node{runtime, authenticated_options(options_for(
+       first_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
+   auto second = node{runtime, authenticated_options(options_for(
+       second_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
 
    const auto relay_endpoint = listen(relay_node, runtime);
    const auto relay_capabilities =
@@ -10275,9 +10509,9 @@ BOOST_AUTO_TEST_CASE(p2p_relay_only_open_does_not_record_direct_failure_or_evict
    auto target_options =
        dht_options_for(target_identity, custom_test_dht_profile(dht::mode::server, custom_limits),
                        capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation});
-   auto relay_node = node{runtime, std::move(relay_options)};
-   auto source = node{runtime, std::move(source_options)};
-   auto target = node{runtime, std::move(target_options)};
+   auto relay_node = node{runtime, authenticated_options(std::move(relay_options))};
+   auto source = node{runtime, authenticated_options(std::move(source_options))};
+   auto target = node{runtime, authenticated_options(std::move(target_options))};
    register_echo(target);
 
    const auto relay_endpoint = listen(relay_node, runtime);
@@ -10353,11 +10587,13 @@ BOOST_AUTO_TEST_CASE(p2p_relay_transport_opens_arbitrary_registered_protocol) {
    const auto source_identity = make_test_certificate_identity("relay-arbitrary-protocol-source");
    const auto target_identity = make_test_certificate_identity("relay-arbitrary-protocol-target");
    auto relay_node = node{
-       runtime, options_for(relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
-                                                                   capabilities::relay_reservation})};
-   auto source = node{runtime, options_for(source_identity, capability_set{.bits = capabilities::direct_quic})};
-   auto target = node{runtime, options_for(target_identity, capability_set{.bits = capabilities::direct_quic |
-                                                                                   capabilities::relay_reservation})};
+       runtime, authenticated_options(options_for(
+           relay_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay |
+                                                    capabilities::relay_reservation}))};
+   auto source = node{runtime, authenticated_options(options_for(
+       source_identity, capability_set{.bits = capabilities::direct_quic}))};
+   auto target = node{runtime, authenticated_options(options_for(
+       target_identity, capability_set{.bits = capabilities::direct_quic | capabilities::relay_reservation}))};
    auto observed_session = std::make_shared<std::optional<node::session_info>>();
    auto observed_authentication = std::make_shared<std::optional<peer_authentication>>();
    auto observed_session_mutex = std::make_shared<std::mutex>();
@@ -12454,9 +12690,9 @@ BOOST_AUTO_TEST_CASE(p2p_discovery_refresh_learns_dht_and_rendezvous_relay_candi
    auto relay_options = dht_options_for(
        relay_identity, amino_v1(dht::mode::server),
        capability_set{.bits = capabilities::direct_quic | capabilities::relay | capabilities::relay_reservation});
-   auto dht_server = node{runtime, std::move(dht_options)};
-   auto rendezvous_server = node{runtime, std::move(rendezvous_options)};
-   auto relay = node{runtime, std::move(relay_options)};
+   auto dht_server = node{runtime, authenticated_options(std::move(dht_options))};
+   auto rendezvous_server = node{runtime, authenticated_options(std::move(rendezvous_options))};
+   auto relay = node{runtime, authenticated_options(std::move(relay_options))};
    const auto dht_endpoint = listen(dht_server, runtime);
    auto rendezvous_endpoint = listen(rendezvous_server, runtime);
    const auto relay_endpoint = listen(relay, runtime);
@@ -12474,7 +12710,7 @@ BOOST_AUTO_TEST_CASE(p2p_discovery_refresh_learns_dht_and_rendezvous_relay_candi
            .namespaces = {"forge.discovery"},
        },
    };
-   auto client = node{runtime, std::move(client_options)};
+   auto client = node{runtime, authenticated_options(std::move(client_options), true)};
    auto advertised_relay_endpoint = make_dns_tcp_endpoint(4140, "relay.example.com");
    advertised_relay_endpoint.peer = relay.local_peer();
 
@@ -12507,9 +12743,10 @@ BOOST_AUTO_TEST_CASE(p2p_discovery_refresh_learns_dht_and_rendezvous_relay_candi
    BOOST_TEST(learned->capabilities.has(capabilities::relay));
    BOOST_TEST(learned->capabilities.has(capabilities::relay_reservation));
 
-   const auto reservations = forge::asio::blocking::run(runtime, client.async_refresh_relay_candidates());
+   const auto reservations = refresh_and_wait_for_relay_reservations(client, runtime, 1);
    BOOST_REQUIRE_EQUAL(reservations.size(), 1U);
    BOOST_TEST(reservations.front().relay_peer.to_string() == relay.local_peer().to_string());
+   BOOST_TEST(relay.metrics().active_relay_reservations == 1U);
 
    forge::asio::blocking::run(runtime, client.async_stop());
    forge::asio::blocking::run(runtime, relay.async_stop());

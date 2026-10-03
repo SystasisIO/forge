@@ -3,10 +3,12 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -27,6 +29,7 @@ import forge.net.p2p.stream;
 import forge.net.transport.stream;
 
 #include "details/operation_deadline.hxx"
+#include "details/cancellation_latch.hxx"
 #include "details/owner_cancellation.hxx"
 #include "details/length_delimited.hxx"
 #include "details/relay_hop_exchange.hxx"
@@ -35,8 +38,10 @@ namespace forge::net::p2p::detail {
 
 boost::asio::awaitable<relay_hop_exchange>
 async_exchange_relay_hop(boost::asio::io_context& context, std::chrono::milliseconds timeout, std::string operation,
-                         relay_stream_opener open_stream, relay::hop_message request, std::size_t max_message_size) {
+                         relay_stream_opener open_stream, relay::hop_message request, std::size_t max_message_size,
+                         std::shared_ptr<cancellation_latch> cancellation) {
    auto stop = std::make_shared<worker_stop_bridge>();
+   auto subscription = cancellation_latch::subscribe(cancellation, [stop]() noexcept { stop->request_stop(); });
    auto result = std::optional<relay_hop_exchange>{};
    auto deadline = operation_deadline{context, timeout};
    deadline.arm([stop] noexcept { stop->request_stop(); });

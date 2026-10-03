@@ -103,16 +103,6 @@
       ]
     },
     {
-      "ordinal": 8,
-      "branch": "forge-p2p-nat-mapping-v1",
-      "dependencies": [
-        "forge-chrono-v1",
-        "forge-p2p-host-protection-v1",
-        "forge-p2p-reachability-v1"
-      ],
-      "allowed_capability_owners": [ "nat.upnp_mapping" ]
-    },
-    {
       "ordinal": 9,
       "branch": "forge-p2p-autorelay-v1",
       "dependencies": [
@@ -221,7 +211,12 @@
       "forge.p2p.evidence.autonat_v2_service_native_tcp_yamux.v1",
       "forge.p2p.evidence.autonat_v2_service_private_tcp_yamux_pnet.v1",
       "forge.p2p.evidence.relay_v2_client_transport.v1",
+      "forge.p2p.evidence.autorelay_lifecycle.v1",
+      "forge.p2p.evidence.autorelay_lifecycle_native_tcp_yamux.v1",
+      "forge.p2p.evidence.autorelay_lifecycle_native_tcp_tls_yamux.v1",
       "forge.p2p.evidence.relay_v2_service.v1",
+      "forge.p2p.evidence.relay_v2_service_native_tcp_yamux.v1",
+      "forge.p2p.evidence.relay_v2_service_native_tcp_tls_yamux.v1",
       "forge.p2p.evidence.dcutr.v1",
       "forge.p2p.evidence.kademlia_amino.v1",
       "forge.p2p.evidence.kademlia_amino_private_tcp_yamux_pnet.v1",
@@ -321,8 +316,15 @@
       "relay.circuit_v2_client_transport": { "scenarios": [
         { "id": "relay_v2_client_transport", "profile": "native", "transport_stack": [ "quic" ], "activation": "enabled", "registration": "registered", "runner_scenario_id": "quic_base/relay_reserve", "source_case_id": "relayv2.reserve_connect_status", "evidence_contract": "forge.p2p.evidence.relay_v2_client_transport.v1", "required_directions": [ "forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge" ], "expected_status": "passed" }
       ] },
+      "relay.autorelay_lifecycle": { "scenarios": [
+        { "id": "autorelay_lifecycle", "runner_scenario_id": "quic_stage6/autorelay_lifecycle", "profile": "native", "transport_stack": [ "quic" ], "activation": "enabled", "registration": "registered", "source_case_id": "autorelay.discovery_reservation_lifecycle", "evidence_contract": "forge.p2p.evidence.autorelay_lifecycle.v1", "required_directions": [ "forge_to_go", "forge_to_rust" ], "expected_status": "passed" },
+        { "id": "autorelay_lifecycle_native_tcp_yamux", "runner_scenario_id": "tcp_stage6/autorelay_lifecycle_native_tcp_yamux", "profile": "native", "transport_stack": [ "tcp", "yamux" ], "activation": "enabled", "registration": "registered", "source_case_id": "autorelay.discovery_reservation_lifecycle", "evidence_contract": "forge.p2p.evidence.autorelay_lifecycle_native_tcp_yamux.v1", "required_directions": [ "forge_to_go", "forge_to_rust" ], "expected_status": "passed" },
+        { "id": "autorelay_lifecycle_native_tcp_tls_yamux", "runner_scenario_id": "tcp_tls_stage6/autorelay_lifecycle_native_tcp_tls_yamux", "profile": "native", "transport_stack": [ "tcp", "yamux" ], "activation": "enabled", "registration": "registered", "source_case_id": "autorelay.discovery_reservation_lifecycle", "evidence_contract": "forge.p2p.evidence.autorelay_lifecycle_native_tcp_tls_yamux.v1", "required_directions": [ "forge_to_go", "forge_to_rust" ], "expected_status": "passed" }
+      ] },
       "relay.circuit_v2_service": { "scenarios": [
-        { "id": "relay_v2_service", "runner_scenario_id": "quic_stage6/relay_v2_service", "profile": "native", "transport_stack": [ "quic" ], "activation": "enabled", "registration": "planned", "evidence_contract": "forge.p2p.evidence.relay_v2_service.v1", "required_directions": [ "forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge" ], "expected_status": "passed" }
+        { "id": "relay_v2_service", "runner_scenario_id": "quic_stage6/relay_v2_service", "profile": "native", "transport_stack": [ "quic" ], "activation": "enabled", "registration": "registered", "source_case_id": "interop.live_ping_identify_relay", "evidence_contract": "forge.p2p.evidence.relay_v2_service.v1", "required_directions": [ "go_to_forge", "rust_to_forge" ], "expected_status": "passed" },
+        { "id": "relay_v2_service_native_tcp_yamux", "runner_scenario_id": "tcp_stage6/relay_v2_service_native_tcp_yamux", "profile": "native", "transport_stack": [ "tcp", "yamux" ], "activation": "enabled", "registration": "registered", "source_case_id": "interop.live_ping_identify_relay", "evidence_contract": "forge.p2p.evidence.relay_v2_service_native_tcp_yamux.v1", "required_directions": [ "go_to_forge", "rust_to_forge" ], "expected_status": "passed" },
+        { "id": "relay_v2_service_native_tcp_tls_yamux", "runner_scenario_id": "tcp_tls_stage6/relay_v2_service_native_tcp_tls_yamux", "profile": "native", "transport_stack": [ "tcp", "yamux" ], "activation": "enabled", "registration": "registered", "source_case_id": "interop.live_ping_identify_relay", "evidence_contract": "forge.p2p.evidence.relay_v2_service_native_tcp_tls_yamux.v1", "required_directions": [ "go_to_forge", "rust_to_forge" ], "expected_status": "passed" }
       ] },
       "relay.dcutr": { "scenarios": [
         { "id": "dcutr", "runner_scenario_id": "quic_stage6/dcutr", "profile": "native", "transport_stack": [ "quic" ], "activation": "enabled", "registration": "planned", "evidence_contract": "forge.p2p.evidence.dcutr.v1", "required_directions": [ "forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge" ], "expected_status": "passed" }
@@ -838,12 +840,12 @@
       "profiles": [ "native" ],
       "support_requirement": "required",
       "default_activation": "enabled",
-      "interop_applicability": "not_applicable",
+      "interop_applicability": "go_and_rust",
       "decision": "stage_6",
       "planned_branch": "forge-p2p-autorelay-v1",
       "forge_feature_ids": [],
-      "donor_sources": [ "donors/go-libp2p/p2p/host/autorelay/autorelay.go", "donors/go-libp2p/p2p/host/autorelay/relay_finder.go" ],
-      "rationale": "AutoRelay owns verified candidate selection, bounded reservations, renewal and replacement over the relay client; its orchestration is host-local rather than a bilateral wire interop claim."
+      "donor_sources": [ "donors/go-libp2p/p2p/host/autorelay/autorelay.go", "donors/go-libp2p/p2p/host/autorelay/relay_finder.go", "donors/rust-libp2p/protocols/relay/src/priv_client.rs" ],
+      "rationale": "Native node-owned candidate selection, bounded reservation renewal/replacement, address withdrawal and shutdown are implemented pending clean exact-head acceptance. Registration covers six lifecycle cases against Go/Rust relays on QUIC, TCP Noise/Yamux and TCP TLS/Yamux, not production support. Live unknown-reachability acquisition does not establish public/private reachability transitions or every discovery source; private PSK relay remains unsupported."
     },
     {
       "id": "relay.circuit_v2_service",
@@ -860,7 +862,7 @@
         "donors/go-libp2p/p2p/protocol/circuitv2/relay/relay.go",
         "donors/rust-libp2p/protocols/relay/src/behaviour.rs"
       ],
-      "rationale": "Operating a public relay is opt-in and requires separate ACL, reservation, connection and byte limits with Go/Rust service-client interop."
+      "rationale": "Native opt-in Relay v2 service is implemented pending clean exact-head acceptance; three registered transport contracts require Go/Rust clients reserving and exchanging real cross-donor circuit bytes through Forge. Registration is execution coverage only, not production acceptance of ACL, reservation, connection, byte limits or hostile-peer behavior."
     },
     {
       "id": "relay.dcutr",
@@ -1116,17 +1118,16 @@
       "id": "nat.upnp_mapping",
       "category": "reachability",
       "profiles": [ "native", "private_network" ],
-      "support_requirement": "optional",
-      "default_activation": "opt_in",
+      "support_requirement": "deferred",
+      "default_activation": "not_applicable",
       "interop_applicability": "not_applicable",
-      "decision": "stage_6",
-      "planned_branch": "forge-p2p-nat-mapping-v1",
+      "decision": "future_profile",
       "profile_dependencies": {
         "private_network": [ "reachability.private_internet_policy" ]
       },
       "forge_feature_ids": [],
       "donor_sources": [ "donors/go-libp2p/p2p/net/nat/nat.go", "donors/rust-libp2p/protocols/upnp/src/lib.rs" ],
-      "rationale": "UPnP is an explicit deploy-time capability whose mappings must renew, expire and feed confirmed external addresses."
+      "rationale": "Maintainer-deferred former Stage 6 PR8, forge-p2p-nat-mapping-v1: automatic router configuration is unsupported in the initial production profile and does not gate AutoRelay or Stages 7/8. A subsequent block must prove opt-in IGD v1/v2 mapping renewal, loss, cleanup and confirmed external addresses; NAT-PMP/PCP require a separate decision."
     },
     {
       "id": "reachability.private_internet_policy",

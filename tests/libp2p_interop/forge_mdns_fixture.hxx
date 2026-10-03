@@ -53,6 +53,7 @@ BOOST_DESCRIBE_STRUCT(echo_receipt, (), (protocol, bytes, sha256, connection_id,
 struct failure_diagnostics {
    std::string capture_phase = "before_stop";
    std::string capture_error;
+   std::string shutdown_error;
    std::string service_errors = "unavailable_via_public_api";
    std::string topology_phase;
    std::size_t mdns_observations = 0;
@@ -64,7 +65,7 @@ struct failure_diagnostics {
    bool observer_invalid = false;
 };
 BOOST_DESCRIBE_STRUCT(failure_diagnostics, (),
-                      (capture_phase, capture_error, service_errors, topology_phase, mdns_observations,
+                      (capture_phase, capture_error, shutdown_error, service_errors, topology_phase, mdns_observations,
                        active_operations, completed_refreshes, failed_refreshes, direct_attempts, direct_failures,
                        sessions_opened, sessions_closed, peer_dial_gate_calls, observations_before_dial,
                        upgraded, observer_invalid))

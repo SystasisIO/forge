@@ -26,6 +26,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.asio.notification;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.lifecycle;

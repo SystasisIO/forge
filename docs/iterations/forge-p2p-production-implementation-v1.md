@@ -354,9 +354,10 @@ that maintenance loop.
 
 ### Stage 6: Donor parity, reachability and path management
 
-Stage 6 closes every required native/private-host gap discovered by the
-donor-first manifest except WebSocket. It is delivered as focused PRs rather
-than one transport monolith. The canonical order, dependencies and permitted
+Stage 6 closes the approved native/private-host gaps in the donor-first
+manifest. WebSocket and automatic router port mapping are deferred.
+It is delivered as focused PRs rather than one transport monolith. The canonical
+order, dependencies and permitted
 capability owners are the exact machine-readable
 `stage_6_pr_registry` in `p2p_donor_capabilities.json`; it has no aliases or
 locally reordered variants. The roadmap, chrono and crypto prerequisite PRs
@@ -373,7 +374,7 @@ own no capability entry.
    transport protection, with pinned `libsodium` discovery and tests;
 4. `forge-p2p-private-network-v1`: TCP/Yamux plus a transport PSK layer before
    the normal secure channel, with no `/pnet` protocol ID, QUIC, Relay or DCUtR;
-   AutoNAT and UPnP require one explicit Internet-egress policy;
+   AutoNAT and any future UPnP require one explicit Internet-egress policy;
 5. `forge-p2p-address-resolution-v1`: `/dnsaddr`, bounded recursive
    resolution, Happy Eyeballs, IPv6 black-hole suppression for native/private
    profiles and UDP black-hole suppression for the native profile over the
@@ -386,9 +387,9 @@ own no capability entry.
 7. `forge-p2p-mdns-v1`: optional public mDNS with Go/Rust interop, plus the
    fingerprinted private-network service namespace with its documented Rust
    limitation;
-8. `forge-p2p-nat-mapping-v1`: optional native UPnP mapping ownership, renewal, loss
-   and confirmed external-address publication; private profiles use it only
-   through the explicit Internet-egress policy;
+8. Reserved, deferred outside Stage 6: `forge-p2p-nat-mapping-v1`.
+   UPnP belongs to the subsequent automatic router configuration block below;
+   PR9 does not depend on it. Existing PR numbers are not renumbered;
 9. `forge-p2p-autorelay-v1`: verified relay candidates, bounded reservations,
    renewal/replacement and Identify Push of circuit addresses are host-local
    orchestration; the public Relay v2 service is a separately configured,
@@ -568,6 +569,84 @@ through the official plugins. Plugins remain dependency/configuration adapters:
 they may not own mDNS, NAT, relay, dialing, GossipSub or resource-maintenance
 loops. Programmatic nodes and plugin-created nodes must have lifecycle parity.
 
+#### Consumer API coverage and ownership
+
+The owner is `plugins/net/p2p/node`, with namespace
+`forge::plugins::net::p2p::node` and configuration `plugins.net.p2p.node`.
+It owns node identity, persistence, configuration, listeners and startup/shutdown.
+It must not expose a mutable `node&`, `shared_ptr<node>` or mutable peer store
+to consumers. An in-process API is an ownership contract, not a security
+sandbox for arbitrary native code.
+
+Consumers receive focused local typed API contracts grouped by coherent
+capabilities, not one interface per method: discovery/DHT and provider
+registration, PubSub, host events/diagnostics, and connections/publications.
+Exact interface names and grouping are decided during Stage 7 design within
+the current `plugins.net.p2p` leaves, without an aggregate plugin or namespace.
+Reuse library types and delegate operations to the same node; do not copy DTOs,
+create a second network runtime or make these interfaces remotely callable
+merely because they use Forge API contracts.
+
+Publication, subscription and provider-registration handles retain explicit
+operation ownership. Node shutdown rejects new operations and terminates or
+drains existing operations according to their contracts, without dangling
+references or permitting a consumer to stop the shared node. A controlled
+custom-protocol registration/open-stream surface may be approved explicitly;
+it must preserve admission limits, registration ownership and shared lifecycle.
+Swarm continues to use its typed Forge API binding, not a raw-stream bypass.
+
+Stage 7 must classify every public node capability as consumer API,
+owner-only configuration/lifecycle, or explicitly deferred/unsupported, with
+rationale and tests. Owner-only is not a way to hide ordinary consumer
+operations. Missing DHT operations or host events must not disappear from the
+plugin delivery checklist. The coverage table and raw-node/plugin parity
+tests are required exit evidence. These are delivery requirements, not claims
+that the current plugin already provides the complete operational surface.
+
+#### Product integration alongside Stage 8
+
+After Stage 7 and its parity gates pass, developing applications may begin
+test integration through the official plugin, pinned to an exact Forge commit.
+Use isolated test deployments and preserve unrelated downstream work.
+Exercise real discovery, provider registration, streaming, restart and shutdown
+paths; turn each confirmed integration defect into a reproducible Forge
+regression and rerun affected acceptance gates after fixes.
+
+This integration proceeds alongside Stage 8 long-running, hostile-peer and
+resource-exhaustion work. Product feedback may drive focused fixes but does
+not replace raw-node/plugin tests or live Go/Rust evidence. Until Stage 8
+passes, describe deployments as test integration with an evolving stack, not
+production-ready delivery. This gate is distinct from the earlier permission
+to develop deterministic Swarm mechanisms after Stage 6.
+
+#### Net plugin inventory classification (source-only)
+
+At `bbe5f2be`, all 20 public `.cppm` files under
+`plugins/net/p2p/<leaf>/include/forge/plugins/net/p2p/<leaf>/`, for leaves
+`node`, `resolver`, `pubsub` and `diagnostics`, were compared with the unchanged
+`plugins/p2p` declarations at `8a277203` in `forge-p2p-upnp-roadmap-v1`.
+Their old source/path digests matched the previous inventory. After inserting
+`net` into module, namespace and plugin/API identity strings, every file matched
+byte-for-byte. The
+[approved migration](../releases/unreleased-net-plugins.md) changes identities,
+not methods, payload layout or numeric API versions. Snapshot hashes include
+paths and file bytes, so the inherited pre-rename hashes must change.
+
+| Current module prefix | Inspected slices | Retained classification and boundary |
+|---|---|---|
+| `forge.plugins.net.p2p.node` | `api`, `descriptor`, `exceptions`, `plugin`, `types` | `plugin.node`, `partial`: typed connections/publications and source contracts; plugin lifecycle/configuration remains owner-only. No mutable node accessor is exported. |
+| `forge.plugins.net.p2p.resolver` | `api`, `descriptor`, `exceptions`, `managed_api`, `plugin`, `types` | `plugin.resolver`, `manual-only`: explicit API metadata publication/resolution, not peer discovery or DHT coverage. |
+| `forge.plugins.net.p2p.pubsub` | `api`, `descriptor`, `exceptions`, `plugin`, `types` | `plugin.pubsub`, `partial`: topic operations over the shared node, not independent GossipSub maintenance. |
+| `forge.plugins.net.p2p.diagnostics` | `api`, `exceptions`, `plugin`, `types` | `plugin.diagnostics`, `partial`: read-only bounded snapshots, not a host-event subscription or mutable control surface. |
+
+The inventory keeps its stable owner keys `plugin.p2p.*` while physical paths
+use `plugins/net/p2p`, modules use `forge.plugins.net.p2p.*`, and targets/components
+use the matching `plugins_net_p2p_*` forms. Reclassification retains all
+feature states and maps every inspected slice to its existing feature; it does
+not promote AutoRelay, complete Stage 7 or establish runtime/interop acceptance.
+Declaration paths are recorded in feature evidence. The coordinator must run
+final integrated-code tests and refresh fixture-lock hashes only after integration.
+
 After Stage 6 is complete and its P2P contracts are fixed, Content Swarm may
 resume development in parallel with Stage 7. This maintainer-approved overlap
 replaces the earlier requirement to defer all Swarm implementation until after
@@ -606,6 +685,28 @@ ownership/AutoTLS policy and Go/Rust interoperability.
 Only then may Forge advertise the WebSocket browser-transport profile.
 WebTransport and WebRTC remain separately classified future capabilities and
 cannot be inferred from WebSocket support.
+
+### Subsequent block: Automatic router configuration
+
+Former Stage 6 PR8 (`forge-p2p-nat-mapping-v1`) is deferred by maintainer
+decision. It is not a prerequisite for PR9 AutoRelay, Stage 7 integration or
+Stage 8 production proof. No stage number or delivery date is assigned yet.
+Stage 6 resumes with PR9 after PR7; the machine-readable registry preserves
+the original ordinals and omits deferred PR8.
+
+The initial production profile explicitly does not support automatic router
+port mapping. It must prove direct connectivity through reachable or manually
+forwarded addresses, relay fallback, and DCUtR upgrades where possible. This is
+a scoped support boundary, not a relaxation of tests for supported mechanisms
+or a claim that UPnP has been implemented.
+
+The deferred block retains opt-in UPnP IGD v1/v2 discovery, bounded mapping
+creation, renewal/removal, router loss and external-IP changes. Only externally
+confirmed addresses may be advertised. Reuse Forge HTTP/XML and node-owned
+reachability/lifecycle; do not add plugin network loops. Private-profile use
+requires explicit Internet egress. Acceptance uses a deterministic IGD emulator,
+including cleanup and failure cases, without claiming libp2p wire interop.
+NAT-PMP/PCP remain separate future decisions, not implicitly approved scope.
 
 ## 9. Delivery Discipline
 

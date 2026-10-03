@@ -73,7 +73,8 @@ struct peer_store::impl {
    [[nodiscard]] std::optional<peer_store::record> find(const peer_id& peer) const;
    [[nodiscard]] std::optional<public_key> find_public_key(const peer_id& peer) const;
    [[nodiscard]] std::vector<peer_store::record> snapshot(std::size_t limit) const;
-   [[nodiscard]] std::vector<peer_store::record> candidates(std::uint64_t capability, std::size_t limit) const;
+   [[nodiscard]] std::vector<peer_store::record> candidates(std::uint64_t capability, std::size_t limit,
+                                                            std::span<const peer_id> excluded_peers) const;
    [[nodiscard]] std::vector<peer_store::record> scored_candidates(std::size_t limit) const;
    [[nodiscard]] std::vector<peer_store::record> scored_candidates(discovery::source source, std::size_t limit) const;
    [[nodiscard]] std::vector<rendezvous::registration>
