@@ -38,13 +38,21 @@ def case_specs():
 
 
 def _read(path):
-    if path.stat().st_size > 1024 * 1024:
+    with path.open("rb") as source:
+        raw = source.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
         raise ValueError(f"AutoRelay evidence exceeds 1 MiB: {path}")
-    payload = path.read_text()
     try:
+        payload = raw.decode("utf-8")
         value = json.loads(payload, object_pairs_hook=reject_duplicate_json_keys)
     except ValueError as error:
-        raise ValueError(f"invalid AutoRelay JSON: {path}; read_characters={len(payload)}; {error}") from error
+        capture = path.with_name(path.name + ".invalid-read")
+        try:
+            capture.write_bytes(raw)
+            detail = f"captured_read={capture}"
+        except OSError as failure:
+            detail = f"capture_error={failure}"
+        raise ValueError(f"invalid AutoRelay JSON: {path}; read_bytes={len(raw)}; {detail}; {error}") from error
     if not isinstance(value, dict):
         raise ValueError(f"AutoRelay evidence must be an object: {path}")
     return value

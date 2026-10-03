@@ -43,7 +43,10 @@ class AutoRelayCaseTests(unittest.TestCase):
             with self.assertRaises(ValueError) as raised:
                 _read(path)
             self.assertIn(str(path), str(raised.exception))
-            self.assertIn(f"read_characters={len(path.read_text())}", str(raised.exception))
+            self.assertIn(f"read_bytes={len(path.read_bytes())}", str(raised.exception))
+            captured = path.with_name(path.name + ".invalid-read")
+            self.assertEqual(captured.read_bytes(), path.read_bytes())
+            self.assertIn(str(captured), str(raised.exception))
             self.assertIsInstance(raised.exception.__cause__, json.JSONDecodeError)
 
     def test_json_path_diagnostics_preserve_duplicate_key_and_object_guards(self):
