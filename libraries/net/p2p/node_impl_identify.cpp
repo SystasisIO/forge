@@ -419,7 +419,9 @@ void node::impl::register_protocol_handler(protocol_id protocol, node::protocol_
       }
 
       auto candidate = local_identify_document_locked(*this);
-      candidate.protocols.push_back(protocol);
+      if (std::ranges::find(candidate.protocols, protocol) == candidate.protocols.end()) {
+         candidate.protocols.push_back(protocol);
+      }
       if (candidate.protocols.size() > options.identify.max_protocols) {
          FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected,
                                "P2P protocol handler would exceed the Identify protocol count limit");

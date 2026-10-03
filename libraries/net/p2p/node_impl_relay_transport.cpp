@@ -210,6 +210,7 @@ boost::asio::awaitable<void> node::impl::handle_relayed_yamux_stream(std::shared
    auto admitted =
        co_await accept_resource_stream(session->info.remote_peer, std::move(stream), std::move(reservation));
    detail::stream_access::set_authentication(admitted.stream, session->authentication);
+   if (co_await dispatch_registered_handler(session, admitted)) { co_return; }
    if (admitted.protocol == builtins::ping) {
       co_await handle_ping(std::move(admitted.stream));
    } else if (admitted.protocol == builtins::identify) {
@@ -225,17 +226,8 @@ boost::asio::awaitable<void> node::impl::handle_relayed_yamux_stream(std::shared
    } else if (admitted.protocol == builtins::meshsub_v11 || admitted.protocol == builtins::meshsub_v10) {
       co_await handle_pubsub(session, std::move(admitted.stream));
    } else {
-      auto handler = handler_for(admitted.protocol);
-      if (!handler) {
-         increment_protocol_rejected();
-         FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "unsupported negotiated relayed P2P protocol");
-      }
-      increment_protocol_accepted();
-      co_await (*handler)(node::incoming_protocol_stream{
-          .session = session_info_for(session),
-          .protocol = admitted.protocol,
-          .stream = std::move(admitted.stream),
-      });
+      increment_protocol_rejected();
+      FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "unsupported negotiated relayed P2P protocol");
    }
    co_await detail::async_close_unescaped(admitted.resource);
 }

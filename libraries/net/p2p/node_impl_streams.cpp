@@ -214,6 +214,36 @@ node::impl::accept_resource_stream(const peer_id& peer, forge::net::transport::s
    };
 }
 
+boost::asio::awaitable<bool>
+node::impl::dispatch_registered_handler(const std::shared_ptr<session_state>& session, admitted_stream& admitted) {
+   auto failure = std::exception_ptr{};
+   try {
+      require_private_protocol_allowed(admitted.protocol);
+      // Explicit routing must not turn a circuit into a native relay owner connection.
+      if (session->info.path != path::kind::direct &&
+          (admitted.protocol == builtins::relay_hop || admitted.protocol == builtins::relay_stop)) {
+         increment_protocol_rejected();
+         FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "P2P relay HOP/STOP requires a direct session");
+      }
+      auto handler = handler_for(admitted.protocol);
+      if (!handler) { co_return false; }
+      increment_protocol_accepted();
+      co_await (*handler)(node::incoming_protocol_stream{
+          .session = session_info_for(session),
+          .protocol = admitted.protocol,
+          .stream = std::move(admitted.stream),
+      });
+   } catch (...) { failure = std::current_exception(); }
+   if (failure) {
+      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+      admitted.stream = {};
+   }
+   try { co_await detail::async_close_unescaped(admitted.resource); }
+   catch (...) { if (!failure) { throw; } }
+   if (failure) { std::rethrow_exception(failure); }
+   co_return true;
+}
+
 boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_direct_session(
     const peer_id& peer, const protocol_id& protocol, std::shared_ptr<node::impl::session_state> session,
     std::chrono::milliseconds timeout, std::shared_ptr<cancellation_latch> cancellation) {

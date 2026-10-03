@@ -19,6 +19,7 @@ libp2p specifications `6b6203ee`, as pinned in the interop fixture lock.
 | `rust-libp2p/protocols/relay/src/priv_client.rs` | Circuit addresses and reservation validity depend on the relay connection | Node-owned reservation and advertised-address state |
 | `rust-libp2p/protocols/relay/src/behaviour.rs` | Bounded relay service reservations/circuits with independent resource limits | Relay policy and resource admission |
 | `libp2p-specs/relay/circuit-v2.md` | HOP/STOP protobuf and protocol IDs, expiry, advisory vouchers, unlimited zero/absent remote limits | Existing relay codec and reservation validation |
+| `go-libp2p/p2p/host/basic/basic_host.go`, `rust-libp2p/swarm/src/handler/select.rs` | Explicit protocol routing is honored instead of being silently shadowed by built-in dispatch | Shared registered-handler dispatch after authentication and resource admission |
 
 ## Composition
 
@@ -35,6 +36,12 @@ Automatically managed circuit addresses are separate from configured and observe
 addresses. They are valid only while the corresponding reservation and direct
 relay connection remain live. Changes participate in canonical signed peer records
 and Identify Push. Private PSK profiles continue to reject relay use.
+
+An explicit handler has priority over the built-in fallback. Removing it restores
+the enabled built-in handler. This is Forge's composition policy, not a wire
+extension or a claim that donor unregistration retains a built-in handler.
+Supported protocol IDs remain unique. Private-network and direct-only relay
+checks precede handler selection; custom routing cannot bypass them.
 
 Wire interoperability does not require identical Go and Rust operational defaults.
 Differences in local resource policy must be documented and bounded; codec or

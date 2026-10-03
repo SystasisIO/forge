@@ -666,6 +666,14 @@ node.register_protocol_handler(forge::net::p2p::protocol_id{.value = "/example/1
 });
 ```
 
+An explicitly registered handler takes precedence over an enabled built-in
+handler for the same protocol ID. Unregistering it restores the built-in
+fallback; registering a second explicit handler still requires removing the
+first. Identify advertises each supported ID once. All handlers use the same
+authenticated stream admission and scoped resources. Registration cannot bypass
+private-network restrictions or the direct-session requirement for relay
+HOP/STOP.
+
 ### Publish Typed APIs Above P2P
 
 Application protocols that need request/response, typed errors and idempotent

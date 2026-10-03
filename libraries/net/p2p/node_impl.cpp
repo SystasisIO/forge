@@ -746,47 +746,50 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_l
    auto out = std::vector<protocol_id>{builtins::ping,
                                        builtins::identify,
                                        builtins::identify_push};
+   const auto append = [&out](const protocol_id& protocol) {
+      if (std::ranges::find(out, protocol) == out.end()) { out.push_back(protocol); }
+   };
    if (!private_network_enabled() ||
        options.private_network->internet_egress == private_network::internet_egress_policy::allow_internet) {
       if (options.reachability_policy.service_v2_enabled) {
-         out.push_back(builtins::autonat_v2_dial_request);
+         append(builtins::autonat_v2_dial_request);
       }
       if (options.reachability_policy.client_v2_enabled) {
-         out.push_back(builtins::autonat_v2_dial_back);
+         append(builtins::autonat_v2_dial_back);
       }
       if (options.reachability_policy.service_v1_enabled) {
-         out.push_back(builtins::autonat_v1);
+         append(builtins::autonat_v1);
       }
    }
    if (!private_network_enabled()) {
-      out.push_back(builtins::relay_stop);
-      out.push_back(builtins::dcutr);
+      append(builtins::relay_stop);
+      append(builtins::dcutr);
    }
    if (!private_network_enabled() && options.relay_policy.service_enabled) {
-      out.push_back(builtins::relay_hop);
+      append(builtins::relay_hop);
    }
    if (options.capabilities.has(capabilities::peer_exchange)) {
-      out.push_back(builtins::peer_exchange);
+      append(builtins::peer_exchange);
    }
    for (const auto& [protocol, state] : dht_profiles) {
       if (state->profile.operating_mode == dht::mode::server) {
-         out.push_back(protocol);
+         append(protocol);
       }
    }
    if (options.capabilities.has(capabilities::rendezvous) &&
        (options.limits.rendezvous.operating_role == rendezvous::role::server ||
         options.limits.rendezvous.operating_role == rendezvous::role::client_and_server)) {
-      out.push_back(builtins::rendezvous);
+      append(builtins::rendezvous);
    }
    if (options.capabilities.has(capabilities::pubsub)) {
-      out.push_back(builtins::meshsub_v11);
+      append(builtins::meshsub_v11);
       if (options.limits.pubsub.allow_v1_0_fallback) {
-         out.push_back(builtins::meshsub_v10);
+         append(builtins::meshsub_v10);
       }
    }
    out.reserve(out.size() + handlers.size());
    for (const auto& [protocol, _] : handlers) {
-      out.push_back(protocol);
+      append(protocol);
    }
    return out;
 }

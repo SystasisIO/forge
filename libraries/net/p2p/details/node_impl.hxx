@@ -779,6 +779,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
                                                                   forge::net::transport::stream stream,
                                                                   resource_manager::stream_reservation reservation);
 
+   boost::asio::awaitable<bool> dispatch_registered_handler(const std::shared_ptr<session_state>& session,
+                                                            admitted_stream& admitted);
+
    bool launch_session_accept_loop(std::shared_ptr<session_state> session);
 
    boost::asio::awaitable<void> handle_incoming_stream(std::shared_ptr<session_state> session,
