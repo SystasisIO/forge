@@ -37,4 +37,8 @@ class secret_string {
    std::string value_;
 };
 
+[[nodiscard]] constexpr bool diagnostic_is_secret(const secret_string&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::core

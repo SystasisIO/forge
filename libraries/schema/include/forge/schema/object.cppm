@@ -406,6 +406,7 @@ template <typename T> struct field_rule {
    std::function<std::any(const T&)> read_any;
    std::function<std::optional<std::any>(const T&)> read_validation_any;
    std::function<input_value(const T&, std::string_view)> read_input;
+   std::function<const void*(const T&)> member_address;
    std::function<std::optional<std::size_t>(const T&)> read_size;
    std::vector<std::function<void(const T&, std::string_view, std::vector<diagnostic>&)>> validators;
 };
@@ -503,6 +504,7 @@ template <typename T> class object_schema {
       rule.read_input = [](const T& object, std::string_view path) -> input_value {
          return to_input_value(object.*Member, path);
       };
+      rule.member_address = [](const T& object) -> const void* { return std::addressof(object.*Member); };
       if constexpr (is_vector<member_type>::value) {
          rule.read_size = [](const T& object) -> std::optional<std::size_t> { return (object.*Member).size(); };
       } else if constexpr (is_optional<member_type>::value &&
@@ -579,9 +581,18 @@ template <typename T> class object_schema {
    }
 
    [[nodiscard]] input_value::object_type encode_object(const T& input, std::string_view base_path = {}) const {
+      return encode_object_with(
+          input,
+          [](const auto& field, const T& object, std::string_view path) { return field.read_input(object, path); },
+          base_path);
+   }
+
+   template <typename Encoder>
+   [[nodiscard]] input_value::object_type encode_object_with(const T& input, Encoder&& encoder,
+                                                             std::string_view base_path = {}) const {
       auto output = input_value::object_type{};
       for (const auto& field : *fields_) {
-         auto value = field.read_input(input, append_path(base_path, field.name));
+         auto value = encoder(field, input, append_path(base_path, field.name));
          if (!std::holds_alternative<std::monostate>(value.storage)) {
             set_input_path(output, field.name, std::move(value));
          }
@@ -1449,10 +1460,8 @@ template <typename T> [[nodiscard]] input_value to_input_value(const T& input, s
          throw encoding_error{std::string{path}, error.what()};
       }
       if (!text) {
-         FORGE_THROW_EXCEPTION(
-            exceptions::invalid_value,
-            "scalar adapter has no canonical config spelling",
-            forge::exceptions::ctx("path", std::string{path}));
+         FORGE_THROW_EXCEPTION(exceptions::invalid_value, "scalar adapter has no canonical config spelling",
+                               forge::exceptions::ctx("path", std::string{path}));
       }
       return input_value{*text};
    } else if constexpr (std::same_as<clean_type, std::vector<std::string>>) {
@@ -1503,9 +1512,14 @@ template <typename T> [[nodiscard]] object_schema<T> object() {
 }
 
 template <typename T> struct rules {
+   using default_definition = void;
+
    [[nodiscard]] static object_schema<T> define() {
       return object<T>();
    }
 };
+
+template <typename T>
+inline constexpr bool has_explicit_rules_v = !requires { typename rules<std::remove_cvref_t<T>>::default_definition; };
 
 } // namespace forge::schema

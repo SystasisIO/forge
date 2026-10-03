@@ -74,4 +74,8 @@ class private_key {
    private_key_secret data_;
 };
 
+[[nodiscard]] constexpr bool diagnostic_is_secret(const private_key&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::asymmetric::rsa

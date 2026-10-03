@@ -41,4 +41,8 @@ class secret_bytes {
    bytes value_;
 };
 
+[[nodiscard]] constexpr bool diagnostic_is_secret(const secret_bytes&) noexcept {
+   return true;
+}
+
 } // namespace forge::crypto::core

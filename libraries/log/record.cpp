@@ -6,6 +6,8 @@ module;
 #include <boost/stacktrace.hpp>
 #endif
 
+#define BOOST_DLL_USE_STD_FS
+#include <boost/dll/runtime_symbol_info.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -14,16 +16,27 @@ module;
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 #include <utility>
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 module forge.log.record;
 
 import forge.chrono.iso8601;
 import forge.core.string;
 import forge.log.exceptions;
-import forge.log.log_message;
+import forge.variant.format;
+import forge.variant.value;
 
 namespace {
+
+std::mutex& console_mutex() {
+   // Like named logger state, console logging remains usable in static destructors.
+   static auto* mutex = new std::mutex;
+   return *mutex;
+}
 
 std::string sanitize_value(std::string value, bool redacted) {
    if (redacted) {
@@ -61,82 +74,109 @@ class locked_file {
 
 namespace forge {
 
-log_field log_ctx(std::string_view key, std::string value) {
-   return log_field{std::string(key), std::move(value), false};
-}
-log_field log_ctx(std::string_view key, std::string_view value) {
-   return log_ctx(key, std::string(value));
-}
-log_field log_ctx(std::string_view key, const char* value) {
-   return log_ctx(key, value ? std::string(value) : std::string{"<null>"});
-}
-log_field log_ctx(std::string_view key, bool value) {
-   return log_ctx(key, value ? "true" : "false");
-}
-log_field log_ctx(std::string_view key, char value) {
-   return log_ctx(key, std::string(1, value));
-}
-log_field log_ctx(std::string_view key, signed char value) {
-   return log_ctx(key, static_cast<long long>(value));
-}
-log_field log_ctx(std::string_view key, unsigned char value) {
-   return log_ctx(key, static_cast<unsigned long long>(value));
-}
-log_field log_ctx(std::string_view key, short value) {
-   return log_ctx(key, static_cast<long long>(value));
-}
-log_field log_ctx(std::string_view key, unsigned short value) {
-   return log_ctx(key, static_cast<unsigned long long>(value));
-}
-log_field log_ctx(std::string_view key, int value) {
-   return log_ctx(key, static_cast<long long>(value));
-}
-log_field log_ctx(std::string_view key, unsigned value) {
-   return log_ctx(key, static_cast<unsigned long long>(value));
-}
-log_field log_ctx(std::string_view key, long value) {
-   return log_ctx(key, static_cast<long long>(value));
-}
-log_field log_ctx(std::string_view key, unsigned long value) {
-   return log_ctx(key, static_cast<unsigned long long>(value));
-}
-log_field log_ctx(std::string_view key, long long value) {
-   return log_ctx(key, std::to_string(value));
-}
-log_field log_ctx(std::string_view key, unsigned long long value) {
-   return log_ctx(key, std::to_string(value));
-}
-log_field log_ctx(std::string_view key, float value) {
-   return log_ctx(key, std::to_string(value));
-}
-log_field log_ctx(std::string_view key, double value) {
-   return log_ctx(key, std::to_string(value));
-}
-log_field log_ctx(std::string_view key, long double value) {
-   return log_ctx(key, std::to_string(static_cast<double>(value)));
+static thread_local std::string thread_name;
+
+void set_thread_name(const std::string& name) {
+   thread_name = name;
+#if defined(__linux__) || defined(__FreeBSD__)
+   pthread_setname_np(pthread_self(), name.c_str());
+#elif defined(__APPLE__)
+   pthread_setname_np(name.c_str());
+#endif
 }
 
-log_field log_secret(std::string_view key, std::string value) {
-   static_cast<void>(value);
-   return log_field{std::string(key), "<redacted>", true};
+const std::string& get_thread_name() {
+   if (thread_name.empty()) {
+      try {
+         thread_name = boost::dll::program_location().filename().generic_string();
+      } catch (...) {
+         thread_name = "unknown";
+      }
+   }
+   return thread_name;
 }
-log_field log_secret(std::string_view key, std::string_view value) {
-   return log_secret(key, std::string(value));
+
+void to_variant(log_level e, variant& v) {
+   switch (e) {
+   case log_level::all:
+      v = "all";
+      return;
+   case log_level::debug:
+      v = "debug";
+      return;
+   case log_level::info:
+      v = "info";
+      return;
+   case log_level::warn:
+      v = "warn";
+      return;
+   case log_level::error:
+      v = "error";
+      return;
+   case log_level::off:
+      v = "off";
+      return;
+   }
 }
-log_field log_secret(std::string_view key, const char* value) {
-   return log_secret(key, value ? std::string(value) : std::string{});
+void from_variant(const variant& v, log_level& e) {
+   try {
+      if (v.as_string() == "all")
+         e = log_level::all;
+      else if (v.as_string() == "debug")
+         e = log_level::debug;
+      else if (v.as_string() == "info")
+         e = log_level::info;
+      else if (v.as_string() == "warn")
+         e = log_level::warn;
+      else if (v.as_string() == "error")
+         e = log_level::error;
+      else if (v.as_string() == "off")
+         e = log_level::off;
+      else
+         throw std::invalid_argument("Failed to cast from Variant to log_level");
+   } catch (const std::exception&) {
+      throw std::invalid_argument("Expected 'all|debug|info|warn|error|off'");
+   }
+}
+
+std::string log_level::to_string() const {
+   switch (value) {
+   case log_level::all:
+      return "all";
+   case log_level::debug:
+      return "debug";
+   case log_level::info:
+      return "info";
+   case log_level::warn:
+      return "warn";
+   case log_level::error:
+      return "error";
+   case log_level::off:
+      return "off";
+   }
+   return "unknown";
+}
+
+std::string format_log_value(const variant& value) {
+   return format_string("${value}", mutable_variant_object{}("value", value));
+}
+
+log_fields log_field_builder::take() {
+   return std::move(_fields);
+}
+
+std::string interpolate_log_message(const std::string& message, const log_fields& fields) {
+   auto values = mutable_variant_object{};
+   for (const auto& field : fields) {
+      values(field.key, sanitize_value(field.value, field.redacted));
+   }
+   return format_string(message, values);
 }
 
 void append_log_field(log_fields& fields, log_field field) {
    if (!field.key.empty()) {
       field.value = sanitize_value(std::move(field.value), field.redacted);
       fields.push_back(std::move(field));
-   }
-}
-
-void append_log_field(log_fields& fields, const log_field_provider& provider) {
-   if (provider.provider) {
-      append_log_field(fields, provider.provider());
    }
 }
 
@@ -286,13 +326,18 @@ std::string format_json_log_record(const log_record& record) {
    return out.str();
 }
 
-console_sink::console_sink(bool stderr_for_warnings) : stderr_for_warnings_(stderr_for_warnings) {}
+console_sink::console_sink(bool stderr_for_warnings)
+    : _stream(stderr_for_warnings ? console_stream::by_level : console_stream::standard_out) {}
+console_sink::console_sink(console_stream stream) : _stream(stream) {}
 console_sink::~console_sink() = default;
 
 void console_sink::log(const log_record& record) {
-   auto& out = stderr_for_warnings_ && static_cast<int>(record.level) >= static_cast<int>(log_level::warn) ? std::cerr
-                                                                                                           : std::cout;
-   out << format_text_log_record(record) << '\n';
+   const auto use_stderr = _stream == console_stream::standard_error ||
+                           (_stream == console_stream::by_level && record.level >= log_level::warn);
+   auto& out = use_stderr ? std::cerr : std::cout;
+   const auto text = format_text_log_record(record);
+   std::lock_guard lock(console_mutex());
+   out << text << '\n';
 }
 
 class file_sink::impl : public locked_file {

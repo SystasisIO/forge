@@ -32,7 +32,6 @@ import forge.asio.runtime;
 import forge.net.http.route_context;
 import forge.net.http.server;
 import forge.net.http.types;
-import forge.log.log_message;
 import forge.log.record;
 import forge.otlp.exceptions;
 import forge.otlp.options;
@@ -62,9 +61,9 @@ struct collected_request {
 
 class fake_collector {
  public:
-   fake_collector(forge::asio::runtime& runtime, std::vector<collector_response> responses, bool block_responses = false)
-       : responses_(std::move(responses)),
-         block_responses_(block_responses),
+   fake_collector(forge::asio::runtime& runtime, std::vector<collector_response> responses,
+                  bool block_responses = false)
+       : responses_(std::move(responses)), block_responses_(block_responses),
          server_(runtime, {.bind_address = "127.0.0.1", .port = 0},
                  [this](forge::net::http::route_context& context) { return handle(context); }) {
       if (responses_.empty()) {
@@ -135,7 +134,7 @@ class fake_collector {
       }
 
       auto response = forge::net::http::make_text_response(context.request, response_value.status, response_value.body,
-                                                    "application/json");
+                                                           "application/json");
       if (response_value.retry_after.has_value()) {
          response.set(forge::net::http::field::retry_after, *response_value.retry_after);
       }
@@ -229,8 +228,8 @@ std::string shell_quote(std::string_view value) {
 std::string crash_helper_command(std::string_view mode, const std::filesystem::path& directory,
                                  std::vector<std::string> arguments = {}) {
    BOOST_REQUIRE(std::string_view{FORGE_OTLP_CRASH_HELPER}.size() > 0);
-   auto command = shell_quote(FORGE_OTLP_CRASH_HELPER) + " " + shell_quote(mode) + " " +
-                  shell_quote(directory.string());
+   auto command =
+       shell_quote(FORGE_OTLP_CRASH_HELPER) + " " + shell_quote(mode) + " " + shell_quote(directory.string());
    for (const auto& argument : arguments) {
       command += " " + shell_quote(argument);
    }
@@ -342,7 +341,7 @@ class held_spool_mutation_lock {
       fd_ = ::openat(directory_fd_, ".crash-resend.lock", flags, S_IRUSR | S_IWUSR);
       BOOST_REQUIRE(fd_ >= 0);
 
-      struct flock lock {};
+      struct flock lock{};
       lock.l_type = F_WRLCK;
       lock.l_whence = SEEK_SET;
       BOOST_REQUIRE(::fcntl(fd_, F_SETLK, &lock) == 0);
@@ -350,7 +349,7 @@ class held_spool_mutation_lock {
 
    ~held_spool_mutation_lock() {
       if (fd_ >= 0) {
-         struct flock lock {};
+         struct flock lock{};
          lock.l_type = F_UNLCK;
          lock.l_whence = SEEK_SET;
          (void)::fcntl(fd_, F_SETLK, &lock);
@@ -467,7 +466,8 @@ BOOST_AUTO_TEST_CASE(log_sink_exports_otlp_json_to_logs_endpoint) {
 
 BOOST_AUTO_TEST_CASE(exporter_batches_by_count_and_explicit_flush) {
    auto runtime = forge::asio::runtime{};
-   auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}, {.status = forge::net::http::status::ok}}};
+   auto collector =
+       fake_collector{runtime, {{.status = forge::net::http::status::ok}, {.status = forge::net::http::status::ok}}};
    auto options = make_options(collector);
    options.batch.max_records = 2;
    options.batch.flush_interval = 1h;
@@ -546,8 +546,8 @@ BOOST_AUTO_TEST_CASE(exporter_retries_retryable_status_and_drops_permanent_failu
 
    {
       auto runtime = forge::asio::runtime{};
-      auto collector =
-          fake_collector{runtime, {{.status = forge::net::http::status::bad_request}, {.status = forge::net::http::status::ok}}};
+      auto collector = fake_collector{
+          runtime, {{.status = forge::net::http::status::bad_request}, {.status = forge::net::http::status::ok}}};
       auto options = make_options(collector);
       options.retry.max_attempts = 2;
 
@@ -568,7 +568,8 @@ BOOST_AUTO_TEST_CASE(exporter_retries_retryable_status_and_drops_permanent_failu
 
 BOOST_AUTO_TEST_CASE(shutdown_flushes_or_drops_within_deadline) {
    auto runtime = forge::asio::runtime{};
-   auto collector = fake_collector{runtime, {{.status = forge::net::http::status::service_unavailable, .retry_after = "5"}}};
+   auto collector =
+       fake_collector{runtime, {{.status = forge::net::http::status::service_unavailable, .retry_after = "5"}}};
    auto options = make_options(collector);
    options.retry.max_attempts = 100;
    options.shutdown_timeout = 20ms;
@@ -646,7 +647,7 @@ BOOST_AUTO_TEST_CASE(crash_spool_creates_private_regular_file) {
    const auto path = directory.path() / ("crash-" + std::to_string(::getpid()) + ".spool");
    BOOST_REQUIRE(std::filesystem::exists(path));
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(path.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -668,7 +669,7 @@ BOOST_AUTO_TEST_CASE(crash_spool_reuses_existing_safe_file) {
    auto guard = forge::otlp::install_crash_capture(options);
    BOOST_REQUIRE(guard);
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(path.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -688,8 +689,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_skips_active_current_process_spool) {
    auto runtime = forge::asio::runtime{};
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-   const auto result =
-       forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_TEST(result.files_scanned == 1U);
@@ -700,7 +701,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_skips_active_current_process_spool) {
    BOOST_TEST(std::filesystem::exists(path));
    BOOST_TEST(!std::filesystem::exists(path.string() + ".bad"));
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(path.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -721,8 +722,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_retains_live_process_empty_spool_from_other_pr
    auto runtime = forge::asio::runtime{};
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-   const auto result =
-       forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_TEST(result.files_scanned == 1U);
@@ -734,7 +735,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_retains_live_process_empty_spool_from_other_pr
    BOOST_TEST(std::filesystem::exists(spool));
    BOOST_TEST(!std::filesystem::exists(spool.string() + ".bad"));
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(spool.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -768,8 +769,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_retains_live_process_valid_spool_before_remova
    auto runtime = forge::asio::runtime{};
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-   const auto result =
-       forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_REQUIRE(collector.wait_for_requests(1));
@@ -782,7 +783,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_retains_live_process_valid_spool_before_remova
    BOOST_TEST(std::filesystem::file_size(spool) == record_size);
    BOOST_TEST(!std::filesystem::exists(spool.string() + ".bad"));
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(spool.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -820,7 +821,7 @@ BOOST_AUTO_TEST_CASE(crash_install_waits_for_resend_mutation_lock) {
    BOOST_TEST(std::filesystem::file_size(spool) == record_size);
    BOOST_TEST(!std::filesystem::exists(spool.string() + ".bad"));
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(spool.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -838,8 +839,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_quarantines_stale_empty_spool_when_process_is_
    auto runtime = forge::asio::runtime{};
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-   const auto result =
-       forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_TEST(result.files_scanned == 1U);
@@ -871,8 +872,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_mutate_spool_when_capture_installs_co
    auto error = std::exception_ptr{};
    auto resend = std::thread{[&] {
       try {
-         result =
-             forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+         result = forge::asio::blocking::run(
+             runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
       } catch (...) {
          error = std::current_exception();
       }
@@ -904,7 +905,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_mutate_spool_when_capture_installs_co
    BOOST_TEST(!std::filesystem::exists(active_path.string() + ".bad"));
    BOOST_TEST(count_spool_files(directory.path()) == 1U);
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(active_path.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -950,7 +951,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_drop_retained_records_when_resends_ov
    auto first_resend = std::thread{[&] {
       try {
          first_result = forge::asio::blocking::run(first_runtime,
-                                                 forge::otlp::async_resend_crashes(first_exporter, first_options));
+                                                   forge::otlp::async_resend_crashes(first_exporter, first_options));
       } catch (...) {
          first_error = std::current_exception();
       }
@@ -958,7 +959,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_drop_retained_records_when_resends_ov
    auto second_resend = std::thread{[&] {
       try {
          second_result = forge::asio::blocking::run(second_runtime,
-                                                  forge::otlp::async_resend_crashes(second_exporter, second_options));
+                                                    forge::otlp::async_resend_crashes(second_exporter, second_options));
       } catch (...) {
          second_error = std::current_exception();
       }
@@ -990,7 +991,7 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_drop_retained_records_when_resends_ov
    BOOST_REQUIRE(std::filesystem::exists(target));
    BOOST_TEST(std::filesystem::file_size(target) == record_size);
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    BOOST_REQUIRE(::lstat(target.c_str(), &stat_value) == 0);
    BOOST_TEST(S_ISREG(stat_value.st_mode));
    BOOST_TEST(stat_value.st_uid == ::geteuid());
@@ -999,9 +1000,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_drop_retained_records_when_resends_ov
    auto followup_runtime = forge::asio::runtime{};
    auto followup_collector = fake_collector{followup_runtime, {{.status = forge::net::http::status::ok}}};
    auto followup_exporter = forge::otlp::log_exporter{followup_runtime, make_options(followup_collector)};
-   const auto followup_result =
-       forge::asio::blocking::run(followup_runtime,
-                                forge::otlp::async_resend_crashes(followup_exporter, make_spool_options(directory.path())));
+   const auto followup_result = forge::asio::blocking::run(
+       followup_runtime, forge::otlp::async_resend_crashes(followup_exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(followup_runtime, followup_exporter.async_shutdown());
 
    BOOST_REQUIRE(followup_collector.wait_for_requests(1));
@@ -1065,9 +1065,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_drop_retained_records_when_resends_ov
    auto followup_runtime = forge::asio::runtime{};
    auto followup_collector = fake_collector{followup_runtime, {{.status = forge::net::http::status::ok}}};
    auto followup_exporter = forge::otlp::log_exporter{followup_runtime, make_options(followup_collector)};
-   const auto followup_result =
-       forge::asio::blocking::run(followup_runtime,
-                                forge::otlp::async_resend_crashes(followup_exporter, make_spool_options(directory.path())));
+   const auto followup_result = forge::asio::blocking::run(
+       followup_runtime, forge::otlp::async_resend_crashes(followup_exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(followup_runtime, followup_exporter.async_shutdown());
 
    BOOST_REQUIRE(followup_collector.wait_for_requests(1));
@@ -1080,16 +1079,17 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_drop_retained_records_when_resends_ov
 #if defined(__unix__) || defined(__APPLE__)
 BOOST_AUTO_TEST_CASE(crash_resend_rejects_unsafe_directory) {
    auto directory = temp_directory{"forge-otlp-crash-resend-writable-dir"};
-   std::filesystem::permissions(directory.path(), std::filesystem::perms::owner_all | std::filesystem::perms::group_write,
+   std::filesystem::permissions(directory.path(),
+                                std::filesystem::perms::owner_all | std::filesystem::perms::group_write,
                                 std::filesystem::perm_options::replace);
 
    auto runtime = forge::asio::runtime{};
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
 
-   BOOST_CHECK_THROW(
-       (void)forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path()))),
-       forge::otlp::exceptions::spool_error);
+   BOOST_CHECK_THROW((void)forge::asio::blocking::run(
+                         runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path()))),
+                     forge::otlp::exceptions::spool_error);
    BOOST_TEST(collector.requests().empty());
 
    std::filesystem::permissions(directory.path(), std::filesystem::perms::owner_all,
@@ -1109,8 +1109,8 @@ BOOST_AUTO_TEST_CASE(crash_resend_does_not_follow_spool_symlink) {
    auto runtime = forge::asio::runtime{};
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-   const auto result =
-       forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_TEST(result.bad_files == 1U);
@@ -1131,7 +1131,8 @@ BOOST_AUTO_TEST_CASE(next_start_resends_terminate_spool_as_safe_fatal_log) {
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
 
-   const auto result = forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_REQUIRE(collector.wait_for_requests(1));
@@ -1162,7 +1163,8 @@ BOOST_AUTO_TEST_CASE(next_start_resends_signal_spool) {
    auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
    auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
 
-   const auto result = forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+   const auto result = forge::asio::blocking::run(
+       runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
    forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
    BOOST_REQUIRE(collector.wait_for_requests(1));
@@ -1185,8 +1187,8 @@ BOOST_AUTO_TEST_CASE(permanent_export_failure_leaves_spool_for_retry) {
       auto runtime = forge::asio::runtime{};
       auto collector = fake_collector{runtime, {{.status = forge::net::http::status::bad_request}}};
       auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-      const auto result =
-          forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+      const auto result = forge::asio::blocking::run(
+          runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
       forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
       BOOST_REQUIRE(collector.wait_for_requests(1));
@@ -1199,8 +1201,8 @@ BOOST_AUTO_TEST_CASE(permanent_export_failure_leaves_spool_for_retry) {
       auto runtime = forge::asio::runtime{};
       auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
       auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-      const auto result =
-          forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+      const auto result = forge::asio::blocking::run(
+          runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
       forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
       BOOST_REQUIRE(collector.wait_for_requests(1));
@@ -1220,8 +1222,8 @@ BOOST_AUTO_TEST_CASE(malformed_spool_is_quarantined_and_resend_is_bounded) {
       auto runtime = forge::asio::runtime{};
       auto collector = fake_collector{runtime, {{.status = forge::net::http::status::ok}}};
       auto exporter = forge::otlp::log_exporter{runtime, make_options(collector)};
-      const auto result =
-          forge::asio::blocking::run(runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
+      const auto result = forge::asio::blocking::run(
+          runtime, forge::otlp::async_resend_crashes(exporter, make_spool_options(directory.path())));
       forge::asio::blocking::run(runtime, exporter.async_shutdown());
 
       BOOST_TEST(result.bad_files == 1U);

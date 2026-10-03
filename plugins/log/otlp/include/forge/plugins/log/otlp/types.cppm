@@ -9,7 +9,7 @@ module;
 
 export module forge.plugins.log.otlp.types;
 
-import forge.log.log_message;
+import forge.log.record;
 import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;

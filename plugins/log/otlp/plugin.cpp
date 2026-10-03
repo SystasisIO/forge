@@ -21,7 +21,7 @@ import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.config.core.component;
 import forge.config.core.decode;
-import forge.log.log_message;
+import forge.log.record;
 import forge.log.logger;
 import forge.crypto.core.types;
 import forge.net.http.client;

@@ -38,7 +38,6 @@ module;
 module forge.otlp.crash;
 
 import forge.exceptions;
-import forge.log.log_message;
 import forge.log.record;
 
 namespace forge::otlp {
@@ -200,7 +199,6 @@ struct crash_state {
       }
 #endif
    }
-
 };
 
 namespace {
@@ -216,8 +214,7 @@ void validate_options(const crash_spool_options& options, bool installing) {
    if (options.max_file_bytes < options.max_record_bytes) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "OTLP crash file limit must cover one record");
    }
-   if (options.max_records_per_process >
-       static_cast<std::size_t>((std::numeric_limits<std::sig_atomic_t>::max)())) {
+   if (options.max_records_per_process > static_cast<std::size_t>((std::numeric_limits<std::sig_atomic_t>::max)())) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "OTLP crash process record limit is too large");
    }
    if (installing && !options.capture_signals && !options.capture_terminate) {
@@ -234,7 +231,7 @@ void validate_options(const crash_spool_options& options, bool installing) {
 #endif
          ) {
             FORGE_THROW_EXCEPTION(exceptions::invalid_options, "OTLP crash signal is not supported",
-                                forge::exceptions::ctx("signal", signal_number));
+                                  forge::exceptions::ctx("signal", signal_number));
          }
       }
    }
@@ -355,8 +352,8 @@ void ensure_crash_directory(const std::filesystem::path& directory) {
    std::filesystem::create_directories(directory, error);
    if (error) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "failed to create OTLP crash spool directory",
-                          forge::exceptions::ctx("path", directory.string()),
-                          forge::exceptions::ctx("reason", error.message()));
+                            forge::exceptions::ctx("path", directory.string()),
+                            forge::exceptions::ctx("reason", error.message()));
    }
 }
 
@@ -408,7 +405,7 @@ struct fd_guard {
 
 void throw_errno_spool_error(std::string_view message, const std::filesystem::path& path) {
    FORGE_THROW_EXCEPTION(exceptions::spool_error, std::string{message}, forge::exceptions::ctx("path", path.string()),
-                       forge::exceptions::ctx("errno", errno));
+                         forge::exceptions::ctx("errno", errno));
 }
 
 void ensure_owner_private_mode(const struct stat& value, const std::filesystem::path& path, bool directory) {
@@ -416,19 +413,19 @@ void ensure_owner_private_mode(const struct stat& value, const std::filesystem::
    if (directory) {
       if (!S_ISDIR(mode)) {
          FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool path is not a directory",
-                             forge::exceptions::ctx("path", path.string()));
+                               forge::exceptions::ctx("path", path.string()));
       }
    } else if (!S_ISREG(mode)) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool path is not a regular file",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
    if (value.st_uid != ::geteuid()) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool path is not owned by current user",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
    if ((mode & (S_IWGRP | S_IWOTH)) != 0) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool path is group/world writable",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
 }
 
@@ -447,7 +444,7 @@ fd_guard open_spool_directory(const std::filesystem::path& directory) {
    if (fd.get() < 0) {
       throw_errno_spool_error("failed to open OTLP crash spool directory", directory);
    }
-   struct stat stat_value {};
+   struct stat stat_value{};
    if (::fstat(fd.get(), &stat_value) != 0) {
       throw_errno_spool_error("failed to stat OTLP crash spool directory", directory);
    }
@@ -488,13 +485,13 @@ class spool_mutation_lock {
          }
       }
 
-      struct stat stat_value {};
+      struct stat stat_value{};
       if (::fstat(fd_.get(), &stat_value) != 0) {
          throw_errno_spool_error("failed to stat OTLP crash spool mutation lock", path_);
       }
       ensure_owner_private_mode(stat_value, path_, false);
 
-      struct flock lock {};
+      struct flock lock{};
       lock.l_type = F_WRLCK;
       lock.l_whence = SEEK_SET;
       while (::fcntl(fd_.get(), F_SETLKW, &lock) != 0) {
@@ -510,7 +507,7 @@ class spool_mutation_lock {
       if (!locked_) {
          return;
       }
-      struct flock lock {};
+      struct flock lock{};
       lock.l_type = F_UNLCK;
       lock.l_whence = SEEK_SET;
       (void)::fcntl(fd_.get(), F_SETLK, &lock);
@@ -539,7 +536,7 @@ struct open_spool_result {
 [[nodiscard]] std::sig_atomic_t checked_signal_count(std::size_t value, const std::filesystem::path& path) {
    if (value > static_cast<std::size_t>((std::numeric_limits<std::sig_atomic_t>::max)())) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool record count is too large",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
    return static_cast<std::sig_atomic_t>(value);
 }
@@ -549,7 +546,7 @@ struct open_spool_result {
    if (stat_value.st_size < 0 || static_cast<std::uint64_t>(stat_value.st_size) > options.max_file_bytes ||
        static_cast<std::uint64_t>(stat_value.st_size) % sizeof(disk_record) != 0) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "existing OTLP crash spool is malformed",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
    return static_cast<std::size_t>(static_cast<std::uint64_t>(stat_value.st_size) / sizeof(disk_record));
 }
@@ -561,7 +558,7 @@ void read_record_or_throw(int fd, disk_record& record, const std::filesystem::pa
       const auto count = ::read(fd, cursor, remaining);
       if (count == 0) {
          FORGE_THROW_EXCEPTION(exceptions::spool_error, "existing OTLP crash spool is truncated",
-                             forge::exceptions::ctx("path", path.string()));
+                               forge::exceptions::ctx("path", path.string()));
       }
       if (count < 0) {
          if (errno == EINTR) {
@@ -583,7 +580,7 @@ void validate_existing_records(int fd, std::size_t count, const std::filesystem:
       read_record_or_throw(fd, record, path);
       if (!valid_record(record)) {
          FORGE_THROW_EXCEPTION(exceptions::spool_error, "existing OTLP crash spool contains invalid record",
-                             forge::exceptions::ctx("path", path.string()));
+                               forge::exceptions::ctx("path", path.string()));
       }
    }
    if (::lseek(fd, 0, SEEK_END) < 0) {
@@ -593,7 +590,7 @@ void validate_existing_records(int fd, std::size_t count, const std::filesystem:
 
 [[nodiscard]] open_spool_result finalize_open_spool_file(fd_guard fd, const std::filesystem::path& path,
                                                          const crash_spool_options& options) {
-   struct stat stat_value {};
+   struct stat stat_value{};
    if (::fstat(fd.get(), &stat_value) != 0) {
       throw_errno_spool_error("failed to stat OTLP crash spool", path);
    }
@@ -603,12 +600,12 @@ void validate_existing_records(int fd, std::size_t count, const std::filesystem:
    const auto capacity = max_file_records(options);
    if (existing >= capacity) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool is full",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
    const auto writable = std::min(options.max_records_per_process, capacity - existing);
    if (writable == 0) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "OTLP crash spool cannot accept records",
-                          forge::exceptions::ctx("path", path.string()));
+                            forge::exceptions::ctx("path", path.string()));
    }
    (void)checked_signal_count(existing, path);
    (void)checked_signal_count(existing + writable, path);
@@ -763,9 +760,7 @@ std::vector<spool_entry> list_spool_files(const std::filesystem::path& directory
       }
       files.push_back(spool_entry{.name = name, .path = directory / name});
    }
-   std::sort(files.begin(), files.end(), [](const auto& left, const auto& right) {
-      return left.name < right.name;
-   });
+   std::sort(files.begin(), files.end(), [](const auto& left, const auto& right) { return left.name < right.name; });
    return files;
 }
 
@@ -777,7 +772,7 @@ struct open_existing_result {
    fd_guard fd;
    bool unsafe = false;
    bool missing = false;
-   struct stat stat_value {};
+   struct stat stat_value{};
 };
 
 open_existing_result open_existing_spool_file(int directory_fd, const spool_entry& entry) {
@@ -801,7 +796,7 @@ open_existing_result open_existing_spool_file(int directory_fd, const spool_entr
       throw_errno_spool_error("failed to open OTLP crash spool", entry.path);
    }
 
-   struct stat stat_value {};
+   struct stat stat_value{};
    if (::fstat(fd.get(), &stat_value) != 0) {
       throw_errno_spool_error("failed to stat OTLP crash spool", entry.path);
    }
@@ -860,8 +855,7 @@ template <typename Mutation>
 
 template <typename Mutation>
 [[nodiscard]] bool mutate_if_exported_spool_still_removable(int directory_fd, const spool_entry& entry,
-                                                            const spool_snapshot& snapshot,
-                                                            Mutation&& mutation) {
+                                                            const spool_snapshot& snapshot, Mutation&& mutation) {
    const auto mutation_lock = spool_mutation_lock{directory_fd, entry.path.parent_path()};
    const auto lock = std::scoped_lock{capture_lifecycle_mutex};
    if (active_spool_matches_locked(directory_fd, entry) || spool_may_belong_to_live_process(entry)) {
@@ -874,8 +868,7 @@ template <typename Mutation>
    return true;
 }
 
-[[nodiscard]] bool read_exact_or_malformed(int fd, void* out, std::size_t size,
-                                           const std::filesystem::path& path) {
+[[nodiscard]] bool read_exact_or_malformed(int fd, void* out, std::size_t size, const std::filesystem::path& path) {
    auto* cursor = static_cast<char*>(out);
    auto remaining = size;
    while (remaining > 0) {
@@ -962,7 +955,7 @@ void remove_exported_records(int directory_fd, const spool_entry& entry, std::ui
    auto opened = open_existing_spool_file(directory_fd, entry);
    if (opened.missing || opened.unsafe) {
       FORGE_THROW_EXCEPTION(exceptions::spool_error, "cannot safely rewrite OTLP crash spool",
-                          forge::exceptions::ctx("path", entry.path.string()));
+                            forge::exceptions::ctx("path", entry.path.string()));
    }
    const auto offset = static_cast<off_t>(removed * sizeof(disk_record));
    if (::lseek(opened.fd.get(), offset, SEEK_SET) < 0) {
@@ -1020,7 +1013,8 @@ std::chrono::sys_time<std::chrono::microseconds> timestamp_for(const disk_record
       return std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::system_clock::now());
    }
    const auto nanos = std::chrono::nanoseconds{static_cast<std::chrono::nanoseconds::rep>(record.unix_nanos)};
-   return std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::sys_time<std::chrono::nanoseconds>{nanos});
+   return std::chrono::time_point_cast<std::chrono::microseconds>(
+       std::chrono::sys_time<std::chrono::nanoseconds>{nanos});
 }
 
 forge::stacktrace_snapshot stacktrace_for(const disk_record& record) {
@@ -1145,16 +1139,16 @@ crash_guard install_crash_capture(crash_spool_options options) {
    try {
 #if defined(__unix__) || defined(__APPLE__)
       if (options.capture_signals) {
-         struct sigaction action {};
+         struct sigaction action{};
          action.sa_sigaction = signal_handler;
          action.sa_flags = SA_SIGINFO;
          sigemptyset(&action.sa_mask);
          for (const auto signal_number : options.signals) {
-            struct sigaction previous {};
+            struct sigaction previous{};
             if (::sigaction(signal_number, &action, &previous) != 0) {
                FORGE_THROW_EXCEPTION(exceptions::invalid_options, "failed to install OTLP crash signal handler",
-                                   forge::exceptions::ctx("signal", signal_number),
-                                   forge::exceptions::ctx("errno", errno));
+                                     forge::exceptions::ctx("signal", signal_number),
+                                     forge::exceptions::ctx("errno", errno));
             }
             state->installed_signals.push_back(signal_number);
             state->previous_actions.push_back(previous);
@@ -1173,8 +1167,7 @@ crash_guard install_crash_capture(crash_spool_options options) {
    return crash_guard{std::move(state)};
 }
 
-boost::asio::awaitable<crash_resend_result> async_resend_crashes(log_exporter& exporter,
-                                                                 crash_spool_options options) {
+boost::asio::awaitable<crash_resend_result> async_resend_crashes(log_exporter& exporter, crash_spool_options options) {
    validate_options(options, false);
    ensure_crash_directory(options.directory);
 
@@ -1219,12 +1212,10 @@ boost::asio::awaitable<crash_resend_result> async_resend_crashes(log_exporter& e
       if (exported.failed_records == 0 && exported.exported_records == read.records.size()) {
          result.exported_records += exported.exported_records;
          ++result.files_exported;
-         if (!read.snapshot.has_value() || !mutate_if_exported_spool_still_removable(
-                                             directory_fd.get(), entry, *read.snapshot,
-                                             [&] {
-                                                remove_exported_records(directory_fd.get(), entry, read.records.size(),
-                                                                        read.total_records);
-                                             })) {
+         if (!read.snapshot.has_value() ||
+             !mutate_if_exported_spool_still_removable(directory_fd.get(), entry, *read.snapshot, [&] {
+                remove_exported_records(directory_fd.get(), entry, read.records.size(), read.total_records);
+             })) {
             ++result.files_retained;
             continue;
          }

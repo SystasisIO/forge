@@ -1,4 +1,5 @@
 #include <boost/asio/awaitable.hpp>
+#include <boost/describe.hpp>
 #include <boost/test/unit_test.hpp>
 #include <forge/log/macros.hpp>
 
@@ -17,6 +18,14 @@
 #include <thread>
 #include <variant>
 #include <vector>
+
+namespace otlp_log_fixtures {
+struct credentials {
+   std::string user;
+   std::string token;
+};
+BOOST_DESCRIBE_STRUCT(credentials, (), (user, token))
+} // namespace otlp_log_fixtures
 
 import forge.api.core.registry;
 import forge.app.application_shell;
@@ -46,6 +55,16 @@ import forge.plugins.log.otlp.exceptions;
 import forge.plugins.log.otlp.plugin;
 import forge.plugins.log.otlp.types;
 import forge.variant.value;
+import forge.schema.object;
+
+template <> struct forge::schema::rules<otlp_log_fixtures::credentials> {
+   static forge::schema::object_schema<otlp_log_fixtures::credentials> define() {
+      auto schema = forge::schema::object<otlp_log_fixtures::credentials>();
+      static_cast<void>(schema.field<&otlp_log_fixtures::credentials::user>("user-name"));
+      schema.field<&otlp_log_fixtures::credentials::token>("token").secret();
+      return schema;
+   }
+};
 
 namespace {
 
@@ -314,7 +333,7 @@ BOOST_AUTO_TEST_CASE(log_otlp_export_disabled_keeps_named_routes_on_the_console_
 
    auto named = forge::logger::get("spine.runtime");
    BOOST_REQUIRE(named.get_parent() != nullptr);
-   named.debug("named route remains visible without OTLP");
+   dlog(named, "named route remains visible without OTLP");
 
    BOOST_REQUIRE_EQUAL(shared_sink->records.size(), 1U);
    BOOST_TEST(shared_sink->records.front().logger == "spine.runtime");
@@ -363,9 +382,9 @@ BOOST_AUTO_TEST_CASE(log_otlp_exports_default_and_named_logger_routes) {
        plugin_config(collector.endpoint(), {logger_route("default"), logger_route("plugin.dynamic", "debug")}));
    harness.provide_and_start();
 
-   ilog("default route exported ${value}", ("value", "one"));
+   ilog("default", "default route exported ${value}", ("value", "one"));
    auto named = forge::logger::get("plugin.dynamic");
-   forge_ilog(named, "named route exported ${value}", ("value", "two"));
+   ilog(named, "named route exported ${value}", ("value", "two"));
 
    auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
    forge::asio::blocking::run(harness.runtime, api->flush());
@@ -388,6 +407,50 @@ BOOST_AUTO_TEST_CASE(log_otlp_exports_default_and_named_logger_routes) {
    BOOST_TEST(snapshot.enqueued_records == 2U);
    BOOST_TEST(snapshot.exported_records == 2U);
 
+   harness.shutdown();
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_macros_redact_nested_schema_values_before_interpolation_and_export_once) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   auto harness = plugin_harness{};
+   auto collector = fake_collector{harness.runtime};
+   harness.configure(plugin_config(collector.endpoint(), {logger_route("default"), logger_route("plugin.schema")}));
+   harness.provide_and_start();
+
+   auto capture = std::make_shared<capture_sink>();
+   auto parent = forge::logger::get("default");
+   auto named = forge::logger::get("plugin.schema");
+   parent.add_sink(capture);
+   named.add_sink(capture);
+   const auto payload = std::vector<otlp_log_fixtures::credentials>{{"alice", "private-fixture-value"}};
+   const auto line = __LINE__ + 1;
+   ilog("plugin.schema", "nested ${payload}", ("payload", payload));
+   BOOST_REQUIRE_EQUAL(capture->records.size(), 1U);
+   const auto& record = capture->records.front();
+   BOOST_TEST(record.location.line() == line);
+   BOOST_TEST(record.logger == "plugin.schema");
+   BOOST_TEST(record.message.find("private-fixture-value") == std::string::npos);
+   BOOST_TEST(record.message.find("<redacted>") != std::string::npos);
+   BOOST_REQUIRE_EQUAL(record.fields.size(), 1U);
+   BOOST_TEST(record.fields.front().value.find("private-fixture-value") == std::string::npos);
+
+   auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
+   forge::asio::blocking::run(harness.runtime, api->flush());
+   BOOST_REQUIRE(collector.wait_for_requests(1));
+   const auto requests = collector.requests();
+   const auto body = std::accumulate(requests.begin(), requests.end(), std::string{},
+                                     [](std::string out, const auto& request) { return out + request.body; });
+   expect_contains(body, "nested");
+   expect_contains(body, "alice");
+   expect_contains(body, "user-name");
+   expect_contains(body, "<redacted>");
+   expect_contains(body, "plugin.schema");
+   expect_contains(body, "source.line");
+   expect_contains(body, "source.function");
+   BOOST_TEST(body.find("private-fixture-value") == std::string::npos);
+   const auto metrics = forge::asio::blocking::run(harness.runtime, api->metrics());
+   BOOST_TEST(metrics.enqueued_records == 1U);
+   BOOST_TEST(metrics.exported_records == 1U);
    harness.shutdown();
 }
 

@@ -688,6 +688,10 @@ void from_variant(const variant& var, float& vo) {
    vo = static_cast<float>(var.as_double());
 }
 
+void to_variant(const long double& value, variant& output) {
+   output = static_cast<double>(value);
+}
+
 void to_variant(const std::string& s, variant& v) {
    v = variant(std::string(s));
 }

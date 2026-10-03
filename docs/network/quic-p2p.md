@@ -474,13 +474,13 @@ READMEs may link here, but must not define a second block order.
   the OTLP sink is an optional adapter with bounded queueing, batching,
   retry/backoff, `Retry-After` handling, `Resource` attributes such as
   `service.name` and deterministic shutdown. Metrics and traces are later
-  additive exporters, not log appenders.
+  additive exporters, not log sinks.
 - G.6 scope decisions: start with OTLP JSON over HTTP, not a gRPC transport,
   because gRPC and Protocol Buffers runtime dependencies bring a large
   event-loop and packaging cost. Do not vendor-lock FORGE to backend SDKs for
   Sentry, Grafana, Datadog or OpenTelemetry C++; backend routing belongs in the
   Collector.
-- G.6b implemented checkpoint: crash capture is separate from the live appender.
+- G.6b implemented checkpoint: crash capture is separate from the live log sink.
   Signal handlers write only fixed binary records to a bounded local spool with
   async-signal-safe operations. On the next start, `forge_otlp` reads and
   validates the spool, quarantines malformed files, exports safe crash evidence
@@ -656,7 +656,7 @@ Rejected:
 - Product authorization or business acknowledgement inside P2P.
 - Silent insecure peer identity fallback outside tests.
 - Direct backend SDK lock-in for observability, including Sentry native,
-  OpenTelemetry C++ or per-backend FORGE appenders that bypass the Collector.
+  OpenTelemetry C++ or per-backend FORGE sinks that bypass the Collector.
 - gRPC as the first OTLP transport path for FORGE runtime telemetry; it can be
   revisited only if HTTP/JSON becomes insufficient and dependency/event-loop
   costs are justified.

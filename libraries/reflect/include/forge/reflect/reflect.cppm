@@ -2,10 +2,16 @@ module;
 #include <boost/describe.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/mp11.hpp>
+#include <boost/pfr/core.hpp>
+#include <boost/pfr/core_name.hpp>
+#include <boost/pfr/traits.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 
 export module forge.reflect.reflect;
 
@@ -21,6 +27,19 @@ inline constexpr bool is_described_object_v = boost::describe::has_describe_memb
 template <typename T>
 inline constexpr bool is_described_enum_v =
     std::is_enum_v<clean_type<T>> && boost::describe::has_describe_enumerators<clean_type<T>>::value;
+
+struct diagnostic_aggregate_tag {};
+
+template <typename T>
+inline constexpr bool is_diagnostic_aggregate_v =
+    std::is_class_v<clean_type<T>> && std::is_aggregate_v<clean_type<T>> && std::is_standard_layout_v<clean_type<T>> &&
+    !std::is_union_v<clean_type<T>> && boost::pfr::is_implicitly_reflectable_v<clean_type<T>, diagnostic_aggregate_tag>;
+
+template <typename T, typename Visitor>
+   requires is_diagnostic_aggregate_v<T>
+void for_each_aggregate_member(const T& value, Visitor&& visitor) {
+   boost::pfr::for_each_field_with_name(value, std::forward<Visitor>(visitor));
+}
 
 template <typename T, typename Visitor> void for_each_member(Visitor&& visitor) {
    using members = boost::describe::describe_members<clean_type<T>,

@@ -145,6 +145,7 @@ add_test(NAME test_forge_chrono COMMAND test_forge_chrono WORKING_DIRECTORY ${CM
 add_executable(
    test_forge_variant
    unit/main.cpp
+   variant/diagnostic_tests.cpp
    variant/test_static_variant.cpp
    variant/test_variant.cpp
    variant/test_variant_dynamic_bitset.cpp
@@ -170,6 +171,7 @@ add_executable(
    test_forge_log
    unit/main.cpp
    log/log_tests.cpp
+   log/log_disabled_tests.cpp
 )
 target_link_libraries(test_forge_log forge_log Boost::included_unit_test_framework)
 add_test(NAME test_forge_log COMMAND test_forge_log WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

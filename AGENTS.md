@@ -335,6 +335,9 @@ implementation-library namespaces. For plugin family/role decisions, follow
 ## Reflection And Serialization
 
 - New canonical reflection uses Boost.Describe directly.
+- Diagnostic aggregate fallback may use Boost.PFR through `forge_reflect` and
+  `forge_variant`. It must not replace explicit Boost.Describe field order for
+  existing wire/persisted contracts or introduce a logger-owned serializer.
 - Do not add broad reflection macro aliases over Boost.Describe.
 - Legacy reflection macro APIs are forbidden in FORGE code.
 - Old reflect macro families must not return as public reflection APIs; use Boost.Describe directly.
@@ -397,6 +400,14 @@ implementation-library namespaces. For plugin family/role decisions, follow
 - The old FC exception hierarchy, old declare/throw macros and variant-backed exception serialization are removed and must not reappear.
 - Context capture must preserve source location and redact secret fields.
 - Logging core should stay small: console/file/JSONL-style sinks and structured fields.
+- Preferred application logging uses `tlog/dlog/ilog/wlog/elog` with a logger
+  name or logger object, a message/template and optional `("field", value)`
+  pairs. Public `forge_*log` macros and the legacy `log_message`/appender path
+  are removed by the approved log-schema-macros clean source break.
+- Diagnostic encoding uses existing Schema secret metadata recursively before
+  formatting or sink delivery. Without Schema, use existing conversion,
+  Boost.Describe or compatible Boost.PFR aggregate traversal. A failed secret
+  redaction must never fall back to raw serialization.
 - External logging integrations must be optional adapters, not core dependencies.
 - Do not log secrets, passphrases, private keys, token values, or raw key material.
 - `forge_log` is synchronous in core. It must not import `forge_asio`, own a
@@ -623,7 +634,8 @@ implementation-library namespaces. For plugin family/role decisions, follow
   document the downstream migration in the owning README and release notes.
 - `forge_core` is a low-level foundation only. It must not import `forge.crypto`, `forge.raw`, `forge.variant`, `forge.json` or `forge.log`.
 - `forge_core` may own neutral diagnostic helpers such as type names, but must not own Boost.Describe member traversal or variant conversion.
-- `forge_reflect` owns only Boost.Describe metadata helpers. It must not import or link `forge_variant`.
+- `forge_reflect` owns Boost.Describe metadata helpers and approved diagnostic
+  Boost.PFR aggregate traversal. It must not import or link `forge_variant`.
 - `forge_variant` owns described-type conversion to and from `forge::variant`; described variant mapping must not live in `forge_reflect`.
 - The umbrella `forge` target must not collect external dependencies "just in case"; put each dependency on the target that owns the include/link usage.
 - Installed consumers should link leaf targets such as `Forge::forge_raw`,

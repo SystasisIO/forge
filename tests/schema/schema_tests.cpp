@@ -57,6 +57,13 @@ struct wide_range_config {
    unsigned __int128 unsigned_value = 0;
 };
 
+struct diagnostic_wire_record {
+   std::string name;
+   std::string token;
+};
+BOOST_DESCRIBE_STRUCT(diagnostic_wire_record, (), (name, token))
+static_assert(boost::describe::has_describe_members<diagnostic_wire_record>::value);
+
 struct throwing_scalar {
    throwing_scalar() = default;
    explicit throwing_scalar(std::string) {
@@ -86,12 +93,33 @@ import forge.schema.object;
 import forge.schema.enums;
 import forge.schema.scalar;
 import forge.crypto.digest.sha256;
+import forge.crypto.core.secret_bytes;
+import forge.crypto.core.secret_string;
+import forge.crypto.asymmetric;
+import forge.crypto.asymmetric.secp256k1;
+import forge.crypto.asymmetric.p256;
+import forge.crypto.asymmetric.ed25519;
+import forge.crypto.asymmetric.rsa;
+import forge.crypto.asymmetric.x25519;
+import forge.crypto.bls;
+import forge.variant.schema;
+import forge.variant.value;
+import forge.variant.described;
+import forge.codec.json;
+import forge.raw.codec;
 
 namespace forge_schema_tests {
 
 struct digest_list_config {
    std::vector<forge::crypto::digest::sha256> values;
 };
+
+struct diagnostic_secret_parent {
+   forge::crypto::core::secret_string token;
+   std::vector<forge::crypto::core::secret_string> children;
+};
+BOOST_DESCRIBE_STRUCT(diagnostic_secret_parent, (), (token, children))
+static_assert(boost::describe::has_describe_members<diagnostic_secret_parent>::value);
 
 } // namespace forge_schema_tests
 
@@ -178,6 +206,15 @@ template <> struct forge::schema::rules<forge_schema_tests::wide_range_config> {
           .range(-static_cast<__int128>(boundary), static_cast<__int128>(boundary));
       schema.field<&forge_schema_tests::wide_range_config::unsigned_value>("unsigned-value")
           .range(boundary, boundary + 10);
+      return schema;
+   }
+};
+
+template <> struct forge::schema::rules<forge_schema_tests::diagnostic_wire_record> {
+   [[nodiscard]] static auto define() {
+      auto schema = forge::schema::object<forge_schema_tests::diagnostic_wire_record>();
+      static_cast<void>(schema.field<&forge_schema_tests::diagnostic_wire_record::name>("public-name"));
+      schema.field<&forge_schema_tests::diagnostic_wire_record::token>("private-value").secret();
       return schema;
    }
 };
@@ -569,4 +606,48 @@ BOOST_AUTO_TEST_CASE(schema_exact_lists_require_canonical_string_scalar_spelling
    BOOST_REQUIRE_EQUAL(uppercase.size(), 1U);
    BOOST_TEST(uppercase.front().code == "config.type");
    BOOST_TEST(uppercase.front().path == "config.values[0]");
+}
+
+BOOST_AUTO_TEST_CASE(diagnostic_redaction_does_not_change_ordinary_variant_json_or_raw) {
+   const auto input = forge_schema_tests::diagnostic_wire_record{"p", "s"};
+   const auto diagnostic = forge::variant_schema::encode_diagnostic(input);
+   BOOST_TEST(diagnostic["public-name"].as_string() == "p");
+   BOOST_TEST(diagnostic["private-value"].as_string() == "<redacted>");
+
+   const auto ordinary = forge::variant_schema::encode(input);
+   BOOST_TEST(ordinary["private-value"].as_string() == "s");
+   BOOST_TEST(forge::variant{input}["token"].as_string() == "s");
+   const auto written = forge::codec::json::write(input);
+   BOOST_REQUIRE(written.ok());
+   const auto parsed = forge::codec::json::read_value(written.text);
+   BOOST_REQUIRE(parsed.ok());
+   BOOST_TEST(parsed.value["private-value"].as_string() == "s");
+   const auto packed = forge::raw::pack(input);
+   BOOST_TEST(packed == (forge::raw::bytes{1U, 'p', 1U, 's'}), boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(real_crypto_secret_types_redact_without_variant_or_crypto_dependencies_in_schema) {
+   const auto bytes = forge::crypto::core::secret_bytes{std::vector<std::uint8_t>{1, 2, 3}};
+   const auto text = forge::crypto::core::secret_string{"unexposed"};
+   const auto key = forge::crypto::asymmetric::private_key{};
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(bytes).as_string() == "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(text).as_string() == "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(key).as_string() == "<redacted>");
+   BOOST_TEST(
+       forge::variant_schema::encode_diagnostic(forge::crypto::asymmetric::secp256k1::private_key{}).as_string() ==
+       "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(forge::crypto::asymmetric::p256::private_key{}).as_string() ==
+              "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(forge::crypto::asymmetric::ed25519::private_key{}).as_string() ==
+              "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(forge::crypto::asymmetric::rsa::private_key{}).as_string() ==
+              "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(forge::crypto::asymmetric::x25519::private_key{}).as_string() ==
+              "<redacted>");
+   BOOST_TEST(forge::variant_schema::encode_diagnostic(forge::crypto::bls::private_key{}).as_string() == "<redacted>");
+   const auto parent = forge_schema_tests::diagnostic_secret_parent{forge::crypto::core::secret_string{"unexposed"},
+                                                                    {forge::crypto::core::secret_string{"unexposed"}}};
+   const auto nested = forge::variant_schema::encode_diagnostic(parent);
+   BOOST_TEST(nested["token"].as_string() == "<redacted>");
+   BOOST_TEST(nested["children"][std::size_t{0}].as_string() == "<redacted>");
 }

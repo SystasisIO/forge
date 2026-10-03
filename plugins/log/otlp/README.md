@@ -2,8 +2,8 @@
 
 `forge::plugins::log::otlp` connects existing `forge_log` loggers to the
 `forge_otlp` HTTP/JSON log exporter. It does not add a new logging API: code
-continues to use `ilog`, `wlog`, `elog`, `dlog` for the default logger and
-`forge_ilog(logger, ...)` style macros for named logger routes.
+uses `tlog/dlog/ilog/wlog/elog` with named logger routes or a one-message
+default-logger shortcut.
 
 ## When To Use
 
@@ -149,19 +149,23 @@ credentials.
 Default logger:
 
 ```cpp
+#include <forge/log/macros.hpp>
+import forge.log.logger;
+
 ilog("node started");
 ```
 
 Named logger:
 
 ```cpp
-static auto network_log = forge::logger::get("network");
+#include <forge/log/macros.hpp>
+import forge.log.logger;
 
-forge_ilog(network_log, "peer connected ${peer}", ("peer", peer_id));
+ilog("network", "peer connected ${peer}", ("peer", peer_id));
 ```
 
 The plugin attaches one shared OTLP sink to every configured `loggers[]` route
-with `export: true`. Logger routing is additive: parent console appenders and
+with `export: true`. Logger routing is additive: parent console sinks and
 the OTLP sink both receive the same structured record, preserving its source
 logger name. If the same shared sink is reachable through multiple route levels,
 it is invoked once. Logger names are user-defined; the plugin does not hardcode

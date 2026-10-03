@@ -55,6 +55,8 @@ P2P, plugins or application code.
 ### Export Logs
 
 ```cpp
+#include <forge/log/macros.hpp>
+
 import forge.asio.runtime;
 import forge.log.logger;
 import forge.otlp.options;
@@ -72,7 +74,7 @@ auto exporter = std::make_shared<forge::otlp::log_exporter>(
 
 auto log = forge::logger{"app"};
 log.add_sink(std::make_shared<forge::otlp::log_sink>(exporter));
-log.info("startup complete");
+ilog(log, "startup complete");
 
 co_await exporter->async_flush();
 ```

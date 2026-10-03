@@ -1,5 +1,6 @@
 module;
 #include <chrono>
+#include <boost/describe.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -14,9 +15,28 @@ module;
 
 export module forge.log.record;
 
-import forge.log.log_message;
+import forge.variant.value;
+import forge.variant.schema;
 
 export namespace forge {
+
+class log_level {
+ public:
+   enum values { all, debug, info, warn, error, off };
+   BOOST_DESCRIBE_NESTED_ENUM(values, all, debug, info, warn, error, off)
+   log_level(values v = off) : value(v) {}
+   explicit log_level(int v) : value(static_cast<values>(v)) {}
+   operator int() const {
+      return value;
+   }
+   std::string to_string() const;
+   values value;
+};
+
+void to_variant(log_level level, variant& value);
+void from_variant(const variant& value, log_level& level);
+void set_thread_name(const std::string& name);
+const std::string& get_thread_name();
 
 struct log_field {
    std::string key;
@@ -26,53 +46,31 @@ struct log_field {
 
 using log_fields = std::vector<log_field>;
 
-struct log_field_provider {
-   std::function<log_field()> provider;
-};
+[[nodiscard]] std::string format_log_value(const variant& value);
 
-log_field log_ctx(std::string_view key, std::string value);
-log_field log_ctx(std::string_view key, std::string_view value);
-log_field log_ctx(std::string_view key, const char* value);
-log_field log_ctx(std::string_view key, bool value);
-log_field log_ctx(std::string_view key, char value);
-log_field log_ctx(std::string_view key, signed char value);
-log_field log_ctx(std::string_view key, unsigned char value);
-log_field log_ctx(std::string_view key, short value);
-log_field log_ctx(std::string_view key, unsigned short value);
-log_field log_ctx(std::string_view key, int value);
-log_field log_ctx(std::string_view key, unsigned value);
-log_field log_ctx(std::string_view key, long value);
-log_field log_ctx(std::string_view key, unsigned long value);
-log_field log_ctx(std::string_view key, long long value);
-log_field log_ctx(std::string_view key, unsigned long long value);
-log_field log_ctx(std::string_view key, float value);
-log_field log_ctx(std::string_view key, double value);
-log_field log_ctx(std::string_view key, long double value);
-
-template <typename T> log_field log_ctx(std::string_view key, const T&) {
-   return log_ctx(key, std::string{"<unprintable>"});
+template <typename T> log_field log_ctx(std::string_view key, const T& value) {
+   return {std::string{key}, format_log_value(variant_schema::encode_diagnostic(value)), false};
 }
 
-log_field log_secret(std::string_view key, std::string value);
-log_field log_secret(std::string_view key, std::string_view value);
-log_field log_secret(std::string_view key, const char* value);
-
-template <typename T> log_field log_secret(std::string_view key, const T& value) {
-   auto field = log_ctx(key, value);
-   field.value = "<redacted>";
-   field.redacted = true;
-   return field;
+template <typename T> log_field log_secret(std::string_view key, const T&) {
+   return {std::string{key}, "<redacted>", true};
 }
 
 void append_log_field(log_fields& fields, log_field field);
-void append_log_field(log_fields& fields, const log_field_provider& provider);
 
-template <typename... Fields> log_fields make_log_fields(Fields&&... fields) {
-   log_fields result;
-   result.reserve(sizeof...(Fields));
-   (append_log_field(result, std::forward<Fields>(fields)), ...);
-   return result;
-}
+class log_field_builder {
+ public:
+   template <typename T> log_field_builder& operator()(std::string_view key, const T& value) {
+      append_log_field(_fields, log_ctx(key, value));
+      return *this;
+   }
+   [[nodiscard]] log_fields take();
+
+ private:
+   log_fields _fields;
+};
+
+[[nodiscard]] std::string interpolate_log_message(const std::string& message, const log_fields& fields);
 
 struct stacktrace_frame {
    std::size_t index = 0;
@@ -118,14 +116,17 @@ class sink {
    virtual void log(const log_record& record) = 0;
 };
 
+enum class console_stream { by_level, standard_out, standard_error };
+
 class console_sink final : public sink {
  public:
    explicit console_sink(bool stderr_for_warnings = true);
+   explicit console_sink(console_stream stream);
    ~console_sink() override;
    void log(const log_record& record) override;
 
  private:
-   bool stderr_for_warnings_ = true;
+   console_stream _stream = console_stream::by_level;
 };
 
 class file_sink final : public sink {
@@ -151,3 +152,7 @@ class jsonl_sink final : public sink {
 };
 
 } // namespace forge
+
+export namespace forge {
+BOOST_DESCRIBE_STRUCT(log_level, (), (value))
+}
