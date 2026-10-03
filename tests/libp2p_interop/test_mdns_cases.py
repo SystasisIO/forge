@@ -164,6 +164,19 @@ class Harness:
 
 
 class MdnsCasesTests(unittest.TestCase):
+    def test_shutdown_failure_cannot_replace_primary_or_bypass_join(self):
+        source = Path(__file__).with_name("forge_mdns_fixture.cpp").read_text()
+        cleanup = source.split("auto shutdown_failure = std::exception_ptr{};", 1)[1]
+        self.assertIn("shutdown_failure = std::current_exception();\n"
+                      "      if (!failure) {\n         failure = shutdown_failure;\n      }", cleanup)
+        self.assertLess(cleanup.index("runtime.stop();"), cleanup.index("before_stop.shutdown_error ="))
+        self.assertIn("std::rethrow_exception(failure);", cleanup)
+        self.assertNotIn("failure = std::current_exception();", cleanup.replace(
+            "shutdown_failure = std::current_exception();", ""))
+        header = Path(__file__).with_name("forge_mdns_fixture.hxx").read_text()
+        self.assertIn("std::string shutdown_error;", header)
+        self.assertIn("capture_phase, capture_error, shutdown_error, service_errors", header)
+
     def test_native_bound_preserves_original_exception_and_real_deadline_branch(self):
         source = Path(__file__).with_name("forge_mdns_fixture.cpp").read_text()
         bound = source.split("boost::asio::awaitable<void> bounded(", 1)[1].split(

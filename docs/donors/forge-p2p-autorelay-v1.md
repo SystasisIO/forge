@@ -83,3 +83,21 @@ The focused `test_forge_p2p_autorelay` target covers manager, raw-node and sessi
 ownership regressions without replacing the existing complete P2P suite. Native
 HOP/STOP tests must observe handler entry and complete request decoding before
 asserting cancellation, invalid grants, limits or coalesced byte-stream delivery.
+
+## Fixture Lifecycle And Native Address Ordering
+
+The registered mDNS participants remain alive until both provisional echo
+receipts exist. Only immutable post-exit receipts are accepted; operation,
+shutdown and forced-cleanup failures remain fatal. The Forge fixture preserves
+the primary exception when shutdown also fails, recording shutdown diagnostics
+separately after workers have joined.
+
+The legacy QUIC DCUtR fixture waits for Identify from the same authenticated
+relay connection and a matching native `NewExternalAddrCandidate` before creating
+the circuit handler. Rust's `swarm/src/lib.rs` suppresses candidate delivery for
+already confirmed external addresses, while `protocols/dcutr/src/behaviour.rs`
+captures candidates when that handler is constructed. Address confirmation must
+therefore follow native candidate delivery. A donor-Swarm regression exercises
+both orders; stale Identify from a replaced connection cannot open the barrier.
+Bounded native DCUtR events survive the final receipt. This fixture correction
+does not implement PR10 path automation or change the libp2p wire.

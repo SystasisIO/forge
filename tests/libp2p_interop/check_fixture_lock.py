@@ -56,6 +56,7 @@ EXPECTED_FIXTURE_FILES = {
     "rust_fixture/main.rs",
     "rust_fixture/autonat.rs",
     "rust_fixture/autorelay.rs",
+    "rust_fixture/relay_readiness.rs",
     "rust_fixture/mdns.rs",
     "rust_fixture/provider.rs",
     "rust_fixture/upgrade_observer.rs",

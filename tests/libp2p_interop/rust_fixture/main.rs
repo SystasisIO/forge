@@ -42,6 +42,7 @@ mod mdns_fixture;
 #[path = "autonat.rs"]
 mod autonat_fixture;
 mod autorelay;
+mod relay_readiness;
 
 const KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 const PUBSUB_TOPIC: &str = "forge.pubsub.interop";
@@ -2760,7 +2761,8 @@ async fn open_echo_stream(
     peer: PeerId,
     expect_direct_upgrade: bool,
     opts: &Options,
-) -> Result<(bool, Option<serde_json::Value>), Box<dyn Error>> {
+    readiness: Option<serde_json::Value>,
+) -> Result<(bool, Option<serde_json::Value>, Vec<serde_json::Value>), Box<dyn Error>> {
     let mut control = swarm.behaviour().stream.new_control();
     // Drive the Swarm throughout native stream negotiation, echo I/O and close.
     let exchange = async {
@@ -2775,6 +2777,7 @@ async fn open_echo_stream(
     let deadline = tokio::time::sleep(Duration::from_secs(30));
     tokio::pin!(deadline);
     let mut progress = RelayEchoProgress::default();
+    let mut dcutr_events = Vec::new();
     while !progress.complete() {
         tokio::select! {
             result = &mut exchange, if !progress.exchange_complete => {
@@ -2792,6 +2795,9 @@ async fn open_echo_stream(
                     SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
                         swarm.add_external_address(info.observed_addr);
                     }
+                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) if expect_direct_upgrade => {
+                        relay_readiness::record_dcutr(&opts.result_file, &readiness, &mut dcutr_events, &event)?;
+                    }
                     _ => {}
                 }
             }
@@ -2807,16 +2813,24 @@ async fn open_echo_stream(
             tokio::select! {
                 _ = &mut settle => break,
                 event = swarm.select_next_some() => {
-                    if let SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } = event
-                        && peer_id == peer {
-                        progress.established(connection_id, peer_id, &endpoint, opts);
-                        if progress.direct_upgrade { break; }
+                    match event {
+                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } if peer_id == peer => {
+                            progress.established(connection_id, peer_id, &endpoint, opts);
+                            if progress.direct_upgrade { break; }
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                            relay_readiness::record_dcutr(&opts.result_file, &readiness, &mut dcutr_events, &event)?;
+                        }
+                        _ => {}
                     }
                 }
             }
         }
     }
-    Ok((progress.direct_upgrade, progress.connection))
+    if expect_direct_upgrade {
+        write_json(&opts.result_file, json!({"relay_readiness": readiness, "dcutr_events": dcutr_events}))?;
+    }
+    Ok((progress.direct_upgrade, progress.connection, dcutr_events))
 }
 
 async fn dial_and_wait(
@@ -2828,18 +2842,49 @@ async fn dial_and_wait(
     swarm.dial(address)?;
     let deadline = tokio::time::sleep(Duration::from_secs(20));
     tokio::pin!(deadline);
+    let require_readiness = relay_readiness::required(&opts.scenario, &opts.transport);
+    let mut readiness = relay_readiness::State::new(*swarm.local_peer_id(), peer);
+    let mut connection = None;
     loop {
         tokio::select! {
-            _ = &mut deadline => return Err("timed out connecting relay".into()),
+            _ = &mut deadline => {
+                if require_readiness { write_json(&opts.result_file, json!({"relay_readiness": readiness.snapshot()}))?; }
+                return Err("timed out connecting relay or waiting for native DCUtR address readiness".into());
+            }
             event = swarm.select_next_some() => {
-                match event {
+                let outcome: Result<(), Box<dyn Error>> = match event {
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } if peer_id == peer => {
-                        return Ok(autorelay::connection(connection_id, peer_id, &endpoint, opts));
+                        let row = autorelay::connection(connection_id, peer_id, &endpoint, opts);
+                        if !require_readiness { return Ok(row); }
+                        readiness.connected(peer_id, connection_id, endpoint.is_relayed()).map(|()| { connection = Some(row); })
                     }
-                    SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
-                        swarm.add_external_address(info.observed_addr);
+                    SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, connection_id, info })) => {
+                        if require_readiness && peer_id == peer {
+                            // Confirming here would suppress the native candidate event used by DCUtR.
+                            readiness.identified(peer_id, connection_id, &info)
+                        } else {
+                            if !require_readiness { swarm.add_external_address(info.observed_addr); }
+                            Ok(())
+                        }
                     }
-                    _ => {}
+                    SwarmEvent::NewExternalAddrCandidate { address } if require_readiness => {
+                        readiness.candidate(&address)
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } if require_readiness && peer_id == peer => {
+                        readiness.note("connection_closed", peer_id.to_string())
+                            .and_then(|()| Err("authenticated relay disconnected during DCUtR readiness".into()))
+                    }
+                    _ => Ok(())
+                };
+                if require_readiness {
+                    write_json(&opts.result_file, json!({"relay_readiness": readiness.snapshot()}))?;
+                    outcome?;
+                    if let Some(address) = readiness.ready_address() {
+                        swarm.add_external_address(address);
+                        let mut row = connection.take().ok_or("DCUtR readiness lacks native connection")?;
+                        row["readiness"] = readiness.snapshot();
+                        return Ok(row);
+                    }
                 }
             }
         }
@@ -2856,11 +2901,12 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
         .with(Protocol::P2pCircuit)
         .with(Protocol::P2p(target_peer));
     swarm.dial(target_addr.clone())?;
-    let (direct_upgrade, echo_connection) = open_echo_stream(
+    let (direct_upgrade, echo_connection, dcutr_events) = open_echo_stream(
         &mut swarm,
         target_peer,
         opts.scenario == "dcutr_relay_topology",
         &opts,
+        relay_connection.get("readiness").cloned(),
     )
     .await?;
     if opts.scenario == "dcutr_relay_topology" && !direct_upgrade {
@@ -2875,7 +2921,7 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
     }
     write_json(
         &opts.result_file,
-        json!({
+        relay_readiness::final_receipt(json!({
             "implementation": "rust",
             "role": "relay_dialer",
             "scenario": opts.scenario,
@@ -2892,7 +2938,7 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
             "relay_connection": relay_connection,
             "echo_connection": echo_connection,
             "direct_upgrade": direct_upgrade
-        }),
+        }), &opts.scenario, dcutr_events),
     )
 }
 
