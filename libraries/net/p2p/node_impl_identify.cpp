@@ -239,9 +239,29 @@ local_identify_document_locked(const auto& self,
       state.cached_generation = 0;
    }
    if (state.cached_generation != state.generation) {
+      auto remaining_endpoints = std::map<std::string, endpoint>{};
+      for (auto address : self.local_endpoints_for_control_locked()) {
+         remaining_endpoints.emplace(address.to_string(), std::move(address));
+      }
       auto listen_addresses = std::vector<forge::multiformats::multiaddr>{};
-      for (const auto& endpoint : self.local_endpoints_for_control_locked()) {
-         listen_addresses.push_back(endpoint.to_multiaddr());
+      const auto endpoint_limit = self.options.identify.max_listen_endpoints;
+      listen_addresses.reserve(std::min(endpoint_limit, remaining_endpoints.size()));
+      // Keep fresh owned circuits first so count and byte-prefix limits preserve reachability.
+      for (const auto& relay_address : relay_addresses) {
+         if (listen_addresses.size() >= endpoint_limit) {
+            break;
+         }
+         const auto found = remaining_endpoints.find(relay_address.to_string());
+         if (found != remaining_endpoints.end()) {
+            listen_addresses.push_back(found->second.to_multiaddr());
+            remaining_endpoints.erase(found);
+         }
+      }
+      for (const auto& [_, address] : remaining_endpoints) {
+         if (listen_addresses.size() >= endpoint_limit) {
+            break;
+         }
+         listen_addresses.push_back(address.to_multiaddr());
       }
       auto document = identify::document{
           .protocol_version = self.options.protocol_version,

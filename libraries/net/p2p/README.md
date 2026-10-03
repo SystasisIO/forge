@@ -392,6 +392,11 @@ shutdown invalidate pending grants, stop admission and join the workers before
 peer persistence closes. `async_cancel_relay(peer)` cancels local outbound
 ownership without closing the shared authenticated connection.
 
+Identify applies `max_listen_endpoints` to the combined advertisement before
+signing. Live reservation-backed circuits have priority within that projection;
+its signed and unsigned lists match. The full local control view and configured
+addresses are not truncated or changed by this wire budget.
+
 Circuit Relay v2 service is opt-in through `relay_policy.service_enabled`;
 capability bits alone do not enable it. Service admission requires connected
 direct owners, bounds request rates/reservations/circuits, and counts both

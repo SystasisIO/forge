@@ -31,8 +31,10 @@ module forge.net.p2p.node;
 import forge.asio.runtime;
 import forge.asio.notification;
 import forge.exceptions;
+import forge.multiformats.multiaddr;
 import forge.net.p2p.diagnostics;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.envelope;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.identify;
@@ -42,6 +44,7 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.private_network;
 import forge.net.p2p.protocol;
 import forge.net.p2p.relay;
+import forge.net.p2p.rendezvous;
 import forge.net.p2p.stream;
 import forge.net.p2p.topology;
 import forge.net.yamux.exceptions;
@@ -203,7 +206,8 @@ boost::asio::awaitable<void> require_stream_end(p2p::stream& stream, std::vector
    }
 }
 
-boost::asio::awaitable<p2p::identify::document> wire_identify(p2p::node& observer, p2p::peer_id peer) {
+boost::asio::awaitable<p2p::identify::document> wire_identify(
+    p2p::node& observer, p2p::peer_id peer, p2p::identify::limits limits = {}) {
    auto stream = co_await observer.async_open_protocol_stream(peer, p2p::builtins::identify);
    require_wire(stream.authentication() == p2p::peer_authentication::libp2p_tls,
                 "Identify evidence requires the actual authenticated TCP/TLS session");
@@ -211,11 +215,11 @@ boost::asio::awaitable<p2p::identify::document> wire_identify(p2p::node& observe
    const auto frame = co_await p2p::async_read_length_delimited(stream, buffered, 8192);
    const auto decoded = p2p::protocol_negotiation::decode_frame(frame);
    require_wire(decoded.consumed == frame.size() && buffered.empty(), "Identify evidence has unexpected remainder");
-   auto document = p2p::identify::decode(decoded.payload);
+   co_await stream.async_close();
+   auto document = p2p::identify::decode(decoded.payload, limits);
    require_wire(!document.public_key.empty() &&
                     p2p::make_peer_id(p2p::decode_public_key(document.public_key)) == peer,
                 "Identify evidence public key does not match the authenticated peer");
-   co_await stream.async_close();
    co_return document;
 }
 
@@ -287,6 +291,73 @@ BOOST_AUTO_TEST_CASE(start_acquires_and_advertises_without_manual_refresh) {
    bounded(runtime, client.async_stop());
    BOOST_TEST(circuits(client).empty());
    bounded(runtime, service.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(identify_endpoint_bound_keeps_live_circuit_and_restores_direct_after_disconnect) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto client_options = options_for("autorelay-identify-bound-client");
+   client_options.identify.max_listen_endpoints = 1;
+   auto observer_options = options_for("autorelay-identify-bound-observer");
+   observer_options.relay_policy.auto_discovery_enabled = false;
+   auto client = p2p::node{runtime, std::move(client_options)};
+   auto observer = p2p::node{runtime, std::move(observer_options)};
+   auto service = p2p::node{runtime, options_for("autorelay-identify-bound-service", true)};
+   static_cast<void>(bounded(runtime, client.async_start()));
+   static_cast<void>(bounded(runtime, observer.async_start()));
+   static_cast<void>(bounded(runtime, service.async_start()));
+   const auto direct = client.local_endpoints().front();
+   BOOST_REQUIRE(!direct.relayed);
+   static_cast<void>(bounded(runtime, observer.async_connect(direct)));
+
+   auto limits = p2p::identify::limits{};
+   limits.max_listen_endpoints = 1;
+   const auto check_snapshot = [&](const p2p::identify::document& document, const p2p::endpoint& expected) {
+      BOOST_REQUIRE_EQUAL(document.listen_endpoints.size(), 1U);
+      BOOST_TEST(document.listen_endpoints.front().to_string() == expected.to_multiaddr().to_string());
+      BOOST_REQUIRE(!document.signed_peer_record.empty());
+      const auto envelope = p2p::signed_envelope::decode(document.signed_peer_record);
+      envelope.verify("libp2p-peer-record", client.local_peer());
+      BOOST_CHECK((envelope.payload_type == std::vector<std::uint8_t>{0x03, 0x01}));
+      const auto record = p2p::rendezvous::codec::decode_peer_record(envelope.payload);
+      BOOST_CHECK(record.peer == client.local_peer());
+      BOOST_REQUIRE_EQUAL(record.endpoints.size(), 1U);
+      BOOST_TEST(record.endpoints.front().to_string() == document.listen_endpoints.front().to_string());
+      return record.sequence;
+   };
+   const auto baseline_sequence = check_snapshot(
+       bounded(runtime, wire_identify(observer, client.local_peer(), limits)), direct);
+
+   static_cast<void>(bounded(runtime, client.async_connect(service.local_endpoints().front())));
+   BOOST_REQUIRE(eventually(runtime, [&] {
+      const auto snapshot = client.diagnostics();
+      return snapshot.autorelay.automatic_reservations == 1 && snapshot.relay_reservations.size() == 1 &&
+             snapshot.relay_reservations.front().relay_peer == service.local_peer() &&
+             snapshot.relay_reservations.front().expires_at >
+                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()) &&
+             has_circuit(client, service.local_peer());
+   }));
+   const auto granted = circuits(client);
+   BOOST_REQUIRE_EQUAL(granted.size(), 1U);
+   const auto local_endpoints = client.local_endpoints();
+   BOOST_TEST(std::ranges::any_of(local_endpoints, [&](const auto& address) {
+      return address.to_string() == direct.to_string();
+   }));
+   BOOST_TEST(std::ranges::any_of(local_endpoints, [&](const auto& address) {
+      return address.to_string() == granted.front().to_string();
+   }));
+   const auto granted_sequence = check_snapshot(
+       bounded(runtime, wire_identify(observer, client.local_peer(), limits)), granted.front());
+   BOOST_TEST(granted_sequence > baseline_sequence);
+
+   bounded(runtime, service.async_stop());
+   BOOST_REQUIRE(eventually(runtime, [&] {
+      return client.diagnostics().relay_reservations.empty() && circuits(client).empty();
+   }));
+   const auto withdrawn_sequence = check_snapshot(
+       bounded(runtime, wire_identify(observer, client.local_peer(), limits)), direct);
+   BOOST_TEST(withdrawn_sequence > granted_sequence);
+   bounded(runtime, client.async_stop());
+   bounded(runtime, observer.async_stop());
 }
 
 BOOST_AUTO_TEST_CASE(renewal_tracks_lease_expiry_not_topology_refresh_interval) {
