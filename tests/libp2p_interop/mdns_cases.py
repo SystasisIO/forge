@@ -140,8 +140,17 @@ def run_case(spec: Case, binaries: dict[str, Path], root: Path, *, pnet_key: Pat
             owner.ready = ready
             readiness[role] = ready
         client = owners["client"]
+        if spec.client == "go":
+            # Go keeps its host and advertiser live until the listener has also
+            # completed native stream close and published its provisional receipt.
+            for role, label in (("client", "dialer"), ("server", "listener")):
+                provisional = wait_json(work / f"{role}.json", remaining(OPERATION_TIMEOUT))
+                if not isinstance(provisional, dict) or provisional.get("status") != "ok":
+                    raise ValueError(f"mDNS {label} did not finish its echo exchange")
+            client.stop_file.write_text("stop\n")
         try:
-            code = client.process.wait(timeout=remaining(PROCESS_TIMEOUT))
+            code = client.process.wait(timeout=remaining(SHUTDOWN_TIMEOUT if spec.client == "go"
+                                                        else PROCESS_TIMEOUT))
         except subprocess.TimeoutExpired:
             scope.attempts[-1]["timeout_class"] = "fixture_timeout"
             raise
@@ -149,9 +158,10 @@ def run_case(spec: Case, binaries: dict[str, Path], root: Path, *, pnet_key: Pat
             raise RuntimeError(f"mDNS dialer exited with {code}")
         # Wait for the listener's provisional success before requesting its stop.
         # Only the post-exit immutable receipt below is accepted as evidence.
-        provisional = wait_json(work / "server.json", remaining())
-        if not isinstance(provisional, dict) or provisional.get("status") != "ok":
-            raise ValueError("mDNS listener did not finish its echo exchange")
+        if spec.client != "go":
+            provisional = wait_json(work / "server.json", remaining())
+            if not isinstance(provisional, dict) or provisional.get("status") != "ok":
+                raise ValueError("mDNS listener did not finish its echo exchange")
     except Exception as error:
         artifact["errors"].append(f"{type(error).__name__}: {error}")
     finally:

@@ -142,9 +142,21 @@ boost::asio::awaitable<void> bounded(boost::asio::awaitable<void> operation,
    using namespace boost::asio::experimental::awaitable_operators;
    auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
    timer.expires_after(timeout);
-   const auto completed = co_await (std::move(operation) || timer.async_wait(boost::asio::use_awaitable));
+   // OR waits for success; capture failure as completion rather than masking it with the timer.
+   auto operation_failure = std::exception_ptr{};
+   auto run_operation = [&]() -> boost::asio::awaitable<void> {
+      try {
+         co_await std::move(operation);
+      } catch (...) {
+         operation_failure = std::current_exception();
+      }
+   };
+   const auto completed = co_await (run_operation() || timer.async_wait(boost::asio::use_awaitable));
    if (completed.index() != 0) {
       throw std::runtime_error{"mDNS fixture deadline expired"};
+   }
+   if (operation_failure) {
+      std::rethrow_exception(operation_failure);
    }
 }
 

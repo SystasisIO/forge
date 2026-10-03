@@ -54,12 +54,25 @@ class Process:
     def path(self, flag):
         return Path(self.command[self.command.index(flag) + 1])
 
-    def finish(self, code=0):
-        self.code = code
+    def receipt(self):
         value = copy.deepcopy(self.harness.data[self.role])
         payload = self.command[self.command.index("--payload") + 1].encode()
         value["echo"].update(bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        return value
+
+    def provisional(self):
+        value = self.receipt()
+        value["status"] = "error" if self.harness.provisional_error_role == self.role else "ok"
         self.path("--result-file").write_text(json.dumps(value))
+        self.harness.events.append((self.role, "provisional"))
+
+    def finish(self, code=0):
+        self.code = code
+        value = self.receipt()
+        if self.harness.final_error_role == self.role:
+            value.update(status="error", failure=self.harness.failure)
+        self.path("--result-file").write_text(json.dumps(value))
+        self.harness.events.append((self.role, "final"))
         if self.harness.changed_ready:
             self.path("--ready-file").write_text('{}')
         return code
@@ -68,6 +81,9 @@ class Process:
         return self.code
 
     def wait(self, timeout):
+        if self.path("--stop-file").exists():
+            self.harness.events.append((self.role, "stop"))
+        self.harness.events.append((self.role, "join"))
         if self.harness.timeout and self.role == "client":
             raise subprocess.TimeoutExpired(self.command, timeout)
         if self.role == "server" and not self.path("--stop-file").exists():
@@ -76,13 +92,15 @@ class Process:
             raise subprocess.TimeoutExpired(self.command, timeout)
         if self.role == "client":
             self.harness.client_wait_timeout = timeout
-            if timeout < self.harness.operation_elapsed:
-                raise subprocess.TimeoutExpired(self.command, timeout)
-            self.harness.now += self.harness.operation_elapsed
-            server = self.harness.processes[0]
-            # Listener has provisional success but is still serving until stop.
-            server.path("--result-file").write_text('{"status":"ok"}')
-        return self.finish(self.harness.client_code if self.role == "client" else 0)
+            if self.harness.spec.client == "go":
+                if not self.path("--stop-file").exists():
+                    raise AssertionError("Go dialer joined before existing stop-file barrier")
+            else:
+                if timeout < self.harness.operation_elapsed:
+                    raise subprocess.TimeoutExpired(self.command, timeout)
+                self.harness.now += self.harness.operation_elapsed
+                self.harness.processes[0].provisional()
+        return self.finish(self.harness.client_code if self.role == "client" else self.harness.server_code)
 
     def send_signal(self, signal):
         self.harness.signals.append(signal)
@@ -104,7 +122,10 @@ class Harness:
         self.now = 0
         self.setup_elapsed = self.readiness_elapsed = self.operation_elapsed = 0
         self.client_wait_timeout = None
-        self.client_code = 0
+        self.client_code = self.server_code = 0
+        self.provisional_error_role = self.final_error_role = None
+        self.failure = {"category": "forge.net.p2p", "code": "timeout"}
+        self.events = []
         self.signals = []
         self.network = Network(self)
 
@@ -120,6 +141,16 @@ class Harness:
             if timeout < self.readiness_elapsed:
                 raise TimeoutError("synthetic readiness timeout")
             self.now += self.readiness_elapsed
+        elif self.spec.client == "go" and path.name in ("client.json", "server.json"):
+            role = path.stem
+            process = next(p for p in self.processes if p.role == role)
+            if role == "client":
+                if timeout < self.operation_elapsed:
+                    raise TimeoutError("synthetic provisional receipt timeout")
+                self.now += self.operation_elapsed
+            if any(p.path("--stop-file").exists() or p.code is not None for p in self.processes):
+                raise AssertionError("provisional receipt requested after peer teardown")
+            process.provisional()
         return json.loads(path.read_text())
 
     def run(self, root):
@@ -133,6 +164,102 @@ class Harness:
 
 
 class MdnsCasesTests(unittest.TestCase):
+    def test_native_bound_preserves_original_exception_and_real_deadline_branch(self):
+        source = Path(__file__).with_name("forge_mdns_fixture.cpp").read_text()
+        bound = source.split("boost::asio::awaitable<void> bounded(", 1)[1].split(
+            "boost::asio::awaitable<diagnostics::session> identified(", 1)[0]
+        self.assertIn("auto operation_failure = std::exception_ptr{};", bound)
+        self.assertIn("try {\n         co_await std::move(operation);\n      } catch (...) {\n"
+                      "         operation_failure = std::current_exception();\n      }", bound)
+        self.assertIn("co_await (run_operation() || timer.async_wait(boost::asio::use_awaitable))", bound)
+        self.assertIn('if (completed.index() != 0) {\n'
+                      '      throw std::runtime_error{"mDNS fixture deadline expired"};\n   }', bound)
+        self.assertIn("if (operation_failure) {\n      std::rethrow_exception(operation_failure);\n   }", bound)
+        self.assertLess(bound.index("if (completed.index() != 0)"),
+                        bound.index("std::rethrow_exception(operation_failure)"))
+        for forbidden in ("std::move(operation) ||", "error.what()", "std::make_exception_ptr"):
+            self.assertNotIn(forbidden, bound)
+        self.assertIn("staged && !quiet ? 120s : 45s", source)
+        self.assertIn("bounded(owner->async_stop(), 5s)", source)
+
+    def test_go_echo_roles_share_bounded_stop_barrier_after_provisional_receipt(self):
+        source = (Path(__file__).parent / "go_fixture/mdns.go").read_text()
+        exchange = source.split('result["echo"] =', 1)[1]
+        publish = exchange.index("writeJSON(opts.resultFile, result)")
+        wait = exchange.index("ticker := time.NewTicker(")
+        stop = exchange.index("os.Stat(opts.stopFile)")
+        self.assertLess(publish, wait)
+        self.assertLess(wait, stop)
+        self.assertNotIn('if opts.command == "listen"', exchange)
+        self.assertIn("case <-ctx.Done():\n\t\t\treturn ctx.Err()", exchange)
+        self.assertLess(exchange.index("if failure := ctx.Err(); failure != nil"), stop)
+        self.assertIn("if !info.Mode().IsRegular()", exchange)
+        self.assertNotIn("service.Close()", exchange)
+        self.assertNotIn("h.Close()", exchange)
+
+    def test_go_receipts_precede_stop_join_and_immutable_final_capture(self):
+        for family in (4, 6):
+            with self.subTest(family=family), tempfile.TemporaryDirectory() as temp:
+                harness = Harness(cases.Case("go", "forge", "tcp-pnet", family))
+                artifact = harness.run(Path(temp))
+                self.assertEqual(artifact["status"], "passed", artifact["errors"])
+                events = harness.events
+                stop = events.index(("client", "stop"))
+                self.assertLess(events.index(("client", "provisional")), stop)
+                self.assertLess(events.index(("server", "provisional")), stop)
+                self.assertLess(stop, events.index(("client", "join")))
+                self.assertLess(events.index(("client", "join")), events.index(("client", "final")))
+                self.assertEqual(harness.client_wait_timeout, cases.SHUTDOWN_TIMEOUT)
+                self.assertEqual(harness.signals, [])
+                self.assertTrue(harness.closed_after_processes)
+                for role in ("client", "server"):
+                    owner = next(p for p in artifact["owned_processes"] if p["ready"]["role"] == (
+                        "dialer" if role == "client" else "listener"))
+                    output, = [o for o in owner["outputs"] if o["argument"] == "--result-file"]
+                    self.assertEqual(json.loads(Path(output["log_file"]).read_text()), artifact[role])
+                    Path(output["path"]).write_text('{"status":"error"}')
+                    self.assertEqual(json.loads(Path(output["log_file"]).read_text()), artifact[role])
+
+    def test_go_provisional_success_cannot_override_final_error_or_nonzero_exit(self):
+        for role in ("client", "server"):
+            for failure in ("receipt", "exit", "both"):
+                with self.subTest(role=role, failure=failure), tempfile.TemporaryDirectory() as temp:
+                    harness = Harness(cases.Case("go", "forge", "tcp-pnet"))
+                    if failure in ("receipt", "both"):
+                        harness.final_error_role = role
+                    if failure in ("exit", "both"):
+                        setattr(harness, f"{role}_code", 2)
+                    artifact = harness.run(Path(temp))
+                    self.assertEqual(artifact["status"], "failed")
+                    self.assertTrue(artifact["errors"] or artifact["cleanup_errors"])
+                    self.assertIn(("client", "provisional"), harness.events)
+                    self.assertIn(("server", "provisional"), harness.events)
+                    self.assertTrue(harness.closed_after_processes)
+                    self.assertEqual(harness.signals, [])
+                    if failure in ("receipt", "both"):
+                        self.assertEqual(artifact[role]["status"], "error")
+                        self.assertEqual(artifact[role]["failure"], harness.failure)
+                    if failure in ("exit", "both"):
+                        owner = next(p for p in artifact["owned_processes"] if p["ready"]["role"] == (
+                            "dialer" if role == "client" else "listener"))
+                        self.assertEqual(owner["terminal_status"], {"exit_code": 2, "termination": "graceful"})
+
+    def test_go_barrier_does_not_hide_forced_cleanup_or_provisional_failure(self):
+        for failure in ("timeout", "forced_server", "client", "server"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                harness = Harness(cases.Case("go", "forge", "tcp-pnet"))
+                if failure in ("client", "server"):
+                    harness.provisional_error_role = failure
+                else:
+                    setattr(harness, failure, True)
+                artifact = harness.run(Path(temp))
+                self.assertEqual(artifact["status"], "failed")
+                self.assertTrue(harness.closed_after_processes)
+                if failure in ("timeout", "forced_server"):
+                    self.assertTrue(any("forced SIGTERM" in error for error in artifact["cleanup_errors"]))
+                else:
+                    self.assertTrue(any("did not finish its echo exchange" in error for error in artifact["errors"]))
+
     def test_registry_and_hidden_commands_all_28_cases(self):
         specs = cases.case_specs()
         self.assertEqual(len(specs), 28)
