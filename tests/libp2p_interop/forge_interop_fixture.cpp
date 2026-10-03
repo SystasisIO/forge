@@ -454,6 +454,18 @@ forge::net::p2p::node::options node_options(const std::filesystem::path& store_p
    return node_options(store_path, local_identity());
 }
 
+forge::net::p2p::node::options relay_node_options(const std::filesystem::path& store_path,
+                                                const libp2p_identity& identity) {
+   auto out = node_options(store_path, identity);
+   out.allow_insecure_test_mode = false;
+   out.dht_profiles.clear();
+   return out;
+}
+
+forge::net::p2p::node::options relay_node_options(const std::filesystem::path& store_path) {
+   return relay_node_options(store_path, local_identity());
+}
+
 void configure_dns_server(forge::net::p2p::node::options& options,
                           const std::map<std::string, std::string>& args) {
    const auto value = optional_value(args, "dns-server");
@@ -1411,9 +1423,13 @@ int listen_mode(const std::map<std::string, std::string>& args) {
 
 int destination_mode(const std::map<std::string, std::string>& args) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto value = forge::net::p2p::node{runtime, node_options(required(args, "store-dir"))};
+   auto value = forge::net::p2p::node{runtime, relay_node_options(required(args, "store-dir"))};
    register_echo(value);
    forge::asio::blocking::run(runtime, value.async_listen(loopback_quic_endpoint()));
+   const auto local = value.local_endpoint();
+   if (!local) {
+      throw std::runtime_error{"FORGE destination did not expose a local endpoint"};
+   }
 
    const auto relay_addr = forge::net::p2p::parse_endpoint(required(args, "relay-addr"));
    const auto relay_peer = forge::net::p2p::peer_id::from_string(required(args, "relay-peer-id"));
@@ -1423,10 +1439,6 @@ int destination_mode(const std::map<std::string, std::string>& args) {
                                                forge::net::p2p::capabilities::relay |
                                                forge::net::p2p::capabilities::relay_reservation});
    const auto reservation = forge::asio::blocking::run(runtime, value.async_reserve_relay(relay_peer));
-   const auto local = value.local_endpoint();
-   if (!local) {
-      throw std::runtime_error{"FORGE destination did not expose a local endpoint"};
-   }
    auto relay_addrs = std::string{};
    for (std::size_t i = 0; i < reservation.relay_endpoints.size(); ++i) {
       if (i != 0) {
@@ -2143,7 +2155,7 @@ int dial_mode(const std::map<std::string, std::string>& args) {
 
 int dial_relay_mode(const std::map<std::string, std::string>& args) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto value = forge::net::p2p::node{runtime, node_options(required(args, "store-dir"))};
+   auto value = forge::net::p2p::node{runtime, relay_node_options(required(args, "store-dir"))};
    forge::asio::blocking::run(runtime, value.async_listen(loopback_quic_endpoint()));
 
    const auto relay_addr = forge::net::p2p::parse_endpoint(required(args, "relay-addr"));
@@ -2209,14 +2221,14 @@ int topology_mode(const std::map<std::string, std::string>& args) {
    const auto source_identity = generate_libp2p_identity();
    const auto destination_identity = generate_libp2p_identity();
 
-   auto relay_options = node_options(root / "relay-store", relay_identity);
+   auto relay_options = relay_node_options(root / "relay-store", relay_identity);
    relay_options.capabilities = forge::net::p2p::capability_set{
        .bits = forge::net::p2p::capabilities::direct_quic | forge::net::p2p::capabilities::relay |
                forge::net::p2p::capabilities::relay_reservation | forge::net::p2p::capabilities::hole_punching};
-   auto source_options = node_options(root / "source-store", source_identity);
+   auto source_options = relay_node_options(root / "source-store", source_identity);
    source_options.capabilities = forge::net::p2p::capability_set{.bits = forge::net::p2p::capabilities::direct_quic |
                                                                          forge::net::p2p::capabilities::hole_punching};
-   auto destination_options = node_options(root / "destination-store", destination_identity);
+   auto destination_options = relay_node_options(root / "destination-store", destination_identity);
    destination_options.capabilities = forge::net::p2p::capability_set{
        .bits = forge::net::p2p::capabilities::direct_quic | forge::net::p2p::capabilities::relay_reservation |
                forge::net::p2p::capabilities::hole_punching};
@@ -2350,10 +2362,8 @@ int main(int argc, char** argv) {
       if (args.at("command") == "autorelay-destination" || args.at("command") == "autorelay-service") {
          return forge::test::libp2p_interop::forge_autorelay_fixture::run(args, {
              .make_options = [](const auto& arguments) {
-                auto options = node_options({}, generate_libp2p_identity());
-                options.allow_insecure_test_mode = false;
+                auto options = relay_node_options({}, generate_libp2p_identity());
                 const auto service = arguments.at("command") == "autorelay-service";
-                options.dht_profiles.clear();
                 options.capabilities = forge::net::p2p::capability_set{.bits =
                     forge::net::p2p::capabilities::direct_quic | forge::net::p2p::capabilities::relay_reservation |
                     (service ? forge::net::p2p::capabilities::relay : 0)};

@@ -32,9 +32,68 @@ class AutoRelayCaseTests(unittest.TestCase):
         source = Path(__file__).with_name("forge_interop_fixture.cpp").read_text()
         factory = source.split('args.at("command") == "autorelay-destination"', 1)[1].split(
             ".listen_endpoint = loopback_endpoint_for", 1)[0]
-        self.assertIn("node_options({}, generate_libp2p_identity())", factory)
-        self.assertIn("options.allow_insecure_test_mode = false;", factory)
-        self.assertNotIn("options.allow_insecure_test_mode = true;", factory)
+        self.assertIn("auto options = relay_node_options({}, generate_libp2p_identity());", factory)
+        self.assertIn("options.relay_policy.service_enabled = service;", factory)
+        self.assertNotIn("allow_insecure_test_mode", factory)
+        self.assertNotIn("dht_profiles", factory)
+
+    def test_relay_factory_authenticates_matching_identity_without_unused_dht(self):
+        source = Path(__file__).with_name("forge_interop_fixture.cpp").read_text()
+        base = source.split("forge::net::p2p::node::options node_options(", 1)[1].split(
+            "forge::net::p2p::node::options relay_node_options(", 1)[0]
+        for binding in (".certificate_pem = identity.certificate_pem",
+                        ".private_key_pem = identity.private_key_pem",
+                        ".explicit_peer_id = identity.peer", ".public_key = identity.public_key"):
+            self.assertIn(binding, base)
+        self.assertIn(".allow_insecure_test_mode = true", base)
+        self.assertIn("out.dht_profiles.push_back(forge::net::p2p::amino_v1(", base)
+        self.assertIn("peer_store::make_memory_persistence()", base)
+
+        relay = source.split("forge::net::p2p::node::options relay_node_options(", 1)[1].split(
+            "void configure_dns_server(", 1)[0]
+        self.assertIn("auto out = node_options(store_path, identity);", relay)
+        self.assertIn("out.allow_insecure_test_mode = false;", relay)
+        self.assertIn("out.dht_profiles.clear();", relay)
+        self.assertIn("return relay_node_options(store_path, local_identity());", relay)
+        self.assertNotIn("allow_insecure_test_mode = true", relay)
+        self.assertNotIn("dht_profiles.push_back", relay)
+        self.assertNotIn("persistence", relay)
+
+        local = source.split("const libp2p_identity& local_identity() {", 1)[1].split(
+            "forge::net::p2p::node::options node_options(", 1)[0]
+        self.assertIn("static const auto identity = generate_libp2p_identity();", local)
+
+    def test_legacy_relay_roles_use_strict_factory_and_distinct_topology_identities(self):
+        source = Path(__file__).with_name("forge_interop_fixture.cpp").read_text()
+        for start, end in (("int destination_mode(", "std::string run_scenario("),
+                           ("int dial_relay_mode(", "int topology_mode(")):
+            role = source.split(start, 1)[1].split(end, 1)[0]
+            with self.subTest(role=start):
+                self.assertIn('node{runtime, relay_node_options(required(args, "store-dir"))}', role)
+                self.assertNotIn('node{runtime, node_options(', role)
+                self.assertNotIn("allow_insecure_test_mode", role)
+
+        topology = source.split("int topology_mode(", 1)[1].split("int build_info_mode()", 1)[0]
+        for role in ("relay", "source", "destination"):
+            with self.subTest(role=role):
+                self.assertIn(f"const auto {role}_identity = generate_libp2p_identity();", topology)
+                self.assertIn(f'auto {role}_options = relay_node_options(root / "{role}-store", '
+                              f"{role}_identity);", topology)
+                self.assertNotIn(f"auto {role}_options = node_options(", topology)
+        self.assertNotIn("allow_insecure_test_mode", topology)
+
+    def test_legacy_destination_captures_direct_listener_before_relay_advertisement(self):
+        source = Path(__file__).with_name("forge_interop_fixture.cpp").read_text()
+        destination = source.split("int destination_mode(", 1)[1].split("std::string run_scenario(", 1)[0]
+        listen = destination.index("value.async_listen(loopback_quic_endpoint())")
+        direct = destination.index("const auto local = value.local_endpoint();")
+        reserve = destination.index("value.async_reserve_relay(relay_peer)")
+        ready = destination.index('write_file(required(args, "ready-file")')
+        self.assertLess(listen, direct)
+        self.assertLess(direct, reserve)
+        self.assertLess(reserve, ready)
+        self.assertEqual(destination.count("value.local_endpoint()"), 1)
+        self.assertIn("endpoint_json(p2p_endpoint_for(*local, value.local_peer()))", destination)
 
     def test_listener_budget_is_derived_from_native_close_and_fixture_post_stop(self):
         root = Path(__file__).resolve().parents[2]

@@ -71,6 +71,12 @@ fixture/inventory dependencies, with artifacts under the promotion directory's
 `autorelay` subdirectory. This is not a full Stage 6 verdict; the global Stage 6
 gate remains blocked by future-protocol and private-profile gaps.
 
+The full registered Linux caller must run under `unshare --net --mount` with
+loopback brought up inside those namespaces. AutoNAT/mDNS environment failures
+from a caller without this setup are not protocol verdicts. Canonical proof
+artifacts must reside on a native Linux filesystem, not a host bind-mounted
+filesystem; namespace setup alone does not establish acceptance.
+
 Unit, package and source gates complement this live proof. None independently
 establish production readiness or promotion of untested profile combinations.
 The focused `test_forge_p2p_autorelay` target covers manager, raw-node and session
