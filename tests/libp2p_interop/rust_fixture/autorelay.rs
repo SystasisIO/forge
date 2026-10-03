@@ -31,8 +31,43 @@ pub(crate) fn connection(connection_id: impl std::fmt::Display, peer: PeerId,
     // Raw upgrade traces retain their own IDs; no guessed Swarm-to-stream binding.
     json!({"connection_id": connection_id.to_string(), "peer_id": peer.to_string(),
         "remote_addr": point.get_remote_address().to_string(),
+        "endpoint": upgrade_observer::endpoint(point), "relayed": point.is_relayed(),
         "negotiated_transport": observed_quic_transport(point),
         "upgrade_observation": opts.upgrade_observer.snapshot()})
+}
+
+pub(crate) fn refresh_connection(row: &mut Value, opts: &Options) -> Result<(), Box<dyn Error>> {
+    refresh_from_snapshot(row, opts.upgrade_observer.snapshot())
+}
+
+fn refresh_from_snapshot(row: &mut Value, observation: Value) -> Result<(), Box<dyn Error>> {
+    if observation["overflow"] != false { return Err("connection trace overflow".into()); }
+    let peer = row["peer_id"].as_str().ok_or("missing observed connection peer")?;
+    let id = row["connection_id"].as_str().ok_or("missing observed connection ID")?;
+    let events = observation["swarm_events"].as_array().ok_or("missing native Swarm events")?;
+    let matches = events.iter().filter(|event| event["kind"] == "connection_established"
+        && event["swarm_connection_id"] == id && event["authenticated_remote_peer_id"] == peer
+        && event["endpoint"] == row["endpoint"]).collect::<Vec<_>>();
+    let [event] = matches.as_slice() else { return Err("observed connection event absent/ambiguous".into()); };
+    if row["remote_addr"] != event["endpoint"]["remote_address"] {
+        return Err("observed connection endpoint changed".into());
+    }
+    if row["relayed"] == false {
+        let traces = observation["connections"].as_array().ok_or("missing native upgrade traces")?;
+        let matches = traces.iter().filter(|trace| trace["authenticated_remote_peer_id"] == peer
+            && if row["negotiated_transport"] == "/quic-v1" {
+                trace["endpoint"] == event["endpoint"]
+            } else {
+                application_observer::bound_remote_endpoint(trace, event, peer).is_ok()
+            }).collect::<Vec<_>>();
+        if matches.len() != 1 { return Err("native connection endpoint receipt absent/ambiguous".into()); }
+    } else if row["relayed"] != true {
+        return Err("missing observed connection path".into());
+    }
+    // Preserve the full raw snapshot and its incomplete flags. This refresh does
+    // not claim exact application-to-stream binding or manufacture completion.
+    row["upgrade_observation"] = observation;
+    Ok(())
 }
 
 fn identify_addresses(raw: &[u8], peer: PeerId) -> Result<Vec<String>, Box<dyn Error>> {
@@ -176,6 +211,7 @@ async fn observe(swarm: &mut libp2p::Swarm<Behaviour>, peer: PeerId, revision: &
         tokio::select! {
             result = &mut exchange => {
                 let mut row = control.clone();
+                refresh_connection(&mut row, opts)?;
                 row["kind"] = json!("identify");
                 row["protocol"] = json!(IDENTIFY);
                 row["basis"] = json!("independent_authenticated_identify_stream");
@@ -235,6 +271,7 @@ fn push_receipt(peer: PeerId, connection_id: impl std::fmt::Display, info: ident
     if fresh.len() > 1 { return Err("ambiguous native Identify Push receipt".into()); }
     if fresh.is_empty() { return Ok(None); }
     let mut row = control.clone();
+    refresh_connection(&mut row, opts)?;
     if row["connection_id"] != connection_id.to_string() { return Err("Push connection mismatch".into()); }
     row["kind"] = json!("identify_push");
     row["protocol"] = json!(PUSH);
@@ -276,6 +313,9 @@ pub(crate) async fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                     append(&mut events, row)?;
                     revision = request;
                 }
+                for row in &mut events {
+                    if row["kind"] == "connection" { refresh_connection(row, &opts)?; }
+                }
                 write_atomic(&opts.result_file, json!({"schema_version": 1, "implementation": "rust", "scenario": "autorelay",
                     "role": if service { "service" } else { "observer" }, "peer_id": peer.to_string(),
                     "transport": opts.transport, "complete": false, "overflow": false,
@@ -315,6 +355,9 @@ pub(crate) async fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             }
         }
     };
+    for row in &mut events {
+        if row["kind"] == "connection" { refresh_connection(row, &opts)?; }
+    }
     drop(swarm);
     write_atomic(&opts.result_file, json!({"schema_version": 1, "implementation": "rust", "scenario": "autorelay",
         "role": if service { "service" } else { "observer" }, "peer_id": peer.to_string(), "transport": opts.transport,

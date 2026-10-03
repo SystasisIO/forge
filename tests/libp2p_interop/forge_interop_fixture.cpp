@@ -2351,6 +2351,7 @@ int main(int argc, char** argv) {
          return forge::test::libp2p_interop::forge_autorelay_fixture::run(args, {
              .make_options = [](const auto& arguments) {
                 auto options = node_options({}, generate_libp2p_identity());
+                options.allow_insecure_test_mode = false;
                 const auto service = arguments.at("command") == "autorelay-service";
                 options.dht_profiles.clear();
                 options.capabilities = forge::net::p2p::capability_set{.bits =

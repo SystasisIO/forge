@@ -39,10 +39,14 @@ def case_specs():
 
 def _read(path):
     if path.stat().st_size > 1024 * 1024:
-        raise ValueError("AutoRelay evidence exceeds 1 MiB")
-    value = json.loads(path.read_text(), object_pairs_hook=reject_duplicate_json_keys)
+        raise ValueError(f"AutoRelay evidence exceeds 1 MiB: {path}")
+    payload = path.read_text()
+    try:
+        value = json.loads(payload, object_pairs_hook=reject_duplicate_json_keys)
+    except ValueError as error:
+        raise ValueError(f"invalid AutoRelay JSON: {path}; read_characters={len(payload)}; {error}") from error
     if not isinstance(value, dict):
-        raise ValueError("AutoRelay evidence must be an object")
+        raise ValueError(f"AutoRelay evidence must be an object: {path}")
     return value
 
 
@@ -57,6 +61,14 @@ def _await(owner, path, predicate, seconds=10):
                 return value
         time.sleep(0.05)
     raise TimeoutError(f"AutoRelay observation deadline: {path}")
+
+
+def _capture(owner, flag):
+    try:
+        return _snapshot(owner, flag)
+    except ValueError as error:
+        paths = [output.get("log_file") for output in owner.outputs if output.get("argument") == flag]
+        raise ValueError(f"invalid captured AutoRelay JSON: argument={flag}; files={paths}; {error}") from error
 
 
 def _latest(value):
@@ -109,9 +121,13 @@ def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destinat
             # Acquisition proofs pass the independently received Identify address,
             # not a runner-constructed circuit address or a self-query result.
             address = circuit.split("/p2p-circuit")[0] if circuit else ready["listen_addrs"][0]
-            result = run_relay_dial(binaries[spec.source], spec.source, "autorelay",
-                                    destination.ready["peer_id"], ready["peer_id"], address, echo_work,
-                                    transport=spec.transport)
+            try:
+                result = run_relay_dial(binaries[spec.source], spec.source, "autorelay",
+                                        destination.ready["peer_id"], ready["peer_id"], address, echo_work,
+                                        transport=spec.transport)
+            except ValueError as error:
+                result_file = echo_work / f"{spec.source}-relay-dial-autorelay.json"
+                raise ValueError(f"invalid AutoRelay echo JSON: {result_file}; {error}") from error
             echoes.append({"phase": phase, "result_file": result["result_file"]})
 
         if spec.kind == "service":
@@ -202,9 +218,9 @@ def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destinat
                 attempt["exit_code"] = terminal.get("exit_code")
         for role, owner in owners.items():
             try:
-                raw[role] = {"ready": _snapshot(owner, "--ready-file"), "process": owner.evidence()}
+                raw[role] = {"ready": _capture(owner, "--ready-file"), "process": owner.evidence()}
                 if "--result-file" in owner.command:
-                    raw[role]["result"] = _snapshot(owner, "--result-file")
+                    raw[role]["result"] = _capture(owner, "--result-file")
             except Exception as error:
                 errors.append(f"capture {role}: {error}")
         for echo in echoes:
@@ -212,7 +228,7 @@ def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destinat
                 path = Path(echo["result_file"])
                 owner = next(p for p in scope.processes if "--result-file" in p.command
                              and p.command[p.command.index("--result-file") + 1] == str(path))
-                echo["result"] = _snapshot(owner, "--result-file")
+                echo["result"] = _capture(owner, "--result-file")
                 echo["process"] = owner.evidence()
             except Exception as error:
                 errors.append(f"capture echo: {error}")

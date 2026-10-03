@@ -1,9 +1,10 @@
 from pathlib import Path
 import json
 import tempfile
+from types import SimpleNamespace
 import unittest
 
-from autorelay_cases import case_specs
+from autorelay_cases import _capture, _read, case_specs
 from autorelay_acceptance import SCENARIOS, claims_for
 import runner
 
@@ -26,6 +27,45 @@ class AutoRelayCaseTests(unittest.TestCase):
                          "snapshot.relay_reservations", "snapshot.autorelay"):
             self.assertIn(required, source)
         self.assertNotIn("peer.relay_reservations", source)
+
+    def test_autorelay_factory_requires_real_authenticated_identity(self):
+        source = Path(__file__).with_name("forge_interop_fixture.cpp").read_text()
+        factory = source.split('args.at("command") == "autorelay-destination"', 1)[1].split(
+            ".listen_endpoint = loopback_endpoint_for", 1)[0]
+        self.assertIn("node_options({}, generate_libp2p_identity())", factory)
+        self.assertIn("options.allow_insecure_test_mode = false;", factory)
+        self.assertNotIn("options.allow_insecure_test_mode = true;", factory)
+
+    def test_malformed_json_fails_once_with_exact_path_and_original_decode_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "destination.json"
+            path.write_text('{"observations":[{"peer_id":"unfinished')
+            with self.assertRaises(ValueError) as raised:
+                _read(path)
+            self.assertIn(str(path), str(raised.exception))
+            self.assertIn(f"read_characters={len(path.read_text())}", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, json.JSONDecodeError)
+
+    def test_json_path_diagnostics_preserve_duplicate_key_and_object_guards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "observer.json"
+            for raw in ('{"complete":false,"complete":true}', '[]'):
+                path.write_text(raw)
+                with self.subTest(raw=raw), self.assertRaises(ValueError) as raised:
+                    _read(path)
+                self.assertIn(str(path), str(raised.exception))
+
+    def test_terminal_capture_decode_failure_names_immutable_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actor.log.result-file.json"
+            path.write_text('{"events":[')
+            owner = SimpleNamespace(log_file=Path(directory) / "actor.log", outputs=[{
+                "argument": "--result-file", "exists": True, "log_file": str(path)}])
+            with self.assertRaises(ValueError) as raised:
+                _capture(owner, "--result-file")
+            self.assertIn(str(path), str(raised.exception))
+            self.assertIn("--result-file", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, json.JSONDecodeError)
 
     def test_six_canonical_role_transport_registrations_bind_all_twelve_cases(self):
         self.assertEqual(len(runner.AUTORELAY_ACCEPTANCE_SCENARIOS), 6)

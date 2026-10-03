@@ -340,7 +340,7 @@ impl Observer {
     }
 }
 
-fn endpoint(point: &ConnectedPoint) -> Value {
+pub(crate) fn endpoint(point: &ConnectedPoint) -> Value {
     match point {
         ConnectedPoint::Dialer {
             address,
@@ -1804,6 +1804,79 @@ mod tests {
         let snapshot = observer.snapshot();
         assert_eq!(snapshot["connections"][0]["transport_output_receipts"].as_array().unwrap().len(), 2);
         assert_eq!(snapshot["overflow"], true);
+    }
+
+    fn autorelay_control_fixture() -> (super::super::Options, Trace, Value, StreamMuxerBox) {
+        let observer = Observer::default();
+        let peer = PeerId::random();
+        let point = ConnectedPoint::Dialer {
+            address: format!("/ip4/127.0.0.1/tcp/4002/p2p/{peer}").parse().unwrap(),
+            role_override: Endpoint::Dialer,
+            port_use: libp2p::core::transport::PortUse::Reuse,
+        };
+        let trace = observer.begin(&point, "/ip4/127.0.0.1/tcp/4001".into(),
+            "/ip4/127.0.0.1/tcp/4002".into(), PeerId::random());
+        trace.update(|connection| connection.remote_peer = peer.to_string());
+        let muxer = StreamMuxerBox::new(FakeMuxer {
+            calls: Arc::new(Mutex::new(Vec::new())), trace: trace.clone(),
+        });
+        let (_, muxer) = bind_transport_output((peer, muxer, trace.clone()), point.clone(), false);
+        let opts = super::super::Options { upgrade_observer: observer, ..Default::default() };
+        let row = super::super::autorelay::connection("17", peer, &point, &opts);
+        (opts, trace, row, muxer)
+    }
+
+    #[test]
+    fn autorelay_control_refresh_preserves_lazy_incompletion_until_wire_selection() {
+        let (opts, trace, mut row, _muxer) = autorelay_control_fixture();
+        let original = row.clone();
+        super::super::autorelay::refresh_connection(&mut row, &opts).unwrap();
+        assert_eq!(row["upgrade_observation"]["connections"][0]["muxer_complete"], false);
+        trace.update(|connection| {
+            for (phase, protocol) in [(0, "/noise"), (1, "/yamux/1.0.0")] {
+                connection.phases[phase].delegate_protocol = Some(protocol.to_owned());
+                connection.phases[phase].delegate_complete = true;
+                for side in 0..2 {
+                    for byte in frame(HEADER.as_bytes()).into_iter().chain(frame(format!("{protocol}\n").as_bytes())) {
+                        connection.phases[phase].byte(side, byte);
+                    }
+                }
+                connection.milestones(phase);
+            }
+        });
+        super::super::autorelay::refresh_connection(&mut row, &opts).unwrap();
+        assert_eq!(row["upgrade_observation"]["connections"][0]["muxer_complete"], true);
+        assert_eq!(row["upgrade_observation"]["connections"][0]["security_complete"], true);
+        assert_eq!(original["upgrade_observation"]["connections"][0]["muxer_complete"], false);
+        for field in ["connection_id", "peer_id", "endpoint", "remote_addr"] { assert_eq!(row[field], original[field]); }
+        assert_eq!(row["upgrade_observation"]["swarm_events"].as_array().unwrap().len(), 1);
+        assert_eq!(row["upgrade_observation"]["exact_application_binding_supported"], false);
+        assert_eq!(row["upgrade_observation"]["swarm_connection_binding_supported"], false);
+    }
+
+    #[test]
+    fn autorelay_control_refresh_rejects_changed_event_or_native_endpoint_receipt() {
+        let (opts, trace, row, _muxer) = autorelay_control_fixture();
+        for field in ["connection_id", "peer_id", "remote_addr", "endpoint"] {
+            let mut wrong = row.clone();
+            wrong[field] = json!("not the observed event");
+            let before = wrong.clone();
+            assert!(super::super::autorelay::refresh_connection(&mut wrong, &opts).is_err());
+            assert_eq!(wrong, before);
+        }
+        trace.update(|connection| {
+            let receipt = connection.transport_output_receipts[0].clone();
+            connection.transport_output_receipts.push(receipt);
+        });
+        let mut ambiguous = row.clone();
+        assert!(super::super::autorelay::refresh_connection(&mut ambiguous, &opts).is_err());
+        assert_eq!(ambiguous, row);
+        trace.update(|connection| {
+            connection.transport_output_receipts.pop();
+            connection.transport_output_receipts[0]["request_endpoint"]["remote_address"] = json!("/ip4/127.0.0.1/tcp/4999");
+        });
+        assert!(super::super::autorelay::refresh_connection(&mut ambiguous, &opts).is_err());
+        assert_eq!(ambiguous, row);
     }
 
     #[test]
