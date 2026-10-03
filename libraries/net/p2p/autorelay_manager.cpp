@@ -117,20 +117,24 @@ void autorelay_manager::parent_complete(std::exception_ptr error) noexcept {
 void autorelay_manager::finish_if_ready() noexcept {
    auto operation = lifecycle_tracker::operation{};
    auto subscription = lifecycle_stop_subscription{};
+   auto finished = false;
    {
       const auto lock = std::scoped_lock{_mutex};
-      if (!_parent_done || _children != 0 || _finished) { return; }
+      if (!_parent_done || _finished) { return; }
       // Parent completion has invalidated every claim; this reap cannot allocate.
       reap_locked(std::chrono::steady_clock::now());
-      _finished = true;
-      _stats.running = false;
-      operation = std::move(_operation);
-      subscription = std::move(_subscription);
+      if (_children == 0) {
+         _finished = true;
+         _stats.running = false;
+         operation = std::move(_operation);
+         subscription = std::move(_subscription);
+         finished = true;
+      }
    }
-   subscription.reset();
+   if (finished) { subscription.reset(); }
    _wakeup->notify();
    _changed->notify();
-   operation.release();
+   if (finished) { operation.release(); }
 }
 
 void autorelay_manager::notify() noexcept { _wakeup->notify(); }

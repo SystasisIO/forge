@@ -1144,6 +1144,19 @@ add_test(NAME test_forge_quic_p2p COMMAND test_forge_quic_p2p WORKING_DIRECTORY 
 set_tests_properties(test_forge_quic_p2p PROPERTIES TIMEOUT 300)
 
 add_executable(
+   test_forge_p2p_autorelay
+   unit/main.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/autorelay_manager_fixture.cpp
+   quic_p2p/autorelay_manager_tests.cpp
+   quic_p2p/node_autorelay_tests.cpp
+   quic_p2p/node_session_tests.cpp
+)
+target_link_libraries(test_forge_p2p_autorelay forge_net_p2p Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_autorelay COMMAND test_forge_p2p_autorelay WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_autorelay PROPERTIES TIMEOUT 120)
+
+add_executable(
    test_forge_net_pnet
    unit/main.cpp
    net_pnet/pnet_tests.cpp
