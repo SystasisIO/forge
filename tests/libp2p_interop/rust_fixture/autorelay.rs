@@ -1,5 +1,6 @@
 //! Bounded observations around the existing native Swarm, never a relay implementation.
 use super::*;
+use libp2p::core::SignedEnvelope;
 use serde_json::Value;
 
 const HOP: &str = "/libp2p/circuit/relay/0.2.0/hop";
