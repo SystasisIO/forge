@@ -16,6 +16,7 @@ import forge.net.p2p.dialing;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.identify;
 import forge.net.p2p.host_event;
@@ -23,6 +24,7 @@ import forge.net.p2p.lifecycle;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.reachability;
+import forge.net.p2p.relay;
 import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.topology;
@@ -250,6 +252,28 @@ struct diagnostics {
       std::uint64_t probe_errors = 0;
    };
 
+   struct autorelay_state {
+      bool enabled = false;
+      bool running = false;
+      bool permitted = false;
+      bool stopping = false;
+      std::size_t candidates = 0;
+      std::size_t pending_reservations = 0;
+      std::size_t reservations = 0;
+      std::size_t automatic_reservations = 0;
+      std::size_t waiting_refreshes = 0;
+      std::size_t max_candidates = 0;
+      std::size_t max_parallel_reservations = 0;
+      std::size_t target_reservations = 0;
+      std::uint64_t refreshes = 0;
+      std::uint64_t attempts = 0;
+      std::uint64_t successes = 0;
+      std::uint64_t failures = 0;
+      std::uint64_t renewals = 0;
+      std::uint64_t invalidated_completions = 0;
+      std::optional<exceptions::code> last_error;
+   };
+
    struct snapshot {
       network_state network;
       metrics_snapshot metrics;
@@ -265,6 +289,9 @@ struct diagnostics {
       topology_state topology;
       dialing::black_hole_status black_holes;
       reachability_state reachability;
+      autorelay_state autorelay;
+      // Active outbound ownership, bounded by options::max_peers; not persisted history.
+      std::vector<relay::reservation::info> relay_reservations;
    };
 };
 
@@ -314,9 +341,19 @@ BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::topology_state, (),
                        max_candidates, max_parallel_queries, max_parallel_dials, configured_rendezvous_points,
                        max_peer_exchange_peers, dht_enabled, peer_exchange_enabled, refresh_queued, refresh_in_flight,
                        observations, mdns_observations, active_operations, waiting_refreshes, completed_refreshes, failed_refreshes))
-BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::snapshot, (),
+export namespace forge::net::p2p {
+
+BOOST_DESCRIBE_STRUCT(diagnostics::snapshot, (),
                       (network, metrics, resources, pubsub, connections, peers, sessions, persistence, dht_profiles,
-                       lifecycle, effective_limits, topology, black_holes, reachability))
+                       lifecycle, effective_limits, topology, black_holes, reachability, autorelay, relay_reservations))
+BOOST_DESCRIBE_STRUCT(diagnostics::autorelay_state, (),
+                      (enabled, running, permitted, stopping, candidates, pending_reservations, reservations,
+                       automatic_reservations, waiting_refreshes, max_candidates, max_parallel_reservations,
+                       target_reservations, refreshes, attempts, successes, failures, renewals,
+                       invalidated_completions, last_error))
+
+} // namespace forge::net::p2p
+
 BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::reachability_state, (),
                       (host, client_v1_enabled, client_v2_enabled, service_v1_enabled, service_v2_enabled,
                        internet_egress_allowed, pending_probes, pending_pings, waiting_probes, active_handlers,

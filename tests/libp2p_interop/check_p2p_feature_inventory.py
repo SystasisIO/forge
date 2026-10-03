@@ -13,6 +13,11 @@ from autonat_acceptance import (
     ROLE_DIRECTIONS,
     SCENARIOS as AUTONAT_SCENARIOS,
 )
+from autorelay_acceptance import (
+    EVIDENCE_CONTRACTS as AUTORELAY_EVIDENCE_CONTRACTS,
+    ROLE_DIRECTIONS as AUTORELAY_ROLE_DIRECTIONS,
+    SCENARIOS as AUTORELAY_SCENARIOS,
+)
 from check_stage6_acceptance import EVIDENCE_CONTRACT_VALIDATORS, expected_launcher_transport
 from mdns_acceptance import SCENARIOS as MDNS_SCENARIOS, EVIDENCE_CONTRACTS as MDNS_EVIDENCE_CONTRACTS
 from provenance import (
@@ -21,6 +26,9 @@ from provenance import (
     donor_source_object_errors,
 )
 from stage6_evidence_contract import (
+    AUTORELAY_NATIVE_DIRECTIONS,
+    AUTORELAY_NATIVE_PROFILES,
+    AUTORELAY_NATIVE_SOURCE_CASES,
     EVIDENCE_CONTRACT_PREFIX,
     EVIDENCE_CONTRACT_SUFFIX,
     evidence_contract_for,
@@ -165,6 +173,41 @@ def donor_case_has_source(case: object, donor_prefix: str) -> bool:
     )
 
 
+def autorelay_native_profile_errors(capability_id: str, capability: dict, scenario: dict) -> list[str]:
+    scenario_id = scenario.get("id")
+    profile = AUTORELAY_NATIVE_PROFILES.get(scenario_id) if isinstance(scenario_id, str) else None
+    if profile is None:
+        return [f"donor capability {capability_id}: unknown PR9 native evidence profile"]
+    owner, role, transport, runner_profile = profile
+    expected_stack = ["quic"] if transport == "quic" else ["tcp", "yamux"]
+    directions = scenario.get("required_directions")
+    if (
+        capability_id != owner
+        or capability.get("decision") != "stage_6"
+        or capability.get("interop_applicability") != "go_and_rust"
+        or capability.get("profiles") != ["native"]
+        or scenario.get("registration") != "registered"
+        or scenario.get("profile") != "native"
+        or scenario.get("transport_stack") != expected_stack
+        or scenario.get("activation") != "enabled"
+        or scenario.get("runner_scenario_id") != f"{runner_profile}/{scenario_id}"
+        or scenario.get("evidence_contract") != evidence_contract_for(scenario_id)
+        or scenario.get("source_case_id") != AUTORELAY_NATIVE_SOURCE_CASES[role]
+        or scenario.get("requires_capabilities", []) != []
+        or scenario.get("expected_status") != "passed"
+        or not isinstance(directions, list)
+        or any(not isinstance(direction, str) for direction in directions)
+        or set(directions) != AUTORELAY_NATIVE_DIRECTIONS[role]
+        or len(directions) != len(AUTORELAY_NATIVE_DIRECTIONS[role])
+        or expected_launcher_transport("native", tuple(expected_stack), evidence_contract_for(scenario_id)) != transport
+    ):
+        return [
+            f"donor capability {capability_id}: PR9 native evidence profile must match its exact "
+            "staged owner, role directions, transport, runner and source case"
+        ]
+    return []
+
+
 def donor_case_text(case: object) -> str:
     if not isinstance(case, dict):
         return ""
@@ -234,6 +277,7 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
             "CURRENT_ACCEPTANCE_SCENARIOS",
             "AUTONAT_ACCEPTANCE_SCENARIOS",
             "MDNS_ACCEPTANCE_SCENARIOS",
+            "AUTORELAY_ACCEPTANCE_SCENARIOS",
         }:
             continue
         if target.id in literal_maps:
@@ -273,9 +317,16 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
     mdns = literal_maps.get("MDNS_ACCEPTANCE_SCENARIOS", {})
     if mdns != {value[1]: (name,) for name, value in MDNS_SCENARIOS.items()}:
         raise ValueError("mDNS registration must cover both exact focused-suite contracts")
+    autorelay = literal_maps.get("AUTORELAY_ACCEPTANCE_SCENARIOS", {})
+    if "AUTORELAY_ACCEPTANCE_SCENARIOS" in literal_maps and autorelay != {
+        f"{value[3]}/{name}": (name,) for name, value in AUTORELAY_NATIVE_PROFILES.items()
+    }:
+        raise ValueError("AutoRelay registration must cover all 6 exact native role/transport scenarios")
+    if any(key not in runner_scenario_ids for key in autorelay):
+        raise ValueError("AutoRelay registration must be declared in LIVE_SCENARIO_PROFILES")
     return {
         (runner_scenario_id, scenario_id)
-        for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat, **mdns}.items()
+        for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat, **mdns, **autorelay}.items()
         for scenario_id in scenario_ids
     }
 
@@ -848,7 +899,7 @@ def main() -> int:
             {"native", "private_network"}, "required", "opt_in", "go_only_rust_limited", "stage_6"
         ),
         "nat.upnp_mapping": (
-            {"native", "private_network"}, "optional", "opt_in", "not_applicable", "stage_6"
+            {"native", "private_network"}, "deferred", "not_applicable", "not_applicable", "future_profile"
         ),
         "relay.circuit_v2_service": (
             {"native"}, "optional", "opt_in", "go_and_rust", "stage_6"
@@ -907,7 +958,6 @@ def main() -> int:
         "forge-p2p-address-resolution-v1",
         "forge-p2p-reachability-v1",
         "forge-p2p-mdns-v1",
-        "forge-p2p-nat-mapping-v1",
         "forge-p2p-autorelay-v1",
         "forge-p2p-path-management-v1",
         "forge-p2p-gossipsub-scoring-v1",
@@ -919,6 +969,8 @@ def main() -> int:
         stage_6_registry = []
     registry_by_branch: dict[str, dict[str, object]] = {}
     registry_owners: list[str] = []
+    # PR8 is deferred; preserve the published PR9-12 identities.
+    stage_6_ordinals = (0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12)
     for index, entry in enumerate(stage_6_registry):
         if not isinstance(entry, dict) or set(entry) != {
             "ordinal",
@@ -932,7 +984,13 @@ def main() -> int:
         branch = entry.get("branch")
         dependencies = entry.get("dependencies")
         owners = entry.get("allowed_capability_owners")
-        if ordinal != index or not isinstance(branch, str) or not branch:
+        if (
+            index >= len(stage_6_ordinals)
+            or type(ordinal) is not int
+            or ordinal != stage_6_ordinals[index]
+            or not isinstance(branch, str)
+            or not branch
+        ):
             errors.append(f"donor capabilities: Stage 6 registry entry {index} has invalid ordinal or branch")
             continue
         if branch in registry_by_branch:
@@ -971,11 +1029,6 @@ def main() -> int:
             "forge-p2p-private-network-v1",
         ],
         "forge-p2p-mdns-v1": ["forge-chrono-v1", "forge-p2p-private-network-v1"],
-        "forge-p2p-nat-mapping-v1": [
-            "forge-chrono-v1",
-            "forge-p2p-host-protection-v1",
-            "forge-p2p-reachability-v1",
-        ],
         "forge-p2p-autorelay-v1": [
             "forge-chrono-v1",
             "forge-p2p-host-protection-v1",
@@ -1153,6 +1206,28 @@ def main() -> int:
         errors.append("donor capabilities: acceptance registry must cover interoperable capabilities exactly")
         acceptance_capabilities = {}
 
+    if (AUTORELAY_SCENARIOS != AUTORELAY_NATIVE_PROFILES
+            or AUTORELAY_ROLE_DIRECTIONS != AUTORELAY_NATIVE_DIRECTIONS
+            or AUTORELAY_EVIDENCE_CONTRACTS != {
+                evidence_contract_for(name) for name in AUTORELAY_NATIVE_PROFILES
+            }):
+        errors.append("donor capabilities: PR9 native profiles differ from the canonical AutoRelay suite")
+    # Planned pre-PR9 fixtures retain their old service-only contract. Once any
+    # PR9 wire claim is registered, the whole closed six-profile suite is required.
+    registered_pr9 = any(
+        isinstance(acceptance, dict) and isinstance(acceptance.get("scenarios"), list) and any(
+            isinstance(scenario, dict)
+            and isinstance(scenario.get("id"), str)
+            and scenario.get("id") in AUTORELAY_NATIVE_PROFILES
+            and scenario.get("registration") == "registered"
+            for scenario in acceptance["scenarios"]
+        )
+        for acceptance in acceptance_capabilities.values()
+    )
+    executable_contracts = set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
+    if registered_pr9:
+        executable_contracts |= AUTORELAY_EVIDENCE_CONTRACTS
+
     expected_directions = {
         "go_and_rust": {"forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"},
         "go_only": {"forge_to_go", "go_to_forge"},
@@ -1202,6 +1277,9 @@ def main() -> int:
         # the separate AutoNAT suite validator still requires all 41 cases.
         if capability_id in {value[0] for value in AUTONAT_SCENARIOS.values()}:
             expected_primary_directions = ROLE_DIRECTIONS[capability_id.rsplit("_", 1)[1]]
+        if registered_pr9 and capability_id in {value[0] for value in AUTORELAY_NATIVE_PROFILES.values()}:
+            role = next(value[1] for value in AUTORELAY_NATIVE_PROFILES.values() if value[0] == capability_id)
+            expected_primary_directions = AUTORELAY_NATIVE_DIRECTIONS[role]
         has_primary_scenario = False
         has_registered_scenario = False
         for scenario in scenarios:
@@ -1245,8 +1323,8 @@ def main() -> int:
                 or evidence_contract != evidence_contract_for(scenario_id)
                 or evidence_contract not in declared_contract_set
                 or registration not in {"registered", "planned"}
-                or (registration == "registered" and evidence_contract not in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS))
-                or (registration == "planned" and evidence_contract in (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS))
+                or (registration == "registered" and evidence_contract not in executable_contracts)
+                or (registration == "planned" and evidence_contract in executable_contracts)
                 or evidence_contract in seen_evidence_contracts
             ):
                 errors.append(
@@ -1292,6 +1370,8 @@ def main() -> int:
                 or set(directions) != ROLE_DIRECTIONS[AUTONAT_SCENARIOS[scenario_id][1]]
             ):
                 errors.append(f"donor capability {capability_id}: AutoNAT directions must match the actual Forge role")
+            if registered_pr9 and isinstance(scenario_id, str) and scenario_id in AUTORELAY_NATIVE_PROFILES:
+                errors.extend(autorelay_native_profile_errors(capability_id, capability, scenario))
             if registration == "registered":
                 has_registered_scenario = True
                 if isinstance(runner_scenario_id, str) and isinstance(scenario_id, str):
@@ -1299,7 +1379,9 @@ def main() -> int:
                 # Registration establishes an executable contract, not a live
                 # verdict. Only the new paired suite may register while staged.
                 if capability.get("decision") != "current" and not (
-                    capability.get("decision") == "stage_6" and scenario_id in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS))
+                    capability.get("decision") == "stage_6" and scenario_id in (
+                        set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_NATIVE_PROFILES)
+                    )
                 ):
                     errors.append(
                         f"donor capability {capability_id}: staged scenario cannot claim current runner registration"
@@ -1409,7 +1491,7 @@ def main() -> int:
 
     if declared_contract_set != seen_evidence_contracts:
         errors.append("donor capabilities: evidence contract registry must cover acceptance scenarios exactly")
-    if registered_evidence_contracts != set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS:
+    if registered_evidence_contracts != executable_contracts:
         errors.append(
             "donor capabilities: executable validator registry must match registered evidence contracts exactly"
         )
@@ -1474,6 +1556,11 @@ def main() -> int:
             "inline_muxer_rust_tls_fixed_alpn_fallback_private_pnet",
         },
     }
+    if registered_pr9:
+        for owner in {value[0] for value in AUTORELAY_NATIVE_PROFILES.values()}:
+            required_stage_6_scenarios[owner] = {
+                name for name, value in AUTORELAY_NATIVE_PROFILES.items() if value[0] == owner
+            }
     for capability_id, expected_ids in required_stage_6_scenarios.items():
         scenarios = acceptance_capabilities.get(capability_id, {}).get("scenarios", [])
         actual_ids = {
@@ -1622,6 +1709,20 @@ def main() -> int:
         if capability is None:
             errors.append(f"donor capabilities: host-local policy classification is missing {capability_id}")
         elif capability.get("interop_applicability") != "not_applicable":
+            if capability_id == "relay.autorelay_lifecycle":
+                scenarios = acceptance_capabilities.get(capability_id, {}).get("scenarios", [])
+                expected_ids = {
+                    name for name, value in AUTORELAY_NATIVE_PROFILES.items() if value[0] == capability_id
+                }
+                if (registered_pr9 and isinstance(scenarios, list)
+                        and len(scenarios) == len(expected_ids)
+                        and all(isinstance(scenario, dict) for scenario in scenarios)
+                        and {scenario.get("id") for scenario in scenarios} == expected_ids
+                        and all(not autorelay_native_profile_errors(capability_id, capability, scenario)
+                                for scenario in scenarios)):
+                    # Only real HOP/Identify/circuit lifecycle observation is bilateral;
+                    # the autonomous selection policy itself remains host-local.
+                    continue
             errors.append(
                 f"donor capability {capability_id}: host-local orchestration cannot claim bilateral interop"
             )

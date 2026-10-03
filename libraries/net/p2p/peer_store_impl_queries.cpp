@@ -22,6 +22,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -250,7 +251,8 @@ std::vector<peer_store::record> peer_store::impl::snapshot(std::size_t limit) co
    return result;
 }
 
-std::vector<peer_store::record> peer_store::impl::candidates(std::uint64_t capability, std::size_t limit) const {
+std::vector<peer_store::record> peer_store::impl::candidates(std::uint64_t capability, std::size_t limit,
+                                                          std::span<const peer_id> excluded_peers) const {
    auto lock = std::scoped_lock{mutex_};
    auto result = std::vector<peer_store::record>{};
    if (capability == 0 || limit == 0) {
@@ -264,11 +266,13 @@ std::vector<peer_store::record> peer_store::impl::candidates(std::uint64_t capab
    }
 
    result.reserve(std::min(limit, index->second.size()));
+   const auto excluded = std::set<peer_id>{excluded_peers.begin(), excluded_peers.end()};
    const auto now = std::chrono::system_clock::now();
    for (const auto& [_, peer] : index->second) {
       if (result.size() == limit) {
          break;
       }
+      if (excluded.contains(peer)) { continue; }
       const auto record = records_.find(peer);
       if (record == records_.end() || !record->second.capabilities.has(capability)) {
          continue;

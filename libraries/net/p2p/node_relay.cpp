@@ -46,6 +46,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.exceptions;
 import forge.asio.gate;
 import forge.asio.notification;
@@ -115,15 +117,8 @@ boost::asio::awaitable<void> node::async_cancel_relay(peer_id relay_peer) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options,
                             "P2P private-network profile does not permit relay cancellation");
    }
-   {
-      auto lock = std::scoped_lock{self->mutex};
-      self->cleanup_expired_relay_reservations_locked();
-      const auto it = self->outbound_relay_reservations.find(relay_peer);
-      if (it == self->outbound_relay_reservations.end()) {
-         co_return;
-      }
-      self->outbound_relay_reservations.erase(it);
-   }
+   self->cancel_outbound_relay(relay_peer);
+   co_return;
 }
 
 boost::asio::awaitable<hole_punch::status>

@@ -122,7 +122,8 @@ network mechanics and their maintenance:
 - DHT routing refresh and provider-record maintenance;
 - Rendezvous registration/discovery refresh;
 - Peer Exchange scheduling;
-- optional UPnP mapping renewal and loss detection;
+- optional UPnP mapping renewal and loss detection in the deferred router
+  configuration block, outside the initial production profile;
 - AutoRelay candidate selection and reservation renewal;
 - DCUtR attempts and relay fallback;
 - adaptive dial ordering and UDP/IPv6 black-hole suppression;
@@ -208,8 +209,8 @@ Forge uses explicit production profiles rather than claiming every donor crate:
 The private-network profile is not an alias for every native transport. Its
 scope lock deliberately selects TCP/Yamux plus routing, discovery and pubsub
 under the PSK transport layer; QUIC, Circuit Relay and DCUtR are excluded until
-a donor-backed PSK-compatible design exists. AutoNAT and UPnP require one
-explicit private-profile Internet-egress policy. Stage 8 evaluates that explicit
+a donor-backed PSK-compatible design exists. AutoNAT and any future UPnP require
+one explicit private-profile Internet-egress policy. Stage 8 evaluates that explicit
 profile rather than inheriting unsupported native paths.
 
 The first donor-first audit found these missing or incomplete host mechanisms:
@@ -219,7 +220,7 @@ The first donor-first audit found these missing or incomplete host mechanisms:
 | mDNS | Public mDNS has Go/Rust interop; private fingerprinted mDNS is Go-compatible and carries an explicit Rust limitation. | Stage 6, `forge-p2p-mdns-v1` |
 | DNSAddr | Resolves TXT records containing complete peer multiaddrs; ordinary DNS host lookup is not equivalent. | Stage 6, `forge-p2p-address-resolution-v1` |
 | Observed-address manager | Requires independent observations, confidence and expiry before publishing an external address. | Stage 6, `forge-p2p-reachability-v1` |
-| UPnP | Optionally owns native NAT mappings and their renewal/loss lifecycle; private use requires explicit Internet egress. | Stage 6, `forge-p2p-nat-mapping-v1` |
+| UPnP | Deferred automatic router mapping; unsupported in the initial production profile. Future private use requires explicit Internet egress. | Subsequent router configuration block; former PR8 `forge-p2p-nat-mapping-v1` |
 | Private network PSK | Isolates a deployment through a transport PSK layer before the normal secure-channel handshake; it is not a negotiated protocol ID. | Stage 6, `forge-p2p-private-network-v1` |
 | Connection gater | Rejects at peer dial, address dial, accept, secured identity and upgraded-connection stages. | Stage 6, `forge-p2p-host-protection-v1` |
 | Full resource scopes | Bounds memory, file descriptors, transient work and services in addition to sessions/streams/bytes. | Stage 6, `forge-p2p-host-protection-v1` |
@@ -787,8 +788,8 @@ corresponding Forge facility exists.
 - add public Go/Rust mDNS, private fingerprinted mDNS with its Rust limitation,
   and DNSAddr discovery without parallel topology loops;
 - add the PSK transport layer as an explicit TCP/Yamux private profile, with no
-  negotiated `/pnet` ID, QUIC, Relay or DCUtR; AutoNAT and UPnP need explicit
-  private-profile Internet egress;
+  negotiated `/pnet` ID, QUIC, Relay or DCUtR; AutoNAT and any future UPnP need
+  explicit private-profile Internet egress;
 - add Happy Eyeballs, IPv6 black-hole state for native/private profiles, UDP
   black-hole state for the native profile and typed host-state events;
 - preserve Circuit Relay v2 client/transport semantics, keep AutoRelay candidate
@@ -801,15 +802,22 @@ corresponding Forge facility exists.
 - complete GossipSub scoring, thresholds, decay, mesh diversity, v1.0 fallback,
   v1.2 and v1.3 first-RPC extension advertisement, unknown-extension ignore and
   capability matching, plus opt-in Partial Messages implementation;
-- deliver only these 13 focused implementation PRs, with no new plugin-owned
-  network loops, ordered as PR0 through PR12:
+- deliver these 12 focused PRs, with no new plugin-owned network loops,
+  preserving PR0 through PR7 and PR9 through PR12 (PR8 is deferred):
   `forge-p2p-stage6-roadmap-v1`, `forge-chrono-v1`,
   `forge-p2p-host-protection-v1`, `forge-crypto-xsalsa20-v1`,
   `forge-p2p-private-network-v1`, `forge-p2p-address-resolution-v1`,
   `forge-p2p-reachability-v1`, `forge-p2p-mdns-v1`,
-  `forge-p2p-nat-mapping-v1`, `forge-p2p-autorelay-v1`,
+  `forge-p2p-autorelay-v1`,
   `forge-p2p-path-management-v1`, `forge-p2p-gossipsub-scoring-v1` and
   `forge-p2p-gossipsub-extensions-v1`.
+
+UPnP is moved out of Stage 6 into a subsequent automatic router configuration
+block, not dropped or marked implemented. PR9 AutoRelay has no UPnP dependency.
+Stages 7 and 8 target a profile without automatic router port mapping: direct
+reachable/manually forwarded addresses, relay fallback and DCUtR upgrades must
+be proven independently. See the
+[deferred scope and acceptance](forge-p2p-production-implementation-v1.md#subsequent-block-automatic-router-configuration).
 
 The exact order, dependency DAG and permitted capability owners are locked by
 `stage_6_pr_registry` in `p2p_donor_capabilities.json`; the roadmap, chrono and
@@ -868,7 +876,8 @@ management also depends on address resolution. Reachability has no direct
 address-resolution dependency because AutoNAT, Ping and observed-address policy
 operate on configured or Identify-observed endpoints and do not resolve
 `/dnsaddr`. In the private profile, every AutoNAT lifecycle/client/service role
-and UPnP depends on the Forge-owned Internet-egress policy; native roles do not.
+and any future UPnP depends on the Forge-owned Internet-egress policy; native
+roles do not.
 Private fingerprinted mDNS and that egress policy are Forge extensions informed
 by donor patterns and limitations, not donor-spec claims. Rendezvous is
 Rust-supported with an explicit Go limitation: no
@@ -891,6 +900,23 @@ work after the raw-node contracts are stable.
 - remove all plugin-owned network maintenance;
 - expose narrow typed contributions and read-only diagnostics;
 - prove configuration, restart and shutdown parity with programmatic nodes.
+
+Consumer access uses focused local typed API contracts grouped by capability,
+not a mutable node or peer-store escape hatch. `plugins.net.p2p.node` retains
+configuration, identity, persistence and node lifecycle ownership. Existing
+library types and operation handles are reused; forwarding must not introduce
+network loops or duplicate runtime state. Every public node capability must
+appear in a tested coverage table: consumer API, owner-only, or explicitly
+deferred/unsupported. No consumer feature may be silently omitted. Exact
+interface grouping remains a Stage 7 design task; see
+[consumer API coverage and ownership](forge-p2p-production-implementation-v1.md#consumer-api-coverage-and-ownership).
+
+Once Stage 7 parity gates pass, developing products may begin test integration
+through the official plugin on a pinned Forge commit, in parallel with Stage 8.
+Confirmed defects become Forge regressions. Product integration does not
+replace long-running, hostile-peer, resource-exhaustion or Go/Rust checks and
+must not be presented as production-ready before Stage 8 passes. See
+[integration workflow](forge-p2p-production-implementation-v1.md#product-integration-alongside-stage-8).
 
 After Stage 6 completion, Content Swarm development may proceed in parallel
 under the boundaries in section 10, without delaying P2P delivery.

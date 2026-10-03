@@ -45,6 +45,8 @@ module;
 
 module forge.net.p2p.node;
 
+import :lifecycle_stop_listener;
+
 import forge.exceptions;
 import forge.asio.gate;
 import forge.asio.notification;
@@ -231,10 +233,35 @@ validated_identify_addresses(const std::vector<forge::multiformats::multiaddr>& 
 local_identify_document_locked(const auto& self,
                                std::optional<forge::net::p2p::endpoint> observed_endpoint = std::nullopt) {
    auto& state = self.identify_push_value;
+   const auto relay_addresses = self.relay_advertised_endpoints_locked();
+   if (!std::ranges::equal(relay_addresses, state.cached_relay_endpoints, {},
+                           &endpoint::to_string, &endpoint::to_string)) {
+      state.cached_generation = 0;
+   }
    if (state.cached_generation != state.generation) {
+      auto remaining_endpoints = std::map<std::string, endpoint>{};
+      for (auto address : self.local_endpoints_for_control_locked()) {
+         remaining_endpoints.emplace(address.to_string(), std::move(address));
+      }
       auto listen_addresses = std::vector<forge::multiformats::multiaddr>{};
-      for (const auto& endpoint : self.local_endpoints_for_control_locked()) {
-         listen_addresses.push_back(endpoint.to_multiaddr());
+      const auto endpoint_limit = self.options.identify.max_listen_endpoints;
+      listen_addresses.reserve(std::min(endpoint_limit, remaining_endpoints.size()));
+      // Keep fresh owned circuits first so count and byte-prefix limits preserve reachability.
+      for (const auto& relay_address : relay_addresses) {
+         if (listen_addresses.size() >= endpoint_limit) {
+            break;
+         }
+         const auto found = remaining_endpoints.find(relay_address.to_string());
+         if (found != remaining_endpoints.end()) {
+            listen_addresses.push_back(found->second.to_multiaddr());
+            remaining_endpoints.erase(found);
+         }
+      }
+      for (const auto& [_, address] : remaining_endpoints) {
+         if (listen_addresses.size() >= endpoint_limit) {
+            break;
+         }
+         listen_addresses.push_back(address.to_multiaddr());
       }
       auto document = identify::document{
           .protocol_version = self.options.protocol_version,
@@ -305,6 +332,7 @@ local_identify_document_locked(const auto& self,
          }
       }
       state.cached_document = std::move(document);
+      state.cached_relay_endpoints = relay_addresses;
       state.cached_generation = state.generation;
    }
    auto document = state.cached_document;
@@ -411,7 +439,9 @@ void node::impl::register_protocol_handler(protocol_id protocol, node::protocol_
       }
 
       auto candidate = local_identify_document_locked(*this);
-      candidate.protocols.push_back(protocol);
+      if (std::ranges::find(candidate.protocols, protocol) == candidate.protocols.end()) {
+         candidate.protocols.push_back(protocol);
+      }
       if (candidate.protocols.size() > options.identify.max_protocols) {
          FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected,
                                "P2P protocol handler would exceed the Identify protocol count limit");
@@ -499,7 +529,7 @@ bool node::impl::advance_identify_generation_locked() noexcept {
 }
 
 bool node::impl::schedule_identify_push_locked() noexcept {
-   if (stopped || identify_push_value.coordinator_running) {
+   if (stopped || session_admission_closed || identify_push_value.coordinator_running) {
       return false;
    }
    const auto pending = std::ranges::any_of(sessions, [&](const auto& entry) {
@@ -610,16 +640,23 @@ boost::asio::awaitable<void> node::impl::send_identify_push(const std::shared_pt
          outgoing.observed_endpoint.reset();
       }
    }
-   auto encoded = std::make_shared<const std::vector<std::uint8_t>>(wrap_length_delimited(identify::encode(outgoing)));
    if (identify::encode(outgoing).size() > options.identify.max_own_message_size) {
       FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "local Identify Push document exceeds configured limit");
    }
 
    auto self = shared_from_this();
    co_await run_identify_operation_with_timeout(
-       self, "P2P Identify Push", [self, session, encoded]() -> boost::asio::awaitable<void> {
+       self, "P2P Identify Push", [self, session]() -> boost::asio::awaitable<void> {
           auto stream = co_await self->open_session_stream(session, builtins::identify_push);
-          co_await stream.async_write(*encoded);
+          auto stopped = false;
+          auto fresh = identify::document{};
+          {
+             const auto lock = std::scoped_lock{self->mutex};
+             stopped = self->stopped || self->session_admission_closed || session->closed;
+             if (!stopped) { fresh = local_identify_document_locked(*self, session->remote_endpoint); }
+          }
+          if (stopped) { stream.request_cancel(); co_return; }
+          co_await stream.async_write(wrap_length_delimited(identify::encode(fresh)));
           co_await stream.async_close();
        });
 
@@ -719,6 +756,8 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
    }
    observe_address(session, document);
    notify_reachability_changed();
+   refresh_relay_publication();
+   notify_autorelay_changed();
    if (verified_dht_server) {
       notify_dht_routing_refresh();
    }

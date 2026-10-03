@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import io
 import json
 import stat
 import subprocess
@@ -21,6 +22,7 @@ from provenance import (
 )
 from check_p2p_feature_inventory import (
     donor_case_source_errors,
+    main as inventory_main,
     private_mdns_attribution_errors,
     registered_runner_acceptance_pairs,
     registered_runner_pair_errors,
@@ -692,6 +694,320 @@ class InteropFixtureContractTest(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             require_local_topology_evidence({"status": "ok"}, "unknown_topology")
+
+
+class InventoryPolicyTest(unittest.TestCase):
+    source_dir = Path(__file__).resolve().parent
+    source_root = source_dir.parents[1]
+
+    def manifest(self, name: str) -> dict:
+        return json.loads((self.source_dir / name).read_text())
+
+    def runner_fixture(self, include_pr9: bool = True, pr9_map: Optional[dict] = None) -> str:
+        from runner import (
+            AUTONAT_ACCEPTANCE_SCENARIOS,
+            AUTORELAY_ACCEPTANCE_SCENARIOS,
+            CURRENT_ACCEPTANCE_SCENARIOS,
+            LIVE_SCENARIO_PROFILES,
+            MDNS_ACCEPTANCE_SCENARIOS,
+        )
+
+        maps = {
+            "LIVE_SCENARIO_PROFILES": LIVE_SCENARIO_PROFILES,
+            "CURRENT_ACCEPTANCE_SCENARIOS": CURRENT_ACCEPTANCE_SCENARIOS,
+            "AUTONAT_ACCEPTANCE_SCENARIOS": AUTONAT_ACCEPTANCE_SCENARIOS,
+            "MDNS_ACCEPTANCE_SCENARIOS": MDNS_ACCEPTANCE_SCENARIOS,
+        }
+        if include_pr9:
+            maps["AUTORELAY_ACCEPTANCE_SCENARIOS"] = (
+                AUTORELAY_ACCEPTANCE_SCENARIOS if pr9_map is None else pr9_map
+            )
+        return "\n".join(f"{name} = {value!r}" for name, value in maps.items())
+
+    def check(self, capabilities: Optional[dict] = None, inventory: Optional[dict] = None,
+              donor_cases: Optional[dict] = None, runner_source: Optional[str] = None) -> tuple[int, str, str]:
+        classified = self.manifest("p2p_feature_inventory.json")
+        surfaces = {
+            owner["path"]: classified["public_surface_snapshots"][key]
+            for key, owner in classified["owners"].items()
+            if owner["kind"] in {"library", "plugin"}
+        }
+
+        def surface_snapshot(root: Path, owner: dict) -> tuple:
+            snapshot = surfaces[owner["path"]]
+            return snapshot["modules"], snapshot["headers"], snapshot["sha256"], []
+
+        replacements = {}
+        if capabilities is not None:
+            replacements[self.source_dir / "p2p_donor_capabilities.json"] = json.dumps(capabilities)
+        if inventory is not None:
+            replacements[self.source_dir / "p2p_feature_inventory.json"] = json.dumps(inventory)
+        if donor_cases is not None:
+            replacements[self.source_dir / "donor_cases.json"] = json.dumps(donor_cases)
+        if runner_source is not None:
+            replacements[self.source_dir / "runner.py"] = runner_source
+        original_read_text = Path.read_text
+
+        def read_text(path: Path, *args, **kwargs) -> str:
+            if path in replacements:
+                return replacements[path]
+            return original_read_text(path, *args, **kwargs)
+
+        argv = [
+            "check_p2p_feature_inventory.py",
+            str(self.source_root),
+            str(self.source_dir / "p2p_feature_inventory.json"),
+            str(self.source_dir / "p2p_donor_capabilities.json"),
+            str(self.source_dir / "donor_cases.json"),
+            str(self.source_root / "donors"),
+        ]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        # Pin classified declarations for policy tests while production source may evolve.
+        # The standalone checker verifies actual source hashes and donor pins without mocks.
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(Path, "read_text", read_text),
+            patch("check_p2p_feature_inventory.donor_checkout_head_errors", return_value=[]),
+            patch("check_p2p_feature_inventory.donor_case_source_errors", return_value=[]),
+            patch("check_p2p_feature_inventory.donor_source_object_errors", return_value=[]),
+            patch("check_p2p_feature_inventory.public_surface_snapshot", side_effect=surface_snapshot),
+            patch.object(sys, "stdout", stdout),
+            patch.object(sys, "stderr", stderr),
+        ):
+            status = inventory_main()
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_current_inventory_is_valid_but_not_live_execution_evidence(self) -> None:
+        states = {
+            feature["id"]: feature["state"]
+            for feature in self.manifest("p2p_feature_inventory.json")["features"]
+        }
+        status, stdout, stderr = self.check()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertIn("source-only; no live interop execution verdict", stdout)
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        self.assertEqual(
+            [entry["ordinal"] for entry in capabilities["stage_6_pr_registry"]],
+            [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12],
+        )
+        self.assertEqual(
+            {feature["id"]: feature["state"]
+             for feature in self.manifest("p2p_feature_inventory.json")["features"]},
+            states,
+        )
+
+    def test_upnp_cannot_return_to_the_initial_profile(self) -> None:
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        upnp = next(value for value in capabilities["capabilities"] if value["id"] == "nat.upnp_mapping")
+        upnp.update(support_requirement="optional", default_activation="opt_in", decision="stage_6",
+                    planned_branch="forge-p2p-nat-mapping-v1")
+        status, _, stderr = self.check(capabilities=capabilities)
+        self.assertEqual(status, 1)
+        self.assertIn("nat.upnp_mapping: semantic classification differs", stderr)
+
+    def test_future_upnp_cannot_keep_a_staged_branch(self) -> None:
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        upnp = next(value for value in capabilities["capabilities"] if value["id"] == "nat.upnp_mapping")
+        upnp["planned_branch"] = "forge-p2p-nat-mapping-v1"
+        status, _, stderr = self.check(capabilities=capabilities)
+        self.assertEqual(status, 1)
+        self.assertIn("nat.upnp_mapping: planned_branch is only valid for a staged decision", stderr)
+
+    def test_registry_rejects_restored_pr8_and_extra_entries(self) -> None:
+        for position in (8, 12):
+            capabilities = self.manifest("p2p_donor_capabilities.json")
+            capabilities["stage_6_pr_registry"].insert(position, {
+                "ordinal": 8,
+                "branch": "forge-p2p-nat-mapping-v1",
+                "dependencies": [],
+                "allowed_capability_owners": ["nat.upnp_mapping"],
+            })
+            with self.subTest(position=position):
+                status, _, stderr = self.check(capabilities=capabilities)
+                self.assertEqual(status, 1)
+                self.assertIn("exact approved branch set and order", stderr)
+
+    def test_registry_rejects_renumbering_and_noninteger_ordinals(self) -> None:
+        for index, ordinal in ((8, 8), (1, True), (8, 9.0)):
+            capabilities = self.manifest("p2p_donor_capabilities.json")
+            capabilities["stage_6_pr_registry"][index]["ordinal"] = ordinal
+            with self.subTest(index=index, ordinal=ordinal):
+                status, _, stderr = self.check(capabilities=capabilities)
+                self.assertEqual(status, 1)
+                self.assertIn(f"entry {index} has invalid ordinal or branch", stderr)
+
+    def test_autorelay_cannot_depend_on_deferred_upnp(self) -> None:
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        autorelay = capabilities["stage_6_pr_registry"][8]
+        self.assertEqual(autorelay["branch"], "forge-p2p-autorelay-v1")
+        autorelay["dependencies"].append("forge-p2p-nat-mapping-v1")
+        status, _, stderr = self.check(capabilities=capabilities)
+        self.assertEqual(status, 1)
+        self.assertIn("forge-p2p-autorelay-v1 dependencies differ from baseline", stderr)
+
+    def test_stale_plugin_hashes_are_rejected_not_silently_refreshed(self) -> None:
+        for owner in ("node", "resolver", "pubsub", "diagnostics"):
+            inventory = self.manifest("p2p_feature_inventory.json")
+            key = f"plugin.p2p.{owner}"
+            inventory["public_surface_snapshots"][key]["sha256"] = "0" * 64
+            with self.subTest(owner=key):
+                status, _, stderr = self.check(inventory=inventory)
+                self.assertEqual(status, 1)
+                self.assertIn(f"public surface {key}: declarations changed", stderr)
+
+    def test_plugin_module_coverage_cannot_be_omitted(self) -> None:
+        inventory = self.manifest("p2p_feature_inventory.json")
+        inventory["public_surface_snapshots"]["plugin.p2p.node"]["module_features"].pop(
+            "forge.plugins.net.p2p.node.api"
+        )
+        status, _, stderr = self.check(inventory=inventory)
+        self.assertEqual(status, 1)
+        self.assertIn("public surface plugin.p2p.node: every module needs exact feature classification", stderr)
+
+    def test_pr9_native_profiles_match_the_canonical_suite(self) -> None:
+        from autorelay_acceptance import ROLE_DIRECTIONS, SCENARIOS
+        from stage6_evidence_contract import AUTORELAY_NATIVE_DIRECTIONS, AUTORELAY_NATIVE_PROFILES
+
+        self.assertEqual(len(AUTORELAY_NATIVE_PROFILES), 6)
+        self.assertEqual(AUTORELAY_NATIVE_PROFILES, SCENARIOS)
+        self.assertEqual(AUTORELAY_NATIVE_DIRECTIONS, ROLE_DIRECTIONS)
+        pairs = registered_runner_acceptance_pairs(self.source_dir / "runner.py")
+        for name, (_, _, _, profile) in SCENARIOS.items():
+            self.assertIn((f"{profile}/{name}", name), pairs)
+
+    def test_pr9_directions_must_follow_the_observed_forge_role(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_DIRECTIONS, AUTORELAY_NATIVE_PROFILES
+
+        for name, (owner, role, _, _) in AUTORELAY_NATIVE_PROFILES.items():
+            for directions in (
+                sorted(AUTORELAY_NATIVE_DIRECTIONS["service" if role == "lifecycle" else "lifecycle"]),
+                ["forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"],
+            ):
+                capabilities = self.manifest("p2p_donor_capabilities.json")
+                scenario = next(value for value in capabilities["interop_acceptance_registry"]["capabilities"][owner]["scenarios"]
+                                if value["id"] == name)
+                scenario["required_directions"] = directions
+                with self.subTest(name=name, directions=directions):
+                    status, _, stderr = self.check(capabilities=capabilities)
+                    self.assertEqual(status, 1)
+                    self.assertIn("PR9 native evidence profile must match its exact staged owner, role directions", stderr)
+
+    def test_pr9_rejects_mismatched_native_evidence_profiles(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_PROFILES
+
+        for name, (owner, _, transport, _) in AUTORELAY_NATIVE_PROFILES.items():
+            mutations = {
+                "profile": "private_network",
+                "transport_stack": ["tcp", "yamux"] if transport == "quic" else ["quic"],
+                "runner_scenario_id": f"quic_base/{name}",
+                "source_case_id": "relayv2.reserve_connect_status",
+                "requires_capabilities": ["security.private_network_psk"],
+                "expected_status": "limited",
+                "activation": "opt_in",
+            }
+            for field, replacement in mutations.items():
+                capabilities = self.manifest("p2p_donor_capabilities.json")
+                scenario = next(value for value in capabilities["interop_acceptance_registry"]["capabilities"][owner]["scenarios"]
+                                if value["id"] == name)
+                scenario[field] = replacement
+                with self.subTest(name=name, field=field):
+                    status, _, stderr = self.check(capabilities=capabilities)
+                    self.assertEqual(status, 1)
+                    self.assertIn("PR9 native evidence profile must match its exact", stderr)
+
+    def test_pr9_registration_requires_all_six_profiles(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_PROFILES, evidence_contract_for
+
+        for name, (owner, _, _, _) in AUTORELAY_NATIVE_PROFILES.items():
+            capabilities = self.manifest("p2p_donor_capabilities.json")
+            registry = capabilities["interop_acceptance_registry"]
+            registry["capabilities"][owner]["scenarios"] = [
+                value for value in registry["capabilities"][owner]["scenarios"] if value["id"] != name
+            ]
+            registry["evidence_contracts"].remove(evidence_contract_for(name))
+            with self.subTest(name=name):
+                status, _, stderr = self.check(capabilities=capabilities)
+                self.assertEqual(status, 1)
+                self.assertIn("acceptance scenario ids differ from Stage 6 baseline", stderr)
+                self.assertIn("executable validator registry must match registered evidence contracts exactly", stderr)
+
+    def test_pr9_registration_cannot_promote_support_decisions(self) -> None:
+        for owner in ("relay.autorelay_lifecycle", "relay.circuit_v2_service"):
+            capabilities = self.manifest("p2p_donor_capabilities.json")
+            capability = next(value for value in capabilities["capabilities"] if value["id"] == owner)
+            capability["decision"] = "current"
+            capability.pop("planned_branch")
+            with self.subTest(owner=owner):
+                status, _, stderr = self.check(capabilities=capabilities)
+                self.assertEqual(status, 1)
+                self.assertIn("PR9 native evidence profile must match its exact staged owner", stderr)
+
+    def test_pr9_host_local_exception_requires_exact_observable_contracts(self) -> None:
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        scenario = capabilities["interop_acceptance_registry"]["capabilities"]["relay.autorelay_lifecycle"]["scenarios"][0]
+        scenario["source_case_id"] = "interop.live_ping_identify_relay"
+        status, _, stderr = self.check(capabilities=capabilities)
+        self.assertEqual(status, 1)
+        self.assertIn("relay.autorelay_lifecycle: host-local orchestration cannot claim bilateral interop", stderr)
+
+    def test_pr9_donor_cases_must_register_each_actual_native_pair(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_PROFILES, AUTORELAY_NATIVE_SOURCE_CASES
+
+        for name, (_, role, _, _) in AUTORELAY_NATIVE_PROFILES.items():
+            donors = self.manifest("donor_cases.json")
+            case = next(value for value in donors["cases"] if value["id"] == AUTORELAY_NATIVE_SOURCE_CASES[role])
+            case["forge_live_scenario"] = [value for value in case["forge_live_scenario"] if value["scenario"] != name]
+            with self.subTest(name=name):
+                status, _, stderr = self.check(donor_cases=donors)
+                self.assertEqual(status, 1)
+                self.assertIn("donor case does not register its runner scenario", stderr)
+
+    def test_pr9_runner_registration_is_a_closed_six_pair_map(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_PROFILES
+
+        mapping = {f"{value[3]}/{name}": (name,) for name, value in AUTORELAY_NATIVE_PROFILES.items()}
+        for name, (_, _, _, profile) in AUTORELAY_NATIVE_PROFILES.items():
+            reduced = dict(mapping)
+            reduced.pop(f"{profile}/{name}")
+            with self.subTest(name=name):
+                status, _, stderr = self.check(runner_source=self.runner_fixture(pr9_map=reduced))
+                self.assertEqual(status, 1)
+                self.assertIn("AutoRelay registration must cover all 6 exact native role/transport scenarios", stderr)
+        expanded = {**mapping, "quic_stage6/autorelay_unproved": ("autorelay_unproved",)}
+        status, _, stderr = self.check(runner_source=self.runner_fixture(pr9_map=expanded))
+        self.assertEqual(status, 1)
+        self.assertIn("AutoRelay registration must cover all 6 exact native role/transport scenarios", stderr)
+
+    def test_pr9_canonical_profile_drift_is_rejected(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_PROFILES
+
+        drifted = dict(AUTORELAY_NATIVE_PROFILES)
+        drifted["autorelay_lifecycle"] = ("relay.autorelay_lifecycle", "service", "quic", "quic_stage6")
+        with patch("check_p2p_feature_inventory.AUTORELAY_SCENARIOS", drifted):
+            status, _, stderr = self.check()
+        self.assertEqual(status, 1)
+        self.assertIn("PR9 native profiles differ from the canonical AutoRelay suite", stderr)
+
+    def test_old_planned_pr9_synthetic_inventory_fixture_remains_valid(self) -> None:
+        from stage6_evidence_contract import AUTORELAY_NATIVE_PROFILES, evidence_contract_for
+
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        lifecycle = next(value for value in capabilities["capabilities"] if value["id"] == "relay.autorelay_lifecycle")
+        lifecycle["interop_applicability"] = "not_applicable"
+        registry = capabilities["interop_acceptance_registry"]
+        registry["capabilities"].pop("relay.autorelay_lifecycle")
+        service = registry["capabilities"]["relay.circuit_v2_service"]["scenarios"][0]
+        service["registration"] = "planned"
+        service.pop("source_case_id")
+        service["required_directions"] = ["forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"]
+        registry["capabilities"]["relay.circuit_v2_service"]["scenarios"] = [service]
+        registry["evidence_contracts"] = [
+            contract for contract in registry["evidence_contracts"]
+            if contract not in {evidence_contract_for(name) for name in AUTORELAY_NATIVE_PROFILES}
+        ] + [evidence_contract_for("relay_v2_service")]
+        status, stdout, stderr = self.check(capabilities=capabilities, runner_source=self.runner_fixture(include_pr9=False))
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertIn("source-only; no live interop execution verdict", stdout)
 
 
 if __name__ == "__main__":

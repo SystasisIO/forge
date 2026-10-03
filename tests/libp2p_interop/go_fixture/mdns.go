@@ -498,22 +498,26 @@ func runMDNS(opts options) (err error) {
 	if err = writeJSON(opts.resultFile, result); err != nil {
 		return err
 	}
-	// Keep the listener alive until the runner has collected the dialer's receipt.
-	if opts.command == "listen" {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-ticker.C:
-				if _, failure := os.Stat(opts.stopFile); failure == nil {
-					return nil
-				} else if !os.IsNotExist(failure) {
-					return failure
+	// Both echo roles keep their advertiser and host alive until both provisional
+	// receipts exist. The runner stops and joins them before accepting final evidence.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if failure := ctx.Err(); failure != nil {
+				return failure
+			}
+			if info, failure := os.Stat(opts.stopFile); failure == nil {
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("mDNS echo stop must be a regular file")
 				}
+				return nil
+			} else if !os.IsNotExist(failure) {
+				return failure
 			}
 		}
 	}
-	return nil
 }

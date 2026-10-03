@@ -240,10 +240,17 @@
         "test_forge_quic_p2p p2p_autorelay_refresh_accepts_dht_and_rendezvous_sourced_candidates",
         "test_forge_quic_p2p p2p_autorelay_refresh_respects_candidate_and_target_limits",
         "test_forge_quic_p2p p2p_relay_fallback_refreshes_candidate_without_explicit_relay_peer",
-        "test_forge_quic_p2p p2p_discovery_refresh_learns_dht_and_rendezvous_relay_candidates_for_autorelay"
+        "test_forge_quic_p2p p2p_discovery_refresh_learns_dht_and_rendezvous_relay_candidates_for_autorelay",
+        "test_forge_quic_p2p autorelay_manager_tests",
+        "test_forge_libp2p_interop autorelay"
+      ],
+      "forge_live_scenario": [
+        { "profile": "quic_stage6", "scenario": "autorelay_lifecycle" },
+        { "profile": "tcp_stage6", "scenario": "autorelay_lifecycle_native_tcp_yamux" },
+        { "profile": "tcp_tls_stage6", "scenario": "autorelay_lifecycle_native_tcp_tls_yamux" }
       ],
       "known_gap":
-          "Live fixtures cover relay reservation and use; autonomous relay candidate discovery policy is component-only because fixtures do not expose every discovery source."
+          "Registered native PR9 lifecycle contracts require Forge HOP acquisition/renewal against Go/Rust relays, independently received Identify/Push addresses, circuit echo, relay-loss withdrawal/replacement and owned shutdown. Registration is not a PASS or production verdict. AutoRelay selection remains host-local: public/private transitions, every discovery source and hostile-peer/restart/scale acceptance are not established by these live contracts."
     },
     {
       "id": "dcutr.connect_sync_attempt",
@@ -392,13 +399,15 @@
       "donor": "live fixtures launched by tests/libp2p_interop/runner.py",
       "donor_file": [
         "donors/go-libp2p/p2p/protocol/ping/ping_test.go", "donors/go-libp2p/p2p/protocol/identify/id_test.go",
-        "donors/rust-libp2p/protocols/ping/tests/ping.rs", "donors/rust-libp2p/protocols/identify/tests/smoke.rs"
+        "donors/rust-libp2p/protocols/ping/tests/ping.rs", "donors/rust-libp2p/protocols/identify/tests/smoke.rs",
+        "donors/go-libp2p/p2p/protocol/circuitv2/relay/relay_test.go",
+        "donors/rust-libp2p/protocols/relay/tests/lib.rs"
       ],
-      "donor_case": [ "Ping", "Identify", "Relay reserve" ],
+      "donor_case": [ "Ping", "Identify", "Relay reserve", "native clients through opt-in Forge Relay v2 service" ],
       "mapping_state": "mapped",
       "forge_tests": [
         "test_forge_libp2p_interop ping", "test_forge_libp2p_interop identify",
-        "test_forge_libp2p_interop relay_reserve"
+        "test_forge_libp2p_interop relay_reserve", "test_forge_libp2p_interop autorelay"
       ],
       "forge_live_scenario": [
         {
@@ -412,7 +421,10 @@
         {
           "profile": "quic_base",
           "scenario": "relay_reserve"
-        }
+        },
+        { "profile": "quic_stage6", "scenario": "relay_v2_service" },
+        { "profile": "tcp_stage6", "scenario": "relay_v2_service_native_tcp_yamux" },
+        { "profile": "tcp_tls_stage6", "scenario": "relay_v2_service_native_tcp_tls_yamux" }
       ],
       "known_gap": "Listed live scenarios are registered optional evidence only, not PASS results. Their exact runner executions remain required for the corresponding support claim."
     },

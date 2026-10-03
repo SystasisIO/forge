@@ -41,6 +41,8 @@ mod application_observer;
 mod mdns_fixture;
 #[path = "autonat.rs"]
 mod autonat_fixture;
+mod autorelay;
+mod relay_readiness;
 
 const KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 const PUBSUB_TOPIC: &str = "forge.pubsub.interop";
@@ -54,6 +56,8 @@ struct Options {
     addr: String,
     relay_addr: String,
     relay_peer_id: String,
+    relay_ttl_seconds: u64,
+    probe_file: PathBuf,
     ready_file: PathBuf,
     stop_file: PathBuf,
     result_file: PathBuf,
@@ -145,6 +149,7 @@ struct RelayReservationEvidence {
     client_peer_id: String,
     circuit_addr: String,
     renewal: bool,
+    control_connection: Option<serde_json::Value>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -216,6 +221,13 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
             "--addr" => out.addr = value,
             "--relay-addr" => out.relay_addr = value,
             "--relay-peer-id" => out.relay_peer_id = value,
+            "--relay-ttl-seconds" => {
+                out.relay_ttl_seconds = value.parse()?;
+                if !out.command.starts_with("autorelay-") || !(3..=30).contains(&out.relay_ttl_seconds) {
+                    return Err("short TTL requires autorelay fixture and 3..30 seconds".into());
+                }
+            }
+            "--probe-file" => out.probe_file = PathBuf::from(value),
             "--ready-file" => out.ready_file = PathBuf::from(value),
             "--stop-file" => out.stop_file = PathBuf::from(value),
             "--result-file" => out.result_file = PathBuf::from(value),
@@ -294,8 +306,14 @@ fn behaviour_for(
     kad_behaviour.set_mode(Some(kad::Mode::Server));
     Behaviour {
         mdns: None.into(),
-        relay: (!private_network)
-            .then(|| relay::Behaviour::new(peer, Default::default()))
+        relay: (!private_network && (opts.scenario != "autorelay" || opts.command == "autorelay-relay"))
+            .then(|| {
+                let mut config = relay::Config::default();
+                if opts.command == "autorelay-relay" {
+                    config.reservation_duration = Duration::from_secs(opts.relay_ttl_seconds);
+                }
+                relay::Behaviour::new(peer, config)
+            })
             .into(),
         relay_client: relay_client.filter(|_| !private_network).into(),
         kad: kad_behaviour,
@@ -323,7 +341,7 @@ fn behaviour_for(
             "/forge-interop/0.1.0".into(),
             key,
         )),
-        dcutr: (!private_network)
+        dcutr: (!private_network && opts.scenario != "autorelay")
             .then(|| dcutr::Behaviour::new(peer))
             .into(),
         stream: raw_stream::Behaviour::new(),
@@ -343,6 +361,16 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
         (config, options)
     });
     let mut swarm = match transport {
+        "quic" if opts.scenario == "autorelay" => {
+            let observer = opts.upgrade_observer.clone();
+            SwarmBuilder::with_existing_identity(key)
+                .with_tokio()
+                .with_other_transport(move |key| upgrade_observer::native_quic_transport(key, observer))?
+                .with_relay_client(noise::Config::new, yamux::Config::default)?
+                .with_behaviour(|key, relay_client| behaviour_for(key, Some(relay_client), opts))?
+                .with_swarm_config(configure_tasks)
+                .build()
+        }
         "quic" | "" => {
             let builder = SwarmBuilder::with_existing_identity(key)
                 .with_tokio()
@@ -565,6 +593,7 @@ async fn reserve_relay_address(
     swarm: &mut libp2p::Swarm<Behaviour>,
     relay_peer: PeerId,
     relay_addr: Multiaddr,
+    opts: &Options,
 ) -> Result<RelayReservationEvidence, Box<dyn Error>> {
     let client_peer = *swarm.local_peer_id();
     let base_circuit_addr = relay_addr
@@ -573,6 +602,7 @@ async fn reserve_relay_address(
     let expected_circuit_addr = base_circuit_addr.clone().with(Protocol::P2p(client_peer));
     let relay_listener_id = swarm.listen_on(base_circuit_addr)?;
     let mut progress = RelayReservationProgress::default();
+    let mut control_connection = None;
     let deadline = tokio::time::sleep(Duration::from_secs(20));
     tokio::pin!(deadline);
 
@@ -582,6 +612,10 @@ async fn reserve_relay_address(
                 return Err("timed out waiting for relay reservation acceptance and circuit address".into());
             }
             event = swarm.select_next_some() => match event {
+                SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. }
+                    if peer_id == relay_peer && opts.scenario == "autorelay" => {
+                    control_connection = Some(autorelay::connection(connection_id, peer_id, &endpoint, opts));
+                }
                 SwarmEvent::NewListenAddr { listener_id, address, .. }
                     if listener_id == relay_listener_id && address == expected_circuit_addr =>
                 {
@@ -611,12 +645,16 @@ async fn reserve_relay_address(
             },
         }
         if let Some((renewal, circuit_addr)) = progress.complete() {
+            if let Some(control) = &mut control_connection {
+                autorelay::refresh_connection(control, opts)?;
+            }
             return Ok(RelayReservationEvidence {
                 accepted: true,
                 relay_peer_id: relay_peer.to_string(),
                 client_peer_id: client_peer.to_string(),
                 circuit_addr,
                 renewal,
+                control_connection,
             });
         }
     }
@@ -2306,6 +2344,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                 &mut swarm,
                 remote_peer,
                 relay_transport.ok_or("relay transport address was not prepared")?,
+                &opts,
             )
             .await?;
             write_json(
@@ -2604,6 +2643,9 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
 async fn destination(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut swarm = new_swarm(&opts).await?;
     spawn_incoming_stream_echo(&mut swarm, "/forge/interop/relay-echo/1", None, &opts.tasks)?;
+    if opts.scenario == "autorelay" {
+        return autorelay::destination(swarm, opts).await;
+    }
     let peer = *swarm.local_peer_id();
     let relay_addr: Multiaddr = opts.relay_addr.parse()?;
     let relay_listener_id = swarm.listen_on(relay_addr.clone().with(Protocol::P2pCircuit))?;
@@ -2695,83 +2737,154 @@ async fn destination(opts: Options) -> Result<(), Box<dyn Error>> {
     }
 }
 
+#[derive(Default)]
+struct RelayEchoProgress {
+    exchange_complete: bool,
+    direct_upgrade: bool,
+    connection: Option<serde_json::Value>,
+}
+
+impl RelayEchoProgress {
+    fn established(&mut self, id: impl std::fmt::Display, peer: PeerId,
+                   endpoint: &libp2p::core::ConnectedPoint, opts: &Options) {
+        self.direct_upgrade |= !endpoint.is_relayed();
+        self.connection = Some(autorelay::connection(id, peer, endpoint, opts));
+    }
+
+    fn complete(&self) -> bool {
+        self.exchange_complete && self.connection.is_some()
+    }
+}
+
 async fn open_echo_stream(
     swarm: &mut libp2p::Swarm<Behaviour>,
     peer: PeerId,
     expect_direct_upgrade: bool,
-) -> Result<bool, Box<dyn Error>> {
+    opts: &Options,
+    readiness: Option<serde_json::Value>,
+) -> Result<(bool, Option<serde_json::Value>, Vec<serde_json::Value>), Box<dyn Error>> {
     let mut control = swarm.behaviour().stream.new_control();
-    let mut open =
-        Box::pin(control.open_stream(peer, StreamProtocol::new("/forge/interop/relay-echo/1")));
+    // Drive the Swarm throughout native stream negotiation, echo I/O and close.
+    let exchange = async {
+        let mut stream = control.open_stream(peer, StreamProtocol::new("/forge/interop/relay-echo/1")).await?;
+        write_frame(&mut stream, b"relay-echo").await?;
+        let echoed = read_frame(&mut stream).await?;
+        stream.close().await?;
+        if echoed != b"relay-echo" { return Err("relay echo mismatch".into()); }
+        Ok::<(), Box<dyn Error>>(())
+    };
+    tokio::pin!(exchange);
     let deadline = tokio::time::sleep(Duration::from_secs(30));
     tokio::pin!(deadline);
-    let mut direct_upgrade = false;
-    loop {
+    let mut progress = RelayEchoProgress::default();
+    let mut dcutr_events = Vec::new();
+    while !progress.complete() {
         tokio::select! {
-            result = &mut open => {
-                let mut stream = result?;
-                write_frame(&mut stream, b"relay-echo").await?;
-                let echoed = read_frame(&mut stream).await?;
-                stream.close().await?;
-                if echoed != b"relay-echo" {
-                    return Err("relay echo mismatch".into());
-                }
-                if expect_direct_upgrade && !direct_upgrade {
-                    let settle = tokio::time::sleep(Duration::from_secs(5));
-                    tokio::pin!(settle);
-                    loop {
-                        tokio::select! {
-                            _ = &mut settle => return Ok(direct_upgrade),
-                                event = swarm.select_next_some() => {
-                                    if let SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } = event {
-                                        if peer_id == peer && !format!("{endpoint:?}").contains("P2pCircuit") {
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                }
-                return Ok(direct_upgrade);
+            result = &mut exchange, if !progress.exchange_complete => {
+                result?;
+                progress.exchange_complete = true;
             }
             _ = &mut deadline => {
-                return Err("timed out opening relay echo stream".into());
+                return Err("timed out waiting for relay echo and native connection event".into());
             }
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } if peer_id == peer => {
-                        if !format!("{endpoint:?}").contains("P2pCircuit") {
-                            direct_upgrade = true;
-                        }
+                    SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } if peer_id == peer => {
+                        progress.established(connection_id, peer_id, &endpoint, opts);
                     }
                     SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
                         swarm.add_external_address(info.observed_addr);
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) if expect_direct_upgrade => {
+                        relay_readiness::record_dcutr(&opts.result_file, &readiness, &mut dcutr_events, &event)?;
                     }
                     _ => {}
                 }
             }
         }
     }
+    if opts.scenario == "autorelay" {
+        autorelay::refresh_connection(progress.connection.as_mut().ok_or("missing native echo connection")?, opts)?;
+    }
+    if expect_direct_upgrade && !progress.direct_upgrade {
+        let settle = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(settle);
+        loop {
+            tokio::select! {
+                _ = &mut settle => break,
+                event = swarm.select_next_some() => {
+                    match event {
+                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } if peer_id == peer => {
+                            progress.established(connection_id, peer_id, &endpoint, opts);
+                            if progress.direct_upgrade { break; }
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                            relay_readiness::record_dcutr(&opts.result_file, &readiness, &mut dcutr_events, &event)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if expect_direct_upgrade {
+        write_json(&opts.result_file, json!({"relay_readiness": readiness, "dcutr_events": dcutr_events}))?;
+    }
+    Ok((progress.direct_upgrade, progress.connection, dcutr_events))
 }
 
 async fn dial_and_wait(
     swarm: &mut libp2p::Swarm<Behaviour>,
     peer: PeerId,
     address: Multiaddr,
-) -> Result<(), Box<dyn Error>> {
+    opts: &Options,
+) -> Result<serde_json::Value, Box<dyn Error>> {
     swarm.dial(address)?;
     let deadline = tokio::time::sleep(Duration::from_secs(20));
     tokio::pin!(deadline);
+    let require_readiness = relay_readiness::required(&opts.scenario, &opts.transport);
+    let mut readiness = relay_readiness::State::new(*swarm.local_peer_id(), peer);
+    let mut connection = None;
     loop {
         tokio::select! {
-            _ = &mut deadline => return Err("timed out connecting relay".into()),
+            _ = &mut deadline => {
+                if require_readiness { write_json(&opts.result_file, json!({"relay_readiness": readiness.snapshot()}))?; }
+                return Err("timed out connecting relay or waiting for native DCUtR address readiness".into());
+            }
             event = swarm.select_next_some() => {
-                match event {
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == peer => return Ok(()),
-                    SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
-                        swarm.add_external_address(info.observed_addr);
+                let outcome: Result<(), Box<dyn Error>> = match event {
+                    SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } if peer_id == peer => {
+                        let row = autorelay::connection(connection_id, peer_id, &endpoint, opts);
+                        if !require_readiness { return Ok(row); }
+                        readiness.connected(peer_id, connection_id, endpoint.is_relayed()).map(|()| { connection = Some(row); })
                     }
-                    _ => {}
+                    SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, connection_id, info })) => {
+                        if require_readiness && peer_id == peer {
+                            // Confirming here would suppress the native candidate event used by DCUtR.
+                            readiness.identified(peer_id, connection_id, &info)
+                        } else {
+                            if !require_readiness { swarm.add_external_address(info.observed_addr); }
+                            Ok(())
+                        }
+                    }
+                    SwarmEvent::NewExternalAddrCandidate { address } if require_readiness => {
+                        readiness.candidate(&address)
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } if require_readiness && peer_id == peer => {
+                        readiness.note("connection_closed", peer_id.to_string())
+                            .and_then(|()| Err("authenticated relay disconnected during DCUtR readiness".into()))
+                    }
+                    _ => Ok(())
+                };
+                if require_readiness {
+                    write_json(&opts.result_file, json!({"relay_readiness": readiness.snapshot()}))?;
+                    outcome?;
+                    if let Some(address) = readiness.ready_address() {
+                        swarm.add_external_address(address);
+                        let mut row = connection.take().ok_or("DCUtR readiness lacks native connection")?;
+                        row["readiness"] = readiness.snapshot();
+                        return Ok(row);
+                    }
                 }
             }
         }
@@ -2783,23 +2896,32 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
     let target_peer: PeerId = opts.peer_id.parse()?;
     let relay_peer: PeerId = opts.relay_peer_id.parse()?;
     let relay_addr: Multiaddr = opts.relay_addr.parse()?;
-    dial_and_wait(&mut swarm, relay_peer, relay_addr.clone()).await?;
+    let mut relay_connection = dial_and_wait(&mut swarm, relay_peer, relay_addr.clone(), &opts).await?;
     let target_addr = relay_addr
         .with(Protocol::P2pCircuit)
         .with(Protocol::P2p(target_peer));
     swarm.dial(target_addr.clone())?;
-    let direct_upgrade = open_echo_stream(
+    let (direct_upgrade, echo_connection, dcutr_events) = open_echo_stream(
         &mut swarm,
         target_peer,
         opts.scenario == "dcutr_relay_topology",
+        &opts,
+        relay_connection.get("readiness").cloned(),
     )
     .await?;
     if opts.scenario == "dcutr_relay_topology" && !direct_upgrade {
         return Err("DCUtR did not produce a direct connection".into());
     }
+    if opts.scenario == "autorelay" && (direct_upgrade || echo_connection.as_ref()
+        .and_then(|c| c["remote_addr"].as_str()).is_none_or(|a| !a.contains("/p2p-circuit"))) {
+        return Err("AutoRelay echo lacks authenticated circuit connection".into());
+    }
+    if opts.scenario == "autorelay" {
+        autorelay::refresh_connection(&mut relay_connection, &opts)?;
+    }
     write_json(
         &opts.result_file,
-        json!({
+        relay_readiness::final_receipt(json!({
             "implementation": "rust",
             "role": "relay_dialer",
             "scenario": opts.scenario,
@@ -2808,8 +2930,15 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
             "target_peer": target_peer.to_string(),
             "relayed_addr": target_addr.to_string(),
             "relay_echo": true,
+            "local_peer_id": swarm.local_peer_id().to_string(),
+            "protocol": "/forge/interop/relay-echo/1",
+            "protocol_basis": "native_raw_stream_control_negotiation",
+            "echo_bytes": 10,
+            "unix_ms": SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+            "relay_connection": relay_connection,
+            "echo_connection": echo_connection,
             "direct_upgrade": direct_upgrade
-        }),
+        }), &opts.scenario, dcutr_events),
     )
 }
 
@@ -2835,6 +2964,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "destination" => destination(opts).await,
         "dial" => dial(opts).await,
         "dial-relay" => dial_relay(opts).await,
+        "autorelay-relay" | "autorelay-observe" => autorelay::run(opts).await,
         _ => Err(format!("unknown command {}", opts.command).into()),
     };
     // Commands own their Swarms; drain the public-executor and echo tasks only after drop.
@@ -2985,6 +3115,59 @@ mod tests {
 
     fn test_peer() -> libp2p::PeerId {
         identity::Keypair::generate_ed25519().public().to_peer_id()
+    }
+
+    #[test]
+    fn relay_echo_completion_requires_native_connection_in_either_event_order() {
+        let peer = test_peer();
+        let point = libp2p::core::ConnectedPoint::Dialer {
+            address: test_transport_addr().with(Protocol::P2p(test_peer()))
+                .with(Protocol::P2pCircuit).with(Protocol::P2p(peer)),
+            role_override: libp2p::core::Endpoint::Dialer,
+            port_use: libp2p::core::transport::PortUse::Reuse,
+        };
+        for exchange_first in [false, true] {
+            let opts = super::Options::default();
+            let mut progress = super::RelayEchoProgress::default();
+            if exchange_first {
+                progress.exchange_complete = true;
+                assert!(!progress.complete());
+                assert!(progress.connection.is_none());
+            }
+            progress.established("observed-17", peer, &point, &opts);
+            assert!(!progress.direct_upgrade);
+            assert_eq!(progress.complete(), exchange_first);
+            progress.exchange_complete = true;
+            assert!(progress.complete());
+            let row = progress.connection.unwrap();
+            assert_eq!(row["connection_id"], "observed-17");
+            assert_eq!(row["peer_id"], peer.to_string());
+            assert_eq!(row["remote_addr"], point.get_remote_address().to_string());
+            assert_eq!(row["relayed"], true);
+        }
+    }
+
+    #[test]
+    fn relay_echo_classifies_native_circuit_listener_not_debug_text() {
+        let peer = test_peer();
+        let point = libp2p::core::ConnectedPoint::Listener {
+            local_addr: test_transport_addr().with(Protocol::P2p(test_peer()))
+                .with(Protocol::P2pCircuit).with(Protocol::P2p(test_peer())),
+            send_back_addr: test_transport_addr().with(Protocol::P2p(peer)),
+        };
+        let opts = super::Options::default();
+        let mut progress = super::RelayEchoProgress::default();
+        progress.established("circuit", peer, &point, &opts);
+        assert!(!progress.direct_upgrade);
+        assert_eq!(progress.connection.as_ref().unwrap()["relayed"], true);
+        let direct = libp2p::core::ConnectedPoint::Dialer {
+            address: test_transport_addr().with(Protocol::P2p(peer)),
+            role_override: libp2p::core::Endpoint::Dialer,
+            port_use: libp2p::core::transport::PortUse::Reuse,
+        };
+        progress.established("direct", peer, &direct, &opts);
+        assert!(progress.direct_upgrade);
+        assert_eq!(progress.connection.as_ref().unwrap()["relayed"], false);
     }
 
     fn test_transport_addr() -> Multiaddr {

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import hashlib
 import ipaddress
 import json
@@ -22,6 +23,13 @@ from autonat_acceptance import (
     ROLE_DIRECTIONS as AUTONAT_ROLE_DIRECTIONS,
     SCENARIOS as AUTONAT_SCENARIOS,
     validate_suite as validate_autonat_suite,
+)
+from autorelay_acceptance import (
+    EVIDENCE_CONTRACTS as AUTORELAY_EVIDENCE_CONTRACTS,
+    ROLE_DIRECTIONS as AUTORELAY_ROLE_DIRECTIONS,
+    SCENARIOS as AUTORELAY_SCENARIOS,
+    is_record as is_autorelay_record,
+    validate_suite as validate_autorelay_suite,
 )
 
 from provenance import (
@@ -73,6 +81,8 @@ ARTIFACT_SCHEMA = {
 }
 
 CANONICAL_RUNNER = Path("tests/libp2p_interop/runner.py")
+ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay")
+FOCUSED_SCENARIOS = {"autonat": AUTONAT_SCENARIOS, "mdns": MDNS_SCENARIOS, "autorelay": AUTORELAY_SCENARIOS}
 DIRECTIONS = {"forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"}
 SHA256 = re.compile(r"[0-9a-f]{64}")
 PROFILE_TRANSPORT_STACKS = {
@@ -117,7 +127,8 @@ TLS_EVIDENCE_CONTRACTS = {
     evidence_contract_for("tls_identity"),
     evidence_contract_for("inline_muxer_go_tls"),
     evidence_contract_for("inline_muxer_rust_tls_fixed_alpn_fallback"),
-}
+} | {evidence_contract_for(name) for name, (_, _, transport, _) in AUTORELAY_SCENARIOS.items()
+     if transport == "tcp-tls"}
 
 
 def expected_launcher_transport(profile: str, stack: tuple[str, ...], evidence_contract: str) -> Optional[str]:
@@ -172,7 +183,7 @@ def required_scenarios(
     list[str],
 ]:
     errors: list[str] = []
-    if suite not in ("stage6", "autonat", "mdns"):
+    if suite not in ACCEPTANCE_SUITES:
         return {}, ["unknown acceptance suite"]
     if not isinstance(manifest, dict):
         return {}, ["manifest must be a JSON object"]
@@ -225,8 +236,8 @@ def required_scenarios(
             registration = scenario.get("registration")
             evidence_contract = scenario.get("evidence_contract")
             stack = tuple(transport_stack) if isinstance(transport_stack, list) else ()
-            selected = suite == "stage6" or (isinstance(scenario_id, str) and scenario_id in (
-                MDNS_SCENARIOS if suite == "mdns" else AUTONAT_SCENARIOS))
+            selected = suite == "stage6" or (
+                isinstance(scenario_id, str) and scenario_id in FOCUSED_SCENARIOS.get(suite, {}))
             if selected and registration != "registered":
                 errors.append(
                     f"manifest {capability_id}/{scenario_id}: non-registered scenario is promotion-blocking "
@@ -268,6 +279,7 @@ def required_scenarios(
                 referenced_contracts.add(evidence_contract)
                 if registration == "registered" and evidence_contract not in (
                     set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
+                    | AUTORELAY_EVIDENCE_CONTRACTS
                 ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
@@ -308,6 +320,18 @@ def required_scenarios(
                 ("security.private_network_psk",) if private else (), evidence_contract_for(name),
             ):
                 errors.append(f"mDNS {name}: exact profile contract mismatch")
+    autorelay_required = {key: value for key, value in required.items() if key[1] in AUTORELAY_SCENARIOS}
+    if suite == "autorelay" or autorelay_required:
+        if {name for _, name in autorelay_required} != set(AUTORELAY_SCENARIOS):
+            errors.append("AutoRelay suite requires all 6 registered role/transport contracts")
+        for (capability, name), value in autorelay_required.items():
+            owner, role, transport, runner_profile = AUTORELAY_SCENARIOS[name]
+            if capability != owner or value != (
+                AUTORELAY_ROLE_DIRECTIONS[role], "passed", "native",
+                ("quic",) if transport == "quic" else ("tcp", "yamux"),
+                f"{runner_profile}/{name}", (), evidence_contract_for(name),
+            ):
+                errors.append(f"AutoRelay {name}: exact role directions/profile/transport contract mismatch")
     return required, errors
 
 
@@ -362,7 +386,7 @@ def validate_runner_inputs(root: Path, artifact_path: Path, artifact_root: Path,
         "source_dir", "build_dir", "forge_root", "donors_root", "acceptance_manifest"
     }
     if (not isinstance(inputs, dict) or set(inputs) not in (path_keys, path_keys | {"suite"})
-            or inputs.get("suite", "stage6") != suite or suite not in ("stage6", "autonat", "mdns")):
+            or inputs.get("suite", "stage6") != suite or suite not in ACCEPTANCE_SUITES):
         return {}, ["artifact runner input provenance has invalid schema"]
     paths = {key: absolute_path(inputs.get(key)) for key in path_keys}
     if any(path is None for path in paths.values()):
@@ -579,7 +603,9 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                     if isolated and len(command) >= 6 and command[1:3] == ["netns", "exec"]:
                         native = command[4:]
                     options, errors = command_options(native, native[1])
-                    valid_command = (not errors and native[1] in {"listen", "dial", "destination", "dial-relay", "topology"}
+                    valid_command = (not errors and native[1] in {"listen", "dial", "destination", "dial-relay", "topology",
+                                                               "autorelay-destination", "autorelay-service",
+                                                               "autorelay-relay", "autorelay-observe"}
                                      and absolute_path(native[0]) in binaries.values())
                     for flag in ("--ready-file", "--result-file", "--stop-file", "--store-dir"):
                         path = path_within(options.get(flag), root)
@@ -595,7 +621,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                     if path is not None:
                         non_stdout.add(path)
                 # `processes` is either a list or a map of role -> process.
-                child_process = key in {"owned_processes", "processes", "attempts", "listener_process"}
+                child_process = key in {"owned_processes", "processes", "attempts", "listener_process", "process"}
                 visit(nested, child_process or (process and "log_file" not in value), isolated)
 
     for record in artifacts:
@@ -705,6 +731,10 @@ def validate_all_result_evidence(artifacts: list[object], indexed_evidence: dict
     errors: list[str] = []
     for index, record in enumerate(artifacts):
         if not isinstance(record, dict):
+            continue
+        if is_autorelay_record(record):
+            # PR9 echoes wrap snapshots rather than flattening result_file
+            # payloads. Its suite validator binds every final owned output.
             continue
         for result in raw_result_payloads(record):
             result_path = path_within(result["result_file"], artifact_root)
@@ -2017,7 +2047,7 @@ def validate(
     provenance = artifact.get("fixture_provenance")
     runner_inputs = provenance.get("runner_inputs") if isinstance(provenance, dict) else None
     suite = runner_inputs.get("suite", "stage6") if isinstance(runner_inputs, dict) else None
-    if suite not in ("stage6", "autonat", "mdns") or (expected_suite is not None and suite != expected_suite):
+    if suite not in ACCEPTANCE_SUITES or (expected_suite is not None and suite != expected_suite):
         return [*errors, "artifact suite differs from requested canonical suite"], False
     required, manifest_errors = required_scenarios(manifest, suite)
     errors.extend(manifest_errors)
@@ -2081,10 +2111,14 @@ def validate(
         return [*errors, "canonical runner artifacts must be a non-empty array"], False
     autonat_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "autonat"]
     mdns_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "mdns"]
-    base_records = [record for record in artifacts if not isinstance(record, dict) or record.get("suite") not in ("autonat", "mdns")]
+    autorelay_records = [record for record in artifacts if is_autorelay_record(record)]
+    base_records = [record for record in artifacts if not is_autorelay_record(record)
+                    and (not isinstance(record, dict) or record.get("suite") not in ("autonat", "mdns"))]
     autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
     mdns_required = {key: value for key, value in required.items() if key[1] in MDNS_SCENARIOS}
-    base_required = {key: value for key, value in required.items() if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS))}
+    autorelay_required = {key: value for key, value in required.items() if key[1] in AUTORELAY_SCENARIOS}
+    base_required = {key: value for key, value in required.items()
+                     if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_SCENARIOS))}
     indexed_evidence, evidence_errors = validate_evidence_index(
         artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
@@ -2092,6 +2126,35 @@ def validate(
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
     used_evidence: set[Path] = set()
+    # Partial older parser manifests do not imply PR9 support. Any registered
+    # PR9 contract or supplied case requires the entire exact twelve-case suite.
+    if suite == "autorelay" or autorelay_required or autorelay_records:
+        if {name for _, name in autorelay_required} != set(AUTORELAY_SCENARIOS):
+            errors.append("AutoRelay requires all 6 registered role/transport contracts")
+
+        def load_autorelay_json(value):
+            path = path_within(value, artifact_root)
+            if path is None or path not in indexed_evidence:
+                raise ValueError("AutoRelay raw output absent from verified evidence index")
+            if path.stat().st_size > 1024 * 1024:
+                raise ValueError("AutoRelay raw output exceeds 1 MiB")
+            payload, failures = load_evidence_json(path, "AutoRelay raw output")
+            if failures or payload is None:
+                raise ValueError("; ".join(failures))
+            return payload
+
+        for record in autorelay_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("AutoRelay cases reuse raw process evidence")
+            used_evidence.update(paths)
+        errors.extend(validate_autorelay_suite(
+            autorelay_records, autorelay_required, artifact_root, binary_paths, load_autorelay_json))
+    if suite == "autorelay":
+        if base_records or autonat_records or mdns_records:
+            errors.append("focused AutoRelay suite contains unrelated records")
+        return errors, False
+
     # Partial legacy parser manifests do not imply mDNS support. Registered
     # contracts (or supplied mDNS records) always require the entire matrix.
     if suite == "mdns" or mdns_required or mdns_records:
@@ -2115,7 +2178,7 @@ def validate(
         errors.extend(validate_mdns_suite(mdns_records, mdns_required, artifact_root, binary_paths, load_mdns_json,
                                          root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key"))
     if suite == "mdns":
-        if base_records or autonat_records:
+        if base_records or autonat_records or autorelay_records:
             errors.append("focused mDNS suite contains unrelated records")
         return errors, False
 
@@ -2142,7 +2205,7 @@ def validate(
             pnet_fingerprint_for_launcher_key, root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key",
         ))
     if suite == "autonat":
-        if base_records or mdns_records:
+        if base_records or mdns_records or autorelay_records:
             errors.append("focused AutoNAT suite contains unrelated base records")
         return errors, False
 
@@ -3019,17 +3082,19 @@ def self_test() -> int:
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
-    if len(sys.argv) != 5:
-        print(
-            "usage: check_stage6_acceptance.py SOURCE_ROOT MANIFEST ARTIFACT EXPECTED_HEAD | --self-test",
-            file=sys.stderr,
-        )
-        return 2
+    parser = argparse.ArgumentParser(description="Standalone artifact consistency only; never a promotion PASS.")
+    parser.add_argument("source_root")
+    parser.add_argument("manifest")
+    parser.add_argument("artifact")
+    parser.add_argument("expected_head")
+    parser.add_argument("--suite", choices=ACCEPTANCE_SUITES)
+    args = parser.parse_args()
     errors, has_documented_limitations = validate(
-        Path(sys.argv[1]).resolve(),
-        Path(sys.argv[2]).resolve(),
-        Path(sys.argv[3]).resolve(),
-        sys.argv[4],
+        Path(args.source_root).resolve(),
+        Path(args.manifest).resolve(),
+        Path(args.artifact).resolve(),
+        args.expected_head,
+        expected_suite=args.suite,
     )
     if errors:
         for error in errors:
@@ -3039,7 +3104,7 @@ def main() -> int:
     if has_documented_limitations:
         print("CONSISTENT_WITH_DOCUMENTED_LIMITATIONS: standalone artifact consistency only; not promotion")
     else:
-        print("CONSISTENT: standalone artifact consistency only; CMake promotion wrapper owns PASS")
+        print("CONSISTENT: standalone artifact consistency only; promotion wrapper owns acceptance verdict")
     return 0
 
 

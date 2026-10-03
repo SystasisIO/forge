@@ -1,6 +1,7 @@
 #pragma once
 
 #include "connection_manager.hxx"
+#include "autorelay_manager.hxx"
 #include "connection_gate.hxx"
 #include "connection_singleflight_registry.hxx"
 #include "direct_dial_root.hxx"
@@ -140,8 +141,11 @@ struct node::impl : std::enable_shared_from_this<impl> {
       mutable std::uint64_t cached_generation = 0;
       mutable std::uint64_t peer_record_sequence = 0;
       mutable identify::document cached_document;
+      mutable std::vector<endpoint> cached_relay_endpoints;
       bool coordinator_running = false;
    };
+
+   struct relay_reservation_operation;
 
    struct relay_reservation_state {
       peer_id owner;
@@ -154,11 +158,17 @@ struct node::impl : std::enable_shared_from_this<impl> {
       std::size_t active_streams = 0;
       bool canceled = false;
       resource_manager::relay_reservation resource;
+      relay::reservation::info info;
+      std::uint64_t session_id = 0;
+      bool automatic = false;
+      std::weak_ptr<relay_reservation_operation> operation;
+      std::string remote_ip;
    };
 
    struct relay_admission {
       resource_manager::relay_reservation circuit;
       std::optional<std::uint64_t> reservation_id;
+      peer_id source;
    };
 
    struct pubsub_state {
@@ -222,8 +232,10 @@ struct node::impl : std::enable_shared_from_this<impl> {
       bool heartbeat_started = false;
    };
 
-   struct relay_discovery_state {
-      bool maintenance_started = false;
+   struct relay_reservation_operation {
+      std::shared_ptr<cancellation_latch> cancellation;
+      bool automatic = false;
+      bool canceled = false;
    };
 
    struct peer_exchange_batch {
@@ -276,7 +288,22 @@ struct node::impl : std::enable_shared_from_this<impl> {
    std::map<std::uint64_t, std::shared_ptr<session_state>> retiring_sessions;
    std::map<std::uint64_t, operation_deadline::stop_token> protocol_open_deadlines;
    std::map<peer_id, relay_reservation_state> inbound_relay_reservations;
+   struct relay_service_request {
+      peer_id peer;
+      std::string ip;
+      std::chrono::steady_clock::time_point observed_at;
+   };
+   std::vector<relay_service_request> relay_service_requests;
+   // Counts both source and destination participation independently of grants.
+   std::map<peer_id, std::size_t> relay_peer_active;
    std::map<peer_id, relay_reservation_state> outbound_relay_reservations;
+   std::map<peer_id, std::shared_ptr<relay_reservation_operation>> relay_reservation_operations;
+   std::shared_ptr<detail::autorelay_manager> autorelay_manager_value;
+   std::uint64_t autorelay_generation = 1;
+   bool autorelay_public = false;
+   std::uint64_t autorelay_session_cursor = 0;
+   bool autorelay_hints_first = false;
+   std::vector<endpoint> published_relay_endpoints;
    struct autonat_nonce {
       std::uint64_t value = 0;
       std::chrono::steady_clock::time_point expires_at;
@@ -294,7 +321,6 @@ struct node::impl : std::enable_shared_from_this<impl> {
    pubsub_state pubsub_value;
    detail::peer_exchange_scheduler peer_exchange_value;
    std::map<std::uint64_t, std::shared_ptr<peer_exchange_operation>> peer_exchange_operations;
-   relay_discovery_state relay_discovery_value;
    mutable identify_push_state identify_push_value;
    node::metrics_snapshot metrics_value;
    std::optional<std::chrono::steady_clock::time_point> stop_requested_at;
@@ -305,6 +331,19 @@ struct node::impl : std::enable_shared_from_this<impl> {
    bool peer_state_hydrated = false;
 
    void initialize_lifecycle();
+   void initialize_autorelay();
+   void start_autorelay();
+   void notify_autorelay_changed() noexcept;
+   void stop_autorelay() noexcept;
+   boost::asio::awaitable<void> join_autorelay();
+   [[nodiscard]] detail::autorelay_manager::snapshot autorelay_snapshot();
+   [[nodiscard]] std::vector<endpoint> relay_advertised_endpoints_locked() const;
+   void refresh_relay_publication();
+   void invalidate_relay_session_locked(std::uint64_t session_id) noexcept;
+   void cancel_outbound_relay(const peer_id& peer);
+   static boost::asio::awaitable<relay::reservation::info> reserve_autorelay_owned(
+       std::shared_ptr<impl> self, detail::autorelay_manager::candidate candidate, std::uint64_t generation,
+       std::shared_ptr<cancellation_latch> cancellation);
    void initialize_mdns();
    void stop_mdns() noexcept;
    boost::asio::awaitable<void> join_mdns();
@@ -511,19 +550,20 @@ struct node::impl : std::enable_shared_from_this<impl> {
    [[nodiscard]] std::vector<peer_id> fresh_outbound_relay_candidates(std::size_t limit,
                                                                       std::chrono::milliseconds refresh_margin);
 
-   bool remember_outbound_relay_reservation(relay_reservation_state reservation);
-
    void remember_relay_reservation_in_store(const relay::reservation::info& info);
 
-   [[nodiscard]] bool remember_inbound_relay_reservation(const peer_id& owner, relay::reservation::options request);
+   [[nodiscard]] bool remember_inbound_relay_reservation(const std::shared_ptr<session_state>& session,
+                                                        relay::reservation::options request);
+   [[nodiscard]] bool admit_relay_service_locked(const session_state& session);
 
    bool cancel_inbound_relay_reservation(const peer_id& owner, std::uint64_t reservation_id);
 
-   [[nodiscard]] std::optional<relay_admission> begin_relay(const peer_id& owner, relay::status& status);
+   [[nodiscard]] std::optional<relay_admission> begin_relay(const peer_id& owner, const peer_id& source,
+                                                          relay::status& status);
 
    [[nodiscard]] std::uint64_t relay_byte_limit(const peer_id& owner);
 
-   void finish_relay(const peer_id& owner, std::optional<std::uint64_t> reservation_id);
+   void finish_relay(const peer_id& owner, std::optional<std::uint64_t> reservation_id, const peer_id& source);
 
    void erase_inbound_relay_reservation_locked(const peer_id& owner) noexcept;
 
@@ -692,14 +732,15 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<relay::reservation::info>
    request_relay_reservation(const peer_id& relay_peer, relay::reservation::options reservation_options,
-                             std::chrono::milliseconds timeout);
+                              std::chrono::milliseconds timeout,
+                              std::shared_ptr<cancellation_latch> cancellation = {},
+                              bool automatic = false, std::uint64_t generation = 0,
+                              std::uint64_t session_id = 0);
 
    boost::asio::awaitable<void> ensure_relay_reservation(const peer_id& relay_peer, std::chrono::milliseconds timeout);
 
    boost::asio::awaitable<std::vector<relay::reservation::info>>
    refresh_relay_candidates(std::optional<peer_id> target, std::chrono::milliseconds timeout);
-
-   void launch_relay_discovery_maintenance();
 
    boost::asio::awaitable<upgraded_session>
    open_relay_yamux(const peer_id& peer, const peer_id& relay_peer, std::chrono::milliseconds timeout,
@@ -737,6 +778,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<admitted_stream> accept_resource_stream(const peer_id& peer,
                                                                   forge::net::transport::stream stream,
                                                                   resource_manager::stream_reservation reservation);
+
+   boost::asio::awaitable<bool> dispatch_registered_handler(const std::shared_ptr<session_state>& session,
+                                                            admitted_stream& admitted);
 
    bool launch_session_accept_loop(std::shared_ptr<session_state> session);
 

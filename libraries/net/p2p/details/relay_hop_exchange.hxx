@@ -24,6 +24,7 @@ using relay_stream_opener = std::function<boost::asio::awaitable<forge::net::p2p
 
 boost::asio::awaitable<relay_hop_exchange>
 async_exchange_relay_hop(boost::asio::io_context& context, std::chrono::milliseconds timeout, std::string operation,
-                         relay_stream_opener open_stream, relay::hop_message request, std::size_t max_message_size);
+                         relay_stream_opener open_stream, relay::hop_message request, std::size_t max_message_size,
+                         std::shared_ptr<cancellation_latch> cancellation = {});
 
 } // namespace forge::net::p2p::detail
