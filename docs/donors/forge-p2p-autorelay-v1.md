@@ -56,8 +56,11 @@ match current automatic ownership. Current policy and actual cancellation still
 take precedence; an unrelated global generation change alone does not discard
 committed ownership or relabel a completed network failure. Both deadlines
 survive candidate rotation; bounded history pressure retains unexpired bans
-instead of permitting a completion-driven retry loop. Shutdown drains without
-new retry history.
+instead of permitting a completion-driven retry loop. Temporary loss of verified
+HOP support stops renewal admission, but retains existing live automatic
+ownership so restoration cannot be blocked by unknown candidates. Explicit
+peer cancellation updates retained retry history without resetting failure
+backoff. Shutdown drains without new retry history.
 
 ## Acceptance Gate
 

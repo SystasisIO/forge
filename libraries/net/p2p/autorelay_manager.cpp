@@ -173,6 +173,10 @@ void autorelay_manager::cancel_peer(const peer_id& peer) noexcept {
             found->second.pending->invalidated = true;
             cancellation = found->second.pending->cancellation;
          }
+      } else if (!_stopping) {
+         if (const auto found = _backoffs.find(peer); found != _backoffs.end()) {
+            found->second.acquisition_after = std::max(found->second.acquisition_after, now + _policy.candidate_backoff);
+         }
       }
    }
    if (cancellation) { cancellation->request_stop(); }
@@ -257,9 +261,14 @@ autorelay_manager::time_point autorelay_manager::tick() {
          }
       }
       reap_locked(now, snapshot.reservations);
+      const auto owned = [&](const peer_id& peer) {
+         return std::ranges::any_of(snapshot.reservations, [&](const reservation& current) {
+            return current.automatic && current.info.relay_peer == peer && current.expires_at > now;
+         });
+      };
       for (auto entry = _candidates.begin(); entry != _candidates.end();) {
          const auto& [peer, value] = *entry;
-         if (value.pending || sources.contains(peer)) { ++entry; continue; }
+         if (value.pending || sources.contains(peer) || owned(peer)) { ++entry; continue; }
          const auto cooling = value.retry_after > now || value.acquisition_after > now;
          if (value.failures != 0 || value.retry_after != time_point{} || value.acquisition_after != time_point{}) {
             if (_backoffs.size() == _policy.max_candidates_per_refresh) {
@@ -288,7 +297,7 @@ autorelay_manager::time_point autorelay_manager::tick() {
             if (_candidates.size() == _policy.max_candidates_per_refresh) {
                if (previous == _backoffs.end()) { continue; }
                displaced = std::ranges::find_if(_candidates, [&](const auto& retained) {
-                  return !retained.second.pending && !sources.contains(retained.first);
+                  return !retained.second.pending && !sources.contains(retained.first) && !owned(retained.first);
                });
                if (displaced == _candidates.end()) { continue; }
             }

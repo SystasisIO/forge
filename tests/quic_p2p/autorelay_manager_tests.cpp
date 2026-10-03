@@ -318,6 +318,60 @@ BOOST_AUTO_TEST_CASE(completion_cooldown_survives_candidate_rotation_and_new_ses
    }
 }
 
+BOOST_AUTO_TEST_CASE(cancel_rotated_peer_extends_acquisition_cooldown_without_resetting_failure_history) {
+   auto limits = policy(1, 1, 1);
+   limits.candidate_backoff = 4s;
+   auto value = fixture{limits};
+   value.use_selection();
+   value.immediate_error(p2p::exceptions::code::closed);
+   value.set_snapshot(fixture::snapshot({1}));
+   value.start();
+   value.wait_state([](const auto& stats) {
+      return stats.failures == 1 && stats.candidates == 0 && stats.pending_reservations == 0;
+   });
+   const auto peer = fixture::candidate(1).peer;
+   BOOST_TEST(value.owner()->stats().attempts == 1U);
+   BOOST_TEST(std::ranges::count(value.owner()->selection().unavailable, peer) == 1);
+
+   // Both cancellations occur while A is retained only in retry history.
+   value.owner()->cancel_peer(peer);
+   value.advance_clock(500ms);
+   value.owner()->cancel_peer(peer);
+   value.advance_clock(1500ms);
+   // The original 750..1000ms network backoff has expired, but acquisition is still canceled.
+   check_refresh_during_cooldown(value);
+   BOOST_TEST(value.owner()->stats().failures == 1U);
+   BOOST_TEST(value.owner()->stats().invalidated_completions == 0U);
+   BOOST_CHECK(value.owner()->stats().last_error == p2p::exceptions::code::closed);
+
+   value.advance_clock(2s);
+   // Repeated cancellation extended the fixed cooldown from t=4s to t=4.5s.
+   check_refresh_during_cooldown(value);
+   value.advance_clock(500ms);
+   value.owner()->notify();
+   value.wait_started(2);
+   const auto requests = value.requests();
+   BOOST_REQUIRE_EQUAL(requests.size(), 2U);
+   BOOST_TEST(requests[1].source.peer.value == peer.value);
+   value.release(1, true);
+   value.wait_state([](const auto& stats) { return stats.failures == 2 && stats.pending_reservations == 0; });
+
+   // Cancellation must retain the second failure's 1500..2000ms tier, not reset it to <=1s.
+   value.advance_clock(1s);
+   value.owner()->notify();
+   auto refreshed = value.refresh(100ms);
+   auto result = fixture::result{};
+   BOOST_CHECK_NO_THROW(result = ready(refreshed));
+   BOOST_TEST(result.empty());
+   BOOST_TEST(value.owner()->stats().attempts == 2U);
+   BOOST_TEST(value.owner()->stats().pending_reservations == 0U);
+   BOOST_TEST(value.owner()->stats().failures == 2U);
+   BOOST_TEST(value.owner()->stats().invalidated_completions == 0U);
+   BOOST_CHECK(value.owner()->stats().last_error == p2p::exceptions::code::timeout);
+   BOOST_TEST(value.requests().size() == 2U);
+   BOOST_TEST(value.peak_active() == 1U);
+}
+
 BOOST_AUTO_TEST_CASE(terminal_error_selection_admits_healthy_spare_before_reap) {
    for (const auto error : std::initializer_list<std::optional<p2p::exceptions::code>>{
             p2p::exceptions::code::canceled, p2p::exceptions::code::closed, std::nullopt}) {
@@ -374,6 +428,83 @@ BOOST_AUTO_TEST_CASE(unexpired_retry_history_survives_capacity_pressure_and_refr
    }
    BOOST_TEST(value.requests().size() == 2U);
    BOOST_TEST(value.peak_active() == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(restored_live_owned_lease_renews_when_unknown_to_full_candidate_and_retry_maps) {
+   auto value = fixture{policy(2, 1, 2)};
+   value.use_selection();
+   auto lease = fixture::lease(fixture::candidate(5));
+   lease.info.ttl = 800ms;
+   lease.expires_at = fixture::now() + 800ms;
+   lease.renew_at = fixture::now() + 600ms;
+   auto state = fixture::snapshot({5});
+   value.set_snapshot(state);
+   value.start();
+   value.wait_started(1);
+   state.reservations = {lease};
+   value.set_snapshot(state);
+   value.release(0);
+   value.wait_state([](const auto& stats) {
+      return stats.successes == 1 && stats.reservations == 1 && stats.candidates == 1 &&
+          stats.pending_reservations == 0;
+   });
+
+   // Loss of HOP removes C from candidates, but does not withdraw its still-live lease.
+   state.candidates = fixture::snapshot({1, 2, 3, 4}).candidates;
+   value.immediate_error(p2p::exceptions::code::closed);
+   value.set_snapshot(state);
+   value.owner()->notify();
+   for (auto index = std::size_t{2}; index < 4; ++index) {
+      value.wait_started(index + 1);
+      value.release(index, true);
+   }
+   value.wait_state([](const auto& stats) {
+      return stats.failures == 3 && stats.candidates == 2;
+   });
+   // Retaining absent C consumes one slot; otherwise one more already-admitted peer completes.
+   if (value.owner()->stats().pending_reservations != 0) {
+      value.wait_started(5);
+      value.release(4, true);
+      value.wait_state([](const auto& stats) { return stats.failures == 4 && stats.pending_reservations == 0; });
+   }
+   const auto failures = static_cast<std::size_t>(value.owner()->stats().failures);
+   BOOST_TEST(failures >= 3U);
+   BOOST_TEST(failures <= 4U);
+   BOOST_TEST(value.owner()->stats().pending_reservations == 0U);
+   BOOST_TEST(value.owner()->stats().attempts == failures + 1);
+   BOOST_TEST(value.owner()->stats().reservations == 1U);
+   const auto cooling = value.owner()->selection();
+   BOOST_TEST(cooling.unavailable.size() == failures);
+   for (auto id = std::uint8_t{1}; id <= failures; ++id) {
+      BOOST_TEST(std::ranges::count(cooling.unavailable, fixture::candidate(id).peer) == 1);
+   }
+   BOOST_TEST(std::ranges::count(cooling.unavailable, fixture::candidate(5).peer) == 0);
+
+   // All first-failure backoffs are still future (>=750ms), while C is live and due.
+   value.advance_clock(600ms);
+   state.candidates = fixture::snapshot({5, 1, 2, 3, 4}).candidates;
+   value.set_snapshot(state);
+   value.owner()->notify();
+   value.wait_started(failures + 2);
+   const auto requests = value.requests();
+   BOOST_REQUIRE_EQUAL(requests.size(), failures + 2);
+   BOOST_TEST(requests[failures + 1].source.peer.value == fixture::candidate(5).peer.value);
+   BOOST_TEST(value.owner()->stats().candidates <= 2U);
+   BOOST_TEST(value.owner()->stats().pending_reservations == 1U);
+   BOOST_TEST(value.owner()->stats().max_candidates == 2U);
+   BOOST_TEST(value.peak_active() == 1U);
+
+   lease.expires_at += 600ms;
+   lease.renew_at += 600ms;
+   state.reservations = {lease};
+   value.set_snapshot(state);
+   value.release(failures + 1);
+   value.wait_state([](const auto& stats) { return stats.pending_reservations == 0 && stats.successes == 2; });
+   BOOST_TEST(value.owner()->stats().renewals == 1U);
+   BOOST_TEST(value.owner()->stats().failures == failures);
+   BOOST_TEST(value.owner()->stats().invalidated_completions == 0U);
+   BOOST_TEST(value.owner()->stats().candidates <= 2U);
+   BOOST_TEST(value.owner()->selection().unavailable.size() <= 4U);
 }
 
 BOOST_AUTO_TEST_CASE(invalidated_generation_completion_cools_without_network_failure) {
