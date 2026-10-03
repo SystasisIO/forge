@@ -47,9 +47,12 @@ Wire interoperability does not require identical Go and Rust operational default
 Differences in local resource policy must be documented and bounded; codec or
 manual RESERVE tests alone do not prove AutoRelay ownership or renewal.
 
-## Acceptance Evidence
+## Acceptance Gate
 
-Evidence is pending implementation and exact-head validation. Required proof:
+Delivery requires independent exact-head review and canonical runtime promotion.
+The promotion receipt binds the clean Git tree, compiled fixture and native
+Go/Rust binaries to the executed cases; source inventory or standalone artifact
+consistency is not a live verdict. Required proof:
 
 - Raw node startup acquires relay access without manual reservation or refresh.
 - Renewal follows the accepted expiry; failure/disconnect replaces the relay and
@@ -63,3 +66,7 @@ Evidence is pending implementation and exact-head validation. Required proof:
 
 Unit, package and source gates complement this live proof. None independently
 establish production readiness or promotion of untested profile combinations.
+The focused `test_forge_p2p_autorelay` target covers manager, raw-node and session
+ownership regressions without replacing the existing complete P2P suite. Native
+HOP/STOP tests must observe handler entry and complete request decoding before
+asserting cancellation, invalid grants, limits or coalesced byte-stream delivery.
