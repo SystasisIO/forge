@@ -126,6 +126,10 @@ def owned_case(spec, root, binaries, case_index):
         owner = {"pid": pid, "command": command, "log_file": str(log),
                  "terminal_status": {"exit_code": 0, "termination": "graceful"},
                  "ready": data.get("ready", {}), "outputs": []}
+        if implementation == "forge" and action in ("autorelay-destination", "autorelay-service") \
+                and options["--transport"] in ("tcp", "tcp-tls"):
+            owner["stop_budget"] = {"native_close_seconds": 5.0, "post_stop_seconds": 1.2,
+                                    "scheduler_allowance_seconds": 2.0, "seconds": 8.2}
         for flag, key in (("--ready-file", "ready"), ("--result-file", "result")):
             if flag not in options:
                 continue
@@ -249,6 +253,69 @@ class AutoRelayAcceptanceTests(unittest.TestCase):
         self.assertEqual(self.validate(self.receipt()), [])
         self.assertEqual(len(self.records), 12)
         self.assertEqual(sum(len(r["processes"]) for r in self.records), 60)
+
+    def test_exact_stop_budget_accepts_all_eight_scoped_forge_owners(self):
+        scoped = [owner for record in self.records for owner in record["processes"] if "stop_budget" in owner]
+        self.assertEqual(len(scoped), 8)
+        for owner in scoped:
+            self.assertEqual(owner["stop_budget"], {"native_close_seconds": 5.0, "post_stop_seconds": 1.2,
+                "scheduler_allowance_seconds": 2.0, "seconds": 8.2})
+        self.assertEqual(self.validate(), [])
+        self.assertEqual(self.validate(self.receipt()), [])
+
+    def test_missing_scoped_stop_budget_rejects_every_tcp_tls_case(self):
+        for index, record in enumerate(self.records):
+            if record["case"]["transport"] == "quic":
+                continue
+            original = copy.deepcopy(record)
+            label = "destination" if record["case"]["kind"] == "lifecycle" else "relay"
+            with self.subTest(case=record["scenario_id"]):
+                del record["raw"][label]["process"]["stop_budget"]
+                self.assert_rejected("invalid exact process owner")
+            self.records[index] = original
+
+    def test_stop_budget_requires_closed_exact_finite_nonbool_numeric_fields(self):
+        spec = case_specs()[4]
+        original = copy.deepcopy(self.records[4])
+        valid = original["raw"]["destination"]["process"]["stop_budget"]
+        invalid = [None, True, [], {**valid, "extra": 0}]
+        for key in valid:
+            missing = dict(valid)
+            del missing[key]
+            invalid.append(missing)
+            for value in (valid[key] + 0.01, True, False, str(valid[key]), None,
+                          float("inf"), float("-inf"), float("nan"), 10 ** 400):
+                invalid.append({**valid, key: value})
+        for budget in invalid:
+            with self.subTest(budget=budget):
+                record = copy.deepcopy(original)
+                record["raw"]["destination"]["process"]["stop_budget"] = budget
+                with self.assertRaisesRegex(ValueError, "stop budget"):
+                    acceptance.validate_record(record, spec, self.artifact_root, self.binaries,
+                                               lambda path: checker.load_json(Path(path)))
+
+    def test_stop_budget_is_forbidden_on_quic_donor_and_echo_owners(self):
+        selections = [(0, "destination"), (2, "relay"), (4, "relay"), (5, "relay"),
+                      (4, "observer"), (5, "observer"), (4, "replacement"), (5, "replacement"),
+                      (6, "destination"), (7, "destination"), (6, None), (7, None)]
+        budget = self.records[4]["raw"]["destination"]["process"]["stop_budget"]
+        for index, label in selections:
+            original = copy.deepcopy(self.records[index])
+            with self.subTest(case=original["scenario_id"], label=label):
+                actor = self.records[index]["raw"][label] if label else self.records[index]["echoes"][0]
+                actor["process"]["stop_budget"] = dict(budget)
+                self.assert_rejected("invalid exact process owner")
+            self.records[index] = original
+
+    def test_scoped_budget_does_not_allow_unknown_owner_fields_or_forced_cleanup(self):
+        original = copy.deepcopy(self.records[4])
+        for change, error in (({"other_budget": 8.2}, "invalid exact process owner"),
+                              ({"terminal_status": {"exit_code": 0, "termination": "terminated"}}, "graceful joined shutdown"),
+                              ({"terminal_status": {"exit_code": 0, "termination": "killed"}}, "graceful joined shutdown")):
+            with self.subTest(change=change):
+                self.records[4] = copy.deepcopy(original)
+                self.records[4]["raw"]["destination"]["process"].update(change)
+                self.assert_rejected(error)
 
     def test_missing_suite_and_empty_claims_use_exact_case_mapping(self):
         for record in self.records:

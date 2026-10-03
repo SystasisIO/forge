@@ -1,6 +1,7 @@
 """Canonical PR9 execution registration, never a production support claim."""
 
 from copy import deepcopy
+import math
 from pathlib import Path
 
 from autorelay_cases import case_specs
@@ -102,7 +103,21 @@ def _actor_launch(spec, label, work, raw):
 
 def _owned_output(actor, impl, action, log, options, work, binaries, load_json, used_paths):
     owner = actor.get("process")
-    _require(isinstance(owner, dict) and set(owner) == OWNER_FIELDS, "invalid exact process owner")
+    scoped_budget = (impl == "forge" and action in ("autorelay-destination", "autorelay-service")
+                     and options.get("--scenario") == "autorelay"
+                     and options.get("--transport") in ("tcp", "tcp-tls"))
+    expected_fields = OWNER_FIELDS | {"stop_budget"} if scoped_budget else OWNER_FIELDS
+    _require(isinstance(owner, dict) and set(owner) == expected_fields, "invalid exact process owner")
+    if scoped_budget:
+        # Independently validate this exact fixture policy, not the launcher's
+        # budget selector or a self-declared owner/action/transport.
+        expected_budget = {"native_close_seconds": 5.0, "post_stop_seconds": 1.2,
+                           "scheduler_allowance_seconds": 2.0, "seconds": 8.2}
+        budget = owner["stop_budget"]
+        _require(isinstance(budget, dict) and set(budget) == set(expected_budget)
+                 and all(type(budget[key]) in (int, float) and budget[key] == value
+                         and math.isfinite(budget[key]) for key, value in expected_budget.items()),
+                 "invalid exact Forge AutoRelay stop budget")
     _require(type(owner.get("pid")) is int and owner["pid"] > 0, "invalid owned PID")
     terminal = owner.get("terminal_status")
     _require(terminal == {"exit_code": 0, "termination": "graceful"}
