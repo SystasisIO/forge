@@ -64,6 +64,13 @@ consistency is not a live verdict. Required proof:
 - Negative evidence checks reject manual-reservation substitutes, direct-path
   bypasses, mismatched identities, incomplete receipts and forced cleanup.
 
+Run the focused 12-case canonical AutoRelay promotion gate with
+`cmake --build <build-dir> --target test_forge_p2p_autorelay_acceptance -j 4`.
+It uses the existing promotion wrapper, exact clean HEAD, canonical manifest and
+fixture/inventory dependencies, with artifacts under the promotion directory's
+`autorelay` subdirectory. This is not a full Stage 6 verdict; the global Stage 6
+gate remains blocked by future-protocol and private-profile gaps.
+
 Unit, package and source gates complement this live proof. None independently
 establish production readiness or promotion of untested profile combinations.
 The focused `test_forge_p2p_autorelay` target covers manager, raw-node and session

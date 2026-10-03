@@ -54,7 +54,7 @@
     "rust_fixture/upgrade_observer.rs": "e6fb6866e485ac02c6cbfec21a05acff932e59593abb534dda536d119f070618"
   },
   "runtime_artifact_sources": {
-    "../CMakeLists.txt": "95b44435c82520257c78b1b90303170873f3c4f3502ad622d32bd3e75705d8d9",
+    "../CMakeLists.txt": "122b79914b472774eb867be7fe7ffc53eb14fc53b2fecd69d578db3ecf02f09e",
     "autonat_acceptance.py": "5bca06fb7a97d81c823f8d42dabd671c67484f1585f4988b3473b4e406045ab3",
     "autonat_cases.py": "a7b58ae1b03359411cab68c627ca0602fe034a691a2e7fb9f9cc841fa2d4b96b",
     "autonat_evidence.py": "ee14c5984570b9e738e4f386214ec34428d01bb03ef1303917ef991b9f71c1d1",
