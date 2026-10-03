@@ -80,16 +80,19 @@ class autorelay_manager final : public lifecycle_stop_listener,
       bool invalidated = false;
       bool renewal = false;
       std::optional<exceptions::code> error;
+      std::optional<std::uint64_t> reservation_id;
    };
 
    struct candidate_state {
       candidate source;
       time_point retry_after{};
+      time_point acquisition_after{};
       std::uint64_t failures = 0;
       std::shared_ptr<work> pending;
    };
    struct retry_state {
       time_point retry_after{};
+      time_point acquisition_after{};
       std::uint64_t failures = 0;
    };
 
@@ -100,7 +103,7 @@ class autorelay_manager final : public lifecycle_stop_listener,
    void complete(const std::shared_ptr<work>& item, std::optional<exceptions::code> error) noexcept;
    void parent_complete(std::exception_ptr error) noexcept;
    void finish_if_ready() noexcept;
-   void reap_locked(time_point now);
+   void reap_locked(time_point now, const std::vector<reservation>& reservations);
    [[nodiscard]] time_point backoff_locked(candidate_state& value, time_point now);
 
    boost::asio::strand<boost::asio::any_io_executor> _strand;

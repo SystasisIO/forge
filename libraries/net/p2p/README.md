@@ -392,6 +392,16 @@ shutdown invalidate pending grants, stop admission and join the workers before
 peer persistence closes. `async_cancel_relay(peer)` cancels local outbound
 ownership without closing the shared authenticated connection.
 
+An unsolicited `closed` or `canceled` reservation result is a failed attempt,
+not evidence of owner cancellation. It receives the normal per-peer jittered
+backoff. Owner invalidation or completion without the same live automatic lease
+receives an acquisition cooldown without a failure penalty. This cooldown does
+not delay renewal of a different live lease; genuine failure backoff still does.
+Both deadlines survive candidate/session rotation. Bounded history pressure
+defers new acquisition instead of forgetting an unexpired deadline. Notifications
+and manual refresh cannot bypass or extend it. Shutdown only drains existing
+work, without retries.
+
 Identify applies `max_listen_endpoints` to the combined advertisement before
 signing. Live reservation-backed circuits have priority within that projection;
 its signed and unsigned lists match. The full local control view and configured

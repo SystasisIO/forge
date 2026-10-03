@@ -54,7 +54,10 @@ autorelay_manager_fixture::autorelay_manager_fixture(net::relay::policy policy)
                             std::shared_ptr<net::cancellation_latch> cancellation) {
              return reserve(std::move(source), generation, std::move(cancellation));
           },
-          .now = [] { return now(); },
+          .now = [this] {
+             const auto lock = std::scoped_lock{_mutex};
+             return _now;
+          },
       })} {}
 
 autorelay_manager_fixture::~autorelay_manager_fixture() {
@@ -139,6 +142,27 @@ void autorelay_manager_fixture::immediate_success(bool value) {
    const auto lock = std::scoped_lock{_mutex};
    _immediate_success = value;
 }
+void autorelay_manager_fixture::immediate_error(net::exceptions::code error) {
+   const auto lock = std::scoped_lock{_mutex};
+   _immediate_error = error;
+}
+void autorelay_manager_fixture::immediate_unowned_success() {
+   const auto lock = std::scoped_lock{_mutex};
+   _immediate_unowned_success = true;
+}
+void autorelay_manager_fixture::before_immediate_completion(std::function<void()> callback) {
+   const auto lock = std::scoped_lock{_mutex};
+   _before_immediate_completion = std::move(callback);
+}
+void autorelay_manager_fixture::use_selection(bool value) {
+   const auto lock = std::scoped_lock{_mutex};
+   _use_selection = value;
+}
+void autorelay_manager_fixture::advance_clock(std::chrono::milliseconds amount) {
+   BOOST_REQUIRE_GE(amount.count(), 0);
+   const auto lock = std::scoped_lock{_mutex};
+   _now += amount;
+}
 void autorelay_manager_fixture::fail_snapshot(bool value) {
    fail_snapshot(value ? std::make_exception_ptr(std::logic_error{"scripted snapshot failure"})
                        : std::exception_ptr{});
@@ -152,11 +176,28 @@ void autorelay_manager_fixture::start() { _owner->start(_tracker); }
 autorelay_manager_fixture::manager::snapshot autorelay_manager_fixture::current() {
    auto value = manager::snapshot{};
    auto callback = std::function<void()>{};
+   auto use_selection = false;
+   auto now = manager::time_point{};
    {
       const auto lock = std::scoped_lock{_mutex};
       if (_snapshot_error) { std::rethrow_exception(_snapshot_error); }
       value = _snapshot;
       callback = std::exchange(_after_snapshot, {});
+      use_selection = _use_selection;
+      now = _now;
+   }
+   if (use_selection) {
+      const auto selection = _owner->selection();
+      const auto owned = [&](const auto& source) {
+         return std::ranges::any_of(value.reservations, [&](const auto& lease) {
+            return lease.automatic && lease.info.relay_peer == source.peer && lease.expires_at > now;
+         });
+      };
+      // Match node snapshot priority: live ownership precedes terminal candidate exclusions.
+      std::stable_partition(value.candidates.begin(), value.candidates.end(), owned);
+      std::erase_if(value.candidates, [&](const auto& source) {
+         return !owned(source) && std::ranges::find(selection.unavailable, source.peer) != selection.unavailable.end();
+      });
    }
    if (callback) { callback(); }
    return value;
@@ -167,17 +208,30 @@ asio::awaitable<net::relay::reservation::info> autorelay_manager_fixture::reserv
    auto item = std::make_shared<request>(request{.source = source, .generation = generation,
                                                .cancellation = cancellation});
    auto immediate = false;
+   auto unowned_success = false;
+   auto before_completion = std::function<void()>{};
+   auto immediate_error = std::optional<net::exceptions::code>{};
    {
       const auto lock = std::scoped_lock{_mutex};
       _requests.push_back(item);
       _peak_active = std::max(_peak_active, ++_active);
       immediate = _immediate_success;
-      if (immediate) {
+      // Only the first scripted error is synchronous; any erroneous retry stays bounded.
+      immediate_error = std::exchange(_immediate_error, std::nullopt);
+      unowned_success = std::exchange(_immediate_unowned_success, false);
+      if (immediate_error || unowned_success) {
+         item->completed = true;
+         --_active;
+         before_completion = std::exchange(_before_immediate_completion, {});
+      } else if (immediate) {
          _snapshot.reservations.push_back(lease(source));
          item->released = true;
       }
    }
    _progress.notify_all();
+   if (before_completion) { before_completion(); }
+   if (immediate_error) { FORGE_THROW_CODE(*immediate_error, "scripted immediate reservation completion"); }
+   if (unowned_success) { co_return lease(source).info; }
    auto subscription = net::cancellation_latch::subscribe(cancellation, [this, item] {
       auto callback = std::function<void()>{};
       {

@@ -122,7 +122,7 @@ void autorelay_manager::finish_if_ready() noexcept {
       const auto lock = std::scoped_lock{_mutex};
       if (!_parent_done || _finished) { return; }
       // Parent completion has invalidated every claim; this reap cannot allocate.
-      reap_locked(std::chrono::steady_clock::now());
+      reap_locked(std::chrono::steady_clock::now(), {});
       if (_children == 0) {
          _finished = true;
          _stats.running = false;
@@ -166,7 +166,9 @@ void autorelay_manager::cancel_peer(const peer_id& peer) noexcept {
    {
       const auto lock = std::scoped_lock{_mutex};
       if (const auto found = _candidates.find(peer); found != _candidates.end()) {
-         found->second.retry_after = now + _policy.candidate_backoff;
+         if (!_stopping) {
+            found->second.acquisition_after = std::max(found->second.acquisition_after, now + _policy.candidate_backoff);
+         }
          if (found->second.pending) {
             found->second.pending->invalidated = true;
             cancellation = found->second.pending->cancellation;
@@ -191,15 +193,24 @@ autorelay_manager::time_point autorelay_manager::backoff_locked(candidate_state&
    return now + std::chrono::milliseconds{static_cast<std::int64_t>(delay - jitter)};
 }
 
-void autorelay_manager::reap_locked(time_point now) {
+void autorelay_manager::reap_locked(time_point now, const std::vector<reservation>& reservations) {
    for (auto& [_, value] : _candidates) {
       const auto item = value.pending;
       if (!item || !item->done) { continue; }
       if (_stats.pending_reservations > 0) { --_stats.pending_reservations; }
-      if (item->invalidated) {
+      const auto live = std::ranges::find_if(reservations, [&](const reservation& current) {
+         return current.automatic && current.info.relay_peer == item->source.peer && current.expires_at > now;
+      });
+      const auto invalidated = _stopping || item->invalidated || item->cancellation->stop_requested();
+      const auto committed = _stats.permitted && !invalidated && !item->error && item->reservation_id &&
+          live != reservations.end() && live->info.id == *item->reservation_id;
+      if (invalidated || (!item->error && !committed)) {
          increment(_stats.invalidated_completions);
-      } else if (item->error == exceptions::code::canceled || item->error == exceptions::code::closed) {
-         increment(_stats.invalidated_completions);
+         // An orphan acquisition cools without changing genuine failure history.
+         // A canceled renewal keeps the existing live lease's scheduling intact.
+         if (!_stopping && (!invalidated || !item->renewal || live == reservations.end())) {
+            value.acquisition_after = std::max(value.acquisition_after, now + _policy.candidate_backoff);
+         }
       } else if (item->error) {
          increment(_stats.failures);
          _stats.last_error = item->error;
@@ -209,6 +220,7 @@ void autorelay_manager::reap_locked(time_point now) {
          if (item->renewal) { increment(_stats.renewals); }
          value.failures = 0;
          value.retry_after = {};
+         value.acquisition_after = {};
       }
       value.pending.reset();
    }
@@ -235,44 +247,81 @@ autorelay_manager::time_point autorelay_manager::tick() {
       _stats.permitted = !_stopping && _stats.enabled && snapshot.permitted;
       for (auto& [peer, value] : _candidates) {
          const auto item = value.pending;
-         if (item && !item->done && (!snapshot.permitted || _stopping || item->generation != snapshot.generation ||
-             (item->source.session_id != 0 && (!sources.contains(peer) ||
-                                              sources.at(peer).session_id != item->source.session_id)))) {
+         if (item && (!snapshot.permitted || _stopping ||
+             (!item->done && (item->generation != snapshot.generation ||
+              (item->source.session_id != 0 && (!sources.contains(peer) ||
+               sources.at(peer).session_id != item->source.session_id)))) ||
+             (item->done && item->error == exceptions::code::canceled && item->generation != snapshot.generation))) {
             item->invalidated = true;
-            cancellations.push_back(item->cancellation);
+            if (!item->done) { cancellations.push_back(item->cancellation); }
          }
       }
-      reap_locked(now);
-      for (const auto& [peer, value] : _candidates) {
-         if (!value.pending && !sources.contains(peer) && value.retry_after > time_point{}) {
-            _backoffs.insert_or_assign(peer, retry_state{value.retry_after, value.failures});
-            if (_backoffs.size() > _policy.max_candidates_per_refresh) {
-               const auto oldest = std::ranges::min_element(_backoffs, {}, [](const auto& entry) {
-                  return entry.second.retry_after;
+      reap_locked(now, snapshot.reservations);
+      for (auto entry = _candidates.begin(); entry != _candidates.end();) {
+         const auto& [peer, value] = *entry;
+         if (value.pending || sources.contains(peer)) { ++entry; continue; }
+         const auto cooling = value.retry_after > now || value.acquisition_after > now;
+         if (value.failures != 0 || value.retry_after != time_point{} || value.acquisition_after != time_point{}) {
+            if (_backoffs.size() == _policy.max_candidates_per_refresh) {
+               const auto expired = std::ranges::find_if(_backoffs, [&](const auto& history) {
+                  return history.second.retry_after <= now && history.second.acquisition_after <= now;
                });
-               _backoffs.erase(oldest);
+               if (expired != _backoffs.end()) { _backoffs.erase(expired); }
             }
-         } else if (!value.pending && value.failures == 0 && value.retry_after == time_point{}) {
-            _backoffs.erase(peer);
+            if (_backoffs.size() < _policy.max_candidates_per_refresh) {
+               _backoffs.emplace(peer, retry_state{value.retry_after, value.acquisition_after, value.failures});
+            } else if (cooling) {
+               // No unexpired history may be evicted to make room for an unknown peer.
+               ++entry;
+               continue;
+            }
          }
+         entry = _candidates.erase(entry);
       }
-      std::erase_if(_candidates, [&](const auto& entry) {
-         return !entry.second.pending && !sources.contains(entry.first);
-      });
-      for (const auto& [peer, value] : sources) {
+      for (const auto& peer : priority) {
+         const auto& value = sources.at(peer);
          if (const auto found = _candidates.find(peer); found != _candidates.end()) {
             found->second.source = value;
-         } else if (_candidates.size() < _policy.max_candidates_per_refresh) {
+         } else {
+            const auto previous = _backoffs.find(peer);
+            auto displaced = _candidates.end();
+            if (_candidates.size() == _policy.max_candidates_per_refresh) {
+               if (previous == _backoffs.end()) { continue; }
+               displaced = std::ranges::find_if(_candidates, [&](const auto& retained) {
+                  return !retained.second.pending && !sources.contains(retained.first);
+               });
+               if (displaced == _candidates.end()) { continue; }
+            }
             auto state = candidate_state{.source = value};
-            if (const auto previous = _backoffs.find(peer); previous != _backoffs.end()) {
+            if (previous != _backoffs.end()) {
                state.retry_after = previous->second.retry_after;
+               state.acquisition_after = previous->second.acquisition_after;
                state.failures = previous->second.failures;
             }
-            _candidates.emplace(peer, std::move(state));
+            const auto inserted = _candidates.emplace(peer, std::move(state)).first;
+            // Stage both transfers before erasing either retained history entry.
+            // The temporary extra node stays under the mutex and rolls back on allocation failure.
+            try {
+               if (displaced != _candidates.end()) {
+                  const auto& retained = displaced->second;
+                  _backoffs.emplace(displaced->first,
+                      retry_state{retained.retry_after, retained.acquisition_after, retained.failures});
+               }
+            } catch (...) {
+               _candidates.erase(inserted);
+               throw;
+            }
+            if (previous != _backoffs.end()) { _backoffs.erase(previous); }
+            if (displaced != _candidates.end()) { _candidates.erase(displaced); }
          }
       }
       for (const auto& [_, value] : _backoffs) {
          if (value.retry_after > now) { deadline = std::min(deadline, value.retry_after); }
+         if (value.acquisition_after > now) { deadline = std::min(deadline, value.acquisition_after); }
+      }
+      for (const auto& [_, value] : _candidates) {
+         if (value.retry_after > now) { deadline = std::min(deadline, value.retry_after); }
+         if (value.acquisition_after > now) { deadline = std::min(deadline, value.acquisition_after); }
       }
       _stats.candidates = _candidates.size();
       _stats.reservations = snapshot.reservations.size();
@@ -289,13 +338,11 @@ autorelay_manager::time_point autorelay_manager::tick() {
          if (retained == _candidates.end()) { continue; }
          auto& value = retained->second;
          if (!_stats.permitted || !sources.contains(peer) || value.pending) { continue; }
-         if (value.retry_after > now) {
-            deadline = std::min(deadline, value.retry_after);
-            continue;
-         }
-         const auto reserved = std::ranges::find(snapshot.reservations, peer,
-             [](const reservation& current) { return current.info.relay_peer; });
+         const auto reserved = std::ranges::find_if(snapshot.reservations, [&](const reservation& current) {
+            return current.info.relay_peer == peer && current.expires_at > now;
+         });
          const auto renewal = reserved != snapshot.reservations.end();
+         if (value.retry_after > now || (!renewal && value.acquisition_after > now)) { continue; }
          if (renewal) {
             if (!reserved->automatic) { continue; }
             if (reserved->renew_at > now) {
@@ -340,17 +387,19 @@ autorelay_manager::time_point autorelay_manager::tick() {
 boost::asio::awaitable<void> autorelay_manager::reserve_owned(std::shared_ptr<autorelay_manager> self,
                                                             std::shared_ptr<work> item) {
    auto error = std::optional<exceptions::code>{};
+   auto reservation_id = std::optional<std::uint64_t>{};
    try {
       if (item->cancellation->stop_requested()) {
          FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P AutoRelay reservation canceled before admission");
       }
-      static_cast<void>(co_await self->_callbacks.reserve(item->source, item->generation, item->cancellation));
+      reservation_id = (co_await self->_callbacks.reserve(item->source, item->generation, item->cancellation)).id;
    } catch (const forge::exceptions::base& failure) {
       error = exceptions::code_of(failure).value_or(exceptions::code::internal);
    } catch (...) { error = exceptions::code::internal; }
    {
       const auto lock = std::scoped_lock{self->_mutex};
       item->error = error;
+      item->reservation_id = reservation_id;
    }
 }
 
@@ -475,13 +524,12 @@ autorelay_manager::selection_state autorelay_manager::selection() const {
    for (const auto& [peer, value] : _candidates) {
       const auto item = value.pending;
       if (item && !item->done && !item->invalidated) { result.pending.push_back(value.source); }
-      if (value.retry_after > now || (item && item->done && !item->invalidated && item->error &&
-          item->error != exceptions::code::canceled && item->error != exceptions::code::closed)) {
+      if (value.retry_after > now || value.acquisition_after > now || (item && item->done)) {
          result.unavailable.push_back(peer);
       }
    }
    for (const auto& [peer, value] : _backoffs) {
-      if (value.retry_after > now) { result.unavailable.push_back(peer); }
+      if (value.retry_after > now || value.acquisition_after > now) { result.unavailable.push_back(peer); }
    }
    return result;
 }

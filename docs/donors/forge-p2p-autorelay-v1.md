@@ -47,6 +47,18 @@ Wire interoperability does not require identical Go and Rust operational default
 Differences in local resource policy must be documented and bounded; codec or
 manual RESERVE tests alone do not prove AutoRelay ownership or renewal.
 
+Go's `relay_finder.go` applies per-peer backoff to unsuccessful RESERVE calls,
+including remote closure. Forge distinguishes such results from explicit owner
+invalidation: error codes alone do not prove cancellation. Acquisition cooldown
+is separate from failed-attempt backoff, so cancellation of an obsolete operation
+cannot delay renewal of a live lease. Success requires the returned lease ID to
+match current automatic ownership. Current policy and actual cancellation still
+take precedence; an unrelated global generation change alone does not discard
+committed ownership or relabel a completed network failure. Both deadlines
+survive candidate rotation; bounded history pressure retains unexpired bans
+instead of permitting a completion-driven retry loop. Shutdown drains without
+new retry history.
+
 ## Acceptance Gate
 
 Delivery requires independent exact-head review and canonical runtime promotion.

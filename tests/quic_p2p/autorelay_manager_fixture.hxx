@@ -41,6 +41,11 @@ class autorelay_manager_fixture {
    void on_cancel(std::function<void()> callback);
    void hold_canceled(bool value = true);
    void immediate_success(bool value = true);
+   void immediate_error(forge::net::p2p::exceptions::code error);
+   void immediate_unowned_success();
+   void before_immediate_completion(std::function<void()> callback);
+   void use_selection(bool value = true);
+   void advance_clock(std::chrono::milliseconds amount);
    void fail_snapshot(bool value = true);
    void fail_snapshot(std::exception_ptr error);
    void start();
@@ -73,10 +78,15 @@ class autorelay_manager_fixture {
    std::vector<std::shared_ptr<request>> _requests;
    std::function<void()> _after_snapshot;
    std::function<void()> _on_cancel;
+   std::function<void()> _before_immediate_completion;
    std::size_t _active = 0;
    std::size_t _peak_active = 0;
    bool _hold_canceled = false;
    bool _immediate_success = false;
+   bool _immediate_unowned_success = false;
+   bool _use_selection = false;
+   std::optional<forge::net::p2p::exceptions::code> _immediate_error;
+   manager::time_point _now = now();
    std::exception_ptr _snapshot_error;
 };
 
