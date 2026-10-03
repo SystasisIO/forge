@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import runner
 import process_lifecycle
+import autorelay_cases
 
 
 class FakeProcess:
@@ -113,6 +114,81 @@ class ProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(result["owned_processes"][0]["terminal_status"],
                          {"exit_code": 0, "termination": "graceful"})
         self.assert_closed()
+
+    def test_default_listener_retains_five_second_graceful_stop(self):
+        @runner.owned_case
+        def case():
+            self.listener()
+            return {"status": "ok"}
+
+        result = case()
+        self.assertEqual(self.events, [(self.processes[0].pid, "wait", 5)])
+        self.assertNotIn("stop_budget", result["owned_processes"][0])
+        self.assert_closed()
+
+    def test_canonical_autorelay_launch_passes_role_budget_to_owned_listener(self):
+        binaries = {name: Path("controlled-fixture") for name in ("forge", "go", "rust")}
+        for transport in ("quic", "tcp", "tcp-tls"):
+            for kind in ("lifecycle", "service"):
+                with self.subTest(transport=transport, kind=kind):
+                    spec = autorelay_cases.Case("go", "go" if kind == "lifecycle" else "forge",
+                                                "forge" if kind == "lifecycle" else "rust", transport, kind)
+                    forge_role = "destination" if kind == "lifecycle" else "relay"
+                    before = len(self.events)
+
+                    def ready(path, seconds):
+                        if path.name == f"{forge_role}-ready.json":
+                            raise TimeoutError("controlled readiness failure after Forge launch")
+                        return self.ready(path, seconds)
+
+                    with patch.object(autorelay_cases, "spawn_owned", wraps=process_lifecycle.spawn_owned) as spawn:
+                        artifact = autorelay_cases.run_case(spec, binaries, self.root, wait_json=ready,
+                            command_attempt=lambda *args: {}, start_destination=MagicMock(),
+                            run_relay_dial=MagicMock(), claims_for_case=lambda case: ())
+                    expected = 8.2 if transport in ("tcp", "tcp-tls") else 5
+                    budget = spawn.call_args.kwargs["stop_budget"]
+                    self.assertEqual(None if budget is None else budget.seconds,
+                                     None if transport == "quic" else 8.2)
+                    forge_process = artifact["raw"][forge_role]["process"]
+                    self.assertIn((forge_process["pid"], "wait", expected), self.events[before:])
+                    self.assertEqual(forge_process["terminal_status"], {"exit_code": 0, "termination": "graceful"})
+                    self.assertEqual(artifact["status"], "failed")
+                    self.assertTrue(any("controlled readiness failure" in error for error in artifact["errors"]))
+                    if kind == "lifecycle":
+                        self.assertIsNone(spawn.call_args_list[0].kwargs["stop_budget"])
+                    self.assert_closed()
+
+    def test_explicit_budget_preserves_fatal_forced_cleanup_and_nonzero_exit(self):
+        budget = autorelay_cases._listener_stop_budget("forge", "autorelay-destination", "tcp")
+        for waits in ([subprocess.TimeoutExpired(["controlled-fixture"], budget.seconds), 0],
+                      [subprocess.TimeoutExpired(["controlled-fixture"], budget.seconds), timeout(), 0], [7]):
+            with self.subTest(waits=waits):
+                self.scripts = [{"waits": waits}]
+                before = len(self.events)
+
+                @runner.owned_case
+                def case():
+                    process_lifecycle.spawn_owned(["controlled-fixture", "autorelay-destination", "--result-file",
+                        str(self.root / "budget-result.json")], self.root / "budget.log",
+                        self.root / "budget.stop", stop_budget=budget)
+                    return {"status": "ok"}
+
+                with self.assertRaises(runner.CaseFailure) as raised:
+                    case()
+                expected = "forced SIGTERM" if len(waits) > 1 else "exit code 7"
+                self.assertIn(expected, str(raised.exception))
+                if len(waits) == 3:
+                    self.assertIn("forced SIGKILL", str(raised.exception))
+                evidence = raised.exception.artifact["processes"][0]
+                self.assertEqual(evidence["stop_budget"]["seconds"], budget.seconds)
+                actual_waits = [event[2] for event in self.events[before:] if event[1] == "wait"]
+                self.assertEqual(actual_waits, [budget.seconds] + [5] * (len(waits) - 1))
+                self.assert_closed()
+
+    def test_explicit_stop_budget_rejects_invalid_or_unbounded_numeric_values(self):
+        for values in ((0, 0, 0), (-1, 1, 1), (5, float("inf"), 2), (float("nan"), 1.2, 2), (1e308, 1e308, 1e308)):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                process_lifecycle.StopBudget(*values)
 
     def test_tcp_upgrade_listener_is_joined_before_reading_final_evidence(self):
         proof = {"finalized_after_host_close": True, "complete": True, "overflow": False}

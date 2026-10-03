@@ -4,7 +4,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from autorelay_cases import _capture, _read, case_specs
+from autorelay_cases import _capture, _listener_stop_budget, _read, case_specs
 from autorelay_acceptance import SCENARIOS, claims_for
 import runner
 
@@ -35,6 +35,30 @@ class AutoRelayCaseTests(unittest.TestCase):
         self.assertIn("node_options({}, generate_libp2p_identity())", factory)
         self.assertIn("options.allow_insecure_test_mode = false;", factory)
         self.assertNotIn("options.allow_insecure_test_mode = true;", factory)
+
+    def test_listener_budget_is_derived_from_native_close_and_fixture_post_stop(self):
+        root = Path(__file__).resolve().parents[2]
+        native = (root / "libraries/net/yamux/include/forge/net/yamux/options.cppm").read_text()
+        fixture = Path(__file__).with_name("forge_autorelay_fixture.cpp").read_text()
+        self.assertIn("close_timeout{5'000}", native)
+        self.assertIn("sleep_for(1200ms)", fixture)
+        for command in ("autorelay-destination", "autorelay-service"):
+            for transport in ("tcp", "tcp-tls"):
+                budget = _listener_stop_budget("forge", command, transport)
+                self.assertEqual((budget.native_close_seconds, budget.post_stop_seconds,
+                                  budget.scheduler_allowance_seconds), (5.0, 1.2, 2.0))
+                self.assertEqual(budget.seconds, 8.2)
+
+    def test_listener_budget_does_not_change_donor_quic_or_legacy_fixtures(self):
+        for implementation in ("forge", "go", "rust"):
+            for command in ("autorelay-destination", "autorelay-service", "autorelay-relay",
+                            "autorelay-observe", "listen", "destination", "dial-relay"):
+                for transport in ("quic", "tcp", "tcp-tls", "tcp-pnet"):
+                    selected = implementation == "forge" and command in (
+                        "autorelay-destination", "autorelay-service") and transport in ("tcp", "tcp-tls")
+                    if not selected:
+                        with self.subTest(implementation=implementation, command=command, transport=transport):
+                            self.assertIsNone(_listener_stop_budget(implementation, command, transport))
 
     def test_malformed_json_fails_once_with_exact_path_and_original_decode_error(self):
         with tempfile.TemporaryDirectory() as directory:

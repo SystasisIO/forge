@@ -7,7 +7,7 @@ import time
 
 from autonat_cases import _snapshot
 from autorelay_evidence import validate_case
-from process_lifecycle import enter_scope, exit_scope, spawn_owned
+from process_lifecycle import StopBudget, enter_scope, exit_scope, spawn_owned
 from provenance import reject_duplicate_json_keys
 
 
@@ -35,6 +35,17 @@ def case_specs():
             ("rust", "forge", "go", "service"),
         )
     )
+
+
+def _listener_stop_budget(implementation, command, transport):
+    if implementation == "forge" and command in ("autorelay-destination", "autorelay-service") \
+            and transport in ("tcp", "tcp-tls"):
+        # Native Yamux options::close_timeout is 5 s; this fixture then records
+        # post_stop after 1200 ms. Two seconds cover bounded scheduling overhead.
+        # Canonical teardown joins relay/dialer or destination owners first;
+        # this is not a node-wide bound for arbitrary sequential session drains.
+        return StopBudget(native_close_seconds=5.0, post_stop_seconds=1.2, scheduler_allowance_seconds=2.0)
+    return None
 
 
 def _read(path):
@@ -112,7 +123,8 @@ def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destinat
             if implementation == "forge":
                 argv += ["--store-dir", str(work / f"{label}-store")]
             attempt = command_attempt(argv, work / f"{label}.log", spec.identifier, 1, label, 60)
-            owner = spawn_owned(argv, work / f"{label}.log", work / f"{label}.stop", attempt)
+            owner = spawn_owned(argv, work / f"{label}.log", work / f"{label}.stop", attempt,
+                                stop_budget=_listener_stop_budget(implementation, command, spec.transport))
             owners[label] = owner
             owner.ready = wait_json(work / f"{label}-ready.json", 10)
             return owner, result
