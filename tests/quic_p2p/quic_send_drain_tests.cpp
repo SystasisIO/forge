@@ -136,6 +136,7 @@ struct quic_send_fixture {
    forge::asio::gate::ticket held;
    std::optional<boost::system::error_code> expected_close_error;
    bool expected_close_allocation_failure = false;
+   bool expected_listener_allocation_failure = false;
 
    quic_send_fixture() {
       const auto client_identity = forge::tests::p2p::make_identity_fixture("send-drain-client");
@@ -241,16 +242,16 @@ struct quic_send_fixture {
             BOOST_ERROR("unexpected QUIC connection cleanup error");
          }
       }
-      auto stopped = asio::co_spawn(
-          listener->strand,
-          [listener = listener]() -> asio::awaitable<void> {
-             listener->stop();
-             co_await listener->wait_operations_idle();
-          },
-          asio::use_future);
+      auto stopped = asio::co_spawn(runtime.context(), listener_facade->async_stop(), asio::use_future);
       BOOST_CHECK(stopped.wait_for(8s) == std::future_status::ready);
       stopped.wait();
-      BOOST_CHECK_NO_THROW(stopped.get());
+      try {
+         stopped.get();
+      } catch (const std::bad_alloc&) {
+         BOOST_CHECK(expected_listener_allocation_failure);
+      } catch (...) {
+         BOOST_ERROR("unexpected QUIC listener cleanup error");
+      }
    }
 
    void queue(std::size_t size = 64) {
@@ -853,6 +854,7 @@ BOOST_AUTO_TEST_CASE(quic_listener_preparation_failures_leave_shutdown_retryable
 
 BOOST_AUTO_TEST_CASE(quic_listener_cancel_dispatch_failure_retains_prepared_owners_until_join) {
    auto fixture = quic_send_fixture{};
+   fixture.expected_listener_allocation_failure = true;
    auto worker_entered = std::make_shared<forge::asio::notification>();
    auto worker_released = std::make_shared<forge::asio::notification>();
    auto fault_seen = std::make_shared<forge::asio::notification>();
@@ -971,6 +973,7 @@ BOOST_AUTO_TEST_CASE(quic_listener_shutdown_joins_native_closed_hook_and_posted_
 
 BOOST_AUTO_TEST_CASE(quic_listener_shutdown_preserves_cleanup_dispatch_error_after_cid_removal) {
    auto fixture = quic_send_fixture{};
+   fixture.expected_listener_allocation_failure = true;
    auto entered = std::make_shared<std::promise<void>>();
    auto observed = entered->get_future();
    auto released = std::make_shared<std::promise<void>>();

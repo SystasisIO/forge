@@ -50,16 +50,6 @@ void engine_listener::impl::finish_operation() noexcept {
    --active_operations;
    if (active_operations == 0) {
       if (stopped) { update_shutdown_operations(); }
-      // These waits and all admitted-operation guards share this strand.
-      // Direct cancellation avoids any_io_executor's allocating dispatch.
-      auto waiters = std::move(operation_waiters);
-      operation_waiters.clear();
-      for (const auto& weak : waiters) {
-         if (auto timer = weak.lock()) {
-            assert(strand.running_in_this_thread());
-            timer->cancel();
-         }
-      }
    }
 }
 
@@ -97,18 +87,6 @@ void engine_listener::impl::report_callback_failure(std::exception_ptr error) no
       completion = shutdown_state;
    }
    if (completion) { completion->remember(std::move(error)); }
-}
-
-boost::asio::awaitable<void> engine_listener::impl::wait_operations_idle() {
-   co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
-   while (active_operations != 0) {
-      auto timer = std::make_shared<asio::steady_timer>(strand);
-      timer->expires_after(std::chrono::minutes{10});
-      operation_waiters.emplace_back(timer);
-      boost::system::error_code ec;
-      co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, ec));
-      co_await asio::dispatch(strand, asio::use_awaitable);
-   }
 }
 
 [[nodiscard]] engine_listener::impl::shutdown_action

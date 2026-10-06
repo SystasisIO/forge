@@ -22,7 +22,6 @@ struct engine_listener::impl {
    std::optional<engine_error_kind> pending_accept_error;
    std::string pending_accept_failure_text;
    std::weak_ptr<impl> self;
-   std::vector<std::weak_ptr<asio::steady_timer>> operation_waiters;
    std::shared_ptr<listener_shutdown> shutdown_state;
    mutable std::mutex shutdown_mutex;
    std::exception_ptr shutdown_error;
@@ -56,8 +55,6 @@ struct engine_listener::impl {
    void update_shutdown_operations_locked() noexcept;
 
    void report_callback_failure(std::exception_ptr error) noexcept;
-
-   boost::asio::awaitable<void> wait_operations_idle();
 
    [[nodiscard]] shutdown_action begin_shutdown(std::vector<std::shared_ptr<engine_connection::impl>>& prepared);
 
