@@ -4,6 +4,8 @@
 #include "engine_connection_metrics_state.hxx"
 #include "engine_stream_impl.hxx"
 
+#include <boost/asio/async_result.hpp>
+
 namespace forge::net::quic::detail {
 struct engine_connection::impl {
    struct queued_packet {
@@ -59,6 +61,7 @@ struct engine_connection::impl {
    asio::steady_timer handshake_timer;
    asio::steady_timer expiry_timer;
    asio::steady_timer owner_drain_timer;
+   asio::steady_timer close_ready_timer;
    std::deque<server_udp_socket::packet> outbound_datagrams;
    std::deque<queued_packet> inbound_packets;
    std::size_t queued_datagram_bytes = 0;
@@ -71,6 +74,8 @@ struct engine_connection::impl {
    bool terminal_cleanup_complete = false;
    bool close_started = false;
    bool close_cleanup_complete = false;
+   bool close_completion_pending = false;
+   bool close_work_active = false;
    std::exception_ptr close_error;
    std::atomic_bool cancellation_requested{false};
    std::atomic_bool owner_released{false};
@@ -147,6 +152,34 @@ struct engine_connection::impl {
    void finish_background_job() noexcept;
 
    boost::asio::awaitable<void> wait_background_idle();
+
+   boost::asio::awaitable<void> async_close_on_owner(std::chrono::steady_clock::time_point deadline, bool cleanup_only);
+
+   template <typename Launch, typename CompletionToken> auto async_wait_close(Launch launch, CompletionToken&& token) {
+      return asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
+          [owner = self.lock(), launch = std::move(launch)](auto handler) mutable {
+             const auto connection = std::move(owner);
+             assert(connection && connection->strand.running_in_this_thread());
+             // Match dial_batch: install native completion before any close
+             // work can publish a dependent owner or fail its allocating join.
+             connection->close_ready_timer.async_wait(
+                 asio::bind_cancellation_slot(asio::cancellation_slot{}, std::move(handler)));
+             try {
+                if (connection->test_failpoint) {
+                   static_cast<void>(connection->test_failpoint("async_close_terminal_wait_armed"));
+                }
+                if (connection->close_cleanup_complete) {
+                   connection->complete_close();
+                   return;
+                }
+                launch(connection);
+             } catch (...) {
+                connection->fail_all();
+                connection->complete_close(std::current_exception());
+             }
+          },
+          token);
+   }
 
    void complete_close(std::exception_ptr error = {}) noexcept;
 

@@ -75,6 +75,7 @@ import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
 import forge.multiformats.multiaddr;
+import forge.net.transport.exceptions;
 import forge.net.transport.session;
 import forge.net.transport.stream;
 import forge.net.yamux.session;
@@ -110,6 +111,12 @@ boost::asio::awaitable<std::exception_ptr> async_close_terminal(forge::net::tran
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    try {
       co_await connection.async_close();
+   } catch (const forge::net::transport::exceptions::closed&) {
+      detail::request_session_cancel(connection);
+   } catch (const forge::net::transport::exceptions::canceled&) {
+      // Owner retirement accepts cancellation only after the transport's
+      // terminal cleanup barrier; it does not acknowledge application I/O.
+      detail::request_session_cancel(connection);
    } catch (...) {
       // transport::session reports failures only after terminal cleanup. Keep
       // the owner through that barrier, then make cancellation idempotent.

@@ -87,6 +87,7 @@ import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
 import forge.multiformats.multiaddr;
+import forge.net.transport.exceptions;
 import forge.net.transport.session;
 import forge.net.transport.stream;
 import forge.net.yamux.session;
@@ -112,6 +113,8 @@ import forge.net.yamux.session;
 namespace forge::net::p2p {
 namespace {
 
+enum class terminal_close { success, canceled, closed, internal, io_failure };
+
 struct close_barrier {
    forge::asio::notification changed;
    std::atomic_bool entered{false};
@@ -123,8 +126,9 @@ struct close_barrier {
 
 class admission_transport final : public forge::net::transport::detail::session_concept {
  public:
-   admission_transport(std::shared_ptr<close_barrier> state, std::shared_ptr<void> native, bool fail_close = false)
-       : state_(std::move(state)), native_(std::move(native)), fail_close_(fail_close) {}
+   admission_transport(std::shared_ptr<close_barrier> state, std::shared_ptr<void> native,
+                       terminal_close outcome = terminal_close::success)
+       : state_(std::move(state)), native_(std::move(native)), outcome_(outcome) {}
 
    bool valid() const noexcept override { return open_.load(); }
 
@@ -150,7 +154,17 @@ class admission_transport final : public forge::net::transport::detail::session_
          co_await state_->changed.async_wait(epoch);
       }
       open_ = false;
-      if (fail_close_) { FORGE_THROW_EXCEPTION(exceptions::internal, "fixture terminal session close failure"); }
+      switch (outcome_) {
+         case terminal_close::success: co_return;
+         case terminal_close::canceled:
+            FORGE_THROW_EXCEPTION(forge::net::transport::exceptions::canceled, "fixture terminal cancellation");
+         case terminal_close::closed:
+            FORGE_THROW_EXCEPTION(forge::net::transport::exceptions::closed, "fixture terminal remote close");
+         case terminal_close::internal:
+            FORGE_THROW_EXCEPTION(exceptions::internal, "fixture terminal session close failure");
+         case terminal_close::io_failure:
+            throw boost::system::system_error{boost::asio::error::connection_reset};
+      }
    }
 
    void cancel() override { open_ = false; }
@@ -159,7 +173,7 @@ class admission_transport final : public forge::net::transport::detail::session_
    std::shared_ptr<close_barrier> state_;
    std::shared_ptr<void> native_;
    std::atomic_bool open_{true};
-   bool fail_close_ = false;
+   terminal_close outcome_ = terminal_close::success;
 };
 
 enum class stream_failure { ping, observer_mismatch, negotiation, binding };
@@ -1135,7 +1149,8 @@ struct node_session_fixture {
       BOOST_CHECK(worker.get());
    }
 
-   static void graceful_quic_shutdown_closes_sessions_before_listener(bool fail_close) {
+   static void graceful_quic_shutdown_closes_sessions_before_listener(terminal_close outcome) {
+      const auto fail_close = outcome == terminal_close::internal || outcome == terminal_close::io_failure;
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
       auto server = node{runtime, passive_reachability_options("graceful-quic-server")};
       auto client = node{runtime, passive_reachability_options("graceful-quic-client")};
@@ -1163,7 +1178,7 @@ struct node_session_fixture {
       retiring->info.remote_peer = client.local_peer();
       retiring->info.path = path::kind::direct;
       retiring->connection = forge::net::transport::detail::session_access::make(
-          std::make_shared<admission_transport>(barrier, std::make_shared<int>(1), fail_close));
+          std::make_shared<admission_transport>(barrier, std::make_shared<int>(1), outcome));
       {
          const auto lock = std::scoped_lock{self->mutex};
          retiring->id = self->next_session_id++;
@@ -1185,10 +1200,19 @@ struct node_session_fixture {
       }
       barrier->released = true;
       barrier->changed.notify();
+      const auto check_terminal = [outcome](auto&& operation) {
+         if (outcome == terminal_close::internal) {
+            BOOST_CHECK_THROW(operation(), exceptions::internal);
+         } else if (outcome == terminal_close::io_failure) {
+            BOOST_CHECK_EXCEPTION(operation(), boost::system::system_error,
+                                  [](const auto& error) { return error.code() == boost::asio::error::connection_reset; });
+         } else {
+            BOOST_CHECK_NO_THROW(operation());
+         }
+      };
       for (auto* stopped : {&first, &second}) {
          BOOST_REQUIRE(stopped->wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-         if (fail_close) { BOOST_CHECK_THROW(stopped->get(), exceptions::internal); }
-         else { BOOST_CHECK_NO_THROW(stopped->get()); }
+         check_terminal([&] { stopped->get(); });
       }
       BOOST_TEST(barrier->closes.load() == 1U);
       BOOST_TEST(!self->direct_registry.listening());
@@ -1200,8 +1224,7 @@ struct node_session_fixture {
          BOOST_TEST(self->sessions.empty());
          BOOST_TEST(self->retiring_sessions.empty());
       }
-      if (fail_close) { BOOST_CHECK_THROW(bounded_result(runtime, server.async_stop()), exceptions::internal); }
-      else { BOOST_CHECK_NO_THROW(bounded_result(runtime, server.async_stop())); }
+      check_terminal([&] { bounded_result(runtime, server.async_stop()); });
    }
 
    static void reachability_pins_qualified_session(bool retire_selected) {
@@ -1988,7 +2011,7 @@ BOOST_AUTO_TEST_CASE(p2p_background_reachability_reuses_sessions_without_redial_
 }
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_joins_retiring_sessions_before_listener_stop) {
-   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(false);
+   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::success);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dcutr_direct_wait_after_stop_does_not_hold_lifecycle) {
@@ -2028,7 +2051,19 @@ BOOST_AUTO_TEST_CASE(p2p_relay_pair_skipped_worker_closure_drains_before_lifecyc
 }
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_preserves_close_error_after_joined_cleanup) {
-   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(true);
+   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::internal);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_accepts_terminal_cancel_after_joined_cleanup) {
+   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::canceled);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_accepts_terminal_remote_close_after_joined_cleanup) {
+   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::closed);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_preserves_io_failure_after_joined_cleanup) {
+   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::io_failure);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_reachability_keeps_qualified_control_when_same_peer_dialback_arrives) {
