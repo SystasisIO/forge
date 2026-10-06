@@ -565,7 +565,13 @@ def go_cancel_state(result, token, peer, role):
     require(relay.get("direction") == ("outbound" if role == "source" else "inbound"),
             "Go cancellation claim has the wrong original relay owner")
     exchanges = _handshakes(events[:start["sequence"] - 1], peer, relay, role, "cancelled")
-    boundary = previous_terminal["sequence"] if previous_terminal else relay["sequence"]
+    if previous_terminal:
+        boundary = previous_terminal["sequence"]
+    else:
+        baseline = _one(events, "baseline", remote_peer_id=peer)
+        require(baseline.get("direct_connection_ids") == [], "Go cancellation baseline already became direct")
+        # Native I/O can precede the observer's authenticated connection snapshot.
+        boundary = baseline["sequence"]
     matching = [frames for frames in exchanges if frames[0]["sequence"] > boundary
                 and frames[-1]["sequence"] < start["sequence"]]
     require(len(matching) == 1, "Go active native claim lacks a unique current complete CONNECT/SYNC stream")

@@ -314,6 +314,59 @@ def unit_go_retry_cancellation(spec):
     return record
 
 
+def captured_023_go_connect_before_auth_prefix():
+    """Exact first nine root023 forge_to_go.cancelled events; not a PASS receipt."""
+    peer = "12D3KooWHGHd5ACPwu5HRYA4rhGQbEziR3n7cnAGDUMngkA44fhi"
+    local = "12D3KooWCfSPXJ9cmJ8CDdr9RqcxzA3MGXw4wPKxvG8J2nJAJT9L"
+    relay = "12D3KooWNntxC1tmzUsLuCbNBMV7erMPnNo8nK6GzSkwBBDtmf4u"
+    return {"schema_version": 1, "implementation": "go", "case_token": "25d8563d6f0c52e2938834bbbf6ab2af",
+            "local_peer_id": local, "error": None, "overflow": False, "finalized": False, "joined": False,
+            "events": [
+                {"kind": "identify_observed_address", "source": "go.event.EvtPeerIdentificationCompleted",
+                 "sequence": 1, "mono_ns": 6952834, "connection_id": "12D3KooWNn-1", "observer_peer_id": relay,
+                 "connection_local_address": "/ip4/10.2.0.2/udp/55701/quic-v1",
+                 "listener_address": "/ip4/10.2.0.2/udp/55701/quic-v1", "observed_address": "/ip4/11.0.0.3/udp/55701/quic-v1"},
+                {"kind": "native_dcutr_protocol_ready", "source": "go.host.Mux.Protocols", "sequence": 2,
+                 "mono_ns": 257286001, "protocol": "/libp2p/dcutr", "registered": True,
+                 "protocols": ["/ipfs/ping/1.0.0", "/libp2p/circuit/relay/0.2.0/stop", "/ipfs/id/1.0.0",
+                               "/ipfs/id/push/1.0.0", "/forge/interop/path-echo/1", "/libp2p/dcutr"]},
+                {"kind": "baseline", "source": "go.network.connections", "sequence": 3, "mono_ns": 364488793,
+                 "remote_peer_id": peer, "direct_connection_ids": []},
+                {"kind": "control_completed", "source": "go.path_control.native_call", "sequence": 4,
+                 "mono_ns": 364495668, "action": "bind", "control_sequence": 1},
+                {"kind": "dcutr_frame", "source": "go.native_dcutr.io", "sequence": 5, "mono_ns": 432164585,
+                 "connection_id": "12D3KooWHG-2", "stream_id": "12D3KooWHG-2-10", "remote_peer_id": peer,
+                 "direction": "write", "message_type": 100, "protocol": "/libp2p/dcutr",
+                 "addresses": ["/ip4/11.0.0.3/udp/55701/quic-v1"], "receipt": {
+                     "framed_hex": "0f0864120b040b0000039102d995cd03", "write": {"framed_bytes": 16,
+                         "framed_sha256": "a3d470ddee80c34bd39865df5b316bf08f777f5b73d6f6fdb0dc5a6c0a2cea70",
+                         "frames": 1, "complete_frames": True, "invalid_or_over_limit": False}}},
+                {"kind": "authenticated_connection", "source": "go.network.Conn.authenticated_output",
+                 "sequence": 6, "mono_ns": 435028876, "connection_id": "12D3KooWHG-2", "remote_peer_id": peer,
+                 "authenticated": True, "authentication_basis": "native_relay_inner_upgrade", "direction": "inbound",
+                 "path": "relay", "transport": "circuit", "security": "/noise", "muxer": "/yamux/1.0.0",
+                 "relay_peer_id": relay, "local_address": "/ip4/10.2.0.2/udp/55701/quic-v1",
+                 "remote_address": "/ip4/11.0.0.1/udp/42644/quic-v1/p2p/" + relay + "/p2p-circuit"},
+                {"kind": "dcutr_frame", "source": "go.native_dcutr.io", "sequence": 7, "mono_ns": 441052626,
+                 "connection_id": "12D3KooWHG-2", "stream_id": "12D3KooWHG-2-10", "remote_peer_id": peer,
+                 "direction": "read", "message_type": 100, "protocol": "/libp2p/dcutr",
+                 "addresses": ["/ip4/11.0.0.2/udp/42060/quic-v1/p2p/" + peer], "receipt": {
+                     "framed_hex": "3808641234040b0000029102a44ccd03a503260024080112206ea5c4ee8f7f11f558f7f1403088c3af1312f869ba53e87721a246ecba018c19",
+                     "read": {"framed_bytes": 57,
+                         "framed_sha256": "21ced4f2120f9fab85be8aa1df6512b02c298c0d18b87a4ea5b0872e204407b4",
+                         "frames": 1, "complete_frames": True, "invalid_or_over_limit": False}}},
+                {"kind": "dcutr_frame", "source": "go.native_dcutr.io", "sequence": 8, "mono_ns": 441080335,
+                 "connection_id": "12D3KooWHG-2", "stream_id": "12D3KooWHG-2-10", "remote_peer_id": peer,
+                 "direction": "write", "message_type": 300, "protocol": "/libp2p/dcutr", "addresses": [], "receipt": {
+                     "framed_hex": "0308ac02", "write": {"framed_bytes": 4,
+                         "framed_sha256": "c1f6fd90cbcd42f1a9e09047328104f92bfbae6df4f736ff13be26f775c02e05",
+                         "frames": 1, "complete_frames": True, "invalid_or_over_limit": False}}},
+                {"kind": "holepunch_trace", "source": "go.holepunch.tracer", "sequence": 9, "mono_ns": 446126293,
+                 "local_peer_id": local, "remote_peer_id": peer, "native_type": "StartHolePunch",
+                 "native_unix_ns": 1791239978340351760,
+                 "addresses": ["/ip4/11.0.0.2/udp/42060/quic-v1/p2p/" + peer], "rtt_ns": 8955292}]}
+
+
 def captured_079_go_protocol_error_prefix():
     """Exact first eight raw events from root079 forge_to_go.cancelled, not a PASS receipt."""
     peer = "12D3KooWALFQS1Vc8xcndcvmtLMzeDfH3U6u1ZrzNArfYRYfcdhr"
@@ -1440,6 +1493,66 @@ class PathEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing complete native DCUtR handshake"):
             _handshakes(prefix["events"], peer, prefix["events"][4], "destination", "failed")
 
+    def test_captured_go_connect_before_auth_snapshot_uses_peer_baseline_without_reordering(self):
+        prefix = captured_023_go_connect_before_auth_prefix()
+        original = copy.deepcopy(prefix)
+        peer = prefix["events"][-1]["remote_peer_id"]
+        state = go_cancel_state(prefix, prefix["case_token"], peer, "destination")
+        self.assertEqual(state, {"state": "active", "start_sequence": 9, "terminal_sequence": None,
+            "terminal_type": None, "connection_id": "12D3KooWHG-2", "stream_id": "12D3KooWHG-2-10",
+            "start_mono_ns": 446126293})
+        self.assertEqual(prefix, original, "validation must not reorder native capture events")
+
+    def test_go_first_wave_still_requires_unique_baseline_and_exact_authenticated_wire(self):
+        for mutation, error in (
+                ("absent_auth", "authenticated_connection"), ("unverified", "authenticated connection"),
+                ("foreign_auth_peer", "authenticated_connection"), ("foreign_connection", "circuit peer/stream"),
+                ("foreign_wire_peer", "circuit peer/stream"), ("split_stream", "roles/order"),
+                ("absent_baseline", "baseline"), ("foreign_baseline", "baseline"),
+                ("duplicate_baseline", "baseline"), ("preexisting_direct", "baseline already became direct"),
+                ("wire_before_baseline", "unique current complete"), ("two_current_streams", "unique current complete"),
+                ("candidate_mismatch", "candidates differ")):
+            with self.subTest(mutation=mutation):
+                prefix = captured_023_go_connect_before_auth_prefix()
+                events = prefix["events"]
+                baseline, write, auth, read, sync, start = events[2], *events[4:9]
+                peer = start["remote_peer_id"]
+                if mutation == "absent_auth":
+                    events.remove(auth)
+                elif mutation == "unverified":
+                    auth["authenticated"] = False
+                elif mutation == "foreign_auth_peer":
+                    auth["remote_peer_id"] = "foreign"
+                elif mutation == "foreign_connection":
+                    read["connection_id"] = "foreign"
+                elif mutation == "foreign_wire_peer":
+                    read["remote_peer_id"] = "foreign"
+                elif mutation == "split_stream":
+                    read["stream_id"] = "foreign"
+                elif mutation == "absent_baseline":
+                    events.remove(baseline)
+                elif mutation == "foreign_baseline":
+                    baseline["remote_peer_id"] = "foreign"
+                elif mutation == "duplicate_baseline":
+                    events.insert(3, copy.deepcopy(baseline))
+                elif mutation == "preexisting_direct":
+                    baseline["direct_connection_ids"] = ["old-direct"]
+                elif mutation == "wire_before_baseline":
+                    events.remove(baseline)
+                    events.insert(events.index(auth) + 1, baseline)
+                elif mutation == "two_current_streams":
+                    extra = copy.deepcopy([write, read, sync])
+                    for event in extra:
+                        event["stream_id"] = "another-current-stream"
+                    events[events.index(start):events.index(start)] = extra
+                else:
+                    start["addresses"] = ["/ip4/11.0.0.9/udp/42060/quic-v1"]
+                # Only the negative structural doubles get rebased after mutation.
+                for index, event in enumerate(events, 1):
+                    event.update(sequence=index, mono_ns=index * 1_000_000)
+                with self.assertRaisesRegex(ValueError, error):
+                    go_cancel_state(prefix, prefix["case_token"], peer, "destination")
+
     def test_protocol_error_before_cancel_cannot_pass_with_empty_handler_drain(self):
         spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
         value = unit_cancellation(spec)
@@ -1510,7 +1623,7 @@ class PathEvidenceTests(unittest.TestCase):
 
     def test_go_cancel_current_start_requires_full_unique_current_wire_exchange(self):
         spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
-        for mutation in ("missing_sync", "historical_wire", "ambiguous_wire", "non_native_wire"):
+        for mutation in ("missing_sync", "historical_wire", "ambiguous_wire", "non_native_wire", "reused_retry_stream"):
             with self.subTest(mutation=mutation):
                 value = unit_go_retry_cancellation(spec)
                 events = value["raw"]["destination"]["result"]["events"]
@@ -1521,6 +1634,9 @@ class PathEvidenceTests(unittest.TestCase):
                     events[:] = [e for e in events if e not in frames]
                 elif mutation == "non_native_wire":
                     frames[0]["source"] = "go.path_control.intent"
+                elif mutation == "reused_retry_stream":
+                    for event in frames:
+                        event["stream_id"] = "dcutr-1"
                 else:
                     extra = copy.deepcopy(frames)
                     for event in extra:

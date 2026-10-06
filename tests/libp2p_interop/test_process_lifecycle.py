@@ -4,6 +4,7 @@ import hashlib
 import json
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -747,6 +748,24 @@ class ProcessLifecycleTests(unittest.TestCase):
         self.assertFalse(any(event[1] in {"signal", "kill"} for event in self.events))
         self.assert_closed()
 
+    def test_owned_attempt_cannot_publish_an_exit_code_when_join_fails(self):
+        self.scripts = [{"waits": [timeout(), timeout(), OSError("unreaped")]}]
+        @runner.owned_case
+        def case():
+            command = ["fixture", "listener"]
+            attempt = runner.command_attempt(command, self.root / "unreaped.log", "path", 1, "destination", 5)
+            process_lifecycle.spawn_owned(command, self.root / "unreaped.log", self.root / "unreaped.stop", attempt)
+            return {"attempts": [attempt]}
+
+        with self.assertRaises(runner.CaseFailure) as raised:
+            case()
+        attempt = raised.exception.artifact["attempts"][0]
+        self.assertIsNone(attempt["exit_code"])
+        self.assertIsNone(attempt["terminal_status"]["exit_code"])
+        self.assertEqual(attempt["terminal_status"]["termination"], "killed")
+        self.assertIn("unreaped", str(raised.exception))
+        self.assert_closed()
+
     def test_log_open_failure_writes_failed_artifact_without_invented_evidence(self):
         log_file = self.root / "forbidden.log"
         primary = PermissionError("controlled log open denial")
@@ -796,6 +815,64 @@ class ProcessLifecycleTests(unittest.TestCase):
             runner.write_artifact(self.root / "artifact.json", self.root, {}, [result], [],
                                   ["controlled-runner"], 0, None)
         self.assert_closed()
+
+
+class RealProcessLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.scope, token = process_lifecycle.enter_scope()
+        self.addCleanup(process_lifecycle.exit_scope, token)
+        self.addCleanup(self.scope.close)
+
+    def test_owned_attempt_publishes_actual_graceful_zero_and_nonzero_exit_after_join(self):
+        script = (
+            "import pathlib, sys, time\n"
+            "ready, stop = map(pathlib.Path, sys.argv[1:3])\n"
+            "ready.write_text('{}')\n"
+            "while not stop.exists(): time.sleep(0.005)\n"
+            "sys.exit(int(sys.argv[3]))\n"
+        )
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                ready, stop = self.root / f"{exit_code}.ready", self.root / f"{exit_code}.stop"
+                log = self.root / f"{exit_code}.log"
+                command = [sys.executable, "-c", script, str(ready), str(stop), str(exit_code)]
+                attempt = runner.command_attempt(command, log, "path", 1, "destination", 5)
+                owned = process_lifecycle.spawn_owned(command, log, stop, attempt)
+                runner.wait_json(ready, 5)
+                self.assertIsNone(owned.process.poll())
+                self.assertIsNone(attempt["exit_code"])
+                self.assertIs(attempt["terminal_status"], owned.terminal_status)
+                errors = owned.close()
+                self.assertEqual(owned.process.returncode, exit_code)
+                self.assertEqual(attempt["exit_code"], owned.process.returncode)
+                self.assertEqual(attempt["terminal_status"], {"exit_code": exit_code, "termination": "graceful"})
+                self.assertEqual(owned.close(), errors)
+                if exit_code:
+                    self.assertTrue(any("terminal exit code 23" in error for error in errors))
+                else:
+                    self.assertEqual(errors, [])
+                self.assertTrue(owned.log_handle.closed)
+
+    def test_owned_attempt_timeout_records_actual_signal_exit_without_committing_success(self):
+        ready, stop = self.root / "timeout.ready", self.root / "timeout.stop"
+        log = self.root / "timeout.log"
+        script = "import pathlib, signal, sys; pathlib.Path(sys.argv[1]).write_text('{}'); signal.pause()"
+        command = [sys.executable, "-c", script, str(ready)]
+        attempt = runner.command_attempt(command, log, "path", 1, "destination", 5)
+        owned = process_lifecycle.spawn_owned(command, log, stop, attempt,
+            stop_budget=process_lifecycle.StopBudget(0.05, 0, 0))
+        runner.wait_json(ready, 5)
+        self.assertIsNone(attempt["exit_code"])
+        errors = self.scope.close()
+        self.assertEqual(owned.process.returncode, -signal.SIGTERM)
+        self.assertEqual(attempt["exit_code"], owned.process.returncode)
+        self.assertEqual(attempt["terminal_status"], {"exit_code": -signal.SIGTERM, "termination": "terminated"})
+        self.assertTrue(any("graceful stop failed" in error for error in errors))
+        self.assertTrue(any("forced SIGTERM" in error for error in errors))
+        self.assertTrue(owned.log_handle.closed)
 
 
 if __name__ == "__main__":

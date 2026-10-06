@@ -36,7 +36,7 @@ class StopBudget:
 
 class Listener:
     def __init__(self, process: subprocess.Popen, ready: dict, stop_file: Optional[Path], log_file: Path, log_handle,
-                 command: list[str], *, stop_budget: Optional[StopBudget] = None):
+                 command: list[str], *, stop_budget: Optional[StopBudget] = None, attempt: Optional[dict] = None):
         self.process = process
         self.ready = ready
         self.stop_file = stop_file
@@ -44,6 +44,7 @@ class Listener:
         self.log_handle = log_handle
         self.command = command
         self.stop_budget = stop_budget
+        self.attempt = attempt
         # Keep a mutable terminal record so artifacts built after close include
         # the process outcome without inventing a separate listener result.
         self.terminal_status: dict[str, object] = {"exit_code": None, "termination": "running"}
@@ -115,6 +116,8 @@ class Listener:
             else:
                 self.terminal_status["termination"] = "graceful"
             self.terminal_status["exit_code"] = exit_code
+            if self.attempt is not None:
+                self.attempt["exit_code"] = exit_code
             if exit_code != 0:
                 failure(f"terminal exit code {exit_code}")
         except Exception as error:
@@ -201,7 +204,7 @@ def spawn_owned(command: list[str], log_file: Path, stop_file: Optional[Path] = 
             attempt["spawn_error"] = str(error)
             attempt["log_tail"] = "<log not opened>" if log is None else tail_text(log_file)
         raise
-    owned = Listener(process, {}, stop_file, log_file, log, command, stop_budget=stop_budget)
+    owned = Listener(process, {}, stop_file, log_file, log, command, stop_budget=stop_budget, attempt=attempt)
     scope.processes.append(owned)
     if attempt is not None:
         attempt["pid"] = process.pid
