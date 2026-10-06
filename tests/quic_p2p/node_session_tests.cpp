@@ -122,6 +122,9 @@ struct close_barrier {
    std::atomic_size_t opens{0};
    std::atomic_size_t accepts{0};
    std::atomic_size_t closes{0};
+   std::atomic_size_t cancels{0};
+   std::atomic_bool listener_active_on_first_cancel{false};
+   std::function<bool()> listener_probe;
 };
 
 class admission_transport final : public forge::net::transport::detail::session_concept {
@@ -167,7 +170,12 @@ class admission_transport final : public forge::net::transport::detail::session_
       }
    }
 
-   void cancel() override { open_ = false; }
+   void cancel() override {
+      if (state_->cancels.fetch_add(1) == 0 && state_->listener_probe) {
+         state_->listener_active_on_first_cancel = state_->listener_probe();
+      }
+      open_ = false;
+   }
 
  private:
    std::shared_ptr<close_barrier> state_;
@@ -1149,13 +1157,18 @@ struct node_session_fixture {
       BOOST_CHECK(worker.get());
    }
 
-   static void graceful_quic_shutdown_closes_sessions_before_listener(terminal_close outcome) {
+   static void graceful_quic_shutdown_closes_sessions_before_listener(terminal_close outcome,
+                                                                      bool synchronous_stop_first = false) {
       const auto fail_close = outcome == terminal_close::internal || outcome == terminal_close::io_failure;
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
       auto server = node{runtime, passive_reachability_options("graceful-quic-server")};
       auto client = node{runtime, passive_reachability_options("graceful-quic-client")};
       const auto self = server.impl_;
       auto barrier = std::make_shared<close_barrier>();
+      barrier->listener_probe = [weak = std::weak_ptr{self}] {
+         const auto owner = weak.lock();
+         return owner && owner->direct_registry.listening();
+      };
       auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
          barrier->released = true;
          barrier->changed.notify();
@@ -1183,7 +1196,15 @@ struct node_session_fixture {
          const auto lock = std::scoped_lock{self->mutex};
          retiring->id = self->next_session_id++;
          self->sessions.emplace(retiring->id, retiring);
-         BOOST_REQUIRE(self->retire_session_locked(retiring, false) == retiring);
+         BOOST_REQUIRE(self->retire_session_locked(retiring, synchronous_stop_first) == retiring);
+      }
+      if (synchronous_stop_first) {
+         // A tracked retirement must still receive cancellation before the
+         // synchronous fallback closes its shared native listener.
+         BOOST_REQUIRE(retiring->retirement.tracked());
+         server.stop();
+         BOOST_TEST(barrier->cancels.load() > 0U);
+         BOOST_TEST(barrier->listener_active_on_first_cancel.load());
       }
       auto first = boost::asio::co_spawn(runtime.context(), server.async_stop(), boost::asio::use_future);
       auto context = boost::asio::io_context{};
@@ -1191,7 +1212,7 @@ struct node_session_fixture {
       auto second = boost::asio::co_spawn(runtime.context(), server.async_stop(), boost::asio::use_future);
       BOOST_CHECK(second.wait_for(std::chrono::milliseconds{20}) == std::future_status::timeout);
       BOOST_CHECK(first.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
-      BOOST_TEST(self->direct_registry.listening());
+      BOOST_TEST(self->direct_registry.listening() == !synchronous_stop_first);
       {
          const auto lock = std::scoped_lock{self->mutex};
          BOOST_TEST(self->session_admission_closed);
@@ -1225,6 +1246,33 @@ struct node_session_fixture {
          BOOST_TEST(self->retiring_sessions.empty());
       }
       check_terminal([&] { bounded_result(runtime, server.async_stop()); });
+   }
+
+   static void retired_cancel_tracks_model_not_facade() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      auto owner = node{runtime, passive_reachability_options("retired-cancel-owner")};
+      const auto self = owner.impl_;
+      auto barrier = std::make_shared<close_barrier>();
+      barrier->released = true;
+      auto session = std::make_shared<node::impl::session_state>();
+      session->connection = forge::net::transport::detail::session_access::make(
+          std::make_shared<admission_transport>(barrier, std::make_shared<int>(1)));
+      auto transport = forge::net::transport::session{};
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         session->id = self->next_session_id++;
+         self->sessions.emplace(session->id, session);
+         BOOST_REQUIRE(self->retire_session_locked(session, true) == session);
+         BOOST_REQUIRE(session->retirement.tracked());
+         transport = std::move(session->connection);
+      }
+      // Run the actual production tracking callback after its facade moved,
+      // while the retiring transport model is still alive at the terminal barrier.
+      self->teardown.start({});
+      BOOST_TEST(barrier->cancels.load() == 1U);
+      transport = {};
+      BOOST_CHECK_NO_THROW(bounded_result(runtime, owner.async_stop()));
+      BOOST_TEST(self->retiring_sessions.empty());
    }
 
    static void reachability_pins_qualified_session(bool retire_selected) {
@@ -2012,6 +2060,33 @@ BOOST_AUTO_TEST_CASE(p2p_background_reachability_reuses_sessions_without_redial_
 
 BOOST_AUTO_TEST_CASE(p2p_graceful_quic_shutdown_joins_retiring_sessions_before_listener_stop) {
    node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::success);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_synchronous_stop_cancels_tracked_retiring_sessions_before_listener_stop) {
+   node_session_fixture::graceful_quic_shutdown_closes_sessions_before_listener(terminal_close::success, true);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_cancel_owner_survives_move_without_making_session_copyable) {
+   static_assert(!std::is_copy_constructible_v<forge::net::transport::session>);
+   auto barrier = std::make_shared<close_barrier>();
+   auto native = std::make_shared<int>(1);
+   const auto observed = std::weak_ptr{native};
+   auto connection = forge::net::transport::detail::session_access::make(
+       std::make_shared<admission_transport>(barrier, std::move(native)));
+   auto cancellation = forge::net::transport::detail::session_access::cancellation_owner(connection);
+   BOOST_REQUIRE(cancellation);
+   auto moved = std::move(connection);
+   moved = {};
+   BOOST_TEST(!observed.expired());
+   cancellation->request_cancel();
+   BOOST_TEST(barrier->cancels.load() == 1U);
+   cancellation.reset();
+   BOOST_TEST(observed.expired());
+   BOOST_TEST(!forge::net::transport::detail::session_access::cancellation_owner(connection));
+}
+
+BOOST_AUTO_TEST_CASE(p2p_retirement_callback_cancels_model_after_facade_move) {
+   node_session_fixture::retired_cancel_tracks_model_not_facade();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dcutr_direct_wait_after_stop_does_not_hold_lifecycle) {

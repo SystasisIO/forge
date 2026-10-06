@@ -339,7 +339,7 @@ boost::asio::awaitable<void> node::impl::async_close_topology_sessions(std::vect
 
    for (const auto& session : removed) {
       identify_service.forget(session->id);
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
    }
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    for (const auto& session : removed) {

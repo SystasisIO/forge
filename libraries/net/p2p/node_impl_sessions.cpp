@@ -145,8 +145,11 @@ node::impl::retire_session_locked(const std::shared_ptr<session_state>& session,
    remove_address_observation_locked(retired->id);
    if (track_close) {
       try {
-         static_cast<void>(
-             retired->retirement.track(teardown.track([retired] { detail::request_session_cancel(retired->connection); })));
+         const auto owner = std::weak_ptr{
+             forge::net::transport::detail::session_access::cancellation_owner(retired->connection)};
+         static_cast<void>(retired->retirement.track(teardown.track([owner] {
+            if (const auto connection = owner.lock()) { connection->request_cancel(); }
+         })));
       } catch (...) {
          // The map owns the session before tracking is attempted, so a callback
          // allocation failure becomes a quarantined retirement rather than a split registry.
@@ -154,6 +157,15 @@ node::impl::retire_session_locked(const std::shared_ptr<session_state>& session,
       }
    }
    return retired;
+}
+
+void node::impl::request_cancel_session(const std::shared_ptr<session_state>& session) noexcept {
+   auto owner = std::shared_ptr<forge::net::transport::detail::session_concept>{};
+   {
+      const auto lock = std::scoped_lock{mutex};
+      owner = forge::net::transport::detail::session_access::cancellation_owner(session->connection);
+   }
+   if (owner) { owner->request_cancel(); }
 }
 
 boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_ptr<session_state>& session,
@@ -165,7 +177,7 @@ boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_
       start = session->retirement.begin_close(allow_untracked);
    }
    if (start == detail::session_retirement::close_start::untracked) {
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
       session->retirement.quarantine();
       co_return;
    }
@@ -176,8 +188,12 @@ boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_
    const auto failure = co_await async_close_terminal(session->connection);
    // The terminal model can retain the direct-attempt teardown ticket through
    // its lower native transport, so destroy it before releasing that ticket.
-   auto transport = std::move(session->connection);
-   session->connection = {};
+   auto transport = forge::net::transport::session{};
+   {
+      const auto lock = std::scoped_lock{mutex};
+      transport = std::move(session->connection);
+      session->connection = {};
+   }
    transport = {};
 
    auto teardown_ticket = detail::session_teardown::ticket{};
@@ -235,7 +251,7 @@ void node::impl::forget_retired_session(const std::shared_ptr<session_state>& se
 
 void node::impl::launch_pruned_session_teardown(const std::shared_ptr<session_state>& session) noexcept {
    if (!session->retirement.tracked()) {
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
       session->retirement.quarantine();
       return;
    }
@@ -248,7 +264,7 @@ void node::impl::launch_pruned_session_teardown(const std::shared_ptr<session_st
           },
           boost::asio::detached);
    } catch (...) {
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
       session->retirement.quarantine();
    }
 }
@@ -459,7 +475,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
          }
       }
       if (pruned) {
-         detail::request_session_cancel(pruned->connection);
+         request_cancel_session(pruned);
          launch_pruned_session_teardown(pruned);
       }
    }

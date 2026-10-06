@@ -833,9 +833,13 @@ void engine_connection::impl::start_udp_send_loop() {
                co_return;
             }
             if (ec) {
+               if (value->test_failpoint) {
+                  static_cast<void>(value->test_failpoint("udp_send_failure_before_report"));
+               }
                value->fail_udp_send(ec, {},
                                     ec == asio::error::operation_aborted &&
-                                        value->terminal_signaled.load(std::memory_order_acquire));
+                                        (value->terminal_signaled.load(std::memory_order_acquire) ||
+                                         value->cancellation_requested.load(std::memory_order_acquire)));
                if (!value->closing) {
                   value->fail_udp(ec);
                }

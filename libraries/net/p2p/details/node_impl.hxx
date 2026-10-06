@@ -504,6 +504,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    void launch_pruned_session_teardown(const std::shared_ptr<session_state>& session) noexcept;
    [[nodiscard]] std::shared_ptr<session_state>
    retire_session_locked(const std::shared_ptr<session_state>& session, bool track_close) noexcept;
+   void request_cancel_session(const std::shared_ptr<session_state>& session) noexcept;
    boost::asio::awaitable<void> async_retire_session(const std::shared_ptr<session_state>& session,
                                                       bool allow_untracked);
    boost::asio::awaitable<void> async_retire_sessions_gracefully();

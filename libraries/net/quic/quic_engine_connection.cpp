@@ -205,6 +205,7 @@ void engine_connection::cancel() {
    if (!impl_) {
       return;
    }
+   request_cancel();
    asio::post(impl_->strand, [impl = impl_] {
       impl->metrics.cancellations.fetch_add(1, std::memory_order_relaxed);
       impl->fail_all();

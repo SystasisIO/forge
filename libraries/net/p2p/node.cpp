@@ -321,12 +321,14 @@ exchange_rendezvous(const auto& self, const peer_id& peer, rendezvous::message r
 void stop_owned(auto self) {
    auto operations = std::vector<detail::session_teardown::operation>{};
    auto deadlines = std::vector<operation_deadline::stop_token>{};
+   auto cancellations = std::vector<std::shared_ptr<forge::net::transport::detail::session_concept>>{};
    {
       auto lock = std::scoped_lock{self->mutex};
       if (self->stopped) {
          return;
       }
       operations.reserve(self->sessions.size() + self->retiring_sessions.size() + 1);
+      cancellations.reserve(self->sessions.size() + self->retiring_sessions.size());
       operations.push_back(self->direct_registry.teardown_operation());
       deadlines.reserve(self->protocol_open_deadlines.size());
       for (auto& [_, deadline] : self->protocol_open_deadlines) {
@@ -342,14 +344,23 @@ void stop_owned(auto self) {
       }
       self->connections.clear();
       for (const auto& [_, session] : self->retiring_sessions) {
+         if (!session->retirement.terminal()) {
+            if (auto owner = forge::net::transport::detail::session_access::cancellation_owner(session->connection)) {
+               cancellations.push_back(std::move(owner));
+            }
+         }
          if (session->retirement.terminal() || session->retirement.tracked()) {
             continue;
          }
+         const auto owner = std::weak_ptr{
+             forge::net::transport::detail::session_access::cancellation_owner(session->connection)};
          operations.push_back(detail::session_teardown::operation{
              .close = [self, session]() -> boost::asio::awaitable<void> {
                 co_await self->async_retire_session(session, true);
              },
-             .cancel = [session] { detail::request_session_cancel(session->connection); },
+             .cancel = [owner] {
+                if (const auto connection = owner.lock()) { connection->request_cancel(); }
+             },
          });
       }
       self->inbound_relay_reservations.clear();
@@ -361,6 +372,12 @@ void stop_owned(auto self) {
       self->metrics_value.active_relay_reservations = 0;
       self->metrics_value.stopped = true;
    }
+   // Publish per-session cancellation before closing the shared listener FD.
+   // These stable owners also cover a retirement whose facade moves concurrently.
+   for (const auto& owner : cancellations) {
+      owner->request_cancel();
+   }
+   cancellations.clear();
    self->direct_registry.stop();
    for (const auto& deadline : deadlines) {
       static_cast<void>(deadline.request_stop());
