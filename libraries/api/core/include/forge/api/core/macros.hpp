@@ -13,6 +13,7 @@
 #include <boost/preprocessor/tuple/to_seq.hpp>
 #include <boost/preprocessor/variadic/to_seq.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>

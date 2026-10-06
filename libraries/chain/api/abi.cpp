@@ -1096,7 +1096,7 @@ class serializer {
             fail(abi_error_code::size_limit, "ABI public key text exceeds the byte limit", "public_key", path,
                  writer.tellp());
          }
-         const auto key = forge::crypto::asymmetric::encoding::antelope().parse_public(text);
+         const auto key = forge::crypto::asymmetric::encoding::forge().parse_public(text);
          context_.check(1U, "public_key", path, writer.tellp());
          pack_raw(writer, key, "public_key", path);
       } catch (const abi_serialization_error&) {
@@ -1111,7 +1111,7 @@ class serializer {
       const auto key = unpack_raw<protocol::public_key>(reader, "public_key", path);
       context_.check(1U, "public_key", path, reader.tellp());
       try {
-         return forge::variant{forge::crypto::asymmetric::encoding::antelope().format(key)};
+         return forge::variant{forge::crypto::asymmetric::encoding::forge().format(key)};
       } catch (const std::exception& error) {
          fail(abi_error_code::invalid_binary, "Invalid ABI public key: " + std::string{error.what()}, "public_key",
               path, reader.tellp());
@@ -1125,7 +1125,7 @@ class serializer {
             fail(abi_error_code::size_limit, "ABI signature text exceeds the byte limit", "signature", path,
                  writer.tellp());
          }
-         const auto signature = forge::crypto::asymmetric::encoding::antelope().parse_signature(text);
+         const auto signature = forge::crypto::asymmetric::encoding::forge().parse_signature(text);
          context_.check(1U, "signature", path, writer.tellp());
          pack_raw(writer, signature, "signature", path);
       } catch (const abi_serialization_error&) {
@@ -1140,7 +1140,7 @@ class serializer {
       const auto signature = unpack_raw<protocol::signature>(reader, "signature", path);
       context_.check(1U, "signature", path, reader.tellp());
       try {
-         return forge::variant{forge::crypto::asymmetric::encoding::antelope().format(signature)};
+         return forge::variant{forge::crypto::asymmetric::encoding::forge().format(signature)};
       } catch (const std::exception& error) {
          fail(abi_error_code::invalid_binary, "Invalid ABI signature: " + std::string{error.what()}, "signature", path,
               reader.tellp());

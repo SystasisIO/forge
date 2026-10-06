@@ -207,6 +207,16 @@ whether it belongs to the current policy and its last emitted vote. It is
 operational node state, therefore it is intentionally exposed through the
 Admin transport only and is not a `verified_client` projection.
 
+`integrity_hash(admin_query)` may require exclusive producer access. A busy
+producer is a declared `forge::chain::api::exceptions::conflict`, projected as
+HTTP 409 with `retryable: true`; common invalid-request, unavailable and resource
+errors remain declared. Other `admin_query` reads do not acquire conflict or
+admission errors. This corrects an omitted existing error declaration in `2.4`;
+the contract version, default minimum revision, methods, DTOs, error identity and
+`GET /v1/chain/admin/integrity` mapping stay unchanged. No migration or reset is
+required. An undeclared implementation error still becomes a fixed internal
+error rather than exposing its diagnostic context.
+
 Block responses use the complete host `activated_protocol_feature_info` and
 reuse the canonical
 `chain_config`, `wasm_parameters`, `producer_info` and
@@ -285,6 +295,17 @@ include built-in Spring types, typedefs, struct inheritance, dynamic and fixed
 arrays, optional fields, trailing binary extensions and tagged variants.
 Public Forge names and error contracts are native; there are no EOSIO namespace
 aliases or compatibility modes.
+
+ABI `public_key` and `signature` JSON scalars use the same canonical
+`forge::crypto::asymmetric::encoding::forge()` profile as ordinary protocol
+Variant/JSON conversion: SECP256K1, P256, WebAuthn, Ed25519 and RSA retain their
+existing typed variants and Raw bytes. Antelope `EOS`/`PUB_K1_`/`PUB_R1_`/`PUB_WA_`
+and `SIG_K1_`/`SIG_R1_`/`SIG_WA_` text is rejected at this boundary; there is no
+alternate profile or fallback. The explicit Antelope crypto codec remains
+available for donor or offline migration use, not as an ABI compatibility mode.
+This approved pre-stabilization text-contract break requires callers to
+re-encode existing JSON inputs and expectations with the existing codecs, not
+replace prefixes. See the [unreleased ABI migration note](../../../docs/releases/unreleased-chain-api-forge-crypto-text.md).
 
 `abi_serialization_limits` bounds recursion depth, elapsed serialization time,
 binary bytes, string/byte payloads and container elements. Failures throw

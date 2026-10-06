@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
@@ -10,12 +11,27 @@
 #include <vector>
 
 import forge.chain.api.abi;
+import forge.crypto.asymmetric;
 import forge.raw.raw;
 
 namespace {
 
 namespace chain_api = forge::chain::api;
 namespace protocol = forge::chain::protocol;
+namespace asymmetric = forge::crypto::asymmetric;
+
+// Pinned donor text remains an oracle, not an accepted ABI input format.
+constexpr auto donor_public_key = std::string_view{"EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV"};
+constexpr auto donor_signature = std::string_view{
+    "SIG_K1_Jzdpi5RCzHLGsQbpGhndXBzcFs8vT5LHAtWLMxPzBdwRHSmJkcCdVu6oqPUQn1hbGUdErHvxtdSTS1YA73BThQFwV1v4G5"};
+
+template <typename T, std::size_t Size> std::array<T, Size> sequence(std::uint8_t first) {
+   auto result = std::array<T, Size>{};
+   for (auto index = std::size_t{}; index < result.size(); ++index) {
+      result[index] = static_cast<T>(first + index);
+   }
+   return result;
+}
 
 forge::variant object(std::initializer_list<std::pair<std::string, forge::variant>> fields) {
    auto value = forge::mutable_variant_object{};
@@ -435,9 +451,8 @@ BOOST_AUTO_TEST_CASE(chain_abi_donor_builtins_round_trip) {
    const auto zero160 = std::string(40, '0');
    const auto zero256 = std::string(64, '0');
    const auto zero512 = std::string(128, '0');
-   const auto public_key = std::string{"EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV"};
-   const auto signature = std::string{
-       "SIG_K1_Jzdpi5RCzHLGsQbpGhndXBzcFs8vT5LHAtWLMxPzBdwRHSmJkcCdVu6oqPUQn1hbGUdErHvxtdSTS1YA73BThQFwV1v4G5"};
+   const auto public_key = asymmetric::encoding::antelope().parse_public(donor_public_key);
+   const auto signature = asymmetric::encoding::antelope().parse_signature(donor_signature);
 
    const auto values = std::vector<std::pair<std::string, forge::variant>>{
        {"bool", true},
@@ -465,8 +480,8 @@ BOOST_AUTO_TEST_CASE(chain_abi_donor_builtins_round_trip) {
        {"checksum160", zero160},
        {"checksum256", zero256},
        {"checksum512", zero512},
-       {"public_key", public_key},
-       {"signature", signature},
+       {"public_key", asymmetric::encoding::forge().format(public_key)},
+       {"signature", asymmetric::encoding::forge().format(signature)},
        {"symbol", "4,SYS"},
        {"symbol_code", "SYS"},
        {"asset", "100.0000 SYS"},
@@ -478,6 +493,142 @@ BOOST_AUTO_TEST_CASE(chain_abi_donor_builtins_round_trip) {
       const auto decoded = chain_api::abi_bin_to_json(abi, type, binary);
       BOOST_TEST_CONTEXT("built-in " << type) {
          BOOST_TEST(chain_api::abi_json_to_bin(abi, type, decoded) == binary);
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_crypto_uses_forge_text_and_preserves_raw_binary) {
+   const auto abi = empty_abi();
+   const auto& codec = asymmetric::encoding::forge();
+   const auto public_keys = std::vector<std::pair<asymmetric::public_key, std::string_view>>{
+       {asymmetric::encoding::antelope().parse_public(donor_public_key), "PUB_SECP256K1_"},
+       {asymmetric::r1_public_key{sequence<char, 33>(2U)}, "PUB_P256_"},
+       {asymmetric::webauthn_public_key{sequence<char, 33>(3U),
+                                        asymmetric::webauthn_public_key::user_presence_t::USER_PRESENCE_VERIFIED,
+                                        "login.example"},
+        "PUB_WEBAUTHN_"},
+       {asymmetric::ed25519_public_key{sequence<std::uint8_t, 32>(4U)}, "PUB_ED25519_"},
+       {asymmetric::rsa_public_key{{5U, 6U, 7U, 8U}}, "PUB_RSA_"},
+   };
+   const auto signatures = std::vector<std::pair<asymmetric::signature, std::string_view>>{
+       {asymmetric::encoding::antelope().parse_signature(donor_signature), "SIG_SECP256K1_"},
+       {asymmetric::r1_signature{sequence<char, 65>(12U)}, "SIG_P256_"},
+       {asymmetric::webauthn_signature{sequence<char, 65>(13U), {14U, 15U, 16U}, R"({"type":"webauthn.get"})"},
+        "SIG_WEBAUTHN_"},
+       {asymmetric::ed25519_signature{sequence<std::uint8_t, 64>(17U)}, "SIG_ED25519_"},
+       {asymmetric::rsa_signature{{18U, 19U, 20U, 21U}}, "SIG_RSA_"},
+   };
+
+   for (const auto& [key, prefix] : public_keys) {
+      BOOST_TEST_CONTEXT("public-key family " << prefix) {
+         const auto text = codec.format(key);
+         BOOST_CHECK(text.starts_with(prefix));
+         const auto binary = chain_api::abi_json_to_bin(abi, "public_key", forge::variant{text});
+         BOOST_TEST(binary == forge::raw::pack(key));
+         const auto decoded = chain_api::abi_bin_to_json(abi, "public_key", binary);
+         BOOST_TEST(decoded.as_string() == text);
+         BOOST_CHECK(codec.parse_public(decoded.as_string()) == key);
+      }
+   }
+   for (const auto& [signature, prefix] : signatures) {
+      BOOST_TEST_CONTEXT("signature family " << prefix) {
+         const auto text = codec.format(signature);
+         BOOST_CHECK(text.starts_with(prefix));
+         const auto binary = chain_api::abi_json_to_bin(abi, "signature", forge::variant{text});
+         BOOST_TEST(binary == forge::raw::pack(signature));
+         const auto decoded = chain_api::abi_bin_to_json(abi, "signature", binary);
+         BOOST_TEST(decoded.as_string() == text);
+         BOOST_CHECK(codec.parse_signature(decoded.as_string()) == signature);
+      }
+   }
+
+   // Captured through the unchanged Antelope ABI boundary before this text break.
+   const auto donor_public_binary = protocol::bytes{
+       0x00, 0x02, 0xc0, 0xde, 0xd2, 0xbc, 0x1f, 0x13, 0x05, 0xfb, 0x0f, 0xaa, 0xc5, 0xe6, 0xc0, 0x3e, 0xe3,
+       0xa1, 0x92, 0x42, 0x34, 0x98, 0x54, 0x27, 0xb6, 0x16, 0x7c, 0xa5, 0x69, 0xd1, 0x3d, 0xf4, 0x35, 0xcf};
+   const auto donor_signature_binary = protocol::bytes{
+       0x00, 0x1f, 0x29, 0x1f, 0x9b, 0x80, 0x64, 0x2f, 0x6c, 0xd8, 0xed, 0x1c, 0x78, 0x89, 0xa0, 0x67, 0xb6,
+       0xfa, 0xda, 0x4e, 0xec, 0xf9, 0x71, 0xfe, 0xbf, 0x3f, 0x67, 0x1f, 0x97, 0xb7, 0x09, 0xb7, 0x17, 0xc4,
+       0x58, 0xa2, 0x6e, 0xad, 0x9a, 0x25, 0x5c, 0x69, 0xe9, 0x55, 0x0b, 0x1e, 0x13, 0xe9, 0xac, 0x0c, 0x6d,
+       0x9d, 0x1d, 0x90, 0x0c, 0xf9, 0x83, 0x1a, 0x65, 0x66, 0xc1, 0xf0, 0x88, 0x9f, 0x0f, 0xb0};
+   BOOST_TEST(forge::raw::pack(public_keys.front().first) == donor_public_binary);
+   BOOST_TEST(forge::raw::pack(signatures.front().first) == donor_signature_binary);
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "public_key", forge::variant{codec.format(public_keys.front().first)}) ==
+              donor_public_binary);
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "signature", forge::variant{codec.format(signatures.front().first)}) ==
+              donor_signature_binary);
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_crypto_nested_record_preserves_donor_bytes) {
+   auto abi = empty_abi();
+   abi.structs = {
+       protocol::struct_def{.name = "crypto",
+                            .fields = {{.name = "key", .type = "public_key"}, {.name = "proof", .type = "signature"}}},
+       protocol::struct_def{.name = "record",
+                            .fields = {{.name = "tag", .type = "uint16"}, {.name = "crypto", .type = "crypto"}}},
+   };
+   const auto key = asymmetric::encoding::antelope().parse_public(donor_public_key);
+   const auto signature = asymmetric::encoding::antelope().parse_signature(donor_signature);
+   const auto value = object({
+       {"tag", 0x1234},
+       {"crypto", object({{"key", asymmetric::encoding::forge().format(key)},
+                          {"proof", asymmetric::encoding::forge().format(signature)}})},
+   });
+   const auto expected = forge::raw::pack(std::uint16_t{0x1234}, key, signature);
+   const auto binary = chain_api::abi_json_to_bin(abi, "record", value);
+   BOOST_TEST(binary == expected);
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, "record", binary) == value);
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_rejects_antelope_crypto_text_with_exact_diagnostics) {
+   auto abi = empty_abi();
+   abi.structs = {
+       protocol::struct_def{.name = "crypto",
+                            .fields = {{.name = "key", .type = "public_key"}, {.name = "proof", .type = "signature"}}},
+       protocol::struct_def{.name = "record",
+                            .fields = {{.name = "tag", .type = "uint16"}, {.name = "crypto", .type = "crypto"}}},
+   };
+   const auto key = asymmetric::encoding::antelope().parse_public(donor_public_key);
+   const auto signature = asymmetric::encoding::antelope().parse_signature(donor_signature);
+   const auto& legacy = asymmetric::encoding::antelope();
+   const auto cases = std::vector<std::pair<std::string_view, std::string>>{
+       {"public_key", legacy.format(key)},
+       {"public_key", legacy.format(asymmetric::public_key{asymmetric::r1_public_key{sequence<char, 33>(2U)}})},
+       {"public_key", legacy.format(asymmetric::public_key{asymmetric::webauthn_public_key{
+                          sequence<char, 33>(3U),
+                          asymmetric::webauthn_public_key::user_presence_t::USER_PRESENCE_VERIFIED, "login.example"}})},
+       {"signature", legacy.format(signature)},
+       {"signature", legacy.format(asymmetric::signature{asymmetric::r1_signature{sequence<char, 65>(12U)}})},
+       {"signature", legacy.format(asymmetric::signature{asymmetric::webauthn_signature{
+                         sequence<char, 65>(13U), {14U, 15U, 16U}, R"({"type":"webauthn.get"})"}})},
+       // Existing parse-only prefix shape; this is not a checksum-valid donor oracle.
+       {"public_key", "PUB_K1_TEST"},
+   };
+
+   for (const auto& [type, text] : cases) {
+      BOOST_TEST_CONTEXT("unsupported Antelope scalar " << type) {
+         for (const auto nested : {false, true}) {
+            const auto value =
+                nested
+                    ? object(
+                          {{"tag", 0x1234},
+                           {"crypto",
+                            object({
+                                {"key", type == "public_key" ? text : asymmetric::encoding::forge().format(key)},
+                                {"proof", type == "signature" ? text : asymmetric::encoding::forge().format(signature)},
+                            })}})
+                    : forge::variant{text};
+            const auto path = nested ? (type == "public_key" ? "record.crypto.key" : "record.crypto.proof") : type;
+            const auto offset = !nested ? 0U : type == "public_key" ? 2U : 2U + forge::raw::pack(key).size();
+            try {
+               (void)chain_api::abi_json_to_bin(abi, nested ? "record" : type, value);
+               BOOST_FAIL("Antelope crypto text was accepted by the Forge ABI boundary");
+            } catch (const chain_api::abi_serialization_error& error) {
+               require_diagnostic(error, chain_api::abi_error_code::invalid_json, type, path, offset);
+               BOOST_TEST(error.code().value() == static_cast<int>(chain_api::abi_error_code::invalid_json));
+               BOOST_TEST(std::string{error.code().category().name()} == "forge.chain.api.abi");
+            }
+         }
       }
    }
 }

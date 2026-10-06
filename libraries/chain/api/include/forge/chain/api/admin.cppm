@@ -90,6 +90,12 @@ template <> struct method_descriptor_customization<::forge::chain::api::admin> {
       static_cast<void>(Method);
       ::forge::chain::api::exceptions::descriptor::declare_common(method);
       using request_type = method_request_t<Method>;
+      if constexpr (std::is_same_v<std::integral_constant<decltype(Method), Method>,
+                                   std::integral_constant<decltype(&::forge::chain::api::admin::integrity_hash),
+                                                          &::forge::chain::api::admin::integrity_hash>>) {
+         method.template error<::forge::chain::api::exceptions::conflict>(
+             "conflict", {.status_code = status::conflict, .retryable = true});
+      }
       if constexpr (std::is_same_v<request_type, ::forge::chain::protocol::snapshot_status_request>) {
          ::forge::chain::api::exceptions::descriptor::declare_not_found(method);
       }

@@ -35,6 +35,7 @@
 
 import forge.api.core.connection;
 import forge.api.core.binding;
+import forge.api.core.error_projection;
 import forge.api.core.exceptions;
 import forge.api.core.registry;
 import forge.api.http.binding;
@@ -211,6 +212,8 @@ class block_service final : public forge::chain::api::block {
 
 class snapshot_admin_service final : public forge::chain::api::admin {
  public:
+   enum class integrity_failure { none, busy, unavailable, undeclared };
+
    explicit snapshot_admin_service(forge::chain::protocol::snapshot_response response)
        : response_{std::move(response)} {}
 
@@ -306,6 +309,17 @@ class snapshot_admin_service final : public forge::chain::api::admin {
 
    boost::asio::awaitable<forge::chain::protocol::integrity_hash_response>
    integrity_hash(forge::chain::protocol::admin_query) override {
+      switch (integrity_error.load()) {
+      case integrity_failure::none:
+         break;
+      case integrity_failure::busy:
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::conflict, "producer is busy");
+      case integrity_failure::unavailable:
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::unavailable, "producer is unavailable");
+      case integrity_failure::undeclared:
+         FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::snapshot_lost, "undeclared integrity sentinel",
+                               forge::exceptions::ctx("integrity.context", "private-context-sentinel"));
+      }
       co_return forge::chain::protocol::integrity_hash_response{};
    }
 
@@ -316,6 +330,7 @@ class snapshot_admin_service final : public forge::chain::api::admin {
    forge::chain::protocol::snapshot_state state = forge::chain::protocol::snapshot_state::pending;
    std::optional<forge::chain::protocol::snapshot_request> accepted_request;
    std::string lost_request_id;
+   std::atomic<integrity_failure> integrity_error{integrity_failure::none};
 
  private:
    forge::chain::protocol::snapshot_lifecycle_response
@@ -1741,6 +1756,74 @@ BOOST_AUTO_TEST_CASE(chain_producers_http_roundtrip_preserves_typed_not_found) {
    server.stop();
 }
 
+BOOST_AUTO_TEST_CASE(chain_integrity_http_roundtrip_preserves_conflict_and_existing_error_policy) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto service = std::make_shared<snapshot_admin_service>(forge::chain::protocol::snapshot_response{});
+   service->integrity_error.store(snapshot_admin_service::integrity_failure::busy);
+
+   auto apis = forge::api::core::registry{};
+   apis.install<forge::chain::api::admin>(forge::chain::api::admin::describe(), service);
+
+   auto router = forge::net::http::router{};
+   router.mount(forge::api::http::binding()
+                    .use(forge::api::core::binding().serve(apis).build())
+                    .bind<forge::chain::api::admin>()
+                    .build());
+
+   auto server = forge::net::http::server{runtime, forge::net::http::server_config{}, std::move(router)};
+   server.start();
+   try {
+      auto client = forge::net::http::client{
+          runtime,
+          forge::net::http::parse_base_url("http://127.0.0.1:" + std::to_string(server.port())),
+      };
+      auto remote = forge::asio::blocking::run(runtime, forge::api::http::remote<forge::chain::api::admin>(client));
+
+      const auto busy = forge::asio::blocking::run(runtime, client.async_get("/v1/chain/admin/integrity"));
+      BOOST_TEST(busy.result_int() == 409U);
+      const auto conflict = forge::codec::json::read<forge::api::core::error_payload>(busy.body());
+      BOOST_REQUIRE(conflict.ok());
+      BOOST_TEST(conflict.value.error == "conflict");
+      BOOST_TEST(conflict.value.identity.category == "forge.chain.api");
+      BOOST_TEST(conflict.value.identity.code == 13U);
+      BOOST_CHECK(conflict.value.status_code == forge::api::core::status::conflict);
+      BOOST_TEST(conflict.value.retryable);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, remote->integrity_hash({})),
+                        forge::chain::api::exceptions::conflict);
+
+      const auto status = forge::asio::blocking::run(runtime, client.async_get("/v1/chain/admin/producer"));
+      BOOST_TEST(status.result_int() == 200U);
+
+      service->integrity_error.store(snapshot_admin_service::integrity_failure::unavailable);
+      const auto unavailable = forge::asio::blocking::run(runtime, client.async_get("/v1/chain/admin/integrity"));
+      BOOST_TEST(unavailable.result_int() == 503U);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, remote->integrity_hash({})),
+                        forge::chain::api::exceptions::unavailable);
+
+      service->integrity_error.store(snapshot_admin_service::integrity_failure::undeclared);
+      const auto unknown = forge::asio::blocking::run(runtime, client.async_get("/v1/chain/admin/integrity"));
+      BOOST_TEST(unknown.result_int() == 500U);
+      const auto internal = forge::codec::json::read<forge::api::core::error_payload>(unknown.body());
+      BOOST_REQUIRE(internal.ok());
+      BOOST_TEST(internal.value.error == "internal");
+      BOOST_TEST(internal.value.message == "internal error");
+      BOOST_TEST(!internal.value.retryable);
+      BOOST_CHECK(!internal.value.details.has_value());
+      BOOST_TEST(unknown.body().find("undeclared integrity sentinel") == std::string::npos);
+      BOOST_TEST(unknown.body().find("private-context-sentinel") == std::string::npos);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, remote->integrity_hash({})),
+                        forge::api::core::exceptions::remote_internal);
+
+      service->integrity_error.store(snapshot_admin_service::integrity_failure::none);
+      const auto healthy = forge::asio::blocking::run(runtime, remote->integrity_hash({}));
+      BOOST_CHECK(healthy == forge::chain::protocol::integrity_hash_response{});
+   } catch (...) {
+      server.stop();
+      throw;
+   }
+   server.stop();
+}
+
 BOOST_AUTO_TEST_CASE(chain_snapshot_http_roundtrip_preserves_lifecycle_and_typed_not_found) {
    auto head = forge::chain::protocol::block_id{};
    head._hash[0] = 0x42U;
@@ -2447,6 +2530,57 @@ BOOST_AUTO_TEST_CASE(chain_audited_query_remote_restores_trust_required) {
    BOOST_CHECK_THROW(run(remote.get({.audit = forge::chain::protocol::audit_mode::required})),
                      forge::chain::api::exceptions::trust_required);
    BOOST_TEST(invoker->calls == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(chain_admin_integrity_declares_only_its_retryable_conflict) {
+   const auto descriptor = forge::chain::api::admin::describe();
+   BOOST_TEST(descriptor.version.major == 2U);
+   BOOST_TEST(descriptor.version.revision == 4U);
+   BOOST_TEST(forge::chain::api::admin::ref().min_revision == 4U);
+   BOOST_CHECK(forge::api::core::compatible(descriptor, forge::chain::api::admin::ref(4U)));
+
+   const auto* integrity = forge::api::core::find_method(descriptor, "integrity_hash");
+   const auto* producer = forge::api::core::find_method(descriptor, "producer_status");
+   BOOST_REQUIRE(integrity != nullptr);
+   BOOST_REQUIRE(producer != nullptr);
+   BOOST_TEST(integrity->errors.size() == 4U);
+   const auto conflict = forge::api::core::exception_identity<forge::chain::api::exceptions::conflict>();
+   const auto admission = forge::api::core::exception_identity<forge::chain::api::exceptions::admission_rejected>();
+   const auto declared = std::ranges::find(integrity->errors, conflict, &forge::api::core::error_descriptor::identity);
+   BOOST_REQUIRE(declared != integrity->errors.end());
+   BOOST_TEST(declared->name == "conflict");
+   BOOST_CHECK(declared->status_code == forge::api::core::status::conflict);
+   BOOST_TEST(declared->retryable);
+   for (const auto& identity :
+        {forge::api::core::exception_identity<forge::chain::api::exceptions::invalid_request>(),
+         forge::api::core::exception_identity<forge::chain::api::exceptions::unavailable>(),
+         forge::api::core::exception_identity<forge::chain::api::exceptions::resource_exhausted>()}) {
+      BOOST_CHECK(std::ranges::find(integrity->errors, identity, &forge::api::core::error_descriptor::identity) !=
+                  integrity->errors.end());
+   }
+   for (const auto& method : descriptor.methods) {
+      if (method.request_type == typeid(forge::chain::protocol::admin_query)) {
+         BOOST_CHECK(std::ranges::find(method.errors, admission, &forge::api::core::error_descriptor::identity) ==
+                     method.errors.end());
+         if (method.name != "integrity_hash") {
+            BOOST_CHECK(std::ranges::find(method.errors, conflict, &forge::api::core::error_descriptor::identity) ==
+                        method.errors.end());
+         }
+      }
+   }
+
+   const auto error = forge::chain::api::exceptions::conflict{"producer is busy"};
+   const auto payload = forge::api::core::project_error(*integrity, error);
+   BOOST_CHECK(payload.identity == conflict);
+   BOOST_CHECK(payload.status_code == forge::api::core::status::conflict);
+   BOOST_TEST(payload.retryable);
+   BOOST_CHECK_THROW(forge::api::core::raise_remote_error(payload, integrity), forge::chain::api::exceptions::conflict);
+
+   const auto unrelated = forge::api::core::project_error(*producer, error);
+   BOOST_TEST(unrelated.error == "internal");
+   BOOST_CHECK(unrelated.status_code == forge::api::core::status::internal);
+   BOOST_TEST(unrelated.identity.category == "forge.api");
+   BOOST_TEST(!unrelated.retryable);
 }
 
 BOOST_AUTO_TEST_CASE(chain_admin_declares_mutation_errors_only_for_mutating_methods) {
