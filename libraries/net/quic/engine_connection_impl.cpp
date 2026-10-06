@@ -505,6 +505,13 @@ void engine_connection::impl::signal_terminal() noexcept {
    termination_changed.notify();
 }
 
+void engine_connection::impl::request_cancel() noexcept {
+   if (!cancellation_requested.exchange(true, std::memory_order_acq_rel)) {
+      metrics.cancellations.fetch_add(1, std::memory_order_relaxed);
+   }
+   termination_changed.notify();
+}
+
 void engine_connection::impl::fail_all() noexcept {
    assert(strand.running_in_this_thread());
    if (terminal_cleanup_complete) {
@@ -532,9 +539,11 @@ void engine_connection::impl::fail_all() noexcept {
 
 void engine_connection::impl::fail_udp(boost::system::error_code error) noexcept {
    assert(strand.running_in_this_thread());
+   if (!closing && !canceled && !udp_transport_error && error != asio::error::operation_aborted) {
+      udp_transport_error = error;
+   }
    if (!handshake_done && !closing && !canceled && !handshake_terminal_cause &&
        error != asio::error::operation_aborted) {
-      handshake_transport_error = error;
       if (error == asio::error::connection_refused || error == asio::error::connection_reset ||
           error == asio::error::network_unreachable || error == asio::error::host_unreachable ||
           error == asio::error::network_down) {
@@ -663,7 +672,7 @@ boost::asio::awaitable<void> engine_connection::impl::wait_handshake(std::chrono
          // the outer active_connect arbitration decide the terminal winner.
          static_cast<void>(test_failpoint("handshake_udp_failure_before_report"));
       }
-      throw_engine(*handshake_terminal_cause, "QUIC handshake UDP failure: " + handshake_transport_error.message());
+      throw_engine(*handshake_terminal_cause, "QUIC handshake UDP failure: " + udp_transport_error.message());
    }
    if (canceled && metrics.backpressure_rejections.load(std::memory_order_relaxed) > 0) {
       throw_engine(engine_error_kind::backpressure_rejected, "QUIC handshake stopped by inbound packet backpressure");
@@ -763,6 +772,9 @@ asio::awaitable<void> engine_connection::impl::wait_udp_send_prefix(std::uint64_
       if (udp_failed_generation != 0 && udp_failed_generation <= generation) {
          if (udp_send_exception) {
             std::rethrow_exception(udp_send_exception);
+         }
+         if (udp_send_discarded && udp_transport_error) {
+            throw boost::system::system_error{udp_transport_error, "QUIC UDP transport failed before captured drain"};
          }
          throw boost::system::system_error{udp_send_error, "QUIC UDP send failed before captured drain"};
       }
@@ -1367,7 +1379,6 @@ void engine_connection::impl::start_cancel_request_worker() {
       while (!value->terminal_signaled.load(std::memory_order_acquire)) {
          if (value->cancellation_requested.load(std::memory_order_acquire)) {
             if (!value->closing && !value->canceled) {
-               value->metrics.cancellations.fetch_add(1, std::memory_order_relaxed);
                value->fail_all();
             }
             co_return;

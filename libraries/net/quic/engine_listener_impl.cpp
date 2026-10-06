@@ -136,12 +136,16 @@ void engine_listener::impl::stop() {
    if (stopped) {
       return;
    }
+   const auto active = connections();
    stopped = true;
    stop_requested.store(true, std::memory_order_release);
+   for (const auto& connection : active) {
+      connection->request_cancel();
+   }
    server_socket->stop();
    wake(punch_waiters);
    wake(accept_waiters);
-   for (auto& connection : connections()) {
+   for (const auto& connection : active) {
       asio::post(connection->strand, [connection] { connection->fail_all(); });
    }
 }

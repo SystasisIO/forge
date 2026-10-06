@@ -68,7 +68,7 @@ struct engine_connection::impl {
    std::size_t queued_inbound_packet_bytes = 0;
    bool handshake_done = false;
    std::optional<engine_error_kind> handshake_terminal_cause;
-   boost::system::error_code handshake_transport_error;
+   boost::system::error_code udp_transport_error;
    bool closing = false;
    bool canceled = false;
    bool terminal_cleanup_complete = false;
@@ -226,6 +226,7 @@ struct engine_connection::impl {
    void cancel_transport_io(bool close_socket);
 
    void signal_terminal() noexcept;
+   void request_cancel() noexcept;
 
    void fail_all() noexcept;
 

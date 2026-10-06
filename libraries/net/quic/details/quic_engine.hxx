@@ -169,6 +169,7 @@ class engine_connection : public std::enable_shared_from_this<engine_connection>
    friend class engine_connector;
    friend class engine_listener;
    friend class engine_stream;
+   friend struct engine_connection_fixture;
 
    explicit engine_connection(std::shared_ptr<impl> impl_value);
 
