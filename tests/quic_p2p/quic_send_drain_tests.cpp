@@ -946,7 +946,9 @@ void check_listener_callback_join(std::string_view point) {
    completed(observed);
    BOOST_CHECK(stop.wait_for(20ms) == std::future_status::timeout);
    BOOST_CHECK(joined.wait_for(20ms) == std::future_status::timeout);
-   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) == 1U);
+   // A closed hook may execute inside the still-owned cancel handler. Both
+   // tickets are valid; the held callback must keep shutdown non-idle.
+   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) > 0U);
    {
       const auto lock = std::scoped_lock{fixture.listener->shutdown_mutex};
       BOOST_TEST(!fixture.listener->shutdown_complete);
