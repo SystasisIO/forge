@@ -13,6 +13,11 @@ module;
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
 
+namespace forge::net::stcp::detail {
+struct connection_access;
+struct connection_test_hooks;
+}
+
 export module forge.net.stcp.connection;
 
 export import forge.net.stcp.exceptions;
@@ -54,6 +59,7 @@ class connection {
    [[nodiscard]] transport::stream_connection into_transport_stream() &&;
 
  private:
+   friend struct detail::connection_access;
    friend boost::asio::awaitable<connection> async_upgrade_client(tcp::connection source, client_options options);
    friend boost::asio::awaitable<connection> async_upgrade_client(tcp::connection source, client_options options,
                                                                   std::chrono::milliseconds timeout);
@@ -78,7 +84,15 @@ class connection {
 
    connection(backend_token, std::shared_ptr<detail::stream_backend> stream, tls::context_snapshot_ptr context,
               std::size_t read_chunk_size, transport::endpoint local, transport::endpoint remote,
-              std::shared_ptr<void> lifetime);
+              std::shared_ptr<void> lifetime, std::shared_ptr<detail::connection_test_hooks> hooks = {});
+
+   static boost::asio::awaitable<connection>
+   async_upgrade_native(tcp::connection source, client_options options,
+                        std::optional<std::chrono::milliseconds> timeout, std::stop_token stop,
+                        std::shared_ptr<detail::connection_test_hooks> hooks = {});
+   static boost::asio::awaitable<connection>
+   async_upgrade_native(tcp::connection source, server_options options,
+                        std::optional<std::chrono::milliseconds> timeout, std::stop_token stop);
 
    std::shared_ptr<impl> impl_;
 };

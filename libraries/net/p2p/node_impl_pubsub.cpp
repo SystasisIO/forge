@@ -193,7 +193,7 @@ void node::impl::increment_pubsub_invalid(const peer_id& peer) {
    if (offender) {
       record_direct_session_failure(offender);
       forget_session(offender);
-      detail::request_session_cancel(offender->connection);
+      request_cancel_session(offender);
    }
 }
 

@@ -35,8 +35,9 @@ import forge.net.quic.security;
 
 #include "details/engine_client_options.hxx"
 
+#include "details/connector_impl.hxx"
+
 namespace forge::net::quic {
-namespace {
 
 [[nodiscard]] exceptions::code map_error(detail::engine_error_kind kind) noexcept {
    switch (kind) {
@@ -182,19 +183,15 @@ void append_cache_key_component(std::string& out, std::string_view value) {
    return out;
 }
 
-} // namespace
-
-struct connector::impl {
-   explicit impl(forge::asio::runtime& runtime_value)
-       : runtime(runtime_value), engine(runtime_value.context()),
-         client_tokens(std::make_shared<detail::client_token_cache>()) {}
-
-   forge::asio::runtime& runtime;
-   detail::engine_connector engine;
-   std::shared_ptr<detail::client_token_cache> client_tokens;
-};
-
 connector::connector(forge::asio::runtime& runtime) : impl_(std::make_unique<impl>(runtime)) {}
+
+connector::connector(forge::asio::runtime& runtime, listener& source, endpoint local) {
+   try {
+      impl_ = std::make_unique<impl>(runtime, *detail::listener_access::get(source).engine, std::move(local));
+   } catch (const detail::engine_failure& error) {
+      raise_engine_failure(error);
+   }
+}
 
 connector::~connector() = default;
 

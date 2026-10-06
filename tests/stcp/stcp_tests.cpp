@@ -5,10 +5,13 @@
 #include <atomic>
 #include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <ctime>
 #include <exception>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -17,6 +20,11 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(__APPLE__) || defined(__linux__)
+#include <fcntl.h>
+#include <cerrno>
+#endif
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/associated_executor.hpp>
@@ -50,6 +58,7 @@
 #include "../../libraries/net/stcp/details/handshake_deadline.hxx"
 
 import forge.asio.blocking;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.crypto.pki.x509;
 import forge.net.stcp.connection;
@@ -64,6 +73,8 @@ import forge.net.transport.buffer;
 import forge.net.transport.endpoint;
 import forge.net.transport.exceptions;
 import forge.net.transport.stream;
+
+#include "../../libraries/net/stcp/details/connection_access.hxx"
 
 
 namespace {
@@ -315,6 +326,8 @@ struct observed_lower_state {
    std::atomic_size_t cancel_requests = 0;
    std::atomic_size_t close_calls = 0;
    std::atomic_size_t read_calls = 0;
+   std::atomic_bool close_completed = false;
+   forge::asio::notification model_released;
 };
 
 class observed_transport_stream final : public forge::net::transport::detail::stream_concept {
@@ -322,6 +335,11 @@ class observed_transport_stream final : public forge::net::transport::detail::st
    observed_transport_stream(forge::net::transport::stream stream, std::shared_ptr<observed_lower_state> state,
                              std::size_t read_fragment_size)
        : stream_(std::move(stream)), state_(std::move(state)), read_fragment_size_(read_fragment_size) {}
+
+   ~observed_transport_stream() override {
+      // This observes final ownership release, not native close completion.
+      state_->model_released.notify();
+   }
 
    [[nodiscard]] bool valid() const noexcept override {
       return !cancel_requested_.load(std::memory_order_acquire) && stream_.valid();
@@ -349,6 +367,7 @@ class observed_transport_stream final : public forge::net::transport::detail::st
    boost::asio::awaitable<void> async_close() override {
       state_->close_calls.fetch_add(1, std::memory_order_relaxed);
       co_await stream_.async_close();
+      state_->close_completed.store(true, std::memory_order_release);
    }
 
    void cancel() override {
@@ -878,8 +897,12 @@ boost::asio::awaitable<void> stcp_transport_upgrade_preserves_endpoints_lifetime
       const auto handoff_received = co_await read_exact(server, handoff_payload.size());
       BOOST_TEST(handoff_received == handoff_payload, boost::test_tools::per_element());
       co_await handed_off.stream.async_close();
+      BOOST_TEST(client_state->close_completed.load(std::memory_order_acquire));
+      BOOST_TEST(!client_model.expired());
    }
-   co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   // A caller-executor post cannot join worker/completion captures on another
+   // strand. Await their actual final lower-model release, without polling.
+   static_cast<void>(co_await client_state->model_released.async_wait(0));
    BOOST_TEST(client_model.expired());
    BOOST_TEST(client_state->cancel_requests.load(std::memory_order_relaxed) == 1U);
    BOOST_TEST(client_state->close_calls.load(std::memory_order_relaxed) == 1U);
@@ -1488,9 +1511,223 @@ boost::asio::awaitable<void> stcp_rejects_tls12_peer() {
    co_await listener.async_close();
 }
 
+struct native_owner_probe {
+   std::mutex mutex;
+   std::condition_variable changed;
+   std::optional<forge::net::stcp::detail::startup_stage> fail_at;
+   bool reject_verification = false;
+   bool handoff = false;
+   bool handoff_used = false;
+   bool hold_timer = false;
+   bool timer_entered = false;
+   bool release_timer = false;
+   bool timer_completed = false;
+   bool close_entered = false;
+   bool release_close = false;
+   bool native_open = false;
+   bool closed = false;
+   bool gate_timed_out = false;
+   bool token_released = false;
+   bool early_ack = false;
+   bool finished = false;
+   int descriptor = -1;
+   std::exception_ptr primary;
+   std::exception_ptr unexpected;
+};
+
+boost::asio::awaitable<void> stcp_native_owner_fixture(
+    tls_material material, std::shared_ptr<native_owner_probe> probe,
+    std::shared_ptr<forge::net::stcp::detail::connection_test_hooks> hooks) {
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto listener = forge::net::tcp::listener{executor, loopback(0)};
+   auto connector = forge::net::tcp::connector{executor};
+   auto accept = spawn_result<forge::net::tcp::connection>(executor, listener.async_accept_connection());
+   auto token = std::shared_ptr<void>{new int{1}, [probe](void* value) noexcept {
+      const auto lock = std::scoped_lock{probe->mutex};
+      probe->early_ack = !probe->closed;
+      probe->token_released = true;
+      delete static_cast<int*>(value);
+      probe->changed.notify_all();
+   }};
+   auto client_tcp = co_await connector.async_connect_connection(listener.local_endpoint(), {}, std::move(token));
+   auto server_tcp = co_await take_result(accept);
+   auto server_upgrade = spawn_result<forge::net::stcp::connection>(
+       executor, forge::net::stcp::async_upgrade_server(std::move(server_tcp), server_options(material),
+                                                        std::chrono::seconds{3}));
+   auto options = client_options(material);
+   if (probe->reject_verification) {
+      options.security.verifier = [](const forge::net::stcp::certificate_chain&) { return false; };
+   }
+   auto client = forge::net::stcp::connection{};
+   try {
+      client = co_await forge::net::stcp::detail::connection_access::async_upgrade_client(
+          std::move(client_tcp), std::move(options), std::chrono::seconds{3}, std::move(hooks));
+   } catch (...) {
+      const auto lock = std::scoped_lock{probe->mutex};
+      probe->primary = std::current_exception();
+   }
+   auto server = forge::net::stcp::connection{};
+   try {
+      server = co_await take_result(server_upgrade);
+   } catch (const forge::net::stcp::exceptions::closed&) {
+      // Backend allocation can fail before the real server finishes TLS.
+   } catch (...) {
+      const auto lock = std::scoped_lock{probe->mutex};
+      probe->unexpected = std::current_exception();
+   }
+   if (client.valid()) {
+      if (probe->handoff) {
+         auto lower = std::move(client).into_transport_stream();
+         client = forge::net::stcp::connection{};
+         const auto payload = bytes{1, 2, 3};
+         co_await lower.stream.async_write(payload);
+         const auto received = co_await server.async_read();
+         {
+            const auto lock = std::scoped_lock{probe->mutex};
+            probe->handoff_used = received == payload && !probe->token_released;
+         }
+         co_await lower.stream.async_close();
+      } else {
+         co_await client.async_close();
+      }
+   }
+   client = forge::net::stcp::connection{};
+   co_await server.async_close();
+   co_await listener.async_close();
+   co_await connector.async_stop();
+}
+
+void stcp_native_owner_holds_real_close(
+    std::optional<forge::net::stcp::detail::startup_stage> fail_at, bool reject_verification, bool handoff) {
+   using stage = forge::net::stcp::detail::startup_stage;
+   using close_stage = forge::net::stcp::detail::native_close_stage;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto probe = std::make_shared<native_owner_probe>();
+   probe->fail_at = fail_at;
+   probe->reject_verification = reject_verification;
+   probe->handoff = handoff;
+   probe->hold_timer = reject_verification || fail_at == stage::owner_allocation || fail_at == stage::terminal_launch;
+   auto hooks = std::make_shared<forge::net::stcp::detail::connection_test_hooks>();
+   hooks->state = probe;
+   hooks->startup = [](void* value, stage current) {
+      const auto& state = *static_cast<native_owner_probe*>(value);
+      if (state.fail_at == current) {
+         throw std::bad_alloc{};
+      }
+   };
+   hooks->timer_callback = [](void* value, const boost::system::error_code&) noexcept {
+      auto& state = *static_cast<native_owner_probe*>(value);
+      auto lock = std::unique_lock{state.mutex};
+      state.timer_entered = true;
+      state.changed.notify_all();
+      if (state.hold_timer) {
+         state.gate_timed_out = !state.changed.wait_for(lock, std::chrono::seconds{5}, [&] {
+            return state.release_timer;
+         });
+      }
+      state.timer_completed = true;
+      state.changed.notify_all();
+   };
+   hooks->native_close = [](void* value, const boost::asio::ip::tcp::socket& native, close_stage current) noexcept {
+      auto& state = *static_cast<native_owner_probe*>(value);
+      auto lock = std::unique_lock{state.mutex};
+      if (current == close_stage::before_close) {
+         state.native_open = native.is_open();
+         state.descriptor = const_cast<boost::asio::ip::tcp::socket&>(native).native_handle();
+         state.close_entered = true;
+         state.changed.notify_all();
+         state.gate_timed_out = state.gate_timed_out || !state.changed.wait_for(
+             lock, std::chrono::seconds{5}, [&] { return state.release_close; });
+      } else {
+         state.closed = !native.is_open();
+#if defined(__APPLE__) || defined(__linux__)
+         errno = 0;
+         state.closed = state.closed && fcntl(state.descriptor, F_GETFD) == -1 && errno == EBADF;
+#endif
+         state.changed.notify_all();
+      }
+   };
+   auto material = make_tls_material();
+   auto worker = std::jthread{[&runtime, probe, hooks, material = std::move(material)]() mutable {
+      auto failure = std::exception_ptr{};
+      try {
+         forge::asio::blocking::run(runtime, stcp_native_owner_fixture(std::move(material), probe, hooks));
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      const auto lock = std::scoped_lock{probe->mutex};
+      if (failure) {
+         probe->unexpected = std::move(failure);
+      }
+      probe->finished = true;
+      probe->changed.notify_all();
+   }};
+   const auto release = [](native_owner_probe* state) noexcept {
+      const auto lock = std::scoped_lock{state->mutex};
+      state->release_timer = true;
+      state->release_close = true;
+      state->changed.notify_all();
+   };
+   // Both native gates are released before unconditional worker join, including
+   // assertion failures. No callback refers to stack-owned probe state.
+   auto release_guard = std::unique_ptr<native_owner_probe, decltype(release)>{probe.get(), release};
+   {
+      auto lock = std::unique_lock{probe->mutex};
+      if (probe->hold_timer) {
+         BOOST_CHECK(probe->changed.wait_for(lock, std::chrono::seconds{2}, [&] { return probe->timer_entered; }));
+         BOOST_CHECK(!probe->close_entered);
+         BOOST_CHECK(!probe->token_released);
+         BOOST_CHECK(!probe->finished);
+         probe->release_timer = true;
+         probe->changed.notify_all();
+      }
+      BOOST_CHECK(probe->changed.wait_for(lock, std::chrono::seconds{2}, [&] { return probe->close_entered; }));
+      BOOST_CHECK(probe->native_open);
+      BOOST_CHECK(!probe->token_released);
+      BOOST_CHECK(!probe->finished);
+   }
+   release_guard.reset();
+   worker.join();
+   {
+      auto lock = std::unique_lock{probe->mutex};
+      BOOST_CHECK(probe->changed.wait_for(lock, std::chrono::seconds{2}, [&] { return probe->token_released; }));
+      BOOST_CHECK(probe->closed);
+      BOOST_CHECK(!probe->early_ack);
+      BOOST_CHECK(!probe->gate_timed_out);
+      BOOST_CHECK(!probe->unexpected);
+      if (probe->hold_timer) {
+         BOOST_CHECK(probe->timer_completed);
+      }
+      if (handoff) {
+         BOOST_CHECK(probe->handoff_used);
+         BOOST_CHECK(!probe->primary);
+      } else if (probe->primary) {
+         if (reject_verification) {
+            BOOST_CHECK_THROW(std::rethrow_exception(probe->primary), forge::net::stcp::exceptions::verification_failed);
+         } else {
+            BOOST_CHECK_THROW(std::rethrow_exception(probe->primary), std::bad_alloc);
+         }
+      } else {
+         BOOST_ERROR("native startup failure must preserve its primary exception");
+      }
+   }
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(stcp)
+
+BOOST_AUTO_TEST_CASE(stcp_native_startup_failures_keep_owner_until_actual_close_and_timer_drain) {
+   using stage = forge::net::stcp::detail::startup_stage;
+   stcp_native_owner_holds_real_close(stage::backend_allocation, false, false);
+   stcp_native_owner_holds_real_close(stage::owner_allocation, false, false);
+   stcp_native_owner_holds_real_close(stage::terminal_launch, false, false);
+   stcp_native_owner_holds_real_close(std::nullopt, true, false);
+}
+
+BOOST_AUTO_TEST_CASE(stcp_native_tcp_and_stream_handoffs_do_not_acknowledge_socket_close) {
+   stcp_native_owner_holds_real_close(std::nullopt, false, true);
+}
 
 BOOST_AUTO_TEST_CASE(stcp_loopback_roundtrip_and_transport_stream) {
    auto runtime = forge::asio::runtime{};

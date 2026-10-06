@@ -18,8 +18,9 @@ import forge.net.quic.security;
 
 #include "details/engine_server_options.hxx"
 
+#include "details/listener_impl.hxx"
+
 namespace forge::net::quic {
-namespace {
 
 [[nodiscard]] exceptions::code map_error(detail::engine_error_kind kind) noexcept {
    switch (kind) {
@@ -125,20 +126,6 @@ namespace {
    return out;
 }
 
-} // namespace
-
-struct listener::impl {
-   impl(forge::asio::runtime& runtime_value, endpoint bind_endpoint_value, server_options options_value)
-       : runtime(runtime_value), engine(runtime_value.context(),
-                                        detail::engine_endpoint{.host = std::move(bind_endpoint_value.host),
-                                                                .port = bind_endpoint_value.port,
-                                                                .zone = std::move(bind_endpoint_value.zone)},
-                                        map_options(options_value)) {}
-
-   forge::asio::runtime& runtime;
-   detail::engine_listener engine;
-};
-
 listener::listener(forge::asio::runtime& runtime, endpoint bind_endpoint, server_options options) {
    validate(options);
    const auto capabilities = initialize_runtime();
@@ -148,13 +135,15 @@ listener::listener(forge::asio::runtime& runtime, endpoint bind_endpoint, server
    impl_ = std::make_unique<impl>(runtime, std::move(bind_endpoint), std::move(options));
 }
 
-listener::~listener() = default;
+listener::~listener() {
+   stop();
+}
 
 endpoint listener::local_endpoint() const {
    if (!impl_) {
       return endpoint{};
    }
-   const auto local = impl_->engine.local_endpoint();
+   const auto local = impl_->engine->local_endpoint();
    return map_endpoint(local);
 }
 
@@ -163,7 +152,7 @@ boost::asio::awaitable<connection> listener::async_accept() {
       FORGE_THROW_EXCEPTION(exceptions::connection_closed, "invalid QUIC listener");
    }
    try {
-      auto engine_connection = co_await impl_->engine.async_accept();
+      auto engine_connection = co_await impl_->engine->async_accept();
       co_return detail::connection_access::make(detail::connection_handle{.engine = std::move(engine_connection)});
    } catch (const detail::engine_failure& error) {
       raise_engine_failure(error);
@@ -172,13 +161,35 @@ boost::asio::awaitable<connection> listener::async_accept() {
 
 boost::asio::awaitable<void> listener::async_stop() {
    if (impl_) {
-      co_await impl_->engine.async_stop();
+      co_await impl_->engine->async_stop();
    }
 }
 
 void listener::stop() {
    if (impl_) {
-      impl_->engine.stop();
+      impl_->engine->stop();
+   }
+}
+
+detail::listener_handle detail::listener_access::get(listener& value) {
+   if (!value.impl_) {
+      FORGE_THROW_EXCEPTION(exceptions::connection_closed, "invalid QUIC listener");
+   }
+   return {.engine = value.impl_->engine};
+}
+
+boost::asio::awaitable<std::size_t> listener::async_punch(endpoint local, endpoint remote, punch_options options) {
+   if (!impl_) {
+      FORGE_THROW_EXCEPTION(exceptions::connection_closed, "invalid QUIC listener");
+   }
+   auto engine = impl_->engine;
+   try {
+      co_return co_await engine->async_punch(
+          {.host = std::move(local.host), .port = local.port, .zone = std::move(local.zone)},
+          {.host = std::move(remote.host), .port = remote.port, .zone = std::move(remote.zone)}, options.timeout,
+          options.max_packets, std::move(options.lifetime));
+   } catch (const detail::engine_failure& error) {
+      raise_engine_failure(error);
    }
 }
 

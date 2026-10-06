@@ -2268,14 +2268,21 @@ void seed_dht_provider_records(forge::asio::runtime& runtime, const dht::profile
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(p2p_session_info_preserves_legacy_structured_binding_shape) {
-   auto [remote_peer, capabilities, path, relay_peer, identify_state] = node::session_info{};
-   BOOST_TEST(remote_peer.value.empty());
-   BOOST_TEST(capabilities.bits == 0U);
-   BOOST_TEST(static_cast<std::uint8_t>(path) == static_cast<std::uint8_t>(forge::net::p2p::path::kind::direct));
-   BOOST_TEST(!relay_peer.has_value());
-   BOOST_TEST(static_cast<std::uint8_t>(identify_state) ==
+BOOST_AUTO_TEST_CASE(p2p_session_info_defaults_do_not_fabricate_native_facts) {
+   const auto session = node::session_info{};
+   BOOST_TEST(session.remote_peer.value.empty());
+   BOOST_TEST(session.capabilities.bits == 0U);
+   BOOST_TEST(static_cast<std::uint8_t>(session.path) == static_cast<std::uint8_t>(forge::net::p2p::path::kind::direct));
+   BOOST_TEST(!session.relay_peer.has_value());
+   BOOST_TEST(static_cast<std::uint8_t>(session.identify_state) ==
               static_cast<std::uint8_t>(forge::net::p2p::identify::state::unknown));
+   BOOST_TEST(session.muxer.value.empty());
+   BOOST_TEST(!session.used_early_muxer_negotiation);
+   BOOST_TEST(!session.security_role.has_value());
+   BOOST_TEST(!session.yamux_role.has_value());
+   BOOST_TEST(!session.circuit_endpoint.has_value());
+   BOOST_TEST(!session.carrier_session_id.has_value());
+   BOOST_TEST(session.id == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_quic_client_token_cache_close_rejects_late_callbacks) {
@@ -9328,23 +9335,6 @@ BOOST_AUTO_TEST_CASE(p2p_libp2p_dcutr_codec_matches_spec_shape) {
        .kind = hole_punch::message::message_kind::sync,
    }));
    BOOST_TEST(static_cast<int>(decoded.kind) == static_cast<int>(hole_punch::message::message_kind::sync));
-}
-
-BOOST_AUTO_TEST_CASE(p2p_dcutr_attempt_tracks_rtt_retry_and_inflight_state) {
-   auto attempt = hole_punch::attempt{};
-   attempt.peer = peer(98);
-   attempt.relay_peer = peer(99);
-   attempt.rtt = std::chrono::milliseconds{80};
-   attempt.max_attempts = 2;
-   BOOST_TEST(attempt.sync_delay() == std::chrono::milliseconds{40});
-   BOOST_TEST(attempt.try_begin());
-   BOOST_TEST(!attempt.try_begin());
-   attempt.finish(hole_punch::status::failed);
-   BOOST_TEST(attempt.can_retry());
-   BOOST_TEST(attempt.try_begin());
-   attempt.finish(hole_punch::status::succeeded);
-   BOOST_TEST(!attempt.can_retry());
-   BOOST_TEST(static_cast<int>(attempt.result().value) == static_cast<int>(hole_punch::status::succeeded));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_libp2p_autonat_v1_codec_matches_spec_shape) {

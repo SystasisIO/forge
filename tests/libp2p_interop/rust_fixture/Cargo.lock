@@ -672,6 +672,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "yamux 0.13.10",
 ]
 
 [[package]]

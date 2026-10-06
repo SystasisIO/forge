@@ -577,6 +577,7 @@ void get_with_deadline(std::future<void>& future, std::chrono::milliseconds time
 template <typename T>
 T get_with_deadline_or_stop(forge::asio::runtime& runtime, std::future<T>& future, std::chrono::milliseconds timeout,
                             std::string_view label) {
+   BOOST_TEST_CHECKPOINT(std::string{label});
    if (future.wait_for(timeout) != std::future_status::ready) {
       runtime.stop();
       BOOST_FAIL(std::string{"timed out waiting for "} + std::string{label});
@@ -1807,21 +1808,36 @@ BOOST_AUTO_TEST_CASE(quic_public_operations_enter_transport_owner_strands) {
 
    const auto expected_local_endpoint = client_connection.local_endpoint();
    auto keep_reading_endpoint = std::atomic_bool{true};
+   auto reader_started = std::promise<void>{};
+   auto first_read = reader_started.get_future();
    auto endpoint_reader = std::async(std::launch::async, [&] {
       auto reads = std::size_t{};
       auto mismatches = std::size_t{};
-      while (keep_reading_endpoint.load(std::memory_order_acquire)) {
-         const auto observed = client_connection.local_endpoint();
-         if (observed.host != expected_local_endpoint.host || observed.port != expected_local_endpoint.port) {
-            ++mismatches;
+      try {
+         while (keep_reading_endpoint.load(std::memory_order_acquire)) {
+            const auto observed = client_connection.local_endpoint();
+            if (observed.host != expected_local_endpoint.host || observed.port != expected_local_endpoint.port) {
+               ++mismatches;
+            }
+            if (++reads == 1U) { reader_started.set_value(); }
          }
-         ++reads;
+      } catch (...) {
+         if (reads == 0U) { reader_started.set_exception(std::current_exception()); }
+         throw;
       }
       return std::pair{reads, mismatches};
    });
+   const auto stop_reader = [](std::atomic_bool* reading) noexcept {
+      reading->store(false, std::memory_order_release);
+   };
+   // Stop before the future's joining destructor, including close failures.
+   auto reader_cleanup = std::unique_ptr<std::atomic_bool, decltype(stop_reader)>{&keep_reading_endpoint, stop_reader};
+   get_with_deadline_or_stop(runtime, first_read, std::chrono::milliseconds{5'000}, "endpoint observer first read");
    auto close_future = boost::asio::co_spawn(client_executor, client_connection.async_close(), boost::asio::use_future);
-   auto stop_future = boost::asio::co_spawn(accept_executor, server.async_stop(), boost::asio::use_future);
    get_with_deadline_or_stop(runtime, close_future, std::chrono::milliseconds{5'000}, "foreign-strand close");
+   // Keep the peer's UDP port alive through the successful close prefix. Abrupt
+   // peer loss is a transport-failure case, not a successful emission guarantee.
+   auto stop_future = boost::asio::co_spawn(accept_executor, server.async_stop(), boost::asio::use_future);
    keep_reading_endpoint.store(false, std::memory_order_release);
    const auto [endpoint_reads, endpoint_mismatches] = endpoint_reader.get();
    BOOST_TEST(endpoint_reads > 0U);

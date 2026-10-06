@@ -5,6 +5,7 @@
 #include <boost/asio/ip/udp.hpp>
 #include <boost/asio/strand.hpp>
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -22,6 +23,7 @@ struct server_udp_socket : std::enable_shared_from_this<server_udp_socket> {
    explicit server_udp_socket(boost::asio::strand<boost::asio::io_context::executor_type> strand);
    void open_and_bind(const boost::asio::ip::udp::endpoint& endpoint);
    [[nodiscard]] boost::asio::ip::udp::endpoint local_endpoint() const noexcept;
+   [[nodiscard]] bool owns_local_endpoint(const boost::asio::ip::udp::endpoint& endpoint) const noexcept;
    boost::asio::awaitable<packet> async_receive();
    boost::asio::awaitable<boost::system::error_code> async_send(packet value);
    void stop();
@@ -34,6 +36,7 @@ struct server_udp_socket : std::enable_shared_from_this<server_udp_socket> {
    std::uint32_t _interface_index = 0;
    forge::asio::gate _send_gate;
    bool _stopped = false;
+   std::size_t _pending_sends = 0;
 };
 
 } // namespace forge::net::quic::detail

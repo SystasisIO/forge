@@ -1,0 +1,1900 @@
+#include <boost/test/unit_test.hpp>
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <exception>
+#include <future>
+#include <memory>
+#include <new>
+#include <optional>
+#include <stdexcept>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/ip/udp.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_future.hpp>
+
+#include "../../libraries/net/quic/details/engine_connection_impl.hxx"
+#include "../../libraries/net/quic/details/engine_listener_impl.hxx"
+#include "../../libraries/net/quic/details/listener_callback.hxx"
+#include "libp2p_identity_fixture.hxx"
+
+import forge.asio.runtime;
+import forge.net.quic.security;
+
+namespace forge::net::quic::detail {
+struct engine_connection_fixture {
+   static std::shared_ptr<engine_connection::impl> state(const std::shared_ptr<engine_connection>& connection) {
+      return connection->impl_;
+   }
+};
+struct engine_listener_fixture {
+   static std::shared_ptr<engine_listener::impl> state(const std::shared_ptr<engine_listener>& listener) {
+      return listener->impl_;
+   }
+};
+} // namespace forge::net::quic::detail
+
+namespace {
+namespace asio = boost::asio;
+namespace detail = forge::net::quic::detail;
+using namespace std::chrono_literals;
+
+template <typename T> T completed(std::future<T>& future, std::string_view phase = "native operation") {
+   BOOST_REQUIRE(future.wait_for(12s) == std::future_status::ready);
+   try {
+      return future.get();
+   } catch (const detail::engine_failure& error) {
+      BOOST_TEST_MESSAGE("QUIC phase=" << phase << " engine_failure.kind=" << static_cast<int>(error.kind())
+                                       << " message=" << error.message());
+      throw;
+   }
+}
+
+template <typename Predicate>
+asio::awaitable<void> observe(std::shared_ptr<detail::engine_connection::impl> owner, Predicate predicate) {
+   const auto deadline = std::chrono::steady_clock::now() + 3s;
+   while (true) {
+      const auto epoch = owner->udp_send_changed.epoch();
+      if (predicate()) {
+         co_return;
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+         throw boost::system::system_error{asio::error::timed_out, "QUIC send-drain observation timed out"};
+      }
+      static_cast<void>(co_await owner->udp_send_changed.async_wait_until(epoch, deadline));
+   }
+}
+
+struct udp_send_fixture {
+   forge::asio::runtime runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   asio::ip::udp::socket receiver{runtime.context(), {asio::ip::address_v4::loopback(), 0}};
+   std::shared_ptr<asio::ip::udp::socket> socket = std::make_shared<asio::ip::udp::socket>(
+       runtime.context(), asio::ip::udp::endpoint{asio::ip::address_v4::loopback(), 0});
+   std::shared_ptr<detail::engine_connection::impl> owner;
+   forge::asio::gate::ticket held;
+
+   udp_send_fixture() {
+      socket->connect(receiver.local_endpoint());
+      owner = std::make_shared<detail::engine_connection::impl>(runtime.context(), socket, socket->local_endpoint(),
+                                                                receiver.local_endpoint(),
+                                                                detail::engine_transport_limits{});
+      owner->self = owner;
+      auto gate = asio::co_spawn(owner->strand, owner->send_gate.acquire(), asio::use_future);
+      held = completed(gate);
+   }
+
+   ~udp_send_fixture() {
+      held.release();
+      auto cleanup = asio::co_spawn(
+          owner->strand,
+          [owner = owner]() -> asio::awaitable<void> {
+             owner->fail_all();
+             co_await owner->wait_background_idle();
+          },
+          asio::use_future);
+      BOOST_CHECK(cleanup.wait_for(8s) == std::future_status::ready);
+      cleanup.wait();
+      BOOST_CHECK_NO_THROW(cleanup.get());
+   }
+
+   std::uint64_t enqueue(std::uint8_t byte) {
+      auto queued = asio::co_spawn(
+          owner->strand,
+          [owner = owner, byte]() -> asio::awaitable<std::uint64_t> {
+             auto path = detail::make_path(owner->local_endpoint_value, owner->remote_endpoint);
+             const auto packet = std::array<std::uint8_t, 1>{byte};
+             owner->enqueue_datagram(packet, path.path);
+             co_return owner->udp_enqueued_generation;
+          },
+          asio::use_future);
+      return completed(queued);
+   }
+
+   std::future<void> drain(std::uint64_t generation, std::chrono::milliseconds budget = 2s) {
+      const auto deadline = std::chrono::steady_clock::now() + budget;
+      return asio::co_spawn(owner->strand, owner->wait_udp_send_prefix(generation, deadline), asio::use_future);
+   }
+};
+
+struct quic_send_fixture {
+   forge::asio::runtime runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   std::shared_ptr<detail::engine_listener> listener_facade;
+   std::shared_ptr<detail::engine_listener::impl> listener;
+   detail::engine_connector connector{runtime.context()};
+   std::shared_ptr<detail::engine_connection> client;
+   std::shared_ptr<detail::engine_connection> server;
+   std::shared_ptr<detail::engine_connection::impl> owner;
+   std::shared_ptr<detail::engine_stream> client_stream;
+   std::shared_ptr<detail::engine_stream> server_stream;
+   std::shared_ptr<detail::engine_stream::impl> stream_owner;
+   forge::asio::gate::ticket held;
+   std::optional<boost::system::error_code> expected_close_error;
+   bool expected_close_allocation_failure = false;
+   bool expected_listener_allocation_failure = false;
+
+   quic_send_fixture() {
+      const auto client_identity = forge::tests::p2p::make_identity_fixture("send-drain-client");
+      const auto server_identity = forge::tests::p2p::make_identity_fixture("send-drain-server");
+      auto server_options = detail::engine_server_options{};
+      server_options.certificate_pem = server_identity.certificate_pem;
+      server_options.private_key_pem = server_identity.private_key_pem;
+      server_options.security.expected_sha256_fingerprint =
+          forge::net::quic::certificate_sha256_fingerprint_from_pem(client_identity.certificate_pem);
+      listener_facade = std::make_shared<detail::engine_listener>(
+          runtime.context(), detail::engine_endpoint{.host = "127.0.0.1"}, std::move(server_options));
+      listener = detail::engine_listener_fixture::state(listener_facade);
+      BOOST_REQUIRE_GT(listener->bind_endpoint.port, 0U);
+      auto options = detail::engine_client_options{};
+      options.connect_timeout = 3s;
+      options.handshake_timeout = 2s;
+      options.certificate_pem = client_identity.certificate_pem;
+      options.private_key_pem = client_identity.private_key_pem;
+      options.security.expected_sha256_fingerprint =
+          forge::net::quic::certificate_sha256_fingerprint_from_pem(server_identity.certificate_pem);
+      auto dial =
+          asio::co_spawn(runtime.context(),
+                         connector.async_connect(detail::from_udp_endpoint(listener->server_socket->local_endpoint()),
+                                                 std::move(options)),
+                         asio::use_future);
+      client = completed(dial, "client.connect_authenticated");
+      auto accepted = asio::co_spawn(
+          listener->strand,
+          [listener = listener]() -> asio::awaitable<std::shared_ptr<detail::engine_connection>> {
+             const auto deadline = std::chrono::steady_clock::now() + 3s;
+             while (listener->accepted.empty()) {
+                auto timer = std::make_shared<asio::steady_timer>(listener->strand);
+                timer->expires_at(deadline);
+                listener->accept_waiters.emplace_back(timer);
+                auto error = boost::system::error_code{};
+                co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, error));
+                detail::remove_waiter(listener->accept_waiters, timer);
+                if (listener->accepted.empty() && std::chrono::steady_clock::now() >= deadline) {
+                   throw boost::system::system_error{asio::error::timed_out};
+                }
+             }
+             auto connection = std::move(listener->accepted.front());
+             listener->accepted.pop_front();
+             co_return connection;
+          },
+          asio::use_future);
+      server = completed(accepted, "server.accept_authenticated");
+      BOOST_REQUIRE(client->peer_certificate().has_value());
+      BOOST_REQUIRE(server->peer_certificate().has_value());
+      const auto connections = listener->connections();
+      BOOST_REQUIRE_EQUAL(connections.size(), 1U);
+      owner = connections.front();
+      auto opened = asio::co_spawn(runtime.context(), client->async_open_stream(), asio::use_future);
+      client_stream = completed(opened, "client.open_seed_stream");
+      auto incoming = asio::co_spawn(runtime.context(), server->async_accept_stream(), asio::use_future);
+      auto seed = asio::co_spawn(
+          runtime.context(),
+          [stream = client_stream]() -> asio::awaitable<void> {
+             const auto bytes = std::array<std::uint8_t, 1>{0x41};
+             co_await stream->async_write(bytes);
+          },
+          asio::use_future);
+      completed(seed, "client.write_seed");
+      server_stream = completed(incoming, "server.accept_seed_stream");
+      auto read = asio::co_spawn(runtime.context(), server_stream->async_read(), asio::use_future);
+      BOOST_TEST(completed(read, "server.read_seed") == std::vector<std::uint8_t>{0x41},
+                 boost::test_tools::per_element());
+      auto baseline = asio::co_spawn(
+          owner->strand,
+          [owner = owner, id = server_stream->id()]() -> asio::awaitable<std::shared_ptr<detail::engine_stream::impl>> {
+             co_await owner->wait_udp_send_prefix(owner->udp_enqueued_generation,
+                                                  std::chrono::steady_clock::now() + 2s);
+             co_return owner->streams.at(id);
+          },
+          asio::use_future);
+      stream_owner = completed(baseline, "server.capture_native_stream_and_baseline");
+      auto gate = asio::co_spawn(owner->strand, owner->send_gate.acquire(), asio::use_future);
+      held = completed(gate, "server.hold_send_gate");
+   }
+
+   ~quic_send_fixture() {
+      held.release();
+      for (const auto& connection : {server, client}) {
+         if (!connection) {
+            continue;
+         }
+         connection->request_cancel();
+         auto close = asio::co_spawn(runtime.context(), connection->async_close(), asio::use_future);
+         BOOST_CHECK(close.wait_for(8s) == std::future_status::ready);
+         close.wait();
+         try {
+            close.get();
+         } catch (const detail::engine_failure& error) {
+            BOOST_CHECK(error.kind() == detail::engine_error_kind::canceled ||
+                        error.kind() == detail::engine_error_kind::connection_closed);
+         } catch (const boost::system::system_error& error) {
+            // Cancellation and a previously tested close timeout remain sticky.
+            BOOST_CHECK(error.code() == asio::error::operation_aborted || error.code() == asio::error::timed_out ||
+                        (expected_close_error && error.code() == *expected_close_error));
+         } catch (const std::bad_alloc&) {
+            BOOST_CHECK(expected_close_allocation_failure);
+         } catch (...) {
+            BOOST_ERROR("unexpected QUIC connection cleanup error");
+         }
+      }
+      auto stopped = asio::co_spawn(runtime.context(), listener_facade->async_stop(), asio::use_future);
+      BOOST_CHECK(stopped.wait_for(8s) == std::future_status::ready);
+      stopped.wait();
+      try {
+         stopped.get();
+      } catch (const std::bad_alloc&) {
+         BOOST_CHECK(expected_listener_allocation_failure);
+      } catch (...) {
+         BOOST_ERROR("unexpected QUIC listener cleanup error");
+      }
+   }
+
+   void queue(std::size_t size = 64) {
+      auto write = asio::co_spawn(
+          runtime.context(),
+          [stream = server_stream, size]() -> asio::awaitable<void> {
+             const auto bytes = std::vector<std::uint8_t>(size, 0x52);
+             co_await stream->async_write(bytes);
+          },
+          asio::use_future);
+      completed(write);
+   }
+
+   template <typename Predicate> void until(Predicate predicate) {
+      auto ready = asio::co_spawn(owner->strand, observe(owner, std::move(predicate)), asio::use_future);
+      completed(ready);
+   }
+
+   void require_sender_joined() {
+      auto joined = asio::co_spawn(
+          owner->strand,
+          [owner = owner]() -> asio::awaitable<bool> {
+             co_return !owner->udp_send_active && owner->udp_inflight_generation == 0 &&
+                 owner->background_jobs.load(std::memory_order_acquire) == 0;
+          },
+          asio::use_future);
+      BOOST_TEST(completed(joined));
+   }
+};
+
+BOOST_AUTO_TEST_CASE(quic_udp_send_prefix_includes_popped_inflight_datagram) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x51);
+   auto draining = fixture.drain(prefix);
+   auto ready =
+       asio::co_spawn(fixture.owner->strand,
+                      observe(fixture.owner,
+                              [owner = fixture.owner, prefix] {
+                                 return owner->udp_inflight_generation == prefix && owner->outbound_datagrams.empty();
+                              }),
+                      asio::use_future);
+   completed(ready);
+   BOOST_CHECK(draining.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_NO_THROW(completed(draining));
+   auto read = asio::co_spawn(
+       fixture.runtime.context(),
+       [&fixture]() -> asio::awaitable<std::uint8_t> {
+          using namespace asio::experimental::awaitable_operators;
+          auto byte = std::array<std::uint8_t, 1>{};
+          auto timer = asio::steady_timer{fixture.runtime.context()};
+          timer.expires_after(1s);
+          auto result = co_await (fixture.receiver.async_receive(asio::buffer(byte), asio::use_awaitable) ||
+                                  timer.async_wait(asio::use_awaitable));
+          if (result.index() != 0) {
+             throw boost::system::system_error{asio::error::timed_out};
+          }
+          co_return byte.front();
+       },
+       asio::use_future);
+   BOOST_TEST(completed(read) == 0x51U);
+}
+
+BOOST_AUTO_TEST_CASE(quic_udp_send_prefix_does_not_wait_for_later_inflight_packet) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x61);
+   auto started = asio::co_spawn(
+       fixture.owner->strand,
+       observe(fixture.owner, [owner = fixture.owner, prefix] { return owner->udp_inflight_generation == prefix; }),
+       asio::use_future);
+   completed(started);
+   auto later_gate = asio::co_spawn(fixture.owner->strand, fixture.owner->send_gate.acquire(), asio::use_future);
+   const auto later = fixture.enqueue(0x62);
+   auto draining = fixture.drain(prefix);
+   fixture.held.release();
+   fixture.held = completed(later_gate);
+   BOOST_CHECK_NO_THROW(completed(draining));
+   auto observed = asio::co_spawn(fixture.owner->strand,
+                                  observe(fixture.owner,
+                                          [owner = fixture.owner, prefix, later] {
+                                             return owner->udp_completed_generation == prefix &&
+                                                    owner->udp_inflight_generation == later;
+                                          }),
+                                  asio::use_future);
+   completed(observed);
+   auto later_drain = fixture.drain(later);
+   BOOST_CHECK(later_drain.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_NO_THROW(completed(later_drain));
+   auto replay = fixture.drain(prefix);
+   BOOST_CHECK_NO_THROW(completed(replay));
+   auto gate = asio::co_spawn(fixture.owner->strand, fixture.owner->send_gate.acquire(), asio::use_future);
+   fixture.held = completed(gate);
+   const auto failed = fixture.enqueue(0x63);
+   auto closed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          owner->socket->close();
+          co_return;
+       },
+       asio::use_future);
+   completed(closed);
+   auto failed_drain = fixture.drain(failed);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(failed_drain), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::bad_descriptor; });
+   auto earlier_after_failure = fixture.drain(prefix);
+   BOOST_CHECK_NO_THROW(completed(earlier_after_failure));
+}
+
+BOOST_AUTO_TEST_CASE(quic_udp_send_prefix_timeout_never_advances_completed_generation) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x71);
+   auto draining = fixture.drain(prefix, 30ms);
+   BOOST_CHECK_EXCEPTION(completed(draining), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::timed_out; });
+   auto observed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<std::uint64_t> { co_return owner->udp_completed_generation; },
+       asio::use_future);
+   BOOST_TEST(completed(observed) == 0U);
+   fixture.held.release();
+   auto delivered = fixture.drain(prefix);
+   BOOST_CHECK_NO_THROW(completed(delivered));
+}
+
+BOOST_AUTO_TEST_CASE(quic_udp_send_failure_is_sticky_and_not_counted_as_sent) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x81);
+   auto started = asio::co_spawn(
+       fixture.owner->strand,
+       observe(fixture.owner, [owner = fixture.owner, prefix] { return owner->udp_inflight_generation == prefix; }),
+       asio::use_future);
+   completed(started);
+   auto closed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          owner->socket->close();
+          co_return;
+       },
+       asio::use_future);
+   completed(closed);
+   auto draining = fixture.drain(prefix);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(draining), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::bad_descriptor; });
+   auto replay = fixture.drain(prefix);
+   BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::bad_descriptor; });
+   auto joined = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_await owner->wait_udp_send_idle();
+          co_return owner->udp_completed_generation == 0 && owner->udp_inflight_generation == 0 &&
+              owner->outbound_datagrams.empty();
+       },
+       asio::use_future);
+   BOOST_TEST(completed(joined));
+}
+
+BOOST_AUTO_TEST_CASE(quic_fin_close_waits_for_actual_gated_socket_send) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner] {
+      return stream->fin_send_generation != 0 && owner->udp_inflight_generation != 0 &&
+             owner->udp_completed_generation < stream->fin_send_generation;
+   });
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   auto timer_ran = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          auto timer = asio::steady_timer{owner->strand};
+          timer.expires_after(10ms);
+          co_await timer.async_wait(asio::use_awaitable);
+          co_return owner->udp_inflight_generation != 0;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(timer_ran));
+   fixture.held.release();
+   BOOST_CHECK_NO_THROW(completed(close));
+   auto read = asio::co_spawn(fixture.runtime.context(), fixture.client_stream->async_read(), asio::use_future);
+   BOOST_TEST(completed(read) == std::vector<std::uint8_t>(64, 0x52), boost::test_tools::per_element());
+}
+
+struct peer_stop_fin_probe {
+   std::atomic_bool pause_client{true};
+   std::atomic_bool pause_server{true};
+   std::atomic_bool close_released{false};
+   forge::asio::notification client_drain_entered;
+   forge::asio::notification close_entered;
+   forge::asio::notification incoming_drain_entered;
+   forge::asio::notification fin_waiting;
+   forge::asio::notification reset_published;
+   forge::asio::notification peer_terminal;
+   std::promise<void> release_close;
+   std::shared_future<void> close_release = release_close.get_future().share();
+   // Client-strand receipts: the first native packet after shutdown must also
+   // submit the marker. ngtcp2 serializes pending control frames before STREAM.
+   std::uint64_t stop_before_generation = 0;
+   std::uint64_t marker_generation = 0;
+
+   void release_owner_spawn() {
+      if (!close_released.exchange(true, std::memory_order_acq_rel)) {
+         release_close.set_value();
+      }
+   }
+
+   void release() {
+      pause_client.store(false, std::memory_order_release);
+      pause_server.store(false, std::memory_order_release);
+      release_owner_spawn();
+   }
+};
+
+void wait_probe(quic_send_fixture& fixture, forge::asio::notification& event, std::string_view phase) {
+   BOOST_TEST_MESSAGE("STOP_SENDING regression: " << phase);
+   auto ready = asio::co_spawn(fixture.runtime.context(),
+                               event.async_wait_until(0, std::chrono::steady_clock::now() + 3s), asio::use_future);
+   BOOST_REQUIRE_MESSAGE(completed(ready, phase) > 0U, phase);
+}
+
+std::future<void> stop_peer_during_fin_close(quic_send_fixture& fixture,
+                                            const std::shared_ptr<peer_stop_fin_probe>& probe) {
+   const auto client_owner = detail::engine_connection_fixture::state(fixture.client);
+   auto armed_client = asio::co_spawn(
+       client_owner->strand,
+       [owner = client_owner, probe, id = fixture.client_stream->id()]() -> asio::awaitable<void> {
+          owner->test_failpoint = [owner = owner.get(), stream = owner->streams.at(id), probe](std::string_view name) {
+             if (name == "drain_after_owner_claim_before_native_write") {
+                if (probe->pause_client.load(std::memory_order_acquire)) {
+                   probe->client_drain_entered.notify();
+                   return true;
+                }
+             } else if (name == "drain_after_owner_claim_before_native_write_wait") {
+                return probe->pause_client.load(std::memory_order_acquire);
+             } else if (name == "drain_after_udp_enqueue" && stream->send_next_offset == 2U &&
+                        probe->marker_generation == 0U) {
+                probe->marker_generation = owner->udp_enqueued_generation;
+             } else if (name == "stream_native_close_after_terminal_cleanup" && stream->closed) {
+                probe->peer_terminal.notify();
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed_client);
+   auto marker = asio::co_spawn(
+       fixture.runtime.context(),
+       [stream = fixture.client_stream]() -> asio::awaitable<void> {
+          const auto payload = std::array<std::uint8_t, 1>{0x42};
+          co_await stream->async_write(payload);
+       },
+       asio::use_future);
+   completed(marker);
+   wait_probe(fixture, probe->client_drain_entered, "client marker staged before native output");
+
+   auto armed_server = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, probe]() -> asio::awaitable<void> {
+          owner->test_failpoint = [stream, probe](std::string_view name) {
+             if (name == "stream_close_before_owner_spawn") {
+                // Hold the caller, not native drain: real input remains processable.
+                probe->close_entered.notify();
+                if (probe->close_release.wait_for(8s) != std::future_status::ready) {
+                   throw boost::system::system_error{asio::error::timed_out, "held QUIC close caller timed out"};
+                }
+             } else if (name == "drain_after_owner_claim_before_native_write") {
+                if (stream->recv_next_offset == 2U && probe->pause_server.load(std::memory_order_acquire)) {
+                   probe->incoming_drain_entered.notify();
+                   return true;
+                }
+             } else if (name == "drain_after_owner_claim_before_native_write_wait") {
+                return probe->pause_server.load(std::memory_order_acquire);
+             } else if (name == "drain_request_before_completion_wait" && stream->fin_queued &&
+                        stream->fin_send_generation == 0U) {
+                probe->fin_waiting.notify();
+             } else if (name == "stream_reset_published") {
+                probe->reset_published.notify();
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed_server);
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   wait_probe(fixture, probe->close_entered, "close caller entered before peer STOP_SENDING");
+   auto remote_stop = asio::co_spawn(
+       client_owner->strand,
+       [owner = client_owner, probe, id = fixture.client_stream->id()]() -> asio::awaitable<void> {
+          const auto result = ngtcp2_conn_shutdown_stream_read(owner->conn, 0, id, 0);
+          if (result != 0) {
+             throw std::runtime_error{ngtcp2_strerror(result)};
+          }
+          probe->stop_before_generation = owner->udp_enqueued_generation;
+          probe->pause_client.store(false, std::memory_order_release);
+          co_await owner->drain_send();
+          co_await owner->wait_udp_send_prefix(owner->udp_enqueued_generation,
+                                               std::chrono::steady_clock::now() + 2s);
+          BOOST_REQUIRE(probe->marker_generation == probe->stop_before_generation + 1U);
+       },
+       asio::use_future);
+   completed(remote_stop);
+   wait_probe(fixture, probe->incoming_drain_entered, "native STOP_SENDING and same-packet marker received");
+   auto read = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_read(), asio::use_future);
+   BOOST_TEST(completed(read) == std::vector<std::uint8_t>{0x42}, boost::test_tools::per_element());
+   probe->release_owner_spawn();
+   wait_probe(fixture, probe->fin_waiting, "real FIN queued behind already processed peer input");
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   probe->pause_server.store(false, std::memory_order_release);
+   return close;
+}
+
+BOOST_AUTO_TEST_CASE(quic_peer_stop_sending_during_fin_close_is_not_connection_failure) {
+   auto fixture = quic_send_fixture{};
+   fixture.held.release();
+   auto opened = asio::co_spawn(fixture.runtime.context(), fixture.server->async_open_stream(), asio::use_future);
+   auto neighbor = completed(opened);
+   auto incoming = asio::co_spawn(fixture.runtime.context(), fixture.client->async_accept_stream(), asio::use_future);
+   auto seed = asio::co_spawn(
+       fixture.runtime.context(),
+       [neighbor]() -> asio::awaitable<void> {
+          const auto payload = std::array<std::uint8_t, 1>{0x72};
+          co_await neighbor->async_write(payload);
+       },
+       asio::use_future);
+   completed(seed);
+   auto received = completed(incoming);
+   auto seed_read = asio::co_spawn(fixture.runtime.context(), received->async_read(), asio::use_future);
+   BOOST_TEST(completed(seed_read) == std::vector<std::uint8_t>{0x72}, boost::test_tools::per_element());
+   auto probe = std::make_shared<peer_stop_fin_probe>();
+   auto release = [probe](peer_stop_fin_probe*) { probe->release(); };
+   auto release_on_exit = std::unique_ptr<peer_stop_fin_probe, decltype(release)>{probe.get(), release};
+   auto close = stop_peer_during_fin_close(fixture, probe);
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure, [](const auto& error) {
+      return error.kind() == detail::engine_error_kind::stream_reset;
+   });
+   wait_probe(fixture, probe->peer_terminal, "peer received actual stream terminal frame");
+   auto remote_close = asio::co_spawn(fixture.runtime.context(), fixture.client_stream->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote_close));
+   const auto client_owner = detail::engine_connection_fixture::state(fixture.client);
+   auto clear_client = asio::co_spawn(
+       client_owner->strand,
+       [owner = client_owner]() -> asio::awaitable<void> {
+          owner->test_failpoint = {};
+          co_return;
+       },
+       asio::use_future);
+   completed(clear_client);
+   auto healthy = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          co_return !owner->close_started && !owner->closing && !owner->canceled &&
+              stream->native_write_rejected && stream->fin_queued && stream->fin_send_generation == 0U &&
+              stream->terminal_cleanup_owners == 0 && stream->terminal_cleanup_complete.load() &&
+              !stream->terminal_cleanup_error;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(healthy));
+   auto write = asio::co_spawn(
+       fixture.runtime.context(),
+       [neighbor]() -> asio::awaitable<void> {
+          const auto payload = std::array<std::uint8_t, 1>{0x73};
+          co_await neighbor->async_write(payload);
+       },
+       asio::use_future);
+   completed(write);
+   auto read = asio::co_spawn(fixture.runtime.context(), received->async_read(), asio::use_future);
+   BOOST_TEST(completed(read) == std::vector<std::uint8_t>{0x73}, boost::test_tools::per_element());
+   auto reply = asio::co_spawn(
+       fixture.runtime.context(),
+       [received]() -> asio::awaitable<void> {
+          const auto payload = std::array<std::uint8_t, 1>{0x74};
+          co_await received->async_write(payload);
+       },
+       asio::use_future);
+   completed(reply);
+   auto reply_read = asio::co_spawn(fixture.runtime.context(), neighbor->async_read(), asio::use_future);
+   BOOST_TEST(completed(reply_read) == std::vector<std::uint8_t>{0x74}, boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(quic_peer_stop_sending_fin_close_preserves_native_cleanup_io_failure) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_close_error = asio::error::invalid_argument;
+   fixture.queue(6000);
+   fixture.until([owner = fixture.owner] {
+      return owner->udp_inflight_generation != 0U && !owner->outbound_datagrams.empty();
+   });
+   auto probe = std::make_shared<peer_stop_fin_probe>();
+   auto release = [probe](peer_stop_fin_probe*) { probe->release(); };
+   auto release_on_exit = std::unique_ptr<peer_stop_fin_probe, decltype(release)>{probe.get(), release};
+   auto close = stop_peer_during_fin_close(fixture, probe);
+   wait_probe(fixture, probe->reset_published, "rejected FIN entered actual reset cleanup");
+   auto fault = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<void> {
+          BOOST_REQUIRE(stream->native_write_rejected);
+          BOOST_REQUIRE(stream->fin_send_generation == 0U);
+          BOOST_REQUIRE(stream->terminal_cleanup_owners > 0U);
+          BOOST_REQUIRE(!owner->outbound_datagrams.empty());
+          // Corrupt the route of an already generated native packet. The OS
+          // send, not a fabricated error/FIN receipt, must reject port zero.
+          owner->outbound_datagrams.front().route.remote.port(0);
+          co_return;
+       },
+       asio::use_future);
+   completed(fault);
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::invalid_argument; });
+   auto failed_prefix = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<std::pair<std::uint64_t, std::uint64_t>> {
+          BOOST_REQUIRE(owner->closing && owner->terminal_cleanup_complete);
+          co_return std::pair{owner->udp_completed_generation, owner->udp_enqueued_generation};
+       },
+       asio::use_future);
+   const auto prefix = completed(failed_prefix);
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   // This is cleanup of an already failed connection, not another send or
+   // a replay contract for the stream's original terminal error.
+   BOOST_CHECK_NO_THROW(completed(joined));
+   fixture.require_sender_joined();
+   auto receipt = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, prefix]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          if (!stream->terminal_cleanup_error) {
+             co_return false;
+          }
+          try {
+             std::rethrow_exception(stream->terminal_cleanup_error);
+          } catch (const boost::system::system_error& error) {
+             co_return error.code() == asio::error::invalid_argument &&
+                 owner->udp_send_error == asio::error::invalid_argument && !owner->udp_send_discarded &&
+                 !owner->native_remote_close_received && !owner->cancellation_requested.load() &&
+                 owner->terminal_cleanup_complete && owner->close_cleanup_complete && !owner->close_work_active &&
+                 owner->udp_completed_generation == prefix.first && owner->udp_enqueued_generation == prefix.second &&
+                 owner->udp_completed_generation < owner->udp_enqueued_generation &&
+                 stream->fin_send_generation == 0U && stream->terminal_cleanup_owners == 0U &&
+                 stream->terminal_cleanup_complete.load();
+          }
+          co_return false;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+}
+
+void check_local_cancel_during_fin(bool write_only, bool submitted) {
+   auto fixture = quic_send_fixture{};
+   auto pause = std::make_shared<std::atomic_bool>(!submitted);
+   auto cancel_drain_entered = std::make_shared<forge::asio::notification>();
+   auto release = [pause](std::atomic_bool*) noexcept { pause->store(false, std::memory_order_release); };
+   auto release_on_exit = std::unique_ptr<std::atomic_bool, decltype(release)>{pause.get(), release};
+   auto armed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, pause, cancel_drain_entered,
+        submitted]() -> asio::awaitable<void> {
+          owner->test_failpoint = [owner = owner.get(), stream, pause, cancel_drain_entered,
+                                   submitted](std::string_view name) {
+             if (name == "drain_after_owner_claim_before_native_write" ||
+                 name == "drain_after_owner_claim_before_native_write_wait") {
+                if (pause->load(std::memory_order_acquire)) {
+                   owner->udp_send_changed.notify();
+                   return true;
+                }
+             } else if (name == "drain_request_before_completion_wait") {
+                owner->udp_send_changed.notify();
+                if (stream->reset || stream->local_write_canceled) {
+                   cancel_drain_entered->notify();
+                }
+             } else if (name == "stream_reset_published" && submitted) {
+                cancel_drain_entered->notify();
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed);
+   if (!submitted) {
+      fixture.held.release();
+   }
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner, submitted] {
+      return stream->fin_queued && (submitted ? stream->fin_send_generation != 0U &&
+                                                   owner->udp_completed_generation < stream->fin_send_generation
+                                             : owner->drain_active && stream->fin_send_generation == 0U);
+   });
+   if (write_only) {
+      fixture.server_stream->cancel_write();
+   } else {
+      fixture.server_stream->request_cancel();
+   }
+   wait_probe(fixture, *cancel_drain_entered, "local cancel joined held native FIN drain");
+   auto pending = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, write_only, submitted]() -> asio::awaitable<bool> {
+          co_return (write_only ? stream->local_write_canceled : stream->reset) &&
+              (submitted ? stream->fin_send_generation > owner->udp_completed_generation
+                         : stream->fin_send_generation == 0U) &&
+              stream->terminal_cleanup_owners > 0U && !owner->closing && !owner->canceled;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(pending));
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   release_on_exit.reset();
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   auto terminal = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, write_only, submitted]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          co_return (write_only ? stream->local_write_canceled : stream->reset) &&
+              (submitted ? stream->fin_send_generation != 0U : stream->fin_send_generation == 0U) &&
+              stream->terminal_cleanup_owners == 0U && stream->terminal_cleanup_complete.load() &&
+              !stream->terminal_cleanup_error && !owner->closing && !owner->canceled;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(terminal));
+   auto opened = asio::co_spawn(fixture.runtime.context(), fixture.server->async_open_stream(), asio::use_future);
+   auto neighbor = completed(opened);
+   auto incoming = asio::co_spawn(fixture.runtime.context(), fixture.client->async_accept_stream(), asio::use_future);
+   auto write = asio::co_spawn(
+       fixture.runtime.context(),
+       [neighbor]() -> asio::awaitable<void> {
+          const auto payload = std::array<std::uint8_t, 1>{0x75};
+          co_await neighbor->async_write(payload);
+       },
+       asio::use_future);
+   completed(write);
+   auto received = completed(incoming);
+   auto read = asio::co_spawn(fixture.runtime.context(), received->async_read(), asio::use_future);
+   BOOST_TEST(completed(read) == std::vector<std::uint8_t>{0x75}, boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(quic_local_cancel_before_native_fin_is_canceled_and_preserves_connection) {
+   for (const auto write_only : {false, true}) {
+      BOOST_TEST_CONTEXT("write-only cancellation=" << write_only) { check_local_cancel_during_fin(write_only, false); }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(quic_local_cancel_during_fin_prefix_wait_joins_native_cleanup) {
+   for (const auto write_only : {false, true}) {
+      BOOST_TEST_CONTEXT("write-only cancellation=" << write_only) { check_local_cancel_during_fin(write_only, true); }
+   }
+}
+
+void check_local_cancel_preserves_cleanup_io(bool write_only) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_close_error = asio::error::invalid_argument;
+   fixture.queue(6000);
+   auto recovery_entered = std::make_shared<forge::asio::notification>();
+   auto armed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, recovery_entered, write_only]() -> asio::awaitable<void> {
+          owner->test_failpoint = [recovery_entered, write_only](std::string_view name) {
+             // Full cancel already owns reset when close recovery joins it.
+             // Write-only cancel after FIN submission performs no reset itself:
+             // publication therefore belongs to the failed close's recovery.
+             if ((!write_only && name == "stream_reset_before_terminal_join") ||
+                 (write_only && name == "stream_reset_published")) {
+                recovery_entered->notify();
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed);
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner] {
+      return stream->fin_send_generation != 0U && owner->udp_completed_generation < stream->fin_send_generation &&
+          owner->udp_inflight_generation != 0U && !owner->outbound_datagrams.empty();
+   });
+   if (write_only) {
+      fixture.server_stream->cancel_write();
+   } else {
+      fixture.server_stream->request_cancel();
+   }
+   wait_probe(fixture, *recovery_entered, "local canceled close entered native reset recovery before I/O fault");
+   auto fault = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, write_only]() -> asio::awaitable<void> {
+          BOOST_REQUIRE(write_only ? stream->local_write_canceled : stream->reset);
+          BOOST_REQUIRE(stream->terminal_cleanup_owners > 0U);
+          BOOST_REQUIRE(stream->fin_send_generation > owner->udp_completed_generation);
+          BOOST_REQUIRE(owner->udp_failed_generation == 0U);
+          BOOST_REQUIRE(!owner->udp_transport_error);
+          BOOST_REQUIRE(!owner->closing && !owner->canceled);
+          BOOST_REQUIRE(!stream->terminal_cleanup_error);
+          BOOST_REQUIRE(!owner->outbound_datagrams.empty());
+          // Real native output is still gate-held. Trigger an OS send error
+          // only after canceled has been selected and recovery has joined.
+          owner->outbound_datagrams.front().route.remote.port(0);
+          co_return;
+       },
+       asio::use_future);
+   completed(fault);
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::invalid_argument; });
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(joined));
+   fixture.require_sender_joined();
+   auto terminal = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, write_only]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          if (!stream->terminal_cleanup_error) {
+             co_return false;
+          }
+          try {
+             std::rethrow_exception(stream->terminal_cleanup_error);
+          } catch (const boost::system::system_error& error) {
+             co_return error.code() == asio::error::invalid_argument &&
+                 (write_only ? stream->local_write_canceled : stream->reset) &&
+                 owner->udp_send_error == asio::error::invalid_argument && !owner->udp_send_discarded &&
+                 !owner->native_remote_close_received && !owner->cancellation_requested.load() &&
+                 owner->udp_completed_generation < stream->fin_send_generation &&
+                 stream->terminal_cleanup_owners == 0U && stream->terminal_cleanup_complete.load() &&
+                 owner->terminal_cleanup_complete && owner->close_cleanup_complete;
+          }
+          co_return false;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(terminal));
+}
+
+BOOST_AUTO_TEST_CASE(quic_local_cancel_fin_close_preserves_native_cleanup_io_failure) {
+   for (const auto write_only : {false, true}) {
+      BOOST_TEST_CONTEXT("write-only cancellation=" << write_only) { check_local_cancel_preserves_cleanup_io(write_only); }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(quic_reset_close_joins_queued_udp_prefix_without_a_fin) {
+   auto fixture = quic_send_fixture{};
+   fixture.server_stream->request_cancel();
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner] {
+      return stream->reset && !stream->fin_queued && stream->terminal_cleanup_owners != 0 &&
+             owner->udp_inflight_generation != 0;
+   });
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_NO_THROW(completed(close));
+   auto terminal = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<bool> {
+          co_return stream->terminal_cleanup_owners == 0 && stream->terminal_cleanup_complete.load() &&
+              owner->udp_completed_generation != 0 && !owner->closing && !owner->canceled;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(terminal));
+}
+
+BOOST_AUTO_TEST_CASE(quic_reset_partial_enqueue_failure_captures_new_prefix_and_joins_sender) {
+   auto fixture = quic_send_fixture{};
+   auto armed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<std::uint64_t> {
+          owner->test_failpoint = [stream](std::string_view name) {
+             if (stream->reset && name == "drain_after_udp_enqueue") {
+                throw std::bad_alloc{};
+             }
+             return false;
+          };
+          co_return owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   const auto before = completed(armed);
+   fixture.server_stream->request_cancel();
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner, before] {
+      return stream->terminal_cleanup_error && owner->udp_enqueued_generation > before && !owner->udp_send_active;
+   });
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   BOOST_CHECK_THROW(completed(close), std::bad_alloc);
+   auto joined = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          co_await owner->wait_background_idle();
+          co_return owner->udp_completed_generation < owner->udp_enqueued_generation &&
+              owner->udp_inflight_generation == 0 && owner->outbound_datagrams.empty() &&
+              stream->terminal_cleanup_owners == 0;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(joined));
+   fixture.require_sender_joined();
+}
+
+BOOST_AUTO_TEST_CASE(quic_fin_submission_timeout_preserves_neighbor_and_original_error_after_reset_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.held.release();
+   auto incoming = asio::co_spawn(fixture.runtime.context(), fixture.client->async_accept_stream(), asio::use_future);
+   auto opened = asio::co_spawn(fixture.runtime.context(), fixture.server->async_open_stream(), asio::use_future);
+   auto neighbor = completed(opened);
+   auto seed = asio::co_spawn(
+       fixture.runtime.context(),
+       [neighbor]() -> asio::awaitable<void> {
+          const auto bytes = std::array<std::uint8_t, 1>{0x53};
+          co_await neighbor->async_write(bytes);
+       },
+       asio::use_future);
+   completed(seed);
+   auto received_neighbor = completed(incoming);
+   auto baseline = asio::co_spawn(fixture.runtime.context(), received_neighbor->async_read(), asio::use_future);
+   BOOST_TEST(completed(baseline) == std::vector<std::uint8_t>{0x53}, boost::test_tools::per_element());
+   auto paused = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<void> {
+          owner->test_failpoint = [stream](std::string_view name) {
+             return !stream->reset && (name == "drain_after_owner_claim_before_native_write" ||
+                                       name == "drain_after_owner_claim_before_native_write_wait");
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(paused);
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::timed_out; });
+   auto healthy = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          co_return !owner->close_started && !owner->closing && !owner->canceled && stream->reset &&
+              stream->terminal_cleanup_owners == 0 && !stream->terminal_cleanup_error;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(healthy));
+   auto write = asio::co_spawn(
+       fixture.runtime.context(),
+       [neighbor]() -> asio::awaitable<void> {
+          const auto bytes = std::array<std::uint8_t, 1>{0x54};
+          co_await neighbor->async_write(bytes);
+       },
+       asio::use_future);
+   completed(write);
+   auto read = asio::co_spawn(fixture.runtime.context(), received_neighbor->async_read(), asio::use_future);
+   BOOST_TEST(completed(read) == std::vector<std::uint8_t>{0x54}, boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_seals_admission_and_drains_queued_and_inflight_prefix) {
+   auto fixture = quic_send_fixture{};
+   constexpr auto payload_size = std::size_t{3000};
+   fixture.queue(payload_size);
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner] {
+      return owner->udp_inflight_generation != 0 && !owner->outbound_datagrams.empty() &&
+             stream->send_next_offset == payload_size && stream->outbound.empty();
+   });
+   auto receipt = std::make_shared<std::optional<std::array<std::uint64_t, 3>>>();
+   auto captured_changed = std::make_shared<forge::asio::notification>();
+   const auto observed = captured_changed->epoch();
+   auto armed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner, receipt, captured_changed]() -> asio::awaitable<void> {
+          owner->test_failpoint = [owner = owner.get(), stream, receipt, captured_changed](std::string_view name) {
+             if (name == "async_close_after_udp_prefix_capture") {
+                *receipt = std::array<std::uint64_t, 3>{owner->udp_enqueued_generation, stream->send_next_offset,
+                                                        stream->outbound.size()};
+                captured_changed->notify();
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed);
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && !owner->closing; });
+   auto opened = asio::co_spawn(fixture.runtime.context(), fixture.server->async_open_stream(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(completed(opened)), detail::engine_failure, [](const auto& error) {
+      return error.kind() == detail::engine_error_kind::connection_closed;
+   });
+   auto write = asio::co_spawn(
+       fixture.runtime.context(),
+       [stream = fixture.server_stream]() -> asio::awaitable<void> {
+          const auto bytes = std::array<std::uint8_t, 1>{0x53};
+          co_await stream->async_write(bytes);
+       },
+       asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(write), detail::engine_failure, [](const auto& error) {
+      return error.kind() == detail::engine_error_kind::connection_closed;
+   });
+   auto captured = asio::co_spawn(
+       fixture.owner->strand,
+       [receipt, captured_changed, observed]() -> asio::awaitable<std::array<std::uint64_t, 3>> {
+          auto epoch = observed;
+          const auto deadline = std::chrono::steady_clock::now() + 3s;
+          while (!receipt->has_value()) {
+             if (std::chrono::steady_clock::now() >= deadline) {
+                throw boost::system::system_error{asio::error::timed_out, "QUIC close prefix was not captured"};
+             }
+             epoch = co_await captured_changed->async_wait_until(epoch, deadline);
+          }
+          co_return **receipt;
+       },
+       asio::use_future);
+   const auto actual = completed(captured);
+   const auto prefix = actual[0];
+   BOOST_TEST(prefix > 0U);
+   BOOST_TEST(actual[1] == payload_size);
+   BOOST_TEST(actual[2] == 0U);
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_NO_THROW(completed(close));
+   auto sent = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, prefix]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          co_return owner->udp_completed_generation >= prefix && owner->outbound_datagrams.empty() &&
+              !owner->native_remote_close_received && !owner->canceled;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(sent));
+   fixture.require_sender_joined();
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_cancel_joins_sender_without_closing_shared_listener_fd) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   fixture.server->request_cancel();
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   fixture.require_sender_joined();
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   auto probe = asio::ip::udp::socket{fixture.runtime.context()};
+   probe.open(asio::ip::udp::v4());
+   auto error = boost::system::error_code{};
+   probe.bind(fixture.listener->server_socket->local_endpoint(), error);
+   BOOST_TEST(error == asio::error::address_in_use);
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_timeout_joins_sender_and_keeps_error_for_other_callers) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::timed_out; });
+   fixture.require_sender_joined();
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::timed_out; });
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_public_cancel_normalizes_only_authored_discard_after_join) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   fixture.server->cancel();
+   fixture.server->cancel();
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   fixture.require_sender_joined();
+   auto receipt = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->udp_send_discarded && owner->udp_send_error == asio::error::operation_aborted &&
+              !owner->udp_send_exception && owner->udp_failed_generation != 0 &&
+              owner->udp_failed_generation <= owner->udp_enqueued_generation &&
+              owner->cancellation_requested.load(std::memory_order_acquire) && !owner->native_remote_close_received &&
+              owner->metrics.cancellations.load(std::memory_order_relaxed) == 1U &&
+              owner->canceled && owner->terminal_cleanup_complete && owner->close_cleanup_complete &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   fixture.require_sender_joined();
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_shared_socket_abort_before_owner_terminal_stays_a_real_failure) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   auto stop_socket = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener]() -> asio::awaitable<void> {
+          // Exercise the real shared-socket stop before connection teardown,
+          // not a manufactured error or a connection cancel flag.
+          listener->server_socket->stop();
+          co_return;
+       },
+       asio::use_future);
+   completed(stop_socket);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::operation_aborted; });
+   fixture.require_sender_joined();
+   auto receipt = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return !owner->udp_send_discarded && owner->udp_send_error == asio::error::operation_aborted &&
+              !owner->udp_send_exception &&
+              owner->canceled && owner->terminal_cleanup_complete && owner->close_cleanup_complete &&
+              !owner->cancellation_requested.load(std::memory_order_acquire) && !owner->native_remote_close_received &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::operation_aborted; });
+   fixture.require_sender_joined();
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_atomic_cancel_before_udp_failure_report_is_owned_discard) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   auto observed = std::make_shared<bool>(false);
+   auto armed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, connection = fixture.server, observed]() -> asio::awaitable<void> {
+          owner->test_failpoint = [owner = owner.get(), connection = std::weak_ptr{connection},
+                                   observed](std::string_view name) {
+             if (name == "udp_send_failure_before_report") {
+                BOOST_TEST(!owner->terminal_signaled.load(std::memory_order_acquire));
+                BOOST_TEST(!owner->canceled);
+                BOOST_TEST(!owner->terminal_cleanup_complete);
+                // Publish a real cancellation at the failure-report barrier.
+                // The posted terminal worker cannot run before this producer
+                // resumes, so only the atomic request can classify the abort.
+                const auto transport = connection.lock();
+                BOOST_REQUIRE(transport);
+                transport->request_cancel();
+                *observed = owner->cancellation_requested.load(std::memory_order_acquire) &&
+                            !owner->terminal_signaled.load(std::memory_order_acquire);
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed);
+   auto stop_socket = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener]() -> asio::awaitable<void> {
+          listener->server_socket->stop();
+          co_return;
+       },
+       asio::use_future);
+   completed(stop_socket);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   fixture.require_sender_joined();
+   auto receipt = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, observed]() -> asio::awaitable<bool> {
+          owner->test_failpoint = {};
+          co_return *observed && owner->udp_send_discarded && owner->udp_send_error == asio::error::operation_aborted &&
+              !owner->udp_send_exception && owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_listener_stop_publishes_cancel_before_shared_socket_abort) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   auto stop_listener = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener]() -> asio::awaitable<void> {
+          listener->stop();
+          co_return;
+       },
+       asio::use_future);
+   completed(stop_listener);
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   fixture.require_sender_joined();
+   auto receipt = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->cancellation_requested.load(std::memory_order_acquire) && owner->udp_send_discarded &&
+              owner->udp_send_error == asio::error::operation_aborted && !owner->udp_send_exception &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+}
+
+namespace {
+void check_listener_preparation_failure(std::string_view fault) {
+   auto fixture = quic_send_fixture{};
+   auto snapshots = std::make_shared<std::size_t>(0);
+   auto injected = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, snapshots, fault]() -> asio::awaitable<void> {
+          owner->test_failpoint = [snapshots, fault](std::string_view point) {
+             if (point == fault && ++*snapshots == 1U) {
+                throw std::bad_alloc{};
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(injected);
+   auto failed = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   BOOST_CHECK_THROW(completed(failed), std::bad_alloc);
+   auto retained = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener]() -> asio::awaitable<bool> {
+          co_return !listener->shutdown_started && !listener->shutdown_complete && !listener->stopped &&
+              !listener->stop_requested.load(std::memory_order_acquire) && listener->active_operations != 0 &&
+              listener->connection_count() == 1U;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(retained));
+   fixture.held.release();
+   fixture.queue();
+   auto received = asio::co_spawn(fixture.runtime.context(), fixture.client_stream->async_read(), asio::use_future);
+   BOOST_TEST(completed(received) == std::vector<std::uint8_t>(64, 0x52), boost::test_tools::per_element());
+   auto retry = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   completed(retry);
+   fixture.require_sender_joined();
+   BOOST_TEST(*snapshots == 2U);
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   completed(replay);
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(quic_listener_preparation_failures_leave_shutdown_retryable) {
+   for (const auto fault : {"listener_before_connection_snapshot", "listener_before_aggregate_wait",
+                           "listener_before_completion_binding"}) {
+      check_listener_preparation_failure(fault);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(quic_listener_cancel_dispatch_failure_retains_prepared_owners_until_join) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_listener_allocation_failure = true;
+   auto worker_entered = std::make_shared<forge::asio::notification>();
+   auto worker_released = std::make_shared<forge::asio::notification>();
+   auto fault_seen = std::make_shared<forge::asio::notification>();
+   const auto release = [worker_released](forge::asio::notification*) noexcept { worker_released->notify(); };
+   auto release_on_exit =
+       std::unique_ptr<forge::asio::notification, decltype(release)>{worker_released.get(), release};
+   fixture.queue();
+   fixture.until([owner = fixture.owner] { return owner->udp_inflight_generation != 0; });
+   auto injected = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, worker_entered, worker_released, fault_seen]() -> asio::awaitable<void> {
+          // Exercise the real connection-owned job admission and completion.
+          // This held task is a lifecycle fault fixture, not wire evidence.
+          owner->spawn_background([worker_entered, worker_released](const auto&) -> asio::awaitable<void> {
+             worker_entered->notify();
+             static_cast<void>(co_await worker_released->async_wait_until(0, std::chrono::steady_clock::now() + 8s));
+          });
+          owner->test_failpoint = [fault_seen](std::string_view point) {
+             if (point == "listener_before_cancel_dispatch") {
+                fault_seen->notify();
+                throw std::bad_alloc{};
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(injected);
+   auto entered = asio::co_spawn(
+       fixture.runtime.context(), worker_entered->async_wait_until(0, std::chrono::steady_clock::now() + 2s),
+       asio::use_future);
+   completed(entered);
+   auto stop = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   auto observed = asio::co_spawn(
+       fixture.runtime.context(), fault_seen->async_wait_until(0, std::chrono::steady_clock::now() + 2s),
+       asio::use_future);
+   completed(observed);
+   BOOST_CHECK(stop.wait_for(20ms) == std::future_status::timeout);
+   BOOST_CHECK(joined.wait_for(20ms) == std::future_status::timeout);
+   auto pending = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener, owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return listener->stopped && !listener->shutdown_complete && owner->background_jobs != 0;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(pending));
+   worker_released->notify();
+   BOOST_CHECK_THROW(completed(stop), std::bad_alloc);
+   BOOST_CHECK_THROW(completed(joined), std::bad_alloc);
+   fixture.require_sender_joined();
+   auto receipt = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener]() -> asio::awaitable<bool> {
+          co_return listener->stopped && listener->shutdown_complete && listener->shutdown_failure() &&
+              listener->active_operations == 0 && listener->connection_count() == 0;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   BOOST_CHECK_THROW(completed(replay), std::bad_alloc);
+}
+
+namespace {
+void check_listener_callback_join(std::string_view point) {
+   auto fixture = quic_send_fixture{};
+   auto entered = std::make_shared<std::promise<void>>();
+   auto observed = entered->get_future();
+   auto released = std::make_shared<std::promise<void>>();
+   const auto release_wait = released->get_future().share();
+   const auto release = [released](std::promise<void>*) noexcept { released->set_value(); };
+   auto release_on_exit = std::unique_ptr<std::promise<void>, decltype(release)>{released.get(), release};
+   auto injected = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, entered, release_wait, point]() -> asio::awaitable<void> {
+          owner->test_failpoint = [entered, release_wait, point](std::string_view name) {
+             if (name == point) {
+                entered->set_value();
+                if (release_wait.wait_for(8s) != std::future_status::ready) {
+                   throw boost::system::system_error{asio::error::timed_out, "held listener callback timed out"};
+                }
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(injected);
+   auto stop = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   completed(observed);
+   BOOST_CHECK(stop.wait_for(20ms) == std::future_status::timeout);
+   BOOST_CHECK(joined.wait_for(20ms) == std::future_status::timeout);
+   // A closed hook may execute inside the still-owned cancel handler. Both
+   // tickets are valid; the held callback must keep shutdown non-idle.
+   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) > 0U);
+   {
+      const auto lock = std::scoped_lock{fixture.listener->shutdown_mutex};
+      BOOST_TEST(!fixture.listener->shutdown_complete);
+   }
+   release_on_exit.reset();
+   completed(stop);
+   completed(joined);
+   fixture.require_sender_joined();
+   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) == 0U);
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   completed(replay);
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(quic_listener_shutdown_joins_native_closed_hook_and_posted_cleanup) {
+   check_listener_callback_join("listener_before_cleanup_dispatch");
+   check_listener_callback_join("listener_cleanup_before_completion");
+   check_listener_callback_join("listener_cancel_before_completion");
+}
+
+BOOST_AUTO_TEST_CASE(quic_listener_shutdown_preserves_cleanup_dispatch_error_after_cid_removal) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_listener_allocation_failure = true;
+   auto entered = std::make_shared<std::promise<void>>();
+   auto observed = entered->get_future();
+   auto released = std::make_shared<std::promise<void>>();
+   const auto release_wait = released->get_future().share();
+   const auto release = [released](std::promise<void>*) noexcept { released->set_value(); };
+   auto release_on_exit = std::unique_ptr<std::promise<void>, decltype(release)>{released.get(), release};
+   auto injected = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, entered, release_wait]() -> asio::awaitable<void> {
+          owner->test_failpoint = [entered, release_wait](std::string_view point) {
+             if (point == "listener_before_cleanup_dispatch") {
+                entered->set_value();
+                if (release_wait.wait_for(8s) != std::future_status::ready) {
+                   throw boost::system::system_error{asio::error::timed_out};
+                }
+                throw std::bad_alloc{};
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(injected);
+   fixture.server->request_cancel();
+   completed(observed);
+   BOOST_TEST(fixture.listener->connection_count() == 0U);
+   auto stop = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   BOOST_CHECK(stop.wait_for(20ms) == std::future_status::timeout);
+   BOOST_CHECK(joined.wait_for(20ms) == std::future_status::timeout);
+   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) == 1U);
+   release_on_exit.reset();
+   BOOST_CHECK_THROW(completed(stop), std::bad_alloc);
+   BOOST_CHECK_THROW(completed(joined), std::bad_alloc);
+   fixture.require_sender_joined();
+   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) == 0U);
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   BOOST_CHECK_THROW(completed(replay), std::bad_alloc);
+}
+
+BOOST_AUTO_TEST_CASE(quic_listener_shutdown_retains_cid_until_actual_close_worker_completion) {
+   auto fixture = quic_send_fixture{};
+   auto entered = std::make_shared<std::promise<void>>();
+   auto observed = entered->get_future();
+   auto released = std::make_shared<std::promise<void>>();
+   const auto release_wait = released->get_future().share();
+   const auto release = [released](std::promise<void>*) noexcept { released->set_value(); };
+   auto release_on_exit = std::unique_ptr<std::promise<void>, decltype(release)>{released.get(), release};
+   auto injected = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, entered, release_wait]() -> asio::awaitable<void> {
+          owner->test_failpoint = [entered, release_wait](std::string_view point) {
+             if (point == "connection_close_after_background_join") {
+                entered->set_value();
+                if (release_wait.wait_for(8s) != std::future_status::ready) {
+                   throw boost::system::system_error{asio::error::timed_out};
+                }
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(injected);
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_work_active && owner->udp_inflight_generation != 0; });
+   fixture.server->request_cancel();
+   completed(observed);
+   BOOST_TEST(fixture.owner->background_jobs.load(std::memory_order_acquire) == 0U);
+   BOOST_TEST(fixture.listener->connection_count() == 1U);
+   auto stop = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   BOOST_CHECK(stop.wait_for(20ms) == std::future_status::timeout);
+   BOOST_CHECK(joined.wait_for(20ms) == std::future_status::timeout);
+   release_on_exit.reset();
+   BOOST_CHECK_EXCEPTION(completed(close), detail::engine_failure,
+                         [](const auto& error) { return error.kind() == detail::engine_error_kind::canceled; });
+   completed(stop);
+   completed(joined);
+   fixture.require_sender_joined();
+   BOOST_TEST(fixture.listener->connection_count() == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(quic_listener_shutdown_joins_concurrent_callback_ticket_release) {
+   auto fixture = quic_send_fixture{};
+   // Ownership unit coverage over the actual ticket and live listener. These
+   // executor callbacks are not protocol or wire-interoperability evidence.
+   auto tickets = std::vector<std::shared_ptr<detail::listener_callback>>{};
+   for (auto index = 0U; index < 64U; ++index) {
+      tickets.push_back(std::make_shared<detail::listener_callback>(fixture.listener, fixture.owner));
+   }
+   auto stop = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   BOOST_CHECK(stop.wait_for(20ms) == std::future_status::timeout);
+   BOOST_CHECK(joined.wait_for(20ms) == std::future_status::timeout);
+   auto remaining = std::make_shared<std::atomic_size_t>(tickets.size());
+   auto released = std::make_shared<std::promise<void>>();
+   auto release_done = released->get_future();
+   for (auto& ticket : tickets) {
+      asio::post(fixture.runtime.context(), [ticket = std::move(ticket), remaining, released]() mutable {
+         ticket.reset();
+         if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1U) { released->set_value(); }
+      });
+   }
+   completed(release_done);
+   completed(stop);
+   completed(joined);
+   fixture.require_sender_joined();
+   BOOST_TEST(fixture.listener->active_callbacks.load(std::memory_order_acquire) == 0U);
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.listener_facade->async_stop(), asio::use_future);
+   completed(replay);
+}
+
+BOOST_AUTO_TEST_CASE(quic_listener_shutdown_waits_for_stop_publication_with_no_receive_job) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto completion = std::make_shared<detail::listener_shutdown>(runtime.context().get_executor(), 2U);
+   auto armed = std::make_shared<std::promise<void>>();
+   auto observed = armed->get_future();
+   auto ready = asio::co_spawn(
+       runtime.context(),
+       [completion, armed]() -> asio::awaitable<void> {
+          auto error = boost::system::error_code{};
+          co_await completion->async_wait_ready([armed] { armed->set_value(); },
+                                               asio::redirect_error(asio::use_awaitable, error));
+          BOOST_TEST(error == asio::error::operation_aborted);
+       },
+       asio::use_future);
+   completed(observed);
+   // Aggregate unit coverage: the receive job and both native contributions
+   // may already be idle while further stop handlers are still being published.
+   completion->admit();
+   completion->set_operations_idle(true);
+   completion->complete_connection(0U);
+   completion->complete_connection(1U);
+   BOOST_CHECK(ready.wait_for(20ms) == std::future_status::timeout);
+   completion->set_operations_idle(false);
+   completion->complete_stop();
+   BOOST_CHECK(ready.wait_for(20ms) == std::future_status::timeout);
+   completion->set_operations_idle(true);
+   completed(ready);
+   completion->finish();
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_preserves_real_peer_port_loss_over_cleanup_discard) {
+   auto fixture = quic_send_fixture{};
+   fixture.held.release();
+   const auto owner = detail::engine_connection_fixture::state(fixture.client);
+   auto gate = asio::co_spawn(owner->strand, owner->send_gate.acquire(), asio::use_future);
+   auto held = completed(gate);
+   auto write = asio::co_spawn(
+       fixture.runtime.context(),
+       [stream = fixture.client_stream]() -> asio::awaitable<void> {
+          const auto bytes = std::array<std::uint8_t, 32>{};
+          co_await stream->async_write(bytes);
+       },
+       asio::use_future);
+   completed(write);
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   auto active = asio::co_spawn(
+       owner->strand,
+       observe(owner, [owner] { return owner->close_started && owner->udp_inflight_generation != 0; }),
+       asio::use_future);
+   completed(active);
+   auto stop_peer = asio::co_spawn(
+       fixture.listener->strand,
+       [listener = fixture.listener]() -> asio::awaitable<void> {
+          listener->stop();
+          co_return;
+       },
+       asio::use_future);
+   completed(stop_peer);
+   auto probe = asio::co_spawn(
+       owner->strand,
+       [owner]() -> asio::awaitable<void> {
+          // Fault injection on the real authenticated connection's UDP socket:
+          // obtain an OS receive error while the captured engine prefix stays
+          // blocked. This probe is not an acknowledged engine packet.
+          const auto byte = std::array<std::uint8_t, 1>{0x01};
+          auto error = boost::system::error_code{};
+          static_cast<void>(co_await owner->socket->async_send(
+              asio::buffer(byte), asio::redirect_error(asio::use_awaitable, error)));
+       },
+       asio::use_future);
+   completed(probe);
+   auto actual_error = boost::system::error_code{};
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error, [&actual_error](const auto& error) {
+      actual_error = error.code();
+      return actual_error == asio::error::connection_refused || actual_error == asio::error::connection_reset;
+   });
+   auto receipt = asio::co_spawn(
+       owner->strand,
+       [owner, actual_error]() -> asio::awaitable<bool> {
+          co_return owner->handshake_done && owner->udp_transport_error == actual_error && actual_error &&
+              owner->udp_send_discarded && owner->udp_send_error == asio::error::operation_aborted &&
+              !owner->udp_send_exception && !owner->native_remote_close_received &&
+              !owner->cancellation_requested.load(std::memory_order_acquire) && owner->background_jobs == 0 &&
+              owner->terminal_cleanup_complete && owner->close_cleanup_complete &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(receipt));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
+                         [actual_error](const auto& error) { return error.code() == actual_error; });
+   fixture.expected_close_error = actual_error;
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_failed_background_join_is_never_normalized_to_cancel) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_close_allocation_failure = true;
+   fixture.queue();
+   auto active_jobs = std::make_shared<std::size_t>(0);
+   auto armed_waits = std::make_shared<std::size_t>(0);
+   auto worker_entered = std::make_shared<forge::asio::notification>();
+   auto worker_released = std::make_shared<forge::asio::notification>();
+   auto join_failed = std::make_shared<forge::asio::notification>();
+   auto release_worker = [worker_released](forge::asio::notification*) noexcept { worker_released->notify(); };
+   auto release_on_exit =
+       std::unique_ptr<forge::asio::notification, decltype(release_worker)>{worker_released.get(), release_worker};
+   auto armed = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, active_jobs, armed_waits, worker_entered, worker_released,
+        join_failed]() -> asio::awaitable<void> {
+          owner->spawn_background([worker_entered, worker_released](const auto&) -> asio::awaitable<void> {
+             worker_entered->notify();
+             static_cast<void>(co_await worker_released->async_wait_until(0, std::chrono::steady_clock::now() + 8s));
+          });
+          owner->test_failpoint = [owner = owner.get(), active_jobs, armed_waits, join_failed](std::string_view name) {
+             if (name == "async_close_terminal_wait_armed") {
+                ++*armed_waits;
+                owner->udp_send_changed.notify();
+             }
+             if (name == "background_join_before_waiter_allocation" && *active_jobs == 0) {
+                *active_jobs = owner->background_jobs.load(std::memory_order_acquire);
+                join_failed->notify();
+                throw std::bad_alloc{};
+             }
+             return false;
+          };
+          co_return;
+       },
+       asio::use_future);
+   completed(armed);
+   auto entered =
+       asio::co_spawn(fixture.runtime.context(),
+                      worker_entered->async_wait_until(0, std::chrono::steady_clock::now() + 3s), asio::use_future);
+   BOOST_TEST(completed(entered) > 0U);
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   auto concurrent = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([armed_waits] { return *armed_waits == 2; });
+   fixture.server->request_cancel();
+   auto failed =
+       asio::co_spawn(fixture.runtime.context(),
+                      join_failed->async_wait_until(0, std::chrono::steady_clock::now() + 3s), asio::use_future);
+   BOOST_TEST(completed(failed) > 0U);
+   auto pending = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, active_jobs]() -> asio::awaitable<bool> {
+          co_return *active_jobs > 0 && owner->background_jobs.load(std::memory_order_acquire) > 0 &&
+              !owner->close_cleanup_complete;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(pending));
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   BOOST_CHECK(concurrent.wait_for(0ms) != std::future_status::ready);
+   release_on_exit.reset();
+   BOOST_CHECK_THROW(completed(close), std::bad_alloc);
+   fixture.require_sender_joined();
+   BOOST_CHECK_THROW(completed(concurrent), std::bad_alloc);
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, active_jobs]() -> asio::awaitable<bool> {
+          co_return *active_jobs > 0 && owner->close_cleanup_complete && !owner->close_completion_pending &&
+              !owner->close_work_active;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_THROW(completed(replay), std::bad_alloc);
+   fixture.require_sender_joined();
+}
+
+BOOST_AUTO_TEST_CASE(quic_close_error_publication_waits_for_actual_background_owner) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x83);
+   auto started = asio::co_spawn(fixture.owner->strand,
+                                 observe(fixture.owner,
+                                         [owner = fixture.owner, prefix] {
+                                            return owner->udp_inflight_generation == prefix &&
+                                                   owner->background_jobs.load(std::memory_order_acquire) > 0;
+                                         }),
+                                 asio::use_future);
+   completed(started);
+   auto pending = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          owner->complete_close(std::make_exception_ptr(std::bad_alloc{}));
+          co_return owner->close_completion_pending && !owner->close_cleanup_complete;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(pending));
+   auto close = asio::co_spawn(fixture.owner->strand, fixture.owner->wait_close_cleanup(), asio::use_future);
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   fixture.held.release();
+   BOOST_CHECK_THROW(completed(close), std::bad_alloc);
+   auto completed_state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, prefix]() -> asio::awaitable<bool> {
+          co_return owner->close_cleanup_complete && !owner->close_completion_pending &&
+              owner->background_jobs.load(std::memory_order_acquire) == 0 && !owner->udp_send_active &&
+              owner->udp_inflight_generation == 0 && owner->udp_completed_generation == prefix;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(completed_state));
+   auto replay = asio::co_spawn(fixture.owner->strand, fixture.owner->wait_close_cleanup(), asio::use_future);
+   BOOST_CHECK_THROW(completed(replay), std::bad_alloc);
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_after_prior_cancel_is_idempotent_unsent_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   fixture.until([owner = fixture.owner] { return owner->udp_inflight_generation != 0; });
+   fixture.server->request_cancel();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(close));
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->canceled && owner->terminal_cleanup_complete && owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation && owner->outbound_datagrams.empty();
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(replay));
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_after_native_peer_close_joins_without_delivery_claim) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   fixture.until([owner = fixture.owner] { return owner->udp_inflight_generation != 0; });
+   auto remote = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote));
+   fixture.until([owner = fixture.owner] { return owner->native_remote_close_received; });
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(close));
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->terminal_cleanup_complete && !owner->canceled && owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto stream = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(stream));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(replay));
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_native_peer_close_during_prefix_wait_is_joined_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   auto remote = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote));
+   BOOST_CHECK_NO_THROW(completed(close));
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->native_remote_close_received && !owner->canceled && owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(replay));
+}
+
+BOOST_AUTO_TEST_CASE(quic_fin_close_native_peer_close_does_not_count_unsent_fin_as_success) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner] {
+      return stream->fin_send_generation != 0 && owner->udp_completed_generation < stream->fin_send_generation;
+   });
+   auto remote = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote));
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::operation_aborted; });
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(joined));
+   fixture.require_sender_joined();
+   auto unsent = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<bool> {
+          co_return owner->native_remote_close_received &&
+              owner->udp_completed_generation < stream->fin_send_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(unsent));
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_active_socket_error_is_sticky_not_remote_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_close_error = asio::error::invalid_argument;
+   fixture.queue(6000);
+   fixture.until(
+       [owner = fixture.owner] { return owner->udp_inflight_generation != 0 && !owner->outbound_datagrams.empty(); });
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && !owner->closing; });
+   auto fault = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          // Port zero makes a real socket send fail; no connection-state or error fabrication.
+          owner->outbound_datagrams.front().route.remote.port(0);
+          co_return;
+       },
+       asio::use_future);
+   completed(fault);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::invalid_argument; });
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return !owner->native_remote_close_received && !owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::invalid_argument; });
+}
+
+BOOST_AUTO_TEST_CASE(quic_udp_send_discard_marker_never_hides_later_real_error_or_exception) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x82);
+   auto marked = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          owner->clear_queued_work();
+          BOOST_TEST(owner->udp_send_discarded);
+          owner->fail_udp_send(asio::error::fault, std::make_exception_ptr(std::bad_alloc{}));
+          owner->clear_queued_work();
+          BOOST_TEST(!owner->udp_send_discarded);
+          co_return;
+       },
+       asio::use_future);
+   completed(marked);
+   auto drain = fixture.drain(prefix);
+   BOOST_CHECK_THROW(completed(drain), std::bad_alloc);
+   auto replay = fixture.drain(prefix);
+   BOOST_CHECK_THROW(completed(replay), std::bad_alloc);
+}
+
+} // namespace

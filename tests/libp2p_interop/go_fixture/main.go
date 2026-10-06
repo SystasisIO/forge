@@ -1549,8 +1549,64 @@ func dialRelay(opts options) error {
 	return writeJSON(opts.resultFile, result)
 }
 
+func parsePathArgs(argv []string) (map[string]string, error) {
+	if len(argv)%2 != 0 {
+		return nil, fmt.Errorf("path-live requires flag/value pairs")
+	}
+	required := map[string]bool{"scenario": true, "transport": true, "path-role": true, "case-token": true,
+		"bind-ip": true, "ready-file": true, "result-file": true, "stop-file": true, "control-file": true, "plan-file": true}
+	out := map[string]string{}
+	for i := 0; i < len(argv); i += 2 {
+		name := strings.TrimPrefix(argv[i], "--")
+		if !strings.HasPrefix(argv[i], "--") || (!required[name] && name != "relay-addr" && name != "relay-peer-id") ||
+			out[name] != "" || argv[i+1] == "" {
+			return nil, fmt.Errorf("invalid/duplicate path-live flag")
+		}
+		out[name] = argv[i+1]
+	}
+	for name := range required {
+		if out[name] == "" {
+			return nil, fmt.Errorf("missing required path-live flag")
+		}
+	}
+	if (out["relay-addr"] == "") != (out["relay-peer-id"] == "") {
+		return nil, fmt.Errorf("path relay peer/address must be paired")
+	}
+	return out, nil
+}
+
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "coordinated-live" {
+		args, err := parseCoordinatedArgs(os.Args[2:])
+		if err == nil {
+			err = runCoordinatedLive(args)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "path-live" {
+		args, err := parsePathArgs(os.Args[2:])
+		if err == nil {
+			err = runPathLive(args)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
 	opts, err := parseArgs()
+	if err == nil && (isPrivateProfileTransport(opts.transport) || strings.HasPrefix(opts.scenario, "inline_muxer_")) {
+		err = runPrivateProfile(opts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
 	if err == nil && strings.HasPrefix(opts.command, "autorelay-") {
 		err = runAutoRelay(opts)
 		if err != nil {

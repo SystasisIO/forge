@@ -20,6 +20,7 @@ module;
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -72,6 +73,9 @@ namespace asio = boost::asio;
 
 namespace {
 
+static_assert(std::is_nothrow_move_assignable_v<std::optional<endpoint>>);
+static_assert(std::is_nothrow_move_constructible_v<upgraded_session>);
+
 [[nodiscard]] endpoint relay_circuit_endpoint(endpoint relay_endpoint, const peer_id& relay_peer,
                                               const peer_id& circuit_peer) {
    relay_endpoint.peer = relay_peer;
@@ -80,13 +84,10 @@ namespace {
 }
 
 [[nodiscard]] const endpoint& relay_transport_endpoint(const auto& session) {
-   if (session.direct_endpoint) {
-      return *session.direct_endpoint;
-   }
    if (session.remote_endpoint) {
       return *session.remote_endpoint;
    }
-   FORGE_THROW_EXCEPTION(exceptions::internal, "P2P relay session has no canonical direct endpoint");
+   FORGE_THROW_EXCEPTION(exceptions::internal, "P2P relay carrier has no native remote endpoint");
 }
 
 } // namespace
@@ -100,7 +101,7 @@ node::impl::open_relay_yamux(const peer_id& peer, const peer_id& relay_peer, std
    try {
       const auto& relay_endpoint = relay_transport_endpoint(*relay_session);
       const auto local_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, local);
-      const auto remote_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, peer);
+      auto remote_endpoint = relay_circuit_endpoint(relay_endpoint, relay_peer, peer);
       connection_gate->address_dial(peer, remote_endpoint);
       auto exchange = co_await detail::async_exchange_relay_hop(
           runtime.context(), remaining_timeout(started, timeout, "P2P relay protocol open"), "P2P relay protocol open",
@@ -124,7 +125,7 @@ node::impl::open_relay_yamux(const peer_id& peer, const peer_id& relay_peer, std
       }
       record_path_open(path::kind::relay);
       auto stream = detail::stream_access::with_buffer(std::move(exchange.stream), std::move(exchange.buffered));
-      co_return co_await upgrade_relay_outbound_session(
+      auto upgraded = co_await upgrade_relay_outbound_session(
           std::move(stream), options, identity, peer,
           upgrade_callbacks{
               .secured =
@@ -138,6 +139,9 @@ node::impl::open_relay_yamux(const peer_id& peer, const peer_id& relay_peer, std
                                     remote_endpoint);
                   },
           });
+      upgraded.circuit_endpoint = std::move(remote_endpoint);
+      upgraded.carrier_session_id = relay_session->id;
+      co_return std::move(upgraded);
    } catch (const forge::exceptions::base& error) {
       if (p2p_code(error) != exceptions::code::connection_rejected) {
          record_relay_failure();
@@ -188,6 +192,12 @@ node::impl::ensure_relay_session(const peer_id& peer, const peer_id& relay_peer,
        .relay_peer = relay_peer,
    };
    session->authentication = upgraded.authentication;
+   session->info.muxer = upgraded.muxer;
+   session->info.used_early_muxer_negotiation = upgraded.used_early_muxer_negotiation;
+   session->info.security_role = upgraded.security_role;
+   session->info.yamux_role = upgraded.yamux_role;
+   session->info.circuit_endpoint = std::move(upgraded.circuit_endpoint);
+   session->info.carrier_session_id = upgraded.carrier_session_id;
    session->connection = std::move(*upgraded.session).as_transport();
    session->resource = std::move(*reservation);
    co_await remember_session(session, connection_manager::direction::outbound);
@@ -218,7 +228,7 @@ boost::asio::awaitable<void> node::impl::handle_relayed_yamux_stream(std::shared
    } else if (admitted.protocol == builtins::identify_push) {
       co_await handle_identify_push(session, std::move(admitted.stream), std::move(admitted.resource));
    } else if (admitted.protocol == builtins::dcutr) {
-      co_await handle_dcutr(session, std::move(admitted.stream));
+      co_await handle_dcutr(session, std::move(admitted.stream), admitted.resource);
    } else if (dht_profiles.contains(admitted.protocol)) {
       co_await handle_dht(session, admitted.protocol, std::move(admitted.stream));
    } else if (admitted.protocol == builtins::rendezvous) {
@@ -265,7 +275,7 @@ boost::asio::awaitable<void> node::impl::handle_relay_stop(std::shared_ptr<node:
    }
    const auto& relay_endpoint = relay_transport_endpoint(*session);
    const auto local_endpoint = relay_circuit_endpoint(relay_endpoint, session->info.remote_peer, local);
-   const auto remote_endpoint = relay_circuit_endpoint(relay_endpoint, session->info.remote_peer, request.source->id);
+   auto remote_endpoint = relay_circuit_endpoint(relay_endpoint, session->info.remote_peer, request.source->id);
    connection_gate->accept(local_endpoint, remote_endpoint);
    auto reservation = resources.reserve_session(resource_manager::session_direction::inbound);
    if (!reservation) {
@@ -333,18 +343,19 @@ boost::asio::awaitable<void> node::impl::handle_relay_stop(std::shared_ptr<node:
        .relay_peer = session->info.remote_peer,
    };
    relayed_session->authentication = upgraded.authentication;
+   relayed_session->info.muxer = upgraded.muxer;
+   relayed_session->info.used_early_muxer_negotiation = upgraded.used_early_muxer_negotiation;
+   relayed_session->info.security_role = upgraded.security_role;
+   relayed_session->info.yamux_role = upgraded.yamux_role;
+   relayed_session->info.circuit_endpoint = std::move(remote_endpoint);
+   relayed_session->info.carrier_session_id = session->id;
    relayed_session->connection = std::move(*upgraded.session).as_transport();
    relayed_session->resource = std::move(*reservation);
    co_await remember_session(relayed_session, connection_manager::direction::inbound);
    launch_session_accept_loop(relayed_session);
    launch_identify(relayed_session);
-   if (options.capabilities.has(capabilities::hole_punching)) {
-      auto self = shared_from_this();
-      static_cast<void>(launch_tracked([self, relayed_session]() -> asio::awaitable<void> {
-         static_cast<void>(co_await self->run_dcutr_initiator(relayed_session->info.remote_peer, relayed_session,
-                                                              std::chrono::milliseconds{10'000}));
-      }));
-   }
+   static_cast<void>(request_path_upgrade(relayed_session,
+       std::chrono::steady_clock::now() + hole_punch::options{}.timeout));
 }
 
 

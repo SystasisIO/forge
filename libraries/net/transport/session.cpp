@@ -11,11 +11,9 @@ module forge.net.transport.session;
 
 import forge.net.transport.exceptions;
 
-namespace forge::net::transport {
+#include "details/session_impl.hxx"
 
-struct session::impl {
-   std::shared_ptr<detail::session_concept> model;
-};
+namespace forge::net::transport {
 
 void detail::session_concept::request_cancel() noexcept {
    try {
@@ -74,6 +72,11 @@ void session::request_cancel() noexcept {
 
 session detail::session_access::make(std::shared_ptr<session_concept> model) {
    return session{std::move(model)};
+}
+
+std::shared_ptr<detail::session_concept>
+detail::session_access::cancellation_owner(const session& value) noexcept {
+   return value.impl_ ? value.impl_->model : nullptr;
 }
 
 } // namespace forge::net::transport

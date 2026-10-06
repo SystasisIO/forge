@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import io
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -24,23 +25,29 @@ from check_p2p_feature_inventory import (
     donor_case_source_errors,
     main as inventory_main,
     private_mdns_attribution_errors,
+    private_profile_source_errors,
     registered_runner_acceptance_pairs,
     registered_runner_pair_errors,
 )
 from runner import (
+    GO_EXECUTION_POLICY,
     SUPPORTED_FORGE_BUILD_PROFILES,
     forge_fixture_requirements,
+    go_execution_environment,
+    prepare_go_fixture,
     prepare_rust_fixture,
     require_dht_provider_evidence,
     require_hidden_dht_find_peer_evidence,
     require_local_topology_evidence,
     require_supported_forge_build_profile,
+    require_toolchain,
     run_dial,
 )
 from test_provider_evidence import valid_hidden_find_peer_result, valid_result
 from promote_stage6_acceptance import (
     CANONICAL_ACCEPTANCE_MANIFEST,
     PROMOTION_DIRECTORY_PREFIX,
+    PROMOTION_SCOPES,
     create_invocation_directory,
     forced_live_environment,
     promotion_status,
@@ -479,6 +486,84 @@ class InteropCMakeConfigurationTest(unittest.TestCase):
 
 
 class InteropRunnerResultTest(unittest.TestCase):
+    def test_go_environment_clamps_graph_overrides_without_mutating_parent(self) -> None:
+        inherited = {
+            "PATH": "/tools", "OTHER": "preserved",
+            "GOFLAGS": "-modfile=/external/alternate.mod -overlay=/external/overlay.json",
+            "GOENV": "/external/go-env", "GOWORK": "/external/go.work",
+            "GOTOOLCHAIN": "auto", "GOPROXY": "https://untrusted.invalid", "GOSUMDB": "sum.example",
+        }
+        before = dict(inherited)
+        ambient = dict(os.environ)
+        effective = go_execution_environment(inherited)
+        self.assertEqual({key: effective[key] for key in GO_EXECUTION_POLICY}, {
+            "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off",
+            "GOFLAGS": "", "GOENV": "off", "GOWORK": "off",
+        })
+        self.assertEqual(effective["PATH"], "/tools")
+        self.assertEqual(effective["OTHER"], "preserved")
+        self.assertEqual(inherited, before)
+        self.assertEqual(dict(os.environ), ambient)
+
+    def test_prepare_go_fixture_uses_effective_policy_for_verify_tests_and_build(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source/go_fixture"
+            source.mkdir(parents=True)
+            canonical = "module fixture\n\ngo 1.26.3\n"
+            (source / "go.mod").write_text(canonical)
+            alternate = root / "alternate.mod"
+            alternate.write_text("module different-fixture\n\ngo 1.26.3\n")
+            ambient = dict(os.environ)
+            for label, overrides in (
+                ("control", {}),
+                ("alternate", {"GOFLAGS": f"-modfile={alternate}",
+                               "GOENV": str(root / "go-env"), "GOWORK": str(root / "go.work"),
+                               "GOPROXY": "https://untrusted.invalid", "GOSUMDB": "sum.example"}),
+            ):
+                with self.subTest(environment=label):
+                    inherited = {"PATH": "/tools", "OTHER": "preserved", **overrides}
+                    before = dict(inherited)
+                    calls = []
+                    def fake_run(command, cwd=None, env=None):
+                        calls.append((command, cwd, dict(env)))
+                    with patch("runner.run", side_effect=fake_run):
+                        binary, records = prepare_go_fixture(root / "source", root / label, "/tools/go", inherited)
+                    expected = [
+                        ["/tools/go", "mod", "verify"],
+                        ["/tools/go", "test", "-mod=readonly", "-count=1", "-timeout=60s", "."],
+                        ["/tools/go", "build", "-mod=readonly", "-trimpath", "-o", str(binary), "."],
+                    ]
+                    self.assertEqual([call[0] for call in calls], expected)
+                    self.assertEqual([record["command"] for record in records], expected)
+                    for record, (_, cwd, effective) in zip(records, calls):
+                        self.assertEqual(cwd, binary.parent)
+                        self.assertEqual(record["cwd"], str(cwd))
+                        self.assertEqual(record["environment"], GO_EXECUTION_POLICY)
+                        self.assertEqual(record["environment"], {key: effective[key] for key in GO_EXECUTION_POLICY})
+                        self.assertEqual(effective["OTHER"], "preserved")
+                    self.assertEqual((binary.parent / "go.mod").read_text(), canonical)
+                    self.assertEqual(inherited, before)
+            self.assertEqual(dict(os.environ), ambient)
+
+    def test_toolchain_version_check_uses_the_same_clamped_go_environment(self) -> None:
+        inherited = {"GOFLAGS": "-modfile=/external/alternate.mod", "GOENV": "/external/go-env",
+                     "GOWORK": "/external/go.work", "PATH": "/tools"}
+        ambient = dict(os.environ)
+        calls = {}
+        def tool(name, command, pattern, version, cwd=None, env=None):
+            calls[name] = dict(env)
+            return {"path": f"/tools/{name}", "version": version, "version_output": "synthetic unit tool"}
+        lock = {"toolchains": {"go": {"version": "1.26.3"},
+                              "rust": {"rustc_version": "1.95.0", "cargo_version": "1.95.0"}}}
+        with patch("runner.go_execution_environment", return_value=go_execution_environment(inherited)) as policy, \
+                patch("runner.tool_identity", side_effect=tool):
+            _, go_environment, _ = require_toolchain(lock, Path("/unit/source"))
+        policy.assert_called_once_with()
+        self.assertEqual(calls["go"], go_environment)
+        self.assertEqual({key: go_environment[key] for key in GO_EXECUTION_POLICY}, GO_EXECUTION_POLICY)
+        self.assertEqual(dict(os.environ), ambient)
+
     def test_prepare_rust_fixture_records_and_runs_frozen_tests_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -605,6 +690,18 @@ class Stage6PromotionHelperTest(unittest.TestCase):
         self.assertEqual(promotion_status(0, ["artifact is missing"]), "FAILED")
         self.assertEqual(promotion_status(1, []), "FAILED")
 
+    def test_promotion_scopes_match_all_suites_without_an_autonat_fallback(self) -> None:
+        from check_stage6_acceptance import ACCEPTANCE_SUITES
+
+        self.assertEqual(set(PROMOTION_SCOPES), set(ACCEPTANCE_SUITES))
+        expected = {"private-profile": "PSK protocol30", "inline-muxer": "inline-muxer16",
+                    "path": "DCUtR12", "coordinated": "TCP reuse8"}
+        for suite, label in expected.items():
+            with self.subTest(suite=suite):
+                self.assertIn(label, PROMOTION_SCOPES[suite])
+                self.assertNotIn("AutoNAT", PROMOTION_SCOPES[suite])
+                self.assertIn("not full Stage 6 or production support", PROMOTION_SCOPES[suite])
+
 
 class InteropFixtureContractTest(unittest.TestCase):
     def fixture_lock(self, build_profiles: object = None) -> dict:
@@ -703,7 +800,8 @@ class InventoryPolicyTest(unittest.TestCase):
     def manifest(self, name: str) -> dict:
         return json.loads((self.source_dir / name).read_text())
 
-    def runner_fixture(self, include_pr9: bool = True, pr9_map: Optional[dict] = None) -> str:
+    def runner_fixture(self, include_pr9: bool = True, pr9_map: Optional[dict] = None,
+                       include_private: bool = True, include_path: bool = True) -> str:
         from runner import (
             AUTONAT_ACCEPTANCE_SCENARIOS,
             AUTORELAY_ACCEPTANCE_SCENARIOS,
@@ -722,7 +820,41 @@ class InventoryPolicyTest(unittest.TestCase):
             maps["AUTORELAY_ACCEPTANCE_SCENARIOS"] = (
                 AUTORELAY_ACCEPTANCE_SCENARIOS if pr9_map is None else pr9_map
             )
-        return "\n".join(f"{name} = {value!r}" for name, value in maps.items())
+        source = "\n".join(f"{name} = {value!r}" for name, value in maps.items())
+        if include_private:
+            source += '''
+from private_profile_cases import case_specs as private_profile_specs, run_case as private_profile_case
+from private_profile_evidence import PRIVATE_CONTRACTS, INLINE_CONTRACTS, validate_private_profile
+
+@owned_case
+def run_private_profile_case(spec, binaries, root):
+    record = private_profile_case(spec, binaries, root)
+    errors = validate_private_profile(record["result"], record, record["listener_result"])
+    if errors:
+        raise RuntimeError(errors)
+    return record
+'''
+        if include_path:
+            source += '''
+from path_cases import run_suite as run_path_suite
+from coordinated_cases import run_suite as run_coordinated_suite
+'''
+        source += "\ndef main():\n    pass\n"
+        if include_private:
+            source += '''
+    for suite, names in (("private-profile", PRIVATE_CONTRACTS), ("inline-muxer", INLINE_CONTRACTS)):
+        for spec in private_profile_specs(suite):
+            run_private_profile_case(spec, binaries, root)
+'''
+        if include_path:
+            source += '''
+    for artifact in run_path_suite(binaries, root, command_attempt=command_attempt):
+        artifacts.append(artifact)
+    for artifact in run_coordinated_suite(binaries, root, pnet_key_file=pnet_key_file,
+            pnet_fingerprint=pnet_fingerprint, command_attempt=command_attempt):
+        artifacts.append(artifact)
+'''
+        return source
 
     def check(self, capabilities: Optional[dict] = None, inventory: Optional[dict] = None,
               donor_cases: Optional[dict] = None, runner_source: Optional[str] = None) -> tuple[int, str, str]:
@@ -795,6 +927,107 @@ class InventoryPolicyTest(unittest.TestCase):
              for feature in self.manifest("p2p_feature_inventory.json")["features"]},
             states,
         )
+
+    def test_private_inline_registration_matches_actual_case_ids_without_a_live_verdict(self) -> None:
+        from private_profile_acceptance import SCENARIOS
+        from private_profile_cases import case_specs
+
+        registry = self.manifest("p2p_donor_capabilities.json")["interop_acceptance_registry"]["capabilities"]
+        actual = {(case.runner_id, case.contract) for suite in ("private-profile", "inline-muxer")
+                  for case in case_specs(suite)}
+        self.assertEqual(len(SCENARIOS), 16)
+        registered = set()
+        for name, owner in SCENARIOS.items():
+            scenario = next(value for value in registry[owner]["scenarios"] if value["id"] == name)
+            self.assertEqual(scenario["registration"], "registered")
+            self.assertEqual(scenario["source_case_id"], name)
+            self.assertEqual(scenario["expected_status"], "limited" if name.startswith("inline_muxer_rust_") else "passed")
+            registered.add((scenario["runner_scenario_id"], name))
+        self.assertEqual(registered, actual)
+        states = {value["id"]: value["state"] for value in self.manifest("p2p_feature_inventory.json")["features"]}
+        self.assertEqual(states["state.hole_punch_attempt"], "partial")
+        self.assertEqual(states["transport.tcp_yamux"], "unverified")
+
+    def test_path_registration_is_checked_through_actual_inventory_main(self) -> None:
+        status, _, stderr = self.check(runner_source=self.runner_fixture(include_path=False))
+        self.assertEqual(status, 1)
+        self.assertIn("current scenario is not registered by runner.py", stderr)
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        scenario = capabilities["interop_acceptance_registry"]["capabilities"]["connections.coordinated_dial_port_reuse"]["scenarios"][-1]
+        scenario["requires_capabilities"] = []
+        status, _, stderr = self.check(capabilities=capabilities)
+        self.assertEqual(status, 1)
+        self.assertIn("path registration must match its exact staged native case contract", stderr)
+
+    def test_path_literal_map_cannot_replace_actual_suite_dispatch(self) -> None:
+        from check_p2p_feature_inventory import PATH_REGISTRATION_SCENARIOS
+        from runner import CURRENT_ACCEPTANCE_SCENARIOS
+
+        counterfeit = {**CURRENT_ACCEPTANCE_SCENARIOS,
+                       **{value[4]: (name,) for name, value in PATH_REGISTRATION_SCENARIOS.items()}}
+        source = self.runner_fixture(include_path=False).replace(
+            f"CURRENT_ACCEPTANCE_SCENARIOS = {CURRENT_ACCEPTANCE_SCENARIOS!r}",
+            f"CURRENT_ACCEPTANCE_SCENARIOS = {counterfeit!r}")
+        status, _, stderr = self.check(runner_source=source)
+        self.assertEqual(status, 1)
+        self.assertIn("current scenario is not registered by runner.py", stderr)
+
+    def test_private_inline_source_contract_rejects_profile_and_case_drift(self) -> None:
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        owner = "transport.tcp_yamux"
+        capability = next(value for value in capabilities["capabilities"] if value["id"] == owner)
+        scenario = next(value for value in capabilities["interop_acceptance_registry"]["capabilities"][owner]["scenarios"]
+                        if value["id"] == "tcp_yamux_private_pnet")
+        self.assertEqual(private_profile_source_errors(self.source_root, owner, capability, scenario), [])
+        for field, value in (
+            ("source_case_id", "interop.live_private_network_pnet"), ("profile", "native"),
+            ("transport_stack", ["tcp", "yamux"]), ("requires_capabilities", []),
+            ("required_directions", ["forge_to_go", "go_to_forge"]), ("required_directions", None),
+            ("required_directions", ["forge_to_go", {"role": "listener"}]),
+            ("expected_status", "limited"), ("registration", "planned"),
+        ):
+            with self.subTest(field=field, value=value):
+                self.assertTrue(private_profile_source_errors(
+                    self.source_root, owner, capability, {**scenario, field: value}))
+        self.assertTrue(private_profile_source_errors(self.source_root, "protocol.ping", capability, scenario))
+        self.assertTrue(private_profile_source_errors(self.source_root, owner, {**capability, "donor_sources": []}, scenario))
+        with patch.object(Path, "is_file", return_value=False):
+            self.assertTrue(private_profile_source_errors(self.source_root, owner, capability, scenario))
+
+    def test_private_inline_manifest_source_drift_is_rejected(self) -> None:
+        capabilities = self.manifest("p2p_donor_capabilities.json")
+        scenario = capabilities["interop_acceptance_registry"]["capabilities"]["discovery.rendezvous"]["scenarios"][-1]
+        self.assertEqual(scenario["id"], "rendezvous_rust_private_tcp_yamux_pnet")
+        scenario["source_case_id"] = "rendezvous_unregistered"
+        status, _, stderr = self.check(capabilities=capabilities)
+        self.assertEqual(status, 1)
+        self.assertIn("private/inline registration must match its exact source case contract", stderr)
+
+    def test_private_inline_literal_registration_cannot_replace_actual_runner_wiring(self) -> None:
+        status, _, stderr = self.check(runner_source=self.runner_fixture(include_private=False))
+        self.assertEqual(status, 1)
+        self.assertIn("current scenario is not registered by runner.py", stderr)
+        source = self.runner_fixture()
+        for old, new in (
+            ("record = private_profile_case(spec", "record = unrelated_adapter(spec"),
+            ("errors = validate_private_profile(", "errors = unrelated_validator("),
+            ("@owned_case", "@unowned_case"),
+            ("for spec in private_profile_specs(suite):", "for spec in unrelated_specs(suite):"),
+        ):
+            with self.subTest(old=old):
+                status, _, stderr = self.check(runner_source=source.replace(old, new))
+                self.assertEqual(status, 1)
+                self.assertIn("private profile runner", stderr)
+
+    def test_removed_public_hole_punch_helper_is_owned_by_private_node_path_manager(self) -> None:
+        inventory = self.manifest("p2p_feature_inventory.json")
+        feature = next(value for value in inventory["features"] if value["id"] == "state.hole_punch_attempt")
+        self.assertEqual(feature["owner"], "net.p2p.node")
+        self.assertEqual(feature["public_components"], [])
+        self.assertIn("libraries/net/p2p/path_manager.cpp", feature["evidence"]["source_paths"])
+        self.assertIn("test_forge_p2p_path_management", feature["evidence"]["tests"])
+        self.assertNotIn("state.hole_punch_attempt",
+                         inventory["public_surface_snapshots"]["net.p2p.node"]["module_features"]["forge.net.p2p.hole_punch"])
 
     def test_upnp_cannot_return_to_the_initial_profile(self) -> None:
         capabilities = self.manifest("p2p_donor_capabilities.json")

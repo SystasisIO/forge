@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::{AsyncRead, AsyncWrite};
+use futures::{AsyncRead, AsyncWrite, TryFutureExt};
 use libp2p::{
     PeerId, Transport,
     core::{
@@ -182,7 +182,7 @@ impl Connection {
             && selection.error.is_none()
             && !selection.io_failed
             && !connection_failed
-            && selection.write_closed
+            && (selection.write_closed || selection.response_flush_basis().is_some())
             && selection.bodies[1].complete();
         if !upgrade && !response {
             return;
@@ -198,11 +198,12 @@ impl Connection {
             self.phases[phase].upgrade_completed_sequence = Some(sequence);
         } else {
             let write = selection.bodies[1].snapshot();
-            self.event(
-                phase,
-                "response_completion",
-                json!({"protocol": protocol, "write": write}),
-            );
+            let mut detail = json!({"protocol": protocol, "write": write});
+            if !selection.write_closed {
+                detail["completion_basis"] = json!(selection.response_flush_basis());
+                detail["read"] = selection.bodies[0].snapshot();
+            }
+            self.event(phase, "response_completion", detail);
             self.phases[phase].response_completed_sequence = Some(sequence);
         }
     }
@@ -268,6 +269,70 @@ impl Observer {
 
     pub(crate) fn finalized(&self, joined: bool) -> Value {
         super::application_observer::finalize(self.snapshot(), joined)
+    }
+
+    // The IDs below are this observer's own raw connection/stream IDs. A
+    // caller must separately bind the connection to its authenticated peer.
+    pub(crate) fn rejection_receipt(&self, connection_id: usize, after_sequence: usize, protocol: &str) -> io::Result<Value> {
+        let proof = self.snapshot();
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "private barrier lacks one bounded native multistream rejection");
+        if proof["overflow"] != false || !protocol.starts_with('/') || protocol.len() + 1 > FRAME_LIMIT
+            || !protocol.bytes().all(|byte| (33..=126).contains(&byte)) { return Err(invalid()); }
+        let connections = proof["connections"].as_array().ok_or_else(invalid)?;
+        let matches = connections.iter().filter(|c| c["connection_trace_id"] == connection_id).collect::<Vec<_>>();
+        let [connection] = matches.as_slice() else { return Err(invalid()); };
+        if connection["negotiations"].as_array().ok_or_else(invalid)?.iter()
+            .any(|phase| phase["io_failed"] != false || !phase["parser_error"].is_null()) {
+            return Err(invalid());
+        }
+        let events = connection["events"].as_array().ok_or_else(invalid)?;
+        if events.iter().enumerate().any(|(index, e)| e["sequence"] != index + 1) {
+            return Err(invalid());
+        }
+        let framed_hex = |text: &str| {
+            let mut bytes = Vec::new();
+            let mut length = text.len();
+            while length >= 128 { bytes.push((length as u8 & 127) | 128); length >>= 7; }
+            bytes.push(length as u8);
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        };
+        let header = framed_hex(HEADER);
+        let proposal = framed_hex(&format!("{protocol}\n"));
+        let na = framed_hex("na\n");
+        let mut candidates = Vec::new();
+        for stream in connection["streams"].as_array().ok_or_else(invalid)? {
+            if stream["direction"] != "outbound" || !stream["protocol"].is_null()
+                || !stream["parser_error"].is_null() || stream["io_failed"] != false
+                || stream["negotiation_complete_frames"] != true
+                || stream["read"]["framed_bytes"] != 0 || stream["write"]["framed_bytes"] != 0 {
+                continue;
+            }
+            let sid = &stream["stream_trace_id"];
+            let scoped = events.iter().filter(|e| e["phase"] == "application" && &e["stream_trace_id"] == sid).collect::<Vec<_>>();
+            let opened = scoped.iter().filter(|e| e["kind"] == "substream_opened").collect::<Vec<_>>();
+            let [opened] = opened.as_slice() else { continue; };
+            if opened["detail"]["direction"] != "outbound"
+                || opened["sequence"].as_u64().unwrap_or(0) <= after_sequence as u64 { continue; }
+            let frames = scoped.iter().filter(|e| e["kind"] == "negotiation_frame").collect::<Vec<_>>();
+            let read = frames.iter().filter(|e| e["direction"] == "read").copied().collect::<Vec<_>>();
+            let write = frames.iter().filter(|e| e["direction"] == "write").copied().collect::<Vec<_>>();
+            if frames.len() != 4 || read.len() != 2 || write.len() != 2
+                || read[0]["frame_hex"] != header || write[0]["frame_hex"] != header
+                || write[1]["frame_hex"] != proposal || read[1]["frame_hex"] != na
+                || read[1]["selection_outcome"] != "rejected"
+                || frames.iter().any(|e| e["sequence"].as_u64() <= opened["sequence"].as_u64())
+                || write[1]["sequence"].as_u64() >= read[1]["sequence"].as_u64() {
+                continue;
+            }
+            let captured = |frames: &[&&Value]| frames.iter().map(|e| json!({"sequence": e["sequence"], "framed_hex": e["frame_hex"]})).collect::<Vec<_>>();
+            candidates.push(json!({"source": "rust-libp2p.observed-multistream-rejection.v1",
+                "connection_trace_id": connection_id, "stream_trace_id": sid, "direction": "outbound",
+                "protocol": protocol, "opened_sequence": opened["sequence"], "rejected_sequence": read[1]["sequence"],
+                "read_frames": captured(&read), "write_frames": captured(&write)}));
+        }
+        if candidates.len() != 1 { return Err(invalid()); }
+        Ok(candidates.remove(0))
     }
 
     fn begin(&self, point: &ConnectedPoint, local: String, remote: String, peer: PeerId) -> Trace {
@@ -386,6 +451,12 @@ pub(crate) struct Body {
 }
 
 impl Body {
+    fn raw_byte(&mut self, byte: u8) {
+        if self.invalid { return; }
+        if self.bytes == 128 { self.invalid = true; return; }
+        self.bytes += 1; self.digest.update([byte]);
+        self.frames = self.bytes / 32; self.remaining = self.bytes % 32;
+    }
     pub(crate) fn byte(&mut self, byte: u8, limit: usize) {
         if self.invalid {
             return;
@@ -451,6 +522,7 @@ struct Selection {
     ambiguous_tail: bool,
     io_failed: bool,
     write_closed: bool,
+    flushed_body_sizes: Option<[usize; 2]>,
     read_eof: bool,
     drop_observed: bool,
     upgrade_completed_sequence: Option<usize>,
@@ -475,6 +547,7 @@ impl Selection {
             ambiguous_tail: false,
             io_failed: false,
             write_closed: false,
+            flushed_body_sizes: None,
             read_eof: false,
             drop_observed: false,
             upgrade_completed_sequence: None,
@@ -501,6 +574,11 @@ impl Selection {
                 let limit = match protocol.map(String::as_str) {
                     Some("/ipfs/id/1.0.0" | "/ipfs/id/push/1.0.0" | "/libp2p/circuit/relay/0.2.0/hop") => 4098,
                     Some("/forge/interop/relay-echo/1") => BODY_LIMIT,
+                    Some("/ipfs/kad/1.0.0" | "/rendezvous/1.0.0") => 8196,
+                    Some("/ipfs/ping/1.0.0") => {
+                        self.bodies[direction].raw_byte(byte);
+                        return None;
+                    }
                     _ => return None,
                 };
                 self.bodies[direction].byte(byte, limit);
@@ -619,16 +697,38 @@ impl Selection {
         self.upgrade_completed_sequence.is_some()
     }
 
+    fn response_flush_basis(&self) -> Option<&'static str> {
+        if !self.application || self.outbound
+            || self.flushed_body_sizes != Some([self.bodies[0].bytes, self.bodies[1].bytes])
+            || !self.bodies.iter().all(|body| body.frames == 1 && body.complete()) {
+            return None;
+        }
+        match self.selected.as_deref() {
+            Some("/ipfs/ping/1.0.0") if self.bodies.iter().all(|body| body.bytes == 32)
+                && self.bodies[0].digest.clone().finalize() == self.bodies[1].digest.clone().finalize() => {
+                Some("native_ping_response_flush")
+            }
+            // The pinned Kademlia handler flushes one framed response and then
+            // waits for another request on the same substream, without close.
+            Some("/ipfs/kad/1.0.0") => Some("native_kad_response_flush"),
+            _ => None,
+        }
+    }
+
     fn snapshot(&self) -> Value {
         let mut value = json!({"direction": direction(self.outbound), "protocol": self.selected,
             "proposed_protocol": self.proposal,
             "parser_error": self.error, "io_failed": self.io_failed,
+            "negotiation_complete_frames": !self.ambiguous_tail
+                && self.decoders.iter().all(|decoder| decoder.frame.is_empty() && decoder.prefix == 0 && !decoder.prefix_complete),
             "drop_observed": self.drop_observed,
             "upgrade_completed_sequence": self.upgrade_completed_sequence,
             "response_completed_sequence": self.response_completed_sequence,
             "read_eof": self.read_eof, "write_close_returned": self.write_closed,
+            "write_flush_returned": self.bodies[1].bytes > 0
+                && self.flushed_body_sizes == Some([self.bodies[0].bytes, self.bodies[1].bytes]),
             "response_write_complete": self.application && self.selected.is_some() && self.error.is_none()
-                && !self.io_failed && self.write_closed && self.bodies[1].complete(),
+                && !self.io_failed && (self.write_closed || self.response_flush_basis().is_some()) && self.bodies[1].complete(),
             "read": self.bodies[0].snapshot(), "write": self.bodies[1].snapshot()});
         if self.selected.as_deref() == Some("/ipfs/id/push/1.0.0") {
             value["push_read_framed_hex"] = json!(self.receipt_frames[0].iter().map(|b| format!("{b:02x}")).collect::<String>());
@@ -748,8 +848,18 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for ObservedIo<T> {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         let result = Pin::new(&mut this.inner).poll_flush(cx);
-        if let Poll::Ready(Err(error)) = &result {
-            this.trace.io_error(this.phase, "flush_error", error);
+        match &result {
+            Poll::Ready(Ok(())) => this.trace.update(|connection| {
+                if let Some(phase) = connection.phases.get_mut(this.phase) {
+                    // Match the consumed body sizes at this successful native
+                    // flush. A negotiation flush or later read cannot complete
+                    // an unflushed response retroactively.
+                    phase.flushed_body_sizes = Some([phase.bodies[0].bytes, phase.bodies[1].bytes]);
+                }
+                connection.milestones(this.phase);
+            }),
+            Poll::Ready(Err(error)) => this.trace.io_error(this.phase, "flush_error", error),
+            _ => {}
         }
         result
     }
@@ -812,7 +922,8 @@ where
         trace: trace.clone(),
         phase,
     };
-    let result = async {
+    let failure_trace = trace.clone();
+    let result = async move {
         let (info, socket) = if outbound {
             dialer_select_proto(socket, upgrade.protocol_info(), Version::V1Lazy)
                 .await
@@ -840,7 +951,7 @@ where
     }
     .await;
     if let Err(error) = &result {
-        trace.io_error(phase, "upgrade_error", error);
+        failure_trace.io_error(phase, "upgrade_error", error);
     }
     guard.finished = true;
     result
@@ -976,6 +1087,79 @@ pub(crate) fn native_transport(
     })
 }
 
+type PrivateSocket = futures::future::Either<
+    libp2p::pnet::PnetOutput<tcp::tokio::TcpStream>,
+    tcp::tokio::TcpStream,
+>;
+
+// This future owns the socket and protector; no borrowed nonce/write buffer
+// crosses into the security/muxer transport's generic AndThenFuture.
+fn protect_private_socket(
+    socket: tcp::tokio::TcpStream,
+    psk: Option<libp2p::pnet::PreSharedKey>,
+) -> futures::future::BoxFuture<'static, io::Result<PrivateSocket>> {
+    Box::pin(async move {
+        match psk {
+            Some(psk) => {
+                let protected = libp2p::pnet::PnetConfig::new(psk).handshake(socket)
+                    .await.map_err(io::Error::other)?;
+                Ok(futures::future::Either::Left(protected))
+            }
+            None => Ok(futures::future::Either::Right(socket)),
+        }
+    })
+}
+
+type ProtectedSocket = (PrivateSocket, Trace);
+
+fn protected_private_transport(
+    local_peer: PeerId,
+    psk: Option<libp2p::pnet::PreSharedKey>,
+    observer: Observer,
+) -> Boxed<ProtectedSocket> {
+    tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
+        .and_then(move |socket, point| {
+            let trace = observer.begin(&point,
+                socket.0.local_addr().map(socket_address).unwrap_or_default(),
+                socket.0.peer_addr().map(socket_address).unwrap_or_default(), local_peer);
+            protect_private_socket(socket, psk).map_ok(move |socket| (socket, trace))
+        }).boxed()
+}
+
+// The same public upgrade delegates as native_transport, but with the pinned
+// PNET protector *before* observation of security negotiation. No PSK nonce or
+// ciphertext is retained. Path fixtures may use this transport and Observer.
+pub(crate) fn native_private_transport(
+    key: &identity::Keypair,
+    use_tls: bool,
+    psk: Option<libp2p::pnet::PreSharedKey>,
+    observer: Observer,
+) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn std::error::Error + Send + Sync>> {
+    let local_peer = key.public().to_peer_id();
+    macro_rules! transport {
+        ($security:expr) => {{
+            let security = $security;
+            protected_private_transport(local_peer, psk, observer)
+                .and_then(move |(socket, trace), point| {
+                    let security = security.clone();
+                    let outbound = upgrade_outbound(&point);
+                    async move {
+                        let (peer, secure) = apply(socket, security, outbound, trace.clone(), 0).await?;
+                        trace.update(|connection| {
+                            connection.remote_peer = peer.to_string();
+                            connection.event(0, "authenticated_peer", json!({"peer_id": peer.to_string()}));
+                        });
+                        let muxer = apply(secure, yamux::Config::default(), outbound, trace.clone(), 1).await?;
+                        Ok::<_, io::Error>((peer, StreamMuxerBox::new(ObservedMuxer { inner: Box::pin(muxer), trace: trace.clone() }), trace))
+                    }
+                }).boxed()
+                .map(|output, point| bind_transport_output(output, point, false)).boxed()
+        }};
+    }
+    Ok(if use_tls { transport!(tls::Config::new(key).map_err(io::Error::other)?) }
+       else { transport!(noise::Config::new(key).map_err(io::Error::other)?) })
+}
+
 // Opt-in only for AutoRelay: native QUIC authenticates the connection; reuse the
 // existing bounded passive substream observer, without inventing TLS/yamux frames.
 pub(crate) fn native_quic_transport(
@@ -1033,6 +1217,30 @@ mod tests {
     use super::*;
     use futures::{AsyncReadExt, AsyncWriteExt, FutureExt, future, task::noop_waker};
     use libp2p::core::{Endpoint, upgrade::UpgradeInfo};
+
+    #[tokio::test]
+    async fn private_transport_boundaries_are_send_static_without_observed_io() {
+        fn require_owned_io<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>() {}
+        fn require_owned_transport<T>(transport: T)
+        where
+            T: Transport + Send + Unpin + 'static,
+            T::Output: Send + 'static,
+            T::Dial: Send + 'static,
+            T::ListenerUpgrade: Send + 'static,
+        {
+            drop(transport);
+        }
+        require_owned_io::<PrivateSocket>();
+        let key = identity::Keypair::generate_ed25519();
+        let observer = Observer::default();
+        require_owned_transport(protected_private_transport(key.public().to_peer_id(), None, observer.clone()));
+        for use_tls in [false, true] {
+            require_owned_transport(native_private_transport(&key, use_tls, None, observer.clone()).unwrap());
+        }
+        // Building a transport is not an authentication or wire observation.
+        assert_eq!(observer.snapshot()["connections"], json!([]));
+        assert_eq!(observer.snapshot()["complete"], false);
+    }
 
     #[test]
     fn autorelay_native_push_and_hop_capture_only_consumed_bounded_frames() {
@@ -1227,6 +1435,8 @@ mod tests {
         trace: Trace,
         pending_once: bool,
         fail: bool,
+        flush_pending_once: bool,
+        flush_fail: bool,
     }
 
     impl ScriptIo {
@@ -1237,6 +1447,8 @@ mod tests {
                 trace,
                 pending_once: false,
                 fail: false,
+                flush_pending_once: false,
+                flush_fail: false,
             }
         }
 
@@ -1316,9 +1528,16 @@ mod tests {
             }
             Poll::Ready(Ok(written))
         }
-        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-            self.check_unlocked();
-            self.state.lock().unwrap().flushes += 1;
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            this.check_unlocked();
+            this.state.lock().unwrap().flushes += 1;
+            if this.flush_pending_once {
+                this.flush_pending_once = false;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            if this.flush_fail { return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())); }
             Poll::Ready(Ok(()))
         }
         fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -2004,6 +2223,273 @@ mod tests {
                 assert_eq!(completed[0]["detail"]["write"]["frames"], 1);
             }
         }
+    }
+
+    fn rejection_stream(trace: &Trace, outbound: bool, protocol: &str, reply: &[u8]) -> ObservedIo<ScriptIo> {
+        let proposal = frame(format!("{protocol}\n").as_bytes());
+        let (read, write) = if outbound { (reply.to_vec(), proposal) } else { (proposal, reply.to_vec()) };
+        let phase = trace.substream(outbound);
+        let mut stream = ObservedIo {
+            inner: ScriptIo::new([frame(HEADER.as_bytes()), read].concat(), trace.clone()), trace: trace.clone(), phase,
+        };
+        futures::executor::block_on(async {
+            stream.write_all(&frame(HEADER.as_bytes())).await.unwrap();
+            stream.write_all(&write).await.unwrap();
+            stream.flush().await.unwrap();
+            let mut read = Vec::new();
+            stream.read_to_end(&mut read).await.unwrap();
+        });
+        stream
+    }
+
+    #[test]
+    fn private_barrier_binds_consumed_native_na_to_its_own_connection_and_open_sequence() {
+        let protocol = "/forge/interop/private-unknown/1";
+        let (observer, trace) = fixture_trace();
+        let stream = rejection_stream(&trace, true, protocol, &frame(b"na\n"));
+        drop(stream);
+        let receipt = observer.rejection_receipt(1, 0, protocol).unwrap();
+        assert_eq!(receipt["connection_trace_id"], 1);
+        assert_eq!(receipt["stream_trace_id"], 1);
+        assert_eq!(receipt["direction"], "outbound");
+        assert_eq!(receipt["opened_sequence"], 1);
+        assert_eq!(receipt["rejected_sequence"], 5);
+        assert_eq!(receipt["read_frames"][1]["framed_hex"], "036e610a");
+        let snapshot = observer.snapshot();
+        for direction in ["read", "write"] {
+            for captured in receipt[format!("{direction}_frames")].as_array().unwrap() {
+                let event = &snapshot["connections"][0]["events"][captured["sequence"].as_u64().unwrap() as usize - 1];
+                assert_eq!(event["direction"], direction);
+                assert_eq!(captured["framed_hex"], event["frame_hex"]);
+            }
+        }
+        // A raw na does not invent a donor-native UnsupportedProtocol result.
+        assert!(receipt.get("native_error").is_none());
+        assert!(observer.rejection_receipt(2, 0, protocol).is_err());
+        assert!(observer.rejection_receipt(1, 1, protocol).is_err());
+        let opened = trace.substream(true);
+        assert_eq!(opened, 3);
+        let snapshot = observer.snapshot();
+        let next = snapshot["connections"][0]["events"].as_array().unwrap().last().unwrap();
+        assert_eq!(next["kind"], "substream_opened");
+        assert!(next["sequence"].as_u64().unwrap() > receipt["rejected_sequence"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn private_barrier_rejects_missing_partial_wrong_duplicate_failed_or_preexisting_native_exchanges() {
+        let protocol = "/forge/interop/private-unknown/1";
+        for mode in ["missing_na", "partial_na", "partial_tail", "wrong_ack", "wrong_protocol", "inbound",
+                     "stream_error", "connection_error", "overflow", "duplicate", "preexisting", "sequence_gap"] {
+            let (observer, trace) = fixture_trace();
+            let proposal = if mode == "wrong_protocol" { "/forge/interop/other-unknown/1" } else { protocol };
+            let reply = match mode {
+                "missing_na" => vec![],
+                "partial_na" => vec![3, b'n'],
+                "partial_tail" => [frame(b"na\n"), vec![2, b'x']].concat(),
+                "wrong_ack" => frame(format!("{protocol}\n").as_bytes()),
+                _ => frame(b"na\n"),
+            };
+            let stream = rejection_stream(&trace, mode != "inbound", proposal, &reply);
+            if mode == "stream_error" { trace.io_error(stream.phase, "read_error", &io::Error::other("before barrier result")); }
+            if mode == "connection_error" { trace.io_error(1, "muxer_poll_error", &io::Error::other("before barrier result")); }
+            if mode == "overflow" { trace.update(|c| c.overflow = true); }
+            if mode == "sequence_gap" { trace.update(|c| c.events[0]["sequence"] = json!(42)); }
+            drop(stream);
+            if mode == "duplicate" { drop(rejection_stream(&trace, true, protocol, &frame(b"na\n"))); }
+            let after = if mode == "preexisting" {
+                observer.snapshot()["connections"][0]["events"].as_array().unwrap().len()
+            } else { 0 };
+            assert!(observer.rejection_receipt(1, after, protocol).is_err(), "{mode}");
+        }
+    }
+
+    #[test]
+    fn private_barrier_cannot_reorder_na_before_its_native_proposal() {
+        let protocol = "/forge/interop/private-unknown/1";
+        let (observer, trace) = fixture_trace();
+        let phase = trace.substream(true);
+        let mut stream = ObservedIo {
+            inner: ScriptIo::new([frame(HEADER.as_bytes()), frame(b"na\n")].concat(), trace.clone()), trace: trace.clone(), phase,
+        };
+        futures::executor::block_on(async {
+            let mut read = Vec::new();
+            stream.read_to_end(&mut read).await.unwrap();
+            stream.write_all(&frame(HEADER.as_bytes())).await.unwrap();
+            stream.write_all(&frame(format!("{protocol}\n").as_bytes())).await.unwrap();
+        });
+        drop(stream);
+        assert!(observer.rejection_receipt(1, 0, protocol).is_err());
+    }
+
+    fn application_stream(protocol: &str, outbound: bool, request: &[u8], response: &[u8]) -> (Observer, Trace, ObservedIo<ScriptIo>) {
+        let (observer, trace) = fixture_trace();
+        let phase = trace.substream(outbound);
+        let token = frame(format!("{protocol}\n").as_bytes());
+        let input = [frame(HEADER.as_bytes()), token.clone(), request.to_vec()].concat();
+        let mut stream = ObservedIo { inner: ScriptIo::new(input, trace.clone()), trace: trace.clone(), phase };
+        futures::executor::block_on(async {
+            let mut read = Vec::new();
+            stream.read_to_end(&mut read).await.unwrap();
+            stream.write_all(&frame(HEADER.as_bytes())).await.unwrap();
+            stream.write_all(&token).await.unwrap();
+            stream.write_all(response).await.unwrap();
+        });
+        (observer, trace, stream)
+    }
+
+    fn ping_stream(outbound: bool, challenge: &[u8], response: &[u8]) -> (Observer, Trace, ObservedIo<ScriptIo>) {
+        application_stream("/ipfs/ping/1.0.0", outbound, challenge, response)
+    }
+
+    #[test]
+    fn private_ping_response_boundary_requires_successful_native_flush_not_close() {
+        let bytes = (1u8..=32).collect::<Vec<_>>();
+        let (observer, trace, mut stream) = ping_stream(false, &bytes, &bytes);
+        let native = stream.inner.state.clone();
+        assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
+        stream.inner.flush_pending_once = true;
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(Pin::new(&mut stream).poll_flush(&mut cx).is_pending());
+        assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
+        futures::executor::block_on(stream.flush()).unwrap();
+        // Repeated successful flushes cannot append a duplicate marker.
+        futures::executor::block_on(stream.flush()).unwrap();
+        trace.io_error(1, "muxer_poll_error", &io::Error::other("later shutdown remains observable"));
+        drop(stream);
+        let snapshot = observer.snapshot();
+        let c = &snapshot["connections"][0];
+        let response = &c["streams"][0];
+        assert_eq!(response["write_close_returned"], false);
+        assert_eq!(response["write_flush_returned"], true);
+        assert_eq!(response["response_write_complete"], true);
+        assert_eq!(response["drop_observed"], true);
+        let events = c["events"].as_array().unwrap();
+        let markers = events.iter().filter(|e| e["kind"] == "response_completion").collect::<Vec<_>>();
+        assert_eq!(markers.len(), 1);
+        let marker = markers[0];
+        assert_eq!(marker["detail"]["completion_basis"], "native_ping_response_flush");
+        assert_eq!(marker["detail"]["read"], response["read"]);
+        assert_eq!(marker["detail"]["write"], response["write"]);
+        assert_eq!(marker["sequence"], response["response_completed_sequence"]);
+        assert!(marker["sequence"].as_u64().unwrap() < events.last().unwrap()["sequence"].as_u64().unwrap());
+        assert_eq!(native.lock().unwrap().closes, 0);
+    }
+
+    #[test]
+    fn private_ping_flush_never_completes_partial_mismatched_failed_or_outbound_io() {
+        let bytes = (1u8..=32).collect::<Vec<_>>();
+        for mode in ["no_flush", "request_31", "reply_31", "reply_33", "mismatch", "outbound",
+                     "flush_error", "stream_error", "connection_error", "overflow"] {
+            let challenge = if mode == "request_31" { &bytes[..31] } else { &bytes[..] };
+            let mut reply = bytes.clone();
+            if mode == "reply_31" { reply.pop(); }
+            if mode == "reply_33" { reply.push(33); }
+            if mode == "mismatch" { reply[0] ^= 1; }
+            let (observer, trace, mut stream) = ping_stream(mode == "outbound", challenge, &reply);
+            if mode == "stream_error" { trace.io_error(stream.phase, "write_error", &io::Error::other("before flush")); }
+            if mode == "connection_error" { trace.io_error(1, "muxer_poll_error", &io::Error::other("before flush")); }
+            if mode == "overflow" { trace.update(|connection| connection.overflow = true); }
+            stream.inner.flush_fail = mode == "flush_error";
+            if mode != "no_flush" {
+                assert_eq!(futures::executor::block_on(stream.flush()).is_err(), mode == "flush_error");
+            }
+            drop(stream);
+            assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null(), "{mode}");
+        }
+    }
+
+    #[test]
+    fn private_ping_negotiation_flush_or_eof_cannot_complete_later_unflushed_body() {
+        let bytes = (1u8..=32).collect::<Vec<_>>();
+        let (observer, _trace, mut stream) = ping_stream(false, &bytes, &[]);
+        futures::executor::block_on(stream.flush()).unwrap();
+        futures::executor::block_on(stream.write_all(&bytes)).unwrap();
+        let s = observer.snapshot()["connections"][0]["streams"][0].clone();
+        assert_eq!(s["read_eof"], true);
+        assert_eq!(s["write_flush_returned"], false);
+        assert!(s["response_completed_sequence"].is_null());
+        drop(stream);
+        assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
+    }
+
+    #[test]
+    fn private_kad_response_boundary_is_one_complete_native_flushed_pair() {
+        let request = frame(&[8, 4, 18, 1, 42]);
+        let response = frame(&[8, 4, 80, 0]);
+        let (observer, trace, mut stream) = application_stream("/ipfs/kad/1.0.0", false, &request, &response);
+        let native = stream.inner.state.clone();
+        stream.inner.flush_pending_once = true;
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(Pin::new(&mut stream).poll_flush(&mut cx).is_pending());
+        assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
+        futures::executor::block_on(stream.flush()).unwrap();
+        futures::executor::block_on(stream.flush()).unwrap();
+        trace.io_error(1, "muxer_poll_error", &io::Error::other("after native response flush"));
+        drop(stream);
+        let snapshot = observer.snapshot();
+        let c = &snapshot["connections"][0];
+        let stream = &c["streams"][0];
+        assert_eq!(stream["write_close_returned"], false);
+        assert_eq!(stream["write_flush_returned"], true);
+        assert_eq!(stream["response_write_complete"], true);
+        let events = c["events"].as_array().unwrap();
+        let markers = events.iter().filter(|e| e["kind"] == "response_completion").collect::<Vec<_>>();
+        assert_eq!(markers.len(), 1);
+        let marker = markers[0];
+        assert_eq!(marker["detail"]["completion_basis"], "native_kad_response_flush");
+        assert_eq!(marker["detail"]["read"], stream["read"]);
+        assert_eq!(marker["detail"]["write"], stream["write"]);
+        assert_eq!(marker["sequence"], stream["response_completed_sequence"]);
+        assert!(marker["sequence"].as_u64().unwrap() < events.last().unwrap()["sequence"].as_u64().unwrap());
+        assert_eq!(native.lock().unwrap().closes, 0);
+    }
+
+    #[test]
+    fn private_kad_flush_does_not_complete_invalid_repeated_failed_or_foreign_protocol_pairs() {
+        let valid = frame(&[8, 4]);
+        for mode in ["no_flush", "no_request", "partial_request", "partial_response", "bad_prefix",
+                     "two_requests", "two_responses", "oversized", "outbound", "other_protocol",
+                     "flush_error", "stream_error", "connection_error", "overflow"] {
+            let request = match mode {
+                "no_request" => vec![],
+                "partial_request" => vec![2, 8],
+                "two_requests" => [valid.clone(), valid.clone()].concat(),
+                _ => valid.clone(),
+            };
+            let response = match mode {
+                "partial_response" => vec![2, 8],
+                "bad_prefix" => vec![0x82, 0, 8, 4],
+                "two_responses" => [valid.clone(), valid.clone()].concat(),
+                "oversized" => frame(&vec![0; 8197]),
+                _ => valid.clone(),
+            };
+            let protocol = if mode == "other_protocol" { "/rendezvous/1.0.0" } else { "/ipfs/kad/1.0.0" };
+            let (observer, trace, mut stream) = application_stream(protocol, mode == "outbound", &request, &response);
+            if mode == "stream_error" { trace.io_error(stream.phase, "write_error", &io::Error::other("before flush")); }
+            if mode == "connection_error" { trace.io_error(1, "muxer_poll_error", &io::Error::other("before flush")); }
+            if mode == "overflow" { trace.update(|connection| connection.overflow = true); }
+            stream.inner.flush_fail = mode == "flush_error";
+            if mode != "no_flush" {
+                assert_eq!(futures::executor::block_on(stream.flush()).is_err(), mode == "flush_error");
+            }
+            drop(stream);
+            assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null(), "{mode}");
+        }
+    }
+
+    #[test]
+    fn private_kad_flush_before_response_bytes_is_not_a_response_boundary() {
+        let request = frame(&[8, 4]);
+        let (observer, _trace, mut stream) = application_stream("/ipfs/kad/1.0.0", false, &request, &[]);
+        futures::executor::block_on(stream.flush()).unwrap();
+        futures::executor::block_on(stream.write_all(&frame(&[8, 4]))).unwrap();
+        let s = observer.snapshot()["connections"][0]["streams"][0].clone();
+        assert_eq!(s["write_flush_returned"], false);
+        assert!(s["response_completed_sequence"].is_null());
+        drop(stream);
+        assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
     }
 
     #[test]

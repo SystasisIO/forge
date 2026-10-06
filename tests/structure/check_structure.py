@@ -373,18 +373,21 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
    if "export import forge.net.tls.context" in stcp_interface:
       errors.append("libraries/net/stcp/include/forge/net/stcp/connection.cppm: TLS is not an STCP public module")
 
-   stcp_source = (root / "libraries/net/stcp/connection.cpp").read_text(errors="ignore")
-   for token in (
-      "tls::make_asio_stream",
-      "tls::configure_client_stream",
-      "tls::validate_peer",
-      "tls::extract_peer_certificate_chain",
-      "tls::selected_alpn",
-   ):
-      if token not in stcp_source:
-         errors.append(f"libraries/net/stcp/connection.cpp: TLS delegation is incomplete ({token})")
+   stcp_owners = {
+      "libraries/net/stcp/connection.cpp": (
+         "tls::make_asio_stream", "tls::configure_client_stream", "tls::validate_peer",
+      ),
+      "libraries/net/stcp/connection_impl.cpp": (
+         "tls::extract_peer_certificate_chain", "tls::selected_alpn",
+      ),
+   }
+   for relative, tokens in stcp_owners.items():
+      source = (root / relative).read_text(errors="ignore")
+      for token in tokens:
+         if token not in source:
+            errors.append(f"{relative}: TLS delegation is incomplete ({token})")
 
-   for relative in ("libraries/net/stcp/connection.cpp", "libraries/net/http/connection.cpp"):
+   for relative in (*stcp_owners, "libraries/net/stcp/stream_backend.cpp", "libraries/net/http/connection.cpp"):
       source = (root / relative).read_text(errors="ignore")
       for token in (
          "native_context(",

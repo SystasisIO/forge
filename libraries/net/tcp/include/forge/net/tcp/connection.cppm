@@ -8,6 +8,11 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/ip/tcp.hpp>
 
+namespace forge::net::tcp::detail {
+struct connection_access;
+struct connection_test_hooks;
+}
+
 export module forge.net.tcp.connection;
 
 export import forge.net.tcp.exceptions;
@@ -47,6 +52,9 @@ class connection {
    [[nodiscard]] boost::asio::ip::tcp::socket release_socket(std::shared_ptr<void>& lifetime) &&;
 
  private:
+   friend struct detail::connection_access;
+   connection(boost::asio::ip::tcp::socket socket, options tcp_options, std::shared_ptr<void> lifetime,
+              std::shared_ptr<detail::connection_test_hooks> hooks);
    struct impl;
    std::shared_ptr<impl> impl_;
 };

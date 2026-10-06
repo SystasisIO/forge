@@ -243,6 +243,8 @@ void node::impl::initialize_lifecycle() {
 }
 
 void node::impl::request_lifecycle_stop() noexcept {
+   cancel_coordinated_dials();
+   if (paths) { paths->request_stop(); }
    stop_mdns();
    auto active_peer_exchange_operations = std::map<std::uint64_t, std::shared_ptr<peer_exchange_operation>>{};
    {

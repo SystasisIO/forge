@@ -3,6 +3,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <memory>
+#include <span>
 #include <optional>
 #include <string>
 #include <utility>

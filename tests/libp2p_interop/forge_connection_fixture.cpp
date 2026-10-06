@@ -1,5 +1,6 @@
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 import forge.net.p2p.diagnostics;
 import forge.net.p2p.endpoint;
@@ -8,6 +9,7 @@ import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.scoring;
+import forge.net.p2p.stream;
 
 #include "forge_connection_fixture.hxx"
 
@@ -62,6 +64,48 @@ void require_same_connection(const forge::net::p2p::node& value,
        capture_identified_connection(value, expected.remote_peer, *expected.remote_endpoint, expected.direction).id != expected.id) {
       throw std::runtime_error{"application exchange did not retain its authenticated connection"};
    }
+}
+
+std::string endpoint_connection_receipt(const forge::net::p2p::node& value,
+                                        const forge::net::p2p::peer_id& peer,
+                                        const forge::net::p2p::stream& stream,
+                                        forge::net::p2p::diagnostics::session_direction direction) {
+   const auto snapshot = value.diagnostics();
+   if (snapshot.sessions.size() != 1 || !snapshot.sessions.front().remote_endpoint) {
+      throw std::runtime_error{"endpoint receipt requires one retained connection"};
+   }
+   const auto session = capture_identified_connection(value, peer, *snapshot.sessions.front().remote_endpoint, direction);
+   if (!stream.valid() || !session.local_endpoint ||
+       session.local_endpoint->transport.protocol != forge::net::p2p::endpoint::protocol_kind::tcp ||
+       session.remote_endpoint->transport.protocol != forge::net::p2p::endpoint::protocol_kind::tcp ||
+       stream.authentication() != session.authentication) {
+      throw std::runtime_error{"endpoint receipt lacks consistent actual stream/session/socket authentication"};
+   }
+   auto security = std::string{};
+   switch (stream.authentication()) {
+   case forge::net::p2p::peer_authentication::noise: security = "/noise"; break;
+   case forge::net::p2p::peer_authentication::libp2p_tls: security = "/tls/1.0.0"; break;
+   default: throw std::runtime_error{"endpoint receipt requires an authenticated native TCP stream"};
+   }
+   if (session.muxer.value.empty()) {
+      throw std::runtime_error{"endpoint receipt lacks the actual session muxer"};
+   }
+   auto quote = [](std::string_view text) {
+      auto result = std::string{"\""};
+      for (const auto c : text) {
+         if (static_cast<unsigned char>(c) < 32) { throw std::runtime_error{"invalid receipt text"}; }
+         if (c == '\\' || c == '"') { result += '\\'; }
+         result += c;
+      }
+      return result + '"';
+   };
+   return "{\"source\":\"forge.authenticated-stream-retained-session\",\"connection_id\":" +
+          std::to_string(session.id) + ",\"stream_id\":" + std::to_string(stream.id()) +
+          ",\"local_peer_id\":" + quote(value.local_peer().to_string()) + ",\"remote_peer_id\":" +
+          quote(peer.to_string()) + ",\"remote_address\":" + quote(session.remote_endpoint->to_string()) +
+          ",\"local_address\":" + quote(session.local_endpoint->to_string()) +
+          ",\"transport\":\"tcp\",\"security\":" + quote(security) + ",\"muxer\":" + quote(session.muxer.value) +
+          ",\"early_muxer_negotiation\":" + (session.used_early_muxer_negotiation ? "true" : "false") + "}";
 }
 
 } // namespace forge::test::libp2p_interop

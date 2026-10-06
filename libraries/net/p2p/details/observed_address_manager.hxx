@@ -41,6 +41,10 @@ class observed_address_manager final {
    void remove(std::uint64_t session_id);
    void expire(time_point now);
    [[nodiscard]] std::vector<endpoint> confirmed(time_point now) const;
+   // DCUtR candidates are not advertisement/reachability confirmation. One
+   // stored authenticated observation suffices, only for a still-owned listener.
+   [[nodiscard]] std::vector<endpoint> hole_punch_candidates(time_point now,
+       std::span<const endpoint> listened, std::size_t limit) const;
 
  private:
    using address_key = std::vector<std::uint8_t>;
@@ -51,6 +55,7 @@ class observed_address_manager final {
       std::string peer;
       std::string observer;
       candidate_key key;
+      endpoint local;
       endpoint reported;
       time_point expires_at;
    };
@@ -62,6 +67,8 @@ class observed_address_manager final {
    };
 
    [[nodiscard]] static std::size_t count_observers(const std::vector<const observation*>& values);
+   [[nodiscard]] std::vector<endpoint> select_locked(time_point now, std::size_t min_observers,
+       std::size_t limit, std::span<const endpoint> listened, bool public_only) const;
    void expire_locked(time_point now);
 
    const options options_;

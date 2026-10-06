@@ -15,6 +15,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <type_traits>

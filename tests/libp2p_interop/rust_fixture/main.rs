@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     error::Error,
     fs,
     net::{Ipv4Addr, SocketAddr},
@@ -37,6 +37,9 @@ mod provider;
 mod task_owner;
 mod upgrade_observer;
 mod application_observer;
+mod private_profile;
+mod path;
+mod coordinated;
 #[path = "mdns.rs"]
 mod mdns_fixture;
 #[path = "autonat.rs"]
@@ -207,6 +210,46 @@ const RENDEZVOUS_LIFECYCLE_MIN_TTL_SECONDS: u64 = 2;
 const RENDEZVOUS_LIFECYCLE_MAX_TTL_SECONDS: u64 = 3;
 const RENDEZVOUS_LIFECYCLE_TIMING_MARGIN: Duration = Duration::from_millis(200);
 
+const PATH_LIVE_REQUIRED_ARGS: [&str; 10] = [
+    "scenario", "transport", "path-role", "case-token", "bind-ip",
+    "ready-file", "result-file", "stop-file", "control-file", "plan-file",
+];
+
+fn parse_path_live_args(argv: &[String]) -> std::io::Result<Option<BTreeMap<String, String>>> {
+    if argv.first().map(String::as_str) != Some("path-live") {
+        return Ok(None);
+    }
+    let invalid = |message: &'static str| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
+    let flags = &argv[1..];
+    if flags.len() % 2 != 0 {
+        return Err(invalid("path-live requires flag/value pairs"));
+    }
+    let mut args = BTreeMap::new();
+    for pair in flags.chunks_exact(2) {
+        let name = pair[0].strip_prefix("--").ok_or_else(|| invalid("path-live requires named flags"))?;
+        if (!PATH_LIVE_REQUIRED_ARGS.contains(&name) && !matches!(name, "relay-addr" | "relay-peer-id"))
+            || args.contains_key(name) || pair[1].is_empty() || pair[1].starts_with("--")
+        {
+            return Err(invalid("invalid/duplicate path-live flag or value"));
+        }
+        args.insert(name.to_owned(), pair[1].clone());
+    }
+    if PATH_LIVE_REQUIRED_ARGS.iter().any(|name| !args.contains_key(*name)) {
+        return Err(invalid("missing required path-live flag"));
+    }
+    if args["scenario"] != "dcutr" || args["transport"] != "quic"
+        || !matches!(args["path-role"].as_str(), "relay" | "source" | "destination")
+        || args["bind-ip"].parse::<Ipv4Addr>().is_err()
+    {
+        return Err(invalid("path-live requires DCUtR, native QUIC, a valid role and numeric IPv4"));
+    }
+    let has_relay = args.contains_key("relay-addr");
+    if has_relay != args.contains_key("relay-peer-id") || (args["path-role"] != "relay" && !has_relay) {
+        return Err(invalid("path-live source/destination require a paired relay peer/address"));
+    }
+    Ok(Some(args))
+}
+
 fn parse_args() -> Result<Options, Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let mut out = Options::default();
@@ -298,7 +341,7 @@ fn behaviour_for(
     opts: &Options,
 ) -> Behaviour {
     let peer = key.public().to_peer_id();
-    let private_network = opts.transport == "tcp-pnet";
+    let private_network = opts.transport == "tcp-pnet" || private_profile::is_transport(&opts.transport);
     let mut kad_config = kad::Config::new(StreamProtocol::new(KAD_PROTOCOL));
     kad_config.set_query_timeout(Duration::from_secs(10));
     let mut kad_behaviour =
@@ -426,6 +469,18 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
                 .with_swarm_config(configure_tasks)
                 .build()
         }
+        "tcp-pnet-noise" | "tcp-pnet-tls" => {
+            let psk = if opts.pnet_key_file.as_os_str().is_empty() { None } else {
+                let text = fs::read_to_string(&opts.pnet_key_file)?;
+                Some(PreSharedKey::from_str(&text).map_err(|_| "invalid private key fixture")?)
+            };
+            let observer = opts.upgrade_observer.clone();
+            let use_tls = transport == "tcp-pnet-tls";
+            SwarmBuilder::with_existing_identity(key).with_tokio()
+                .with_other_transport(move |key| upgrade_observer::native_private_transport(key, use_tls, psk, observer))?
+                .with_behaviour(|key| behaviour_for(key, None, opts))?
+                .with_swarm_config(configure_tasks).build()
+        }
         "tcp-pnet" if opts.pnet_key_file.as_os_str().is_empty() => {
             let builder = SwarmBuilder::with_existing_identity(key)
                 .with_tokio()
@@ -477,7 +532,7 @@ async fn new_swarm(opts: &Options) -> Result<libp2p::Swarm<Behaviour>, Box<dyn E
 
     let listen_addr = if opts.scenario == "mdns" {
         mdns_fixture::listen_address(opts)?
-    } else if transport == "tcp" || transport == "tcp-tls" || transport == "tcp-pnet" {
+    } else if transport == "tcp" || transport == "tcp-tls" || transport == "tcp-pnet" || private_profile::is_transport(transport) {
         Multiaddr::empty()
             .with(Protocol::Ip4(Ipv4Addr::LOCALHOST))
             .with(Protocol::Tcp(0))
@@ -2944,6 +2999,16 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(config) = coordinated::parse_args(&argv)? {
+        coordinated::run(config).await?;
+        return Ok(());
+    }
+    if let Some(args) = parse_path_live_args(&argv)? {
+        // The path fixture owns its Swarm, task join and final evidence file.
+        path::run_live(args).await?;
+        return Ok(());
+    }
     let opts = parse_args()?;
     if opts.scenario == "mdns" {
         return mdns_fixture::run(opts).await;
@@ -2951,7 +3016,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if autonat_fixture::is_scenario(&opts.scenario) {
         return autonat_fixture::run(opts).await;
     }
-    let capture = matches!(opts.transport.as_str(), "tcp" | "tcp-tls")
+    let private = private_profile::is_transport(&opts.transport) || opts.scenario.starts_with("inline_muxer_");
+    let capture = private || matches!(opts.transport.as_str(), "tcp" | "tcp-tls")
         && matches!(opts.command.as_str(), "listen" | "dial")
         && matches!(opts.scenario.as_str(), "identify" | "echo" | "echo_large");
     let observer = opts.upgrade_observer.clone();
@@ -2959,26 +3025,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let result_file = opts.result_file.clone();
     let role = if opts.command == "listen" { "listener" } else { "dialer" };
     let scenario = opts.scenario.clone();
-    let outcome = match opts.command.as_str() {
+    let outcome = if private { private_profile::run(opts).await } else { match opts.command.as_str() {
         "listen" => listen(opts).await,
         "destination" => destination(opts).await,
         "dial" => dial(opts).await,
         "dial-relay" => dial_relay(opts).await,
         "autorelay-relay" | "autorelay-observe" => autorelay::run(opts).await,
         _ => Err(format!("unknown command {}", opts.command).into()),
-    };
+    }};
     // Commands own their Swarms; drain the public-executor and echo tasks only after drop.
     let lifecycle = tasks.close_and_join().await;
     let mut outcome = lifecycle.combine(outcome);
     let observation = capture.then(|| {
         let mut evidence = observer.finalized(lifecycle.snapshot()["fixture_owned_tasks_joined"] == true);
         if outcome.is_err() { evidence["complete"] = json!(false); }
-        if role == "dialer" && matches!(scenario.as_str(), "echo" | "echo_large") {
+        if !private && role == "dialer" && matches!(scenario.as_str(), "echo" | "echo_large") {
             if let Err(error) = application_observer::require_identify_echo_pair(&mut evidence) {
                 if outcome.is_ok() { outcome = Err(error.into()); }
             }
         }
-        if role == "dialer" && outcome.is_ok() && evidence["complete"] != true {
+        if !private && role == "dialer" && outcome.is_ok() && evidence["complete"] != true {
             outcome = Err("native TCP application observation is unbound, ambiguous or incomplete".into());
         }
         evidence
@@ -3002,6 +3068,87 @@ mod tests {
     use quick_protobuf::Writer;
     use sha2::{Digest, Sha256};
     use std::net::Ipv4Addr;
+
+    fn path_live_argv(role: &str) -> Vec<String> {
+        let mut argv: Vec<String> = [
+            "path-live", "--scenario", "dcutr", "--transport", "quic", "--path-role", role,
+            "--case-token", "0123456789abcdef0123456789abcdef", "--bind-ip", "10.200.0.2",
+            "--ready-file", "/case/ready.json", "--result-file", "/case/result.json",
+            "--stop-file", "/case/stop", "--control-file", "/case/control", "--plan-file", "/case/plan",
+        ].into_iter().map(str::to_owned).collect();
+        if role != "relay" {
+            argv.extend(["--relay-addr", "/ip4/10.200.0.1/udp/4001/quic-v1/p2p/relay-peer",
+                         "--relay-peer-id", "relay-peer"].into_iter().map(str::to_owned));
+        }
+        argv
+    }
+
+    #[test]
+    fn path_live_dispatch_preserves_exact_arguments_for_all_roles() {
+        for role in ["relay", "source", "destination"] {
+            let argv = path_live_argv(role);
+            let args = super::parse_path_live_args(&argv).unwrap().unwrap();
+            assert_eq!(args.len(), if role == "relay" { 10 } else { 12 });
+            for pair in argv[1..].chunks_exact(2) {
+                assert_eq!(args.get(pair[0].strip_prefix("--").unwrap()), Some(&pair[1]));
+            }
+            assert!(!args.contains_key("command"));
+        }
+    }
+
+    #[test]
+    fn path_live_dispatch_rejects_noncanonical_argv_before_runtime() {
+        for extra in [
+            vec!["--transport", "quic"], vec!["--pnet-key-file", "/outside/key"],
+            vec!["--features", "relay"], vec!["--store-dir", "/case/store"],
+            vec!["--unknown"], vec!["unexpected", "value"], vec!["--relay-peer-id", ""],
+            vec!["--relay-peer-id", "--relay-addr"], vec!["--transport=quic", "value"],
+        ] {
+            let mut argv = path_live_argv("relay");
+            argv.extend(extra.into_iter().map(str::to_owned));
+            assert!(super::parse_path_live_args(&argv).is_err());
+        }
+        for flag in super::PATH_LIVE_REQUIRED_ARGS {
+            let mut argv = path_live_argv("relay");
+            let index = argv.iter().position(|value| value == &format!("--{flag}")).unwrap();
+            drop(argv.drain(index..index + 2));
+            assert!(super::parse_path_live_args(&argv).is_err());
+        }
+    }
+
+    #[test]
+    fn path_live_dispatch_rejects_wrong_transport_role_or_incomplete_relay_pair() {
+        for (flag, value) in [("--transport", "tcp-pnet-noise"), ("--scenario", "ping"),
+                              ("--path-role", "dialer"), ("--bind-ip", "localhost"), ("--bind-ip", "::1")] {
+            let mut argv = path_live_argv("relay");
+            let index = argv.iter().position(|arg| arg == flag).unwrap();
+            argv[index + 1] = value.into();
+            assert!(super::parse_path_live_args(&argv).is_err());
+        }
+        for role in ["source", "destination"] {
+            for remove in [1, 2] {
+                let mut argv = path_live_argv(role);
+                argv.truncate(argv.len() - 2 * remove);
+                assert!(super::parse_path_live_args(&argv).is_err());
+            }
+        }
+        for lone in ["--relay-addr", "--relay-peer-id"] {
+            let mut argv = path_live_argv("relay");
+            argv.extend([lone.into(), "value".into()]);
+            assert!(super::parse_path_live_args(&argv).is_err());
+        }
+    }
+
+    #[test]
+    fn path_live_dispatch_leaves_all_legacy_commands_to_existing_parser() {
+        assert!(super::parse_path_live_args(&[]).unwrap().is_none());
+        for command in ["listen", "dial", "destination", "dial-relay", "autorelay-relay", "autorelay-observe"] {
+            for scenario in ["mdns", "autonat_v1_client", "tcp_yamux_private_pnet", "inline_muxer_go_noise"] {
+                let argv = [command, "--scenario", scenario].into_iter().map(str::to_owned).collect::<Vec<_>>();
+                assert!(super::parse_path_live_args(&argv).unwrap().is_none());
+            }
+        }
+    }
 
     fn identify_payload(key: &[u8], envelope: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();

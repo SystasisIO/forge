@@ -8,6 +8,7 @@ module;
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <span>
 #include <stdexcept>
 
 #include <boost/asio/awaitable.hpp>
