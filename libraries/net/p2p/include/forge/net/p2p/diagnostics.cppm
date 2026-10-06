@@ -27,8 +27,11 @@ import forge.net.p2p.reachability;
 import forge.net.p2p.relay;
 import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
+import forge.net.p2p.stream;
 import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
+import forge.net.tls.options;
+import forge.net.yamux.options;
 
 export namespace forge::net::p2p {
 
@@ -167,6 +170,16 @@ struct diagnostics {
       bool protected_peer = false;
       identify::state identify_state = identify::state::unknown;
       std::string identify_error;
+      protocol_id muxer;
+      bool used_early_muxer_negotiation = false;
+      // Actual transport facts; no listener or advertised-address fallback.
+      std::optional<forge::net::p2p::endpoint> local_endpoint;
+      peer_authentication authentication = peer_authentication::unverified;
+      std::optional<forge::net::tls::endpoint_role> security_role;
+      std::optional<forge::net::yamux::side> yamux_role;
+      // Relay route and actual outer session ID, distinct from native sockets.
+      std::optional<forge::net::p2p::endpoint> circuit_endpoint;
+      std::optional<std::uint64_t> carrier_session_id;
    };
 
    struct connection_state {
@@ -325,7 +338,9 @@ BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::peer, (),
                        protected_peer))
 BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::session, (),
                       (id, remote_peer, capabilities, path, relay_peer, direct_endpoint, remote_endpoint, direction,
-                       age, idle, closed, protected_peer, identify_state, identify_error))
+                       age, idle, closed, protected_peer, identify_state, identify_error, muxer,
+                       used_early_muxer_negotiation, local_endpoint, authentication, security_role, yamux_role,
+                       circuit_endpoint, carrier_session_id))
 BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::connection_state, (),
                       (active_sessions, protected_peers, retained_identify_attempts))
 BOOST_DESCRIBE_STRUCT(forge::net::p2p::diagnostics::persistence_state, (),

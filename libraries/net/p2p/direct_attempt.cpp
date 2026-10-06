@@ -5,6 +5,7 @@ module;
 #include <functional>
 #include <map>
 #include <memory>
+#include <span>
 #include <optional>
 #include <utility>
 #include <vector>

@@ -84,6 +84,9 @@ import forge.net.pnet.protector;
 #include "forge_autorelay_fixture.hxx"
 #include "forge_connection_fixture.hxx"
 #include "forge_mdns_fixture.hxx"
+#include "forge_path_fixture.hxx"
+#include "forge_private_profile_fixture.hxx"
+#include "forge_coordinated_fixture.hxx"
 
 namespace {
 
@@ -2353,12 +2356,132 @@ int main(int argc, char** argv) {
    try {
       const auto args = parse_args(argc, argv);
       if (args.at("command") == "--self-test") {
+         forge::test::libp2p_interop::private_profile_self_test();
          return dht_wire_self_test_mode();
       }
       if (args.at("command") == "build-info") {
          return build_info_mode();
       }
+      if (args.at("command") == "coordinated-live") {
+         if ((argc - 2) % 2 != 0 || args.size() != 1 + static_cast<std::size_t>((argc - 2) / 2)) {
+            throw std::runtime_error{"coordinated-live requires unique flag/value pairs"};
+         }
+         return forge::test::libp2p_interop::run_coordinated_fixture(
+             args,
+             {
+                 .make_options =
+                     [](const auto& arguments) {
+                        auto options = node_options(required(arguments, "store-dir"));
+                        if (required(arguments, "transport") == "tcp-pnet-noise") {
+                           configure_private_network(options, arguments, "tcp-pnet");
+                        }
+                        options.allow_insecure_test_mode = false;
+                        options.capabilities = {.bits = forge::net::p2p::capabilities::peer_exchange};
+                        options.dht_profiles.clear();
+                        options.relay_policy.service_enabled = false;
+                        options.relay_policy.client_enabled = false;
+                        options.relay_policy.auto_discovery_enabled = false;
+                        options.path_policy = {.allow_direct = true, .allow_hole_punch = false, .allow_relay = false};
+                        options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+                        options.limits.topology.dht_enabled = false;
+                        options.limits.topology.rendezvous_enabled = false;
+                        options.limits.topology.peer_exchange_enabled = false;
+                        return options;
+                     },
+                 .register_echo =
+                     [](auto& node, forge::net::p2p::node::protocol_handler handler) {
+                        node.register_protocol_handler({.value = std::string{echo_protocol}}, std::move(handler));
+                     },
+                 .read_payload =
+                     [](auto& stream, std::vector<std::uint8_t>* observed) {
+                        return read_length_delimited(stream, 128, observed);
+                     },
+                 .write_payload = [](auto& stream, std::span<const std::uint8_t> payload,
+                                     std::vector<std::uint8_t>* observed) -> boost::asio::awaitable<void> {
+                    auto frame = wrap_length_delimited(payload);
+                    co_await stream.async_write(frame);
+                    *observed = std::move(frame);
+                 },
+             });
+      }
+      if (args.at("command") == "path-live") {
+         const auto flags = std::set<std::string>{"command", "scenario", "transport", "path-role", "case-token",
+             "bind-ip", "ready-file", "result-file", "stop-file", "control-file", "plan-file", "store-dir",
+             "relay-addr", "relay-peer-id"};
+         if ((argc - 2) % 2 != 0 || args.size() != 1 + static_cast<std::size_t>((argc - 2) / 2) ||
+             std::ranges::any_of(args, [&](const auto& argument) { return !flags.contains(argument.first); })) {
+            throw std::runtime_error{"path-live requires unique supported flag/value pairs"};
+         }
+         for (const auto* flag : {"scenario", "transport", "path-role", "case-token", "bind-ip", "ready-file",
+                                  "result-file", "stop-file", "control-file", "plan-file", "store-dir"}) {
+            (void)required(args, flag);
+         }
+         const auto role = required(args, "path-role");
+         if (required(args, "scenario") != "dcutr" || required(args, "transport") != "quic" ||
+             (role != "relay" && role != "source" && role != "destination") ||
+             args.contains("relay-addr") != args.contains("relay-peer-id")) {
+            throw std::runtime_error{"path-live role/transport/relay pair mismatch"};
+         }
+         if (role != "relay") {
+            (void)required(args, "relay-addr");
+            (void)required(args, "relay-peer-id");
+         }
+         return forge::test::libp2p_interop::forge_path_fixture::run(args, {
+             .make_options = [](const auto& arguments) {
+                auto options = relay_node_options(required(arguments, "store-dir"), generate_libp2p_identity());
+                const auto service = required(arguments, "path-role") == "relay";
+                options.capabilities = {.bits = forge::net::p2p::capabilities::direct_quic |
+                    forge::net::p2p::capabilities::relay_reservation | forge::net::p2p::capabilities::hole_punching |
+                    (service ? forge::net::p2p::capabilities::relay : 0)};
+                options.relay_policy.service_enabled = service;
+                options.relay_policy.client_enabled = !service;
+                options.relay_policy.auto_discovery_enabled = false;
+                options.path_policy = {.allow_direct = true, .allow_hole_punch = true, .allow_relay = true};
+                options.reachability_policy.client_v1_enabled = false;
+                options.reachability_policy.client_v2_enabled = false;
+                options.reachability_policy.service_v1_enabled = false;
+                options.reachability_policy.service_v2_enabled = false;
+                options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+                options.limits.topology.dht_enabled = false;
+                options.limits.topology.rendezvous_enabled = false;
+                options.limits.topology.peer_exchange_enabled = false;
+                return options;
+             },
+             .listen_endpoint = [](const auto& arguments) {
+                const auto address = boost::asio::ip::make_address(required(arguments, "bind-ip"));
+                if (!address.is_v4()) { throw std::runtime_error{"path-live requires a numeric IPv4 bind address"}; }
+                return forge::net::p2p::parse_endpoint("/ip4/" + address.to_string() + "/udp/0/quic-v1");
+             },
+         });
+      }
       const auto scenario = optional_value(args, "scenario");
+      if (optional_value(args, "transport") == "tcp-pnet-noise" ||
+          optional_value(args, "transport") == "tcp-pnet-tls" || scenario.starts_with("inline_muxer_")) {
+         return forge::test::libp2p_interop::run_private_profile_fixture(args, {
+             .make_options = [](const auto& arguments) {
+                auto options = node_options(required(arguments, "store-dir"));
+                const auto private_profile = optional_value(arguments, "transport").starts_with("tcp-pnet-");
+                if (private_profile) { configure_private_network(options, arguments, "tcp-pnet"); }
+                options.capabilities = {.bits = forge::net::p2p::capabilities::peer_exchange | forge::net::p2p::capabilities::rendezvous};
+                options.relay_policy.service_enabled = false;
+                options.relay_policy.client_enabled = false;
+                options.relay_policy.auto_discovery_enabled = false;
+                options.path_policy = {.allow_direct = true, .allow_hole_punch = false, .allow_relay = false};
+                options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+                options.limits.topology.dht_enabled = false;
+                options.limits.topology.rendezvous_enabled = false;
+                options.limits.topology.peer_exchange_enabled = false;
+                return options;
+             },
+             .register_echo = register_echo,
+             .signed_record = [](const auto& value) {
+                const auto local = value.local_endpoint();
+                if (!local) { throw std::runtime_error{"private record lacks local endpoint"}; }
+                return signed_rendezvous_record(local_identity(), p2p_endpoint_for(*local, value.local_peer()),
+                    static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count()));
+             },
+         });
+      }
       if (args.at("command") == "autorelay-destination" || args.at("command") == "autorelay-service") {
          return forge::test::libp2p_interop::forge_autorelay_fixture::run(args, {
              .make_options = [](const auto& arguments) {

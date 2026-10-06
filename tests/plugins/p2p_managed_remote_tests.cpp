@@ -459,6 +459,19 @@ BOOST_AUTO_TEST_CASE(managed_remote_is_sticky_and_fails_over_without_replay) {
    client.configure(client_config);
    forge::asio::blocking::run(client.runtime(), client.startup());
 
+   // Establish primary catalog and API stream readiness before testing failover.
+   {
+      auto resolver = client.apis().get<forge::plugins::net::p2p::resolver::api>(
+          {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
+      auto warming = forge::asio::blocking::run(
+          client.runtime(), resolver->remote<test_api>(first_peer,
+                                                       {.query_deadline = std::chrono::seconds{2},
+                                                        .open_deadline = std::chrono::seconds{2}}));
+      BOOST_REQUIRE(static_cast<bool>(warming));
+   }
+   BOOST_TEST(first_api->calls() == 0U);
+   BOOST_TEST(second_api->calls() == 0U);
+
    auto managed = client.apis().get<forge::plugins::net::p2p::resolver::managed_api>(
        {.id = {"forge.plugins.net.p2p.resolver.managed"}, .major = 1, .min_revision = 0});
    auto remote = forge::asio::blocking::run(
@@ -466,8 +479,8 @@ BOOST_AUTO_TEST_CASE(managed_remote_is_sticky_and_fails_over_without_replay) {
                                                    {
                                                        .resolution =
                                                            {
-                                                               .query_deadline = std::chrono::milliseconds{100},
-                                                               .open_deadline = std::chrono::milliseconds{100},
+                                                               .query_deadline = std::chrono::seconds{2},
+                                                               .open_deadline = std::chrono::seconds{2},
                                                            },
                                                        .max_connect_rounds = 16,
                                                        .initial_backoff = std::chrono::milliseconds{10},

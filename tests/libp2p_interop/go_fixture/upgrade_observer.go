@@ -101,14 +101,15 @@ type upgradeObserver struct {
 }
 
 type upgradeConnection struct {
-	owner        *upgradeObserver
-	evidence     upgradeConnectionEvidence
-	sequence     uint64
-	stage        int
-	streams      uint64
-	streamStates []*selectionTrace
-	security     selectionTrace
-	muxer        selectionTrace
+	owner          *upgradeObserver
+	privateProfile bool
+	evidence       upgradeConnectionEvidence
+	sequence       uint64
+	stage          int
+	streams        uint64
+	streamStates   []*selectionTrace
+	security       selectionTrace
+	muxer          selectionTrace
 }
 
 // All parser and trace mutation is serialized by the owning observer, never across delegated I/O.
@@ -393,6 +394,21 @@ func (s *selectionTrace) bodyLocked(read bool, data []byte, candidate string) {
 	}
 	if candidate == string(echoProtocol) {
 		body.feed(data, 256*1024+10)
+	}
+	if s.connection.privateProfile {
+		if candidate == "/ipfs/kad/1.0.0" {
+			body.feed(data, 8196)
+		}
+		if candidate == "/ipfs/ping/1.0.0" {
+			if body.digest == nil {
+				body.digest = sha256.New()
+			}
+			body.digest.Write(data)
+			body.total += uint64(len(data))
+			body.frames = body.total / 32
+			body.remaining = body.total % 32
+			body.failed = body.total > 128
+		}
 	}
 }
 
@@ -690,11 +706,18 @@ func (s *selectionTrace) completedLocked() bool {
 		return false
 	}
 	if s.direction == network.DirOutbound.String() {
+		if s.connection.privateProfile && (s.selected == "/ipfs/ping/1.0.0" || s.selected == "/ipfs/kad/1.0.0") {
+			return s.applicationDone && s.boundID != "" && s.readBody.complete() && s.writeBody.complete() &&
+				(s.selected != "/ipfs/ping/1.0.0" || s.writeBody.sum() == s.readBody.sum())
+		}
 		return s.applicationDone && s.boundID != "" && s.readBody.complete() &&
 			(s.selected == "/ipfs/id/1.0.0" || (s.selected == string(echoProtocol) && s.writeBody.complete() && s.writeBody.sum() == s.readBody.sum()))
 	}
 	if !s.writeBody.complete() {
 		return false
+	}
+	if s.connection.privateProfile && (s.selected == "/ipfs/ping/1.0.0" || s.selected == "/ipfs/kad/1.0.0") {
+		return s.readBody.complete() && (s.selected != "/ipfs/ping/1.0.0" || s.writeBody.sum() == s.readBody.sum())
 	}
 	if s.selected == "/ipfs/id/1.0.0" {
 		return true

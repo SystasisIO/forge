@@ -42,6 +42,7 @@ module;
 #include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/compat/move_only_function.hpp>
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
@@ -88,6 +89,7 @@ import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "details/node_impl.hxx"
+#include "details/owner_cancellation.hxx"
 
 #include "details/peer_failure.hxx"
 #include "details/protocol_capabilities.hxx"
@@ -319,12 +321,14 @@ exchange_rendezvous(const auto& self, const peer_id& peer, rendezvous::message r
 void stop_owned(auto self) {
    auto operations = std::vector<detail::session_teardown::operation>{};
    auto deadlines = std::vector<operation_deadline::stop_token>{};
+   auto cancellations = std::vector<std::shared_ptr<forge::net::transport::detail::session_concept>>{};
    {
       auto lock = std::scoped_lock{self->mutex};
       if (self->stopped) {
          return;
       }
       operations.reserve(self->sessions.size() + self->retiring_sessions.size() + 1);
+      cancellations.reserve(self->sessions.size() + self->retiring_sessions.size());
       operations.push_back(self->direct_registry.teardown_operation());
       deadlines.reserve(self->protocol_open_deadlines.size());
       for (auto& [_, deadline] : self->protocol_open_deadlines) {
@@ -340,14 +344,23 @@ void stop_owned(auto self) {
       }
       self->connections.clear();
       for (const auto& [_, session] : self->retiring_sessions) {
+         if (!session->retirement.terminal()) {
+            if (auto owner = forge::net::transport::detail::session_access::cancellation_owner(session->connection)) {
+               cancellations.push_back(std::move(owner));
+            }
+         }
          if (session->retirement.terminal() || session->retirement.tracked()) {
             continue;
          }
+         const auto owner = std::weak_ptr{
+             forge::net::transport::detail::session_access::cancellation_owner(session->connection)};
          operations.push_back(detail::session_teardown::operation{
              .close = [self, session]() -> boost::asio::awaitable<void> {
                 co_await self->async_retire_session(session, true);
              },
-             .cancel = [session] { detail::request_session_cancel(session->connection); },
+             .cancel = [owner] {
+                if (const auto connection = owner.lock()) { connection->request_cancel(); }
+             },
          });
       }
       self->inbound_relay_reservations.clear();
@@ -359,6 +372,12 @@ void stop_owned(auto self) {
       self->metrics_value.active_relay_reservations = 0;
       self->metrics_value.stopped = true;
    }
+   // Publish per-session cancellation before closing the shared listener FD.
+   // These stable owners also cover a retirement whose facade moves concurrently.
+   for (const auto& owner : cancellations) {
+      owner->request_cancel();
+   }
+   cancellations.clear();
    self->direct_registry.stop();
    for (const auto& deadline : deadlines) {
       static_cast<void>(deadline.request_stop());
@@ -420,6 +439,14 @@ boost::asio::awaitable<void> async_stop_after_topology_join(auto self) {
        [self = std::move(self)]() mutable -> boost::asio::awaitable<void> {
           auto failure = std::exception_ptr{};
           self->request_lifecycle_stop();
+          // A failed join preparation must not allow session/persistence teardown
+          // to overtake a still-owned native coordinated operation.
+          co_await self->join_coordinated_dials();
+          try {
+             co_await self->paths->async_join();
+          } catch (...) {
+             failure = std::current_exception();
+          }
           try {
              co_await self->join_mdns();
           } catch (...) {
@@ -486,6 +513,7 @@ node::node(forge::asio::runtime& runtime, node::options options) {
    impl_->validate_local_identify_document();
    impl_->initialize_dht_provider_registry();
    impl_->initialize_lifecycle();
+   impl_->paths = std::make_shared<detail::path_manager>(impl_->lifecycle_wakeup);
    impl_->initialize_topology_manager();
    impl_->initialize_mdns();
    impl_->initialize_reachability();
@@ -714,6 +742,14 @@ forge::net::p2p::diagnostics::snapshot node::diagnostics(forge::net::p2p::diagno
           .protected_peer = impl_->connections.is_protected(session.info.remote_peer),
           .identify_state = session.info.identify_state,
           .identify_error = session.identify_error,
+          .muxer = session.info.muxer,
+          .used_early_muxer_negotiation = session.info.used_early_muxer_negotiation,
+          .local_endpoint = session.local_endpoint,
+          .authentication = session.authentication,
+          .security_role = session.info.security_role,
+          .yamux_role = session.info.yamux_role,
+          .circuit_endpoint = session.info.circuit_endpoint,
+          .carrier_session_id = session.info.carrier_session_id,
       });
    }
 
@@ -800,6 +836,12 @@ boost::asio::awaitable<node::session_info> node::async_connect(forge::net::p2p::
    return async_connect(std::move(endpoint), connect_options{});
 }
 
+boost::asio::awaitable<node::session_info>
+node::async_connect_coordinated(forge::net::p2p::endpoint endpoint, coordinated_connect_options options) {
+   auto self = impl_;
+   co_return co_await self->connect_coordinated(std::move(endpoint), std::move(options));
+}
+
 boost::asio::awaitable<node::session_info> node::async_connect(forge::net::p2p::endpoint endpoint,
                                                                node::connect_options options) {
    impl_->require_private_direct_tcp(endpoint, "connect");
@@ -871,16 +913,61 @@ boost::asio::awaitable<std::chrono::milliseconds> node::async_ping(peer_id peer)
 }
 
 boost::asio::awaitable<std::chrono::milliseconds> node::async_ping(peer_id peer, open_options options) {
-   auto started = std::chrono::steady_clock::now();
-   auto stream = co_await async_open_protocol_stream(std::move(peer), builtins::ping, std::move(options));
-   const auto payload = forge::crypto::core::random_bytes(32);
-   co_await stream.async_write(payload);
-   const auto reply = co_await stream.async_read();
-   if (reply != payload) {
-      FORGE_THROW_EXCEPTION(exceptions::protocol_error, "libp2p ping payload mismatch");
-   }
-   co_await stream.async_close();
-   co_return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+   auto self = impl_;
+   const auto started = std::chrono::steady_clock::now();
+   auto tracked = self->lifecycle.track();
+   if (!tracked.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "P2P Ping admission is closed"); }
+   auto stop = std::make_shared<detail::worker_stop_bridge>();
+   auto deadline = operation_deadline{self->runtime.context(), options.timeout};
+   deadline.arm([stop] noexcept { stop->request_stop(); });
+   auto failure = std::exception_ptr{};
+   auto result = std::optional<std::chrono::milliseconds>{};
+   try {
+      co_await detail::async_run_with_owner_cancellation(
+          stop,
+          [this, peer = std::move(peer), options = std::move(options),
+           stop, started, &result](boost::asio::cancellation_slot slot) mutable -> boost::asio::awaitable<void> {
+             auto stream = std::make_shared<forge::net::p2p::stream>();
+             auto stream_cancellation = detail::owner_stream_cancellation{std::move(slot), stream};
+             auto exchange_failure = std::exception_ptr{};
+             try {
+                *stream = co_await async_open_protocol_stream(std::move(peer), builtins::ping, std::move(options));
+                // Child negotiation/write cleanup may reset task cancellation;
+                // the independent owner slot retains the native stream reset.
+                if (stop->stop_requested()) {
+                   stream_cancellation.request_cancel();
+                   FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P Ping canceled during stream admission");
+                }
+                const auto payload = forge::crypto::core::random_bytes(32);
+                co_await stream->async_write(payload);
+                auto reply = std::vector<std::uint8_t>{};
+                reply.reserve(payload.size());
+                while (reply.size() < payload.size()) {
+                   auto part = co_await stream->async_read();
+                   if (part.empty() || part.size() > payload.size() - reply.size()) {
+                      FORGE_THROW_EXCEPTION(exceptions::protocol_error, "libp2p ping response truncated or oversized");
+                   }
+                   reply.insert(reply.end(), part.begin(), part.end());
+                }
+                if (reply != payload) {
+                   FORGE_THROW_EXCEPTION(exceptions::protocol_error, "libp2p ping payload mismatch");
+                }
+             } catch (...) { exchange_failure = std::current_exception(); }
+             co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+             if (exchange_failure) { stream->request_cancel(); }
+             try { co_await stream->async_close(); }
+             catch (...) { if (!exchange_failure) { exchange_failure = std::current_exception(); } }
+             if (exchange_failure) { std::rethrow_exception(exchange_failure); }
+             result = std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - started);
+          }, {.lifecycle_stop = tracked.stop_source()});
+   } catch (...) { failure = std::current_exception(); }
+   const auto completed = deadline.finish();
+   if (deadline.timed_out() || !completed) { throw_operation_timeout("P2P ping"); }
+   if (stop->stop_requested()) { FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P Ping canceled"); }
+   if (failure) { std::rethrow_exception(failure); }
+   if (!result) { FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P Ping stopped before completing its exchange"); }
+   co_return *result;
 }
 
 boost::asio::awaitable<forge::net::p2p::stream> node::async_open_protocol_stream(peer_id peer, protocol_id protocol) {
@@ -1021,7 +1108,45 @@ void node::request_stop() noexcept {
 void node::stop() {
    auto self = impl_;
    self->request_lifecycle_stop();
-   stop_owned(std::move(self));
+   if ((!self->paths || self->paths->active() == 0) && !self->has_coordinated_dials()) {
+      stop_owned(std::move(self));
+      return;
+   }
+   {
+      const auto lock = std::scoped_lock{self->mutex};
+      if (self->path_shutdown_pending || self->stopped) { return; }
+      self->path_shutdown_pending = true;
+   }
+   // The existing teardown owner also covers stop() after request_stop(), when
+   // ordinary lifecycle admission is already closed. No detached shutdown task.
+   auto terminal = self->teardown.track();
+   if (!terminal.active()) {
+      const auto lock = std::scoped_lock{self->mutex};
+      self->path_shutdown_pending = false;
+      FORGE_THROW_EXCEPTION(exceptions::internal, "P2P path shutdown lost teardown ownership");
+   }
+   try {
+      boost::asio::co_spawn(self->runtime.context(),
+          [self]() -> boost::asio::awaitable<void> {
+             co_await self->join_coordinated_dials();
+             co_await self->paths->async_join();
+             stop_owned(self);
+          }, [self, terminal = std::move(terminal)](std::exception_ptr failure) mutable {
+             {
+                const auto lock = std::scoped_lock{self->mutex};
+                self->path_shutdown_pending = false;
+             }
+             terminal.release();
+             if (failure) {
+                try { std::rethrow_exception(failure); }
+                catch (...) { forge::exceptions::capture_and_log("P2P path shutdown failed"); }
+             }
+          });
+   } catch (...) {
+      const auto lock = std::scoped_lock{self->mutex};
+      self->path_shutdown_pending = false;
+      throw;
+   }
 }
 
 } // namespace forge::net::p2p

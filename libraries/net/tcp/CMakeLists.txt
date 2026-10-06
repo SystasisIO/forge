@@ -1,8 +1,15 @@
 add_library(
    forge_net_tcp STATIC
    connection.cpp
+   connection_access.cpp
+   connection_impl.cpp
    connector.cpp
+   connector_access.cpp
+   connector_impl.cpp
    listener.cpp
+   listener_impl.cpp
+   socket_reuse.cpp
+   socket_stream.cpp
    transport.cpp
 )
 forge_target_modules_at(forge_net_tcp net/tcp)
@@ -14,6 +21,5 @@ target_link_libraries(
       forge_exceptions
       forge_net_transport
       Boost::asio
-   PRIVATE
       forge_asio
 )

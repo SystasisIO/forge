@@ -67,9 +67,12 @@ import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.net.transport.session;
 import forge.net.transport.stream;
+import forge.net.quic.exceptions;
+import forge.net.yamux.exceptions;
 import forge.net.yamux.session;
 
 #include "details/host_addresses.hxx"
+#include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
 #include "details/protocol_capabilities.hxx"
 
@@ -158,6 +161,7 @@ read_identify_document(auto& self, forge::net::p2p::stream& stream,
 }
 
 boost::asio::awaitable<identify::document> exchange_identify(auto self, auto session) {
+   const auto caller_cancellation = co_await boost::asio::this_coro::cancellation_state;
    auto strand = boost::asio::make_strand(self->runtime.context().get_executor());
    auto cancellation = std::make_shared<boost::asio::cancellation_signal>();
    auto timed_out = std::make_shared<std::atomic_bool>(false);
@@ -182,13 +186,25 @@ boost::asio::awaitable<identify::document> exchange_identify(auto self, auto ses
                      [&resource](const std::shared_ptr<detail::resource_stream>& admitted) { resource = admitted; },
                      {}});
              auto document = co_await read_identify_document(*self, stream, resource);
-             co_await stream.async_close();
+             try {
+                co_await stream.async_close();
+             } catch (const forge::exceptions::base& error) {
+                // Accept a native stream reset only after complete decoding and
+                // joined cleanup. The caller receipt still rejects cancellation.
+                if (!forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::stream_reset) &&
+                    !forge::net::yamux::exceptions::is(error, forge::net::yamux::exceptions::code::stream_reset)) {
+                   throw;
+                }
+             }
              co_return document;
           },
           boost::asio::bind_cancellation_slot(cancellation->slot(), boost::asio::use_awaitable));
       timer->cancel();
       if (timed_out->load(std::memory_order_acquire)) {
          throw_operation_timeout("P2P Identify");
+      }
+      if (caller_cancellation.cancelled() != boost::asio::cancellation_type::none) {
+         FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P Identify caller canceled before completion");
       }
       co_return document;
    } catch (...) {
@@ -775,10 +791,11 @@ boost::asio::awaitable<void> node::impl::identify_session(const std::shared_ptr<
          session->info.identify_state = identify::state::failed;
          session->identify_error = "P2P session closed before Identify";
          unavailable = true;
-      } else if (session->info.identify_state == identify::state::identified ||
-                 session->info.identify_state == identify::state::failed) {
+      } else if (session->identify_completed &&
+                 (session->info.identify_state == identify::state::identified ||
+                  session->info.identify_state == identify::state::failed)) {
          co_return;
-      } else {
+      } else if (session->info.identify_state == identify::state::unknown) {
          session->info.identify_state = identify::state::identifying;
       }
    }
@@ -793,6 +810,11 @@ boost::asio::awaitable<void> node::impl::identify_session(const std::shared_ptr<
           self->learn_from_identify(session, document);
           co_return document;
        });
+   {
+      const auto lock = std::scoped_lock{mutex};
+      session->identify_completed = true;
+   }
+   lifecycle_wakeup->notify();
    if (result.state == identify::state::identified) {
       auto lock = std::unique_lock{mutex};
       const auto found = sessions.find(session->id);
@@ -837,6 +859,11 @@ void node::impl::launch_identify(const std::shared_ptr<session_state>& session) 
              co_await self->identify_session(session);
           } catch (...) {
              // The Identify state records attributable failure without terminating the authenticated session.
+             {
+                const auto lock = std::scoped_lock{self->mutex};
+                session->identify_completed = true;
+             }
+             self->lifecycle_wakeup->notify();
           }
        },
        [operation = std::move(operation)](std::exception_ptr error) mutable {

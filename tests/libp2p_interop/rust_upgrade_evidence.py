@@ -358,6 +358,27 @@ def _events(connection, streams):
     return events, opened
 
 
+def _response_completion(record, detail):
+    basis = detail.get("completion_basis")
+    if basis is None:
+        _require(record["write_close_returned"] is True, "response marker lacks application close")
+        return
+    protocols = {"native_ping_response_flush": "/ipfs/ping/1.0.0",
+                 "native_kad_response_flush": "/ipfs/kad/1.0.0"}
+    _require(basis in protocols and record["protocol"] == protocols[basis]
+             and record["direction"] == "inbound" and record.get("write_flush_returned") is True
+             and record.get("response_write_complete") is True,
+             "response marker lacks its exact native protocol flush")
+    read, write = _body(detail.get("read")), _body(detail.get("write"))
+    _require(read == record["read"] and write == record["write"]
+             and all(b["frames"] == 1 and b["complete_frames"] is True
+                     and b["invalid_or_over_limit"] is False and 0 < b["framed_bytes"] <= 8196
+                     for b in (read, write)), "native flush receipt is not one immutable complete request/reply")
+    if basis == "native_ping_response_flush":
+        _require(read == write and read["framed_bytes"] == 32,
+                 "native Ping flush did not echo exactly 32 raw bytes")
+
+
 def _milestones(connection):
     events = connection["events"]
     for index, record in enumerate(connection["negotiations"] + connection["streams"]):
@@ -385,8 +406,9 @@ def _milestones(connection):
                          and started["detail"]["protocol"] == done["detail"]["protocol"] == record["protocol"],
                          "completion marker lacks the selected successful delegate")
             else:
-                _require(index >= 2 and record["upgrade_completed_sequence"] is None
-                         and record["write_close_returned"] is True, "response marker lacks application close")
+                _require(index >= 2 and record["upgrade_completed_sequence"] is None,
+                         "response marker is not an application completion")
+                _response_completion(record, detail)
                 write = _body(detail.get("write"))
                 _require(write["complete_frames"] is True
                          and write["framed_bytes"] <= record["write"]["framed_bytes"],

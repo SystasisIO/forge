@@ -3,9 +3,14 @@
 #include <atomic>
 #include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <functional>
+#include <initializer_list>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,12 +19,15 @@
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <net/if.h>
+#include <fcntl.h>
+#include <cerrno>
 #endif
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -42,7 +50,108 @@ import forge.net.transport.frame;
 import forge.net.transport.registry;
 import forge.net.transport.stream;
 
+#include "../../libraries/net/tcp/details/connection_access.hxx"
+#include "../../libraries/net/tcp/details/connector_access.hxx"
+
 namespace {
+
+struct startup_close_probe {
+   std::mutex mutex;
+   std::condition_variable changed;
+   forge::net::tcp::detail::startup_stage fail_at;
+   bool entered = false;
+   bool release = false;
+   bool closed = false;
+   bool native_open = false;
+   bool gate_timed_out = false;
+   bool token_released = false;
+   bool early_ack = false;
+   bool finished = false;
+   bool original_bad_alloc = false;
+   int descriptor = -1;
+};
+
+void tcp_startup_failure_holds_real_close(forge::net::tcp::detail::startup_stage stage) {
+   namespace asio = boost::asio;
+   using tcp = asio::ip::tcp;
+   using access = forge::net::tcp::detail::connection_access;
+   using hooks_type = forge::net::tcp::detail::connection_test_hooks;
+   using close_stage = forge::net::tcp::detail::native_close_stage;
+   auto context = asio::io_context{};
+   auto acceptor = tcp::acceptor{context, tcp::endpoint{tcp::v4(), 0}};
+   auto socket = tcp::socket{context};
+   socket.connect(tcp::endpoint{asio::ip::make_address("127.0.0.1"), acceptor.local_endpoint().port()});
+   auto peer = tcp::socket{context};
+   acceptor.accept(peer);
+   auto state = std::make_shared<startup_close_probe>();
+   state->fail_at = stage;
+   auto token = std::shared_ptr<void>{new int{1}, [state](void* value) noexcept {
+      const auto lock = std::scoped_lock{state->mutex};
+      state->early_ack = !state->closed;
+      state->token_released = true;
+      delete static_cast<int*>(value);
+      state->changed.notify_all();
+   }};
+   auto hooks = std::make_shared<hooks_type>();
+   hooks->state = state;
+   hooks->startup = [](void* value, forge::net::tcp::detail::startup_stage current) {
+      if (static_cast<startup_close_probe*>(value)->fail_at == current) {
+         throw std::bad_alloc{};
+      }
+   };
+   hooks->native_close = [](void* value, const tcp::socket& native, close_stage current) noexcept {
+      auto& probe = *static_cast<startup_close_probe*>(value);
+      auto lock = std::unique_lock{probe.mutex};
+      if (current == close_stage::before_close) {
+         probe.native_open = native.is_open();
+         probe.descriptor = const_cast<tcp::socket&>(native).native_handle();
+         probe.entered = true;
+         probe.changed.notify_all();
+         probe.gate_timed_out = !probe.changed.wait_for(lock, std::chrono::seconds{5}, [&] { return probe.release; });
+      } else {
+         probe.closed = !native.is_open();
+#if defined(__APPLE__) || defined(__linux__)
+         errno = 0;
+         probe.closed = probe.closed && fcntl(probe.descriptor, F_GETFD) == -1 && errno == EBADF;
+#endif
+         probe.changed.notify_all();
+      }
+   };
+   auto worker = std::jthread{[state, hooks, socket = std::move(socket), token = std::move(token)]() mutable {
+      auto original = false;
+      try {
+         static_cast<void>(access::make(std::move(socket), {}, std::move(token), hooks));
+      } catch (const std::bad_alloc&) {
+         original = true;
+      } catch (...) {
+      }
+      const auto lock = std::scoped_lock{state->mutex};
+      state->original_bad_alloc = original;
+      state->finished = true;
+      state->changed.notify_all();
+   }};
+   const auto release = [](startup_close_probe* value) noexcept {
+      const auto lock = std::scoped_lock{value->mutex};
+      value->release = true;
+      value->changed.notify_all();
+   };
+   // Release before the jthread joins even when an assertion throws.
+   auto release_guard = std::unique_ptr<startup_close_probe, decltype(release)>{state.get(), release};
+   {
+      auto lock = std::unique_lock{state->mutex};
+      BOOST_CHECK(state->changed.wait_for(lock, std::chrono::seconds{2}, [&] { return state->entered; }));
+      BOOST_CHECK(state->native_open);
+      BOOST_CHECK(!state->token_released);
+      BOOST_CHECK(!state->finished);
+   }
+   release_guard.reset();
+   worker.join();
+   BOOST_CHECK(state->closed);
+   BOOST_CHECK(state->token_released);
+   BOOST_CHECK(!state->early_ack);
+   BOOST_CHECK(!state->gate_timed_out);
+   BOOST_CHECK(state->original_bad_alloc);
+}
 
 using bytes = std::vector<std::uint8_t>;
 
@@ -263,6 +372,336 @@ boost::asio::awaitable<void> tcp_registry_roundtrip() {
    co_await client.stream.async_close();
    co_await server.stream.async_close();
    co_await listener.async_close();
+}
+
+boost::asio::awaitable<void> tcp_transport_views_keep_shared_listener_owner() {
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto from_destroyed_facade = [&] {
+      auto facade = forge::net::tcp::listener{executor, loopback(0)};
+      return facade.as_transport();
+   }();
+   auto facade = forge::net::tcp::listener{executor, loopback(0)};
+   auto from_replaced_facade = facade.as_transport();
+   const auto old_local = facade.local_endpoint();
+   facade = forge::net::tcp::listener{executor, loopback(0)};
+   BOOST_CHECK(from_destroyed_facade.valid());
+   BOOST_CHECK(from_replaced_facade.valid());
+   BOOST_CHECK(facade.valid());
+   BOOST_CHECK_EQUAL(from_replaced_facade.local_endpoint().port, old_local.port);
+   BOOST_CHECK(facade.local_endpoint().port != old_local.port);
+   auto connector = forge::net::tcp::connector{executor};
+   for (auto* view : {&from_destroyed_facade, &from_replaced_facade}) {
+      auto accept = boost::asio::co_spawn(executor, view->async_accept(), boost::asio::use_awaitable);
+      auto client = co_await connector.async_connect(view->local_endpoint());
+      auto server = co_await std::move(accept);
+      const auto payload = text_bytes("shared native listener");
+      co_await client.stream.async_write(payload);
+      const auto received = co_await server.stream.async_read();
+      BOOST_CHECK_EQUAL_COLLECTIONS(received.begin(), received.end(), payload.begin(), payload.end());
+      co_await client.stream.async_close();
+      co_await server.stream.async_close();
+      co_await view->async_close();
+      BOOST_CHECK(!view->valid());
+   }
+   auto remaining_view = facade.as_transport();
+   const auto remaining_local = facade.local_endpoint();
+   facade.close();
+   BOOST_CHECK(!facade.valid());
+   BOOST_CHECK(!remaining_view.valid());
+   co_await facade.async_close();
+   // Explicit close still releases the real acceptor even while views survive.
+   auto rebound = forge::net::tcp::listener{executor, remaining_local};
+   co_await rebound.async_close();
+   co_await connector.async_stop();
+}
+
+boost::asio::awaitable<void> tcp_transport_views_keep_shared_connector_owner() {
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto from_destroyed_facade = [&] {
+      auto facade = forge::net::tcp::connector{executor};
+      return facade.as_transport();
+   }();
+   auto facade = forge::net::tcp::connector{executor};
+   auto from_replaced_facade = facade.as_transport();
+   facade = forge::net::tcp::connector{executor};
+   auto from_live_facade = facade.as_transport();
+   auto listener = forge::net::tcp::listener{executor, loopback(0)};
+   for (auto* view : {&from_destroyed_facade, &from_replaced_facade, &from_live_facade}) {
+      BOOST_REQUIRE(view->valid());
+      auto accept = boost::asio::co_spawn(executor, listener.async_accept(), boost::asio::use_awaitable);
+      auto client = co_await view->async_connect(listener.local_endpoint());
+      auto server = co_await std::move(accept);
+      BOOST_CHECK_EQUAL(client.remote_endpoint.port, listener.local_endpoint().port);
+      BOOST_CHECK_EQUAL(server.remote_endpoint.port, client.local_endpoint.port);
+      const auto before_stop = text_bytes("shared native connector");
+      co_await client.stream.async_write_frame(before_stop);
+      const auto received_before_stop = co_await server.stream.async_read_frame();
+      BOOST_CHECK_EQUAL_COLLECTIONS(received_before_stop.begin(), received_before_stop.end(),
+                                    before_stop.begin(), before_stop.end());
+
+      if (view == &from_live_facade) {
+         co_await facade.async_stop();
+         co_await facade.async_stop();
+         BOOST_CHECK(!facade.valid());
+      } else {
+         view->cancel();
+         BOOST_CHECK(facade.valid());
+         BOOST_CHECK(from_live_facade.valid());
+      }
+      BOOST_CHECK(!view->valid());
+      BOOST_CHECK_THROW((void)co_await view->async_connect(listener.local_endpoint()),
+                        forge::net::transport::exceptions::closed);
+      // Stop applies to pending/new dials, not sockets already handed off.
+      const auto after_stop = text_bytes("native handoff survives explicit stop");
+      co_await client.stream.async_write_frame(after_stop);
+      const auto received_after_stop = co_await server.stream.async_read_frame();
+      BOOST_CHECK_EQUAL_COLLECTIONS(received_after_stop.begin(), received_after_stop.end(),
+                                    after_stop.begin(), after_stop.end());
+      co_await server.stream.async_write_frame(after_stop);
+      const auto reply = co_await client.stream.async_read_frame();
+      BOOST_CHECK_EQUAL_COLLECTIONS(reply.begin(), reply.end(), after_stop.begin(), after_stop.end());
+      co_await client.stream.async_close();
+      co_await server.stream.async_close();
+   }
+   co_await listener.async_close();
+}
+
+boost::asio::awaitable<void> tcp_coordinated_connector_keeps_its_source_owner() {
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto source_local = forge::net::transport::endpoint{};
+   auto connector = [&] {
+      auto options = forge::net::tcp::options{};
+      options.reuse_port = true;
+      auto source = forge::net::tcp::listener{executor, loopback(0), {}, options};
+      source_local = source.local_endpoint();
+      return source.make_coordinated_connector(source_local);
+   }();
+   // The existing connector source anchor, not the destroyed typed facade,
+   // owns the listener for the full native attempt.
+   BOOST_CHECK(connector.valid());
+   auto target = forge::net::tcp::listener{executor, loopback(0)};
+   auto accept = boost::asio::co_spawn(executor, target.async_accept_connection(), boost::asio::use_awaitable);
+   auto client = co_await connector.async_connect_connection(target.local_endpoint());
+   auto server = co_await std::move(accept);
+   BOOST_CHECK_EQUAL(client.local_endpoint().host, source_local.host);
+   BOOST_CHECK_EQUAL(client.local_endpoint().port, source_local.port);
+   const auto payload = text_bytes("anchored native source");
+   co_await client.async_write(payload);
+   const auto received = co_await server.async_read();
+   BOOST_CHECK_EQUAL_COLLECTIONS(received.begin(), received.end(), payload.begin(), payload.end());
+   co_await client.async_close();
+   co_await server.async_close();
+   co_await connector.async_stop();
+   BOOST_CHECK(!connector.valid());
+   co_await target.async_close();
+#else
+   BOOST_TEST_MESSAGE("native TCP coordinated source reuse is unsupported on this platform");
+   co_return;
+#endif
+}
+
+struct reuse_fallback_probe {
+   std::atomic_size_t calls = 0;
+   std::atomic_size_t pending = 0;
+   std::atomic_bool native_closed = false;
+   std::atomic_bool native_collision = false;
+   std::atomic_bool token_released = false;
+   forge::asio::notification entered;
+   forge::asio::notification release;
+   forge::asio::notification dial_completed;
+   forge::asio::notification stop_started;
+   forge::asio::notification stop_completed;
+   std::exception_ptr dial_error;
+   std::exception_ptr stop_error;
+   std::optional<forge::net::tcp::connection> unexpected_connection;
+};
+
+void observe_reuse_close(const std::shared_ptr<reuse_fallback_probe>& probe,
+                         const boost::asio::ip::tcp::socket& socket, int descriptor,
+                         const boost::system::error_code& error) {
+   probe->calls.fetch_add(1);
+   probe->native_collision.store(error == boost::system::errc::address_in_use ||
+                                  error == boost::system::errc::address_not_available);
+   auto closed = !socket.is_open();
+#if defined(__APPLE__) || defined(__linux__)
+   errno = 0;
+   closed = closed && descriptor >= 0 && fcntl(descriptor, F_GETFD) == -1 && errno == EBADF;
+#else
+   static_cast<void>(descriptor);
+#endif
+   probe->native_closed.store(closed);
+}
+
+boost::asio::awaitable<bytes> read_reuse_payload(forge::net::tcp::connection& connection, std::size_t size) {
+   auto result = bytes{};
+   while (result.size() < size) {
+      const auto next = co_await connection.async_read();
+      result.insert(result.end(), next.begin(), next.end());
+   }
+   co_return result;
+}
+
+boost::asio::awaitable<void> tcp_reuse_collision_preserves_strict_source_and_allows_preferred_fallback() {
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+   using connector = forge::net::tcp::connector;
+   using access = forge::net::tcp::detail::connector_access;
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto options = forge::net::tcp::options{.reuse_port = true};
+   auto source = forge::net::tcp::listener{executor, loopback(0), {}, options};
+   auto target = forge::net::tcp::listener{executor, loopback(0)};
+   auto occupying_dial = source.make_coordinated_connector(source.local_endpoint());
+   auto occupied = co_await occupying_dial.async_connect_connection(target.local_endpoint());
+   auto original_peer = co_await target.async_accept_connection();
+   BOOST_CHECK_EQUAL(occupied.local_endpoint().port, source.local_endpoint().port);
+   co_await occupying_dial.async_stop();
+
+   auto strict = source.make_coordinated_connector(source.local_endpoint());
+   BOOST_CHECK_THROW((void)co_await strict.async_connect_connection(target.local_endpoint()),
+                     forge::net::tcp::exceptions::connect_failed);
+   co_await strict.async_stop();
+
+   auto preferred = std::make_shared<connector>(
+       source.make_connector(source.local_endpoint(), connector::reuse_policy::preferred));
+   auto probe = std::make_shared<reuse_fallback_probe>();
+   access::observe_reuse_fallback_for_test(*preferred,
+       [probe, weak = std::weak_ptr<connector>{preferred}](const boost::asio::ip::tcp::socket& socket,
+           int descriptor, boost::system::error_code error) -> boost::asio::awaitable<void> {
+          observe_reuse_close(probe, socket, descriptor, error);
+          if (const auto owner = weak.lock()) { probe->pending.store(access::pending_connects_for_test(*owner)); }
+          co_return;
+       });
+   auto fallback = co_await preferred->async_connect_connection(target.local_endpoint());
+   auto fallback_peer = co_await target.async_accept_connection();
+   BOOST_CHECK_EQUAL(probe->calls.load(), 1U);
+   BOOST_CHECK_EQUAL(probe->pending.load(), 1U);
+   BOOST_CHECK(probe->native_collision.load());
+   BOOST_CHECK(probe->native_closed.load());
+   BOOST_CHECK(fallback.local_endpoint().port != source.local_endpoint().port);
+   BOOST_CHECK_EQUAL(fallback.local_endpoint().port, fallback_peer.remote_endpoint().port);
+   BOOST_CHECK_EQUAL(fallback.local_endpoint().host, fallback_peer.remote_endpoint().host);
+   const auto payload = text_bytes("live tuple reuse collision");
+   for (auto pair : {std::pair{&occupied, &original_peer}, std::pair{&fallback, &fallback_peer}}) {
+      co_await pair.first->async_write(payload);
+      const auto received = co_await read_reuse_payload(*pair.second, payload.size());
+      BOOST_CHECK_EQUAL_COLLECTIONS(received.begin(), received.end(), payload.begin(), payload.end());
+      co_await pair.first->async_close();
+      co_await pair.second->async_close();
+   }
+   co_await preferred->async_stop();
+   co_await source.async_close();
+   co_await target.async_close();
+#else
+   BOOST_TEST_MESSAGE("native TCP source reuse is unsupported on this platform");
+   co_return;
+#endif
+}
+
+boost::asio::awaitable<void> tcp_preferred_reuse_cancel_joins_held_closed_socket(bool stop_source) {
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+   using connector = forge::net::tcp::connector;
+   using access = forge::net::tcp::detail::connector_access;
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto source = std::make_shared<forge::net::tcp::listener>(
+       executor, loopback(0), forge::net::transport::listen_options{}, forge::net::tcp::options{.reuse_port = true});
+   auto target = forge::net::tcp::listener{executor, loopback(0)};
+   auto occupying_dial = source->make_coordinated_connector(source->local_endpoint());
+   auto occupied = co_await occupying_dial.async_connect_connection(target.local_endpoint());
+   auto peer = co_await target.async_accept_connection();
+   co_await occupying_dial.async_stop();
+   auto preferred = std::make_shared<connector>(
+       source->make_connector(source->local_endpoint(), connector::reuse_policy::preferred));
+   auto probe = std::make_shared<reuse_fallback_probe>();
+   access::observe_reuse_fallback_for_test(*preferred,
+       [probe, weak = std::weak_ptr<connector>{preferred}](const boost::asio::ip::tcp::socket& socket,
+           int descriptor, boost::system::error_code error) -> boost::asio::awaitable<void> {
+          observe_reuse_close(probe, socket, descriptor, error);
+          if (const auto owner = weak.lock()) { probe->pending.store(access::pending_connects_for_test(*owner)); }
+          probe->entered.notify();
+          co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+          static_cast<void>(co_await probe->release.async_wait(0));
+       });
+   const auto release = [](reuse_fallback_probe* value) noexcept { value->release.notify(); };
+   auto release_guard = std::unique_ptr<reuse_fallback_probe, decltype(release)>{probe.get(), release};
+   auto token = std::shared_ptr<void>{new int{1}, [probe](void* value) noexcept {
+      delete static_cast<int*>(value);
+      probe->token_released.store(true);
+   }};
+   boost::asio::co_spawn(executor, preferred->async_connect_connection(target.local_endpoint(), {}, std::move(token)),
+       [probe, preferred](std::exception_ptr error, forge::net::tcp::connection result) {
+          probe->dial_error = std::move(error);
+          if (!probe->dial_error) { probe->unexpected_connection.emplace(std::move(result)); }
+          probe->dial_completed.notify();
+       });
+   static_cast<void>(co_await probe->entered.async_wait(0));
+   BOOST_CHECK(probe->native_closed.load());
+   BOOST_CHECK(probe->native_collision.load());
+   BOOST_CHECK_EQUAL(probe->pending.load(), 1U);
+   BOOST_CHECK(!probe->token_released.load());
+   if (!stop_source) { preferred->request_cancel(); }
+   boost::asio::co_spawn(executor,
+       [probe, preferred, source, stop_source]() -> boost::asio::awaitable<void> {
+          if (stop_source) { source->close(); }
+          probe->stop_started.notify();
+          if (stop_source) { co_await source->async_close(); }
+          else { co_await preferred->async_stop(); }
+       },
+       [probe](std::exception_ptr error) {
+          probe->stop_error = std::move(error);
+          probe->stop_completed.notify();
+       });
+   static_cast<void>(co_await probe->stop_started.async_wait(0));
+   BOOST_CHECK_EQUAL(probe->stop_completed.epoch(), 0U);
+   BOOST_CHECK(!probe->token_released.load());
+   release_guard.reset();
+   static_cast<void>(co_await probe->dial_completed.async_wait(0));
+   static_cast<void>(co_await probe->stop_completed.async_wait(0));
+   BOOST_CHECK(!probe->stop_error);
+   if (probe->unexpected_connection) {
+      co_await probe->unexpected_connection->async_close();
+      probe->unexpected_connection.reset();
+   }
+   BOOST_REQUIRE(probe->dial_error);
+   BOOST_CHECK_THROW(std::rethrow_exception(probe->dial_error), forge::net::tcp::exceptions::canceled);
+   BOOST_CHECK_EQUAL(probe->calls.load(), 1U);
+   BOOST_CHECK(probe->token_released.load());
+   co_await preferred->async_stop();
+   BOOST_CHECK_EQUAL(access::pending_connects_for_test(*preferred), 0U);
+   co_await occupied.async_close();
+   co_await peer.async_close();
+   co_await source->async_close();
+   co_await target.async_close();
+#else
+   static_cast<void>(stop_source);
+   BOOST_TEST_MESSAGE("native TCP source reuse is unsupported on this platform");
+   co_return;
+#endif
+}
+
+boost::asio::awaitable<void> tcp_preferred_reuse_does_not_retry_connection_refused() {
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+   using connector = forge::net::tcp::connector;
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto source = forge::net::tcp::listener{executor, loopback(0), {}, forge::net::tcp::options{.reuse_port = true}};
+   auto target = forge::net::tcp::listener{executor, loopback(0)};
+   const auto remote = target.local_endpoint();
+   co_await target.async_close();
+   auto preferred = source.make_connector(source.local_endpoint(), connector::reuse_policy::preferred);
+   auto probe = std::make_shared<reuse_fallback_probe>();
+   forge::net::tcp::detail::connector_access::observe_reuse_fallback_for_test(preferred,
+       [probe](const boost::asio::ip::tcp::socket& socket, int descriptor,
+               boost::system::error_code error) -> boost::asio::awaitable<void> {
+          observe_reuse_close(probe, socket, descriptor, error);
+          co_return;
+       });
+   BOOST_CHECK_THROW((void)co_await preferred.async_connect_connection(remote), forge::net::tcp::exceptions::connect_failed);
+   BOOST_CHECK_EQUAL(probe->calls.load(), 0U);
+   co_await preferred.async_stop();
+   co_await source.async_close();
+#else
+   BOOST_TEST_MESSAGE("native TCP source reuse is unsupported on this platform");
+   co_return;
+#endif
 }
 
 boost::asio::awaitable<void> cancel_unblocks_accept() {
@@ -780,6 +1219,12 @@ boost::asio::awaitable<void> tcp_invalid_endpoint_checks() {
 
 BOOST_AUTO_TEST_SUITE(tcp)
 
+BOOST_AUTO_TEST_CASE(tcp_startup_failure_closes_native_socket_before_releasing_owner_token) {
+   using stage = forge::net::tcp::detail::startup_stage;
+   tcp_startup_failure_holds_real_close(stage::owner_allocation);
+   tcp_startup_failure_holds_real_close(stage::terminal_launch);
+}
+
 BOOST_AUTO_TEST_CASE(tcp_stream_roundtrip_and_framing) {
    auto runtime = forge::asio::runtime{};
    forge::asio::blocking::run(runtime, tcp_roundtrip());
@@ -798,6 +1243,44 @@ BOOST_AUTO_TEST_CASE(tcp_connection_supports_native_handoff) {
 BOOST_AUTO_TEST_CASE(tcp_integrates_with_transport_registry) {
    auto runtime = forge::asio::runtime{};
    forge::asio::blocking::run(runtime, tcp_registry_roundtrip());
+}
+
+BOOST_AUTO_TEST_CASE(tcp_transport_views_survive_typed_listener_destruction_and_replacement) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   BOOST_CHECK(forge::asio::blocking::run_for(
+       runtime, tcp_transport_views_keep_shared_listener_owner(), std::chrono::seconds{5}));
+}
+
+BOOST_AUTO_TEST_CASE(tcp_transport_views_survive_typed_connector_destruction_and_replacement) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   BOOST_CHECK(forge::asio::blocking::run_for(
+       runtime, tcp_transport_views_keep_shared_connector_owner(), std::chrono::seconds{5}));
+}
+
+BOOST_AUTO_TEST_CASE(tcp_coordinated_connector_retains_source_after_typed_listener_destruction) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   BOOST_CHECK(forge::asio::blocking::run_for(
+       runtime, tcp_coordinated_connector_keeps_its_source_owner(), std::chrono::seconds{5}));
+}
+
+BOOST_AUTO_TEST_CASE(tcp_preferred_reuse_falls_back_on_live_tuple_but_coordinated_reuse_stays_required) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   BOOST_CHECK(forge::asio::blocking::run_for(
+       runtime, tcp_reuse_collision_preserves_strict_source_and_allows_preferred_fallback(), std::chrono::seconds{5}));
+}
+
+BOOST_AUTO_TEST_CASE(tcp_preferred_reuse_cancel_and_source_stop_join_before_retiring_native_token) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   for (const auto stop_source : {false, true}) {
+      BOOST_CHECK(forge::asio::blocking::run_for(
+          runtime, tcp_preferred_reuse_cancel_joins_held_closed_socket(stop_source), std::chrono::seconds{5}));
+   }
+}
+
+BOOST_AUTO_TEST_CASE(tcp_preferred_reuse_does_not_fallback_on_native_connection_refused) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   BOOST_CHECK(forge::asio::blocking::run_for(
+       runtime, tcp_preferred_reuse_does_not_retry_connection_refused(), std::chrono::seconds{5}));
 }
 
 BOOST_AUTO_TEST_CASE(tcp_accept_can_be_canceled_or_closed) {

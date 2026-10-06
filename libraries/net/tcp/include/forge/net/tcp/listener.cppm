@@ -27,6 +27,11 @@ class listener {
 
    [[nodiscard]] bool valid() const noexcept;
    [[nodiscard]] transport::endpoint local_endpoint() const;
+   // local must be concrete and belong to this listener; reuse is mandatory.
+   [[nodiscard]] connector make_coordinated_connector(transport::endpoint local) const;
+   // preferred permits one kernel-selected-port retry only on native reuse
+   // collision. Both policies retain this listener and share its stop/drain.
+   [[nodiscard]] connector make_connector(transport::endpoint local, connector::reuse_policy policy) const;
 
    boost::asio::awaitable<connection> async_accept_connection(std::shared_ptr<void> lifetime = {});
    boost::asio::awaitable<transport::stream_connection> async_accept();
@@ -34,6 +39,8 @@ class listener {
    void close();
    void cancel();
 
+   // Shares the native owner. Destroying or replacing this facade does not
+   // close other views; explicit close/async_close stops the shared listener.
    [[nodiscard]] transport::stream_listener as_transport() const;
 
  private:

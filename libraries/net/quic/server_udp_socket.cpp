@@ -9,6 +9,12 @@
 #include <boost/system/system_error.hpp>
 #include <utility>
 #include <chrono>
+#include <cstring>
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#endif
 
 import forge.asio.exceptions;
 
@@ -62,10 +68,57 @@ asio::awaitable<server_udp_socket::packet> server_udp_socket::async_receive() {
        asio::use_awaitable);
 }
 
+bool server_udp_socket::owns_local_endpoint(const udp::endpoint& endpoint) const noexcept {
+   const auto bound = local_endpoint();
+   const auto address = endpoint.address();
+   if (endpoint.port() == 0 || endpoint.port() != bound.port() || endpoint.protocol() != bound.protocol() ||
+       address.is_unspecified() || address.is_multicast() ||
+       (!bound.address().is_unspecified() && address != bound.address())) {
+      return false;
+   }
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+   ifaddrs* raw = nullptr;
+   if (::getifaddrs(&raw) != 0) {
+      return false;
+   }
+   const auto interfaces = std::unique_ptr<ifaddrs, decltype(&::freeifaddrs)>{raw, &::freeifaddrs};
+   for (const auto* entry = raw; entry != nullptr; entry = entry->ifa_next) {
+      if (entry->ifa_addr == nullptr || (entry->ifa_flags & IFF_UP) == 0) {
+         continue;
+      }
+      if (address.is_v4() && entry->ifa_addr->sa_family == AF_INET) {
+         const auto* local = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
+         if (address.to_v4().to_uint() == ntohl(local->sin_addr.s_addr)) {
+            return true;
+         }
+      } else if (address.is_v6() && entry->ifa_addr->sa_family == AF_INET6) {
+         const auto value = address.to_v6();
+         const auto bytes = value.to_bytes();
+         const auto* local = reinterpret_cast<const sockaddr_in6*>(entry->ifa_addr);
+         if (std::memcmp(bytes.data(), &local->sin6_addr, bytes.size()) == 0 &&
+             (!value.is_link_local() || value.scope_id() != 0) &&
+             (value.scope_id() == 0 || value.scope_id() == ::if_nametoindex(entry->ifa_name))) {
+            return true;
+         }
+      }
+   }
+#endif
+   return false;
+}
+
 asio::awaitable<boost::system::error_code> server_udp_socket::async_send(packet value) {
    co_return co_await asio::co_spawn(
        _strand,
        [self = shared_from_this(), value = std::move(value)]() mutable -> asio::awaitable<boost::system::error_code> {
+          if (self->_stopped) {
+             co_return asio::error::operation_aborted;
+          }
+          if (self->_pending_sends >= 4096 || value.bytes.size() > 65'507) {
+             co_return asio::error::no_buffer_space;
+          }
+          ++self->_pending_sends;
+          const auto release = [self](server_udp_socket*) noexcept { --self->_pending_sends; };
+          auto pending = std::unique_ptr<server_udp_socket, decltype(release)>{self.get(), release};
           using namespace asio::experimental::awaitable_operators;
           auto deadline = asio::steady_timer{self->_strand};
           deadline.expires_after(std::chrono::seconds{5});

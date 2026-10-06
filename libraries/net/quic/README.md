@@ -242,9 +242,28 @@ released connection are isolated according to ngtcp2's silent-drop contract;
 they neither consume a listener slot indefinitely nor fail a concurrent
 `async_accept()` for another connection.
 
+Graceful stream close waits for the UDP send containing its FIN, including a
+datagram already removed from the queue by the sender. Connection close first
+seals write/open admission and drains its captured UDP prefix before sending
+`CONNECTION_CLOSE`. These are bounded local socket-send guarantees, not peer
+ACKs or application-level delivery acknowledgements. Errors and cancellation
+join the actual sender instead of reporting an unsent prefix as successful.
+If cancellation preceded connection close, or ngtcp2 reports a peer close,
+connection close performs idempotent terminal cleanup without asserting that
+discarded output was sent. Cancellation of an active graceful drain and actual
+socket failures/timeouts remain errors shared by repeated close callers. Stream
+FIN close still fails if its own captured send did not complete.
+
+Reset cleanup stops application writes through ngtcp2 and joins already queued
+UDP work. Any pending RESET and retransmission remain connection-owned until
+native completion or connection teardown; accepting a reset does not prove
+that its packet has been sent. A failed FIN has a separate bounded reset-cleanup
+budget without renewing the failed operation or canceling healthy sibling
+streams merely because that operation timed out.
+
 ## UDP Routing And Scope
 
-A client uses one dedicated UDP socket, permanently connected to its selected
+An ordinary client uses one dedicated UDP socket, permanently connected to its selected
 remote tuple. Open, bind, connect and local-endpoint discovery happen before
 creating the ngtcp2 connection. Its local address is concrete, not a wildcard.
 Client sends use the connected socket without a destination argument; every
@@ -286,6 +305,52 @@ Gate tickets serialize sends across suspension points, including shared-listener
 replies. Send waits are bounded to five seconds; cancellation races join their
 losing operations. Connection cancellation never cancels the shared listener FD.
 Listener stop closes its gate and socket, waking queued and active operations.
+
+### Coordinated Listener Socket
+
+```cpp
+auto selected_local = listener.local_endpoint();
+// For a wildcard listener, replace host with an assigned local interface IP.
+auto initiator = forge::net::quic::connector{runtime, listener, selected_local};
+auto outbound = co_await initiator.async_connect(remote, client_options);
+
+// The responder sends probes while its caller waits for authenticated inbound.
+auto count = co_await listener.async_punch(
+   selected_local, remote, forge::net::quic::punch_options{
+      .timeout = std::chrono::seconds{5}, .max_packets = 64, .lifetime = admission});
+co_await listener.async_stop();
+```
+
+Both APIs use the listener-owned, unconnected UDP FD. They require a literal,
+assigned local IP, matching family and the actual listener port, never an
+external NAT endpoint. Unsupported source routing and closed owners fail;
+neither path opens an ephemeral replacement. Assigned-address discovery for
+this capability currently supports Darwin, Linux and FreeBSD.
+
+The initiator registers its connection IDs in the existing listener registry
+before sending. One attempt consumes one connection slot: pending admission is
+transferred to the CID registry, while its operation owner remains until
+cleanup. Receive, TLS, strand and resource ownership use the existing engine.
+
+`async_punch` sends random 64-byte non-QUIC probes at 10..200 ms intervals,
+bounded to 1..256 packets and a positive timeout of at most 30 seconds. Its
+opaque lifetime is released before stop's operation join completes. Caller
+cancellation cancels only that probe operation, not the shared socket. It does
+not initiate a client handshake or prove peer identity. The caller must wait
+for authenticated inbound, correlate the expected peer and cancel the probe
+operation after successful validation. Await `async_stop()` before runtime stop.
+
+Donor patterns: go-libp2p `p2p/transport/quic/transport.go::holePunch`,
+rust-libp2p `transports/quic/src/hole_punching.rs`, and libp2p-specs
+`relay/DCUtR.md`. Peer correlation remains outside this neutral transport.
+
+Private engine ownership is split by coherent component: `engine_connection::impl`
+owns connection I/O/TLS state, `engine_listener::impl` owns the UDP/CID registry,
+and `engine_connector::impl` owns attempt cancellation. `quic_engine_*` aspects
+implement the engine facade. `quic_engine_support` contains shared native
+ngtcp2 callbacks, endpoint mechanics and TLS configuration, not another runtime.
+`tls_handles` owns real OpenSSL release operations; stream/path state is
+header-only where it has no nontrivial implementation.
 
 ## Initial Tokens
 
@@ -354,3 +419,7 @@ become application defaults.
 `test_forge_quic_p2p` covers endpoint parsing, frame codec, loopback handshakes,
 parallel streams, loss/delay/reorder fault proxy, mTLS, pinned fingerprints and
 backpressure limits.
+
+The focused `coordinated_transport` suite checks observed IPv4/IPv6 probe source
+endpoints, rejected fabricated sources, bounded sends, cancellation/stop joins,
+and two shared-socket dials with a two-slot connection budget.

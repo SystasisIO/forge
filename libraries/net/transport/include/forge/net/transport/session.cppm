@@ -65,6 +65,7 @@ class session_concept {
 
 struct session_access {
    [[nodiscard]] static session make(std::shared_ptr<session_concept> model);
+   [[nodiscard]] static std::shared_ptr<session_concept> cancellation_owner(const session& value) noexcept;
 };
 
 } // namespace detail

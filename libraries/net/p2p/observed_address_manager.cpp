@@ -67,6 +67,17 @@ namespace {
    return left.transport.host_type == right.transport.host_type && left.transport.protocol == right.transport.protocol;
 }
 
+[[nodiscard]] bool listener_covers(const endpoint& local, std::span<const endpoint> listened) {
+   return std::ranges::any_of(listened, [&](const auto& value) {
+      const auto listener = normalized(value, true);
+      return listener && same_transport(local, *listener) &&
+             local.transport.zone == listener->transport.zone &&
+             local.transport.port == listener->transport.port &&
+             (local.transport.host == listener->transport.host ||
+              boost::asio::ip::make_address(listener->transport.host).is_unspecified());
+   });
+}
+
 } // namespace
 
 observed_address_manager::observed_address_manager() : observed_address_manager(options{}) {}
@@ -100,15 +111,7 @@ bool observed_address_manager::observe(std::uint64_t session_id, const peer_id& 
    if (!observer) {
       return false;
    }
-   const auto is_listened = std::ranges::any_of(listened, [&](const auto& value) {
-      const auto listener = normalized(value, true);
-      return listener && same_transport(*local_address, *listener) &&
-             local_address->transport.zone == listener->transport.zone &&
-             local_address->transport.port == listener->transport.port &&
-             (local_address->transport.host == listener->transport.host ||
-              boost::asio::ip::make_address(listener->transport.host).is_unspecified());
-   });
-   if (!is_listened) {
+   if (!listener_covers(*local_address, listened)) {
       return false;
    }
    const auto expires_at = now > time_point::max() - options_.ttl ? time_point::max() : now + options_.ttl;
@@ -117,6 +120,7 @@ bool observed_address_manager::observe(std::uint64_t session_id, const peer_id& 
        .peer = peer_id::from_string(authenticated_peer.value).to_string(),
        .observer = std::move(*observer),
        .key = {local_address->to_multiaddr().to_bytes(), reported_address->to_multiaddr().to_bytes()},
+       .local = std::move(*local_address),
        .reported = std::move(*reported_address), .expires_at = expires_at};
 
    const auto lock = std::scoped_lock{mutex_};
@@ -193,16 +197,32 @@ std::size_t observed_address_manager::count_observers(const std::vector<const ob
 
 std::vector<endpoint> observed_address_manager::confirmed(time_point now) const {
    const auto lock = std::scoped_lock{mutex_};
+   return select_locked(now, options_.min_observers, options_.max_candidates, {}, false);
+}
+
+std::vector<endpoint> observed_address_manager::hole_punch_candidates(time_point now,
+    std::span<const endpoint> listened, std::size_t limit) const {
+   const auto lock = std::scoped_lock{mutex_};
+   // Go HolePunchAddrs uses Addrs(1), independently of stronger advertisement
+   // confirmation. Reuse stored attribution/TTL, not an inferred NAT mapping.
+   return select_locked(now, 1, std::min(limit, options_.max_candidates), listened, true);
+}
+
+std::vector<endpoint> observed_address_manager::select_locked(time_point now, std::size_t min_observers,
+    std::size_t limit, std::span<const endpoint> listened, bool public_only) const {
+   if (limit == 0) { return {}; }
    auto groups = std::map<candidate_key, std::vector<const observation*>>{};
    for (const auto& value : observations_) {
-      if (value.expires_at > now) {
-         groups[value.key].push_back(&value);
-      }
+      if (value.expires_at <= now) { continue; }
+      if (public_only && (host_addresses::classify_endpoint_scope(value.reported) !=
+              host_addresses::endpoint_scope::public_address ||
+              host_addresses::has_interface_zone(value.reported) || !listener_covers(value.local, listened))) { continue; }
+      groups[value.key].push_back(&value);
    }
    auto ranked = std::vector<ranked_candidate>{};
    for (const auto& [key, values] : groups) {
       const auto observers = count_observers(values);
-      if (observers >= options_.min_observers) {
+      if (observers >= min_observers) {
          ranked.push_back({.key = &key, .address = &values.front()->reported, .observers = observers});
       }
    }
@@ -220,6 +240,7 @@ std::vector<endpoint> observed_address_manager::confirmed(time_point now) const 
    const address_key* local = nullptr;
    auto selected = std::size_t{};
    for (const auto& item : ranked) {
+      if (result.size() == limit) { break; }
       if (!local || *local != item.key->first) {
          local = &item.key->first;
          selected = 0;

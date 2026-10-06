@@ -50,6 +50,13 @@ struct client_options {
    std::shared_ptr<void> connection_lifetime;
 };
 
+struct punch_options {
+   std::chrono::milliseconds timeout{5'000};
+   std::size_t max_packets = 64;
+   // Admission/lifetime is owned by the caller, never interpreted by QUIC.
+   std::shared_ptr<void> lifetime;
+};
+
 struct server_options {
    std::string alpn = "forge-p2p/1";
    std::chrono::milliseconds handshake_timeout{10'000};

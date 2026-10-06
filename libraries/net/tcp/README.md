@@ -36,6 +36,7 @@ multiaddr parsing. Those layers sit above raw TCP.
 
 - `forge_net_transport`
 - `forge_exceptions`
+- `forge_asio` (joined cancellation notifications)
 - Boost.Asio
 
 ## Examples
@@ -112,9 +113,52 @@ auto outbound = co_await registry.async_connect_stream(listener.local_endpoint()
 co_await outbound.stream.async_write_frame(payload);
 ```
 
+### Coordinated Source Port
+
+Port reuse is opt-in when the listener is opened. A listener-backed connector can
+only be created by a live listener; a standalone connector still chooses an
+ephemeral source port.
+
+```cpp
+auto source = forge::net::tcp::listener{
+   executor, local, {}, forge::net::tcp::options{.reuse_port = true}};
+auto selected_local = source.local_endpoint();
+// For a wildcard listener, replace host with an assigned local interface IP.
+auto connector = source.make_coordinated_connector(selected_local);
+auto socket = co_await connector.async_connect_connection(remote, {}, native_owner);
+co_await connector.async_stop();
+co_await source.async_close();
+```
+
+The selected address must be an assigned, concrete local IP of the same family
+and use the listener's actual bound port. A public NAT address is not a valid
+local binding. Both sockets enable `SO_REUSEADDR` and `SO_REUSEPORT` before bind;
+unsupported reuse, bind errors and source changes fail without ephemeral
+fallback. Required reuse currently supports Darwin, Linux and FreeBSD.
+Coordinated remote endpoints must be literals. `options::connect_timeout` covers
+resolution/connect; `max_pending_connects` bounds outstanding attempts.
+
+Caller cancellation is per operation. `cancel()` is sticky for that connector;
+`async_stop()` joins its pending attempts. Listener `async_close()` cancels and
+joins accepts and connectors minted by that listener before returning. Existing
+established sockets have their own connection ownership. Await these methods
+before stopping the runtime; destructors request cleanup but cannot join it.
+An outbound simultaneous TCP socket does not imply a security-client role;
+security roles and expected-peer validation belong to the upgrading layer.
+
+Donor patterns: go-libp2p `p2p/transport/tcp/tcp.go` and rust-libp2p
+`transports/tcp/src/lib.rs` reuse listener ports for simultaneous connections.
+The coordinated factory requires the exact source port and deliberately rejects
+fallback. Ordinary dialing may use `make_connector(local,
+connector::reuse_policy::preferred)`: a native `EADDRINUSE` or `EADDRNOTAVAIL`
+permits one retry on a kernel-selected port after closing the first socket.
+The original deadline, pending slot and cancellation remain unchanged, and the
+returned endpoint is the actual native endpoint. Refusal, timeout and all
+coordinated attempts do not take this fallback path.
+
 ## Boundaries
 
-- Depends only on `forge_net_transport`, `forge_exceptions` and Boost.Asio.
+- Depends only on `forge_net_transport`, `forge_exceptions`, `forge_asio` and Boost.Asio.
 - Throws typed `forge::net::tcp::exceptions::*` at the TCP boundary.
 - `dns`, `dns4` and `dns6` are connect-only host kinds.
 - Listen accepts only concrete `ip4` and `ip6` endpoints.
@@ -135,3 +179,5 @@ co_await outbound.stream.async_write_frame(payload);
 ## Tests
 
 - `test_forge_tcp`
+- `coordinated_transport` suite in `test_forge_quic_p2p` checks the actual TCP
+  source endpoint and listener capability rejection.

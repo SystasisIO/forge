@@ -19,12 +19,21 @@ from autorelay_acceptance import (
     SCENARIOS as AUTORELAY_SCENARIOS,
 )
 from check_stage6_acceptance import EVIDENCE_CONTRACT_VALIDATORS, expected_launcher_transport
+from coordinated_acceptance import OWNER_ID as COORDINATED_OWNER_ID, PROFILES as COORDINATED_PROFILES
+from coordinated_evidence import REUSE_RUNNER_IDS
 from mdns_acceptance import SCENARIOS as MDNS_SCENARIOS, EVIDENCE_CONTRACTS as MDNS_EVIDENCE_CONTRACTS
+from path_acceptance import DIRECTIONS as PATH_DIRECTIONS, OWNER_ID as PATH_OWNER_ID, SCENARIO_ID as PATH_SCENARIO_ID
+from path_cases import RUNNER_SCENARIO_ID as PATH_RUNNER_ID
 from provenance import (
     donor_checkout_head_errors,
     donor_revision_schema_errors,
     donor_source_object_errors,
 )
+from private_profile_acceptance import (
+    SCENARIOS as PRIVATE_PROFILE_SCENARIOS,
+    expected_contract as private_profile_expected_contract,
+)
+from private_profile_cases import case_specs as private_profile_case_specs
 from stage6_evidence_contract import (
     AUTORELAY_NATIVE_DIRECTIONS,
     AUTORELAY_NATIVE_PROFILES,
@@ -33,6 +42,16 @@ from stage6_evidence_contract import (
     EVIDENCE_CONTRACT_SUFFIX,
     evidence_contract_for,
 )
+
+
+PATH_REGISTRATION_SCENARIOS = {
+    PATH_SCENARIO_ID: (PATH_OWNER_ID, "path", "native", ("quic",), PATH_RUNNER_ID, (),
+                       "interop.live_dcutr_relay_topology"),
+    **{scenario: (COORDINATED_OWNER_ID, "coordinated", profile, stack, REUSE_RUNNER_IDS[name], requires,
+                  "connections.coordinated_dial_port_reuse")
+       for name, (scenario, profile, stack, requires) in COORDINATED_PROFILES.items()},
+}
+PATH_EVIDENCE_CONTRACTS = {evidence_contract_for(name) for name in PATH_REGISTRATION_SCENARIOS}
 
 
 REQUIRED_FIELDS = {
@@ -265,6 +284,178 @@ def donor_case_source_errors(
     return errors
 
 
+def registered_private_profile_pairs(tree: ast.Module) -> set[tuple[str, str]]:
+    """Recognize the separate paired-case adapter, not a live execution verdict."""
+    imports = {
+        (statement.module, alias.name): alias.asname or alias.name
+        for statement in tree.body if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+    }
+    factory = imports.get(("private_profile_cases", "case_specs"))
+    run_case = imports.get(("private_profile_cases", "run_case"))
+    validator = imports.get(("private_profile_evidence", "validate_private_profile"))
+    if factory is None:
+        return set()
+    wrappers = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == "run_private_profile_case"]
+    if len(wrappers) != 1 or run_case is None or validator is None:
+        raise ValueError("private profile runner must import its case factory, adapter and paired validator")
+    wrapper = wrappers[0]
+    calls = {node.func.id for node in ast.walk(wrapper)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    if (not {run_case, validator} <= calls or not any(
+            isinstance(node, ast.Name) and node.id == "owned_case" for node in wrapper.decorator_list)):
+        raise ValueError("private profile runner wrapper must own the case and validate paired evidence")
+    suites = set()
+    for outer in ast.walk(tree):
+        if not isinstance(outer, ast.For) or not isinstance(outer.iter, ast.Tuple):
+            continue
+        if not isinstance(outer.target, ast.Tuple) or len(outer.target.elts) != 2:
+            continue
+        suite_name = outer.target.elts[0]
+        if not isinstance(suite_name, ast.Name):
+            continue
+        declared = []
+        for item in outer.iter.elts:
+            if (not isinstance(item, ast.Tuple) or len(item.elts) != 2
+                    or not isinstance(item.elts[0], ast.Constant)
+                    or not isinstance(item.elts[1], ast.Name)):
+                break
+            declared.append((item.elts[0].value, item.elts[1].id))
+        expected = [("private-profile", imports.get(("private_profile_evidence", "PRIVATE_CONTRACTS"))),
+                    ("inline-muxer", imports.get(("private_profile_evidence", "INLINE_CONTRACTS")))]
+        if declared != expected or any(name is None for _, name in expected):
+            continue
+        for inner in ast.walk(outer):
+            if (not isinstance(inner, ast.For) or not isinstance(inner.target, ast.Name)
+                    or not isinstance(inner.iter, ast.Call) or not isinstance(inner.iter.func, ast.Name)
+                    or inner.iter.func.id != factory or len(inner.iter.args) != 1
+                    or not isinstance(inner.iter.args[0], ast.Name)
+                    or inner.iter.args[0].id != suite_name.id):
+                continue
+            if any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                   and call.func.id == wrapper.name and call.args
+                   and isinstance(call.args[0], ast.Name) and call.args[0].id == inner.target.id
+                   for call in ast.walk(inner)):
+                suites.update(suite for suite, _ in declared)
+    if suites != {"private-profile", "inline-muxer"}:
+        raise ValueError("private profile runner must execute both exact paired-case matrices")
+    return {(case.runner_id, case.contract) for suite in suites for case in private_profile_case_specs(suite)}
+
+
+def private_profile_source_errors(root: Path, capability_id: str, capability: dict, scenario: dict) -> list[str]:
+    name = scenario.get("id")
+    if not isinstance(name, str) or name not in PRIVATE_PROFILE_SCENARIOS:
+        return []
+    directions, status, profile, stack, runner_id, requires, contract = private_profile_expected_contract(name)
+    expected = {
+        "id": name, "runner_scenario_id": runner_id, "profile": profile,
+        "transport_stack": list(stack), "activation": "enabled", "registration": "registered",
+        "source_case_id": name, "evidence_contract": contract,
+        "required_directions": scenario.get("required_directions"), "expected_status": status,
+    }
+    if requires:
+        expected["requires_capabilities"] = list(requires)
+    required_sources = {
+        "private_profile_cases.py", "private_profile_acceptance.py", "private_profile_evidence.py",
+        "forge_private_profile_fixture.cpp",
+    }
+    donor_sources = capability.get("donor_sources", [])
+    if not isinstance(donor_sources, list):
+        donor_sources = []
+    for implementation in ("go", "rust"):
+        if any(implementation in direction.split("_to_") for direction in directions):
+            required_sources.add(f"{implementation}_fixture/private_profile." + ("go" if implementation == "go" else "rs"))
+            if not any(isinstance(source, str) and source.startswith(f"donors/{implementation}-")
+                       for source in donor_sources):
+                return [f"donor capability {capability_id}: private/inline source lacks its actual donor implementation"]
+    actual_directions = scenario.get("required_directions")
+    if (capability_id != PRIVATE_PROFILE_SCENARIOS[name] or scenario != expected
+            or not isinstance(actual_directions, list)
+            or not all(isinstance(direction, str) for direction in actual_directions)
+            or set(actual_directions) != directions or len(actual_directions) != len(directions)
+            or any(not (root / "tests/libp2p_interop" / source).is_file() for source in required_sources)):
+        return [f"donor capability {capability_id}: private/inline registration must match its exact source case contract"]
+    return []
+
+
+def registered_path_pairs(tree: ast.Module) -> set[tuple[str, str]]:
+    """Bind the closed path suites to their actual dispatched native adapters."""
+    imports = {(statement.module, alias.name): alias.asname or alias.name
+               for statement in tree.body if isinstance(statement, ast.ImportFrom)
+               for alias in statement.names}
+    modules = ("path_cases", "coordinated_cases")
+    adapters = {module: imports.get((module, "run_suite")) for module in modules}
+    if not any(adapters.values()):
+        return set()
+    mains = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"]
+    if not all(adapters.values()) or len(mains) != 1:
+        raise ValueError("path registration requires both native suite adapters in one runner main")
+    for module, adapter in adapters.items():
+        keywords = {"command_attempt": "command_attempt"}
+        if module == "coordinated_cases":
+            keywords.update(pnet_key_file="pnet_key_file", pnet_fingerprint="pnet_fingerprint")
+        loops = [node for node in ast.walk(mains[0]) if isinstance(node, ast.For)
+                 and isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+                 and node.iter.func.id == adapter]
+        if len(loops) != 1:
+            raise ValueError("path registration requires exactly one dispatch for each native suite")
+        loop, call = loops[0], loops[0].iter
+        if (not isinstance(loop.target, ast.Name) or len(call.args) != 2
+                or not all(isinstance(arg, ast.Name) for arg in call.args)
+                or [arg.id for arg in call.args] != ["binaries", "root"]
+                or len(call.keywords) != len(keywords)
+                or {item.arg: item.value.id for item in call.keywords if isinstance(item.value, ast.Name)} != keywords
+                or not any(isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+                           and isinstance(statement.value.func, ast.Attribute)
+                           and isinstance(statement.value.func.value, ast.Name)
+                           and statement.value.func.value.id == "artifacts" and statement.value.func.attr == "append"
+                           and len(statement.value.args) == 1 and isinstance(statement.value.args[0], ast.Name)
+                           and statement.value.args[0].id == loop.target.id for statement in loop.body)):
+            raise ValueError("path registration must capture the exact owned suite with tracked attempts/private inputs")
+    return {(value[4], name) for name, value in PATH_REGISTRATION_SCENARIOS.items()}
+
+
+def path_registration_source_errors(root: Path, capability_id: str, capability: dict, scenario: dict) -> list[str]:
+    name = scenario.get("id")
+    if not isinstance(name, str) or name not in PATH_REGISTRATION_SCENARIOS:
+        return []
+    owner, suite, profile, stack, runner_id, requires, source_case = PATH_REGISTRATION_SCENARIOS[name]
+    directions = scenario.get("required_directions")
+    expected = {"id": name, "runner_scenario_id": runner_id, "profile": profile, "transport_stack": list(stack),
+                "activation": "enabled", "registration": "registered", "source_case_id": source_case,
+                "evidence_contract": evidence_contract_for(name), "required_directions": directions,
+                "expected_status": "passed"}
+    if requires:
+        expected["requires_capabilities"] = list(requires)
+    sources = {f"{suite}_{part}.py" for part in ("cases", "evidence", "acceptance", "network")}
+    sources |= {f"forge_{suite}_fixture.cpp", f"forge_{suite}_fixture.hxx",
+                f"go_fixture/{suite}.go", f"rust_fixture/{suite}.rs"}
+    if suite == "path":
+        sources.add("go_fixture/path_upgrade.go")
+    if (capability_id != owner or capability.get("decision") != "stage_6"
+            or capability.get("planned_branch") != "forge-p2p-path-management-v1"
+            or capability.get("interop_applicability") != "go_and_rust"
+            or capability.get("profiles") != (["native"] if suite == "path" else ["native", "private_network"])
+            or scenario != expected or not isinstance(directions, list)
+            or any(not isinstance(direction, str) for direction in directions)
+            or set(directions) != PATH_DIRECTIONS or len(directions) != len(PATH_DIRECTIONS)
+            or any(not (root / "tests/libp2p_interop" / source).is_file() for source in sources)):
+        return [f"donor capability {capability_id}: path registration must match its exact staged native case contract"]
+    for module, function in ((f"{suite}_cases", "run_case"), (f"{suite}_acceptance", "validate_suite")):
+        tree = ast.parse((root / "tests/libp2p_interop" / f"{module}.py").read_text())
+        imports = {(statement.module, alias.name): alias.asname or alias.name
+                   for statement in tree.body if isinstance(statement, ast.ImportFrom)
+                   for alias in statement.names}
+        validator = imports.get((f"{suite}_evidence", "validate_case"))
+        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == function]
+        if validator is None or len(functions) != 1 or not any(
+                isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == validator
+                for call in ast.walk(functions[0])):
+            return [f"donor capability {capability_id}: path adapter must use its actual native proof validator"]
+    return []
+
+
 def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]]:
     tree = ast.parse(runner_path.read_text(), filename=str(runner_path))
     literal_maps: dict[str, object] = {}
@@ -324,10 +515,11 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
         raise ValueError("AutoRelay registration must cover all 6 exact native role/transport scenarios")
     if any(key not in runner_scenario_ids for key in autorelay):
         raise ValueError("AutoRelay registration must be declared in LIVE_SCENARIO_PROFILES")
-    return {
+    return registered_private_profile_pairs(tree) | registered_path_pairs(tree) | {
         (runner_scenario_id, scenario_id)
         for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat, **mdns, **autorelay}.items()
         for scenario_id in scenario_ids
+        if scenario_id not in PRIVATE_PROFILE_SCENARIOS and scenario_id not in PATH_REGISTRATION_SCENARIOS
     }
 
 
@@ -1224,7 +1416,8 @@ def main() -> int:
         )
         for acceptance in acceptance_capabilities.values()
     )
-    executable_contracts = set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
+    executable_contracts = (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS
+                            | MDNS_EVIDENCE_CONTRACTS | PATH_EVIDENCE_CONTRACTS)
     if registered_pr9:
         executable_contracts |= AUTORELAY_EVIDENCE_CONTRACTS
 
@@ -1381,6 +1574,7 @@ def main() -> int:
                 if capability.get("decision") != "current" and not (
                     capability.get("decision") == "stage_6" and scenario_id in (
                         set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_NATIVE_PROFILES)
+                        | set(PRIVATE_PROFILE_SCENARIOS) | set(PATH_REGISTRATION_SCENARIOS)
                     )
                 ):
                     errors.append(
@@ -1394,9 +1588,14 @@ def main() -> int:
                     or (runner_scenario_id, scenario_id) not in runner_emitted_acceptance_pairs
                 ):
                     errors.append(f"donor capability {capability_id}: current scenario is not registered by runner.py")
-                if not isinstance(source_case_id, str) or not has_registered_live_interop(source_case):
+                if scenario_id in PRIVATE_PROFILE_SCENARIOS:
+                    errors.extend(private_profile_source_errors(root, capability_id, capability, scenario))
+                if scenario_id in PATH_REGISTRATION_SCENARIOS:
+                    errors.extend(path_registration_source_errors(root, capability_id, capability, scenario))
+                if scenario_id not in PRIVATE_PROFILE_SCENARIOS and (
+                        not isinstance(source_case_id, str) or not has_registered_live_interop(source_case)):
                     errors.append(f"donor capability {capability_id}: current scenario lacks a registered donor case")
-                else:
+                elif scenario_id not in PRIVATE_PROFILE_SCENARIOS:
                     selector_ids = {
                         f"{selector.get('profile')}/{selector.get('scenario')}"
                         for selector in source_case.get("forge_live_scenario", [])
@@ -1593,12 +1792,15 @@ def main() -> int:
             scenario.get("profile") != "private_network"
             or scenario.get("transport_stack") != ["tcp", "pnet", "yamux"]
             or scenario.get("activation") != "enabled"
-            or scenario.get("registration") != "planned"
+            or scenario.get("registration") not in {"planned", "registered"}
             or scenario.get("requires_capabilities") != ["security.private_network_psk"]
             or set(scenario.get("required_directions", [])) != expected["directions"]
             or scenario.get("runner_scenario_id") != f"private_tcp_yamux_pnet/{expected['id']}"
         ):
             errors.append(f"donor capability {capability_id}: private TCP/Yamux+pnet scenario is incomplete")
+        if scenario.get("registration") == "registered":
+            errors.extend(private_profile_source_errors(
+                root, capability_id, capabilities_by_id.get(capability_id, {}), scenario))
 
     inlined_muxer = acceptance_capabilities.get("connections.inlined_muxer_negotiation", {})
     inlined_scenarios = inlined_muxer.get("scenarios", []) if isinstance(inlined_muxer, dict) else []

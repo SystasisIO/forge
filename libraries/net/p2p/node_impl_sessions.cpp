@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include <algorithm>
 #include <array>
@@ -74,11 +75,13 @@ import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
 import forge.multiformats.multiaddr;
+import forge.net.transport.exceptions;
 import forge.net.transport.session;
 import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "details/direct_transport.hxx"
+#include "details/coordinated_dial.hxx"
 #include "details/cancellation_latch.hxx"
 #include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
@@ -108,6 +111,12 @@ boost::asio::awaitable<std::exception_ptr> async_close_terminal(forge::net::tran
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    try {
       co_await connection.async_close();
+   } catch (const forge::net::transport::exceptions::closed&) {
+      detail::request_session_cancel(connection);
+   } catch (const forge::net::transport::exceptions::canceled&) {
+      // Owner retirement accepts cancellation only after the transport's
+      // terminal cleanup barrier; it does not acknowledge application I/O.
+      detail::request_session_cancel(connection);
    } catch (...) {
       // transport::session reports failures only after terminal cleanup. Keep
       // the owner through that barrier, then make cancellation idempotent.
@@ -136,8 +145,11 @@ node::impl::retire_session_locked(const std::shared_ptr<session_state>& session,
    remove_address_observation_locked(retired->id);
    if (track_close) {
       try {
-         static_cast<void>(
-             retired->retirement.track(teardown.track([retired] { detail::request_session_cancel(retired->connection); })));
+         const auto owner = std::weak_ptr{
+             forge::net::transport::detail::session_access::cancellation_owner(retired->connection)};
+         static_cast<void>(retired->retirement.track(teardown.track([owner] {
+            if (const auto connection = owner.lock()) { connection->request_cancel(); }
+         })));
       } catch (...) {
          // The map owns the session before tracking is attempted, so a callback
          // allocation failure becomes a quarantined retirement rather than a split registry.
@@ -145,6 +157,15 @@ node::impl::retire_session_locked(const std::shared_ptr<session_state>& session,
       }
    }
    return retired;
+}
+
+void node::impl::request_cancel_session(const std::shared_ptr<session_state>& session) noexcept {
+   auto owner = std::shared_ptr<forge::net::transport::detail::session_concept>{};
+   {
+      const auto lock = std::scoped_lock{mutex};
+      owner = forge::net::transport::detail::session_access::cancellation_owner(session->connection);
+   }
+   if (owner) { owner->request_cancel(); }
 }
 
 boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_ptr<session_state>& session,
@@ -156,7 +177,7 @@ boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_
       start = session->retirement.begin_close(allow_untracked);
    }
    if (start == detail::session_retirement::close_start::untracked) {
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
       session->retirement.quarantine();
       co_return;
    }
@@ -167,8 +188,12 @@ boost::asio::awaitable<void> node::impl::async_retire_session(const std::shared_
    const auto failure = co_await async_close_terminal(session->connection);
    // The terminal model can retain the direct-attempt teardown ticket through
    // its lower native transport, so destroy it before releasing that ticket.
-   auto transport = std::move(session->connection);
-   session->connection = {};
+   auto transport = forge::net::transport::session{};
+   {
+      const auto lock = std::scoped_lock{mutex};
+      transport = std::move(session->connection);
+      session->connection = {};
+   }
    transport = {};
 
    auto teardown_ticket = detail::session_teardown::ticket{};
@@ -226,7 +251,7 @@ void node::impl::forget_retired_session(const std::shared_ptr<session_state>& se
 
 void node::impl::launch_pruned_session_teardown(const std::shared_ptr<session_state>& session) noexcept {
    if (!session->retirement.tracked()) {
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
       session->retirement.quarantine();
       return;
    }
@@ -239,7 +264,7 @@ void node::impl::launch_pruned_session_teardown(const std::shared_ptr<session_st
           },
           boost::asio::detached);
    } catch (...) {
-      detail::request_session_cancel(session->connection);
+      request_cancel_session(session);
       session->retirement.quarantine();
    }
 }
@@ -351,6 +376,19 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
             const auto now = std::chrono::steady_clock::now();
             if (rejected == rejection::none) {
                cleanup_expired_relay_reservations_locked();
+               const auto retain_relay = session->info.path == path::kind::direct &&
+                   !connections.is_protected(session->info.remote_peer) &&
+                   std::ranges::any_of(sessions, [&](const auto& item) {
+                      return item.second != session && !item.second->closed &&
+                          item.second->info.remote_peer == session->info.remote_peer &&
+                          item.second->info.path == path::kind::relay;
+                   });
+               if (retain_relay) { connections.protect(session->info.remote_peer, "direct-upgrade"); }
+               auto relay_protection = boost::scope::scope_exit{[&] {
+                  if (retain_relay) {
+                     static_cast<void>(connections.unprotect(session->info.remote_peer, "direct-upgrade"));
+                  }
+               }};
                auto admission = connections.remember(
                    connection_manager::session_record{
                        .id = assigned_id,
@@ -372,6 +410,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                   // Both registries are now updated under one mutex. The manager
                   // has already staged its allocations, so this commit only transfers nodes.
                   session->id = assigned_id;
+                  session->info.id = assigned_id;
                   session->direction = direction;
                   if (generated_id) {
                      ++next_session_id;
@@ -436,7 +475,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
          }
       }
       if (pruned) {
-         detail::request_session_cancel(pruned->connection);
+         request_cancel_session(pruned);
          launch_pruned_session_teardown(pruned);
       }
    }
@@ -453,6 +492,9 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                             rejection_reason.empty() ? "P2P session admission rejected" : rejection_reason);
    }
 
+   // Publish only admitted native authentication facts, never listener/config
+   // intent. This also completes a TCP wave whose outbound socket failed early.
+   if (paths) { paths->notify_direct(session->info.remote_peer, session->info.path, session->authentication); }
    lifecycle_wakeup->notify();
    start_autorelay();
    refresh_relay_publication();
@@ -559,7 +601,10 @@ node::impl::session_for_path_locked(const peer_id& peer, path::kind kind,
       if (relay_peer && session->info.relay_peer != relay_peer) {
          continue;
       }
-      selected = session;
+      if (!selected || selected->authentication == peer_authentication::unverified ||
+          session->authentication != peer_authentication::unverified) {
+         selected = session;
+      }
    }
    if (selected) {
       connections.touch(selected->id, std::chrono::steady_clock::now());
@@ -590,16 +635,8 @@ node::impl::connect_direct_attempt(forge::net::p2p::endpoint endpoint, node::con
       }
       FORGE_THROW_EXCEPTION(exceptions::internal, "P2P outbound session resource admission failed");
    }
-   auto descriptor = reservation->reserve_file_descriptors(1);
-   if (!descriptor) {
-      auto lock = std::scoped_lock{mutex};
-      ++metrics_value.backpressure_rejections;
-      ++metrics_value.connection_rejections;
-      FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P outbound TCP/QUIC file descriptor limit reached");
-   }
    auto staged_resources = std::make_shared<detail::direct_attempt_resources>();
    staged_resources->session = std::move(*reservation);
-   staged_resources->file_descriptor = std::move(*descriptor);
    auto operation_cancellation = std::make_shared<cancellation_latch>();
    auto parent_subscription = cancellation_latch::subscribe(
        cancellation, [operation_cancellation] noexcept { operation_cancellation->request_stop(); });
@@ -610,6 +647,19 @@ node::impl::connect_direct_attempt(forge::net::p2p::endpoint endpoint, node::con
    }
    try {
       auto started = std::chrono::steady_clock::now();
+      auto socket_admission = [this, staged_resources](std::size_t count) {
+         // Borrowed listener-owned QUIC sockets require no extra descriptor.
+         if (count == 0) { return; }
+         auto descriptor = staged_resources->session.reserve_file_descriptors(count);
+         if (!descriptor) {
+            auto lock = std::scoped_lock{mutex};
+            ++metrics_value.backpressure_rejections;
+            ++metrics_value.connection_rejections;
+            FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected,
+                                  "P2P outbound TCP/QUIC file descriptor limit reached");
+         }
+         staged_resources->file_descriptor = std::move(*descriptor);
+      };
       auto authenticated_admission = [this, staged_resources](const peer_id& authenticated_peer) {
          const auto transition = staged_resources->session.establish(resource_manager::session_scope{
              .peer = authenticated_peer,
@@ -631,7 +681,7 @@ node::impl::connect_direct_attempt(forge::net::p2p::endpoint endpoint, node::con
       auto result = co_await direct_registry.async_connect(std::move(endpoint), connect_options_value,
                                                            std::move(operation_cancellation), staged_resources,
                                                            std::move(authenticated_admission),
-                                                           std::move(tcp_transport_progress));
+                                                           std::move(tcp_transport_progress), std::move(socket_admission));
       auto attempt = detail::direct_attempt{};
       attempt.connection = std::move(result);
       attempt.resources = std::move(staged_resources);
@@ -679,10 +729,11 @@ boost::asio::awaitable<void> node::impl::async_discard_session(const std::shared
 }
 
 boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>
-node::impl::commit_direct_attempt(detail::direct_attempt attempt,
+node::impl::commit_direct_attempt(detail::direct_attempt&& attempt,
                                    std::vector<forge::multiformats::multiaddr> roots,
                                    std::chrono::steady_clock::time_point deadline_at,
-                                   std::shared_ptr<cancellation_latch> cancellation) {
+                                   std::shared_ptr<cancellation_latch> cancellation, bool upgrade_only,
+                                   connection_manager::direction direction, bool announce) {
    auto session = std::shared_ptr<session_state>{};
    auto commit_failure = std::exception_ptr{};
    try {
@@ -696,11 +747,19 @@ node::impl::commit_direct_attempt(detail::direct_attempt attempt,
           .path = path::kind::direct,
       };
       session->authentication = attempt.connection.authentication;
+      session->info.muxer = attempt.connection.muxer;
+      session->info.used_early_muxer_negotiation = attempt.connection.used_early_muxer_negotiation;
+      session->info.security_role = attempt.connection.security_role;
+      session->info.yamux_role = attempt.connection.yamux_role;
       session->direct_endpoint = attempt.target;
       session->direct_roots = std::move(roots);
       session->local_endpoint = attempt.connection.local_endpoint;
       session->remote_endpoint = attempt.connection.remote_endpoint;
-      session->native_lifetime = attempt.resources;
+      if (attempt.connection.native_lifetime) {
+         session->native_lifetime = std::make_shared<
+             std::pair<std::shared_ptr<detail::direct_attempt_resources>, std::shared_ptr<void>>>(
+                 attempt.resources, attempt.connection.native_lifetime);
+      } else { session->native_lifetime = attempt.resources; }
       session->resource = std::move(attempt.resources->session);
       session->connection = std::move(attempt.connection.session);
       attempt.resources.reset();
@@ -729,10 +788,17 @@ node::impl::commit_direct_attempt(detail::direct_attempt attempt,
           });
       admission_deadline->arm([bridge] noexcept { bridge->request_stop(); });
       co_await detail::async_run_with_owner_cancellation(
-          bridge, [this, session, &admission_deadline, &published, deadline_at, cancellation](
+          bridge, [this, session, &admission_deadline, &published, deadline_at, cancellation, upgrade_only, direction](
                       boost::asio::cancellation_slot) -> boost::asio::awaitable<void> {
-             co_await remember_session(session, connection_manager::direction::outbound,
-                 [&admission_deadline, deadline_at, cancellation] {
+             co_await remember_session(session, direction,
+                 [this, session, &admission_deadline, deadline_at, cancellation, upgrade_only] {
+                    if (upgrade_only && std::ranges::any_of(sessions, [&](const auto& item) {
+                           return !item.second->closed && item.second->info.path == path::kind::direct &&
+                               item.second->info.remote_peer == session->info.remote_peer &&
+                               item.second->authentication != peer_authentication::unverified;
+                        })) {
+                       FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P direct upgrade already has an authenticated winner");
+                    }
                     if (cancellation && cancellation->stop_requested()) {
                        FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P dial canceled before publication");
                     }
@@ -761,7 +827,7 @@ node::impl::commit_direct_attempt(detail::direct_attempt attempt,
                  std::chrono::steady_clock::now() - attempt.started_at));
       }
       launch_identify(session);
-      co_await announce_pubsub_subscriptions(session->info.remote_peer);
+      if (announce) { co_await announce_pubsub_subscriptions(session->info.remote_peer); }
    } catch (...) {
       commit_failure = std::current_exception();
    }
@@ -791,6 +857,20 @@ void node::impl::launch_accept_loop(forge::net::p2p::endpoint local_endpoint) {
          }
          try {
             auto connection = co_await self->direct_registry.async_accept(local_endpoint);
+            if (const auto operation = connection.coordinated_owner) {
+               const auto marker = connection.coordinated_inbound_worker;
+               auto terminal = boost::scope::scope_exit{[operation, marker] {
+                  if (marker) { operation->end_inbound(); }
+               }};
+               auto failure = std::exception_ptr{};
+               try { static_cast<void>(operation->install(connection, true)); }
+               catch (...) { failure = std::current_exception(); }
+               // A winning transport moved into the exact owner. A rejected
+               // loser keeps its inbound marker through awaited native close.
+               co_await direct::async_discard_unpublished(connection);
+               if (failure) { std::rethrow_exception(failure); }
+               continue;
+            }
             if (!connection.admission || !connection.admission->active()) {
                co_await direct::async_discard_unpublished(connection);
                {
@@ -872,6 +952,10 @@ boost::asio::awaitable<void> node::impl::handle_inbound_connection(direct::conne
           .path = path::kind::direct,
       };
       session->authentication = connection.authentication;
+      session->info.muxer = connection.muxer;
+      session->info.used_early_muxer_negotiation = connection.used_early_muxer_negotiation;
+      session->info.security_role = connection.security_role;
+      session->info.yamux_role = connection.yamux_role;
       session->direct_endpoint = connection.local_endpoint;
       session->local_endpoint = connection.local_endpoint;
       session->remote_endpoint = connection.remote_endpoint;
@@ -985,7 +1069,7 @@ boost::asio::awaitable<void> node::impl::handle_incoming_stream(std::shared_ptr<
       } else if (admitted.protocol == builtins::relay_stop) {
          co_await handle_relay_stop(session, std::move(admitted.stream));
       } else if (admitted.protocol == builtins::dcutr) {
-         co_await handle_dcutr(session, std::move(admitted.stream));
+         co_await handle_dcutr(session, std::move(admitted.stream), admitted.resource);
       } else if (dht_profiles.contains(admitted.protocol)) {
          co_await handle_dht(session, admitted.protocol, std::move(admitted.stream));
       } else if (admitted.protocol == builtins::rendezvous) {

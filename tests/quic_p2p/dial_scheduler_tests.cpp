@@ -11,6 +11,7 @@ module;
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <span>
 #include <mutex>
 #include <optional>
 #include <set>

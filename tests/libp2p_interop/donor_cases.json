@@ -256,22 +256,26 @@
       "id": "dcutr.connect_sync_attempt",
       "protocol": "DCUtR",
       "source": "donors/libp2p-specs/relay/DCUtR.md",
-      "donor": "go-libp2p/p2p/protocol/holepunch/holepunch_test.go",
-      "donor_file":
-          [ "donors/libp2p-specs/relay/DCUtR.md", "donors/go-libp2p/p2p/protocol/holepunch/holepunch_test.go" ],
-      "donor_case": [ "CONNECT", "SYNC", "simultaneous direct dial" ],
+      "donor": "pinned Go hole-punch service and Rust DCUtR relayed handler",
+      "donor_file": [
+        "donors/libp2p-specs/relay/DCUtR.md", "donors/go-libp2p/p2p/protocol/holepunch/holepunch_test.go",
+        "donors/go-libp2p/p2p/protocol/holepunch/holepuncher.go",
+        "donors/rust-libp2p/protocols/dcutr/src/handler/relayed.rs"
+      ],
+      "donor_case": [ "CONNECT", "SYNC", "simultaneous direct dial", "role/RTT timing and bounded retries" ],
       "mapping_state": "mapped",
       "forge_tests": [
         "test_forge_quic_p2p p2p_libp2p_dcutr_codec_matches_spec_shape",
-        "test_forge_quic_p2p p2p_dcutr_attempt_tracks_rtt_retry_and_inflight_state",
-        "test_forge_libp2p_interop dcutr_relay_topology"
+        "test_forge_p2p_path_management",
+        "test_forge_libp2p_interop dcutr"
       ],
       "forge_live_scenario": [
         {
-          "profile": "quic_topology",
-          "scenario": "dcutr_relay_topology"
+          "profile": "quic_stage6",
+          "scenario": "dcutr"
         }
-      ]
+      ],
+      "known_gap": "The native DCUtR12 matrix and node-owned regressions are registered staged evidence sources, not a live acceptance verdict. Pinned Rust has no public per-upgrade cancel/join; Rust-pair cancellation targets Forge and separately observes natural Rust termination."
     },
     {
       "id": "connections.coordinated_dial_port_reuse",
@@ -292,9 +296,17 @@
         "DialOpts role and address selection",
         "TCP transport local-port reuse"
       ],
-      "mapping_state": "unsupported",
-      "forge_tests": [],
-      "known_gap": "Stage 6 has no runtime fixture control for concurrent port reuse yet. This donor trace is source-only and does not establish an interop result."
+      "mapping_state": "mapped",
+      "forge_tests": [
+        "test_forge_p2p_path_management",
+        "test_forge_libp2p_interop coordinated_dial_port_reuse",
+        "test_forge_libp2p_interop coordinated_dial_port_reuse_private_pnet"
+      ],
+      "forge_live_scenario": [
+        { "profile": "tcp_stage6", "scenario": "coordinated_dial_port_reuse" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "coordinated_dial_port_reuse_private_pnet" }
+      ],
+      "known_gap": "Registered staged native/private TCP reuse8 contracts require bilateral native coordinated attempts, exact listener-port SYN-SENT observations, authenticated outgoing-owner evidence, retained-connection challenge I/O and joined cleanup. Private reuse does not claim private Relay/DCUtR. Mapping and registration are not live acceptance or production PASS."
     },
     {
       "id": "resource.peer_protocol_dial_scopes",
@@ -615,15 +627,16 @@
         "donors/libp2p-specs/relay/DCUtR.md", "donors/go-libp2p/p2p/protocol/holepunch/holepunch_test.go",
         "donors/rust-libp2p/protocols/dcutr/src/handler/relayed.rs"
       ],
-      "donor_case": [ "mixed relay topology", "CONNECT", "SYNC", "direct upgrade" ],
+      "donor_case": [ "mixed relay topology", "CONNECT", "SYNC", "direct upgrade", "authenticated relay fallback after failure/cancellation" ],
       "mapping_state": "mapped",
-      "forge_tests": [ "test_forge_libp2p_interop dcutr_relay_topology", "forge_interop_fixture dcutr_relay_topology" ],
+      "forge_tests": [ "test_forge_libp2p_interop dcutr", "forge_interop_fixture path-live" ],
       "forge_live_scenario": [
         {
-          "profile": "quic_topology",
-          "scenario": "dcutr_relay_topology"
+          "profile": "quic_stage6",
+          "scenario": "dcutr"
         }
-      ]
+      ],
+      "known_gap": "The registered native DCUtR12 suite requires all four Go/Rust bilateral directions with success, failed upgrade and supported owner cancellation, actual frame/operation observations, retained relay I/O and joined cleanup. Source mapping does not claim a passing live run or private Relay/DCUtR support."
     },
     {
       "id": "dht.routing_table_xor_distance",
