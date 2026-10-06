@@ -131,4 +131,10 @@ node::async_attempt_hole_punch(peer_id peer, std::optional<peer_id> relay_peer, 
    co_return co_await self->attempt_hole_punch(std::move(peer), std::move(relay_peer), timeout);
 }
 
+boost::asio::awaitable<bool> node::async_cancel_hole_punch(peer_id peer) {
+   auto self = impl_;
+   if (!self->paths) { co_return false; }
+   co_return co_await self->paths->async_cancel(std::move(peer));
+}
+
 } // namespace forge::net::p2p

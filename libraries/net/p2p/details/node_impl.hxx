@@ -16,6 +16,7 @@
 #include "lifecycle_tracker.hxx"
 #include "operation_deadline.hxx"
 #include "path_selector.hxx"
+#include "path_manager.hxx"
 #include "peer_exchange_cancellation.hxx"
 #include "peer_exchange_codec.hxx"
 #include "peer_exchange_scheduler.hxx"
@@ -53,6 +54,7 @@ class reachability_manager;
 class observed_address_manager;
 class host_event_source;
 class mdns_service;
+class coordinated_dial;
 
 } // namespace detail
 
@@ -102,6 +104,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
       std::optional<forge::net::p2p::endpoint> remote_endpoint;
       connection_manager::direction direction = connection_manager::direction::outbound;
       std::string identify_error;
+      bool identify_completed = false;
       std::uint64_t identify_push_attempted_generation = 0;
       std::uint64_t identify_push_delivered_generation = 0;
       bool identify_push_supported = false;
@@ -146,6 +149,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    };
 
    struct relay_reservation_operation;
+   using path_dial_batch = detail::path_manager::dial_batch;
 
    struct relay_reservation_state {
       peer_id owner;
@@ -263,6 +267,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    detail::session_teardown teardown;
    detail::lifecycle_tracker lifecycle;
    std::shared_ptr<detail::lifecycle_wakeup> lifecycle_wakeup;
+   std::shared_ptr<detail::path_manager> paths;
    detail::identify_service identify_service;
    std::shared_ptr<detail::bootstrap_service> bootstrap;
    forge::asio::gate session_admission_gate;
@@ -278,6 +283,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    mutable connection_manager connections{connection_policy_for(options.limits)};
    std::map<protocol_id, node::protocol_handler> handlers;
    std::map<std::uint64_t, std::shared_ptr<session_state>> sessions;
+   std::map<std::pair<std::string, std::string>, std::shared_ptr<detail::coordinated_dial>> coordinated_dials;
+   std::uint64_t coordinated_generation = 0;
+   bool coordinated_admission_closed = false;
    std::shared_ptr<detail::reachability_manager> reachability_manager_value;
    std::shared_ptr<detail::observed_address_manager> observed_addresses;
    std::shared_ptr<detail::host_event_source> host_event_source;
@@ -325,6 +333,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    node::metrics_snapshot metrics_value;
    std::optional<std::chrono::steady_clock::time_point> stop_requested_at;
    bool stopped = false;
+   bool path_shutdown_pending = false;
    bool session_admission_closed = false;
    std::exception_ptr session_shutdown_error;
    bool peer_exchange_admission_closed = false;
@@ -355,6 +364,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    [[nodiscard]] bool launch_tracked(std::function<boost::asio::awaitable<void>()> operation) noexcept;
    [[nodiscard]] bool launch_tracked_cleanup(std::function<boost::asio::awaitable<void>()> operation) noexcept;
    void request_lifecycle_stop() noexcept;
+   void cancel_coordinated_dials() noexcept;
+   boost::asio::awaitable<void> join_coordinated_dials();
+   [[nodiscard]] bool has_coordinated_dials() const;
    void request_dial_scheduler_stop() noexcept;
    boost::asio::awaitable<void> async_close_dial_scheduler();
    [[nodiscard]] dialing::black_hole_status dial_black_hole_status() const;
@@ -378,6 +390,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
    void release_pubsub_outbound_bytes(const peer_id& peer, std::size_t bytes) noexcept;
 
    [[nodiscard]] std::vector<forge::net::p2p::endpoint> local_endpoints_for_control() const;
+   [[nodiscard]] std::vector<forge::net::p2p::endpoint> local_hole_punch_endpoints() const;
    void initialize_reachability();
    void start_reachability();
    void stop_reachability() noexcept;
@@ -671,12 +684,20 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<void> async_close_direct_attempt(detail::direct_attempt& attempt);
 
+   boost::asio::awaitable<node::session_info>
+   connect_coordinated(endpoint remote, node::coordinated_connect_options value,
+                       std::shared_ptr<cancellation_latch> parent = {}, bool upgrade_only = false);
+   boost::asio::awaitable<void> run_coordinated_dial(std::shared_ptr<detail::coordinated_dial> operation);
+
    boost::asio::awaitable<void> async_discard_session(const std::shared_ptr<session_state>& session);
 
+   // The suspended caller retains ownership across coroutine-frame allocation.
    boost::asio::awaitable<std::shared_ptr<session_state>>
-   commit_direct_attempt(detail::direct_attempt attempt, std::vector<forge::multiformats::multiaddr> roots,
+   commit_direct_attempt(detail::direct_attempt&& attempt, std::vector<forge::multiformats::multiaddr> roots,
                          std::chrono::steady_clock::time_point deadline,
-                         std::shared_ptr<cancellation_latch> cancellation);
+                         std::shared_ptr<cancellation_latch> cancellation, bool upgrade_only = false,
+                         connection_manager::direction direction = connection_manager::direction::outbound,
+                         bool announce = true);
 
    boost::asio::awaitable<std::shared_ptr<session_state>>
    connect_direct(forge::net::p2p::endpoint endpoint, node::connect_options connect_options_value,
@@ -827,7 +848,26 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<void> handle_relay_hop(std::shared_ptr<session_state> session,
                                                  forge::net::p2p::stream stream);
 
-   boost::asio::awaitable<void> handle_dcutr(std::shared_ptr<session_state> session, forge::net::p2p::stream stream);
+   boost::asio::awaitable<void> handle_dcutr(std::shared_ptr<session_state> session, forge::net::p2p::stream stream,
+                                            std::shared_ptr<detail::resource_stream> resource = {});
+
+   [[nodiscard]] bool path_session_eligible(const std::shared_ptr<session_state>& session,
+                                           detail::path_manager::role side) const;
+   [[nodiscard]] std::shared_ptr<session_state> authenticated_direct_session(const peer_id& peer) const;
+   [[nodiscard]] detail::path_manager::claim request_path_upgrade(const std::shared_ptr<session_state>& session,
+                                                                 std::chrono::steady_clock::time_point deadline);
+   boost::asio::awaitable<hole_punch::status> run_path_upgrade(std::shared_ptr<session_state> session,
+                                                             std::shared_ptr<detail::path_manager::operation> owner);
+   boost::asio::awaitable<bool> wait_path_identify(const std::shared_ptr<session_state>& session,
+       const std::shared_ptr<detail::path_manager::operation>& owner,
+       const std::shared_ptr<detail::path_manager::exchange>& ticket = {});
+   boost::asio::awaitable<bool> dial_coordinated_path(
+       std::vector<endpoint> candidates, const std::shared_ptr<detail::path_manager::operation>& owner,
+       const std::shared_ptr<detail::path_manager::exchange>& ticket);
+   boost::asio::awaitable<void> dial_path_candidate(endpoint candidate,
+       std::shared_ptr<detail::path_manager::operation> owner, std::shared_ptr<detail::path_manager::exchange> ticket,
+       std::shared_ptr<path_dial_batch> batch,
+       std::chrono::steady_clock::time_point deadline, std::optional<endpoint> local_source);
 
    boost::asio::awaitable<void> handle_dht(std::shared_ptr<session_state> session, protocol_id profile,
                                            forge::net::p2p::stream stream);
@@ -841,9 +881,10 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<bool> wait_for_direct_session(const peer_id& peer, std::chrono::milliseconds timeout);
 
-   boost::asio::awaitable<hole_punch::status> run_dcutr_initiator(const peer_id& peer,
-                                                                  const std::shared_ptr<session_state>& session,
-                                                                  std::chrono::milliseconds timeout);
+   boost::asio::awaitable<bool> run_dcutr_initiator(
+       const std::shared_ptr<session_state>& session,
+       const std::shared_ptr<detail::path_manager::operation>& owner,
+       const std::shared_ptr<detail::path_manager::exchange>& ticket);
 
    boost::asio::awaitable<void> handle_peer_exchange(forge::net::p2p::stream stream, std::uint64_t request_id,
                                                      std::uint64_t remote_receive_limit);

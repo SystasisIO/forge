@@ -11,8 +11,10 @@ import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.address_resolution;
 import forge.net.p2p.dialing;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
+import forge.net.p2p.hole_punch;
 import forge.net.p2p.identity;
 import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
@@ -65,12 +67,19 @@ static_assert(requires(p2p::node& node, p2p::peer_id peer) {
    { node.async_refresh_relay_candidates() }
        -> std::same_as<boost::asio::awaitable<std::vector<p2p::relay::reservation::info>>>;
    { node.async_cancel_relay(peer) } -> std::same_as<boost::asio::awaitable<void>>;
+   { node.async_attempt_hole_punch(peer) } -> std::same_as<boost::asio::awaitable<p2p::hole_punch::status>>;
+   { node.async_cancel_hole_punch(peer) } -> std::same_as<boost::asio::awaitable<bool>>;
 });
 
 static_assert(requires(forge::net::p2p::node& node, forge::multiformats::multiaddr address) {
    node.async_connect(address);
    node.async_connect(address, forge::net::p2p::node::connect_options{});
    forge::net::p2p::bootstrap_peer{.address = address};
+});
+
+static_assert(p2p::node::coordinated_connect_options{}.timeout == std::chrono::seconds{10});
+static_assert(requires(p2p::node& node, p2p::endpoint remote, p2p::node::coordinated_connect_options options) {
+   { node.async_connect_coordinated(remote, options) } -> std::same_as<boost::asio::awaitable<p2p::node::session_info>>;
 });
 
 int main() {

@@ -98,6 +98,12 @@ add_library(
    relay_hop_exchange.cpp
    details/relay_hop_exchange.hxx
    hole_punch.cpp
+   path_manager.cpp
+   path_manager_dial_batch.cpp
+   details/path_manager.hxx
+   details/path_manager_dial_batch.hxx
+   coordinated_dial.cpp
+   details/coordinated_dial.hxx
    topology.cpp
    topology_manager.cpp
    topology_manager_discovery.cpp
@@ -127,6 +133,8 @@ add_library(
    host_addresses.cpp
    details/host_addresses.hxx
    direct_transport_quic.cpp
+   quic_profile.cpp
+   details/quic_profile.hxx
    pending_quic_connection.cpp
    details/pending_quic_connection.hxx
    quic_client_options.cpp
@@ -134,6 +142,8 @@ add_library(
    quic_client_token_cache.cpp
    details/quic_client_token_cache.hxx
    direct_transport_tcp.cpp
+   tcp_profile.cpp
+   details/tcp_profile.hxx
    libp2p_tls.cpp
    details/libp2p_tls.hxx
    node.cpp
@@ -151,6 +161,7 @@ add_library(
    node_impl_pubsub_inbound.cpp
    node_impl_streams.cpp
    node_impl_sessions.cpp
+   node_impl_coordinated.cpp
    node_impl_dialing.cpp
    node_impl_relay.cpp
    node_impl_relay_reservation.cpp
@@ -227,7 +238,19 @@ add_library(
    private_transport_stream.cpp
    details/private_transport_stream.hxx
    stream_upgrade.cpp
+   stream_upgrade_tls.cpp
    details/stream_upgrade.hxx
+   noise_cipher_state.cpp
+   details/noise_cipher_state.hxx
+   noise_symmetric_state.cpp
+   details/noise_symmetric_state.hxx
+   noise_handshake.cpp
+   details/noise_handshake.hxx
+   secure_io.cpp
+   details/secure_io.hxx
+   secure_stream_concept.cpp
+   details/secure_stream_concept.hxx
+   details/exact_negotiation_io.hxx
 )
 forge_target_modules_at(forge_net_p2p net/p2p)
 
@@ -250,6 +273,7 @@ target_link_libraries(
       forge_net_quic
       forge_net_tcp
       forge_net_stcp
+      forge_net_tls
       forge_net_pnet
       forge_net_yamux
       forge_net_dns

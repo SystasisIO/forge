@@ -70,6 +70,7 @@ import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "details/host_addresses.hxx"
+#include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
 #include "details/protocol_capabilities.hxx"
 
@@ -775,10 +776,11 @@ boost::asio::awaitable<void> node::impl::identify_session(const std::shared_ptr<
          session->info.identify_state = identify::state::failed;
          session->identify_error = "P2P session closed before Identify";
          unavailable = true;
-      } else if (session->info.identify_state == identify::state::identified ||
-                 session->info.identify_state == identify::state::failed) {
+      } else if (session->identify_completed &&
+                 (session->info.identify_state == identify::state::identified ||
+                  session->info.identify_state == identify::state::failed)) {
          co_return;
-      } else {
+      } else if (session->info.identify_state == identify::state::unknown) {
          session->info.identify_state = identify::state::identifying;
       }
    }
@@ -793,6 +795,11 @@ boost::asio::awaitable<void> node::impl::identify_session(const std::shared_ptr<
           self->learn_from_identify(session, document);
           co_return document;
        });
+   {
+      const auto lock = std::scoped_lock{mutex};
+      session->identify_completed = true;
+   }
+   lifecycle_wakeup->notify();
    if (result.state == identify::state::identified) {
       auto lock = std::unique_lock{mutex};
       const auto found = sessions.find(session->id);
@@ -837,6 +844,11 @@ void node::impl::launch_identify(const std::shared_ptr<session_state>& session) 
              co_await self->identify_session(session);
           } catch (...) {
              // The Identify state records attributable failure without terminating the authenticated session.
+             {
+                const auto lock = std::scoped_lock{self->mutex};
+                session->identify_completed = true;
+             }
+             self->lifecycle_wakeup->notify();
           }
        },
        [operation = std::move(operation)](std::exception_ptr error) mutable {

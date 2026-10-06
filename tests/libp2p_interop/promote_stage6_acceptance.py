@@ -10,11 +10,22 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from check_stage6_acceptance import sha256_file, validate
+from check_stage6_acceptance import ACCEPTANCE_SUITES, sha256_file, validate
 
 
 PROMOTION_DIRECTORY_PREFIX = "stage6-promotion-"
 CANONICAL_ACCEPTANCE_MANIFEST = Path("tests/libp2p_interop/p2p_donor_capabilities.json")
+
+PROMOTION_SCOPES = {
+    "stage6": "full registered Stage 6 evidence, not production support",
+    "autonat": "focused AutoNAT41 only, not full Stage 6 or production support",
+    "mdns": "focused mDNS38 only, not full Stage 6 or production support",
+    "autorelay": "focused AutoRelay12 only, not full Stage 6 or production support",
+    "private-profile": "focused private PSK protocol30 only, not full Stage 6 or production support",
+    "inline-muxer": "focused inline-muxer16 only, not full Stage 6 or production support",
+    "path": "focused DCUtR12 only, not full Stage 6 or production support",
+    "coordinated": "focused coordinated TCP reuse8 only, not full Stage 6 or production support",
+}
 
 
 def write_receipt(path: Path, receipt: dict) -> None:
@@ -57,7 +68,7 @@ def main() -> int:
     parser.add_argument("--donors-root", required=True)
     parser.add_argument("--acceptance-manifest", required=True)
     parser.add_argument("--expected-head", required=True)
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay"), default="stage6")
+    parser.add_argument("--suite", choices=ACCEPTANCE_SUITES, default="stage6")
     args = parser.parse_args()
 
     root = Path(args.forge_root).resolve()
@@ -111,10 +122,7 @@ def main() -> int:
     if has_limitations:
         print("PASS_WITH_DOCUMENTED_LIMITATIONS: canonical runner executed and was validated in this promotion")
     else:
-        scope = ("full registered Stage 6 including AutoNAT41, mDNS38 and AutoRelay12" if args.suite == "stage6" else
-                 "focused AutoRelay12 only, not full Stage 6 or production support" if args.suite == "autorelay" else
-                 "focused mDNS38 only, not full Stage 6 or production support" if args.suite == "mdns" else
-                 "focused AutoNAT41 only, not full Stage 6")
+        scope = PROMOTION_SCOPES[args.suite]
         print(f"PASS: {scope}; canonical runner executed and was validated in this promotion")
     return 0
 

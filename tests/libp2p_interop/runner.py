@@ -21,6 +21,8 @@ from dns_fixture import DnsaddrServer
 from autonat_cases import run_suite as run_autonat_suite
 from autorelay_cases import run_suite as run_autorelay_suite
 from autorelay_acceptance import claims_for as autorelay_claims, SCENARIOS as AUTORELAY_SCENARIOS
+from path_cases import run_suite as run_path_suite
+from coordinated_cases import run_suite as run_coordinated_suite
 from mdns_cases import run_suite as run_mdns_suite
 from mdns_isolation_cases import run_suite as run_mdns_isolation_suite
 from mdns_churn_cases import run_suite as run_mdns_churn_suite
@@ -28,6 +30,8 @@ from mdns_acceptance import claims_for as mdns_claims
 from autonat_acceptance import acceptance_id as autonat_acceptance_id, SCENARIOS as AUTONAT_SCENARIOS
 from process_lifecycle import Listener, current_scope, enter_scope, exit_scope, spawn_owned, tail_text
 from provider_evidence import validate_hidden_find_peer_evidence, validate_provider_evidence
+from private_profile_cases import case_specs as private_profile_specs, run_case as private_profile_case
+from private_profile_evidence import PRIVATE_CONTRACTS, INLINE_CONTRACTS, validate_private_profile
 from provenance import (
     WorktreeIdentity,
     fixture_donor_checkout_errors,
@@ -39,6 +43,19 @@ from provenance import (
 )
 
 
+GO_EXECUTION_POLICY = {
+    "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off",
+    "GOFLAGS": "", "GOENV": "off", "GOWORK": "off",
+}
+
+
+def go_execution_environment(inherited: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Keep ambient module/workspace overrides outside the locked fixture graph."""
+    environment = dict(os.environ if inherited is None else inherited)
+    environment.update(GO_EXECUTION_POLICY)
+    return environment
+
+
 LIVE_SCENARIO_PROFILES = {
     "quic_base": ("ping", "identify", "relay_reserve", "unknown_protocol"),
     "tcp_noise": ("ping", "identify", "echo", "echo_large"),
@@ -47,11 +64,21 @@ LIVE_SCENARIO_PROFILES = {
         "pnet", "dnsaddr_private_tcp_yamux_pnet",
         "autonat_v1_client_private_tcp_yamux_pnet", "autonat_v1_service_private_tcp_yamux_pnet",
         "autonat_v2_client_private_tcp_yamux_pnet", "autonat_v2_service_private_tcp_yamux_pnet",
+        "tcp_yamux_private_pnet", "multistream_select_private_pnet",
+        "noise_identity_private_pnet", "tls_identity_private_pnet",
+        "ping_private_tcp_yamux_pnet", "identify_private_tcp_yamux_pnet",
+        "kademlia_amino_private_tcp_yamux_pnet", "rendezvous_rust_private_tcp_yamux_pnet",
+        "inline_muxer_go_noise_private_pnet", "inline_muxer_go_tls_private_pnet",
+        "inline_muxer_rust_noise_fallback_private_pnet", "inline_muxer_rust_tls_fixed_alpn_fallback_private_pnet",
+        "coordinated_dial_port_reuse_private_pnet",
     ),
     "tcp_stage6": (
         "dnsaddr", "autonat_v1_client_native_tcp_yamux", "autonat_v1_service_native_tcp_yamux",
         "autonat_v2_client_native_tcp_yamux", "autonat_v2_service_native_tcp_yamux",
         "autorelay_lifecycle_native_tcp_yamux", "relay_v2_service_native_tcp_yamux",
+        "inline_muxer_go_noise", "inline_muxer_go_tls",
+        "inline_muxer_rust_noise_fallback", "inline_muxer_rust_tls_fixed_alpn_fallback",
+        "coordinated_dial_port_reuse",
     ),
     "tcp_tls_stage6": ("autorelay_lifecycle_native_tcp_tls_yamux", "relay_v2_service_native_tcp_tls_yamux"),
     "quic_stage6": ("autonat_v1_client", "autonat_v1_service", "autonat_v2_client", "autonat_v2_service",
@@ -87,6 +114,22 @@ CURRENT_ACCEPTANCE_SCENARIOS = {
     "private_tcp_yamux_pnet/pnet": ("pnet",),
     "tcp_stage6/dnsaddr": ("dnsaddr",),
     "private_tcp_yamux_pnet/dnsaddr_private_tcp_yamux_pnet": ("dnsaddr_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/tcp_yamux_private_pnet": ("tcp_yamux_private_pnet",),
+    "private_tcp_yamux_pnet/multistream_select_private_pnet": ("multistream_select_private_pnet",),
+    "private_tcp_yamux_pnet/noise_identity_private_pnet": ("noise_identity_private_pnet",),
+    "private_tcp_yamux_pnet/tls_identity_private_pnet": ("tls_identity_private_pnet",),
+    "private_tcp_yamux_pnet/ping_private_tcp_yamux_pnet": ("ping_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/identify_private_tcp_yamux_pnet": ("identify_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/kademlia_amino_private_tcp_yamux_pnet": ("kademlia_amino_private_tcp_yamux_pnet",),
+    "private_tcp_yamux_pnet/rendezvous_rust_private_tcp_yamux_pnet": ("rendezvous_rust_private_tcp_yamux_pnet",),
+    "tcp_stage6/inline_muxer_go_noise": ("inline_muxer_go_noise",),
+    "tcp_stage6/inline_muxer_go_tls": ("inline_muxer_go_tls",),
+    "tcp_stage6/inline_muxer_rust_noise_fallback": ("inline_muxer_rust_noise_fallback",),
+    "tcp_stage6/inline_muxer_rust_tls_fixed_alpn_fallback": ("inline_muxer_rust_tls_fixed_alpn_fallback",),
+    "private_tcp_yamux_pnet/inline_muxer_go_noise_private_pnet": ("inline_muxer_go_noise_private_pnet",),
+    "private_tcp_yamux_pnet/inline_muxer_go_tls_private_pnet": ("inline_muxer_go_tls_private_pnet",),
+    "private_tcp_yamux_pnet/inline_muxer_rust_noise_fallback_private_pnet": ("inline_muxer_rust_noise_fallback_private_pnet",),
+    "private_tcp_yamux_pnet/inline_muxer_rust_tls_fixed_alpn_fallback_private_pnet": ("inline_muxer_rust_tls_fixed_alpn_fallback_private_pnet",),
     "quic_dht/dht_provide_find_provider": ("kademlia_amino",),
     "quic_rendezvous/rendezvous_register_discover": ("rendezvous_rust",),
 }
@@ -280,8 +323,7 @@ def require_toolchain(fixture_lock: dict, source_dir: Path) -> tuple[dict, dict[
     if not all(isinstance(value, str) and value for value in (go_version, rustc_version, cargo_version)):
         raise RuntimeError("fixture lock toolchain versions are malformed")
 
-    go_environment = os.environ.copy()
-    go_environment.update({"GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off"})
+    go_environment = go_execution_environment()
     rust_environment = os.environ.copy()
     rust_environment.update({"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"})
     rust_fixture = source_dir / "rust_fixture"
@@ -597,7 +639,7 @@ def start_listener(binary: Path, implementation: str, work: Path, scenario: Opti
         "--store-dir",
         str(store_dir),
         "--features",
-        "ping,identify" if transport == "tcp-pnet" else "ping,identify,relay,dcutr,dht,rendezvous,pubsub",
+        "ping,identify" if transport.startswith("tcp-pnet") else "ping,identify,relay,dcutr,dht,rendezvous,pubsub",
         "--transport",
         transport,
     ]
@@ -713,13 +755,14 @@ def run_dial(binary: Path, implementation: str, scenario: str, peer_id: str, add
 
 @owned_case
 def run_rejected_pnet_dial(binary: Path, implementation: str, peer_id: str, addr: str, work: Path,
-                           control: str, correlation: str, key_file: Optional[Path], fingerprint: str) -> dict:
+                           control: str, correlation: str, key_file: Optional[Path], fingerprint: str,
+                           transport: str = "tcp-pnet") -> dict:
     result_file = work / f"{implementation}-dial-pnet-{control}.json"
     log_file = work / f"{implementation}-dial-pnet-{control}.log"
     command = [
         str(binary), "dial", "--scenario", "pnet", "--peer-id", peer_id, "--addr", addr,
         "--result-file", str(result_file), "--store-dir", str(work / f"{implementation}-dial-{control}-store"),
-        "--transport", "tcp-pnet", "--pnet-fingerprint", fingerprint,
+        "--transport", transport, "--pnet-fingerprint", fingerprint,
         "--pnet-control", control, "--pnet-correlation", correlation,
     ]
     if key_file is not None:
@@ -963,7 +1006,8 @@ def prepare_go_fixture(source_dir: Path, build_dir: Path, go_tool: str,
         shutil.rmtree(work)
     shutil.copytree(source_dir / "go_fixture", work)
     binary = work / "go_fixture"
-    policy = {"GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off"}
+    effective_environment = go_execution_environment(environment)
+    policy = {key: effective_environment[key] for key in GO_EXECUTION_POLICY}
     commands = [
         {"command": [go_tool, "mod", "verify"], "cwd": str(work), "environment": policy},
         {
@@ -978,7 +1022,7 @@ def prepare_go_fixture(source_dir: Path, build_dir: Path, go_tool: str,
         },
     ]
     for command in commands:
-        run(command["command"], cwd=work, env=environment)
+        run(command["command"], cwd=work, env=effective_environment)
     return binary, commands
 
 
@@ -1231,19 +1275,21 @@ def run_dht_value_remote_get(binaries: dict[str, Path], writer: str, listener: s
 @owned_case
 def run_pnet_control(dialer_binary: Path, dialer: str, listener_binary: Path, listener: str, root: Path,
                      key_file: Path, dial_key_file: Optional[Path], fingerprint: str, control: str,
-                     correlation: str) -> dict:
+                     correlation: str, transport: str = "tcp-pnet") -> dict:
+    if transport not in {"tcp-pnet", "tcp-pnet-noise", "tcp-pnet-tls"}:
+        raise ValueError("unsupported private control transport")
     work = root / f"tcp-pnet-{dialer}-to-{listener}-pnet-{control}"
     work.mkdir(parents=True, exist_ok=True)
     listener_result_file = work / f"{listener}-listen-pnet-{control}.json"
     server = start_listener(
-        listener_binary, listener, work, "pnet", listener_result_file, transport="tcp-pnet",
+        listener_binary, listener, work, "pnet", listener_result_file, transport=transport,
         pnet_key_file=key_file, pnet_fingerprint=fingerprint, pnet_control=control,
         pnet_correlation=correlation,
     )
     try:
         result = run_rejected_pnet_dial(
             dialer_binary, dialer, server.ready["peer_id"], server.ready["listen_addrs"][0], work,
-            control, correlation, dial_key_file, fingerprint,
+            control, correlation, dial_key_file, fingerprint, transport=transport,
         )
     finally:
         server.close()
@@ -1277,6 +1323,18 @@ def run_pnet_control(dialer_binary: Path, dialer: str, listener_binary: Path, li
         "listener_result": listener_result,
         "listener_result_file": str(listener_result_file),
     }
+
+
+@owned_case
+def run_private_profile_case(spec, binaries, root, *, key, mismatch, fingerprint):
+    record = private_profile_case(spec, binaries, root, key=key, mismatch=mismatch, fingerprint=fingerprint,
+                                  start_listener=start_listener, wait_json=wait_json,
+                                  command_attempt=command_attempt, run_control=run_pnet_control,
+                                  effective_configuration=effective_configuration)
+    errors = validate_private_profile(record["result"], record, record["listener_result"])
+    if errors:
+        raise RuntimeError(f"{spec.contract}: " + "; ".join(errors))
+    return record
 
 
 def require_pnet_dial_evidence(result: dict, implementation: str) -> None:
@@ -1559,6 +1617,10 @@ def referenced_evidence_paths(value: object) -> set[Path]:
     paths: set[Path] = set()
     if isinstance(value, dict):
         for key, nested in value.items():
+            if key == "phase_sources" and isinstance(nested, dict):
+                for phase in nested.values():
+                    if isinstance(phase, dict):
+                        paths.update(Path(path) for path in phase.values() if isinstance(path, str))
             if key in {"log_file", "result_file", "listener_result_file", "evidence_file"} and isinstance(nested, str):
                 paths.add(Path(nested))
             paths.update(referenced_evidence_paths(nested))
@@ -1606,6 +1668,15 @@ def manifest_registers_autorelay(path: Optional[str]) -> bool:
                for entry in capabilities.values() for scenario in entry.get("scenarios", []))
 
 
+def manifest_registers_profiles(path: Optional[str], names) -> bool:
+    if path is None:
+        return False
+    manifest = json.loads(Path(path).read_text(), object_pairs_hook=reject_duplicate_json_keys)
+    capabilities = manifest.get("interop_acceptance_registry", {}).get("capabilities", {})
+    return any(s.get("id") in names and s.get("registration") == "registered"
+               for entry in capabilities.values() for s in entry.get("scenarios", []))
+
+
 def write_artifact(path: Path, root: Path, provenance: dict, artifacts: list[dict], failures: list[str],
                    runner_argv: list[str], started_at_unix: float, acceptance_manifest: Optional[dict]) -> None:
     path.write_text(
@@ -1638,7 +1709,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -1658,10 +1729,10 @@ def main() -> int:
     build_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict] = []
     failures: list[str] = []
-    root = build_dir / ({"autonat": "autonat-run", "mdns": "mdns-run", "autorelay": "autorelay-run"}.get(args.suite, "interop-run"))
+    root = build_dir / ("interop-run" if args.suite == "stage6" else f"{args.suite}-run")
     artifact_path = build_dir / (
         "interop-provenance-artifacts.json" if args.provenance_only else
-        {"autonat": "autonat-artifacts.json", "mdns": "mdns-artifacts.json", "autorelay": "autorelay-artifacts.json"}.get(args.suite, "interop-artifacts.json")
+        "interop-artifacts.json" if args.suite == "stage6" else f"{args.suite}-artifacts.json"
     )
     provenance = {
         "forge_worktree": {"start": None, "end": None, "changed_during_run": None},
@@ -1826,7 +1897,9 @@ def main() -> int:
                 for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
                     for transport, profile in (("tcp", "tcp_noise"), ("tcp-tls", "tcp_tls"), ("tcp", "tcp_stage6")):
                         for scenario in LIVE_SCENARIO_PROFILES[profile]:
-                            if scenario in AUTONAT_SCENARIOS or scenario in AUTORELAY_SCENARIOS:
+                            if (scenario in AUTONAT_SCENARIOS or scenario in AUTORELAY_SCENARIOS
+                                    or scenario in PRIVATE_CONTRACTS or scenario in INLINE_CONTRACTS
+                                    or scenario in {"coordinated_dial_port_reuse", "coordinated_dial_port_reuse_private_pnet"}):
                                 continue  # Each bounded role suite below owns its native cases once.
                             for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
                                 f"{profile}/{scenario}",
@@ -1854,7 +1927,8 @@ def main() -> int:
                                                         f"{dialer}->{listener} {transport} {acceptance_scenario_id}", error)
                 for dialer, listener in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
                     for scenario in LIVE_SCENARIO_PROFILES["private_tcp_yamux_pnet"]:
-                        if scenario in AUTONAT_SCENARIOS:
+                        if (scenario in AUTONAT_SCENARIOS or scenario in PRIVATE_CONTRACTS or scenario in INLINE_CONTRACTS
+                                or scenario == "coordinated_dial_port_reuse_private_pnet"):
                             continue
                         for acceptance_scenario_id in CURRENT_ACCEPTANCE_SCENARIOS.get(
                             f"private_tcp_yamux_pnet/{scenario}", (scenario,)
@@ -1920,13 +1994,25 @@ def main() -> int:
                           for name in LIVE_SCENARIO_PROFILES[profile] if name in AUTONAT_SCENARIOS}
             if registered != set(AUTONAT_ACCEPTANCE_SCENARIOS):
                 raise RuntimeError("AutoNAT executable registration differs from the full suite")
-            paired_cases = () if args.suite == "autorelay" else run_paired_suites(args.suite, binaries, root, pnet_key=pnet_key_file,
+            paired_cases = () if args.suite not in ("stage6", "autonat", "mdns") else run_paired_suites(args.suite, binaries, root, pnet_key=pnet_key_file,
                                             mismatch_key=pnet_mismatch_key_file, pnet_fingerprint=pnet_fingerprint)
             for artifact in paired_cases:
                 artifacts.append(artifact)
                 if artifact["status"] != "passed":
                     failures.append(f"{artifact['scenario_id']}: " +
                                     "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+            for suite, names in (("private-profile", PRIVATE_CONTRACTS), ("inline-muxer", INLINE_CONTRACTS)):
+                if args.suite != suite and not (
+                        args.suite == "stage6" and manifest_registers_profiles(args.acceptance_manifest, names)):
+                    continue
+                for spec in private_profile_specs(suite):
+                    try:
+                        artifacts.append(run_private_profile_case(spec, binaries, root, key=pnet_key_file,
+                                                                  mismatch=pnet_mismatch_key_file,
+                                                                  fingerprint=pnet_fingerprint))
+                    except Exception as error:
+                        record_case_failure(artifacts, failures,
+                                            f"{spec.dialer}->{spec.listener} {spec.contract}", error)
             if args.suite == "autorelay" or args.suite == "stage6" and manifest_registers_autorelay(args.acceptance_manifest):
                 registered = {f"{profile}/{name}"
                               for profile in ("quic_stage6", "tcp_stage6", "tcp_tls_stage6")
@@ -1936,6 +2022,21 @@ def main() -> int:
                 for artifact in run_autorelay_suite(binaries, root, wait_json=wait_json,
                         command_attempt=command_attempt, start_destination=start_destination,
                         run_relay_dial=run_relay_dial, claims_for_case=autorelay_claims):
+                    artifacts.append(artifact)
+                    if artifact["status"] != "passed":
+                        failures.append(f"{artifact['scenario_id']}: " +
+                                        "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+            if args.suite == "path" or args.suite == "stage6" and manifest_registers_profiles(
+                    args.acceptance_manifest, {"dcutr"}):
+                for artifact in run_path_suite(binaries, root, command_attempt=command_attempt):
+                    artifacts.append(artifact)
+                    if artifact["status"] != "passed":
+                        failures.append(f"{artifact['scenario_id']}: " +
+                                        "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+            if args.suite == "coordinated" or args.suite == "stage6" and manifest_registers_profiles(
+                    args.acceptance_manifest, {"coordinated_dial_port_reuse", "coordinated_dial_port_reuse_private_pnet"}):
+                for artifact in run_coordinated_suite(binaries, root, pnet_key_file=pnet_key_file,
+                        pnet_fingerprint=pnet_fingerprint, command_attempt=command_attempt):
                     artifacts.append(artifact)
                     if artifact["status"] != "passed":
                         failures.append(f"{artifact['scenario_id']}: " +

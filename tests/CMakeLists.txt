@@ -954,7 +954,7 @@ add_executable(
    unit/main.cpp
    tcp/tcp_tests.cpp
 )
-target_link_libraries(test_forge_tcp forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_tcp forge_net_tcp Boost::included_unit_test_framework)
 add_test(NAME test_forge_tcp COMMAND test_forge_tcp WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -962,7 +962,7 @@ add_executable(
    unit/main.cpp
    stcp/stcp_tests.cpp
 )
-target_link_libraries(test_forge_stcp forge Boost::included_unit_test_framework OpenSSL::SSL)
+target_link_libraries(test_forge_stcp forge_net_stcp forge_asio forge_crypto_pki Boost::included_unit_test_framework OpenSSL::SSL)
 add_test(NAME test_forge_stcp COMMAND test_forge_stcp WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -1100,6 +1100,10 @@ add_executable(
    quic_p2p/interface_state_tests.cpp
    quic_p2p/interface_watcher_tests.cpp
    quic_p2p/quic_tests.cpp
+   quic_p2p/quic_connector_cleanup_tests.cpp
+   quic_p2p/quic_send_drain_tests.cpp
+   quic_p2p/quic_cid_registry_tests.cpp
+   quic_p2p/coordinated_transport_tests.cpp
    quic_p2p/connection_gater_tests.cpp
    quic_p2p/resource_manager_tests.cpp
    quic_p2p/p2p_lifecycle_tests.cpp
@@ -1114,6 +1118,9 @@ add_executable(
    quic_p2p/autonat_exchange_tests.cpp
    quic_p2p/net_p2p_observed_address_tests.cpp
    p2p_reachability_codec_tests.cpp
+   p2p_inline_muxer_tests.cpp
+   quic_p2p/path_manager_tests.cpp
+   quic_p2p/path_session_tests.cpp
    quic_p2p/p2p_tests.cpp
    quic_p2p/chain_signer_tests.cpp
    quic_p2p/chain_signer_fixture.cpp
@@ -1157,6 +1164,23 @@ add_executable(
 target_link_libraries(test_forge_p2p_autorelay forge_net_p2p Boost::included_unit_test_framework)
 add_test(NAME test_forge_p2p_autorelay COMMAND test_forge_p2p_autorelay WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_p2p_autorelay PROPERTIES TIMEOUT 120)
+
+add_executable(
+   test_forge_p2p_path_management
+   unit/main.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/coordinated_transport_tests.cpp
+   quic_p2p/coordinated_node_tests.cpp
+   quic_p2p/quic_connector_cleanup_tests.cpp
+   quic_p2p/quic_send_drain_tests.cpp
+   quic_p2p/quic_cid_registry_tests.cpp
+   p2p_inline_muxer_tests.cpp
+   quic_p2p/path_manager_tests.cpp
+   quic_p2p/path_session_tests.cpp
+)
+target_link_libraries(test_forge_p2p_path_management forge_net_p2p Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_path_management COMMAND test_forge_p2p_path_management WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_path_management PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_net_pnet
@@ -1243,6 +1267,9 @@ add_executable(
    libp2p_interop/forge_autonat_fixture.cpp
    libp2p_interop/forge_autorelay_fixture.cpp
    libp2p_interop/forge_connection_fixture.cpp
+   libp2p_interop/forge_coordinated_fixture.cpp
+   libp2p_interop/forge_path_fixture.cpp
+   libp2p_interop/forge_private_profile_fixture.cpp
    libp2p_interop/forge_mdns_fixture.hxx
    libp2p_interop/forge_mdns_fixture.cpp
 )
@@ -1442,6 +1469,22 @@ add_test(
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
 )
 set_tests_properties(test_forge_libp2p_relay_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_path_wire
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_path_wire test_path_network test_path_cases test_path_evidence test_path_acceptance test_path_registration
+      test_coordinated_network
+      test_coordinated_cases test_coordinated_evidence test_coordinated_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_path_wire PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_private_profile_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_private_profile_evidence test_private_profile_cases test_private_profile_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_private_profile_evidence PROPERTIES TIMEOUT 10)
 
 execute_process(
    COMMAND git -C ${CMAKE_SOURCE_DIR} rev-parse HEAD
@@ -1648,6 +1691,9 @@ string(
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Exact Glaze package\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
+   "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
+   "set(CMAKE_C_FLAGS [==[${CMAKE_C_FLAGS}]==] CACHE STRING \"Parent C toolchain flags\" FORCE)\n"
+   "set(CMAKE_EXE_LINKER_FLAGS [==[${CMAKE_EXE_LINKER_FLAGS}]==] CACHE STRING \"Parent executable linker flags\" FORCE)\n"
 )
 file(
    GENERATE
@@ -1669,6 +1715,9 @@ string(
    "set(FORGE_EXPECTED_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Expected shared dependency prefixes\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
+   "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
+   "set(CMAKE_C_FLAGS [==[${CMAKE_C_FLAGS}]==] CACHE STRING \"Parent C toolchain flags\" FORCE)\n"
+   "set(CMAKE_EXE_LINKER_FLAGS [==[${CMAKE_EXE_LINKER_FLAGS}]==] CACHE STRING \"Parent executable linker flags\" FORCE)\n"
 )
 file(
    GENERATE

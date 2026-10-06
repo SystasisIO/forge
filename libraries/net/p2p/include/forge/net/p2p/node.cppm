@@ -50,6 +50,8 @@ import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
 import forge.net.p2p.topology;
 import forge.net.transport.limits;
+import forge.net.tls.options;
+import forge.net.yamux.options;
 
 export namespace forge::net::p2p {
 
@@ -118,6 +120,14 @@ class node {
       bool allow_hole_punch = true;
    };
 
+   struct coordinated_connect_options {
+      enum class role { initiator, responder };
+      peer_id expected_peer;
+      forge::net::p2p::endpoint local_source;
+      role side = role::initiator;
+      std::chrono::milliseconds timeout{10'000};
+   };
+
    struct open_options {
       bool allow_relay = true;
       std::optional<peer_id> relay_peer;
@@ -135,6 +145,16 @@ class node {
       path::kind path = path::kind::direct;
       std::optional<peer_id> relay_peer;
       identify::state identify_state = identify::state::unknown;
+      protocol_id muxer;
+      bool used_early_muxer_negotiation = false;
+      // Successful native delegate roles, independent of physical direction.
+      std::optional<forge::net::tls::endpoint_role> security_role;
+      std::optional<forge::net::yamux::side> yamux_role;
+      // Logical authenticated circuit route, never an inner socket endpoint.
+      std::optional<forge::net::p2p::endpoint> circuit_endpoint;
+      std::optional<std::uint64_t> carrier_session_id;
+      // Native owner identity shared with diagnostics; zero until admitted.
+      std::uint64_t id = 0;
    };
 
    struct incoming_protocol_stream {
@@ -184,6 +204,13 @@ class node {
    boost::asio::awaitable<void> async_hydrate_peer_state();
    boost::asio::awaitable<session_info> async_connect(forge::net::p2p::endpoint endpoint);
    boost::asio::awaitable<session_info> async_connect(forge::net::p2p::endpoint endpoint, connect_options options);
+   // Explicit simultaneous direct dialing from an owned concrete IP listener.
+   // Identity and handshake role are mandatory, independent of TCP direction.
+   // No DNS, relay, ephemeral fallback or private-network QUIC is admitted.
+   // Caller cancellation cancels and joins only this operation's native work;
+   // a session already published by a winning completion is not rolled back.
+   boost::asio::awaitable<session_info> async_connect_coordinated(
+       forge::net::p2p::endpoint endpoint, coordinated_connect_options options);
    boost::asio::awaitable<session_info> async_connect(forge::multiformats::multiaddr address);
    boost::asio::awaitable<session_info> async_connect(forge::multiformats::multiaddr address, connect_options options);
    boost::asio::awaitable<void> async_request_peer_exchange(peer_id peer);
@@ -222,6 +249,15 @@ class node {
    boost::asio::awaitable<hole_punch::status>
    async_attempt_hole_punch(peer_id peer, std::optional<peer_id> relay_peer = std::nullopt,
                             std::chrono::milliseconds timeout = std::chrono::milliseconds{10'000});
+   // Explicitly stops the current shared peer-upgrade owner, affecting all
+   // joined callers, and joins its actual exchanges/workers without stopping
+   // the node or retiring relay sessions/streams. Ordinary waiter cancellation
+   // remains local to that waiter. False means no active/uncompleted owner at
+   // the manager-lock linearization point; true means a stop request was
+   // accepted, not rollback of a direct session already published in a race.
+   // Repeated calls while logically active join the same owner; after completion, false.
+   // At most eight cancel joins per owner; excess calls report backpressure.
+   boost::asio::awaitable<bool> async_cancel_hole_punch(peer_id peer);
    boost::asio::awaitable<forge::net::p2p::stream> async_open_protocol_stream(peer_id peer, protocol_id protocol);
    boost::asio::awaitable<forge::net::p2p::stream> async_open_protocol_stream(peer_id peer, protocol_id protocol,
                                                                               open_options options);

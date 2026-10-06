@@ -178,6 +178,7 @@ class engine_connection : public std::enable_shared_from_this<engine_connection>
 class engine_connector {
  public:
    explicit engine_connector(boost::asio::io_context& context);
+   engine_connector(boost::asio::io_context& context, engine_listener& source, engine_endpoint local);
 
    boost::asio::awaitable<std::shared_ptr<engine_connection>> async_connect(engine_endpoint remote,
                                                                             engine_client_options options);
@@ -185,6 +186,8 @@ class engine_connector {
 
  private:
    struct impl;
+   static boost::asio::awaitable<std::shared_ptr<engine_connection>>
+   async_connect_owned(std::shared_ptr<impl> owner, engine_endpoint remote, engine_client_options options);
    std::shared_ptr<impl> impl_;
 };
 
@@ -197,10 +200,14 @@ class engine_listener {
 
    [[nodiscard]] engine_endpoint local_endpoint() const;
    boost::asio::awaitable<std::shared_ptr<engine_connection>> async_accept();
+   boost::asio::awaitable<std::size_t> async_punch(engine_endpoint local, engine_endpoint remote,
+                                                   std::chrono::milliseconds timeout, std::size_t max_packets,
+                                                   std::shared_ptr<void> lifetime);
    boost::asio::awaitable<void> async_stop();
    void stop();
 
  private:
+   friend class engine_connector;
    std::shared_ptr<impl> impl_;
 };
 

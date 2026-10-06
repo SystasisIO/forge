@@ -16,6 +16,12 @@ from dns_evidence import DNSADDR_SCENARIOS, validate_dnsaddr
 from provider_evidence import validate_provider_evidence
 from upgrade_evidence import validate_go_dial_upgrade, validate_go_listener_upgrade
 from rust_upgrade_evidence import validate_rust_dial_upgrade, validate_rust_listener_upgrade
+from private_profile_evidence import CONTRACTS as PRIVATE_PROFILE_CONTRACTS, validate_private_profile
+from private_profile_acceptance import (
+    PRIVATE_OWNERS, SCENARIOS as PRIVATE_PROFILE_SCENARIOS,
+    EVIDENCE_CONTRACTS as PRIVATE_PROFILE_EVIDENCE_CONTRACTS, validate_requirements as validate_profile_requirements,
+)
+from private_profile_cases import Case as PrivateProfileCase
 from mdns_acceptance import (SCENARIOS as MDNS_SCENARIOS, EVIDENCE_CONTRACTS as MDNS_EVIDENCE_CONTRACTS,
                              validate_suite as validate_mdns_suite)
 from autonat_acceptance import (
@@ -31,6 +37,20 @@ from autorelay_acceptance import (
     is_record as is_autorelay_record,
     validate_suite as validate_autorelay_suite,
 )
+from path_acceptance import (
+    EVIDENCE_CONTRACT as PATH_EVIDENCE_CONTRACT,
+    OWNER_ID as PATH_OWNER_ID,
+    SCENARIO_ID as PATH_SCENARIO_ID,
+    is_record as is_path_record,
+    validate_suite as validate_path_suite,
+)
+from coordinated_acceptance import (
+    OWNER_ID as COORDINATED_OWNER_ID,
+    PROFILES as COORDINATED_PROFILES,
+    is_record as is_coordinated_record,
+    validate_suite as validate_coordinated_suite,
+)
+from coordinated_evidence import REUSE_RUNNER_IDS
 
 from provenance import (
     FIXTURE_DONOR_DIRECTORIES,
@@ -44,6 +64,10 @@ from stage6_evidence_contract import (
     EVIDENCE_CONTRACT_SUFFIX,
     evidence_contract_for,
 )
+
+COORDINATED_EVIDENCE_CONTRACTS = {
+    evidence_contract_for(value[0]) for value in COORDINATED_PROFILES.values()
+}
 
 
 ARTIFACT_SCHEMA = {
@@ -81,8 +105,14 @@ ARTIFACT_SCHEMA = {
 }
 
 CANONICAL_RUNNER = Path("tests/libp2p_interop/runner.py")
-ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay")
-FOCUSED_SCENARIOS = {"autonat": AUTONAT_SCENARIOS, "mdns": MDNS_SCENARIOS, "autorelay": AUTORELAY_SCENARIOS}
+ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated")
+FOCUSED_SCENARIOS = {
+    "autonat": AUTONAT_SCENARIOS, "mdns": MDNS_SCENARIOS, "autorelay": AUTORELAY_SCENARIOS,
+    "private-profile": PRIVATE_OWNERS,
+    "inline-muxer": {name: owner for name, owner in PRIVATE_PROFILE_SCENARIOS.items() if name not in PRIVATE_OWNERS},
+    "path": {PATH_SCENARIO_ID: PATH_OWNER_ID},
+    "coordinated": {value[0]: COORDINATED_OWNER_ID for value in COORDINATED_PROFILES.values()},
+}
 DIRECTIONS = {"forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"}
 SHA256 = re.compile(r"[0-9a-f]{64}")
 PROFILE_TRANSPORT_STACKS = {
@@ -133,6 +163,11 @@ TLS_EVIDENCE_CONTRACTS = {
 
 def expected_launcher_transport(profile: str, stack: tuple[str, ...], evidence_contract: str) -> Optional[str]:
     """Map the manifest's profile contract to the only permitted fixture transport."""
+    if evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS:
+        spec = PrivateProfileCase(PRIVATE_PROFILE_EVIDENCE_CONTRACTS[evidence_contract], "forge", "go")
+        expected_profile = "private_network" if spec.private else "native"
+        expected_stack = ("tcp", "pnet", "yamux") if spec.private else ("tcp", "yamux")
+        return spec.transport if (profile, stack) == (expected_profile, expected_stack) else None
     if profile == "native" and stack == ("quic",):
         return "quic"
     if profile == "native" and stack == ("tcp", "yamux"):
@@ -279,7 +314,7 @@ def required_scenarios(
                 referenced_contracts.add(evidence_contract)
                 if registration == "registered" and evidence_contract not in (
                     set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
-                    | AUTORELAY_EVIDENCE_CONTRACTS
+                    | AUTORELAY_EVIDENCE_CONTRACTS | {PATH_EVIDENCE_CONTRACT} | COORDINATED_EVIDENCE_CONTRACTS
                 ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
@@ -332,6 +367,22 @@ def required_scenarios(
                 f"{runner_profile}/{name}", (), evidence_contract_for(name),
             ):
                 errors.append(f"AutoRelay {name}: exact role directions/profile/transport contract mismatch")
+    errors.extend(validate_profile_requirements(required, suite))
+    path_required = {key: value for key, value in required.items() if key[1] == PATH_SCENARIO_ID}
+    if suite == "path" or path_required:
+        expected = {(PATH_OWNER_ID, PATH_SCENARIO_ID): (
+            DIRECTIONS, "passed", "native", ("quic",), "quic_stage6/dcutr", (), PATH_EVIDENCE_CONTRACT)}
+        if path_required != expected:
+            errors.append("DCUtR suite requires the exact registered native QUIC contract and all four directions")
+    coordinated_required = {key: value for key, value in required.items()
+                            if key[1] in FOCUSED_SCENARIOS["coordinated"]}
+    if suite == "coordinated" or coordinated_required:
+        expected = {(COORDINATED_OWNER_ID, scenario): (
+            DIRECTIONS, "passed", manifest_profile, stack, REUSE_RUNNER_IDS[profile],
+            capabilities, evidence_contract_for(scenario))
+            for profile, (scenario, manifest_profile, stack, capabilities) in COORDINATED_PROFILES.items()}
+        if coordinated_required != expected:
+            errors.append("coordinated suite requires exact native/private TCP contracts and all four directions")
     return required, errors
 
 
@@ -567,6 +618,10 @@ def raw_evidence_paths(value: object) -> set[Path]:
     paths: set[Path] = set()
     if isinstance(value, dict):
         for key, nested in value.items():
+            if key == "phase_sources" and isinstance(nested, dict):
+                for phase in nested.values():
+                    if isinstance(phase, dict):
+                        paths.update(Path(path) for path in phase.values() if isinstance(path, str))
             if key in {"log_file", "result_file", "listener_result_file", "evidence_file"} and isinstance(nested, str):
                 paths.add(Path(nested))
             paths.update(raw_evidence_paths(nested))
@@ -605,7 +660,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                     options, errors = command_options(native, native[1])
                     valid_command = (not errors and native[1] in {"listen", "dial", "destination", "dial-relay", "topology",
                                                                "autorelay-destination", "autorelay-service",
-                                                               "autorelay-relay", "autorelay-observe"}
+                                                               "autorelay-relay", "autorelay-observe", "path-live", "coordinated-live"}
                                      and absolute_path(native[0]) in binaries.values())
                     for flag in ("--ready-file", "--result-file", "--stop-file", "--store-dir"):
                         path = path_within(options.get(flag), root)
@@ -625,7 +680,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                 visit(nested, child_process or (process and "log_file" not in value), isolated)
 
     for record in artifacts:
-        visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns"))
+        visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns", "path", "coordinated"))
 
     def clean(view):
         terminal = view.get("terminal_status")
@@ -1127,7 +1182,7 @@ def validate_identify_evidence(result: dict, record: dict, _listener: Optional[d
 
 def raw_application_process_source(record: dict, payload: dict, result_path: Path,
                                    root: Path, indexed: dict[Path, str], claim_paths: set[Path],
-                                   mode: str = "dial") -> list[str]:
+                                   mode: str = "dial", rejection: bool = False) -> list[str]:
     """Require the exact application result captured by its joined process owner."""
     attempts = record.get("result", {}).get("attempts")
     owners = record.get("owned_processes")
@@ -1141,7 +1196,8 @@ def raw_application_process_source(record: dict, payload: dict, result_path: Pat
             or (mode == "listen" and view.get("pid") == attempt.get("pid"))):
         return ["application evidence lacks independently owned dialer/listener processes"]
     options, command_errors = command_options(view.get("command"), mode)
-    if (command_errors or record.get("scenario") not in {"identify", "echo"}
+    scenarios = {"pnet"} if rejection else {"identify", "echo"} | set(PRIVATE_PROFILE_CONTRACTS)
+    if (command_errors or record.get("scenario") not in scenarios
             or (mode == "dial" and options.get("--peer-id") != record.get("peer_id"))
             or options.get("--scenario") != record.get("scenario")
             or path_within(options.get("--result-file"), root) != result_path):
@@ -1189,7 +1245,9 @@ def raw_application_process_source(record: dict, payload: dict, result_path: Pat
         ready, ready_errors = load_evidence_json(ready_source, "application listener readiness snapshot")
         errors.extend(ready_errors)
         local_peer = payload.get("local_peer_id")
-        if payload.get("implementation") == "rust":
+        if rejection:
+            local_peer = record.get("peer_id")
+        elif payload.get("implementation") == "rust":
             proof = payload.get("upgrade_observation")
             connections = proof.get("connections") if isinstance(proof, dict) else None
             local_peer = None
@@ -1204,7 +1262,55 @@ def raw_application_process_source(record: dict, payload: dict, result_path: Pat
                 or ready.get("peer_id") != record.get("peer_id")
                 or ready.get("peer_id") != local_peer):
             errors.append("application listener readiness does not identify the actual authenticated counterpart")
+        if rejection or record.get("scenario") in PRIVATE_PROFILE_CONTRACTS:
+            addresses = ready.get("listen_addrs") if isinstance(ready, dict) else None
+            if (not isinstance(addresses, list) or len(addresses) != 1
+                    or addresses != view.get("listen_addrs") or record.get("addr") != addresses[0]):
+                errors.append("private/inline listener readiness is not the exact dialed endpoint")
         claim_paths.add(ready_source)
+    return errors
+
+
+def private_control_process_sources(record, root, indexed, claim_paths):
+    """Bind both rejection counters to their independent final owned snapshots."""
+    errors = []
+    for kind in ("missing_key", "mismatched_key"):
+        control = record.get(kind)
+        if not isinstance(control, dict):
+            errors.append(f"private profile lacks {kind} process sources")
+            continue
+        process = control.get("listener_process")
+        attempt_result = control.get("result")
+        if not isinstance(process, dict) or not isinstance(attempt_result, dict):
+            errors.append(f"private profile {kind} process sources are malformed")
+            continue
+        view = dict(control, owned_processes=record.get("owned_processes"), scenario="pnet",
+                    dialer=record.get("dialer"), listener=record.get("listener"),
+                    peer_id=process.get("peer_id"))
+        addresses = process.get("listen_addrs")
+        view["addr"] = addresses[0] if isinstance(addresses, list) and len(addresses) == 1 else None
+        for mode, name in (("dial", "result"), ("listen", "listener_result")):
+            payload = control.get(name)
+            path = path_within(payload.get("result_file"), root) if isinstance(payload, dict) else None
+            if path is None:
+                errors.append(f"{kind} {mode} lacks its final indexed counter file")
+                continue
+            raw = {key: value for key, value in payload.items() if key not in {"result_file", "attempts"}}
+            errors.extend(raw_application_process_source(view, raw, path, root, indexed, claim_paths, mode, True))
+            claim_paths.add(path)
+            attempts = payload.get("attempts")
+            process = control.get("listener_process") if mode == "listen" else (
+                attempts[0] if isinstance(attempts, list) and len(attempts) == 1 else None)
+            options, option_errors = command_options(process.get("command") if isinstance(process, dict) else None, mode)
+            errors.extend(option_errors)
+            if options.get("--pnet-control") != kind or options.get("--pnet-correlation") != payload.get("correlation_token"):
+                errors.append(f"{kind} {mode} counters are not bound to that exact control launch")
+            if mode == "dial" and options.get("--addr") != view["addr"]:
+                errors.append(f"{kind} dial counters do not target the observed control listener endpoint")
+            if isinstance(process, dict):
+                log = path_within(process.get("log_file"), root)
+                if log is not None:
+                    claim_paths.add(log)
     return errors
 
 
@@ -1644,6 +1750,7 @@ EVIDENCE_CONTRACT_VALIDATORS = {
     **evidence_contracts(validate_pnet_evidence, "pnet"),
     **evidence_contracts(validate_dnsaddr_evidence, "dnsaddr"),
     **evidence_contracts(validate_private_dnsaddr_evidence, "dnsaddr_private_tcp_yamux_pnet"),
+    **{contract: validate_private_profile for contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS},
 }
 
 
@@ -1710,6 +1817,8 @@ def pnet_fingerprint_for_launcher_key(value: object, artifact_root: Path) -> tup
 def validate_pnet_launchers(record: dict, result: dict, listener: Optional[dict], dial_options: dict[str, str],
                             listener_options: dict[str, str], artifact_root: Path) -> list[str]:
     errors: list[str] = []
+    expected_transport = expected_launcher_transport(
+        "private_network", ("tcp", "pnet", "yamux"), evidence_contract_for(record.get("acceptance_scenario_id", "")))
     dial_fingerprint, dial_errors = pnet_fingerprint_for_launcher_key(dial_options.get("--pnet-key-file"), artifact_root)
     listener_fingerprint, listener_errors = pnet_fingerprint_for_launcher_key(
         listener_options.get("--pnet-key-file"), artifact_root
@@ -1737,18 +1846,50 @@ def validate_pnet_launchers(record: dict, result: dict, listener: Optional[dict]
         control_result_value = control.get("result")
         control_listener = control.get("listener_process")
         attempts = control_result_value.get("attempts") if isinstance(control_result_value, dict) else None
-        if not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(control_listener, dict):
+        if (not isinstance(attempts, list) or len(attempts) != 1
+                or not isinstance(attempts[0], dict) or not isinstance(control_listener, dict)):
+            errors.append(f"pnet {name} control lacks one bounded dial/listener launch")
             continue
         control_options, control_errors = command_options(attempts[0].get("command"), "dial")
         errors.extend(control_errors)
         listener_control_options, listener_control_errors = command_options(control_listener.get("command"), "listen")
         errors.extend(listener_control_errors)
+        if expected_transport != PRIVATE_NETWORK_TRANSPORT:
+            dial_flags = {"--scenario", "--peer-id", "--addr", "--result-file", "--store-dir", "--transport",
+                          "--pnet-fingerprint", "--pnet-control", "--pnet-correlation"}
+            if name == "mismatched_key":
+                dial_flags.add("--pnet-key-file")
+            listener_flags = {"--ready-file", "--stop-file", "--store-dir", "--features", "--transport",
+                              "--scenario", "--result-file", "--pnet-key-file", "--pnet-fingerprint",
+                              "--pnet-control", "--pnet-correlation"}
+            positive_result = record.get("result")
+            positive_attempts = positive_result.get("attempts") if isinstance(positive_result, dict) else None
+            positive_dial = (positive_attempts[-1].get("command") if isinstance(positive_attempts, list)
+                             and positive_attempts and isinstance(positive_attempts[-1], dict) else None)
+            positive_process = record.get("listener_process")
+            positive_listener = positive_process.get("command") if isinstance(positive_process, dict) else None
+            control_dial = attempts[0].get("command") if isinstance(attempts[0], dict) else None
+            control_listen = control_listener.get("command")
+            control_addresses = control_listener.get("listen_addrs")
+            if (set(control_options) != dial_flags or set(listener_control_options) != listener_flags
+                    or control_options.get("--scenario") != "pnet" or listener_control_options.get("--scenario") != "pnet"
+                    or not isinstance(positive_dial, list) or not isinstance(control_dial, list) or not control_dial
+                    or positive_dial[:1] != control_dial[:1]
+                    or not isinstance(positive_listener, list) or not isinstance(control_listen, list)
+                    or positive_listener[:1] != control_listen[:1]
+                    or control_options.get("--peer-id") != control_result_value.get("expected_peer_id")
+                    or not isinstance(control_addresses, list) or control_options.get("--addr") not in control_addresses
+                    or any(path_within(control_options.get(flag), artifact_root) is None
+                           for flag in ("--result-file", "--store-dir"))
+                    or any(path_within(listener_control_options.get(flag), artifact_root) is None
+                           for flag in ("--ready-file", "--result-file", "--stop-file", "--store-dir"))):
+                errors.append(f"pnet {name} control differs from the closed private Noise/TLS launcher schema")
         if (
-            control_options.get("--transport") != PRIVATE_NETWORK_TRANSPORT
+            control_options.get("--transport") != expected_transport
             or control_options.get("--pnet-control") != name
             or control_options.get("--pnet-correlation") != control_result_value.get("correlation_token")
             or control_options.get("--pnet-fingerprint") != dial_fingerprint
-            or listener_control_options.get("--transport") != PRIVATE_NETWORK_TRANSPORT
+            or listener_control_options.get("--transport") != expected_transport
             or listener_control_options.get("--pnet-control") != name
             or listener_control_options.get("--pnet-correlation") != control_result_value.get("correlation_token")
             or listener_control_options.get("--features") != "ping,identify"
@@ -1850,6 +1991,8 @@ def validate_successful_raw_record(
         errors.extend(command_errors)
         required_options = {"--scenario", "--peer-id", "--addr", "--result-file", "--store-dir", "--transport"}
         optional_options = {"--payload", "--target-peer-id"}
+        if expected_evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS:
+            required_options |= {"--stop-file", "--payload"}
         if expected_runner_scenario in DNSADDR_SCENARIOS:
             required_options.add("--dns-server")
         if expected_profile == "private_network":
@@ -1860,6 +2003,7 @@ def validate_successful_raw_record(
             options["--scenario"] != record.get("scenario")
             or path_within(options["--result-file"], artifact_root) != result_path
             or path_within(options["--store-dir"], artifact_root) is None
+            or ("--stop-file" in required_options and path_within(options.get("--stop-file"), artifact_root) is None)
             or not options["--peer-id"]
             or not options["--addr"]
             or options["--transport"] != expected_transport
@@ -1867,6 +2011,9 @@ def validate_successful_raw_record(
             errors.append("raw runner dial command does not match its recorded result")
         else:
             dial_options = options
+        if expected_evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS and (
+                options.get("--addr") != record.get("addr") or options.get("--peer-id") != record.get("peer_id")):
+            errors.append("private/inline dial argv differs from the exact observed peer/endpoint")
         log_file = attempt.get("log_file")
         if not isinstance(log_file, str):
             errors.append("raw runner command attempt lacks a log file")
@@ -1928,6 +2075,14 @@ def validate_successful_raw_record(
     errors.extend(validate_result_semantics(
         expected_evidence_contract, payload or {}, record, listener_payload
     ))
+    if expected_evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS:
+        errors.extend(raw_application_process_source(record, payload or {}, result_path, artifact_root,
+                                                     indexed_evidence, claim_paths))
+        if isinstance(listener_payload, dict) and isinstance(listener_result_file, str):
+            errors.extend(raw_application_process_source(record, listener_payload, listener_result_path,
+                                                         artifact_root, indexed_evidence, claim_paths, "listen"))
+        else:
+            errors.append("private/inline receipt lacks the independent joined listener result")
     if isinstance(payload, dict) and (payload.get("raw_identify_exchange") is not None or (
         record.get("dialer") in {"go", "rust"} and record.get("scenario") in {"identify", "echo"}
         and expected_evidence_contract in {
@@ -1973,6 +2128,8 @@ def validate_successful_raw_record(
         errors.extend(validate_pnet_launchers(
             record, payload or {}, listener_payload, dial_options, listener_options, artifact_root
         ))
+        if expected_evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS:
+            errors.extend(private_control_process_sources(record, artifact_root, indexed_evidence, claim_paths))
     errors.extend(validate_effective_configuration(
         record,
         expected_profile,
@@ -2112,13 +2269,20 @@ def validate(
     autonat_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "autonat"]
     mdns_records = [record for record in artifacts if isinstance(record, dict) and record.get("suite") == "mdns"]
     autorelay_records = [record for record in artifacts if is_autorelay_record(record)]
-    base_records = [record for record in artifacts if not is_autorelay_record(record)
+    path_records = [record for record in artifacts if is_path_record(record)]
+    coordinated_records = [record for record in artifacts if is_coordinated_record(record)]
+    base_records = [record for record in artifacts if not is_autorelay_record(record) and not is_path_record(record)
+                    and not is_coordinated_record(record)
                     and (not isinstance(record, dict) or record.get("suite") not in ("autonat", "mdns"))]
     autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
     mdns_required = {key: value for key, value in required.items() if key[1] in MDNS_SCENARIOS}
     autorelay_required = {key: value for key, value in required.items() if key[1] in AUTORELAY_SCENARIOS}
+    path_required = {key: value for key, value in required.items() if key[1] == PATH_SCENARIO_ID}
+    coordinated_required = {key: value for key, value in required.items()
+                            if key[1] in FOCUSED_SCENARIOS["coordinated"]}
     base_required = {key: value for key, value in required.items()
-                     if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_SCENARIOS))}
+                     if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_SCENARIOS)
+                                       | {PATH_SCENARIO_ID} | set(FOCUSED_SCENARIOS["coordinated"]))}
     indexed_evidence, evidence_errors = validate_evidence_index(
         artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
@@ -2126,6 +2290,53 @@ def validate(
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
     used_evidence: set[Path] = set()
+    if suite == "coordinated" or coordinated_required or coordinated_records:
+        def load_coordinated_json(value):
+            path = path_within(value, artifact_root)
+            if path is None or path not in indexed_evidence or path.stat().st_size > 4 * 1024 * 1024:
+                raise ValueError("coordinated output absent from verified bounded evidence index")
+            payload, failures = load_evidence_json(path, "coordinated raw output")
+            if failures or payload is None:
+                raise ValueError("; ".join(failures))
+            return payload
+
+        for record in coordinated_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("coordinated cases reuse raw process evidence")
+            used_evidence.update(paths)
+        key_path = (root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key").resolve()
+        fingerprint, fingerprint_errors = pnet_fingerprint_for_launcher_key(str(key_path), artifact_root)
+        errors.extend(fingerprint_errors)
+        errors.extend(validate_coordinated_suite(coordinated_records, coordinated_required,
+            artifact_root, binary_paths, load_coordinated_json, pnet_key_file=key_path,
+            pnet_fingerprint=fingerprint))
+    if suite == "coordinated":
+        if base_records or autonat_records or mdns_records or autorelay_records or path_records:
+            errors.append("focused coordinated suite contains unrelated records")
+        return errors, False
+    if suite == "path" or path_required or path_records:
+        def load_path_json(value):
+            path = path_within(value, artifact_root)
+            if path is None or path not in indexed_evidence:
+                raise ValueError("DCUtR raw output absent from verified evidence index")
+            if path.stat().st_size > 4 * 1024 * 1024:
+                raise ValueError("DCUtR raw output exceeds 4 MiB")
+            payload, failures = load_evidence_json(path, "DCUtR raw output")
+            if failures or payload is None:
+                raise ValueError("; ".join(failures))
+            return payload
+
+        for record in path_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("DCUtR cases reuse raw process evidence")
+            used_evidence.update(paths)
+        errors.extend(validate_path_suite(path_records, path_required, artifact_root, binary_paths, load_path_json))
+    if suite == "path":
+        if base_records or autonat_records or mdns_records or autorelay_records or coordinated_records:
+            errors.append("focused DCUtR suite contains unrelated records")
+        return errors, False
     # Partial older parser manifests do not imply PR9 support. Any registered
     # PR9 contract or supplied case requires the entire exact twelve-case suite.
     if suite == "autorelay" or autorelay_required or autorelay_records:
@@ -2151,7 +2362,7 @@ def validate(
         errors.extend(validate_autorelay_suite(
             autorelay_records, autorelay_required, artifact_root, binary_paths, load_autorelay_json))
     if suite == "autorelay":
-        if base_records or autonat_records or mdns_records:
+        if base_records or autonat_records or mdns_records or path_records:
             errors.append("focused AutoRelay suite contains unrelated records")
         return errors, False
 
@@ -2178,13 +2389,14 @@ def validate(
         errors.extend(validate_mdns_suite(mdns_records, mdns_required, artifact_root, binary_paths, load_mdns_json,
                                          root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key"))
     if suite == "mdns":
-        if base_records or autonat_records or autorelay_records:
+        if base_records or autonat_records or autorelay_records or path_records:
             errors.append("focused mDNS suite contains unrelated records")
         return errors, False
 
-    # Standalone legacy parser fixtures can have a partial manifest, but every
-    # promotion receipt and every registered AutoNAT claim requires the full 41.
-    if suite == "autonat" or autonat_required or autonat_records or execution_receipt is not None:
+    # Legacy parser fixtures may be partial. Full Stage 6 promotion and actual
+    # AutoNAT requirements/records still require all 41, not unrelated focused suites.
+    if (suite == "autonat" or autonat_required or autonat_records
+            or suite == "stage6" and execution_receipt is not None):
         def load_indexed_json(value):
             path = path_within(value, artifact_root)
             if path is None or path not in indexed_evidence:
@@ -2205,7 +2417,7 @@ def validate(
             pnet_fingerprint_for_launcher_key, root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key",
         ))
     if suite == "autonat":
-        if base_records or mdns_records or autorelay_records:
+        if base_records or mdns_records or autorelay_records or path_records:
             errors.append("focused AutoNAT suite contains unrelated base records")
         return errors, False
 
@@ -2256,6 +2468,10 @@ def validate(
                     artifact_root,
                 )
             )
+    if suite in {"private-profile", "inline-muxer"} and (
+            used_records != set(range(len(base_records)))
+            or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records):
+        errors.append(f"focused {suite} suite must cover every record exactly once without unrelated records")
     return errors, any(
         status == ARTIFACT_SCHEMA["limited_status"] for _, status, _, _, _, _, _ in required.values()
     )
@@ -2357,6 +2573,9 @@ def semantic_provider_network_proof() -> dict[str, object]:
 
 def semantic_fixture(scenario_id: str) -> tuple[dict, dict, Optional[dict]]:
     """One observed-result-shaped fixture per executable registered contract."""
+    if scenario_id in PRIVATE_PROFILE_CONTRACTS:
+        from test_private_profile_evidence import semantic_fixture as private_fixture
+        return private_fixture(scenario_id)
     if scenario_id in {"dnsaddr", "dnsaddr_private_tcp_yamux_pnet"}:
         result, record, listener = semantic_fixture("tcp_yamux" if scenario_id == "dnsaddr" else "pnet")
         root = "/dnsaddr/root.test/p2p/listener-peer"

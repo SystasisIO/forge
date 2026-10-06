@@ -25,6 +25,7 @@ import forge.crypto.asymmetric;
 import forge.crypto.pki.x509;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.net.p2p.negotiation;
 import forge.net.stcp.connection;
 import forge.net.stcp.options;
 
@@ -304,6 +305,21 @@ peer_id verify_libp2p_tls_chain(const forge::net::stcp::certificate_chain& chain
    verify_certificate_basics(certificate.get());
    auto parsed = forge::crypto::pki::x509::certificate::from_der(chain.certificates.front().der);
    return verify_certificate_identity(parsed, expected_peer);
+}
+
+libp2p_tls_handshake verify_libp2p_tls_handshake(const forge::net::stcp::certificate_chain& chain,
+                                               std::string_view selected_alpn,
+                                               const std::optional<peer_id>& expected_peer) {
+   const auto peer = verify_libp2p_tls_chain(chain, expected_peer);
+   // Legacy/absent ALPN supplies no inline decision; the upgrader must select
+   // the muxer on the authenticated stream rather than infer Yamux support.
+   if (selected_alpn.empty() || selected_alpn == legacy_libp2p_alpn) {
+      return libp2p_tls_handshake{.peer = peer};
+   }
+   if (selected_alpn != yamux_protocol) {
+      FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "libp2p TLS did not select a supported ALPN protocol");
+   }
+   return libp2p_tls_handshake{.peer = peer, .muxer = protocol_id{.value = std::string{yamux_protocol}}};
 }
 
 forge::net::stcp::client_options make_libp2p_tls_client_options(const libp2p_identity_material& identity) {

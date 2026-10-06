@@ -67,6 +67,46 @@ not a passing-run claim and does not extend to QUIC, Relay, or DCUtR.
 
 ## Current Support State
 
+`node::async_connect_coordinated(endpoint, coordinated_connect_options)` is an
+additive explicit direct operation, separate from automatic/manual relay DCUtR.
+It requires an expected authenticated peer, a concrete IP source owned by an
+active local listener, an explicit security initiator/responder role and one
+overall timeout (10 seconds by default). DNS, circuits, ephemeral source fallback
+and private-network QUIC are rejected. TCP security role is independent of
+connect/accept direction; QUIC responder sends listener-owned probes and waits
+for authenticated inbound admission, never treating probes as success.
+
+At most eight operations are active per node. Conflicting local/remote tuples
+are rejected rather than coalesced. Each operation leases the actual listener
+generation and exact remote/local tuple before native work, and owns one logical
+dial permit through native drain and publication. Another session to the same
+peer cannot fulfill it. Standard Asio caller cancellation cancels and joins this
+operation's native work without stopping the node or its existing relay streams.
+Cancellation racing publication does not roll back an already published session.
+Host shutdown cancels and joins these owners before session/persistence teardown.
+Native regression and donor/live execution evidence remain separate; the API
+does not by itself establish passing simultaneous-open/NAT acceptance.
+
+Preview source migration: `node::session_info` now includes the admitted native
+owner ID, muxer negotiation facts, delegate roles and circuit ownership. Its
+aggregate arity is no longer the old five-field shape. Consumers should read
+named members rather than use a five-element structured binding; no legacy
+tuple facade is provided. Existing connect operations and libp2p wire formats
+are unchanged.
+
+`session_info` and session diagnostics retain optional `security_role`
+(`forge::net::tls::endpoint_role`, client/server for TLS or Noise) and `yamux_role`
+(`forge::net::yamux::side`). These are recorded only after the respective native
+security upgrade and Yamux construction succeed, not from requested roles or
+TCP connect/accept direction. Transports without those delegate receipts leave
+the fields unset; canceled unpublished upgrades cannot contribute session facts.
+
+Relayed sessions additionally retain their authenticated logical
+`circuit_endpoint` and the actual outer `carrier_session_id`. The corresponding
+carrier diagnostics contain its native socket endpoints; inner relay sessions
+do not fabricate native `local_endpoint`/`remote_endpoint` values. A circuit
+address is a route over the carrier, not an independently observed inner socket.
+
 This library contains substantial libp2p-compatible protocol substrate, but it
 is not yet a complete autonomous production host. Direct QUIC and TCP/Yamux,
 secure peer authentication, node-owned bootstrap, automatic Identify,

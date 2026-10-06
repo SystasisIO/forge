@@ -4,6 +4,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@ module;
 #include <boost/compat/move_only_function.hpp>
 #include <boost/system/error_code.hpp>
 #include <openssl/ssl.h>
+#include "details/connection_test_hooks.hxx"
 
 module forge.net.stcp.connection;
 
@@ -35,13 +37,6 @@ import forge.net.transport.stream;
 
 namespace forge::net::stcp::detail {
 namespace {
-
-template <typename stream_type> void cancel_native_stream(stream_type& stream) noexcept {
-   auto ignored = boost::system::error_code{};
-   stream.lowest_layer().cancel(ignored);
-   stream.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
-   stream.lowest_layer().close(ignored);
-}
 
 template <typename stream_type>
 boost::asio::awaitable<boost::system::error_code>
@@ -70,8 +65,33 @@ run_read_some(stream_type& stream, std::span<std::uint8_t> bytes) {
 
 } // namespace
 
-native_stream_backend::native_stream_backend(std::shared_ptr<forge::net::tls::asio_tls_stream> stream)
-    : stream_(std::move(stream)) {}
+void close_native_socket(boost::asio::ip::tcp::socket& socket,
+                         const std::shared_ptr<connection_test_hooks>& hooks) noexcept {
+   if (!socket.is_open()) {
+      return;
+   }
+   if (hooks && hooks->native_close) {
+      hooks->native_close(hooks->state.get(), socket, native_close_stage::before_close);
+   }
+   auto ignored = boost::system::error_code{};
+   socket.cancel(ignored);
+   socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
+   socket.close(ignored);
+   if (hooks && hooks->native_close) {
+      hooks->native_close(hooks->state.get(), socket, native_close_stage::after_close);
+   }
+}
+
+native_stream_backend::native_stream_backend(std::shared_ptr<forge::net::tls::asio_tls_stream> stream,
+                                             std::shared_ptr<void> lifetime,
+                                             std::shared_ptr<connection_test_hooks> hooks)
+    : stream_(std::move(stream)), lifetime_(std::move(lifetime)), hooks_(std::move(hooks)) {}
+
+native_stream_backend::~native_stream_backend() {
+   // Timer and worker references retain this real native owner, not just the
+   // wrapper. Even pre-publication failure closes the socket before its token.
+   request_cancel();
+}
 
 boost::asio::any_io_executor native_stream_backend::get_executor() const noexcept {
    return stream_->get_executor();
@@ -100,8 +120,9 @@ native_stream_backend::async_read_some(std::span<std::uint8_t> bytes) {
 }
 
 void native_stream_backend::request_cancel() noexcept {
+   const auto lock = std::scoped_lock{close_mutex_};
    if (stream_) {
-      cancel_native_stream(*stream_);
+      close_native_socket(stream_->next_layer(), hooks_);
    }
 }
 
@@ -152,8 +173,17 @@ boost::asio::awaitable<void> transport_stream_backend::async_terminal_close() {
 }
 
 std::shared_ptr<stream_backend>
-make_native_stream_backend(std::shared_ptr<forge::net::tls::asio_tls_stream> stream) {
-   return std::make_shared<native_stream_backend>(std::move(stream));
+make_native_stream_backend(std::shared_ptr<forge::net::tls::asio_tls_stream> stream,
+                           std::shared_ptr<void> lifetime, std::shared_ptr<connection_test_hooks> hooks) {
+   try {
+      if (hooks && hooks->startup) {
+         hooks->startup(hooks->state.get(), startup_stage::backend_allocation);
+      }
+      return std::make_shared<native_stream_backend>(stream, lifetime, hooks);
+   } catch (...) {
+      close_native_socket(stream->next_layer(), hooks);
+      throw;
+   }
 }
 
 std::shared_ptr<stream_backend>

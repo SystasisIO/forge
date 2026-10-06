@@ -23,6 +23,7 @@ module;
 #include <functional>
 #include <future>
 #include <memory>
+#include <span>
 #include <map>
 #include <mutex>
 #include <stdexcept>

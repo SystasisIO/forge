@@ -81,7 +81,8 @@
         "forge.net.p2p.diagnostics": [
           "state.peer_store", "resource.sessions", "resource.streams", "resource.dials", "resource.queued_bytes",
           "topology.connection_manager", "dialing.ipv6_black_hole_detection", "dialing.udp_black_hole_detection",
-          "protocol.autonat", "protocol.ping", "protocol.relay", "security.private_network_psk"
+          "protocol.autonat", "protocol.ping", "protocol.relay", "protocol.dcutr", "state.hole_punch_attempt",
+          "security.private_network_psk", "identity.secure_transport_authentication", "transport.tcp_yamux"
         ],
         "forge.net.p2p.discovery": [
           "protocol.peer_exchange", "protocol.kademlia", "protocol.rendezvous", "protocol.relay", "lifecycle.discovery"
@@ -117,7 +118,7 @@
           "resource.queued_bytes",
           "topology.connection_manager"
         ],
-        "forge.net.p2p.hole_punch": [ "protocol.dcutr", "state.hole_punch_attempt" ],
+        "forge.net.p2p.hole_punch": [ "protocol.dcutr" ],
         "forge.net.p2p.host_event": [ "protocol.autonat", "lifecycle.bootstrap" ],
         "forge.net.p2p.host_event_subscription": [ "protocol.autonat" ],
         "forge.net.p2p.identify": [ "protocol.identify" ],
@@ -184,7 +185,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "f0949845386eab8faf5773624c0f8b599132c44f39517388e276b8a40994b054",
+      "sha256": "03452572bf299d40ac3504554f4aa30954f38f664f4ef37220820ee5f94e9ae7",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -326,20 +327,29 @@
       "owner": "net.p2p.node",
       "normal_activation": "node_lifecycle",
       "configuration": "node direct transport options and TCP listen endpoints",
-      "resource_ownership": "node sessions, STCP, Noise and Yamux lifetimes",
+      "resource_ownership": "node sessions, authenticated TLS/Noise upgrades and Yamux; coordinated TCP source capability is issued by a live listener",
       "persistence": "peer endpoints are recorded by peer_store",
       "maintenance": "node session and connection-manager lifecycle",
-      "diagnostics": "node diagnostics sessions and selected paths",
+      "diagnostics": "session authentication, actual local/remote endpoints and used early muxer negotiation; registration is not live acceptance",
       "intended_disposition": "preserve",
       "builtin_protocols": [],
       "capabilities": [],
       "negotiated_protocol_ids": [ "/tls/1.0.0", "/noise", "/yamux/1.0.0" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "official_plugin", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/direct_transport_tcp.cpp", "plugins/net/p2p/node/plugin.cpp" ],
-        "tests": [ "test_forge_stcp", "test_forge_yamux", "test_forge_plugins" ],
+        "source_paths": [
+          "libraries/net/p2p/direct_transport_tcp.cpp", "libraries/net/p2p/stream_upgrade.cpp",
+          "libraries/net/p2p/libp2p_tls.cpp", "libraries/net/tcp/listener_impl.cpp",
+          "libraries/net/tcp/connector_impl.cpp", "libraries/net/tcp/socket_reuse.cpp",
+          "tests/p2p_inline_muxer_tests.cpp", "tests/quic_p2p/coordinated_transport_tests.cpp",
+          "tests/quic_p2p/coordinated_node_tests.cpp",
+          "tests/libp2p_interop/coordinated_cases.py", "tests/libp2p_interop/coordinated_evidence.py",
+          "tests/libp2p_interop/coordinated_acceptance.py",
+          "tests/libp2p_interop/private_profile_cases.py", "plugins/net/p2p/node/plugin.cpp"
+        ],
+        "tests": [ "test_forge_stcp", "test_forge_yamux", "test_forge_quic_p2p", "test_forge_p2p_path_management", "test_forge_libp2p_interop", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/fcl-p2p-tcp-noise-yamux-v1.md", "docs/donors/fcl-p2p-tcp-tls-yamux-v1.md" ],
-        "donor_cases": [ "transport.tcp_noise_yamux_direct", "transport.tcp_tls_yamux_direct" ]
+        "donor_cases": [ "transport.tcp_noise_yamux_direct", "transport.tcp_tls_yamux_direct", "connections.coordinated_dial_port_reuse" ]
       }
     },
     {
@@ -513,11 +523,16 @@
         "layers": [ "codec", "state_machine", "raw_node", "donor_interop" ],
         "source_paths": [
           "libraries/net/p2p/identity.cpp",
+          "libraries/net/p2p/stream_upgrade.cpp",
+          "libraries/net/p2p/libp2p_tls.cpp",
           "libraries/net/p2p/node.cpp",
           "libraries/net/p2p/include/forge/net/p2p/node.cppm",
+          "tests/p2p_inline_muxer_tests.cpp",
+          "tests/quic_p2p/path_session_tests.cpp",
+          "tests/libp2p_interop/private_profile_evidence.py",
           "plugins/net/p2p/node/plugin.cpp"
         ],
-        "tests": [ "test_forge_stcp", "test_forge_quic_p2p" ],
+        "tests": [ "test_forge_stcp", "test_forge_quic_p2p", "test_forge_p2p_path_management", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-libp2p-foundation-v1.md" ],
         "donor_cases": [ "interop.live_ping_identify_relay" ]
       }
@@ -740,42 +755,57 @@
       "id": "protocol.dcutr",
       "state": "partial",
       "owner": "net.p2p.node",
-      "normal_activation": "relay_path_only",
-      "configuration": "relay-path policy; no explicit per-peer coordinated-dial and port-reuse attempt owner",
-      "resource_ownership": "relay session, synchronization stream and direct dial",
+      "normal_activation": "authenticated_relay_path_and_explicit_upgrade",
+      "configuration": "node path_policy and listener-owned coordinated transport capabilities; private-network Relay/DCUtR remains excluded",
+      "resource_ownership": "node path_manager owns per-peer admission and cancellation; node workers own relay exchange and direct attempts",
       "persistence": "none",
-      "maintenance": "retry mechanics exist but helper ownership is split",
-      "diagnostics": "path attempt metrics without one canonical state object",
-      "intended_disposition": "unify_private_coordinated_dial_state_without_legacy_simultaneous_connect",
+      "maintenance": "bounded retries/backoff and node stop/join; TCP security role follows relay direction, QUIC responder probes then awaits authenticated inbound",
+      "diagnostics": "session path, authentication and actual endpoint facts; registered native DCUtR12 sources remain staged and do not establish live NAT topology acceptance",
+      "intended_disposition": "retain_private_path_manager_and_obtain_live_topology_evidence_without_legacy_simultaneous_connect",
       "builtin_protocols": [ "dcutr" ],
       "capabilities": [ "hole_punching" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "donor_interop" ],
-        "source_paths": [ "libraries/net/p2p/hole_punch.cpp", "libraries/net/p2p/node_impl.cpp" ],
-        "tests": [ "test_forge_quic_p2p", "test_forge_libp2p_interop" ],
+        "source_paths": [
+          "libraries/net/p2p/hole_punch.cpp", "libraries/net/p2p/details/path_manager.hxx",
+          "libraries/net/p2p/path_manager.cpp", "libraries/net/p2p/node_impl_relay_dcutr.cpp",
+          "libraries/net/p2p/direct_transport_tcp.cpp", "libraries/net/p2p/direct_transport_quic.cpp",
+          "libraries/net/p2p/node.cpp", "libraries/net/p2p/node_impl_lifecycle.cpp",
+          "tests/quic_p2p/path_manager_tests.cpp", "tests/quic_p2p/path_session_tests.cpp",
+          "tests/quic_p2p/coordinated_transport_tests.cpp",
+          "tests/libp2p_interop/path_cases.py", "tests/libp2p_interop/path_evidence.py",
+          "tests/libp2p_interop/path_acceptance.py", "tests/libp2p_interop/forge_path_fixture.cpp",
+          "tests/libp2p_interop/go_fixture/path.go", "tests/libp2p_interop/rust_fixture/path.rs"
+        ],
+        "tests": [ "test_forge_quic_p2p", "test_forge_p2p_path_management", "test_forge_libp2p_interop" ],
         "donor_sources": [ "docs/donors/fcl-p2p-reachability-relay-v1.md" ],
         "donor_cases": [ "dcutr.connect_sync_attempt", "interop.live_dcutr_relay_topology" ]
       }
     },
     {
       "id": "state.hole_punch_attempt",
-      "state": "orphan",
-      "owner": "none",
-      "normal_activation": "test_only",
-      "configuration": "public helper constructed directly by component tests",
-      "resource_ownership": "process-local counters and attempted endpoint list",
+      "state": "partial",
+      "owner": "net.p2p.node",
+      "normal_activation": "authenticated_relay_path_and_explicit_upgrade",
+      "configuration": "private node-owned path_manager with path_policy deadlines and candidate limits",
+      "resource_ownership": "coalesced per-peer operation, session id, role, deadline, explicit cancel-and-join and bounded exchange/dial admission; native terminal waiter is installed before dial workers",
       "persistence": "none",
-      "maintenance": "none",
-      "diagnostics": "result projection only",
-      "intended_disposition": "replace_with_node_owned_private_attempt_state",
+      "maintenance": "at most 8 parallel operations, 128 retained peers, 3 attempts, 4 parallel dials and 8 cancellation joiners per operation; 30-second failure backoff and node stop/join",
+      "diagnostics": "private operation progress and session path facts; no standalone public attempt component or live acceptance claim",
+      "intended_disposition": "retain_private_node_ownership_and_validate_live_path_lifecycle",
       "builtin_protocols": [],
       "capabilities": [],
-      "public_components": [ "hole_punch::attempt" ],
+      "public_components": [],
       "evidence": {
-        "layers": [ "state_machine" ],
-        "source_paths":
-            [ "libraries/net/p2p/hole_punch.cpp", "libraries/net/p2p/include/forge/net/p2p/hole_punch.cppm" ],
-        "tests": [ "test_forge_quic_p2p" ],
+        "layers": [ "state_machine", "raw_node" ],
+        "source_paths": [
+          "libraries/net/p2p/details/path_manager.hxx", "libraries/net/p2p/path_manager.cpp",
+          "libraries/net/p2p/details/path_manager_dial_batch.hxx", "libraries/net/p2p/path_manager_dial_batch.cpp",
+          "libraries/net/p2p/details/node_impl.hxx", "libraries/net/p2p/node_impl_relay_dcutr.cpp",
+          "libraries/net/p2p/node.cpp", "libraries/net/p2p/node_relay.cpp", "libraries/net/p2p/node_impl_lifecycle.cpp",
+          "tests/quic_p2p/path_manager_tests.cpp", "tests/quic_p2p/path_session_tests.cpp"
+        ],
+        "tests": [ "test_forge_quic_p2p", "test_forge_p2p_path_management" ],
         "donor_sources": [ "docs/donors/fcl-p2p-reachability-relay-v1.md" ],
         "donor_cases": [ "dcutr.connect_sync_attempt" ]
       }
@@ -1068,7 +1098,8 @@
         "layers": [ "state_machine", "raw_node", "official_plugin", "adversarial" ],
         "source_paths": [
           "libraries/net/p2p/resource_manager.cpp", "libraries/net/p2p/node_impl_identify.cpp",
-          "libraries/net/quic/quic_engine.cpp", "libraries/net/yamux/session.cpp", "plugins/net/p2p/node/plugin.cpp"
+          "libraries/net/quic/quic_engine.cpp", "libraries/net/quic/quic_engine_stream.cpp",
+          "libraries/net/quic/engine_connection_impl.cpp", "libraries/net/yamux/session.cpp", "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_yamux", "test_forge_plugins" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],
