@@ -118,6 +118,7 @@ struct quic_send_fixture {
    std::shared_ptr<detail::engine_stream> server_stream;
    std::shared_ptr<detail::engine_stream::impl> stream_owner;
    forge::asio::gate::ticket held;
+   std::optional<boost::system::error_code> expected_close_error;
 
    quic_send_fixture() {
       const auto client_identity = forge::tests::p2p::make_identity_fixture("send-drain-client");
@@ -226,7 +227,8 @@ struct quic_send_fixture {
                         error.kind() == detail::engine_error_kind::connection_closed);
          } catch (const boost::system::system_error& error) {
             // Cancellation and a previously tested close timeout remain sticky.
-            BOOST_CHECK(error.code() == asio::error::operation_aborted || error.code() == asio::error::timed_out);
+            BOOST_CHECK(error.code() == asio::error::operation_aborted || error.code() == asio::error::timed_out ||
+                        (expected_close_error && error.code() == *expected_close_error));
          } catch (...) {
             BOOST_ERROR("unexpected QUIC connection cleanup error");
          }
@@ -600,6 +602,151 @@ BOOST_AUTO_TEST_CASE(quic_connection_close_timeout_joins_sender_and_keeps_error_
    auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
    BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
                          [](const auto& error) { return error.code() == asio::error::timed_out; });
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_after_prior_cancel_is_idempotent_unsent_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   fixture.until([owner = fixture.owner] { return owner->udp_inflight_generation != 0; });
+   fixture.server->request_cancel();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(close));
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->canceled && owner->terminal_cleanup_complete && owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation && owner->outbound_datagrams.empty();
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(replay));
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_after_native_peer_close_joins_without_delivery_claim) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   fixture.until([owner = fixture.owner] { return owner->udp_inflight_generation != 0; });
+   auto remote = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote));
+   fixture.until([owner = fixture.owner] { return owner->native_remote_close_received; });
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(close));
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->terminal_cleanup_complete && !owner->canceled && owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto stream = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(stream));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(replay));
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_native_peer_close_during_prefix_wait_is_joined_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && owner->udp_inflight_generation != 0; });
+   BOOST_CHECK(close.wait_for(0ms) != std::future_status::ready);
+   auto remote = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote));
+   BOOST_CHECK_NO_THROW(completed(close));
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return owner->native_remote_close_received && !owner->canceled && owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(replay));
+}
+
+BOOST_AUTO_TEST_CASE(quic_fin_close_native_peer_close_does_not_count_unsent_fin_as_success) {
+   auto fixture = quic_send_fixture{};
+   fixture.queue();
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server_stream->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner, stream = fixture.stream_owner] {
+      return stream->fin_send_generation != 0 && owner->udp_completed_generation < stream->fin_send_generation;
+   });
+   auto remote = asio::co_spawn(fixture.runtime.context(), fixture.client->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(remote));
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::operation_aborted; });
+   auto joined = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(joined));
+   fixture.require_sender_joined();
+   auto unsent = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner, stream = fixture.stream_owner]() -> asio::awaitable<bool> {
+          co_return owner->native_remote_close_received &&
+              owner->udp_completed_generation < stream->fin_send_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(unsent));
+}
+
+BOOST_AUTO_TEST_CASE(quic_connection_close_active_socket_error_is_sticky_not_remote_cleanup) {
+   auto fixture = quic_send_fixture{};
+   fixture.expected_close_error = asio::error::invalid_argument;
+   fixture.queue(6000);
+   fixture.until(
+       [owner = fixture.owner] { return owner->udp_inflight_generation != 0 && !owner->outbound_datagrams.empty(); });
+   auto close = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   fixture.until([owner = fixture.owner] { return owner->close_started && !owner->closing; });
+   auto fault = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          // Port zero makes a real socket send fail; no connection-state or error fabrication.
+          owner->outbound_datagrams.front().route.remote.port(0);
+          co_return;
+       },
+       asio::use_future);
+   completed(fault);
+   fixture.held.release();
+   BOOST_CHECK_EXCEPTION(completed(close), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::invalid_argument; });
+   fixture.require_sender_joined();
+   auto state = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<bool> {
+          co_return !owner->native_remote_close_received && !owner->udp_send_discarded &&
+              owner->udp_completed_generation < owner->udp_enqueued_generation;
+       },
+       asio::use_future);
+   BOOST_TEST(completed(state));
+   auto replay = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(replay), boost::system::system_error,
+                         [](const auto& error) { return error.code() == asio::error::invalid_argument; });
+}
+
+BOOST_AUTO_TEST_CASE(quic_udp_send_discard_marker_never_hides_later_real_error_or_exception) {
+   auto fixture = udp_send_fixture{};
+   const auto prefix = fixture.enqueue(0x82);
+   auto marked = asio::co_spawn(
+       fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          owner->clear_queued_work();
+          BOOST_TEST(owner->udp_send_discarded);
+          owner->fail_udp_send(asio::error::fault, std::make_exception_ptr(std::bad_alloc{}));
+          owner->clear_queued_work();
+          BOOST_TEST(!owner->udp_send_discarded);
+          co_return;
+       },
+       asio::use_future);
+   completed(marked);
+   auto drain = fixture.drain(prefix);
+   BOOST_CHECK_THROW(completed(drain), std::bad_alloc);
+   auto replay = fixture.drain(prefix);
+   BOOST_CHECK_THROW(completed(replay), std::bad_alloc);
 }
 
 } // namespace

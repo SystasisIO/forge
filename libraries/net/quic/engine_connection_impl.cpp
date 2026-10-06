@@ -63,7 +63,7 @@ void engine_connection::impl::update_active_stream_metrics() {
 
 void engine_connection::impl::clear_queued_work() {
    if (udp_completed_generation < udp_enqueued_generation) {
-      fail_udp_send(asio::error::operation_aborted);
+      fail_udp_send(asio::error::operation_aborted, {}, true);
    }
    outbound_datagrams.clear();
    inbound_packets.clear();
@@ -583,12 +583,16 @@ engine_connection::impl::send_packet(server_udp_socket::packet packet, bool clos
    co_return result.index() == 1 ? asio::error::timed_out : asio::error::operation_aborted;
 }
 
-void engine_connection::impl::fail_udp_send(boost::system::error_code error, std::exception_ptr exception) noexcept {
+void engine_connection::impl::fail_udp_send(boost::system::error_code error, std::exception_ptr exception,
+                                            bool discarded) noexcept {
    assert(strand.running_in_this_thread());
-   if (udp_failed_generation == 0) {
-      udp_failed_generation = udp_completed_generation + 1;
+   if (udp_failed_generation == 0 || (udp_send_discarded && !discarded)) {
+      if (udp_failed_generation == 0) {
+         udp_failed_generation = udp_completed_generation + 1;
+      }
       udp_send_error = error;
       udp_send_exception = std::move(exception);
+      udp_send_discarded = discarded;
    }
    udp_send_changed.notify();
 }
@@ -681,7 +685,9 @@ void engine_connection::impl::start_udp_send_loop() {
                co_return;
             }
             if (ec) {
-               value->fail_udp_send(ec);
+               value->fail_udp_send(ec, {},
+                                    ec == asio::error::operation_aborted &&
+                                        value->terminal_signaled.load(std::memory_order_acquire));
                if (!value->closing) {
                   value->fail_udp(ec);
                }
@@ -1133,7 +1139,13 @@ boost::asio::awaitable<void> engine_connection::impl::process_queued_packets() {
       auto pi = ngtcp2_pkt_info{};
       const auto rv =
           ngtcp2_conn_read_pkt(conn, &path.path, &pi, queued.bytes.data(), queued.bytes.size(), timestamp());
-      if (rv == NGTCP2_ERR_DRAINING || rv == NGTCP2_ERR_CLOSING) {
+      if (rv == NGTCP2_ERR_DRAINING) {
+         // This native result, not canceled/closing flags, identifies peer close.
+         native_remote_close_received = true;
+         close_transport(!server_side);
+         co_return;
+      }
+      if (rv == NGTCP2_ERR_CLOSING) {
          fail_all();
          co_return;
       }

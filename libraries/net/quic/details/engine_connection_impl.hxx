@@ -100,6 +100,9 @@ struct engine_connection::impl {
    std::uint64_t udp_failed_generation = 0;
    boost::system::error_code udp_send_error;
    std::exception_ptr udp_send_exception;
+   // Queue discard is not a socket-send failure or proof of delivery.
+   bool udp_send_discarded = false;
+   bool native_remote_close_received = false;
    forge::asio::notification udp_send_changed;
    bool packet_processing_active = false;
    bool expiry_event_pending = false;
@@ -215,7 +218,8 @@ struct engine_connection::impl {
    send_packet(server_udp_socket::packet packet, bool closing_packet = false,
                std::optional<std::chrono::steady_clock::time_point> deadline = {});
 
-   void fail_udp_send(boost::system::error_code error, std::exception_ptr exception = {}) noexcept;
+   void fail_udp_send(boost::system::error_code error, std::exception_ptr exception = {},
+                      bool discarded = false) noexcept;
 
    void finish_udp_send_loop() noexcept;
 

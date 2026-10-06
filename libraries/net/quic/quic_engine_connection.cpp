@@ -163,57 +163,89 @@ boost::asio::awaitable<void> engine_connection::async_close() {
              co_await connection->wait_close_cleanup();
              co_return;
           }
+          // A prior host cancellation/terminal transition admits cleanup, not
+          // a new graceful send operation. Cancellation after this latch fails it.
+          const auto cleanup_only = connection->cancellation_requested.load(std::memory_order_acquire) ||
+                                    connection->canceled || connection->closing ||
+                                    connection->terminal_cleanup_complete;
           connection->close_started = true;
           connection->udp_send_changed.notify();
           wake(connection->open_stream_waiters);
           wake(connection->accept_stream_waiters);
           auto primary_error = std::exception_ptr{};
-          if (!connection->terminal_cleanup_complete) {
+          auto prefix = connection->udp_enqueued_generation;
+          auto prefix_captured = false;
+          if (cleanup_only) {
+             if (!connection->terminal_cleanup_complete) {
+                connection->fail_all();
+             }
+          } else {
              connection->metrics.connections_closed.fetch_add(1, std::memory_order_relaxed);
              try {
                 co_await connection->drain_send(deadline);
-                const auto prefix = connection->udp_enqueued_generation;
+                prefix = connection->udp_enqueued_generation;
+                prefix_captured = true;
                 co_await connection->wait_udp_send_prefix(prefix, deadline);
                 if (connection->canceled || connection->cancellation_requested.load(std::memory_order_acquire)) {
                    throw_engine(engine_error_kind::canceled, "QUIC graceful close canceled during UDP drain");
                 }
-                if (connection->closing) {
+                if (connection->closing && !connection->terminal_cleanup_complete) {
                    throw_engine(engine_error_kind::connection_closed, "QUIC peer closed during graceful UDP drain");
                 }
-                connection->closing = true;
-                connection->signal_terminal();
-                if (connection->test_failpoint) {
-                   static_cast<void>(connection->test_failpoint("async_close_before_send"));
-                }
-                if (connection->conn != nullptr) {
-                   auto packet = std::array<std::uint8_t, max_udp_payload_size>{};
-                   auto path = ngtcp2_path_storage{};
-                   ngtcp2_path_storage_zero(&path);
-                   auto packet_info = ngtcp2_pkt_info{};
-                   auto close_error = ngtcp2_ccerr{};
-                   ngtcp2_ccerr_default(&close_error);
-                   ngtcp2_ccerr_set_application_error(&close_error, 0, nullptr, 0);
-                   const auto written =
-                       ngtcp2_conn_write_connection_close(connection->conn, &path.path, &packet_info, packet.data(),
-                                                          packet.size(), &close_error, timestamp());
-                   if (written > 0) {
-                      const auto packet_size = static_cast<std::size_t>(written);
-                      const auto send_error = co_await connection->send_packet(
-                          {.bytes = {packet.begin(), packet.begin() + written}, .route = copy_route(path.path)}, true,
-                          deadline);
-                      if (send_error) {
-                         throw boost::system::system_error{send_error, "QUIC CONNECTION_CLOSE send failed"};
-                      }
-                      connection->metrics.packets_sent.fetch_add(1, std::memory_order_relaxed);
-                      connection->metrics.bytes_sent.fetch_add(packet_size, std::memory_order_relaxed);
-                   } else if (written < 0) {
-                      throw_engine(engine_error_kind::internal_error,
-                                   std::string{"QUIC CONNECTION_CLOSE encoding failed: "} +
-                                       ngtcp2_strerror(static_cast<int>(written)));
+                if (!connection->terminal_cleanup_complete) {
+                   connection->closing = true;
+                   connection->signal_terminal();
+                   if (connection->test_failpoint) {
+                      static_cast<void>(connection->test_failpoint("async_close_before_send"));
                    }
+                   if (connection->conn != nullptr) {
+                      auto packet = std::array<std::uint8_t, max_udp_payload_size>{};
+                      auto path = ngtcp2_path_storage{};
+                      ngtcp2_path_storage_zero(&path);
+                      auto packet_info = ngtcp2_pkt_info{};
+                      auto close_error = ngtcp2_ccerr{};
+                      ngtcp2_ccerr_default(&close_error);
+                      ngtcp2_ccerr_set_application_error(&close_error, 0, nullptr, 0);
+                      const auto written =
+                          ngtcp2_conn_write_connection_close(connection->conn, &path.path, &packet_info, packet.data(),
+                                                             packet.size(), &close_error, timestamp());
+                      if (written > 0) {
+                         const auto packet_size = static_cast<std::size_t>(written);
+                         const auto send_error = co_await connection->send_packet(
+                             {.bytes = {packet.begin(), packet.begin() + written}, .route = copy_route(path.path)},
+                             true, deadline);
+                         if (send_error) {
+                            throw boost::system::system_error{send_error, "QUIC CONNECTION_CLOSE send failed"};
+                         }
+                         connection->metrics.packets_sent.fetch_add(1, std::memory_order_relaxed);
+                         connection->metrics.bytes_sent.fetch_add(packet_size, std::memory_order_relaxed);
+                      } else if (written < 0) {
+                         throw_engine(engine_error_kind::internal_error,
+                                      std::string{"QUIC CONNECTION_CLOSE encoding failed: "} +
+                                          ngtcp2_strerror(static_cast<int>(written)));
+                      }
+                   }
+                   if (connection->cancellation_requested.load(std::memory_order_acquire) || connection->canceled) {
+                      throw_engine(engine_error_kind::canceled, "QUIC graceful close canceled during close send");
+                   }
+                   connection->close_transport(!connection->server_side);
                 }
-                connection->close_transport(!connection->server_side);
+             } catch (const boost::system::system_error& error) {
+                if (!prefix_captured) {
+                   prefix = connection->udp_enqueued_generation;
+                }
+                // Native remote close may discard queued control output. Only
+                // its typed abort is cleanup; FIN and real socket failures stay strict.
+                if (error.code() != asio::error::operation_aborted || !connection->native_remote_close_received ||
+                    !connection->udp_send_discarded || !connection->terminal_cleanup_complete || connection->canceled ||
+                    connection->cancellation_requested.load(std::memory_order_acquire)) {
+                   primary_error = std::current_exception();
+                   connection->fail_all();
+                }
              } catch (...) {
+                if (!prefix_captured) {
+                   prefix = connection->udp_enqueued_generation;
+                }
                 primary_error = std::current_exception();
                 connection->fail_all();
              }
@@ -225,6 +257,21 @@ boost::asio::awaitable<void> engine_connection::async_close() {
                 primary_error = std::current_exception();
              }
              connection->fail_all();
+          }
+          // Joining the sender can expose a real fault after a remote-close
+          // discard. Never let the earlier cleanup marker hide that fault.
+          if (!primary_error && !cleanup_only) {
+             try {
+                if (connection->udp_failed_generation != 0 && connection->udp_failed_generation <= prefix &&
+                    !connection->udp_send_discarded) {
+                   co_await connection->wait_udp_send_prefix(prefix, deadline);
+                }
+                if (connection->cancellation_requested.load(std::memory_order_acquire) || connection->canceled) {
+                   throw_engine(engine_error_kind::canceled, "QUIC graceful close canceled before cleanup joined");
+                }
+             } catch (...) {
+                primary_error = std::current_exception();
+             }
           }
           connection->complete_close(primary_error);
           if (primary_error) {

@@ -248,6 +248,11 @@ seals write/open admission and drains its captured UDP prefix before sending
 `CONNECTION_CLOSE`. These are bounded local socket-send guarantees, not peer
 ACKs or application-level delivery acknowledgements. Errors and cancellation
 join the actual sender instead of reporting an unsent prefix as successful.
+If cancellation preceded connection close, or ngtcp2 reports a peer close,
+connection close performs idempotent terminal cleanup without asserting that
+discarded output was sent. Cancellation of an active graceful drain and actual
+socket failures/timeouts remain errors shared by repeated close callers. Stream
+FIN close still fails if its own captured send did not complete.
 
 Reset cleanup stops application writes through ngtcp2 and joins already queued
 UDP work. Any pending RESET and retransmission remain connection-owned until
