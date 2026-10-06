@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+from threading import Lock
 from typing import Optional
 
 
@@ -51,6 +52,8 @@ class Listener:
         self.cleanup_errors: list[str] = []
         self.closed = False
         self.outputs: list[dict] = []
+        self._stop_lock = Lock()
+        self._stop_requested = False
 
     def evidence(self) -> dict:
         record = {"pid": self.process.pid, "command": self.command, "log_file": str(self.log_file),
@@ -73,6 +76,22 @@ class Listener:
                     output["log_file"] = str(snapshot)
                 self.outputs.append(output)
 
+    def request_stop(self) -> None:
+        """Publish the complete own marker once, without waiting for exit."""
+        with self._stop_lock:
+            if self._stop_requested or self.stop_file is None:
+                return
+            # Use the same adjacent-file/rename mechanics as fixture controls.
+            # A reader sees absence or the complete marker, never truncation;
+            # close() must not rewrite a marker already read by the actor.
+            temporary = self.stop_file.with_name(f"{self.stop_file.name}.{self.process.pid}.tmp")
+            try:
+                temporary.write_bytes(b"stop\n")
+                temporary.replace(self.stop_file)
+                self._stop_requested = True
+            finally:
+                temporary.unlink(missing_ok=True)
+
     def close(self) -> list[str]:
         if self.closed:
             return self.cleanup_errors
@@ -88,7 +107,7 @@ class Listener:
                 failure(f"process poll failed: {error}")
             if exit_code is None and self.stop_file is not None:
                 try:
-                    self.stop_file.write_text("stop\n")
+                    self.request_stop()
                     exit_code = self.process.wait(timeout=self.stop_budget.seconds if self.stop_budget is not None else 5)
                 except Exception as error:
                     failure(f"graceful stop failed: {error}")

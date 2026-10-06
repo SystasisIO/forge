@@ -194,9 +194,9 @@ def run_case(spec, binaries, root, *, pnet_key_file=None, pnet_fingerprint=None,
     finally:
         try:
             # Host stop is terminal cleanup only, never cancellation/fallback proof.
-            for _, files in actors.values():
+            for owner, _ in actors.values():
                 try:
-                    files["stop"].write_text("stop\n")
+                    owner.request_stop()
                 except OSError as error:
                     cleanup.append(f"stop request: {error}")
             cleanup.extend(scope.close())

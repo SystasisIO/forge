@@ -1,11 +1,13 @@
 """Controlled process/artifact tests, not live donor compatibility evidence."""
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import signal
 import subprocess
 import sys
 import tempfile
+from threading import Event
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -125,6 +127,110 @@ class ProcessLifecycleTests(unittest.TestCase):
         result = case()
         self.assertEqual(self.events, [(self.processes[0].pid, "wait", 5)])
         self.assertNotIn("stop_budget", result["owned_processes"][0])
+        self.assert_closed()
+
+    def test_stop_is_published_as_complete_atomic_marker_once_including_close(self):
+        @runner.owned_case
+        def case():
+            owner = self.listener()
+            replace = Path.replace
+            publications = []
+            def publish(path, destination):
+                self.assertEqual(destination, owner.stop_file)
+                self.assertFalse(destination.exists())
+                self.assertEqual(path.read_bytes(), b"stop\n")
+                publications.append(path)
+                return replace(path, destination)
+            with patch.object(Path, "replace", new=publish):
+                owner.request_stop()
+                original = owner.stop_file.stat()
+                owner.request_stop()
+                owner.close()
+            current = owner.stop_file.stat()
+            self.assertEqual((current.st_ino, current.st_mtime_ns), (original.st_ino, original.st_mtime_ns))
+            self.assertEqual(owner.stop_file.read_bytes(), b"stop\n")
+            self.assertEqual(len(publications), 1)
+            self.assertFalse(publications[0].exists())
+            return {"status": "ok"}
+        case()
+        self.assertEqual(len([e for e in self.events if e[1] == "wait"]), 1)
+        self.assert_closed()
+
+    def test_stop_partial_write_and_rename_failure_publish_nothing_and_can_retry(self):
+        for stage in ("write", "rename"):
+            with self.subTest(stage=stage):
+                @runner.owned_case
+                def case():
+                    owner = self.listener(stage)
+                    temporary = owner.stop_file.with_name(f"{owner.stop_file.name}.{owner.process.pid}.tmp")
+                    write = Path.write_bytes
+                    def partial(path, payload):
+                        write(path, payload[:2])
+                        raise OSError("actual partial temporary write failure")
+                    patcher = (patch.object(Path, "write_bytes", new=partial) if stage == "write"
+                               else patch.object(Path, "replace", side_effect=OSError("actual rename failure")))
+                    with patcher, self.assertRaises(OSError):
+                        owner.request_stop()
+                    self.assertFalse(owner.stop_file.exists())
+                    self.assertFalse(temporary.exists())
+                    owner.request_stop()
+                    self.assertEqual(owner.stop_file.read_bytes(), b"stop\n")
+                    return {"status": "ok"}
+                case()
+                self.assert_closed()
+
+    def test_concurrent_requests_publish_one_complete_marker_without_target_truncation(self):
+        @runner.owned_case
+        def case():
+            owner = self.listener()
+            write, replace = Path.write_bytes, Path.replace
+            writing, release, second_started = Event(), Event(), Event()
+            publications = []
+            def held_write(path, payload):
+                write(path, payload[:2])
+                writing.set()
+                if not release.wait(5):
+                    raise TimeoutError("test temporary write was not released")
+                return write(path, payload)
+            def publish(path, destination):
+                self.assertEqual(path.read_bytes(), b"stop\n")
+                publications.append(path)
+                return replace(path, destination)
+            def second_request():
+                second_started.set()
+                owner.request_stop()
+            with patch.object(Path, "write_bytes", new=held_write), patch.object(Path, "replace", new=publish), \
+                    ThreadPoolExecutor(max_workers=2) as workers:
+                first = workers.submit(owner.request_stop)
+                try:
+                    self.assertTrue(writing.wait(5))
+                    self.assertFalse(owner.stop_file.exists())
+                    second = workers.submit(second_request)
+                    self.assertTrue(second_started.wait(5))
+                    self.assertFalse(second.done())
+                    self.assertFalse(owner.stop_file.exists())
+                finally:
+                    release.set()
+                first.result(timeout=5)
+                second.result(timeout=5)
+            self.assertEqual(len(publications), 1)
+            self.assertEqual(owner.stop_file.read_bytes(), b"stop\n")
+            return {"status": "ok"}
+        case()
+        self.assert_closed()
+
+    def test_failed_atomic_stop_publication_still_forces_and_joins_native_process(self):
+        @runner.owned_case
+        def case():
+            self.listener()
+            return {"status": "ok"}
+        with patch.object(Path, "replace", side_effect=OSError("Stop publication denied")), \
+                self.assertRaises(runner.CaseFailure) as raised:
+            case()
+        self.assertIn("Stop publication denied", str(raised.exception))
+        self.assertIn("forced SIGTERM", str(raised.exception))
+        self.assertEqual(raised.exception.artifact["processes"][0]["terminal_status"],
+                         {"exit_code": 0, "termination": "terminated"})
         self.assert_closed()
 
     def test_canonical_autorelay_launch_passes_role_budget_to_owned_listener(self):
@@ -832,6 +938,7 @@ class RealProcessLifecycleTests(unittest.TestCase):
             "ready, stop = map(pathlib.Path, sys.argv[1:3])\n"
             "ready.write_text('{}')\n"
             "while not stop.exists(): time.sleep(0.005)\n"
+            "if stop.read_bytes() != b'stop\\n': sys.exit(17)\n"
             "sys.exit(int(sys.argv[3]))\n"
         )
         for exit_code in (0, 23):
@@ -845,7 +952,11 @@ class RealProcessLifecycleTests(unittest.TestCase):
                 self.assertIsNone(owned.process.poll())
                 self.assertIsNone(attempt["exit_code"])
                 self.assertIs(attempt["terminal_status"], owned.terminal_status)
+                owned.request_stop()
+                marker = stop.stat()
+                owned.request_stop()
                 errors = owned.close()
+                self.assertEqual((stop.stat().st_ino, stop.stat().st_mtime_ns), (marker.st_ino, marker.st_mtime_ns))
                 self.assertEqual(owned.process.returncode, exit_code)
                 self.assertEqual(attempt["exit_code"], owned.process.returncode)
                 self.assertEqual(attempt["terminal_status"], {"exit_code": exit_code, "termination": "graceful"})

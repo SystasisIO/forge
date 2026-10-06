@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import coordinated_cases as cases
-from process_lifecycle import current_scope
+from process_lifecycle import Listener, current_scope
 from test_coordinated_evidence import go_result, ready, rust_result
 
 
@@ -106,7 +106,7 @@ class Rig:
         return value
 
 
-class FakeOwner:
+class FakeOwner(Listener):
     def __init__(self, rig, implementation, role, command, log, stop_file, stop_budget):
         self.rig, self.implementation, self.role = rig, implementation, role
         self.command, self.log_file, self.stop_file, self.stop_budget = command, log, stop_file, stop_budget
@@ -115,7 +115,13 @@ class FakeOwner:
         self.result_path = Path(command[command.index("--result-file") + 1])
         self.ready, self.closed, self.cleanup_errors = {}, False, []
         self.process = SimpleNamespace(pid=100 + len(rig.owners), poll=lambda: 0 if self.closed else None)
-        self.terminal_status = {"exit_code": None, "termination": "running"}
+        super().__init__(self.process, {}, stop_file, log, None, command, stop_budget=stop_budget)
+
+    def request_stop(self):
+        first = not self._stop_requested
+        super().request_stop()
+        if first:
+            self.rig.events.append(f"stop.{self.role}")
 
     def result(self):
         value = rust_result(self.role) if self.implementation == "rust" else go_result(self.role)
@@ -131,7 +137,8 @@ class FakeOwner:
     def close(self):
         if self.closed:
             return self.cleanup_errors
-        if not all(o.stop_file.exists() for o in self.rig.owners):
+        self.request_stop()
+        if not all(o.stop_file.read_bytes() == b"stop\n" for o in self.rig.owners):
             raise AssertionError("both stop requests must precede the first process join")
         self.closed = True
         self.rig.events.append(f"join.{self.role}")
@@ -208,6 +215,16 @@ class CoordinatedCasesTests(unittest.TestCase):
         _, rig = self.run_unit()
         self.assertLess(rig.events.index("join.source"), rig.events.index("network.close"))
         self.assertLess(rig.events.index("join.destination"), rig.events.index("network.close"))
+
+    def test_both_exchanged_snapshots_precede_both_atomic_stop_requests_and_first_join(self):
+        _, rig = self.run_unit()
+        events = rig.events
+        last_exchanged = max(events.index(f"exchanged.{role}") for role in ("source", "destination"))
+        first_join = min(events.index(f"join.{role}") for role in ("source", "destination"))
+        for role in ("source", "destination"):
+            self.assertEqual(events.count(f"stop.{role}"), 1)
+            self.assertLess(last_exchanged, events.index(f"stop.{role}"))
+            self.assertLess(events.index(f"stop.{role}"), first_join)
 
     def test_command_attempts_receive_only_the_actual_joined_exit_code(self):
         def attempt(command, log, scenario, number, role, timeout):

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 from autorelay_acceptance import _options
+from rust_upgrade_evidence import _negotiation
 
 ECHO_PROTOCOL = "/forge/interop/relay-echo/1"
 
@@ -235,10 +236,191 @@ def _application(value, implementation, token, role, connection):
         _frame(application.get("response"), token)
 
 
+def _rust_identify_negotiation(stream, events):
+    protocol, direction, identity = stream.get("protocol"), stream.get("direction"), stream.get("stream_trace_id")
+    _require(protocol in {"/ipfs/id/1.0.0", "/ipfs/id/push/1.0.0"} and direction in {"inbound", "outbound"}
+             and type(identity) is int and identity > 0, "Rust Identify native stream identity/protocol/direction differs")
+    scoped = [e for e in events if e.get("stream_trace_id") == identity]
+    opened = [e for e in scoped if e.get("kind") == "substream_opened"]
+    frames = [e for e in scoped if e.get("kind") == "negotiation_frame"]
+    _require(all(e.get("phase") == "application" for e in scoped) and len(opened) == 1
+             and opened[0].get("detail", {}).get("direction") == direction and len(frames) == 4,
+             "Rust Identify lacks exact retained native negotiation ownership")
+    _equal(stream.get("negotiation_complete_frames"), True, "Rust Identify negotiation is partial")
+    _equal(stream.get("proposed_protocol"), protocol, "Rust Identify native proposal differs")
+    _require(stream.get("upgrade_completed_sequence") is None
+             and not any(e.get("kind") == "upgrade_completed" for e in scoped),
+             "Rust Identify contains an unemitted application upgrade marker")
+    _require(type(opened[0].get("sequence")) is int and all(type(e.get("sequence")) is int
+             and e["sequence"] > opened[0]["sequence"] for e in frames), "Rust Identify frame precedes native stream open")
+    # Application phases have no upgrade_completed marker in this observer.
+    selected, _ = _negotiation(scoped, stream)
+    _require(selected == frames[-1]["sequence"], "Rust Identify lacks its actual completed native proposal/ACK pair")
+
+
+def _rust_cleanup(value, raw, remote, role):
+    """Historical healthy proof and observed cleanup, not Stop-caused I/O."""
+    proof, stop = _obj(value.get("completed_proof")), _obj(value.get("cleanup_stop"))
+    _equal(proof.get("source"), "rust.coordinated.immutable_completed_application.v1", "Rust proof boundary differs")
+    _equal(stop.get("source"), "rust.coordinated.own_stop_file_metadata_and_read.v1", "Rust lacks actual own Stop observation")
+    _equal(stop.get("authorization_basis"), "completed_retained_owner_and_actual_stop_read", "Rust cleanup lacks actual own-Stop/completion authority")
+    _equal(stop.get("native_error_ordering"), "not_inferred_from_stop_or_filesystem_time", "Rust cleanup claims unsupported native error causality")
+    socket = value["socket"]
+    for receipt in (proof, stop):
+        for key in ("native_connection_id", "connection_trace_id"):
+            _equal(receipt.get(key), socket[key], "Rust cleanup/proof belongs to a foreign owner")
+    _equal(proof.get("application"), value["application"], "Rust completed application changed during cleanup")
+    _equal(stop.get("authenticated_remote_peer_id"), remote["peer_id"], "Rust Stop belongs to a foreign peer")
+    _equal(stop.get("marker_hex"), "73746f700a", "Rust cleanup lacks the actual Stop marker")
+    _require(isinstance(stop.get("stop_file"), str) and Path(stop["stop_file"]).is_absolute(), "Rust own Stop path is missing")
+    captured, modified, observed = (proof.get("captured_unix_ns"), stop.get("modified_unix_ns"), stop.get("observed_unix_ns"))
+    # These are raw wall/filesystem clock observations, not causality evidence.
+    # Completion/Stop/close ordering is bound below to actual actor event indices.
+    _require(all(type(t) is int and t > 0 for t in (captured, modified, observed)), "Rust actual clock observations are missing")
+    before = _obj(proof.get("raw_upgrade_observations"))
+    _equal(before.get("complete"), False, "Rust snapshot falsely claims terminal application binding")
+    _equal(before.get("fixture_owned_tasks_joined"), None, "Rust proof snapshot falsely claims cleanup joined")
+    _equal(before.get("overflow"), False, "Rust completed proof overflow")
+    previous_rows, current_rows = _rows(before.get("connections")), _rows(raw.get("connections"))
+    _require(len(previous_rows) == len(current_rows) == 1, "Rust cleanup lost unique native ownership")
+    previous, current = previous_rows[0], current_rows[0]
+    prefix, events = _rows(previous.get("events")), _rows(current.get("events"))
+    _require(prefix and proof.get("raw_event_sequence") == len(prefix), "Rust proof cursor is absent or changed")
+    _equal(events[:len(prefix)], prefix, "Rust healthy raw prefix changed during cleanup")
+    _equal([e.get("sequence") for e in events], list(range(1, len(events) + 1)), "Rust raw cleanup sequence differs")
+    _require(all(e.get("detail", {}).get("error") is None and not str(e.get("kind", "")).endswith("_error")
+                 for e in prefix), "Rust pre-proof native error cannot be controlled cleanup")
+    for key in ("connection_trace_id", "authenticated_local_peer_id", "authenticated_remote_peer_id", "local_address",
+                "remote_address", "endpoint", "transport_output_receipts", "direction", "selected_security", "selected_muxer",
+                "security_complete", "muxer_complete", "security_delegate_completed", "muxer_delegate_completed", "overflow"):
+        _equal(current.get(key), previous.get(key), "Rust native owner/upgrade changed after complete proof")
+    _equal(raw.get("swarm_events"), before.get("swarm_events"), "Rust native owner was replaced during cleanup")
+    actor_events = _rows(value.get("events"), maximum=64)
+    complete, close, own_stop = (_event(value, kind) for kind in ("application_completed", "native_connection_closed", "own_stop_observed"))
+    _equal(proof.get("application_completed_sequence"), complete.get("sequence"), "Rust proof was backdated")
+    _equal(stop.get("application_completed_sequence"), complete.get("sequence"), "Rust Stop lost completed application")
+    _require(complete["sequence"] < min(close["sequence"], own_stop["sequence"]), "Rust close/Stop preceded complete application")
+    for row in (close, own_stop):
+        _equal(row.get("native_connection_id"), socket["native_connection_id"], "Rust terminal owner differs")
+    _equal(close.get("peer_id"), remote["peer_id"], "Rust native close belongs to a foreign peer")
+    _equal(close.get("remaining_established"), 0, "Rust native owner remained live")
+    _equal(stop.get("native_close_sequence"), close["sequence"], "Rust Stop lacks exact native close index")
+    _equal(stop.get("stop_observed_sequence"), own_stop["sequence"], "Rust Stop observation index differs")
+    for key in ("source", "authorization_basis", "native_error_ordering", "stop_file", "marker_hex", "modified_unix_ns", "observed_unix_ns", "close_observed_unix_ns",
+                "authenticated_remote_peer_id", "native_connection_id", "connection_trace_id",
+                "application_completed_sequence", "raw_event_sequence", "stop_observed_sequence"):
+        _equal(own_stop.get(key), stop.get(key), "Rust Stop receipt changed after actual observation")
+    cursor = stop.get("raw_event_sequence")
+    _require(type(cursor) is int and len(prefix) <= cursor <= len(events), "Rust Stop cursor is not a current native boundary")
+    _equal(close.get("raw_event_sequence"), len(events), "Rust native close raw cursor differs")
+    close_time = close.get("observed_unix_ns")
+    _require(type(close_time) is int and close_time > 0, "Rust actual native close clock observation is missing")
+    if close["sequence"] < own_stop["sequence"]:
+        _equal(cursor, len(events), "Rust Stop was backdated to the application cursor")
+        _equal(stop.get("close_observed_unix_ns"), close_time, "Rust close-first Stop boundary differs")
+        _equal(own_stop.get("native_close_sequence"), close["sequence"], "Rust close-first Stop lacks actual close")
+    else:
+        _equal(stop.get("close_observed_unix_ns"), None, "Rust Stop-first receipt fabricated a future close")
+        _equal(own_stop.get("native_close_sequence"), None, "Rust Stop-first receipt fabricated a future index")
+    for row in actor_events[complete["sequence"]:]:
+        _require(row.get("kind") in {"native_connection_closed", "own_stop_observed", "native_identify_received",
+                                     "native_identify_sent", "native_identify_pushed"}, "unrelated Rust actor error/event after proof")
+        _equal(row.get("native_connection_id"), socket["native_connection_id"], "late Rust actor event lost retained ownership")
+        _require(row.get("error") is None, "late Rust actor I/O failure")
+        if row.get("kind", "").startswith("native_identify_"):
+            _equal(row.get("peer_id"), remote["peer_id"], "late Rust Identify belongs to a foreign peer")
+    cause = _obj(close.get("cause"))
+    _equal(cause.get("source"), "libp2p.swarm.ConnectionClosed.typed_native_cause", "Rust close lacks typed native provenance")
+    _require(cause.get("kind") in {"none", "yamux013_closed"}, "Rust unrelated native failure cannot be cleanup")
+    closed = cause["kind"] == "yamux013_closed"
+    if closed:
+        for key in ("display", "debug"):
+            _require(isinstance(_obj(cause.get("raw")).get(key), str) and cause["raw"][key], "Rust full native close cause is missing")
+    else:
+        _equal(cause.get("raw"), None, "Rust clean close has an unexplained native error")
+    streams = _rows(current.get("streams"), maximum=64)
+    ids = [s.get("stream_trace_id") for s in streams]
+    _require(all(type(i) is int and i > 0 for i in ids) and len(set(ids)) == len(ids), "late Rust stream ownership is ambiguous")
+    for stream in streams:
+        _equal(stream.get("io_failed"), False, "Rust native stream I/O failed during cleanup")
+        _equal(stream.get("parser_error"), None, "Rust native stream parser failed during cleanup")
+        if stream.get("protocol") != ECHO_PROTOCOL:
+            _require(stream.get("protocol") in {"/ipfs/id/1.0.0", "/ipfs/id/push/1.0.0"}, "unrelated late Rust native protocol")
+            _rust_identify_negotiation(stream, events)
+    old_streams = _rows(previous.get("streams"), maximum=64)
+    old_ids = [s.get("stream_trace_id") for s in old_streams]
+    _require(all(type(i) is int and i > 0 for i in old_ids) and len(set(old_ids)) == len(old_ids), "Rust proof stream ownership is ambiguous")
+    for old in old_streams:
+        _equal(old.get("io_failed"), False, "Rust pre-proof native stream I/O failed")
+        _equal(old.get("parser_error"), None, "Rust pre-proof native stream parser failed")
+        retained = [s for s in streams if s.get("stream_trace_id") == old.get("stream_trace_id")]
+        _require(len(retained) == 1, "completed Rust stream disappeared")
+        if old.get("protocol") == ECHO_PROTOCOL:
+            _equal(retained[0], old, "completed Rust Echo changed during cleanup")
+        else:
+            for key in ("protocol", "direction", "upgrade_completed_sequence"):
+                _equal(retained[0].get(key), old.get(key), "retained Rust Identify changed identity")
+    terminal = []
+    for row in events[len(prefix):]:
+        if row.get("kind") == "muxer_poll_error":
+            _equal(row.get("phase"), "muxer", "Rust terminal error phase differs")
+            _equal(row.get("stream_trace_id"), None, "Rust terminal failure belongs to a stream")
+            detail = _obj(row.get("detail"))
+            _equal(detail.get("failure_stage"), "post_upgrade", "Rust pre-upgrade error cannot be cleanup")
+            _require(isinstance(detail.get("error"), str) and detail["error"], "Rust raw terminal error was filtered")
+            terminal.append(row)
+        else:
+            selected = [s for s in streams if s.get("stream_trace_id") == row.get("stream_trace_id")]
+            _require(len(selected) == 1 and selected[0].get("protocol") in {"/ipfs/id/1.0.0", "/ipfs/id/push/1.0.0"}
+                     and row.get("phase") == "application" and row.get("kind") in
+                     {"substream_opened", "negotiation_frame", "response_completion"}
+                     and row.get("detail", {}).get("error") is None, "unrelated native event/error after complete Rust proof")
+    _equal(len(terminal), 1 if closed else 0, "typed Rust close does not match its raw terminal error")
+    if closed:
+        _equal(terminal[0], events[-1], "Rust terminal error is not the exact final native event")
+        _equal(close.get("raw_terminal_event"), terminal[0], "Rust typed close does not bind the raw terminal index")
+    previous_phases, current_phases = _rows(previous.get("negotiations")), _rows(current.get("negotiations"))
+    _require(len(previous_phases) == len(current_phases) == 2, "Rust cleanup lost native upgrade phases")
+    mutable = {"io_failed", "drop_observed", "read_eof", "write_close_returned"}
+    for index, (old, phase) in enumerate(zip(previous_phases, current_phases)):
+        _equal(old.get("io_failed"), False, "Rust proof contains failed upgrade I/O")
+        _equal(old.get("parser_error"), None, "Rust proof contains parser failure")
+        _equal(phase.get("io_failed"), closed and index == 1, "Rust raw I/O flag was filtered or differs from typed cause")
+        _equal(phase.get("parser_error"), None, "Rust terminal native parser failure")
+        _equal({k: v for k, v in phase.items() if k not in mutable}, {k: v for k, v in old.items() if k not in mutable},
+               "Rust successful native negotiation changed during cleanup")
+    _equal(current.get("muxer_drop_observed"), True, "Rust actual muxer owner was not retired")
+    if role == "source":
+        apps = _obj(before.get("applications"))
+        _equal(apps.get("overflow"), False, "Rust independent application capture overflow")
+        attempts = _rows(apps.get("attempts"))
+        final_apps = _obj(raw.get("applications"))
+        _equal(final_apps.get("overflow"), False, "Rust final application capture overflow")
+        final_attempts = _rows(final_apps.get("attempts"))
+        _require(len(attempts) == len(final_attempts) == 1, "Rust independent application owner is ambiguous")
+        attempt = attempts[0]
+        for key, expected in (("authenticated_remote_peer_id", remote["peer_id"]), ("protocol", ECHO_PROTOCOL),
+                              ("direction", "outbound"), ("overflow", False), ("errors", []),
+                              ("read", value["application"]["response"]), ("write", value["application"]["request"])):
+            _equal(attempt.get(key), expected, "Rust independent completed application differs")
+        for key in ("opened", "application_io_complete", "attempt_ended", "stream_drop_returned", "write_close_returned"):
+            _equal(attempt.get(key), True, "Rust independent application did not complete before Stop")
+        opened = [row for row in _rows(attempt.get("preexisting_raw_streams"))
+                  if row.get("connection_trace_id") == socket["connection_trace_id"]]
+        _require(len(opened) == 1 and type(opened[0].get("stream_count")) is int
+                 and 0 <= opened[0]["stream_count"] < value["application"]["stream_trace_id"],
+                 "Rust independent application did not open a new retained stream")
+        for key, expected in attempt.items():
+            _equal(final_attempts[0].get(key), expected, "Rust independent application changed during cleanup")
+    return before
+
+
 def _rust_raw(value, ready, remote, role):
     raw = _obj(value.get("raw_upgrade_observations"))
     _equal(raw.get("overflow"), False, "Rust upgrade capture overflow")
     _equal(raw.get("fixture_owned_tasks_joined"), True, "Rust raw observation was not finalized after task join")
+    proof_raw = _rust_cleanup(value, raw, remote, role) if value.get("completed_proof") is not None else None
+    _require(proof_raw is not None or value.get("cleanup_stop") is None, "Rust Stop lacks immutable completed proof")
     connections, events = _rows(raw.get("connections")), _rows(raw.get("swarm_events"))
     _require(len(connections) == len(events) == 1, "Rust native owner is ambiguous")
     connection, event = connections[0], events[0]
@@ -273,7 +455,7 @@ def _rust_raw(value, ready, remote, role):
                           ("remote_address", socket["remote_address"])):
         _equal(output.get(key), expected, "Rust actual transport output receipt differs")
     _equal(output.get("dns_wrapper_enabled"), False, "coordinated proof must not substitute DNS resolution")
-    phases = _rows(connection.get("negotiations"))
+    phases = _rows((proof_raw["connections"][0] if proof_raw is not None else connection).get("negotiations"))
     _require(len(phases) == 2, "Rust lacks security and inner Yamux observations")
     for phase in phases:
         _equal(phase.get("direction"), direction, "Rust actual security/Yamux role differs")
@@ -299,7 +481,7 @@ def _rust_raw(value, ready, remote, role):
                           ("write_close_returned", True), ("drop_observed", True),
                           ("read", application["response"]), ("write", application["request"])):
         _equal(stream.get(key), expected, "Rust actual retained stream differs")
-    if role == "source":
+    if role == "source" and proof_raw is None:
         _equal(raw.get("complete"), True, "Rust independent native application output binding incomplete")
     audit = _rows(value.get("native_transport_dials"))
     _require(len(audit) == 1, "Rust probe requested a fresh native transport dial")
@@ -411,6 +593,16 @@ def validate_native_receipts(artifact):
             final_app = result.get("application") if implementation == "rust" else result["receipt"].get("application")
             exchanged_app = exchanged.get("application") if implementation == "rust" else exchanged["receipt"].get("application")
             _equal(exchanged_app, final_app, "application receipt first appeared during host cleanup")
+            if implementation == "rust" and result.get("completed_proof") is not None:
+                _equal(exchanged.get("completed_proof"), result["completed_proof"], "Rust immutable proof first appeared or changed during cleanup")
+                exchanged_events = _rows(exchanged.get("events"), maximum=64)
+                _equal(result["events"][:len(exchanged_events)], exchanged_events, "Rust exchanged actor prefix changed during cleanup")
+                _require(all(row.get("kind") not in {"native_connection_closed", "own_stop_observed"} for row in exchanged_events),
+                         "Rust EXCHANGED proof was published during cleanup")
+                boundary = result["completed_proof"]["application_completed_sequence"]
+                _require(type(boundary) is int and 0 < boundary <= len(exchanged_events)
+                         and exchanged_events[boundary - 1].get("kind") == "application_completed",
+                         "Rust EXCHANGED lacks its actual application completion event")
     return _errors(check)
 
 
@@ -532,7 +724,9 @@ def validate_case(artifact):
             _require(sum(row == owner for row in processes) == 1, "raw actor is not its tracked process owner")
             _equal(owner.get("ready"), actor["ready"], "process listener identity differs")
             _equal(owner.get("terminal_status"), {"exit_code": 0, "termination": "graceful"}, "actor was killed or did not join")
-            _owner_command(artifact, role, owner)
+            options = _owner_command(artifact, role, owner)
+            if artifact["case"][role] == "rust" and actor["result"].get("cleanup_stop") is not None:
+                _equal(actor["result"]["cleanup_stop"].get("stop_file"), options["--stop-file"], "Rust receipt observed a foreign process Stop file")
             _require(started_receipt(artifact["phases"]["started"][role], artifact["case"][role], artifact["case_token"]), "native start acknowledgement is absent")
             _equal(artifact["phases"]["exchanged"][role].get("status"), "exchanged", "probe was not completed before host stop")
             other = "destination" if role == "source" else "source"

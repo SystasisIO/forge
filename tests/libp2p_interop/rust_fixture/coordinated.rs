@@ -9,7 +9,7 @@ use std::{
     str::FromStr,
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
@@ -23,7 +23,7 @@ use libp2p::{
     identify, identity,
     multiaddr::Protocol,
     pnet::PreSharedKey,
-    swarm::{ConnectionId, NetworkBehaviour, SwarmEvent, dial_opts::DialOpts},
+    swarm::{ConnectionError, ConnectionId, NetworkBehaviour, SwarmEvent, dial_opts::DialOpts},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -586,6 +586,489 @@ fn echo_binding(
     )
 }
 
+fn unix_ns(time: SystemTime) -> io::Result<u64> {
+    u64::try_from(
+        time.duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos(),
+    )
+    .map_err(|_| invalid("coordinated observation clock overflow"))
+}
+
+fn complete_application_snapshot(
+    raw: Value,
+    socket: &Value,
+    application: &Value,
+    role: Role,
+    actor_sequence: usize,
+    local: PeerId,
+    plan: &Plan,
+    listener: &Multiaddr,
+    id: ConnectionId,
+) -> io::Result<Value> {
+    if completed_socket(&raw, local, plan, listener, id, role)?.as_ref() != Some(socket) {
+        return Err(invalid(
+            "completed application lost its actual socket proof",
+        ));
+    }
+    let binding = echo_binding(&raw, socket, application, role, true)?;
+    if role == Role::Initiator {
+        let attempts = raw["applications"]["attempts"]
+            .as_array()
+            .ok_or_else(|| invalid("missing independent application observation"))?;
+        let [attempt] = attempts.as_slice() else {
+            return Err(invalid("ambiguous independent application observation"));
+        };
+        if raw["applications"]["overflow"] != false
+            || attempt["authenticated_remote_peer_id"] != plan.peer.to_string()
+            || attempt["protocol"] != application_observer::ECHO
+            || attempt["direction"] != "outbound"
+            || [
+                "opened",
+                "application_io_complete",
+                "attempt_ended",
+                "stream_drop_returned",
+                "write_close_returned",
+            ]
+            .iter()
+            .any(|key| attempt[*key] != true)
+            || attempt["overflow"] != false
+            || attempt["errors"] != json!([])
+            || attempt["read"] != application["read"]
+            || attempt["write"] != application["write"]
+        {
+            return Err(invalid(
+                "independent application observation is incomplete or failed",
+            ));
+        }
+        let opened = attempt["preexisting_raw_streams"]
+            .as_array()
+            .ok_or_else(|| invalid("missing independent native stream open boundary"))?;
+        let owners = opened
+            .iter()
+            .filter(|row| row["connection_trace_id"] == socket["connection_trace_id"])
+            .collect::<Vec<_>>();
+        if owners.len() != 1
+            || owners[0]["stream_count"].as_u64().is_none_or(|count| {
+                binding["stream_trace_id"]
+                    .as_u64()
+                    .is_none_or(|id| id <= count)
+            })
+        {
+            return Err(invalid(
+                "independent application did not open a new retained native stream",
+            ));
+        }
+    }
+    let events = raw["connections"][0]["events"]
+        .as_array()
+        .ok_or_else(|| invalid("missing completed native event boundary"))?;
+    if events.is_empty()
+        || events
+            .iter()
+            .enumerate()
+            .any(|(index, event)| event["sequence"] != index + 1)
+        || events.iter().any(|event| {
+            !event["detail"]["error"].is_null()
+                || event["kind"]
+                    .as_str()
+                    .is_some_and(|kind| kind.ends_with("_error"))
+        })
+    {
+        return Err(invalid("invalid completed native event boundary"));
+    }
+    Ok(
+        json!({"source": "rust.coordinated.immutable_completed_application.v1",
+        "application_completed_sequence": actor_sequence, "captured_unix_ns": unix_ns(SystemTime::now())?,
+        "native_connection_id": id.to_string(), "connection_trace_id": socket["connection_trace_id"],
+        "raw_event_sequence": events.len(), "application": binding, "raw_upgrade_observations": raw}),
+    )
+}
+
+fn observe_own_stop(
+    path: &Path,
+    proof: Option<&Value>,
+    socket: Option<&Value>,
+    peer: Option<PeerId>,
+    retained: Option<ConnectionId>,
+    current: &Value,
+    close_observed_unix_ns: Option<u64>,
+) -> io::Result<Option<Value>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut marker = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(std::fs::File::open(path)?, 6),
+        &mut marker,
+    )?;
+    let proof =
+        proof.ok_or_else(|| invalid("stop is cleanup only; coordinated proof is incomplete"))?;
+    let socket = socket.ok_or_else(|| invalid("stop lacks the retained socket"))?;
+    let cursor = current["connections"][0]["events"]
+        .as_array()
+        .ok_or_else(|| invalid("stop lacks its current native cursor"))?
+        .len();
+    let modified = unix_ns(metadata.modified()?)?;
+    let observed = unix_ns(SystemTime::now())?;
+    if !metadata.is_file() || marker != b"stop\n" {
+        return Err(invalid("own Stop is not the actual regular-file marker"));
+    }
+    // Filesystem mtime can use a coarse kernel clock. Preserve it as an actual
+    // observation, never as proof that Stop preceded an earlier native error.
+    // The run loop has already frozen completion, and this read is the own-Stop
+    // linearization point; a close handled without the marker remains fatal.
+    if peer.map(|peer| peer.to_string()).as_deref()
+        != socket["authenticated_remote_peer_id"].as_str()
+        || retained.map(|id| id.to_string()).as_deref() != socket["native_connection_id"].as_str()
+        || proof["native_connection_id"] != socket["native_connection_id"]
+        || proof["connection_trace_id"] != socket["connection_trace_id"]
+        || cursor < proof["raw_event_sequence"].as_u64().unwrap_or(u64::MAX) as usize
+        || current["connections"]
+            .as_array()
+            .is_none_or(|rows| rows.len() != 1)
+        || current["connections"][0]["connection_trace_id"] != socket["connection_trace_id"]
+        || current["connections"][0]["authenticated_remote_peer_id"]
+            != socket["authenticated_remote_peer_id"]
+    {
+        return Err(invalid(
+            "own Stop is bound to a foreign retained owner or invalid current cursor",
+        ));
+    }
+    Ok(Some(
+        json!({"source": "rust.coordinated.own_stop_file_metadata_and_read.v1", "stop_file": path,
+        "authorization_basis": "completed_retained_owner_and_actual_stop_read",
+        "native_error_ordering": "not_inferred_from_stop_or_filesystem_time",
+        "marker_hex": "73746f700a", "modified_unix_ns": modified, "observed_unix_ns": observed,
+        "close_observed_unix_ns": close_observed_unix_ns,
+        "authenticated_remote_peer_id": socket["authenticated_remote_peer_id"],
+        "native_connection_id": socket["native_connection_id"], "connection_trace_id": socket["connection_trace_id"],
+        "application_completed_sequence": proof["application_completed_sequence"],
+        "raw_event_sequence": cursor}),
+    ))
+}
+
+fn is_native_yamux_closed(error: io::Error) -> bool {
+    let Some(inner) = error.into_inner() else {
+        return false;
+    };
+    match inner.downcast::<yamux013::ConnectionError>() {
+        Ok(native) => matches!(*native, yamux013::ConnectionError::Closed),
+        Err(inner) => match inner.downcast::<libp2p::yamux::Error>() {
+            // The pinned donor conversion unwraps Io and preserves other native
+            // causes as typed io::Error payloads. Never authorize by Display.
+            Ok(native) => is_native_yamux_closed(io::Error::from(*native)),
+            Err(_) => false,
+        },
+    }
+}
+
+fn native_close_cause(cause: Option<ConnectionError>) -> Value {
+    let raw = cause
+        .as_ref()
+        .map(|cause| json!({"display": cause.to_string(), "debug": format!("{cause:?}")}));
+    let kind = match cause {
+        None => "none",
+        Some(ConnectionError::IO(error)) => {
+            if is_native_yamux_closed(error) {
+                "yamux013_closed"
+            } else {
+                "other"
+            }
+        }
+        Some(_) => "other",
+    };
+    json!({"kind": kind, "source": "libp2p.swarm.ConnectionClosed.typed_native_cause", "raw": raw})
+}
+
+fn verify_identify_negotiation(stream: &Value, events: &[Value]) -> io::Result<()> {
+    let protocol_frame = match stream["protocol"].as_str() {
+        Some("/ipfs/id/1.0.0") => "0f2f697066732f69642f312e302e300a",
+        Some("/ipfs/id/push/1.0.0") => "142f697066732f69642f707573682f312e302e300a",
+        _ => return Err(invalid("unexpected native Identify protocol")),
+    };
+    let (proposal_direction, ack_direction) = match stream["direction"].as_str() {
+        Some("outbound") => ("write", "read"),
+        Some("inbound") => ("read", "write"),
+        _ => return Err(invalid("missing native Identify stream direction")),
+    };
+    let id = stream["stream_trace_id"]
+        .as_u64()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| invalid("missing native Identify stream ID"))?;
+    let scoped = events
+        .iter()
+        .filter(|event| event["stream_trace_id"] == id)
+        .collect::<Vec<_>>();
+    let opened = scoped
+        .iter()
+        .filter(|event| event["kind"] == "substream_opened")
+        .copied()
+        .collect::<Vec<_>>();
+    let frames = scoped
+        .iter()
+        .filter(|event| event["kind"] == "negotiation_frame")
+        .copied()
+        .collect::<Vec<_>>();
+    if scoped.iter().any(|event| event["phase"] != "application")
+        || opened.len() != 1
+        || opened[0]["detail"]["direction"] != stream["direction"]
+        || frames.len() != 4
+        || stream["negotiation_complete_frames"] != true
+        || stream["proposed_protocol"] != stream["protocol"]
+        || !stream["upgrade_completed_sequence"].is_null()
+        || scoped
+            .iter()
+            .any(|event| event["kind"] == "upgrade_completed")
+        || frames.iter().any(|event| {
+            event["sequence"].as_u64().is_none_or(|sequence| {
+                opened[0]["sequence"]
+                    .as_u64()
+                    .is_none_or(|open| sequence <= open)
+            })
+        })
+    {
+        return Err(invalid(
+            "Identify lacks exact retained native negotiation ownership",
+        ));
+    }
+    let mut terminal_frames = Vec::new();
+    for direction in [proposal_direction, ack_direction] {
+        let wire = frames
+            .iter()
+            .filter(|event| event["direction"] == direction)
+            .copied()
+            .collect::<Vec<_>>();
+        if wire.len() != 2
+            || wire[0]["frame_hex"] != "132f6d756c746973747265616d2f312e302e300a"
+            || wire[1]["frame_hex"] != protocol_frame
+        {
+            return Err(invalid(
+                "Identify multistream header, proposal or ACK differs",
+            ));
+        }
+        terminal_frames.push(wire[1]);
+    }
+    // Captures in opposite wire directions may interleave. Selection belongs
+    // to the last captured token of the pair, not necessarily the ACK.
+    let selected = terminal_frames
+        .iter()
+        .max_by_key(|event| event["sequence"].as_u64())
+        .unwrap();
+    for frame in frames {
+        if frame["sequence"] == selected["sequence"] {
+            if frame["selection_outcome"] != "selected" || frame["protocol"] != stream["protocol"] {
+                return Err(invalid(
+                    "Identify lacks its actual matching native proposal/ACK selection",
+                ));
+            }
+        } else if !frame["selection_outcome"].is_null() || !frame["protocol"].is_null() {
+            return Err(invalid(
+                "Identify selection annotation contradicts captured native frames",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_cleanup_tail(
+    raw: &Value,
+    proof: &Value,
+    stop: &Value,
+    actor_events: &[Value],
+) -> io::Result<()> {
+    let before = &proof["raw_upgrade_observations"];
+    let connections = raw["connections"]
+        .as_array()
+        .ok_or_else(|| invalid("missing final native owner"))?;
+    let [connection] = connections.as_slice() else {
+        return Err(invalid("ambiguous final native owner"));
+    };
+    let previous = &before["connections"][0];
+    let prefix = previous["events"]
+        .as_array()
+        .ok_or_else(|| invalid("missing proof prefix"))?;
+    let events = connection["events"]
+        .as_array()
+        .ok_or_else(|| invalid("missing final native events"))?;
+    if raw["overflow"] != false
+        || connection["overflow"] != false
+        || events.len() < prefix.len()
+        || events[..prefix.len()] != prefix[..]
+        || events
+            .iter()
+            .enumerate()
+            .any(|(index, event)| event["sequence"] != index + 1)
+        || [
+            "connection_trace_id",
+            "authenticated_local_peer_id",
+            "authenticated_remote_peer_id",
+            "local_address",
+            "remote_address",
+            "endpoint",
+            "transport_output_receipts",
+        ]
+        .iter()
+        .any(|key| connection[*key] != previous[*key])
+        || raw["swarm_events"] != before["swarm_events"]
+    {
+        return Err(invalid(
+            "final cleanup lost the immutable completed native prefix",
+        ));
+    }
+    let closes = actor_events
+        .iter()
+        .filter(|event| event["kind"] == "native_connection_closed")
+        .collect::<Vec<_>>();
+    let [close] = closes.as_slice() else {
+        return Err(invalid("cleanup lacks a unique native close"));
+    };
+    let stop_cursor = stop["raw_event_sequence"]
+        .as_u64()
+        .ok_or_else(|| invalid("missing Stop cursor"))?;
+    if close["native_connection_id"] != proof["native_connection_id"]
+        || close["peer_id"] != previous["authenticated_remote_peer_id"]
+        || close["remaining_established"] != 0
+        || close["sequence"] != stop["native_close_sequence"]
+        || stop_cursor < prefix.len() as u64
+        || stop_cursor > events.len() as u64
+        || close["raw_event_sequence"] != events.len()
+    {
+        return Err(invalid("native close or Stop cursor lost its exact owner"));
+    }
+    let closed = close["cause"]["kind"] == "yamux013_closed";
+    if !closed && close["cause"]["kind"] != "none" {
+        return Err(invalid("unrelated native close cause"));
+    }
+    let streams = connection["streams"]
+        .as_array()
+        .ok_or_else(|| invalid("missing final native streams"))?;
+    let mut ids = BTreeSet::new();
+    for stream in streams {
+        let id = stream["stream_trace_id"]
+            .as_u64()
+            .ok_or_else(|| invalid("missing native stream ID"))?;
+        if !ids.insert(id) || stream["io_failed"] != false || !stream["parser_error"].is_null() {
+            return Err(invalid("failed or ambiguous final native stream"));
+        }
+        if stream["protocol"] != application_observer::ECHO {
+            if stream["protocol"] != "/ipfs/id/1.0.0" && stream["protocol"] != "/ipfs/id/push/1.0.0"
+            {
+                return Err(invalid("unexpected native protocol during cleanup"));
+            }
+            verify_identify_negotiation(stream, events)?;
+        }
+    }
+    for old in previous["streams"]
+        .as_array()
+        .ok_or_else(|| invalid("missing completed native streams"))?
+    {
+        let next = streams
+            .iter()
+            .find(|s| s["stream_trace_id"] == old["stream_trace_id"])
+            .ok_or_else(|| invalid("completed native stream disappeared"))?;
+        if old["protocol"] == application_observer::ECHO {
+            if next != old {
+                return Err(invalid("completed Echo changed during cleanup"));
+            }
+        } else if ["protocol", "direction", "upgrade_completed_sequence"]
+            .iter()
+            .any(|key| next[*key] != old[*key])
+        {
+            return Err(invalid("retained Identify stream changed identity"));
+        }
+    }
+    let mut terminal = None;
+    for event in &events[prefix.len()..] {
+        if event["kind"] == "muxer_poll_error"
+            && event["phase"] == "muxer"
+            && event["stream_trace_id"].is_null()
+            && event["detail"]["failure_stage"] == "post_upgrade"
+            && event["detail"]["error"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        {
+            if terminal.is_some()
+                || !closed
+                || event != events.last().unwrap()
+                || close["raw_terminal_event"] != *event
+            {
+                return Err(invalid("unbound native terminal error during cleanup"));
+            }
+            terminal = Some(event);
+        } else {
+            let stream = streams
+                .iter()
+                .find(|s| s["stream_trace_id"] == event["stream_trace_id"])
+                .ok_or_else(|| invalid("unrelated event after completed native proof"))?;
+            if event["phase"] != "application"
+                || (stream["protocol"] != "/ipfs/id/1.0.0"
+                    && stream["protocol"] != "/ipfs/id/push/1.0.0")
+                || !matches!(
+                    event["kind"].as_str(),
+                    Some("substream_opened" | "negotiation_frame" | "response_completion")
+                )
+                || !event["detail"]["error"].is_null()
+            {
+                return Err(invalid(
+                    "unrelated native event or I/O failure during cleanup",
+                ));
+            }
+        }
+    }
+    if closed != terminal.is_some() {
+        return Err(invalid(
+            "typed native close lacks its exact raw terminal cause",
+        ));
+    }
+    let phases = connection["negotiations"]
+        .as_array()
+        .ok_or_else(|| invalid("missing final native negotiations"))?;
+    if phases.len() != 2
+        || phases[0]["io_failed"] != false
+        || phases[1]["io_failed"] != closed
+        || phases.iter().any(|phase| !phase["parser_error"].is_null())
+        || connection["streams"].as_array().is_none_or(|streams| {
+            streams
+                .iter()
+                .any(|stream| stream["io_failed"] != false || !stream["parser_error"].is_null())
+        })
+    {
+        return Err(invalid(
+            "final native cleanup flags do not match its retained raw cause",
+        ));
+    }
+    for (index, phase) in phases.iter().enumerate() {
+        let mut phase = phase.clone();
+        // Compare immutable successful upgrade facts, not the sticky terminal
+        // flag or natural drop/close facts. The original raw flag is untouched.
+        let mut old = previous["negotiations"][index].clone();
+        for key in [
+            "io_failed",
+            "drop_observed",
+            "read_eof",
+            "write_close_returned",
+        ] {
+            phase
+                .as_object_mut()
+                .ok_or_else(|| invalid("invalid native phase"))?
+                .remove(key);
+            old.as_object_mut()
+                .ok_or_else(|| invalid("invalid completed native phase"))?
+                .remove(key);
+        }
+        if phase != old {
+            return Err(invalid("native negotiation changed after completed proof"));
+        }
+    }
+    if connection["muxer_drop_observed"] != true {
+        return Err(invalid("native muxer owner did not retire"));
+    }
+    Ok(())
+}
+
 struct Capture {
     started: Instant,
     events: Vec<Value>,
@@ -678,6 +1161,9 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
     let mut socket: Option<Value> = None;
     let mut application: Option<Value> = None;
     let mut stream_proof: Option<Value> = None;
+    let mut completed_proof: Option<Value> = None;
+    let mut cleanup_stop: Option<Value> = None;
+    let mut cleanup_deadline: Option<Instant> = None;
     let mut pending: Option<futures::channel::oneshot::Receiver<io::Result<Value>>> = None;
     let mut probe_dials_before = None;
     let mut tick = tokio::time::interval(Duration::from_millis(10));
@@ -739,9 +1225,36 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
                         capture.event("native_dial_error", json!({"native_connection_id": connection_id.to_string(), "error": error.to_string().chars().take(256).collect::<String>()}))?;
                         return Err(invalid("native coordinated dial failed"));
                     }
-                    SwarmEvent::ConnectionClosed { connection_id, .. } => {
-                        capture.event("native_connection_closed", json!({"native_connection_id": connection_id.to_string()}))?;
-                        return Err(invalid("retained native connection closed before cleanup"));
+                    SwarmEvent::ConnectionClosed { peer_id, connection_id, cause, num_established, .. } => {
+                        let observed = unix_ns(SystemTime::now())?;
+                        let current = observer.snapshot();
+                        let cursor = current["connections"][0]["events"].as_array().map(Vec::len);
+                        let cause = native_close_cause(cause);
+                        capture.event("native_connection_closed", json!({"native_connection_id": connection_id.to_string(),
+                            "peer_id": peer_id.to_string(), "remaining_established": num_established, "observed_unix_ns": observed,
+                            "cause": cause, "raw_event_sequence": cursor,
+                            "raw_terminal_event": current["connections"][0]["events"].as_array().and_then(|events| events.last())}))?;
+                        let close_sequence = capture.events.len();
+                        let mut stop = match cleanup_stop.take() {
+                            Some(stop) => stop,
+                            None => {
+                                let mut stop = observe_own_stop(&config.stop, completed_proof.as_ref(), socket.as_ref(),
+                                    Some(peer_id), Some(connection_id), &current, Some(observed))?
+                                    .ok_or_else(|| invalid("retained native connection closed before own Stop"))?;
+                                stop["native_close_sequence"] = json!(close_sequence);
+                                stop["stop_observed_sequence"] = json!(capture.events.len() + 1);
+                                capture.event("own_stop_observed", stop.clone())?;
+                                stop
+                            }
+                        };
+                        if stage != "exchanged" || retained != Some(connection_id) || num_established != 0
+                            || plan.as_ref().is_none_or(|target| target.peer != peer_id)
+                            || (cause["kind"] != "none" && cause["kind"] != "yamux013_closed") {
+                            return Err(invalid("controlled native close lost its exact completed owner"));
+                        }
+                        stop["native_close_sequence"] = json!(close_sequence);
+                        cleanup_stop = Some(stop);
+                        break;
                     }
                     SwarmEvent::ListenerClosed { .. } | SwarmEvent::ListenerError { .. } => return Err(invalid("native TCP listener terminated before cleanup")),
                     _ => {}
@@ -762,13 +1275,27 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
                     pending = Some(receive);
                 }
                 _ = tick.tick() => {
+                    if cleanup_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "native close cleanup deadline"));
+                    }
                     if capture.started.elapsed() >= RUN_BUDGET { return Err(io::Error::new(io::ErrorKind::TimedOut, "coordinated actor deadline")); }
                     if stage != "exchanged" && operation_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                         return Err(io::Error::new(io::ErrorKind::TimedOut, "coordinated operation deadline"));
                     }
-                    if config.stop.exists() {
-                        if stage != "exchanged" { return Err(invalid("stop is cleanup only; coordinated proof is incomplete")); }
-                        break;
+                    if cleanup_stop.is_none() {
+                        let current = observer.snapshot();
+                        if let Some(mut stop) = observe_own_stop(&config.stop, completed_proof.as_ref(), socket.as_ref(),
+                            plan.as_ref().map(|target| target.peer), retained, &current, None)? {
+                            if stage != "exchanged" { return Err(invalid("stop is cleanup only; coordinated proof is incomplete")); }
+                            stop["native_close_sequence"] = Value::Null;
+                            stop["stop_observed_sequence"] = json!(capture.events.len() + 1);
+                            capture.event("own_stop_observed", stop.clone())?;
+                            cleanup_stop = Some(stop);
+                            cleanup_deadline = Some(Instant::now() + JOIN_BUDGET);
+                            // Poll the existing native owner to its actual close event;
+                            // a queued peer close can win this ordinary disconnect race.
+                            let _ = swarm.disconnect_peer_id(plan.as_ref().unwrap().peer);
+                        }
                     }
                     if audit.count() > 1 { return Err(invalid("application or other behaviour requested a fresh dial")); }
                     if let Some(id) = retained.filter(|_| socket.is_none()) {
@@ -789,10 +1316,14 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
                     }
                     if let (Some(socket), Some(application)) = (&socket, &application) {
                         if stream_proof.is_none() {
-                            let proof = echo_binding(&observer.snapshot(), socket, application, config.role, false)?;
+                            let raw = observer.snapshot();
+                            let snapshot = complete_application_snapshot(raw, socket, application, config.role,
+                                capture.events.len() + 1, local, plan.as_ref().unwrap(), listener.as_ref().unwrap(), retained.unwrap())?;
+                            let proof = snapshot["application"].clone();
                             if probe_dials_before != Some(audit.count()) || audit.count() != 1
                                 || swarm.network_info().connection_counters().num_connections() != 1 || !swarm.is_connected(&plan.as_ref().unwrap().peer) { return Err(invalid("probe lost its retained connection")); }
                             capture.event("application_completed", json!({"native_connection_id": retained.map(|id| id.to_string()), "native_transport_dials_before": probe_dials_before, "native_transport_dials_after": audit.count()}))?;
+                            completed_proof = Some(snapshot);
                             stream_proof = Some(proof); stage = "exchanged";
                         }
                     }
@@ -844,7 +1375,8 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
                     }
                     atomic(&config.result, &json!({"implementation": "rust", "case_token": config.token, "coord_role": config.role.name(),
                         "status": stage, "joined": false, "finalized": false, "events": capture.events, "socket": socket,
-                        "application": stream_proof, "native_transport_dials": audit.snapshot(), "raw_upgrade_observations": observer.snapshot()}))?;
+                        "application": stream_proof, "completed_proof": completed_proof,
+                        "native_transport_dials": audit.snapshot(), "raw_upgrade_observations": observer.snapshot()}))?;
                 }
             }
         }
@@ -853,7 +1385,10 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
     drop(incoming);
     drop(control);
     drop(swarm);
-    let join_budget = JOIN_BUDGET.min(TOTAL_BUDGET.saturating_sub(capture.started.elapsed()));
+    let join_budget = cleanup_deadline
+        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or(JOIN_BUDGET)
+        .min(TOTAL_BUDGET.saturating_sub(capture.started.elapsed()));
     let report = tokio::time::timeout(join_budget, owner.close_and_join()).await;
     let join = report.map(|report| report.snapshot()).unwrap_or_else(
         |_| json!({"fixture_owned_tasks_joined": false, "error": "cleanup join deadline"}),
@@ -865,6 +1400,15 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
     let mut error = execution.as_ref().err().map(ToString::to_string);
     if error.is_none() && !joined {
         error = Some("native cleanup did not join".into());
+    }
+    if error.is_none() {
+        if let (Some(proof), Some(stop)) = (&completed_proof, &cleanup_stop) {
+            if let Err(failure) = verify_cleanup_tail(&raw, proof, stop, &capture.events) {
+                error = Some(failure.to_string());
+            }
+        } else {
+            error = Some("cleanup lacks its own Stop and completed native proof".into());
+        }
     }
     if error.is_none() {
         match echo_binding(
@@ -881,9 +1425,6 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
             Ok(proof) => stream_proof = Some(proof),
             Err(failure) => error = Some(failure.to_string()),
         }
-        if config.role == Role::Initiator && raw["complete"] != true {
-            error = Some("independent native application binding incomplete".into());
-        }
     }
     atomic(
         &config.result,
@@ -892,7 +1433,8 @@ pub(crate) async fn run(config: Config) -> io::Result<()> {
         "case_token": config.token, "coord_role": config.role.name(), "peer_id": local.to_string(), "timeout_ms": config.operation_budget.as_millis(),
         "pnet_fingerprint": pnet_fingerprint, "pnet_fingerprint_basis": pnet_fingerprint.as_ref().map(|_| PNET_FINGERPRINT_BASIS),
         "status": if error.is_none() { "ok" } else { "error" }, "finalized": true, "joined": joined, "error": error,
-        "events": capture.events, "socket": socket, "application": stream_proof, "native_transport_dials": audit.snapshot(),
+        "events": capture.events, "socket": socket, "application": stream_proof, "completed_proof": completed_proof,
+        "cleanup_stop": cleanup_stop, "native_transport_dials": audit.snapshot(),
         "task_join": join, "raw_upgrade_observations": raw, "per_call_cancel_supported": false}),
     )?;
     if let Some(error) = error {
@@ -1393,6 +1935,448 @@ mod tests {
                 }
             }
             assert!(echo_binding(&bad, &socket, &application, Role::Initiator, true).is_err());
+        }
+    }
+
+    struct StopFile(PathBuf);
+    impl StopFile {
+        fn new() -> Self {
+            let directory =
+                std::env::temp_dir().join(format!("forge-coordinated-stop-{}", PeerId::random()));
+            std::fs::create_dir(&directory).unwrap();
+            Self(directory.join("own.stop"))
+        }
+        fn publish(&self) {
+            std::fs::write(&self.0, b"stop\n").unwrap();
+        }
+    }
+    impl Drop for StopFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    fn identify_negotiation_rows(
+        id: u64,
+        direction: &str,
+        protocol: &str,
+        sequences: [u64; 5],
+        reverse_capture: bool,
+    ) -> (Value, Vec<Value>) {
+        let header = "132f6d756c746973747265616d2f312e302e300a";
+        let token = match protocol {
+            "/ipfs/id/1.0.0" => "0f2f697066732f69642f312e302e300a",
+            "/ipfs/id/push/1.0.0" => "142f697066732f69642f707573682f312e302e300a",
+            _ => panic!("unsupported test protocol"),
+        };
+        let (proposal, ack) = if direction == "outbound" {
+            ("write", "read")
+        } else {
+            ("read", "write")
+        };
+        let wire = if reverse_capture {
+            [
+                (ack, header),
+                (ack, token),
+                (proposal, header),
+                (proposal, token),
+            ]
+        } else if direction == "outbound" {
+            [
+                (proposal, header),
+                (proposal, token),
+                (ack, header),
+                (ack, token),
+            ]
+        } else {
+            [
+                (proposal, header),
+                (ack, header),
+                (proposal, token),
+                (ack, token),
+            ]
+        };
+        let stream = json!({"protocol": protocol, "proposed_protocol": protocol,
+            "direction": direction, "stream_trace_id": id, "io_failed": false, "parser_error": null,
+            "upgrade_completed_sequence": null, "negotiation_complete_frames": true});
+        let mut events = vec![json!({"sequence": sequences[0], "phase": "application",
+            "stream_trace_id": id, "kind": "substream_opened", "detail": {"direction": direction}})];
+        for (index, (side, frame)) in wire.into_iter().enumerate() {
+            let mut event = json!({"sequence": sequences[index + 1], "phase": "application",
+                "stream_trace_id": id, "kind": "negotiation_frame", "direction": side, "frame_hex": frame});
+            if index == 3 {
+                event["selection_outcome"] = json!("selected");
+                event["protocol"] = json!(protocol);
+            }
+            events.push(event);
+        }
+        (stream, events)
+    }
+
+    fn completed_cleanup_owner() -> (Value, Value, Value, Plan, ConnectionId) {
+        let (mut raw, local, plan, listener, id) = unit_socket(Role::Responder);
+        let socket = completed_socket(&raw, local, &plan, &listener, id, Role::Responder)
+            .unwrap()
+            .unwrap();
+        let body = body_receipt(&challenge("0123456789abcdef0123456789abcdef"));
+        raw["connections"][0]["overflow"] = json!(false);
+        raw["connections"][0]["muxer_drop_observed"] = json!(false);
+        raw["connections"][0]["streams"] = json!([{"protocol": application_observer::ECHO,
+            "direction": "inbound", "stream_trace_id": 4, "io_failed": false, "parser_error": null,
+            "write_close_returned": true, "drop_observed": true, "read": body, "write": body}]);
+        raw["connections"][0]["events"] = json!((1..=37).map(|index| json!({"sequence": index,
+            "phase": "application", "stream_trace_id": 4, "kind": "response_completion", "detail": {}})).collect::<Vec<_>>());
+        // Real 4cc retained Identify/Push layouts have null application upgrade
+        // markers and interleaved proposal/ACK captures inside the same owner.
+        for (id, direction, protocol, sequences) in [
+            (1, "outbound", "/ipfs/id/1.0.0", [13, 14, 15, 22, 26]),
+            (2, "inbound", "/ipfs/id/1.0.0", [19, 20, 21, 23, 24]),
+            (3, "inbound", "/ipfs/id/push/1.0.0", [27, 28, 29, 30, 31]),
+        ] {
+            let (stream, events) =
+                identify_negotiation_rows(id, direction, protocol, sequences, false);
+            raw["connections"][0]["streams"]
+                .as_array_mut()
+                .unwrap()
+                .push(stream);
+            for event in events {
+                let index = event["sequence"].as_u64().unwrap() as usize - 1;
+                raw["connections"][0]["events"][index] = event;
+            }
+        }
+        let proof = complete_application_snapshot(
+            raw.clone(),
+            &socket,
+            &json!({"read": body, "write": body}),
+            Role::Responder,
+            1,
+            local,
+            &plan,
+            &listener,
+            id,
+        )
+        .unwrap();
+        (raw, proof, socket, plan, id)
+    }
+
+    fn append_native_closed(raw: &mut Value) {
+        let events = raw["connections"][0]["events"].as_array_mut().unwrap();
+        events.push(json!({"sequence": events.len() + 1, "phase": "muxer", "stream_trace_id": null,
+            "kind": "muxer_poll_error", "detail": {"error": "connection is closed", "failure_stage": "post_upgrade"}}));
+        raw["connections"][0]["negotiations"][1]["io_failed"] = json!(true);
+        raw["connections"][0]["muxer_drop_observed"] = json!(true);
+    }
+
+    #[test]
+    fn cleanup_close_requires_native_typed_closed_not_display_or_io_timeout() {
+        let closed = native_close_cause(Some(ConnectionError::IO(io::Error::other(
+            yamux013::ConnectionError::Closed,
+        ))));
+        assert_eq!(closed["kind"], "yamux013_closed");
+        assert!(closed["raw"]["display"].as_str().is_some());
+        assert!(closed["raw"]["debug"].as_str().is_some());
+        for error in [
+            io::Error::other("connection is closed"),
+            io::Error::from(io::ErrorKind::TimedOut),
+            io::Error::other(yamux013::ConnectionError::Io(io::Error::from(
+                io::ErrorKind::BrokenPipe,
+            ))),
+        ] {
+            assert_eq!(
+                native_close_cause(Some(ConnectionError::IO(error)))["kind"],
+                "other"
+            );
+        }
+        assert_eq!(
+            native_close_cause(Some(ConnectionError::KeepAliveTimeout))["kind"],
+            "other"
+        );
+        assert_eq!(native_close_cause(None)["kind"], "none");
+    }
+
+    #[tokio::test]
+    async fn cleanup_closed_downcasts_actual_boxed_native_yamux_error() {
+        use libp2p::core::{muxing::StreamMuxer, upgrade::OutboundConnectionUpgrade};
+        let native = libp2p::yamux::Config::default()
+            .upgrade_outbound(futures::io::Cursor::new(Vec::<u8>::new()), "/yamux/1.0.0")
+            .await
+            .unwrap();
+        let mut boxed = StreamMuxerBox::new(native);
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            futures::future::poll_fn(|cx| Pin::new(&mut boxed).poll(cx)),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let receipt = native_close_cause(Some(ConnectionError::IO(error)));
+        assert_eq!(receipt["kind"], "yamux013_closed");
+        assert!(receipt["raw"]["display"].as_str().is_some());
+        assert!(receipt["raw"]["debug"].as_str().is_some());
+    }
+
+    #[test]
+    fn own_stop_reads_real_marker_and_current_cursor_not_frozen_echo_boundary() {
+        let stop = StopFile::new();
+        let (mut raw, proof, socket, plan, id) = completed_cleanup_owner();
+        assert!(
+            observe_own_stop(
+                &stop.0,
+                Some(&proof),
+                Some(&socket),
+                Some(plan.peer),
+                Some(id),
+                &raw,
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+        stop.publish();
+        let before = observe_own_stop(
+            &stop.0,
+            Some(&proof),
+            Some(&socket),
+            Some(plan.peer),
+            Some(id),
+            &raw,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(before["raw_event_sequence"], 37);
+        assert_eq!(
+            before["authorization_basis"],
+            "completed_retained_owner_and_actual_stop_read"
+        );
+        assert_eq!(
+            before["native_error_ordering"],
+            "not_inferred_from_stop_or_filesystem_time"
+        );
+        append_native_closed(&mut raw);
+        let time = unix_ns(SystemTime::now()).unwrap();
+        let after = observe_own_stop(
+            &stop.0,
+            Some(&proof),
+            Some(&socket),
+            Some(plan.peer),
+            Some(id),
+            &raw,
+            Some(time),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(after["raw_event_sequence"], 38);
+        assert_eq!(proof["raw_event_sequence"], 37);
+        assert_eq!(
+            after["modified_unix_ns"],
+            unix_ns(std::fs::metadata(&stop.0).unwrap().modified().unwrap()).unwrap()
+        );
+        assert!(
+            observe_own_stop(
+                &stop.0,
+                None,
+                Some(&socket),
+                Some(plan.peer),
+                Some(id),
+                &raw,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            observe_own_stop(
+                &stop.0,
+                Some(&proof),
+                Some(&socket),
+                Some(PeerId::random()),
+                Some(id),
+                &raw,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            observe_own_stop(
+                &stop.0,
+                Some(&proof),
+                Some(&socket),
+                Some(plan.peer),
+                Some(ConnectionId::new_unchecked(51)),
+                &raw,
+                None
+            )
+            .is_err()
+        );
+        std::fs::write(&stop.0, b"STOP\n").unwrap();
+        assert!(
+            observe_own_stop(
+                &stop.0,
+                Some(&proof),
+                Some(&socket),
+                Some(plan.peer),
+                Some(id),
+                &raw,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn own_stop_observed_before_completed_owner_remains_fatal_without_clock_authority() {
+        let stop = StopFile::new();
+        stop.publish();
+        let (raw, _proof, socket, plan, id) = completed_cleanup_owner();
+        assert!(
+            observe_own_stop(
+                &stop.0,
+                None,
+                Some(&socket),
+                Some(plan.peer),
+                Some(id),
+                &raw,
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&stop.0).unwrap(), b"stop\n");
+    }
+
+    #[test]
+    fn identify_negotiation_binds_four_real_frames_with_null_upgrade_marker() {
+        for protocol in ["/ipfs/id/1.0.0", "/ipfs/id/push/1.0.0"] {
+            for direction in ["inbound", "outbound"] {
+                for reverse_capture in [false, true] {
+                    let (stream, events) = identify_negotiation_rows(
+                        2,
+                        direction,
+                        protocol,
+                        [38, 39, 40, 41, 42],
+                        reverse_capture,
+                    );
+                    assert!(stream["upgrade_completed_sequence"].is_null());
+                    assert!(verify_identify_negotiation(&stream, &events).is_ok());
+                    for change in 0..10 {
+                        let mut bad = events.clone();
+                        match change {
+                            0 => {
+                                bad.pop();
+                            }
+                            1 => bad[4]["stream_trace_id"] = json!(99),
+                            2 => bad[4]["phase"] = json!("muxer"),
+                            3 => bad[4]["frame_hex"] = json!("036e610a"),
+                            4 => bad[4]["direction"] = bad[1]["direction"].clone(),
+                            5 => bad[4]["selection_outcome"] = Value::Null,
+                            6 => bad[4]["protocol"] = json!("/foreign/1"),
+                            7 => bad[1]["selection_outcome"] = json!("selected"),
+                            8 => {
+                                bad[2]["selection_outcome"] = json!("selected");
+                                bad[2]["protocol"] = json!(protocol);
+                                bad[4]["selection_outcome"] = Value::Null;
+                                bad[4]["protocol"] = Value::Null;
+                            }
+                            _ => bad.push(
+                                json!({"sequence": 43, "phase": "application", "stream_trace_id": 2,
+                                "kind": "upgrade_completed", "detail": {"protocol": protocol}}),
+                            ),
+                        }
+                        assert!(
+                            verify_identify_negotiation(&stream, &bad).is_err(),
+                            "{protocol} {direction} reverse={reverse_capture} change={change}"
+                        );
+                    }
+                    let mut bad_stream = stream.clone();
+                    bad_stream["upgrade_completed_sequence"] = json!(43);
+                    assert!(verify_identify_negotiation(&bad_stream, &events).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cleanup_tail_binds_typed_close_and_retains_bounded_late_identify() {
+        for (late_identify, reverse_capture) in [(false, false), (true, false), (true, true)] {
+            let stop_file = StopFile::new();
+            let (mut raw, proof, socket, plan, id) = completed_cleanup_owner();
+            assert_eq!(proof["raw_event_sequence"], 37);
+            assert!(
+                proof["raw_upgrade_observations"]["connections"][0]["streams"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|stream| stream["protocol"] != application_observer::ECHO)
+                    .all(|stream| stream["upgrade_completed_sequence"].is_null())
+            );
+            if late_identify {
+                let (stream, events) = identify_negotiation_rows(
+                    5,
+                    "outbound",
+                    "/ipfs/id/1.0.0",
+                    [38, 39, 40, 41, 42],
+                    reverse_capture,
+                );
+                raw["connections"][0]["streams"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(stream);
+                raw["connections"][0]["events"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(events);
+            }
+            stop_file.publish();
+            let mut first_stop = observe_own_stop(
+                &stop_file.0,
+                Some(&proof),
+                Some(&socket),
+                Some(plan.peer),
+                Some(id),
+                &raw,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            append_native_closed(&mut raw);
+            let mut stop = observe_own_stop(
+                &stop_file.0,
+                Some(&proof),
+                Some(&socket),
+                Some(plan.peer),
+                Some(id),
+                &raw,
+                Some(unix_ns(SystemTime::now()).unwrap()),
+            )
+            .unwrap()
+            .unwrap();
+            stop["native_close_sequence"] = json!(2);
+            let close = json!({"sequence": 2, "kind": "native_connection_closed", "native_connection_id": id.to_string(),
+                "peer_id": plan.peer.to_string(), "remaining_established": 0, "raw_event_sequence": raw["connections"][0]["events"].as_array().unwrap().len(),
+                "raw_terminal_event": raw["connections"][0]["events"].as_array().unwrap().last(),
+                "cause": native_close_cause(Some(ConnectionError::IO(io::Error::other(yamux013::ConnectionError::Closed))))});
+            assert!(verify_cleanup_tail(&raw, &proof, &stop, &[close.clone()]).is_ok());
+            first_stop["native_close_sequence"] = json!(2);
+            assert!(verify_cleanup_tail(&raw, &proof, &first_stop, &[close.clone()]).is_ok());
+            assert_eq!(raw["connections"][0]["negotiations"][1]["io_failed"], true);
+            for change in 0..6 {
+                let mut bad_raw = raw.clone();
+                let mut bad_close = close.clone();
+                match change {
+                    0 => bad_close["cause"]["kind"] = json!("other"),
+                    1 => bad_close["raw_terminal_event"]["sequence"] = json!(37),
+                    2 => bad_close["native_connection_id"] = json!("foreign"),
+                    3 => bad_raw["connections"][0]["negotiations"][1]["io_failed"] = json!(false),
+                    4 => bad_raw["connections"][0]["streams"][0]["io_failed"] = json!(true),
+                    _ => {
+                        bad_raw["connections"][0]["events"][0]["detail"]["error"] =
+                            json!("earlier error")
+                    }
+                }
+                assert!(
+                    verify_cleanup_tail(&bad_raw, &proof, &stop, &[bad_close]).is_err(),
+                    "change {change}"
+                );
+            }
         }
     }
 }
