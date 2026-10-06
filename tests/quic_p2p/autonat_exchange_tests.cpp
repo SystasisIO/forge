@@ -596,7 +596,8 @@ boost::asio::awaitable<void> read_nonce_and_reset(stream& channel) {
    try { co_await channel.async_close(); }
    catch (const forge::exceptions::base& error) {
       if (!detail::autonat_v2_remote_close(error) &&
-          !quic::exceptions::is(error, quic::exceptions::code::canceled)) { throw; }
+          !quic::exceptions::is(error, quic::exceptions::code::canceled) &&
+          !forge::net::transport::exceptions::is(error, forge::net::transport::exceptions::code::canceled)) { throw; }
    }
 }
 
@@ -609,7 +610,9 @@ boost::asio::awaitable<void> join_dialback_pair(exchange_stream_pair& pair) {
       try { throw; }
       catch (const forge::exceptions::base& error) {
          if (!detail::autonat_v2_remote_close(error) &&
-             !quic::exceptions::is(error, quic::exceptions::code::canceled) && !failure) {
+             !quic::exceptions::is(error, quic::exceptions::code::canceled) &&
+             !forge::net::transport::exceptions::is(error, forge::net::transport::exceptions::code::canceled) &&
+             !failure) {
             failure = std::current_exception();
          }
       }
