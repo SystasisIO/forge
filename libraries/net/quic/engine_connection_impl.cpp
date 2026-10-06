@@ -775,6 +775,26 @@ void engine_connection::impl::finish_udp_send_loop() noexcept {
    udp_send_changed.notify();
 }
 
+void engine_connection::impl::rethrow_udp_failure(std::optional<std::uint64_t> generation) const {
+   assert(strand.running_in_this_thread());
+   if (udp_failed_generation != 0 && (!generation || udp_failed_generation <= *generation)) {
+      if (udp_send_exception) {
+         std::rethrow_exception(udp_send_exception);
+      }
+      if (udp_send_discarded && udp_transport_error) {
+         throw boost::system::system_error{udp_transport_error, "QUIC UDP transport failed before captured drain"};
+      }
+      // Without a captured prefix, report actual I/O only. A discarded queue
+      // is classified by the caller's saved connection/cancellation state.
+      if (generation || !udp_send_discarded) {
+         throw boost::system::system_error{udp_send_error, "QUIC UDP send failed before captured drain"};
+      }
+   }
+   if (!generation && udp_transport_error) {
+      throw boost::system::system_error{udp_transport_error, "QUIC UDP transport failed before FIN completion"};
+   }
+}
+
 asio::awaitable<void> engine_connection::impl::wait_udp_send_prefix(std::uint64_t generation,
                                                                     std::chrono::steady_clock::time_point deadline,
                                                                     std::shared_ptr<engine_stream::impl> stream) {
@@ -784,17 +804,9 @@ asio::awaitable<void> engine_connection::impl::wait_udp_send_prefix(std::uint64_
    }
    while (true) {
       const auto observed = udp_send_changed.epoch();
-      if (udp_failed_generation != 0 && udp_failed_generation <= generation) {
-         if (udp_send_exception) {
-            std::rethrow_exception(udp_send_exception);
-         }
-         if (udp_send_discarded && udp_transport_error) {
-            throw boost::system::system_error{udp_transport_error, "QUIC UDP transport failed before captured drain"};
-         }
-         throw boost::system::system_error{udp_send_error, "QUIC UDP send failed before captured drain"};
-      }
-      if (stream && stream->reset) {
-         throw_engine(engine_error_kind::stream_reset, "QUIC stream reset during FIN send drain");
+      rethrow_udp_failure(generation);
+      if (stream && (stream->reset || stream->local_write_canceled)) {
+         throw_engine(engine_error_kind::canceled, "QUIC stream locally canceled during FIN send drain");
       }
       if (udp_completed_generation >= generation) {
          co_return;
@@ -1047,6 +1059,7 @@ void engine_connection::impl::reject_unwritable_stream(const std::shared_ptr<eng
    }
    release_queued_stream_writes(stream);
    stream->local_write_closed = true;
+   stream->native_write_rejected = true;
    if (error == NGTCP2_ERR_STREAM_NOT_FOUND) {
       stream->closed = true;
    }

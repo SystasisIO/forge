@@ -17,6 +17,7 @@ production promotion remain separate.
 | `go-libp2p/p2p/net/reuseport/dial.go` | Ordinary TCP dialing selects a compatible listening socket; coordinated dialing additionally preserves the agreed security role | Existing TCP profile and listener owner |
 | `go-libp2p/p2p/net/reuseport/reuseport.go`, `reuseport_posix.go` | An ordinary reused tuple may be busy or in TIME_WAIT; a bounded fallback uses a different native source port without renewing the logical deadline | TCP preferred reuse policy; coordinated reuse remains mandatory |
 | `go-libp2p/p2p/host/basic/addrs_manager.go` | Hole-punch candidates include authenticated observations with one observer, separately from the stronger public-advertisement quorum | Existing observed-address manager |
+| `go-libp2p/p2p/protocol/identify/id.go`, `go-libp2p/p2p/transport/quic/stream.go`, `rust-libp2p/protocols/identify/src/protocol.rs` | A complete Identify document remains usable when the peer subsequently closes that stream; stream-local shutdown is not connection failure | Identify exchange and existing QUIC stream owner |
 | `rust-libp2p/protocols/dcutr/src/behaviour.rs` | Per-peer coordination; candidate readiness and direct-connection completion | Path manager and authenticated session publication |
 | `rust-libp2p/protocols/dcutr/src/behaviour.rs`, `on_dial_failure` and `InboundConnectNegotiated` | The inbound-exchange dial is not entered in `outgoing_direct_connection_attempts`; its failed native wave can lack an aggregate DCUtR error event | Explicit Rust-source negative-evidence limitation, not a Forge lifecycle exception |
 | `rust-libp2p/protocols/stream/src/shared.rs` | The pinned generic stream control randomly selects an existing connection, rather than preferring a direct path | Rust fixture limitation; Forge direct preference has separate native regressions |
@@ -86,6 +87,21 @@ or accept and join cancellation, and the original relay application stream must
 still transfer a fresh challenge before host shutdown. This exception does not
 apply to Go or the Rust destination role and cannot synthesize a Rust DCUtR
 completion event.
+
+The Identify exchange accepts a typed native stream reset only after complete
+decoding and joined stream cleanup. Its outer caller cancellation receipt still
+rejects cancellation, and actual UDP send or cleanup failures remain errors.
+QUIC must distinguish native write rejection from local cancellation and a
+closed connection. An absent FIN generation is never fabricated into a drain
+receipt. Native STOP_SENDING regressions retain a working neighboring stream;
+local reset and write cancellation must report cancellation instead.
+
+Go cancellation evidence follows the most recent actual StartHolePunch and its
+complete CONNECT/SYNC stream. An earlier failed EndHolePunch may precede a new
+active retry, but ProtocolError before cancellation cannot count as an active
+operation. The same native attempt must terminate after the cancellation request
+and before the actual handler drain and service join. No worker count or
+synthetic attempt ID substitutes for these native events.
 
 ## Evidence Gate
 

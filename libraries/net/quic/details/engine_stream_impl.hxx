@@ -35,6 +35,8 @@ struct engine_stream::impl {
    bool remote_read_closed = false;
    bool remote_read_reset = false;
    bool local_write_closed = false;
+   bool local_write_canceled = false;
+   bool native_write_rejected = false;
    bool fin_queued = false;
    std::uint64_t fin_send_generation = 0;
    bool reset = false;

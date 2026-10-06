@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from autorelay_wire import varint
 from path_evidence import (RUST_SOURCE_WAVE_SCOPE, _echo, _handshakes, _nat, _session, challenge,
-                           native_terminal, rust_source_wave_case, rust_source_wave_failure,
+                           go_cancel_state, native_terminal, rust_source_wave_case, rust_source_wave_failure,
                            rust_source_wave_pending, validate_case, validate_frame)
 from path_wire import address_bytes
 from path_cases import case_specs
@@ -252,13 +252,20 @@ def _unit_cancellation(spec):
                 for key in ("kind", "sequence", "mono_ns"):
                     fields.pop(key)
                 fields["remote_peer_id"] = peer
+                if implementation == "go":
+                    fields["source"] = "go.native_dcutr.io"
                 add("dcutr_frame", **fields)
-        before[role] = copy.deepcopy(result)
+            if implementation == "go":
+                add("holepunch_trace", source="go.holepunch.tracer", native_type="StartHolePunch",
+                    local_peer_id=peers[role], remote_peer_id=peer, native_unix_ns=1791272877400000000,
+                    addresses=["/ip4/11.0.0.2/udp/4001/quic-v1"], rtt_ns=1_000_000)
+        before[role] = {**copy.deepcopy(result), "finalized": False, "joined": False}
         if role == owner:
             source = "go.holepunch.Service.Close.request" if implementation == "go" else "forge.node.async_cancel_hole_punch.request"
             add("cancellation_requested", source=source, remote_peer_id=peer)
             if implementation == "go":
-                add("holepunch_trace", native_type="EndHolePunch", remote_peer_id=peer, success=False)
+                add("holepunch_trace", source="go.holepunch.tracer", native_type="EndHolePunch", remote_peer_id=peer,
+                    local_peer_id=peers[role], native_unix_ns=1791272877410000000, success=False)
                 add("native_handlers_drained", source="go.native_dcutr.handler_return", remote_peer_id=peer,
                     entered=1, completed=1, active=0)
                 add("native_service_joined", source="go.holepunch.Service.Close.and_handler_drain", remote_peer_id=peer, cancelled=True)
@@ -278,6 +285,76 @@ def _unit_cancellation(spec):
 
 def unit_cancellation(spec):
     return unit_source_wave(spec) if spec.source == "rust" else _unit_cancellation(spec)
+
+
+def refresh_go_cancel_prefix(record):
+    """Rebase structural doubles, never alter or repair captured live receipts."""
+    role = record["cancellation"]["actor"]
+    result = record["raw"][role]["result"]
+    events = result["events"]
+    for index, event in enumerate(events, 1):
+        event.update(sequence=index, mono_ns=index * 1_000_000)
+    request = next(e for e in events if e["kind"] == "cancellation_requested")
+    prefix = {**copy.deepcopy(result), "finalized": False, "joined": False,
+              "events": copy.deepcopy(events[:request["sequence"] - 1])}
+    record["cancellation"].update(before_request=copy.deepcopy(prefix), wire_before_request=prefix)
+
+
+def unit_go_retry_cancellation(spec):
+    record = _unit_cancellation(spec)
+    role = record["cancellation"]["actor"]
+    events = record["raw"][role]["result"]["events"]
+    start = next(e for e in events if e.get("native_type") == "StartHolePunch")
+    end = copy.deepcopy(next(e for e in events if e.get("native_type") == "EndHolePunch"))
+    frames = copy.deepcopy([e for e in events if e["kind"] == "dcutr_frame"])
+    for event in frames:
+        event["stream_id"] = "dcutr-2"
+    events[events.index(start) + 1:events.index(start) + 1] = [end, *frames, copy.deepcopy(start)]
+    refresh_go_cancel_prefix(record)
+    return record
+
+
+def captured_079_go_protocol_error_prefix():
+    """Exact first eight raw events from root079 forge_to_go.cancelled, not a PASS receipt."""
+    peer = "12D3KooWALFQS1Vc8xcndcvmtLMzeDfH3U6u1ZrzNArfYRYfcdhr"
+    local = "12D3KooWE237i59NtztFjjh5gJZEHbEb25PjGPvuzE2UTh7hwU9a"
+    relay = "12D3KooWNU1eAam4tLVgz9L2MkCo2ooAMt38geB1ocjzStMBqS59"
+    return {"schema_version": 1, "implementation": "go", "case_token": "24057c50c5b95ee8cfd48a87f4f7cdf8",
+            "local_peer_id": local, "error": None, "overflow": False, "finalized": False, "joined": False,
+            "events": [
+                {"kind": "identify_observed_address", "source": "go.event.EvtPeerIdentificationCompleted",
+                 "sequence": 1, "mono_ns": 14128960, "connection_id": "12D3KooWNU-1", "observer_peer_id": relay,
+                 "connection_local_address": "/ip4/10.2.0.2/udp/36560/quic-v1",
+                 "listener_address": "/ip4/10.2.0.2/udp/36560/quic-v1", "observed_address": "/ip4/11.0.0.3/udp/36560/quic-v1"},
+                {"kind": "native_dcutr_protocol_ready", "source": "go.host.Mux.Protocols", "sequence": 2,
+                 "mono_ns": 264054127, "protocol": "/libp2p/dcutr", "registered": True,
+                 "protocols": ["/ipfs/ping/1.0.0", "/libp2p/circuit/relay/0.2.0/stop", "/ipfs/id/1.0.0",
+                               "/ipfs/id/push/1.0.0", "/forge/interop/path-echo/1", "/libp2p/dcutr"]},
+                {"kind": "baseline", "source": "go.network.connections", "sequence": 3, "mono_ns": 492261252,
+                 "remote_peer_id": peer, "direct_connection_ids": []},
+                {"kind": "control_completed", "source": "go.path_control.native_call", "sequence": 4,
+                 "mono_ns": 492280002, "action": "bind", "control_sequence": 1},
+                {"kind": "authenticated_connection", "source": "go.network.Conn.authenticated_output",
+                 "sequence": 5, "mono_ns": 541546710, "connection_id": "12D3KooWAL-2", "remote_peer_id": peer,
+                 "authenticated": True, "authentication_basis": "native_relay_inner_upgrade", "direction": "inbound",
+                 "path": "relay", "transport": "circuit", "security": "/noise", "muxer": "/yamux/1.0.0",
+                 "relay_peer_id": relay, "local_address": "/ip4/10.2.0.2/udp/36560/quic-v1",
+                 "remote_address": "/ip4/11.0.0.1/udp/56480/quic-v1/p2p/" + relay + "/p2p-circuit"},
+                {"kind": "dcutr_frame", "source": "go.native_dcutr.io", "sequence": 6, "mono_ns": 551414502,
+                 "connection_id": "12D3KooWAL-2", "stream_id": "12D3KooWAL-2-10", "remote_peer_id": peer,
+                 "direction": "write", "message_type": 100, "protocol": "/libp2p/dcutr",
+                 "addresses": ["/ip4/11.0.0.3/udp/36560/quic-v1"], "receipt": {
+                     "framed_hex": "0f0864120b040b00000391028ed0cd03", "write": {"framed_bytes": 16,
+                         "framed_sha256": "6bc507876388714193eb8522e8135a0379049f03016883267a4001512803aa70",
+                         "frames": 1, "complete_frames": True, "invalid_or_over_limit": False}}},
+                {"kind": "dcutr_stream_terminal", "source": "go.native_dcutr.io", "sequence": 7, "mono_ns": 558921127,
+                 "connection_id": "12D3KooWAL-2", "stream_id": "12D3KooWAL-2-10", "remote_peer_id": peer,
+                 "direction": "read", "protocol": "/libp2p/dcutr", "error_kind": "reset", "error": "stream reset: stream reset",
+                 "completed_frame_count": 0, "io_bytes": 0, "pending_frame_bytes": 0, "invalid_or_over_limit": False},
+                {"kind": "holepunch_trace", "source": "go.holepunch.tracer", "sequence": 8, "mono_ns": 558962752,
+                 "local_peer_id": local, "remote_peer_id": peer, "native_type": "ProtocolError",
+                 "native_unix_ns": 1791272877446472126,
+                 "error": "failed to initiateHolePunch: failed to read CONNECT message from remote peer: stream reset: stream reset"}]}
 
 
 def unit_source_wave(spec):
@@ -1351,6 +1428,153 @@ class PathEvidenceTests(unittest.TestCase):
             else:
                 next(e for e in events if e["kind"] == "native_cancel_completed")["accepted"] = False
                 self.assertIn("accept and join", validate_case(value)[0])
+
+    def test_captured_079_protocol_error_is_terminal_for_cancel_not_failed_acceptance(self):
+        prefix = captured_079_go_protocol_error_prefix()
+        peer = prefix["events"][-1]["remote_peer_id"]
+        validate_frame(prefix["events"][5])
+        self.assertEqual(go_cancel_state(prefix, prefix["case_token"], peer, "destination"),
+                         {"state": "terminal", "start_sequence": None, "terminal_sequence": 8,
+                          "terminal_type": "ProtocolError"})
+        self.assertFalse(native_terminal(prefix, "go", peer, "failed"))
+        with self.assertRaisesRegex(ValueError, "missing complete native DCUtR handshake"):
+            _handshakes(prefix["events"], peer, prefix["events"][4], "destination", "failed")
+
+    def test_protocol_error_before_cancel_cannot_pass_with_empty_handler_drain(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        value = unit_cancellation(spec)
+        events = value["raw"]["destination"]["result"]["events"]
+        frames = [e for e in events if e["kind"] == "dcutr_frame"]
+        events[:] = [e for e in events if e not in frames[1:] and e["kind"] != "holepunch_trace"]
+        captured = captured_079_go_protocol_error_prefix()["events"]
+        terminal, error = copy.deepcopy(captured[6:8])
+        for event in (terminal, error):
+            event.update(remote_peer_id="forge_peer", connection_id="circuit", stream_id="dcutr-1")
+        error.pop("connection_id"); error.pop("stream_id")
+        error["local_peer_id"] = "go_peer"
+        events[events.index(frames[0]) + 1:events.index(frames[0]) + 1] = [terminal, error]
+        next(e for e in events if e["kind"] == "native_handlers_drained").update(entered=0, completed=0, active=0)
+        refresh_go_cancel_prefix(value)
+        self.assertIn("unfinished donor Go native method claim", validate_case(value)[0])
+
+    def test_failed_native_attempt_then_new_start_can_be_actively_cancelled(self):
+        for spec in case_specs():
+            if "go" not in (spec.source, spec.destination) or spec.outcome != "cancelled":
+                continue
+            with self.subTest(direction=spec.identifier):
+                value = unit_go_retry_cancellation(spec)
+                role = value["cancellation"]["actor"]
+                peer = "forge_peer"
+                prefix = value["cancellation"]["before_request"]
+                state = go_cancel_state(prefix, TOKEN, peer, role)
+                self.assertEqual(state["state"], "active")
+                self.assertEqual(state["stream_id"], "dcutr-2")
+                self.assertGreater(state["start_sequence"], state["terminal_sequence"])
+                self.assertTrue(native_terminal(prefix, "go", peer, "failed"))
+                self.assertEqual(validate_case(value), [])
+
+    def test_protocol_error_only_reopens_after_fresh_full_exchange_and_native_start(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        value = unit_go_retry_cancellation(spec)
+        events = value["raw"]["destination"]["result"]["events"]
+        ended = next(e for e in events if e.get("native_type") == "EndHolePunch")
+        ended.update(native_type="ProtocolError", error="native protocol failure")
+        ended.pop("success")
+        refresh_go_cancel_prefix(value)
+        self.assertEqual(validate_case(value), [])
+        prefix = value["cancellation"]["before_request"]
+        prefix["events"] = prefix["events"][:-1]
+        self.assertEqual(go_cancel_state(prefix, TOKEN, "forge_peer", "destination")["state"], "terminal")
+
+    def test_go_cancel_requires_native_start_not_labels_or_full_wire_alone(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        for mutation in ("missing", "foreign_peer", "foreign_local", "fake_source", "missing_timestamp", "wrong_candidates"):
+            with self.subTest(mutation=mutation):
+                value = unit_cancellation(spec)
+                events = value["raw"]["destination"]["result"]["events"]
+                start = next(e for e in events if e.get("native_type") == "StartHolePunch")
+                if mutation == "missing":
+                    events.remove(start)
+                elif mutation == "foreign_peer":
+                    start["remote_peer_id"] = "someone_else"
+                elif mutation == "foreign_local":
+                    start["local_peer_id"] = "someone_else"
+                elif mutation == "fake_source":
+                    start["source"] = "go.path_control.intent"
+                elif mutation == "missing_timestamp":
+                    start.pop("native_unix_ns")
+                else:
+                    start["addresses"] = ["/ip4/11.0.0.9/udp/4001/quic-v1"]
+                refresh_go_cancel_prefix(value)
+                self.assertTrue(validate_case(value))
+
+    def test_go_cancel_current_start_requires_full_unique_current_wire_exchange(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        for mutation in ("missing_sync", "historical_wire", "ambiguous_wire", "non_native_wire"):
+            with self.subTest(mutation=mutation):
+                value = unit_go_retry_cancellation(spec)
+                events = value["raw"]["destination"]["result"]["events"]
+                frames = [e for e in events if e["kind"] == "dcutr_frame" and e["stream_id"] == "dcutr-2"]
+                if mutation == "missing_sync":
+                    events.remove(frames[-1])
+                elif mutation == "historical_wire":
+                    events[:] = [e for e in events if e not in frames]
+                elif mutation == "non_native_wire":
+                    frames[0]["source"] = "go.path_control.intent"
+                else:
+                    extra = copy.deepcopy(frames)
+                    for event in extra:
+                        event["stream_id"] = "dcutr-3"
+                    at = events.index(frames[-1]) + 1
+                    events[at:at] = extra
+                refresh_go_cancel_prefix(value)
+                self.assertTrue(validate_case(value))
+
+    def test_go_cancel_revalidates_actual_events_between_observation_and_request(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        for retry in (False, True):
+            with self.subTest(retry=retry):
+                value = unit_cancellation(spec)
+                observed = copy.deepcopy(value["cancellation"])
+                events = value["raw"]["destination"]["result"]["events"]
+                if retry:
+                    value = unit_go_retry_cancellation(spec)
+                else:
+                    end = copy.deepcopy(next(e for e in events if e.get("native_type") == "EndHolePunch"))
+                    at = next(i for i, e in enumerate(events) if e["kind"] == "cancellation_requested")
+                    events.insert(at, end)
+                    refresh_go_cancel_prefix(value)
+                value["cancellation"] = observed
+                self.assertIn("changed or completed before request", validate_case(value)[0])
+
+    def test_go_cancel_requires_selected_method_terminal_before_native_drain_and_join(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        for mutation in ("missing_end", "late_end", "successful_end", "late_start"):
+            with self.subTest(mutation=mutation):
+                value = unit_cancellation(spec)
+                events = value["raw"]["destination"]["result"]["events"]
+                end = next(e for e in events if e.get("native_type") == "EndHolePunch")
+                if mutation == "missing_end":
+                    events.remove(end)
+                elif mutation == "successful_end":
+                    end["success"] = True
+                elif mutation == "late_end":
+                    events.remove(end)
+                    at = next(i for i, e in enumerate(events) if e["kind"] == "native_service_joined")
+                    events.insert(at, end)
+                else:
+                    start = copy.deepcopy(next(e for e in events if e.get("native_type") == "StartHolePunch"))
+                    at = next(i for i, e in enumerate(events) if e["kind"] == "native_service_joined") + 1
+                    events.insert(at, start)
+                refresh_go_cancel_prefix(value)
+                self.assertTrue(validate_case(value))
+
+    def test_go_destination_native_method_claim_does_not_invent_inbound_handler_workers(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        value = unit_cancellation(spec)
+        events = value["raw"]["destination"]["result"]["events"]
+        next(e for e in events if e["kind"] == "native_handlers_drained").update(entered=0, completed=0, active=0)
+        self.assertEqual(validate_case(value), [])
 
     def test_host_stop_completed_attempt_and_replaced_relay_cannot_prove_cancel(self):
         spec = next(s for s in case_specs() if s.outcome == "cancelled")

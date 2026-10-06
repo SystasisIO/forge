@@ -559,12 +559,13 @@ int acked_stream_data_offset_cb(ngtcp2_conn*, std::int64_t stream_id, std::uint6
    return 0;
 }
 
-int stream_close_cb(ngtcp2_conn* conn, std::uint32_t, std::int64_t stream_id, std::uint64_t, void* user_data, void*) {
+int stream_close_cb(ngtcp2_conn* conn, std::uint32_t flags, std::int64_t stream_id, std::uint64_t, void* user_data, void*) {
    auto* connection = static_cast<engine_connection::impl*>(user_data);
    if (auto it = connection->streams.find(stream_id); it != connection->streams.end()) {
       auto stream = std::move(it->second);
       connection->streams.erase(it);
       connection->release_queued_stream_writes(stream);
+      stream->native_write_rejected |= (flags & NGTCP2_STREAM_CLOSE_FLAG_APP_ERROR_CODE_SET) != 0;
       stream->closed = true;
       finish_stream_terminal_cleanup(stream);
       if (connection->test_failpoint) {

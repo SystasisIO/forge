@@ -104,6 +104,11 @@ Rendezvous does not acquire an unsupported Go claim.
   hole-punch service with tracked inbound handlers, or Forge's explicit peer
   operation. The pinned Rust behaviour has no public per-upgrade cancel/join;
   stopping its Swarm must not masquerade as a preserved relay fallback.
+- Go cancellation observes the latest active native attempt, including a retry
+  after an earlier failed attempt. A preceding ProtocolError is not activity;
+  the selected attempt must terminate after cancellation and before actual
+  handler drain. Identify stream-local closure must not discard a completely
+  decoded document or hide local cancellation and real cleanup failures.
 - The pinned Rust source can report a failed native dial wave without an
   aggregate DCUtR error event. Negative evidence has the explicit
   `native_wave_failure` scope and binds the actual delegated behaviour dial to

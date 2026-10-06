@@ -12,7 +12,7 @@ from pathlib import Path
 import secrets
 import time
 
-from path_evidence import (RUST_SOURCE_WAVE_SCOPE, native_terminal, rust_source_wave_case,
+from path_evidence import (RUST_SOURCE_WAVE_SCOPE, go_cancel_state, native_terminal, rust_source_wave_case,
                            rust_source_wave_failure, rust_source_wave_pending, validate_case)
 from path_network import PathNetwork
 from process_lifecycle import StopBudget, enter_scope, exit_scope, spawn_owned
@@ -67,6 +67,22 @@ def _await(owner, path, predicate, deadline):
 def _has(value, kind, **fields):
     return any(e.get("kind") == kind and all(e.get(k) == v for k, v in fields.items())
                for e in value.get("events", []))
+
+
+def _go_cancel_pending(value, token, peer, role):
+    state = go_cancel_state(value, token, peer, role)
+    if state["state"] == "terminal" and state["terminal_type"] == "ProtocolError":
+        raise RuntimeError("Go native ProtocolError completed before cancellation observation")
+    return state["state"] == "active"
+
+
+def _go_cancel_observation(observed, current, token, peer, role):
+    state = go_cancel_state(observed, token, peer, role)
+    if state["state"] != "active" or current.get("local_peer_id") != observed.get("local_peer_id") or go_cancel_state(
+            current, token, peer, role) != state:
+        raise RuntimeError("Go native cancellation attempt changed or completed before request")
+    return {"observed_active_phase": True, "actor": role, "wire_actor": role,
+            "before_request": current, "wire_before_request": current}
 
 
 def run_case(spec, binaries, root, *, network_factory=PathNetwork, command_attempt=None):
@@ -155,21 +171,28 @@ def run_case(spec, binaries, root, *, network_factory=PathNetwork, command_attem
             if wave_scope:
                 owner, files = actors[donor_role]
                 value = _await(owner, files["result"], lambda v: rust_source_wave_pending(v, token, peer), deadline)
+            elif getattr(spec, donor_role) == "go":
+                owner, files = actors[donor_role]
+                value = _await(owner, files["result"], lambda v: _go_cancel_pending(v, token, peer, donor_role), deadline)
             else:
                 value = wait(donor_role, "dcutr_frame", message_type=100)
-            if native_terminal(value, getattr(spec, donor_role), peer, "success") or native_terminal(value, getattr(spec, donor_role), peer, "failed"):
+            if getattr(spec, donor_role) != "go" and any(native_terminal(value, getattr(spec, donor_role), peer, outcome)
+                                                        for outcome in ("success", "failed")):
                 raise RuntimeError("native operation completed before cancellation observation")
             # Observe actual donor I/O, but cancel the real supported owner.
             # In Rust pairs that is Forge, never Rust Swarm/whole-host stop.
             owner, files = actors[cancellation_role]
             owner_value = _read(files["result"])
             owner_peer = actors["source" if cancellation_role == "destination" else "destination"][0].ready["peer_id"]
-            if any(native_terminal(owner_value, getattr(spec, cancellation_role), owner_peer, outcome)
-                   for outcome in ("success", "failed")):
-                raise RuntimeError("cancel owner completed before captured active phase")
-            artifact["cancellation"] = {"observed_active_phase": True, "actor": cancellation_role,
-                                        "before_request": owner_value, "wire_actor": donor_role,
-                                        "wire_before_request": value}
+            if getattr(spec, donor_role) == "go":
+                artifact["cancellation"] = _go_cancel_observation(value, owner_value, token, owner_peer, cancellation_role)
+            else:
+                if any(native_terminal(owner_value, getattr(spec, cancellation_role), owner_peer, outcome)
+                       for outcome in ("success", "failed")):
+                    raise RuntimeError("cancel owner completed before captured active phase")
+                artifact["cancellation"] = {"observed_active_phase": True, "actor": cancellation_role,
+                                            "before_request": owner_value, "wire_actor": donor_role,
+                                            "wire_before_request": value}
             control(cancellation_role, "cancel")
             if getattr(spec, donor_role) == "rust":
                 owner, files = actors[donor_role]

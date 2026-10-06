@@ -6,10 +6,12 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from path_cases import _await, _has, _read, _write
+from path_cases import _await, _go_cancel_observation, _go_cancel_pending, _has, _read, _write
 from path_evidence import native_terminal, rust_source_wave_case, rust_source_wave_failure, rust_source_wave_pending
-from test_path_evidence import TOKEN, case_specs, unit_source_wave
+from test_path_evidence import (TOKEN, captured_079_go_protocol_error_prefix, case_specs,
+                                unit_cancellation, unit_go_retry_cancellation, unit_source_wave)
 
 
 class PathCasesTests(unittest.TestCase):
@@ -36,6 +38,62 @@ class PathCasesTests(unittest.TestCase):
         owner = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
         with self.assertRaises(TimeoutError):
             _await(owner, Path("missing"), lambda _: True, time.monotonic())
+
+    def test_go_cancel_wait_rejects_captured_protocol_error_without_end(self):
+        prefix = captured_079_go_protocol_error_prefix()
+        peer = prefix["events"][-1]["remote_peer_id"]
+        owner = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result"
+            path.write_text(json.dumps(prefix))
+            with self.assertRaisesRegex(RuntimeError, "ProtocolError completed before cancellation"):
+                _await(owner, path, lambda v: _go_cancel_pending(v, prefix["case_token"], peer, "destination"),
+                       time.monotonic() + 1)
+        with self.assertRaisesRegex(RuntimeError, "completed before request"):
+            _go_cancel_observation(prefix, prefix, prefix["case_token"], peer, "destination")
+
+    def test_go_cancel_wait_can_observe_new_native_attempt_after_failed_end(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        record = unit_go_retry_cancellation(spec)
+        pending = record["cancellation"]["before_request"]
+        completed = copy.deepcopy(pending)
+        first_end = next(e for e in completed["events"] if e.get("native_type") == "EndHolePunch")
+        completed["events"] = completed["events"][:first_end["sequence"]]
+        self.assertFalse(_go_cancel_pending(completed, TOKEN, "forge_peer", "destination"))
+        self.assertTrue(native_terminal(pending, "go", "forge_peer", "failed"))
+        owner = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result"
+            path.write_text(json.dumps(completed))
+            with patch("path_cases._read", side_effect=[completed, pending]):
+                observed = _await(owner, path, lambda v: _go_cancel_pending(v, TOKEN, "forge_peer", "destination"),
+                                  time.monotonic() + 1)
+        self.assertEqual(observed, pending)
+        cancellation = _go_cancel_observation(observed, copy.deepcopy(pending), TOKEN, "forge_peer", "destination")
+        self.assertIs(cancellation["before_request"], cancellation["wire_before_request"])
+        self.assertEqual(cancellation["before_request"], pending)
+
+    def test_go_cancel_wait_does_not_accept_connect_or_labels_as_native_activity(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        prefix = unit_cancellation(spec)["cancellation"]["before_request"]
+        prefix["events"] = prefix["events"][:-1]
+        prefix.update(status="passed", observed_active_phase=True)
+        self.assertFalse(_go_cancel_pending(prefix, TOKEN, "forge_peer", "destination"))
+
+    def test_go_cancel_refresh_rejects_completed_or_replaced_observed_attempt(self):
+        spec = next(s for s in case_specs() if s.source == "forge" and s.destination == "go" and s.outcome == "cancelled")
+        record = unit_cancellation(spec)
+        observed = record["cancellation"]["before_request"]
+        current = copy.deepcopy(observed)
+        end = copy.deepcopy(next(e for e in record["raw"]["destination"]["result"]["events"]
+                                 if e.get("native_type") == "EndHolePunch"))
+        end.update(sequence=len(current["events"]) + 1, mono_ns=current["events"][-1]["mono_ns"] + 1)
+        current["events"].append(end)
+        replacement = unit_go_retry_cancellation(spec)["cancellation"]["before_request"]
+        for prefix in (current, replacement):
+            with self.subTest(state=prefix["events"][-1]["native_type"]):
+                with self.assertRaisesRegex(RuntimeError, "changed or completed before request"):
+                    _go_cancel_observation(observed, prefix, TOKEN, "forge_peer", "destination")
 
     def test_wave_runner_scope_is_only_the_two_rust_source_negative_cases(self):
         specs = [s for s in case_specs() if rust_source_wave_case(asdict(s))]

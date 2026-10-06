@@ -523,6 +523,61 @@ def native_terminal(result, implementation, peer, outcome):
                and e.get("result", {}).get("native_success") is (outcome == "success") for e in events)
 
 
+def _go_cancel_claims(events, local_peer, peer):
+    claims = [e for e in events if e.get("kind") == "holepunch_trace" and e.get("remote_peer_id") == peer
+              and e.get("native_type") in {"StartHolePunch", "EndHolePunch", "ProtocolError"}]
+    for event in claims:
+        require(event.get("source") == "go.holepunch.tracer" and event.get("local_peer_id") == local_peer
+                and _ns(event.get("native_unix_ns")), "Go cancellation lacks actual peer-bound native tracer claim")
+        if event["native_type"] == "EndHolePunch":
+            require(type(event.get("success")) is bool, "Go native terminal lacks its actual result")
+        elif event["native_type"] == "ProtocolError":
+            require(isinstance(event.get("error"), str) and bool(event["error"]), "Go native protocol error lacks its actual cause")
+    return claims
+
+
+def go_cancel_state(result, token, peer, role):
+    """Observed native method state, not a worker count or aggregate outcome."""
+    require(role in {"source", "destination"}, "invalid Go cancellation role")
+    events = _events(result, "go", token, final=False)
+    local_peer = result.get("local_peer_id")
+    require(_id(local_peer), "Go cancellation lacks local identity")
+    claims = _go_cancel_claims(events, local_peer, peer)
+    start, previous_terminal, terminal, active, succeeded = None, None, None, False, False
+    for event in claims:
+        if event["native_type"] == "StartHolePunch":
+            require(not active and not succeeded, "overlapping/completed Go native cancellation claims")
+            start, previous_terminal, active = event, terminal, True
+        else:
+            require(event["native_type"] == "ProtocolError" or active, "Go native EndHolePunch lacks its StartHolePunch")
+            terminal, active = event, False
+            succeeded |= event.get("success") is True
+    state = {"state": "active" if active else "terminal" if terminal else "not_started",
+             "start_sequence": start["sequence"] if start else None,
+             "terminal_sequence": terminal["sequence"] if terminal else None,
+             "terminal_type": terminal["native_type"] if terminal else None}
+    if not active:
+        return state
+    require(not any(e.get("kind") == "authenticated_connection" and e.get("path") == "direct"
+                    and e.get("remote_peer_id") == peer for e in events), "Go cancellation already became direct")
+    require(_ns(start.get("rtt_ns")), "Go active native claim lacks measured RTT")
+    relay = _session(events, peer, "relay", "go")
+    require(relay.get("direction") == ("outbound" if role == "source" else "inbound"),
+            "Go cancellation claim has the wrong original relay owner")
+    exchanges = _handshakes(events[:start["sequence"] - 1], peer, relay, role, "cancelled")
+    boundary = previous_terminal["sequence"] if previous_terminal else relay["sequence"]
+    matching = [frames for frames in exchanges if frames[0]["sequence"] > boundary
+                and frames[-1]["sequence"] < start["sequence"]]
+    require(len(matching) == 1, "Go active native claim lacks a unique current complete CONNECT/SYNC stream")
+    frames = matching[0]
+    require(all(e.get("source") == "go.native_dcutr.io" for e in frames), "Go active claim lacks actual native wire capture")
+    remote_connect = next(e for e in frames if e["direction"] == "read" and e["message_type"] == 100)
+    require(_wave_sockets(start.get("addresses"), peer) == _wave_sockets(remote_connect["addresses"], peer),
+            "Go active native candidates differ from its current remote CONNECT")
+    return {**state, "connection_id": relay["connection_id"], "stream_id": frames[0]["stream_id"],
+            "start_mono_ns": start["mono_ns"]}
+
+
 def _handshakes(events, peer, relay, role, outcome):
     frames = [e for e in events if e.get("kind") == "dcutr_frame"]
     require(frames, "missing donor read/write DCUtR capture")
@@ -891,21 +946,37 @@ def _validate(record):
                 and wire.get("case_token") == token and wire.get("local_peer_id") == peers[wire_role]
                 and isinstance(wire_events, list) and wire_events and wire_events == events[wire_role][:len(wire_events)]
                 and any(e.get("kind") == "dcutr_frame" and e.get("remote_peer_id") == peers[other_role] for e in wire_events)
-                and not any(native_terminal(wire, spec[wire_role], peers[other_role], outcome) for outcome in ("success", "failed")),
+                and (spec[wire_role] == "go" or not any(native_terminal(wire, spec[wire_role], peers[other_role], outcome)
+                                                       for outcome in ("success", "failed"))),
                 "cancellation was not observed during actual unfinished donor DCUtR I/O")
         prior = {"events": [e for e in events[role] if e["sequence"] < cancelled["sequence"]]}
-        require(not any(native_terminal(prior, spec[role], other_peer, outcome) for outcome in ("success", "failed")),
+        require(spec[role] == "go" or not any(native_terminal(prior, spec[role], other_peer, outcome)
+                                              for outcome in ("success", "failed")),
                 "cancellation requested only after native completion")
         joined = _one(events[role], "native_service_joined", remote_peer_id=other_peer)
         if spec[donor_role] == "go":
             require(role == donor_role and cancelled.get("source") == "go.holepunch.Service.Close.request"
                     and cancelled.get("remote_peer_id") == other_peer, "missing supported native Go service cancellation")
+            observed = go_cancel_state(wire, token, other_peer, role)
+            require(observed["state"] == "active", "cancellation lacks an unfinished donor Go native method claim")
+            require(go_cancel_state(captured, token, other_peer, role) == observed
+                    and go_cancel_state({**captured, **prior}, token, other_peer, role) == observed,
+                    "Go native cancellation attempt changed or completed before request")
             drain = _one(events[role], "native_handlers_drained", remote_peer_id=other_peer)
             require(drain.get("source") == "go.native_dcutr.handler_return" and type(drain.get("entered")) is int
                     and drain["entered"] >= (1 if role == "source" else 0) and type(drain.get("completed")) is int
                     and drain["completed"] == drain["entered"] and type(drain.get("active")) is int and drain["active"] == 0
                     and cancelled["sequence"] < drain["sequence"] < joined["sequence"], "Go inbound native handlers did not actually drain")
             require(joined.get("source") == "go.holepunch.Service.Close.and_handler_drain", "Close alone is not Go native handler join")
+            claims = _go_cancel_claims(events[role], peers[role], other_peer)
+            following = [e for e in claims if e["sequence"] > observed["start_sequence"]]
+            require(following and following[0]["native_type"] in {"EndHolePunch", "ProtocolError"}
+                    and following[0].get("success") is not True
+                    and cancelled["sequence"] < following[0]["sequence"] < drain["sequence"],
+                    "selected Go native method did not actually terminate after cancellation before drain")
+            drained = go_cancel_state({**captured, "events": events[role][:joined["sequence"] - 1]}, token, other_peer, role)
+            require(drained["state"] == "terminal" and not any(e["sequence"] > joined["sequence"] for e in claims),
+                    "Go native workers remained active at service join")
         else:
             require(spec[role] == "forge" and role != donor_role
                     and cancelled.get("source") == "forge.node.async_cancel_hole_punch.request"

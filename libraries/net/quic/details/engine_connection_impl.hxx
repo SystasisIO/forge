@@ -260,6 +260,8 @@ struct engine_connection::impl {
 
    void finish_udp_send_loop() noexcept;
 
+   void rethrow_udp_failure(std::optional<std::uint64_t> generation) const;
+
    asio::awaitable<void> wait_udp_send_prefix(std::uint64_t generation, std::chrono::steady_clock::time_point deadline,
                                               std::shared_ptr<engine_stream::impl> stream = {});
 

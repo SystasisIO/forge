@@ -165,15 +165,24 @@ boost::asio::awaitable<void> engine_stream::async_close() {
                    connection->update_active_stream_metrics();
                 }
                 if (stream->fin_queued) {
-                   if (stream->reset) {
-                      throw_engine(engine_error_kind::stream_reset, "QUIC stream reset before FIN send completed");
+                   connection->rethrow_udp_failure(std::nullopt);
+                   if (stream->reset || stream->local_write_canceled) {
+                      throw_engine(engine_error_kind::canceled, "QUIC stream locally canceled before FIN completion");
                    }
-                   if (connection->canceled) {
+                   if (connection->canceled || connection->cancellation_requested.load(std::memory_order_acquire)) {
                       throw_engine(engine_error_kind::canceled, "QUIC FIN send canceled");
                    }
                    if (stream->fin_send_generation == 0) {
-                      throw_engine(engine_error_kind::connection_closed,
-                                   "QUIC connection closed before FIN was queued");
+                      if (connection->closing || connection->terminal_cleanup_complete) {
+                         throw_engine(engine_error_kind::connection_closed,
+                                      "QUIC connection closed before FIN was queued");
+                      }
+                      if (stream->native_write_rejected) {
+                         throw_engine(engine_error_kind::stream_reset,
+                                      "QUIC native stream write rejected before FIN submission");
+                      }
+                      throw_engine(engine_error_kind::internal_error,
+                                   "QUIC live stream ended FIN submission without a native prefix");
                    }
                    co_await connection->wait_udp_send_prefix(stream->fin_send_generation, deadline, stream);
                 }
@@ -197,6 +206,40 @@ boost::asio::awaitable<void> engine_stream::async_close() {
       // This non-throwing handoff also covers a failure starting co_spawn.
       impl_->cancel_requested.notify();
       co_await wait_for_stream_terminal_cleanup(impl_);
+      auto native_stream_rejection = false;
+      auto inspect_cleanup_failure = false;
+      try {
+         std::rethrow_exception(primary_error);
+      } catch (const engine_failure& error) {
+         native_stream_rejection = error.kind() == engine_error_kind::stream_reset;
+         inspect_cleanup_failure = native_stream_rejection || error.kind() == engine_error_kind::canceled;
+      } catch (...) {
+      }
+      if (inspect_cleanup_failure) {
+         co_await asio::co_spawn(
+             connection->strand,
+             [connection, stream = impl_, native_stream_rejection]() -> asio::awaitable<void> {
+                connection->rethrow_udp_failure(std::nullopt);
+                if (stream->terminal_cleanup_error) {
+                   std::rethrow_exception(stream->terminal_cleanup_error);
+                }
+                if (!native_stream_rejection) {
+                   co_return;
+                }
+                // Recovery itself sets stream->reset. Only independent local
+                // write/connection cancellation facts can supersede this cause.
+                if (stream->local_write_canceled || connection->canceled ||
+                    connection->cancellation_requested.load(std::memory_order_acquire)) {
+                   throw_engine(engine_error_kind::canceled, "QUIC FIN close canceled during native cleanup");
+                }
+                if (connection->closing || connection->terminal_cleanup_complete) {
+                   throw_engine(engine_error_kind::connection_closed,
+                                "QUIC connection closed during native stream cleanup");
+                }
+                co_return;
+             },
+             asio::use_awaitable);
+      }
       std::rethrow_exception(primary_error);
    }
    // A concurrent cancel worker may already own the native stream reset.
@@ -226,6 +269,10 @@ void engine_stream::cancel_write() {
    }
    auto stream = impl_;
    asio::dispatch(connection->strand, [connection, stream] {
+      // A FIN may already be native-submitted but still await its socket send.
+      // Record local intent before either the early return or native callbacks.
+      stream->local_write_canceled = true;
+      connection->udp_send_changed.notify();
       if (stream->local_write_closed || stream->reset || stream->closed) {
          return;
       }
