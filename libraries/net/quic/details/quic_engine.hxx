@@ -209,6 +209,7 @@ class engine_listener {
 
  private:
    friend class engine_connector;
+   friend struct engine_listener_fixture;
    std::shared_ptr<impl> impl_;
 };
 

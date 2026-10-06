@@ -263,7 +263,8 @@ void engine_connection::impl::wake_and_clear_streams(bool reset_streams) {
 }
 
 void engine_connection::impl::deliver_closed_hook_if_idle() noexcept {
-   if (!closed_hook_called || closed_hook_delivered || background_jobs.load(std::memory_order_acquire) != 0 ||
+   if (!closed_hook_called || closed_hook_delivered || close_work_active ||
+       background_jobs.load(std::memory_order_acquire) != 0 ||
        !closed_hook) {
       return;
    }
@@ -291,10 +292,10 @@ void engine_connection::impl::finish_background_job() noexcept {
    }
    if (previous == 1) {
       wake(background_waiters);
-      if (close_completion_pending) {
+      deliver_closed_hook_if_idle();
+      if (close_completion_pending || (shutdown_completed_hook && terminal_cleanup_complete)) {
          complete_close();
       }
-      deliver_closed_hook_if_idle();
    }
 }
 
@@ -412,6 +413,9 @@ engine_connection::impl::async_close_on_owner(std::chrono::steady_clock::time_po
    try {
       co_await connection->wait_background_idle();
       background_joined = true;
+      if (connection->test_failpoint) {
+         static_cast<void>(connection->test_failpoint("connection_close_after_background_join"));
+      }
    } catch (...) {
       primary_error = std::current_exception();
       canceled_discard = false;
@@ -450,6 +454,7 @@ void engine_connection::impl::complete_close(std::exception_ptr error) noexcept 
       return;
    }
    close_completion_pending = false;
+   deliver_closed_hook_if_idle();
    close_cleanup_complete = true;
    termination_changed.notify();
    // All terminal waits are already installed. Wake cannot allocate/retry;
@@ -459,6 +464,14 @@ void engine_connection::impl::complete_close(std::exception_ptr error) noexcept 
    } catch (...) {
       std::terminate();
    }
+   auto completed = std::move(shutdown_completed_hook);
+   if (completed) { completed(); }
+}
+
+void engine_connection::impl::observe_shutdown(std::function<void()> completed) {
+   assert(strand.running_in_this_thread());
+   shutdown_completed_hook = std::move(completed);
+   if (terminal_cleanup_complete) { complete_close(); }
 }
 
 boost::asio::awaitable<void> engine_connection::impl::wait_close_cleanup() {
@@ -535,6 +548,7 @@ void engine_connection::impl::fail_all() noexcept {
    }
    notify_closed_once();
    terminal_cleanup_complete = true;
+   if (shutdown_completed_hook) { complete_close(); }
 }
 
 void engine_connection::impl::fail_udp(boost::system::error_code error) noexcept {
@@ -579,6 +593,7 @@ void engine_connection::impl::close_transport(bool cancel_socket) {
    }
    notify_closed_once();
    terminal_cleanup_complete = true;
+   if (shutdown_completed_hook) { complete_close(); }
 }
 
 void engine_connection::impl::verify_selected_alpn(std::string_view expected) {

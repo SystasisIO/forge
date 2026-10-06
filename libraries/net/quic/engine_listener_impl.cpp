@@ -1,5 +1,6 @@
 #include "details/engine_listener_impl.hxx"
 #include "details/engine_connection_impl.hxx"
+#include "details/listener_callback.hxx"
 
 namespace forge::net::quic::detail {
 engine_listener::impl::impl(boost::asio::io_context& context_value, engine_endpoint endpoint_value,
@@ -18,6 +19,12 @@ engine_listener::impl::impl(boost::asio::io_context& context_value, engine_endpo
    };
    {
       auto lock = std::scoped_lock{cid_mutex};
+      if (!connections_by_cid.empty()) {
+         const auto& connection = connections_by_cid.begin()->second;
+         if (connection->test_failpoint) {
+            static_cast<void>(connection->test_failpoint("listener_before_connection_snapshot"));
+         }
+      }
       out.reserve(cids_by_connection.size() + accepted.size());
       for (const auto& [_, keys] : cids_by_connection) {
          if (keys.empty()) {
@@ -42,6 +49,7 @@ void engine_listener::impl::finish_operation() noexcept {
    }
    --active_operations;
    if (active_operations == 0) {
+      if (stopped) { update_shutdown_operations(); }
       // These waits and all admitted-operation guards share this strand.
       // Direct cancellation avoids any_io_executor's allocating dispatch.
       auto waiters = std::move(operation_waiters);
@@ -53,6 +61,42 @@ void engine_listener::impl::finish_operation() noexcept {
          }
       }
    }
+}
+
+void engine_listener::impl::begin_callback() noexcept {
+   const auto lock = std::scoped_lock{shutdown_mutex};
+   active_callbacks.fetch_add(1, std::memory_order_acq_rel);
+   update_shutdown_operations_locked();
+}
+
+void engine_listener::impl::finish_callback() noexcept {
+   const auto lock = std::scoped_lock{shutdown_mutex};
+   const auto previous = active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
+   assert(previous != 0);
+   update_shutdown_operations_locked();
+}
+
+void engine_listener::impl::update_shutdown_operations() noexcept {
+   const auto lock = std::scoped_lock{shutdown_mutex};
+   update_shutdown_operations_locked();
+}
+
+void engine_listener::impl::update_shutdown_operations_locked() noexcept {
+   if (shutdown_state) {
+      const auto idle = stop_requested.load(std::memory_order_acquire) &&
+          active_operations.load(std::memory_order_acquire) == 0 &&
+          active_callbacks.load(std::memory_order_acquire) == 0;
+      shutdown_state->set_operations_idle(idle);
+   }
+}
+
+void engine_listener::impl::report_callback_failure(std::exception_ptr error) noexcept {
+   auto completion = std::shared_ptr<listener_shutdown>{};
+   {
+      auto lock = std::scoped_lock{shutdown_mutex};
+      completion = shutdown_state;
+   }
+   if (completion) { completion->remember(std::move(error)); }
 }
 
 boost::asio::awaitable<void> engine_listener::impl::wait_operations_idle() {
@@ -67,7 +111,8 @@ boost::asio::awaitable<void> engine_listener::impl::wait_operations_idle() {
    }
 }
 
-[[nodiscard]] engine_listener::impl::shutdown_action engine_listener::impl::begin_shutdown() {
+[[nodiscard]] engine_listener::impl::shutdown_action
+engine_listener::impl::begin_shutdown(std::vector<std::shared_ptr<engine_connection::impl>>& prepared) {
    auto lock = std::scoped_lock{shutdown_mutex};
    if (shutdown_complete) {
       return shutdown_action::done;
@@ -75,6 +120,8 @@ boost::asio::awaitable<void> engine_listener::impl::wait_operations_idle() {
    if (shutdown_started) {
       return shutdown_action::wait;
    }
+   // Prepare the sole owning snapshot before making shutdown irreversible.
+   prepared = connections();
    shutdown_started = true;
    return shutdown_action::run;
 }
@@ -84,41 +131,124 @@ boost::asio::awaitable<void> engine_listener::impl::wait_operations_idle() {
    return shutdown_error;
 }
 
-boost::asio::awaitable<void> engine_listener::impl::wait_shutdown_complete() {
-   co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
-   for (;;) {
-      auto timer = std::make_shared<asio::steady_timer>(strand);
-      timer->expires_at(asio::steady_timer::time_point::max());
-      auto ready = false;
-      {
-         auto lock = std::scoped_lock{shutdown_mutex};
-         ready = shutdown_complete;
-         if (!ready) {
-            shutdown_waiters.push_back(timer);
-         }
-      }
-      if (ready) {
-         co_return;
-      }
-      boost::system::error_code ec;
-      co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, ec));
-   }
+void engine_listener::impl::finish_shutdown(std::exception_ptr error) noexcept {
+   auto lock = std::scoped_lock{shutdown_mutex};
+   shutdown_error = std::move(error);
+   shutdown_complete = true;
 }
 
-void engine_listener::impl::finish_shutdown(std::exception_ptr error) noexcept {
-   auto ready = std::vector<std::shared_ptr<asio::steady_timer>>{};
-   {
-      auto lock = std::scoped_lock{shutdown_mutex};
-      if (shutdown_complete) {
-         return;
+boost::asio::awaitable<void> engine_listener::impl::prepare_shutdown(
+    std::shared_ptr<listener_shutdown> completion,
+    const std::vector<std::shared_ptr<engine_connection::impl>>& prepared) {
+   try {
+      for (auto index = std::size_t{}; index < prepared.size(); ++index) {
+         const auto connection = prepared[index];
+         co_await asio::co_spawn(
+             connection->strand,
+             [connection, weak = std::weak_ptr<listener_shutdown>{completion}, index]() -> asio::awaitable<void> {
+                if (connection->test_failpoint) {
+                   static_cast<void>(connection->test_failpoint("listener_before_completion_binding"));
+                }
+                connection->observe_shutdown([weak, index]() noexcept {
+                   if (const auto owner = weak.lock()) { owner->complete_connection(index); }
+                });
+                co_return;
+             },
+             asio::use_awaitable);
       }
-      shutdown_error = std::move(error);
-      shutdown_complete = true;
-      ready.swap(shutdown_waiters);
+   } catch (...) {
+      completion->abort_preparation(std::current_exception());
+      co_return;
    }
-   for (const auto& timer : ready) {
-      wake(timer);
+   // All fallible bindings and the aggregate native wait exist before effects.
+   completion->admit();
+   try {
+      stop(prepared);
+      if (!prepared.empty() && prepared.front()->test_failpoint) {
+         static_cast<void>(prepared.front()->test_failpoint("listener_idle_wait_after_stop"));
+      }
+   } catch (...) {
+      completion->remember(std::current_exception());
    }
+   update_shutdown_operations();
+   // Keep the prepared publication phase owned until every cancel dispatch
+   // was attempted or its original error was retained, even with no receive job.
+   completion->complete_stop();
+}
+
+boost::asio::awaitable<void> engine_listener::impl::async_shutdown() {
+   assert(strand.running_in_this_thread());
+   co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
+   auto prepared = std::vector<std::shared_ptr<engine_connection::impl>>{};
+   const auto action = begin_shutdown(prepared);
+   if (action == shutdown_action::done) {
+      if (const auto error = shutdown_failure()) { std::rethrow_exception(error); }
+      co_return;
+   }
+   if (action == shutdown_action::wait) {
+      const auto completion = shutdown_state;
+      auto error = boost::system::error_code{};
+      co_await completion->async_wait_finished(asio::redirect_error(asio::use_awaitable, error));
+      if (const auto failure = completion->failure()) { std::rethrow_exception(failure); }
+      if (error != asio::error::operation_aborted) {
+         throw boost::system::system_error{error ? error : asio::error::fault, "QUIC shutdown wait failed"};
+      }
+      co_return;
+   }
+   auto completion = std::shared_ptr<listener_shutdown>{};
+   try {
+      completion = std::make_shared<listener_shutdown>(strand, prepared.size());
+      {
+         auto lock = std::scoped_lock{shutdown_mutex};
+         shutdown_state = completion;
+      }
+      if (!prepared.empty() && prepared.front()->test_failpoint) {
+         static_cast<void>(prepared.front()->test_failpoint("listener_before_aggregate_wait"));
+      }
+      auto error = boost::system::error_code{};
+      co_await completion->async_wait_ready(
+          [state = self.lock(), completion, &prepared]() noexcept {
+             try {
+                asio::co_spawn(state->strand, state->prepare_shutdown(completion, prepared),
+                               [completion](std::exception_ptr failure) noexcept {
+                                  if (failure) { completion->abort_preparation(std::move(failure)); }
+                               });
+             } catch (...) {
+                completion->abort_preparation(std::current_exception());
+             }
+          },
+          asio::redirect_error(asio::use_awaitable, error));
+      if (error != asio::error::operation_aborted) {
+         throw boost::system::system_error{error ? error : asio::error::fault, "QUIC shutdown join failed"};
+      }
+   } catch (...) {
+      if (!completion || !completion->admitted()) {
+         const auto error = std::current_exception();
+         if (completion) { completion->abort_preparation(error); }
+         auto lock = std::scoped_lock{shutdown_mutex};
+         shutdown_started = false;
+         shutdown_state.reset();
+         if (completion) { completion->finish(); }
+      }
+      throw;
+   }
+   if (!completion->admitted()) {
+      {
+         auto lock = std::scoped_lock{shutdown_mutex};
+         shutdown_started = false;
+         shutdown_state.reset();
+      }
+      completion->finish();
+      std::rethrow_exception(completion->failure());
+   }
+   assert(stopped && active_operations == 0 && active_callbacks == 0);
+   for (const auto& connection : prepared) {
+      assert(connection->background_jobs.load(std::memory_order_acquire) == 0);
+   }
+   clear_connection_registry();
+   finish_shutdown(completion->failure());
+   completion->finish();
+   if (const auto error = completion->failure()) { std::rethrow_exception(error); }
 }
 
 void engine_listener::impl::clear_connection_registry() {
@@ -137,16 +267,44 @@ void engine_listener::impl::stop() {
       return;
    }
    const auto active = connections();
+   stop(active);
+}
+
+void engine_listener::impl::stop(std::span<const std::shared_ptr<engine_connection::impl>> active) {
+   if (stopped) {
+      return;
+   }
    stopped = true;
    stop_requested.store(true, std::memory_order_release);
    for (const auto& connection : active) {
       connection->request_cancel();
    }
    server_socket->stop();
-   wake(punch_waiters);
-   wake(accept_waiters);
+   // These timers belong to this strand. Do not allocate an erased-executor
+   // dispatch on the irreversible native stop path.
+   for (auto* waiters : {&punch_waiters, &accept_waiters}) {
+      auto current = std::move(*waiters);
+      waiters->clear();
+      for (const auto& weak : current) {
+         if (const auto timer = weak.lock()) { timer->cancel(); }
+      }
+   }
    for (const auto& connection : active) {
-      asio::post(connection->strand, [connection] { connection->fail_all(); });
+      const auto work = std::make_shared<listener_callback>(self.lock(), connection);
+      try {
+         if (connection->test_failpoint) {
+            static_cast<void>(connection->test_failpoint("listener_before_cancel_dispatch"));
+         }
+         asio::post(connection->strand, [work] {
+            if (work->connection->test_failpoint) {
+               static_cast<void>(work->connection->test_failpoint("listener_cancel_before_completion"));
+            }
+            work->connection->fail_all();
+         });
+      } catch (...) {
+         report_callback_failure(std::current_exception());
+         throw;
+      }
    }
 }
 
@@ -427,6 +585,9 @@ boost::asio::awaitable<void> engine_listener::impl::handle_packet(std::vector<st
 [[nodiscard]] std::shared_ptr<engine_connection::impl>
 engine_listener::impl::create_server_connection(const ngtcp2_pkt_hd& hd, const initial_token_validation& token,
                                                 const forge::net::transport::datagram_io::received& route) {
+   if (shutdown_started) {
+      throw_engine(engine_error_kind::connection_closed, "QUIC listener shutdown admission is closed");
+   }
    if (!token.accepted()) {
       throw_engine(engine_error_kind::internal_error, "cannot create QUIC server connection without token validation");
    }
@@ -469,10 +630,24 @@ engine_listener::impl::create_server_connection(const ngtcp2_pkt_hd& hd, const i
       if (!listener) {
          return;
       }
-      const auto had_connection_ids = listener->release_connection_slot(closed_connection.get());
-      asio::post(listener->strand, [listener, closed_connection = std::move(closed_connection), had_connection_ids] {
-         listener->cleanup_connection(closed_connection, had_connection_ids);
-      });
+      auto work = std::shared_ptr<listener_callback>{};
+      try {
+         // Reserve callback ownership before removing the owner from CID indexes.
+         work = std::make_shared<listener_callback>(listener, std::move(closed_connection));
+         const auto had_connection_ids = listener->release_connection_slot(work->connection.get());
+         if (work->connection->test_failpoint) {
+            static_cast<void>(work->connection->test_failpoint("listener_before_cleanup_dispatch"));
+         }
+         asio::post(listener->strand, [work, had_connection_ids] {
+            if (work->connection->test_failpoint) {
+               static_cast<void>(work->connection->test_failpoint("listener_cleanup_before_completion"));
+            }
+            work->listener->cleanup_connection(work->connection, had_connection_ids);
+         });
+      } catch (...) {
+         listener->report_callback_failure(std::current_exception());
+         throw;
+      }
    };
    connection->local_connection_id_issued_hook =
        [listener_weak, connection_weak = std::weak_ptr<engine_connection::impl>{connection}](const ngtcp2_cid& cid) {
@@ -519,7 +694,10 @@ engine_listener::impl::create_server_connection(const ngtcp2_pkt_hd& hd, const i
       if (!listener || !connection) {
          return;
       }
-      asio::post(listener->strand, [listener, connection] {
+      const auto work = std::make_shared<listener_callback>(listener, connection);
+      asio::post(listener->strand, [work] {
+         const auto& listener = work->listener;
+         const auto& connection = work->connection;
          if (listener->stopped) {
             return;
          }

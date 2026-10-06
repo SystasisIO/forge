@@ -36,6 +36,9 @@ boost::asio::awaitable<std::shared_ptr<engine_connection>> engine_listener::asyn
    co_return co_await asio::co_spawn(
        state->strand,
        [state]() -> asio::awaitable<std::shared_ptr<engine_connection>> {
+          if (state->shutdown_started) {
+             throw_engine(engine_error_kind::connection_closed, "QUIC listener shutdown admission is closed");
+          }
           ++state->active_operations;
           const auto finish = [state](engine_listener::impl*) noexcept { state->finish_operation(); };
           auto guard = std::unique_ptr<engine_listener::impl, decltype(finish)>{state.get(), finish};
@@ -92,7 +95,7 @@ asio::awaitable<std::size_t> engine_listener::async_punch(engine_endpoint local,
        state->strand,
        [state, local_endpoint, remote_endpoint, timeout, max_packets,
         lifetime = std::move(lifetime)]() mutable -> asio::awaitable<std::size_t> {
-          if (state->stop_requested.load(std::memory_order_acquire)) {
+          if (state->shutdown_started || state->stop_requested.load(std::memory_order_acquire)) {
              throw_engine(engine_error_kind::connection_closed, "QUIC punch source listener is closed");
           }
           if (state->active_punches >= state->options.limits.max_connections) {
@@ -163,87 +166,7 @@ boost::asio::awaitable<void> engine_listener::async_stop() {
    }
    auto state = impl_;
    co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
-   const auto shutdown_action = co_await asio::co_spawn(
-       state->strand,
-       [state]() -> asio::awaitable<engine_listener::impl::shutdown_action> { co_return state->begin_shutdown(); },
-       asio::use_awaitable);
-   if (shutdown_action == engine_listener::impl::shutdown_action::done) {
-      if (auto error = state->shutdown_failure()) {
-         std::rethrow_exception(error);
-      }
-      co_return;
-   }
-   if (shutdown_action == engine_listener::impl::shutdown_action::wait) {
-      co_await asio::co_spawn(state->strand, state->wait_shutdown_complete(), asio::use_awaitable);
-      if (auto error = state->shutdown_failure()) {
-         std::rethrow_exception(error);
-      }
-      co_return;
-   }
-   auto shutdown_error = std::exception_ptr{};
-   const auto remember_shutdown_error = [&] {
-      if (!shutdown_error) {
-         shutdown_error = std::current_exception();
-      }
-   };
-   auto connections = std::vector<std::shared_ptr<engine_connection::impl>>{};
-   try {
-      connections = co_await asio::co_spawn(
-          state->strand,
-          [state]() -> asio::awaitable<std::vector<std::shared_ptr<engine_connection::impl>>> {
-             auto connections = state->connections();
-             state->stop();
-             co_await state->wait_operations_idle();
-             for (auto& candidate : state->connections()) {
-                if (std::ranges::none_of(connections,
-                                         [&](const auto& current) { return current.get() == candidate.get(); })) {
-                   connections.push_back(std::move(candidate));
-                }
-             }
-             co_return connections;
-          },
-          asio::use_awaitable);
-   } catch (...) {
-      remember_shutdown_error();
-   }
-   for (const auto& connection : connections) {
-      try {
-         co_await asio::co_spawn(
-             connection->strand,
-             [connection]() -> asio::awaitable<void> {
-                connection->fail_all();
-                co_await connection->wait_background_idle();
-                connection->handshake_completed_hook = {};
-                connection->closed_hook = {};
-                connection->local_connection_id_issued_hook = {};
-                connection->local_connection_id_retired_hook = {};
-             },
-             asio::use_awaitable);
-      } catch (...) {
-         remember_shutdown_error();
-      }
-   }
-   try {
-      co_await asio::co_spawn(
-          state->strand,
-          [state]() -> asio::awaitable<void> {
-             state->clear_connection_registry();
-             co_return;
-          },
-          asio::use_awaitable);
-   } catch (...) {
-      remember_shutdown_error();
-   }
-   co_await asio::co_spawn(
-       state->strand,
-       [state, shutdown_error]() -> asio::awaitable<void> {
-          state->finish_shutdown(shutdown_error);
-          co_return;
-       },
-       asio::use_awaitable);
-   if (shutdown_error) {
-      std::rethrow_exception(shutdown_error);
-   }
+   co_await asio::co_spawn(state->strand, state->async_shutdown(), asio::use_awaitable);
 }
 
 } // namespace forge::net::quic::detail

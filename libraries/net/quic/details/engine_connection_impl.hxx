@@ -77,6 +77,7 @@ struct engine_connection::impl {
    bool close_completion_pending = false;
    bool close_work_active = false;
    std::exception_ptr close_error;
+   std::function<void()> shutdown_completed_hook;
    std::atomic_bool cancellation_requested{false};
    std::atomic_bool owner_released{false};
    std::atomic<ngtcp2_tstamp> owner_released_at{0};
@@ -182,6 +183,8 @@ struct engine_connection::impl {
    }
 
    void complete_close(std::exception_ptr error = {}) noexcept;
+
+   void observe_shutdown(std::function<void()> completed);
 
    boost::asio::awaitable<void> wait_close_cleanup();
 

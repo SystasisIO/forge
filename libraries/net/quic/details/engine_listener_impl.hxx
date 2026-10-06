@@ -1,6 +1,7 @@
 #pragma once
 
 #include "quic_engine_support.hxx"
+#include "listener_shutdown.hxx"
 
 namespace forge::net::quic::detail {
 struct engine_listener::impl {
@@ -22,8 +23,8 @@ struct engine_listener::impl {
    std::string pending_accept_failure_text;
    std::weak_ptr<impl> self;
    std::vector<std::weak_ptr<asio::steady_timer>> operation_waiters;
+   std::shared_ptr<listener_shutdown> shutdown_state;
    mutable std::mutex shutdown_mutex;
-   std::vector<std::shared_ptr<asio::steady_timer>> shutdown_waiters;
    std::exception_ptr shutdown_error;
    bool stopped = false;
    std::atomic_bool stop_requested{false};
@@ -33,7 +34,8 @@ struct engine_listener::impl {
    bool receive_started = false;
    bool shutdown_started = false;
    bool shutdown_complete = false;
-   std::size_t active_operations = 0;
+   std::atomic_size_t active_operations{0};
+   std::atomic_size_t active_callbacks{0};
 
    enum class shutdown_action : std::uint8_t {
       run,
@@ -45,19 +47,35 @@ struct engine_listener::impl {
 
    void finish_operation() noexcept;
 
+   void begin_callback() noexcept;
+
+   void finish_callback() noexcept;
+
+   void update_shutdown_operations() noexcept;
+
+   void update_shutdown_operations_locked() noexcept;
+
+   void report_callback_failure(std::exception_ptr error) noexcept;
+
    boost::asio::awaitable<void> wait_operations_idle();
 
-   [[nodiscard]] shutdown_action begin_shutdown();
+   [[nodiscard]] shutdown_action begin_shutdown(std::vector<std::shared_ptr<engine_connection::impl>>& prepared);
 
    [[nodiscard]] std::exception_ptr shutdown_failure() const;
 
-   boost::asio::awaitable<void> wait_shutdown_complete();
+   boost::asio::awaitable<void> async_shutdown();
+
+   boost::asio::awaitable<void> prepare_shutdown(
+       std::shared_ptr<listener_shutdown> completion,
+       const std::vector<std::shared_ptr<engine_connection::impl>>& prepared);
 
    void finish_shutdown(std::exception_ptr error = {}) noexcept;
 
    void clear_connection_registry();
 
    void stop();
+
+   void stop(std::span<const std::shared_ptr<engine_connection::impl>> prepared);
 
    void start();
 

@@ -50,7 +50,7 @@ engine_connector::async_connect_owned(std::shared_ptr<impl> owner, engine_endpoi
           remote_address.is_v4() != owner->source_endpoint->address().is_v4()) {
          throw_engine(engine_error_kind::invalid_endpoint, "coordinated QUIC requires a compatible literal remote");
       }
-      if (source->stop_requested.load(std::memory_order_acquire) || source->stopped) {
+      if (source->shutdown_started || source->stop_requested.load(std::memory_order_acquire) || source->stopped) {
          throw_engine(engine_error_kind::connection_closed, "QUIC source listener is closed");
       }
       if (source->connection_count() + source->pending_dials >= source->options.limits.max_connections) {
@@ -325,7 +325,7 @@ engine_connector::async_connect_owned(std::shared_ptr<impl> owner, engine_endpoi
                 co_await asio::co_spawn(
                     source->strand,
                     [source, connection_impl, scid, &source_pending]() -> asio::awaitable<void> {
-                       if (source->stop_requested.load(std::memory_order_acquire)) {
+                       if (source->shutdown_started || source->stop_requested.load(std::memory_order_acquire)) {
                           throw_engine(engine_error_kind::connection_closed, "QUIC source listener closed during dial");
                        }
                        const auto weak_source = std::weak_ptr<engine_listener::impl>{source};
