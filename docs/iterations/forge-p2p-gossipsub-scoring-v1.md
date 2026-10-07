@@ -119,6 +119,21 @@ Successful traffic, prepare acknowledgements and joined workers do not promote
 an unavailable typed native cause to PASS. See the donor note for the exact
 boundary; canonical acceptance and merge remain pending while this gate is open.
 
+### Shutdown Evidence Repairs
+
+The fixture publishes all donor stop commands before awaiting any donor. Forge
+remains alive until every donor has exited successfully, drained native owners
+and supplied an identity-bound shutdown receipt after the common Prepare barrier.
+Failure cleanup still stops all processes, but cannot create acceptance evidence.
+
+Go QUIC validation distinguishes a failed repeated Close from its independently
+finalized successful Reset. An empty, late-born unselected stream may retain a
+sealed AppClosed0 error only with its actual live parent baseline and successful
+full disposal after each failed native return. Neither path invents a stream
+baseline, rewrites raw errors nor exports RPC, framing or scoring authority.
+Source-only review and replay of saved receipts do not replace a fresh canonical
+run; the unpatched Rust cause observation gap remains a separate open gate.
+
 PR12 retains IDONTWANT, v1.3 extensions and opt-in Partial Messages. Stage 7
 retains official plugin configuration/facets; Stage 8 retains production/hostile
 soak proof; Stage 9 retains P2P WebSocket. UPnP remains deferred. No project

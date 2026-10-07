@@ -145,6 +145,16 @@ class PubSubCaseTests(unittest.TestCase):
                     terminal["native_close"] = {"live_muxers": 0, "live_streams": 0, "connections": [
                         {"connection_id": "synthetic-native-" + role, "dropped": True, "close_returned": True}]}
                     terminal["task_join"] = {"fixture_owned_tasks_joined": True, "overflow": False, "errors": []}
+                    fields = {"kind": "shutdown_requested", "source": "rust.fixture.native_host_close", "listeners": 1}
+                elif owner.ready["implementation"] == "go":
+                    terminal.update(host_close_returned=True, active_stream_handlers_and_io=0,
+                                    active_fixture_workers=0, active_callbacks=0)
+                    fields = {"kind": "shutdown", "source": "go.fixture.owned_context_cancel_and_drain",
+                              "context_cancelled": True, "joined": True, "host_close_returned": True,
+                              "active_stream_handlers_and_io": 0, "active_fixture_workers": 0}
+                if owner.ready["implementation"] in {"rust", "go"}:
+                    sequence = len(terminal["events"]) + 1
+                    terminal["events"].append({**fields, "sequence": sequence, "mono_ns": sequence})
                 if finalize is not None:
                     finalize(role, terminal)
                 files["result"].write_text(json.dumps(terminal))
@@ -175,8 +185,9 @@ class PubSubCaseTests(unittest.TestCase):
                 self.assertEqual(snapshot["pid"], actors[row["actor"]][0].process.pid)
             _stop_prepared(actors, barrier)
             self.assertEqual(stops, ["offender", "replacement", "sink", "victim"])
-            self.assertEqual([row["kind"] for row in barrier["operations"]], ["prepare_ack"] * 4 + ["stop_requested"] * 4)
-            self.assertEqual([row["actor"] for row in barrier["operations"][4:]], stops)
+            self.assertEqual([row["kind"] for row in barrier["operations"]],
+                             ["prepare_ack"] * 4 + ["stop_requested"] * 3 + ["donor_joined"] * 3 + ["stop_requested"])
+            self.assertEqual([row["actor"] for row in barrier["operations"] if row["kind"] == "stop_requested"], stops)
             for role in ("offender", "replacement", "sink"):
                 owner = actors[role][0]
                 self.assertEqual(owner.wait_observations, [(tuple(stops[:3]), owner.stop_budget.seconds)])
@@ -185,20 +196,48 @@ class PubSubCaseTests(unittest.TestCase):
                 self.assertTrue(owner.outputs[0]["exists"])
             self.assertEqual(actors["victim"][0].wait_observations, [])
 
-    def test_rust_victim_is_joined_first_and_non_rust_cases_keep_original_order(self):
-        for rust_roles in (("victim",), ()):
-            with self.subTest(rust_roles=rust_roles), tempfile.TemporaryDirectory() as root:
-                implementations = {role: "rust" if role in rust_roles else "forge" if role == "victim" else "go"
+    def test_all_go_and_rust_stops_precede_any_wait_and_actual_joins_precede_forge_stop(self):
+        configurations = ({"victim": "go"}, {"victim": "rust"},
+                          {"offender": "go", "replacement": "go", "sink": "go"},
+                          {"victim": "rust", "offender": "go"}, {})
+        for configuration in configurations:
+            with self.subTest(configuration=configuration), tempfile.TemporaryDirectory() as root:
+                implementations = {role: configuration.get(role, "forge")
                                    for role in ("victim", "offender", "replacement", "sink")}
                 actors, documents, stops = self.shutdown_actors(root, implementations=implementations)
+                donors = tuple(role for role in actors if implementations[role] != "forge")
+                forge = tuple(role for role in actors if implementations[role] == "forge")
+                for role in forge:
+                    owner = actors[role][0]
+                    publish = owner.request_stop
+                    def forge_stop(publish=publish):
+                        for donor in donors:
+                            candidate = actors[donor][0]
+                            self.assertTrue(candidate.closed)
+                            self.assertEqual(candidate.process.poll(), 0)
+                            self.assertEqual(candidate.terminal_status, {"exit_code": 0, "termination": "graceful"})
+                        publish()
+                    owner.request_stop = forge_stop
                 with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline: documents[owner.ready["actor"]]):
                     barrier = _prepare_all(actors, {role: 1 for role in actors}, "a" * 32, 10)
                 _stop_prepared(actors, barrier)
-                self.assertEqual(stops, list(actors))
-                self.assertEqual([row["actor"] for row in barrier["operations"][4:]], stops)
+                self.assertEqual(stops, list(donors + forge))
+                self.assertEqual([row["actor"] for row in barrier["operations"] if row["kind"] == "stop_requested"], stops)
+                self.assertEqual([row["actor"] for row in barrier["operations"] if row["kind"] == "donor_joined"], list(donors))
+                self.assertEqual([row["kind"] for row in barrier["operations"]], ["prepare_ack"] * 4
+                                 + ["stop_requested"] * len(donors) + ["donor_joined"] * len(donors)
+                                 + ["stop_requested"] * len(forge))
+                for row in barrier["operations"]:
+                    if row["kind"] == "donor_joined":
+                        owner, files = actors[row["actor"]]
+                        raw = json.loads(files["result"].read_text())
+                        event = raw["events"][row["shutdown_event_sequence"] - 1]
+                        self.assertEqual(event["kind"], "shutdown" if implementations[row["actor"]] == "go" else "shutdown_requested")
+                        self.assertEqual((row["pid"], row["case_token"], row["local_peer_id"]),
+                                         (owner.process.pid, owner.ready["case_token"], owner.ready["peer_id"]))
                 for role, (owner, _) in actors.items():
                     self.assertEqual(owner.wait_observations,
-                                     [(rust_roles, owner.stop_budget.seconds)] if role in rust_roles else [])
+                                     [(donors, owner.stop_budget.seconds)] if role in donors else [])
                     self.assertEqual(owner.stop_budget, StopBudget(8, 0, 2))
 
     def test_invalid_rust_final_never_releases_normal_non_rust_stop(self):
@@ -263,58 +302,111 @@ class PubSubCaseTests(unittest.TestCase):
                 self.assertEqual(actors["victim"][0].wait_observations, [])
                 self.assertFalse(actors["victim"][1]["stop"].exists())
 
-    def test_failed_rust_join_keeps_harness_error_and_finally_cleans_every_owner(self):
-        with tempfile.TemporaryDirectory() as root:
-            def fail_join(role, raw):
-                if role == "offender":
-                    raw["joined"] = False
-            actors, documents, stops = self.shutdown_actors(root, finalize=fail_join)
-            def spawn(argv, log, stop_file, attempt, *, stop_budget):
-                role = argv[argv.index("--actor") + 1]
-                owner, files = actors[role]
-                for name in ("ready", "result", "control", "stop"):
-                    files[name] = Path(argv[argv.index("--" + name + "-file") + 1])
-                owner.command, owner.log_file, owner.stop_file = argv, log, stop_file
-                self.assertEqual(owner.stop_budget, stop_budget)
-                files["ready"].write_text(json.dumps(owner.ready))
-                files["result"].write_text(json.dumps(documents[role]))
-                current_scope().processes.append(owner)
-                return owner
-            def wait(owner, path, predicate, deadline):
-                role = owner.ready["actor"]
-                if path == actors[role][1]["ready"]:
-                    self.assertTrue(predicate(owner.ready))
-                    return owner.ready
-                value = documents[role]
-                control = actors[role][1]["control"]
-                if control.exists():
-                    command = json.loads(control.read_text().splitlines()[-1])
-                    if command["kind"] == "prepare_shutdown":
-                        for event in value["events"]:
-                            event["command_sequence"] = command["sequence"]
-                        actors[role][1]["result"].write_text(json.dumps(value))
-                        self.assertTrue(predicate(value))
-                return value
-            spec = next(case for case in case_specs() if case.source == "rust" and case.destination == "forge"
-                        and case.version == "1.1" and case.profile == "native_quic")
-            with patch("pubsub_cases.secrets.token_hex", return_value="a" * 32), \
-                    patch("pubsub_cases.spawn_owned", side_effect=spawn), \
-                    patch("pubsub_cases._await", side_effect=wait), \
-                    patch("pubsub_cases.validate_case") as acceptance:
-                artifact = run_case(spec, {"forge": "synthetic-forge", "rust": "synthetic-rust"}, Path(root) / "cases")
-            acceptance.assert_not_called()
-            self.assertEqual(artifact["status"], "HARNESS_ERROR")
-            self.assertTrue(any("unjoined" in error for error in artifact["errors"]))
-            self.assertNotIn("evidence", artifact)
-            self.assertEqual([row["actor"] for row in artifact["shutdown_barrier"]["operations"][4:]],
-                             ["offender", "replacement", "sink"])
-            self.assertEqual(stops, ["offender", "replacement", "sink", "victim"])
-            self.assertIsNone(current_scope())
-            for role, (owner, files) in actors.items():
-                self.assertTrue(files["stop"].exists())
-                self.assertTrue(owner.closed)
-                self.assertEqual(len(owner.wait_observations), 1)
-                self.assertEqual(artifact["processes"][role]["returncode"], 0)
+    def test_invalid_or_delayed_go_join_never_releases_normal_forge_stop(self):
+        failures = ("host_close", "io", "workers", "callbacks", "raw_error", "shutdown_missing", "shutdown_failed",
+                    "delayed_join", "timeout", "nonzero", "forced_exit", "last_donor_failed")
+        for failure in failures:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
+                failed_role = "sink" if failure == "last_donor_failed" else "offender"
+                def finalize(role, raw):
+                    if role != failed_role:
+                        return
+                    if failure == "host_close":
+                        raw["host_close_returned"] = False
+                    elif failure in {"io", "workers", "callbacks"}:
+                        raw[{"io": "active_stream_handlers_and_io", "workers": "active_fixture_workers",
+                             "callbacks": "active_callbacks"}[failure]] = 1
+                    elif failure in {"raw_error", "last_donor_failed"}:
+                        raw["error"] = "actual native error"
+                    elif failure == "shutdown_missing":
+                        raw["events"].pop()
+                    elif failure == "shutdown_failed":
+                        raw["events"][-1]["joined"] = False
+                implementations = {role: "forge" if role == "victim" else "go"
+                                   for role in ("victim", "offender", "replacement", "sink")}
+                exits = {role: 2 if failure == "nonzero" and role == failed_role else 0 for role in implementations}
+                actors, documents, stops = self.shutdown_actors(root, implementations=implementations,
+                                                               finalize=finalize, exit_codes=exits)
+                owner = actors[failed_role][0]
+                if failure == "delayed_join":
+                    owner.close = lambda: []
+                elif failure == "timeout":
+                    def timed_out():
+                        raise TimeoutError("actual donor close did not return within its existing budget")
+                    owner.close = timed_out
+                elif failure == "forced_exit":
+                    close = owner.close
+                    def forced():
+                        errors = close()
+                        owner.terminal_status["termination"] = "terminated"
+                        return errors
+                    owner.close = forced
+                with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline: documents[owner.ready["actor"]]):
+                    barrier = _prepare_all(actors, {role: 1 for role in actors}, "a" * 32, 10)
+                with self.assertRaises((ValueError, RuntimeError, TimeoutError)):
+                    _stop_prepared(actors, barrier)
+                self.assertEqual(stops, ["offender", "replacement", "sink"])
+                joined = [row["actor"] for row in barrier["operations"] if row["kind"] == "donor_joined"]
+                self.assertEqual(joined, ["offender", "replacement"] if failure == "last_donor_failed" else [])
+                self.assertEqual(actors["victim"][0].wait_observations, [])
+                self.assertFalse(actors["victim"][1]["stop"].exists())
+
+    def test_failed_donor_join_keeps_harness_error_and_finally_cleans_every_owner(self):
+        for implementation in ("go", "rust"):
+            with self.subTest(implementation=implementation), tempfile.TemporaryDirectory() as root:
+                def fail_join(role, raw):
+                    if role == "offender":
+                        raw["joined"] = False
+                implementations = {role: "forge" if role == "victim" else implementation
+                                   for role in ("victim", "offender", "replacement", "sink")}
+                actors, documents, stops = self.shutdown_actors(root, implementations=implementations, finalize=fail_join)
+                def spawn(argv, log, stop_file, attempt, *, stop_budget):
+                    role = argv[argv.index("--actor") + 1]
+                    owner, files = actors[role]
+                    for name in ("ready", "result", "control", "stop"):
+                        files[name] = Path(argv[argv.index("--" + name + "-file") + 1])
+                    owner.command, owner.log_file, owner.stop_file = argv, log, stop_file
+                    self.assertEqual(owner.stop_budget, stop_budget)
+                    files["ready"].write_text(json.dumps(owner.ready))
+                    files["result"].write_text(json.dumps(documents[role]))
+                    current_scope().processes.append(owner)
+                    return owner
+                def wait(owner, path, predicate, deadline):
+                    role = owner.ready["actor"]
+                    if path == actors[role][1]["ready"]:
+                        self.assertTrue(predicate(owner.ready))
+                        return owner.ready
+                    value = documents[role]
+                    control = actors[role][1]["control"]
+                    if control.exists():
+                        command = json.loads(control.read_text().splitlines()[-1])
+                        if command["kind"] == "prepare_shutdown":
+                            for event in value["events"]:
+                                event["command_sequence"] = command["sequence"]
+                            actors[role][1]["result"].write_text(json.dumps(value))
+                            self.assertTrue(predicate(value))
+                    return value
+                spec = next(case for case in case_specs() if case.source == implementation and case.destination == "forge"
+                            and case.version == "1.1" and case.profile == "native_quic")
+                with patch("pubsub_cases.secrets.token_hex", return_value="a" * 32), \
+                        patch("pubsub_cases.spawn_owned", side_effect=spawn), \
+                        patch("pubsub_cases._await", side_effect=wait), \
+                        patch("pubsub_cases.validate_case") as acceptance:
+                    artifact = run_case(spec, {"forge": "synthetic-forge", implementation: "synthetic-" + implementation},
+                                        Path(root) / "cases")
+                acceptance.assert_not_called()
+                self.assertEqual(artifact["status"], "HARNESS_ERROR")
+                self.assertTrue(any("unjoined" in error for error in artifact["errors"]))
+                self.assertNotIn("evidence", artifact)
+                self.assertEqual([row["actor"] for row in artifact["shutdown_barrier"]["operations"][4:]],
+                                 ["offender", "replacement", "sink"])
+                self.assertEqual(stops, ["offender", "replacement", "sink", "victim"])
+                self.assertIsNone(current_scope())
+                for role, (owner, files) in actors.items():
+                    self.assertTrue(files["stop"].exists())
+                    self.assertTrue(owner.closed)
+                    self.assertEqual(len(owner.wait_observations), 1)
+                    self.assertEqual(artifact["processes"][role]["returncode"], 0)
 
     def test_changed_or_missing_prepare_capture_never_releases_stop(self):
         for missing in (False, True):

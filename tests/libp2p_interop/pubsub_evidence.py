@@ -185,7 +185,7 @@ def _framing_terminal(event, implementation):
     if implementation == "go" and event.get("source") in GO_QUIC_SOURCES.values():
         if kind == "native_quic_negotiation_io_return":
             # Only the cross-record validator can authorize deferring a sealed
-            # error through an exact pending cleanup chain, never this flag alone.
+            # error through a complete diagnostic/cleanup chain, never this flag alone.
             require(event.get("outcome") in {"ok", "error"}, "unselected native I/O has unknown outcome")
         if kind == "stream_io_terminal":
             require(type(event.get("pending_frame_bytes")) is int and event["pending_frame_bytes"] == 0,
@@ -622,28 +622,75 @@ def _terminal_owners(raw):
                 "Go native host/stream/worker/callback owners did not close/join")
 
 
+def _donor_shutdown_event(raw, events):
+    implementation = raw["implementation"]
+    require(implementation in {"go", "rust"}, "shutdown join has no actual donor owner")
+    kind = "shutdown" if implementation == "go" else "shutdown_requested"
+    matches = [event for event in events if event["kind"] == kind]
+    require(len(matches) == 1 and matches[0].get("source") in SOURCES[implementation][kind],
+            "missing/duplicate/foreign native donor shutdown event")
+    event = matches[0]
+    if implementation == "go":
+        require(set(event) == EVENT_FIELDS | {"context_cancelled", "joined", "host_close_returned",
+                                             "active_stream_handlers_and_io", "active_fixture_workers"}
+                and event["context_cancelled"] is True and event["joined"] is True
+                and event["host_close_returned"] is True
+                and all(type(event[key]) is int and event[key] == raw[key] == 0
+                        for key in ("active_stream_handlers_and_io", "active_fixture_workers")),
+                "Go shutdown event lacks actual host/IO/worker join")
+    else:
+        require(set(event) == EVENT_FIELDS | {"listeners"}
+                and type(event["listeners"]) is int and 0 <= event["listeners"] <= 16,
+                "invalid native Rust host-close request")
+    return event
+
+
 def _shutdown_barrier(artifact, actors, events):
     barrier = artifact.get("shutdown_barrier")
     require(isinstance(barrier, dict) and set(barrier) == {"source", "operations"}
             and barrier.get("source") == "python.fixture.all_actor_prepare_barrier",
             "missing causal shutdown barrier")
     operations = barrier.get("operations")
-    require(isinstance(operations, list) and len(operations) == 8 and all(isinstance(row, dict) for row in operations),
-            "missing all-actor prepare/stop operations")
     names = set(actors)
-    require({row.get("actor") for row in operations[:4]} == names
-            and {row.get("actor") for row in operations[4:]} == names, "missing/foreign shutdown actor")
+    donors = {actor for actor, raw in actors.items() if raw["implementation"] in {"go", "rust"}}
+    count = len(donors)
+    require(isinstance(operations, list) and len(operations) == 8 + count
+            and all(isinstance(row, dict) and row.get("actor") in names for row in operations),
+            "missing all-actor prepare/stop/donor-join operations")
+    require({row["actor"] for row in operations[:4]} == names
+            and {row["actor"] for row in operations[4:4 + count]} == donors
+            and {row["actor"] for row in operations[4 + count:4 + 2 * count]} == donors
+            and {row["actor"] for row in operations[4 + 2 * count:]} == names - donors,
+            "missing/duplicate/foreign shutdown actor phase")
     for index, row in enumerate(operations, 1):
         fields = {"sequence", "kind", "actor", "case_token", "local_peer_id"}
+        joined = 4 + count < index <= 4 + 2 * count
         if index <= 4:
             fields |= {"command_sequence", "ack_event_sequence", "evidence_file"}
+        elif joined:
+            fields |= {"pid", "shutdown_event_sequence"}
         require(set(row) == fields, "shutdown operation has missing fields or undeclared claims")
         require(isinstance(row, dict) and type(row.get("sequence")) is int and row["sequence"] == index
-                and row.get("kind") == ("prepare_ack" if index <= 4 else "stop_requested"),
-                "stop was requested before every prepare acknowledgement")
+                and row.get("kind") == ("prepare_ack" if index <= 4 else "donor_joined" if joined else "stop_requested"),
+                "stop/join violated all-actor prepare or donor-before-Forge order")
         actor, raw = row["actor"], actors[row["actor"]]
         require(row.get("local_peer_id") == raw["local_peer_id"] and row.get("case_token") == artifact["case_token"],
                 "runner shutdown operation has foreign identity/token")
+        if joined:
+            process = artifact["processes"][actor]
+            status = process.get("terminal_status")
+            require(type(row["pid"]) is int and row["pid"] > 0 and row["pid"] == process["pid"]
+                    and type(process.get("returncode")) is int and process["returncode"] == 0
+                    and process.get("forced_termination") is False
+                    and isinstance(status, dict) and set(status) == {"exit_code", "termination"}
+                    and type(status["exit_code"]) is int and status["exit_code"] == 0
+                    and status["termination"] == "graceful", "donor join differs from actual graceful process owner")
+            _terminal_owners(raw)
+            shutdown = _donor_shutdown_event(raw, events[actor])
+            ack_row = next(value for value in operations[:4] if value["actor"] == actor)
+            require(type(row["shutdown_event_sequence"]) is int
+                    and row["shutdown_event_sequence"] == shutdown["sequence"] > ack_row["ack_event_sequence"],
+                    "donor join lacks exact post-Prepare native shutdown reference")
         if index > 4:
             continue
         require(isinstance(row["evidence_file"], str) and 0 < len(row["evidence_file"]) <= 4096,
@@ -1085,7 +1132,7 @@ def _quic_negotiation_snapshot(events, event, *, is_io):
     return captured, touched
 
 
-def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False):
+def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=False):
     """Unselected native returns describe physical owners, never accepted PubSub outcomes."""
     connection, stream = _go_quic_stream(events, event, diagnostic=True)
     require(connection["local_peer_id"] == raw["local_peer_id"] and _quic_diagnostic_phase(event)
@@ -1102,7 +1149,7 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False):
         {"direction", "requested_bytes", "successful_prefix_bytes", "successful_prefix_valid"} if is_io else {"requested_reset_code"})
     if not is_context and event.get("operation") == "stream_close":
         extra |= {"native_close_error_classification", "send_context_receipt_sequence"}
-    if cleanup_error:
+    if cleanup_error or empty_error:
         extra |= {"error_code", "remote", "transport_error_type", "transport_error_code", "transport_error_remote",
                   "same_native_connection_context_cause"}
     require(set(event) == common | extra and type(event["started_order"]) is int and type(event["returned_order"]) is int
@@ -1127,8 +1174,8 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False):
         if event["protocol"]:
             _go_quic_owner(events, event, event["remote_peer_id"], event["protocol"], "quic", diagnostic=True)
         return 0, False
-    if cleanup_error:
-        require(is_io and event["operation"] == "stream_read" and event["direction"] == "read"
+    if cleanup_error or empty_error:
+        require(is_io and (empty_error or event["operation"] == "stream_read" and event["direction"] == "read")
                 and type(event["successful_prefix_bytes"]) is int and event["successful_prefix_bytes"] == 0
                 and event["outcome"] == "error" and event["error_type"] == "*network.ConnError"
                 and event["typed_cause"] == "libp2p_quic_application_error"
@@ -1138,9 +1185,9 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False):
                 and type(event["remote"]) is bool and event["transport_error_remote"] is event["remote"]
                 and event["same_native_connection_context_cause"] is True
                 and isinstance(event["error"], str) and 0 < len(event["error"]) <= 512,
-                "cleanup error is not a sealed direct same-parent AppClosed0 Read")
+                "diagnostic error is not a sealed direct same-parent AppClosed0 native return")
         parent = _quic_zero_context(event["connection_context"])
-        require(parent["remote"] is event["remote"], "cleanup Read borrowed a mismatched parent cause")
+        require(parent["remote"] is event["remote"], "diagnostic native return borrowed a mismatched parent cause")
     else:
         require(event["outcome"] == "ok" and event["error"] is None and event["error_type"] is None and event["typed_cause"] == "none",
                 "diagnostic native error remains fatal")
@@ -1172,6 +1219,15 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False):
                             ("started_order", "returned_order", "prepare_ack_sequence", "send_context", "connection_context"))
                     and event["native_close_error_classification"] == "none", "diagnostic Close borrowed/fabricated native context")
     captured, touched = _quic_negotiation_snapshot(events, event, is_io=is_io)
+    if empty_error:
+        ack = event["prepare_ack_sequence"]
+        require(event["protocol"] == "" and ack > 0
+                and stream["native_call_begin_prepare_ack_sequence"] == stream["prepare_ack_sequence"] == ack
+                and event["prepare_baseline_present"] is False and event["stream_prepare_baseline_present"] is False
+                and event["connection_prepare_baseline_present"] is True
+                and event["negotiation_snapshot"]["frame_sequences"] == [] and captured == 0 and touched is False,
+                "empty diagnostic error lacks actual late birth/ACK or contains negotiation bytes")
+        _quic_context(event["connection_context_at_prepare"], live=True)
     if event["protocol"]:
         _go_quic_owner(events, event, event["remote_peer_id"], event["protocol"], "quic", diagnostic=True)
     return captured, touched
@@ -1375,6 +1431,7 @@ def _go_quic_operations(raw, events, *, terminal):
     operations, pending, frames, finals, contexts, orders = {}, {}, {}, {}, {}, {}
     diagnostics, diagnostic_contexts, diagnostic_touched, captured_bytes = {}, {}, set(), 0
     cleanup_errors, cleanups, cleanup_frames, cleanup_finals = {}, {}, {}, {}
+    empty_errors = []
     for event in lower:
         if event.get("kind") == "native_quic_negotiation_cleanup_pending":
             _quic_cleanup_shape(events, event)
@@ -1460,7 +1517,10 @@ def _go_quic_operations(raw, events, *, terminal):
             cleanup_frames[key] = event
             continue
         if _quic_diagnostic_phase(event):
-            captured, touched = _go_quic_diagnostic(raw, events, event, cleanup_error=event["sequence"] in cleanup_errors)
+            empty_error = kind == "native_quic_negotiation_io_return" and event.get("outcome") == "error" \
+                and event["sequence"] not in cleanup_errors
+            captured, touched = _go_quic_diagnostic(raw, events, event,
+                                                   cleanup_error=event["sequence"] in cleanup_errors, empty_error=empty_error)
             captured_bytes += captured
             require(captured_bytes <= 4 * 1024 * 1024, "aggregate native diagnostic wire capture overflow")
             key = (event["native_connection_id"], event["native_stream_id"])
@@ -1472,6 +1532,8 @@ def _go_quic_operations(raw, events, *, terminal):
                         "ambiguous diagnostic/native operation counters")
                 seen.update((event["started_order"], event["returned_order"]))
                 diagnostics[event["sequence"]] = event
+                if empty_error:
+                    empty_errors.append(event)
             if touched:
                 diagnostic_touched.add(key)
             continue
@@ -1608,6 +1670,36 @@ def _go_quic_operations(raw, events, *, terminal):
                 require(event["native_close_error_classification"] == "none", "nil native Close has a fabricated cause")
         operations[event["sequence"]] = event
     joined = _quic_native_join(lower) if terminal or any(event["kind"] == "native_quic_join" for event in lower) else None
+    if empty_errors:
+        require(raw.get("finalized") is True and raw.get("joined") is True and joined is not None,
+                "empty diagnostic errors lack actual terminal native join")
+        _terminal_owners(raw)
+    for original in empty_errors:
+        parent = contexts.get(original["native_connection_id"])
+        require(parent is not None and parent["sequence"] < original["sequence"]
+                and parent["prepare_ack_sequence"] == original["prepare_ack_sequence"]
+                and _same_json(parent["context"], original["connection_context"])
+                and _same_json(parent["context_at_prepare"], original["connection_context_at_prepare"]),
+                "empty diagnostic error lacks its indexed sealed same-parent terminal context")
+        owned = [value for value in lower if value.get("native_connection_id") == original["native_connection_id"]
+                 and _same_json(value.get("native_stream_id"), original["native_stream_id"])]
+        require(all(value["kind"] in {"native_quic_stream", "native_quic_negotiation_io_return",
+                                      "native_stream_operation", "native_quic_send_context"}
+                    and value["protocol"] == "" for value in owned),
+                "empty diagnostic owner has negotiation/selection/RPC/framing authority")
+        calls = [value for value in owned if value["sequence"] in diagnostics]
+        require(all(value["negotiation_snapshot"]["frame_sequences"] == []
+                    and all(value["negotiation_snapshot"][side][field]["bytes"] == 0
+                            for side in ("read", "write") for field in ("partial_frame", "lazy_tail"))
+                    and (value["kind"] != "native_quic_negotiation_io_return" or value["successful_prefix_bytes"] == 0)
+                    for value in calls), "empty diagnostic owner has any native negotiation bytes")
+        require(all(value["sequence"] < joined["sequence"] for value in owned)
+                and any(value["kind"] == "native_stream_operation" and value["operation"] in {"stream_reset", "stream_close"}
+                        and value["outcome"] == "ok" and value["error"] is None
+                        and value["prepare_ack_sequence"] == original["prepare_ack_sequence"]
+                        and original["returned_order"] < value["started_order"] < value["returned_order"]
+                        and _same_json(value["connection_context"], original["connection_context"]) for value in calls),
+                "empty diagnostic error lacks actual successful full disposal after its native RETURN")
     require(not cleanup_finals or joined is not None and all(value["native_join_receipt_sequence"] == joined["sequence"]
                                                             for value in cleanup_finals.values()), "cleanup finalized without exact native join")
     for key, framing in cleanup_frames.items():
@@ -1628,6 +1720,7 @@ def _go_quic_operations(raw, events, *, terminal):
                 "lower framing lacks actual successful full owner disposal")
         require(not any(_quic_same_owner(value, framing) and value["sequence"] > framing["sequence"]
                         for value in list(operations.values()) + list(diagnostics.values())), "native operation occurred after lower framing joined")
+    repeat_close_links, validated_repeat_closes = [], {}
     for reference, original in pending.items():
         final = finals[reference]
         framing = _quic_ref(events, final["framing_receipt_sequence"], "native_quic_framing_finalized", final["sequence"])
@@ -1657,9 +1750,18 @@ def _go_quic_operations(raw, events, *, terminal):
             else:
                 boundary = original["returned_order"]
                 names = {"stream_close", "stream_close_read", "stream_reset", "stream_reset_with_error"}
-            require(not any(_quic_same_owner(value, original) and value["operation"] in names
-                            and owned["started_order"] < value["started_order"] < boundary for value in operations.values()),
-                    "owned lower terminal attempt was superseded before native return")
+            superseding = [value for value in operations.values() if _quic_same_owner(value, original)
+                           and value["operation"] in names and owned["started_order"] < value["started_order"] < boundary]
+            if superseding:
+                require(outcome == "owned_read_terminal_pending" and owned["operation"] == "stream_reset"
+                        and len(superseding) == 1 and superseding[0]["operation"] == "stream_close"
+                        and superseding[0]["outcome"] == "native_send_reset_close_pending"
+                        and superseding[0]["prepare_ack_sequence"] == ack_ref
+                        and owned["returned_order"] < superseding[0]["started_order"]
+                        < superseding[0]["returned_order"] < original["returned_order"],
+                        "owned lower terminal attempt was superseded before native return")
+                # Resolve only after the intervening Close's entire independent finalization passed.
+                repeat_close_links.append((owned["sequence"], superseding[0]["sequence"]))
         if outcome in {"owned_reset_pending", "peer_zero_reset_pending"} and original["direction"] == "write":
             require(original["same_send_context_cause"] is True, "send context cannot be borrowed for another Write cause")
             context = _quic_zero_context(original["send_context"], original["native_stream_id"])
@@ -1692,6 +1794,12 @@ def _go_quic_operations(raw, events, *, terminal):
             if connection_ref:
                 connection = _quic_ref(events, connection_ref, "native_quic_connection_context", framing["sequence"])
                 require(connection["native_connection_id"] == original["native_connection_id"], "foreign connection context")
+        if outcome == "native_send_reset_close_pending" and owned_ref is not None:
+            validated_repeat_closes[reference] = final
+    for reset_ref, close_ref in repeat_close_links:
+        require(close_ref in validated_repeat_closes
+                and validated_repeat_closes[close_ref]["owned_terminal_receipt_sequence"] == reset_ref,
+                "Read terminal lacks independently finalized RepeatClose on its exact owned Reset")
     selected_keys = {(event["native_connection_id"], event["native_stream_id"]) for event in lower
                      if event["kind"] == "protocol" and event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}}
     require(set(frames) == selected_keys, "missing actual lower QUIC framing/disposal join")

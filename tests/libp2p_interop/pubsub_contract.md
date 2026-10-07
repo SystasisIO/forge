@@ -55,8 +55,22 @@ router/stream observation continues unchanged while prepared.
 
 The runner observes all four exact acknowledgements, then rechecks every active
 result before requesting ANY normal stop. `shutdown_barrier.operations` records
-four identity/token/command/ack-event-bound `prepare_ack` observations followed
-by four actual `stop_requested` publications with contiguous runner sequences.
+four identity/token/command/ack-event-bound `prepare_ack` observations, then all
+Go/Rust `stop_requested` publications before waiting for any donor. Forge remains
+running until every donor actually exits zero gracefully with clean final raw,
+unchanged Prepare prefix, native host close and zero joined I/O/worker owners.
+Each verified donor adds one `donor_joined` row with exactly `sequence`, `kind`,
+`actor`, `case_token`, `local_peer_id`, actual `pid` and `shutdown_event_sequence`.
+That reference binds the same donor's unique post-Prepare native `shutdown`
+(Go) or `shutdown_requested` (Rust) event; it is not itself proof of process join.
+Indexed terminal raw, native owner counters and the actual process result must
+independently agree. Only after all donor joins are observed may the remaining
+Forge `stop_requested` rows be published. Contiguous coordinator sequences prove
+this order, never comparisons between different processes' monotonic clocks.
+Missing, duplicate, foreign or reordered stop/join receipts, delayed/failed
+donor joins and nonzero/forced exits cannot release normal Forge stop. The
+existing native stop budgets, error classification and donor behavior remain
+unchanged; donor-first scheduling does not guarantee a successful exchange.
 Missing, foreign, ambiguous or timed-out acknowledgement is `HARNESS_ERROR`.
 Failure cleanup may still stop processes, but cannot manufacture a successful
 barrier or acceptance. Final actor events must retain the exact ACK; preparation
@@ -287,6 +301,16 @@ The pinned latest START cannot be replaced by a newer attempt; native counters,
 not receipt publication order, establish this relation. Diagnostic strings do
 not classify any outcome.
 
+For `owned_read_terminal_pending` only, one intervening failed RepeatClose does
+not supersede a successful full Reset when both independent terminal finalizers
+reference that exact Reset on the same authenticated owner, protocol and Prepare
+ACK. Native counters must prove Reset RETURN < Close BEGIN < Close RETURN < Read
+RETURN, even if Reset/Close receipts publish after the Read receipt. The Close's
+complete native-send-context and finalization checks must pass before this link
+is accepted; `accepted=true` alone is not proof. Its send context annotates only
+the original Close error, never the Read cause or graceful shutdown. Any other
+superseding Reset/ResetWithError/terminal operation remains fatal.
+
 Every pending receipt requires exactly one immutable
 `native_quic_terminal_finalized` link. `native_quic_framing_finalized` separately
 requires complete negotiation, both decoders finalized with zero residue,
@@ -351,10 +375,31 @@ proposal/NA/ACK, selected token and bounded proposal count.
 
 These diagnostics are not accepted RPC, scoring, delivery, selected-terminal
 normalization or full selected PubSub disposal authority. Diagnostic native
-errors remain fatal unless the independently verified cleanup-only chain below
-exists. Sticky errors, failed/truncated captures, wrong/future ACKs and parser
+errors remain fatal unless the independently verified empty-owner chain or
+cleanup-only chain below exists. Sticky errors, failed/truncated captures, wrong/future ACKs and parser
 failures remain fatal. Historical lazy bytes never excuse missing ACK or final
 RPC residue on a selected stream.
+
+A late-born, wholly empty diagnostic owner has a separate terminal gate, not
+negotiation-aborted or selected PubSub authority. Its real native-call BEGIN ACK
+must be nonzero and equal its registration/operation/RETURN ACK, with an indexed
+live parent Prepare baseline and no invented stream baseline. Read/Write may
+retain `outcome=error` and `successful_prefix_bytes=0` only for direct
+`*network.ConnError` / `*qerr.ApplicationError` zero codes, matching boolean
+Remote fields and `same_native_connection_context_cause=true`. The original
+RETURN-sealed parent context must independently match the same authenticated
+connection's indexed terminal context; neither a prior stream cause nor send
+context can explain this I/O error. No diagnostic error is rewritten.
+The entire physical owner must have no frames, proposals, selection, partial
+bytes, lazy tail, successful prefix, RPC or framing-authority receipts. Each
+error RETURN must precede an actual same-owner Prepared full Reset/Close BEGIN
+and successful native RETURN with the same sealed parent. Native counters, not
+publication order, establish that disposal; all receipts must precede the
+actual zero-active-call native join and clean final host/worker join. Half,
+early, missing or failed disposal cannot qualify. This gate exports no RPC,
+score, delivery, selected protocol or framing receipt authority and does not
+infer why the parent closed. Opaque/wrapped/errno/nonzero errors and prior
+sticky failures remain fatal.
 
 ### Negotiation-Aborted Cleanup Only
 

@@ -9,7 +9,7 @@ import time
 
 from process_lifecycle import StopBudget, enter_scope, exit_scope, spawn_owned
 from pubsub_evidence import (
-    DIRECTIONS, EVENT_LIMIT, PROFILES, SOURCES, _events, _owner, _rpc_peer, _terminal_owners,
+    DIRECTIONS, EVENT_LIMIT, PROFILES, SOURCES, _donor_shutdown_event, _events, _owner, _rpc_peer, _terminal_owners,
     prepared_snapshot, require, shutdown_ack, validate_case,
 )
 from pubsub_wire import validate_rpc_receipt
@@ -208,23 +208,30 @@ def _stop_prepared(actors, barrier):
         operations.append({"sequence": len(operations) + 1, "kind": "stop_requested", "actor": role,
                            "case_token": owner.ready["case_token"], "local_peer_id": owner.ready["peer_id"]})
 
-    rust = [(role, owner, files) for role, (owner, files) in actors.items() if owner.ready["implementation"] == "rust"]
-    # Publish every Rust stop before waiting; peers remain alive until actual Rust close/join.
-    for role, owner, _ in rust:
+    donors = [(role, owner, files) for role, (owner, files) in actors.items()
+              if owner.ready["implementation"] in {"go", "rust"}]
+    # Publish every donor stop before waiting; Forge remains alive until all actual donor close/join.
+    for role, owner, _ in donors:
         stop(role, owner)
-    for role, owner, files in rust:
+    for role, owner, files in donors:
         errors = owner.close()
         terminal = owner.terminal_status
+        code = owner.process.poll()
         if errors or type(terminal.get("exit_code")) is not int or terminal["exit_code"] != 0 \
-                or terminal.get("termination") != "graceful":
-            raise RuntimeError(f"{role} Rust shutdown did not actually close/join successfully: {errors}")
+                or terminal.get("termination") != "graceful" or type(code) is not int or code != 0:
+            raise RuntimeError(f"{role} donor shutdown did not actually close/join successfully: {errors}")
         raw = _read(files["result"])
-        _events(raw, "rust", owner.ready["case_token"], role)
+        events = _events(raw, owner.ready["implementation"], owner.ready["case_token"], role)
         _terminal_owners(raw)
         row = next(row for row in operations[:4] if row["actor"] == role)
         prepared_snapshot(_read(Path(row["evidence_file"])), row, raw, owner.process.pid)
+        shutdown = _donor_shutdown_event(raw, events)
+        require(shutdown["sequence"] > row["ack_event_sequence"], "donor shutdown preceded actual preparation")
+        operations.append({"sequence": len(operations) + 1, "kind": "donor_joined", "actor": role,
+                           "case_token": owner.ready["case_token"], "local_peer_id": owner.ready["peer_id"],
+                           "pid": owner.process.pid, "shutdown_event_sequence": shutdown["sequence"]})
     for role, (owner, _) in actors.items():
-        if owner.ready["implementation"] != "rust":
+        if owner.ready["implementation"] == "forge":
             stop(role, owner)
 
 
