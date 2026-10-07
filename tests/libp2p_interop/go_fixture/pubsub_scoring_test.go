@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"math"
 	"net"
@@ -2309,6 +2312,188 @@ func TestPubsubScoringDrainRetainsResetErrorAndDoesNotInventJoin(t *testing.T) {
 	cancel()
 	if err := drain.stop(ctx); !errors.Is(err, failure) || !errors.Is(err, context.Canceled) || o.failure != failure || s.framingJoined() {
 		t.Fatal("drain lost native reset failure or claimed join", err)
+	}
+}
+
+func TestPubsubScoringWholeOwnerStopCancelsRootBeforeChildWithoutLiveRemoval(t *testing.T) {
+	// Bind the ordering/no-call regression to the actual deferred teardown,
+	// without introducing injectable lifecycle callbacks into the fixture.
+	source, err := parser.ParseFile(token.NewFileSet(), "pubsub_scoring.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var teardown *ast.BlockStmt
+	for _, declaration := range source.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "runPubsubScoringLive" {
+			continue
+		}
+		for _, statement := range function.Body.List {
+			deferred, ok := statement.(*ast.DeferStmt)
+			if !ok {
+				continue
+			}
+			closure, ok := deferred.Call.Fun.(*ast.FuncLit)
+			if ok {
+				if teardown != nil {
+					t.Fatal("ambiguous whole-owner teardown")
+				}
+				teardown = closure.Body
+			}
+		}
+	}
+	if teardown == nil || len(teardown.List) < 2 {
+		t.Fatal("missing actual whole-owner teardown")
+	}
+	for index, name := range []string{"cancel", "stopSubscriber"} {
+		statement, ok := teardown.List[index].(*ast.ExprStmt)
+		if !ok {
+			t.Fatal("context cancellation is not the first teardown action")
+		}
+		call, ok := statement.X.(*ast.CallExpr)
+		if !ok || len(call.Args) != 0 {
+			t.Fatal("unexpected context cancellation call")
+		}
+		callee, ok := call.Fun.(*ast.Ident)
+		if !ok || callee.Name != name {
+			t.Fatal("root/child context cancellation order changed")
+		}
+	}
+	ast.Inspect(teardown, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		owner, ok := selector.X.(*ast.Ident)
+		if ok && ((owner.Name == "sub" && selector.Sel.Name == "Cancel") ||
+			(owner.Name == "topic" && selector.Sel.Name == "Close")) {
+			t.Fatal("whole-owner teardown invokes live subscription/topic removal")
+		}
+		return true
+	})
+}
+
+func TestPubsubScoringWholeOwnerStopNativeFixtureJoinsWithoutLeave(t *testing.T) {
+	directory := t.TempDir()
+	args := map[string]string{"version": "1.1", "transport": "tcp", "actor": "sink", "case-token": strings.Repeat("a", 32)}
+	for _, name := range []string{"ready-file", "control-file", "result-file", "stop-file", "store-dir"} {
+		args[name] = filepath.Join(directory, name)
+	}
+	done := make(chan struct{})
+	var nativeErr error
+	go func() {
+		defer close(done)
+		nativeErr = runPubsubScoringLive(args)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		// A malformed control command releases the same owned cleanup on a
+		// failed test; it cannot fabricate a successful Prepare or Stop.
+		if err := os.WriteFile(args["control-file"], []byte("{}\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+		select {
+		case <-done:
+		case <-time.After(7 * time.Second):
+			panic("native fixture cleanup join budget exhausted")
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	waitFile := func(path string, matches func(map[string]any) bool) map[string]any {
+		t.Helper()
+		for {
+			data, err := os.ReadFile(path)
+			if err == nil {
+				var value map[string]any
+				if err := json.Unmarshal(data, &value); err != nil {
+					t.Fatal(err)
+				}
+				if matches(value) {
+					return value
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+				t.Fatal("native fixture exited before requested observation", nativeErr)
+			case <-ctx.Done():
+				t.Fatal("native fixture observation timed out")
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	ready := waitFile(args["ready-file"], func(value map[string]any) bool { return value["ready"] == true })
+	local, ok := ready["local_peer_id"].(string)
+	if !ok || ready["subscription_created"] != true {
+		t.Fatal("native subscription/identity was not created")
+	}
+	if _, err := peer.Decode(local); err != nil {
+		t.Fatal(err)
+	}
+	command, err := json.Marshal(pubsubScoringCommand{Sequence: 1, Kind: "prepare_shutdown", Actor: args["actor"],
+		Token: args["case-token"], Local: local})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(args["control-file"], append(command, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(args["result-file"], func(value map[string]any) bool {
+		events, _ := value["events"].([]any)
+		for _, item := range events {
+			event, _ := item.(map[string]any)
+			if event["kind"] == "command_done" && event["command_kind"] == "prepare_shutdown" &&
+				event["command_sequence"] == float64(1) && event["status"] == "ok" {
+				return true
+			}
+		}
+		return false
+	})
+	if err := os.WriteFile(args["stop-file"], nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+		if nativeErr != nil {
+			t.Fatal(nativeErr)
+		}
+	case <-ctx.Done():
+		t.Fatal("native whole-owner stop did not join")
+	}
+	result := waitFile(args["result-file"], func(value map[string]any) bool { return value["finalized"] == true })
+	if result["joined"] != true || result["host_close_returned"] != true || result["error"] != nil || result["overflow"] != false ||
+		result["active_fixture_workers"] != float64(0) || result["active_stream_handlers_and_io"] != float64(0) ||
+		result["active_callbacks"] != float64(0) || result["local_peer_id"] != local {
+		t.Fatal("native whole-owner stop lost joins/accounting", result)
+	}
+	joins, shutdowns := 0, 0
+	for _, item := range result["events"].([]any) {
+		event := item.(map[string]any)
+		switch event["kind"] {
+		case "join":
+			joins++
+		case "leave":
+			t.Fatal("whole-owner stop called the live unsubscribe path")
+		case "shutdown":
+			shutdowns++
+			if event["context_cancelled"] != true || event["joined"] != true || event["host_close_returned"] != true ||
+				event["active_stream_handlers_and_io"] != float64(0) || event["active_fixture_workers"] != float64(0) {
+				t.Fatal("shutdown did not record actual context/owner joins", event)
+			}
+		}
+	}
+	if joins != 1 || shutdowns != 1 {
+		t.Fatal("missing actual native subscription/shutdown", joins, shutdowns)
 	}
 }
 

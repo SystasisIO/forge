@@ -142,3 +142,17 @@ requires clean exact-head source/binary/donor provenance, indexed terminal
 snapshots, distinct owned processes and joined shutdown. This note does not
 declare the live gate passed. PR12 extensions and Stage 8 production soak are
 separate work.
+
+Go whole-owner teardown follows `pubsub.go`'s root-context termination, rather
+than live `Subscription.Cancel()`/`Topic.Close()` calls. Subscription cancellation
+can still select the live cancellation channel after context cancellation;
+topic close requires a live process loop. Neither belongs to disposal of the
+entire fixture owner. Host close, stream resets, callback/worker joins and sticky
+native failures remain required. The fixture does not claim a public join of
+Go's internal router goroutine, which the pinned donor does not expose.
+
+The focused native teardown regression uses the existing Asio gate to exercise
+both an already-queued acquire and stop before coroutine execution. It separately
+holds the tracking ticket until a sticky notification releases it. The prior
+timer-based test signaled readiness before registering its wait and could lose
+cancel; replacing that test is not evidence of a native node shutdown defect.

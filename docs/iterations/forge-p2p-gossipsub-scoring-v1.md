@@ -139,6 +139,15 @@ baseline, rewrites raw errors nor exports RPC, framing or scoring authority.
 Source-only review and replay of saved receipts do not replace a fresh canonical
 run; the original Rust observation limitation remains explicitly documented.
 
+Whole-owner Go teardown cancels the root context before its subscriber child and
+does not perform live subscription/topic removal, which could open another
+stream during simultaneous peer shutdown. The focused test binds this ordering
+to the actual defer and requires native host/worker/resource disposal. Any
+unjoined test owner exhausts a bounded failure budget and fails the process,
+rather than returning with an orphan background task. Native I/O failures are
+not reclassified. A new canonical run must prove the concurrent private-network
+cases; the focused peerless test alone cannot do so.
+
 PR12 retains IDONTWANT, v1.3 extensions and opt-in Partial Messages. Stage 7
 retains official plugin configuration/facets; Stage 8 retains production/hostile
 soak proof; Stage 9 retains P2P WebSocket. UPnP remains deferred. No project

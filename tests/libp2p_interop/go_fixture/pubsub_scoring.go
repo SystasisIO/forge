@@ -1580,15 +1580,10 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 	workerDone := make(chan struct{})
 	workerStarted := false
 	defer func() {
-		stopSubscriber()
-		if sub != nil {
-			sub.Cancel()
-		}
-		// Topic.Close requires the donor process loop to still be running.
-		if topic != nil && ctx.Err() == nil {
-			failure = errors.Join(failure, topic.Close())
-		}
 		cancel()
+		stopSubscriber()
+		// Whole-owner stop must not enqueue live unsubscribe/topic removal.
+		// Subscription.Cancel can still choose cancelCh after ctx.Done is ready.
 		joinCtx, stopJoin := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stopJoin()
 		joined := true
