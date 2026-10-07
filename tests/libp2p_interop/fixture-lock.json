@@ -54,7 +54,7 @@
     "go_fixture/upgrade_observer.go": "ffa29d1e46a7f684ea0de29e55461b200a8846205612a80c2bca1b77048b00ca",
     "go_fixture/upgrade_observer_test.go": "ae4564cff1a44c9954e2ced1dc007f36e8276c281a7796586618b0029bc73dfb",
     "rust_fixture/Cargo.lock": "ab7ec9ac8ef91c0339c6e0fd3b62d50b86ec858431c04c347e092cf9d0458fb5",
-    "rust_fixture/Cargo.toml": "a9e6d350b1283967e18535096c84f45887dfc47ee0c54afa99dde60ab6b129b7",
+    "rust_fixture/Cargo.toml": "58308190e9bbf9891d1ac9e8491890f43f8e3a9cd7d1a8328b15c59494b10382",
     "rust_fixture/application_observer.rs": "3ed1799d57cbb6d2e46e34c59669a9474418394e515e6a4d7306e4a2e9d4daa8",
     "rust_fixture/autonat.rs": "f03829c7f97f94eee625a90def197f12fb6a2f3016ea5c2810bd2d68c29d289b",
     "rust_fixture/autorelay.rs": "bae81b034542c164a27df7ed19cd26595422ac72b93d939d3e5d219a46980166",
@@ -66,8 +66,8 @@
     "rust_fixture/private_profile.rs": "00588553bc0bbc422188300d3d7c3f67349636e1d0450d7c3ef9e392cdd6f34e",
     "rust_fixture/provider.rs": "b1feb9223c6ccd2b8435de3b54f7660d8381217788e1dfd4f166f2bdaf7ab618",
     "rust_fixture/pubsub_scoring.rs": "58522fda956f83ae29f8cd7fd4f1df084de391605b0dffebd308e7037325065f",
-    "rust_fixture/pubsub_scoring/observer.rs": "46f7c6ffcf49a569c817d237a311536ee505d2b454e3775bc87133c4af2adab8",
-    "rust_fixture/pubsub_scoring/observer_tests.rs": "81f55a60e67a6a9634affa3e9aee28e4b4e64da1cfb9f5a7de6948878c8847a6",
+    "rust_fixture/pubsub_scoring/observer.rs": "b2fa24c189fc4976c721bdc791d0d4b88a8bf873d53b37932648f701d03abf39",
+    "rust_fixture/pubsub_scoring/observer_tests.rs": "05c3b978bfadd3d7183ddcf7a5df29ef3eb4c0d55222208ef01ca1c9519b18ac",
     "rust_fixture/pubsub_scoring/tests.rs": "9f70de68e0728748697b3287d5e208c56391ba100c5aff5d5001a01cc351dc78",
     "rust_fixture/pubsub_scoring/transport.rs": "aac8af53577107ebade5401c9e44ebe18b1cb3ddb94c9167804b57afb9d0dec0",
     "rust_fixture/pubsub_scoring/yamux_error.rs": "a9394a2f45de49f3bdff8f6135a612c7398a1f225fe38136a2dff02f9fa8c9e1",
@@ -77,7 +77,7 @@
     "rust_fixture/upgrade_observer.rs": "dbcc689b12958b775f73a0e639fb35476c3ba0b4c0a5f883ac79fb18b21a067c"
   },
   "runtime_artifact_sources": {
-    "../CMakeLists.txt": "f039a53a7a89735ef9d9a9b221942c13f2bab53cc0100b6b586148921ab1928c",
+    "../CMakeLists.txt": "54c1e68d5aa729d22266de4197887c9ba48a44e7d8bb839660ff0f058f421cf3",
     "autonat_acceptance.py": "5bca06fb7a97d81c823f8d42dabd671c67484f1585f4988b3473b4e406045ab3",
     "autonat_cases.py": "a7b58ae1b03359411cab68c627ca0602fe034a691a2e7fb9f9cc841fa2d4b96b",
     "autonat_evidence.py": "ee14c5984570b9e738e4f386214ec34428d01bb03ef1303917ef991b9f71c1d1",
@@ -86,9 +86,9 @@
     "autorelay_cases.py": "a199351a95f658d9f260f0ffe7b9b4712fd5690eac351733703a6168fbe3c0f9",
     "autorelay_evidence.py": "7673ddf648ea324c34942d0eed7221223f417331732cc8b77a0ada9e07dc6ebb",
     "autorelay_wire.py": "864ef19e15fed82071d1b988aba3350d25b05ef26d3cc164554427d4735a3b37",
-    "check_fixture_lock.py": "84a985cb7024c9d6efdebaa29ec88fd984b3f1cf77ca6bb8901f56742aa66170",
+    "check_fixture_lock.py": "8e1be0794be3c82ff4262bad6e76dfe001dab0f13393de1a178e3b42ae851b40",
     "check_p2p_feature_inventory.py": "817da14677ff2e9814fc2100fc01ab71c7109ce4f151a5410f2e8cfa0c0d36ee",
-    "check_stage6_acceptance.py": "a1371c97b7c99bb5442aaff94838e08a680eca13ecc01492be2e5770954cb2d9",
+    "check_stage6_acceptance.py": "b294e7b994054846a4b553384fdeca4f215bfe61242a7359dc80cdaf405e7d3d",
     "coordinated_acceptance.py": "278daf9587039ee065f05441796839ea0217a9529d685451b6cdcf1eb5901fa0",
     "coordinated_cases.py": "b63154688bc98b9b470cdedf57b1dfa422e32df8bdaac1e1338ce13ee6b34241",
     "coordinated_evidence.py": "e08e34c5056228d51fa3c6c02016e258a3438b86c07935bf15ad10d30e13e41e",
@@ -131,17 +131,19 @@
     "private_profile_cases.py": "f50c9444850d7681cb7ed2e59f583366c6e3f1ed0dea0073f92dad833019ad88",
     "private_profile_evidence.py": "7f85eb2a12cb635c9ac6610666fb381398785f2520774a975650734815b5c6eb",
     "process_lifecycle.py": "5eadfb3e092c78170df121caba30a58daa5a0c95703c9bd2a19c23ebb7995a8d",
-    "promote_stage6_acceptance.py": "11357e6f26b92f4d14ef95c007716daef6fc3d27be01d83cdab0c59162f2acb1",
+    "promote_stage6_acceptance.py": "e2d54648a4083e0ec48ec418e390890511f482a85fdfed3a30fd0aedc5a79678",
     "provenance.py": "9ae5c8ffa3d9dcd646c2a5c7148e79cd5086d60ecb156d81374fda2ca00609ec",
     "provider_evidence.py": "673d8caa86a01e0ffd90ad5149059dab9aba489d5af839794e03711f1deea660",
-    "pubsub_acceptance.py": "ed623d1e5a60fa6f75917cf558b64bbbc42a22f5867427ef29a8cc8ff59ae66f",
-    "pubsub_cases.py": "060862878fbe766491bb5a0987f378cc106b2b7f9fb6c744b6b7a85b4054f391",
-    "pubsub_evidence.py": "cc081a99e213dfe10642916674d0010a060609e9268ca2b16fa41f1e864d75ed",
+    "pubsub_acceptance.py": "4a2dd58f58b6ba72d78421fbf5deec1dbaed4fc328a23e18bde3e09742e70f25",
+    "pubsub_cases.py": "40c9f5030b7cb2096dab35bc134727e0d95fce0b3c41c9baf67492c0c44a126a",
+    "pubsub_evidence.py": "30307e9e1c0d9fbf9587ca6c5de409157122f92e260577edd259ad4da10b512c",
     "pubsub_wire.py": "225836dce4d81d899b296caf20cda2509f47a749b5cc28629f9d8b8a301956dc",
-    "runner.py": "18cbc2f5d525460a876eab21e126d3aa7ee45382e7c5b33916d72127ae4989af",
+    "runner.py": "16d6fd2d91770de79791f72562aa2bd8a1bd310cbf2078f7d75b83081ad40d95",
     "rust_upgrade_evidence.py": "36d41934c3550d17d1ccd85413abda31146ec7dbd9ba85d310e64d25c7a09d4f",
     "stage6_evidence_contract.py": "a0b4ad1476518941b7b82922c26cc48adaa301dfb657239035e363a10f62f88d",
-    "upgrade_evidence.py": "37dd2b768a363152e54e3a9640ec3419c10c62e03051b6891df22128ffd47532"
+    "upgrade_evidence.py": "37dd2b768a363152e54e3a9640ec3419c10c62e03051b6891df22128ffd47532",
+    "pubsub_quic_proof.py": "f91185515c27a1ca9947786f4722d525ef0e7466d0b9c4f1ed5c3fb5872a13cf",
+    "rust_quic_observer.py": "1a2067946e40910719fcff91ff2617a49fb9d73e9e7c48a52d8a8061b68cd0d1"
   },
   "evidence_sources": {
     "donor_cases.json": "c8aeab2c5126bed10f3e046d67169e802bfda918e3d6be216895fa6ade2e54a8",
@@ -182,13 +184,15 @@
     "test_process_lifecycle.py": "00f7b9c21381a5eb64c581b6fed7d3d4851e7f59ff95c378fa7efb1dfac66071",
     "test_provenance.py": "202ef4fbb54cc71d97fa3b5d7adb0ed8e1c438a8d7e77e066012a5efbd5b9870",
     "test_provider_evidence.py": "3559b80ab71a858a54f8e93513c14400bec4be769a2384c051e85e8703baefae",
-    "test_pubsub_acceptance.py": "3993a49f126aa4303249b48a22bf10ac168156be956259ba345a0471bf091a26",
+    "test_pubsub_acceptance.py": "ef9de40840cecf86a5a361e09010d45af6b9ba1b73c086f4298594a9f895d7f9",
     "test_pubsub_cases.py": "6f8167b75d55492c2efb3ee0f55c75fa7d8d0f6860cb7adf80df9e9d09430875",
     "test_pubsub_evidence.py": "d4ba52cb8e85b1f799c68e4f9dbd73c8188b2d6959fdbf3117caf1e457600542",
     "test_pubsub_wire.py": "5e5965eb727c2e8f70601fe0e99236706c91a3adf8c9ff6e575278837488e98b",
     "test_relay_evidence.py": "e73779c3c84a417c80806fa6b9697c41fbda2a1a8a68e2d831ff6f00360fde0a",
     "test_rust_upgrade_evidence.py": "cff3ea00fac6561c182eeef9b4fbb90f5d543b3f4d7588a49e56b8c347e01e17",
-    "test_upgrade_evidence.py": "beed646e65c0e0c4b40a733a05f4f8a847b026fb5f033a152761023644ea671c"
+    "test_upgrade_evidence.py": "beed646e65c0e0c4b40a733a05f4f8a847b026fb5f033a152761023644ea671c",
+    "test_pubsub_quic_proof.py": "ab2d8fcdd3dca4d3a7efefa6d464d3c5de7c3a765434320e1ec52d416cb4b724",
+    "test_rust_quic_observer.py": "8141d98b1c575e36be6a3ae4e50959c6ceb18172417460e65ec394df52747f04"
   },
   "dependency_graphs": {
     "go": {
@@ -203,7 +207,7 @@
         "rust_fixture/Cargo.toml",
         "rust_fixture/Cargo.lock"
       ],
-      "sha256": "e1ca8ffffd2c0cec4446d6a0fff4c6654377957eb6658804925fc2e1e54da8bb"
+      "sha256": "80496dcb8fa73b1804abe90d3128b6a0129ad438a5f01c6158c544afe49e7d3b"
     }
   },
   "donors": [

@@ -106,6 +106,24 @@ permission to classify the wrapper or its text as normal. Locked Quinn
 `ApplicationClose` is not itself `StdError`. The fixture's direct Quinn dependency
 is exactly the already locked 0.11.11 with default features disabled.
 
+The maintainer-approved 2026-10-08 observation contract separates the four
+Rust QUIC cases into original-wire and instrumented-shutdown gates. An isolated
+copy of pinned Rust adds only a read-only `ConnectionError::inner()` accessor;
+the fixture enables `quic-cause-observer` only for its separate binary. Complete
+original/observed Git trees, the exact patch and all source/binary hashes must
+validate. No native result, polling, close or router behavior changes.
+
+Original traffic is independently checked using four active indexed Prepare
+snapshots and their unchanged prefixes in the original terminal snapshots. It
+requires the same authenticated RPC, score, repair and delivery checks, not
+merely a Prepare ACK. Original errors and exit1 remain diagnostic artifacts;
+the verdict never claims original shutdown success. The companion runs the
+entire scenario with independent tokens, identities and PIDs, verifies its own
+current typed errors and meets all existing successful shutdown obligations.
+Canonical promotion requires both gates; neither can borrow another run's
+cause, owner or receipt. No observer build is allowed for Go or TCP/private
+cases. Original donor repositories and canonical exports remain unmodified.
+
 Only PubSub TCP/PNET opts into `libp2p_yamux_public_into_io` before core's generic
 StreamMuxerBox boxing. A clone-local opt-in reuses the existing transport factory;
 all other fixtures and QUIC keep their original boxing. The passive upgrade

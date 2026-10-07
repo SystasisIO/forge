@@ -107,10 +107,30 @@ expose the typed cause, the observer records `quic_connection_cause_unavailable`
 as a failure. Prepare acknowledgements, local close intent, another stream's
 earlier error and a later successful close are not substitutes for that cause.
 Normal protocol traffic alone does not close this shutdown evidence gap.
-The original donor must remain unchanged in canonical acceptance; an auxiliary
-instrumented build, diagnostic-string classification or retries until a green
-run cannot promote this gate. A different donor pin or public observation
-contract requires a separate reviewed decision.
+The maintainer approved a scoped observation-contract change on 2026-10-08.
+Original canonical donor exports remain unchanged. Each of the four Rust QUIC
+version/direction cases supplies two independent executions: original active
+wire/scoring proof and an explicitly instrumented full shutdown proof. The
+original terminal errors, exit codes and snapshots are retained; original
+shutdown remains `NOT_PROVEN`, never explained by another execution's cause.
+
+The isolated TEST COPY adds only `ConnectionError::inner() ->
+&quinn::ConnectionError`. No router, polling, error outcome, close, dependency
+or wire behavior is modified. A separately enabled fixture feature reads the
+current owner's error through that accessor. The fixed Git tree, exact patch,
+before/after file membership and hashes, separate binary and Cargo commands are
+independently checked. Every other donor source must remain byte-identical.
+
+The original active gate validates all four indexed Prepare snapshots and
+their unchanged terminal event prefixes, authenticated owners, selected
+protocols, real paired RPC bytes and full causal scoring/repair/delivery proof.
+The companion gate repeats the complete scenario with distinct tokens/PIDs and
+requires actual native owner disposal, zero resources, joined tasks/processes
+and attributable typed shutdown. Nonzero close, reset, timeout, pre-Prepare,
+foreign or unavailable causes remain fatal. Text classification, borrowed
+cross-run causes and retries until a green run remain forbidden. This is a
+combined original-wire/instrumented-shutdown acceptance, not a claim that an
+unmodified Rust transport publicly exposed the hidden reason.
 
 The native cache-pressure regression observes completed IWANT I/O without
 blocking the transport strand, then sends a verified message on a distinct

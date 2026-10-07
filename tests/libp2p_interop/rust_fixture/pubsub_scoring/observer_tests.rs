@@ -281,6 +281,192 @@ fn normal_read_error() -> io::Error {
     )
 }
 
+#[tokio::test]
+async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
+    use futures::future::{Either, join, poll_fn, select};
+    use libp2p::{
+        Transport,
+        core::transport::{DialOpts, ListenerId, TransportEvent},
+        identity,
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let listener_key = identity::Keypair::generate_ed25519();
+        let dialer_key = identity::Keypair::generate_ed25519();
+        let mut listener = libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(
+            &listener_key,
+        ));
+        let mut dialer = libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(
+            &dialer_key,
+        ));
+        listener
+            .listen_on(
+                ListenerId::next(),
+                "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
+            )
+            .unwrap();
+        let TransportEvent::NewAddress { listen_addr, .. } =
+            poll_fn(|cx| Pin::new(&mut listener).poll(cx)).await
+        else {
+            panic!("missing actual QUIC listen address")
+        };
+        let dial = dialer
+            .dial(
+                listen_addr.clone(),
+                DialOpts {
+                    role: Endpoint::Dialer,
+                    port_use: PortUse::Reuse,
+                },
+            )
+            .unwrap();
+        let (incoming, outgoing) = join(
+            async {
+                let TransportEvent::Incoming {
+                    upgrade,
+                    local_addr,
+                    send_back_addr,
+                    ..
+                } =
+                    poll_fn(|cx| Pin::new(&mut listener).poll(cx)).await
+                else {
+                    panic!("missing actual QUIC incoming connection")
+                };
+                (
+                    upgrade.await.unwrap(),
+                    ConnectedPoint::Listener { local_addr, send_back_addr },
+                )
+            },
+            async {
+                match select(dial, poll_fn(|cx| Pin::new(&mut dialer).poll(cx))).await {
+                    Either::Left((result, _)) => result.unwrap(),
+                    Either::Right(_) => panic!("unexpected dialer transport event"),
+                }
+            },
+        )
+        .await;
+        let ((listener_peer, mut listener_connection), listener_point) = incoming;
+        let (dialer_peer, mut dialer_connection) = outgoing;
+        assert_eq!(listener_peer, dialer_key.public().to_peer_id());
+        assert_eq!(dialer_peer, listener_key.public().to_peer_id());
+        poll_fn(|cx| Pin::new(&mut listener_connection).poll_close(cx))
+            .await
+            .unwrap();
+        let local = poll_fn(|cx| Pin::new(&mut listener_connection).poll_inbound(cx))
+            .await
+            .err()
+            .expect("missing native LocallyClosed result");
+        let remote = poll_fn(|cx| Pin::new(&mut dialer_connection).poll_inbound(cx))
+            .await
+            .err()
+            .expect("missing native ApplicationClosed result");
+        let dialer_point = ConnectedPoint::Dialer {
+            address: listen_addr,
+            role_override: Endpoint::Dialer,
+            port_use: PortUse::Reuse,
+        };
+        for (peer, point, error, cause) in [
+            (listener_peer, listener_point, local, "quinn_locally_closed"),
+            (dialer_peer, dialer_point, remote, "quinn_application_closed_0"),
+        ] {
+            assert!(matches!(error, libp2p::quic::Error::Connection(_)));
+            let error = io::Error::other(error);
+            let expected = (error.kind(), error.raw_os_error(), error.to_string());
+            assert_eq!(
+                native_cause(&error),
+                if QUIC_CAUSE_OBSERVER_ENABLED {
+                    (cause, true)
+                } else {
+                    ("quic_connection_cause_unavailable", false)
+                }
+            );
+            for prepared in [false, true] {
+                let evidence = Evidence::default();
+                let id = evidence
+                    .connection(peer, point.clone(), NativeStack::Quic)
+                    .unwrap();
+                evidence.bind(peer, &point, ConnectionId::new_unchecked(7)).unwrap();
+                if prepared {
+                    prepare(&evidence);
+                }
+                evidence.lock().native_error(Some(id), None, "muxer_inbound", &error);
+                let capture = evidence.lock();
+                let accepted = prepared && QUIC_CAUSE_OBSERVER_ENABLED;
+                assert_eq!(capture.error.is_none(), accepted);
+                let record = capture.events.last().unwrap();
+                assert_eq!(
+                    record["kind"],
+                    if accepted { "expected_native_close" } else { "native_io_error" }
+                );
+                assert_eq!(record["prepared"], prepared);
+                assert_eq!(record["operation"], "muxer_inbound");
+                assert_eq!(record["message"], expected.2);
+                assert!(!capture.connections[id].closed);
+                assert!(!capture.connections[id].dropped);
+                assert_eq!(capture.live_muxers, 1);
+                assert_eq!(
+                    (error.kind(), error.raw_os_error(), error.to_string()),
+                    expected
+                );
+            }
+        }
+        poll_fn(|cx| Pin::new(&mut dialer_connection).poll_close(cx))
+            .await
+            .unwrap();
+    })
+    .await
+    .expect("bounded native QUIC pair timed out");
+}
+
+#[test]
+fn current_typed_quic_causes_require_prepare_and_never_hide_nonzero_or_sticky_failure() {
+    for prepared in [false, true] {
+        for case in 0..7 {
+            let (evidence, id, wire) = observed();
+            evidence.lock().connections[id].stack = NativeStack::Quic;
+            if prepared {
+                prepare(&evidence);
+            }
+            let cause = match case {
+                0 | 2 => quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
+                    error_code: if case == 0 { 0u32.into() } else { 1u32.into() },
+                    reason: b"connection lost; closed by peer: 0".to_vec().into(),
+                }),
+                1 => quinn::ConnectionError::LocallyClosed,
+                3 => quinn::ConnectionError::Reset,
+                4 => quinn::ConnectionError::TimedOut,
+                5 => quinn::ConnectionError::TransportError(
+                    quinn::TransportErrorCode::PROTOCOL_VIOLATION.into(),
+                ),
+                _ => quinn::ConnectionError::LocallyClosed,
+            };
+            if case == 6 {
+                evidence.lock().fail("earlier native error");
+            }
+            let error = io::Error::new(
+                io::ErrorKind::NotConnected,
+                quinn::ReadError::ConnectionLost(cause),
+            );
+            let original = (error.kind(), error.raw_os_error(), error.to_string());
+            evidence.lock().native_error(Some(id), Some(wire.stream), "stream_read", &error);
+            assert_eq!(evidence.lock().error.is_none(), prepared && case < 2);
+            assert_eq!(
+                (error.kind(), error.raw_os_error(), error.to_string()),
+                original
+            );
+            if case == 6 {
+                assert_eq!(evidence.lock().error.as_deref(), Some("earlier native error"));
+            }
+            if !prepared {
+                assert!(
+                    evidence.prepare(2, "victim", &"a".repeat(32), PeerId::random(), 0).is_err()
+                );
+                assert!(!evidence.lock().prepared);
+            }
+            drop(wire);
+        }
+    }
+}
+
 #[test]
 fn public_quinn_and_native_transparent_source_chains_are_bounded_and_typed() {
     assert_eq!(

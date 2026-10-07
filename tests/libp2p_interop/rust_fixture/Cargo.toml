@@ -8,6 +8,9 @@ rust-version = "1.88.0"
 name = "forge-libp2p-rust-fixture"
 path = "main.rs"
 
+[features]
+quic-cause-observer = []
+
 [dependencies]
 futures = "0.3"
 hickory-resolver = { version = "=0.25.2", default-features = false }

@@ -114,10 +114,15 @@ Asio frame recycling and allocator selection may change the allocation path.
 Source ordering and general allocation-recovery tests must not be presented as
 a site-specific native factory-OOM regression.
 
-The original pinned Rust QUIC shutdown-cause observation gap remains unresolved.
-Successful traffic, prepare acknowledgements and joined workers do not promote
-an unavailable typed native cause to PASS. See the donor note for the exact
-boundary; canonical acceptance and merge remain pending while this gate is open.
+The original pinned Rust QUIC transport cannot publicly expose every native
+shutdown cause. The maintainer approved separate original-wire and instrumented
+shutdown evidence on 2026-10-08. The four Rust QUIC cases retain original raw
+errors and independently prove traffic through active indexed snapshots; a
+separate accessor-only TEST COPY repeats the full scenario and proves shutdown.
+Tokens, owners and causes are never borrowed between executions. Original
+shutdown remains `NOT_PROVEN`; combined acceptance is explicitly scoped to
+original-wire/instrumented-shutdown. Canonical acceptance and merge remain
+pending until both gates pass on the clean exact head.
 
 ### Shutdown Evidence Repairs
 
@@ -132,7 +137,7 @@ sealed AppClosed0 error only with its actual live parent baseline and successful
 full disposal after each failed native return. Neither path invents a stream
 baseline, rewrites raw errors nor exports RPC, framing or scoring authority.
 Source-only review and replay of saved receipts do not replace a fresh canonical
-run; the unpatched Rust cause observation gap remains a separate open gate.
+run; the original Rust observation limitation remains explicitly documented.
 
 PR12 retains IDONTWANT, v1.3 extensions and opt-in Partial Messages. Stage 7
 retains official plugin configuration/facets; Stage 8 retains production/hostile

@@ -12,6 +12,7 @@ from pathlib import Path
 from autorelay_acceptance import ATTEMPT_FIELDS, OWNER_FIELDS, _options, _owned_output, _path
 from pubsub_cases import _ready, case_specs
 from pubsub_evidence import DIRECTIONS, PROFILES, prepared_snapshot, require, validate_case
+from pubsub_quic_proof import needs_observer, validate_split
 from stage6_evidence_contract import evidence_contract_for
 
 OWNER_ID = "pubsub.gossipsub_v1_0_v1_1"
@@ -114,9 +115,14 @@ def validate_suite(records, required, artifact_root, binary_paths, load_json, *,
         return ["PubSub promotion requires all 24 unique native cases and indexed JSON loader"]
     for record in records:
         try:
-            used = _sources(record, specs[record["scenario_id"]], artifact_root, binary_paths, load_json,
-                            pnet_key_file, pnet_fingerprint)
-            owned = {owner["pid"] for owner in record["processes"].values()}
+            spec = specs[record["scenario_id"]]
+            if needs_observer(spec):
+                used, owned = validate_split(record, spec, artifact_root, binary_paths, load_json, _sources)
+            else:
+                require("proof_scope" not in record, "instrumentation outside permitted QUIC scope")
+                used = _sources(record, spec, artifact_root, binary_paths, load_json,
+                                pnet_key_file, pnet_fingerprint)
+                owned = {owner["pid"] for owner in record["processes"].values()}
             require(not pids & owned and not paths & used, "PubSub cases reuse native process/output identities")
             pids.update(owned)
             paths.update(used)

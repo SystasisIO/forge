@@ -454,7 +454,7 @@ def _go_native_operations(events):
                     "repeat Close lacks prior returned successful Reset")
 
 
-def prepared_snapshot(snapshot, row, raw, pid):
+def prepared_snapshot(snapshot, row, raw, pid, *, terminal_success=True):
     """Bind an immutable active ACK capture to the actual owner and final event prefix."""
     fields = {"schema_version", "source", "actor", "case_token", "pid", "command_sequence",
               "ack_event_sequence", "result"}
@@ -470,9 +470,12 @@ def prepared_snapshot(snapshot, row, raw, pid):
     ack = shutdown_ack(captured, raw["implementation"], row["actor"], row["case_token"], row["local_peer_id"],
                        row["command_sequence"], active=True)
     require(ack is not None and ack["sequence"] == row["ack_event_sequence"], "missing indexed active prepare ACK")
-    final_ack = shutdown_ack(raw, raw["implementation"], row["actor"], row["case_token"], row["local_peer_id"],
-                             row["command_sequence"])
-    require(_same_json(final_ack, ack) and _same_json(raw["events"][:len(captured["events"])], captured["events"]),
+    require(type(terminal_success) is bool, "invalid snapshot proof scope")
+    if terminal_success:
+        final_ack = shutdown_ack(raw, raw["implementation"], row["actor"], row["case_token"], row["local_peer_id"],
+                                 row["command_sequence"])
+        require(_same_json(final_ack, ack), "final actual ACK differs from captured active ACK")
+    require(_same_json(raw["events"][:len(captured["events"])], captured["events"]),
             "indexed prepare ACK/event prefix differs from native terminal result")
     require(not any(event.get("kind") in {"connection_closed", "shutdown", "shutdown_requested", "native_close",
                                           "host_muxer_dropped", "expected_native_close", "native_terminal_state"}
@@ -542,12 +545,12 @@ def _yamux_terminal_state(raw, event, events):
             "Yamux typed Closed did not establish actual owner close/drop/join")
 
 
-def _events(raw, implementation, token, actor, *, cleanup_framing=None):
+def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=False):
     require(isinstance(raw, dict) and type(raw.get("schema_version")) is int
             and raw["schema_version"] == 1, "missing PubSub actor schema")
     require(raw.get("implementation") == implementation and raw.get("case_token") == token
             and raw.get("actor") == actor and _id(raw.get("local_peer_id")), "actor identity/token mismatch")
-    require(raw.get("finalized") is True and raw.get("joined") is True
+    require(type(active) is bool and raw.get("finalized") is (not active) and raw.get("joined") is (not active)
             and raw.get("overflow") is False and raw.get("error") is None, "unjoined/failed/overflowed actor")
     events, previous = raw.get("events"), 0
     require(isinstance(events, list) and 0 < len(events) <= EVENT_LIMIT, "missing bounded PubSub events")
@@ -596,7 +599,7 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None):
         previous = event["mono_ns"]
     if implementation == "go":
         _go_native_operations(events)
-        verified_cleanup = _go_quic_operations(raw, events, terminal=True)
+        verified_cleanup = _go_quic_operations(raw, events, terminal=not active)
         if cleanup_framing is not None:
             cleanup_framing.update(verified_cleanup)
     return events
@@ -1947,6 +1950,49 @@ def validate_case(artifact, *, expected_fingerprint=None):
     require(len({actor["local_peer_id"] for actor in actors.values()}) == 4, "actors share an identity")
     require(len({process["pid"] for process in processes.values()}) == 4, "actors share a process")
     _shutdown_barrier(artifact, actors, events)
+    return _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint)
+
+
+def validate_active_case(artifact, snapshots, *, expected_fingerprint=None):
+    """Prove only active traffic, never the terminal outcome of another execution."""
+    require(isinstance(artifact, dict) and artifact.get("schema_version") == 1
+            and artifact.get("suite") == "pubsub-scoring", "invalid active scoring case schema")
+    spec, token = artifact.get("case"), artifact.get("case_token")
+    require(isinstance(spec, dict) and (spec.get("source"), spec.get("destination")) in DIRECTIONS
+            and spec.get("version") in ("1.0", "1.1") and spec.get("profile") in PROFILES,
+            "active case outside required matrix")
+    require(isinstance(token, str) and re.fullmatch(r"[a-f0-9]{32}", token), "invalid active scoring token")
+    final, processes = artifact.get("raw"), artifact.get("processes")
+    require(isinstance(final, dict) and isinstance(processes, dict) and isinstance(snapshots, dict)
+            and set(final) == set(processes) == set(snapshots) == {"victim", "offender", "replacement", "sink"},
+            "active case lacks four independently captured owners")
+    roles = artifact.get("roles")
+    require(roles == {role: role for role in ("offender", "replacement", "sink")}, "invalid active role mapping")
+    barrier = artifact.get("shutdown_barrier")
+    require(isinstance(barrier, dict) and isinstance(barrier.get("operations"), list), "missing active Prepare barrier")
+    rows = barrier["operations"][:4]
+    require(len(rows) == 4 and {row.get("actor") for row in rows} == set(final)
+            and all(row.get("kind") == "prepare_ack" for row in rows), "missing four actual active ACKs")
+    actors, events, cleanup_framing = {}, {}, {}
+    for row in rows:
+        role = row["actor"]
+        process = processes[role]
+        require(type(process.get("pid")) is int and process["pid"] > 0
+                and type(process.get("returncode")) is int and process["returncode"] in (0, 1)
+                and process.get("forced_termination") is False, "original traffic owner was not actually joined")
+        captured = prepared_snapshot(snapshots[role], row, final[role], process["pid"], terminal_success=False)
+        actors[role] = captured
+        implementation = spec["destination"] if role == "victim" else spec["source"]
+        cleanup_framing[role] = {}
+        events[role] = _events(captured, implementation, token, role,
+                              cleanup_framing=cleanup_framing[role], active=True)
+    require(len({actor["local_peer_id"] for actor in actors.values()}) == 4
+            and len({process["pid"] for process in processes.values()}) == 4, "active actors reuse identity/PID")
+    return _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint)
+
+
+def _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint):
+    spec, token, roles = artifact["case"], artifact["case_token"], artifact["roles"]
     offender, replacement, sink = (roles[key] for key in ("offender", "replacement", "sink"))
     offender_peer = actors[offender]["local_peer_id"]
     replacement_peer, sink_peer = actors[replacement]["local_peer_id"], actors[sink]["local_peer_id"]

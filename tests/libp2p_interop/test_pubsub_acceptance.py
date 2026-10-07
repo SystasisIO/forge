@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pubsub_acceptance as acceptance
 from pubsub_cases import Case, case_specs
+from pubsub_quic_proof import needs_observer
 from pubsub_evidence import AUTHENTICATION, PROFILES, validate_case
 from test_pubsub_evidence import synthetic_case
 
@@ -161,8 +162,17 @@ class PubSubAcceptanceTests(unittest.TestCase):
         namespace = {"pubsub_specs": case_specs, "run_pubsub_case": capture, "binaries": {"go": "synthetic-go"},
                      "root": Path("/unit"), "pnet_key_file": key, "pnet_fingerprint": fingerprint,
                      "command_attempt": attempt, "artifacts": [], "failures": []}
+        observer_calls = []
+        def complete(original, spec, binaries, root, observer_binary, *, command_attempt):
+            observer_calls.append((spec, observer_binary, command_attempt))
+            return original
+        namespace.update(needs_quic_observer=needs_observer, complete_pubsub_case=complete,
+                         observer_binary=Path("/unit/observer-rust"))
         dispatch = ast.Module(body=branches[0].body, type_ignores=[])
         exec(compile(ast.fix_missing_locations(dispatch), "runner_pubsub_dispatch", "exec"), namespace)
+        self.assertEqual(len(observer_calls), 4)
+        self.assertTrue(all(needs_observer(spec) and binary == Path("/unit/observer-rust") and owner is attempt
+                            for spec, binary, owner in observer_calls))
         self.assertEqual(tuple(call[0] for call in calls), case_specs())
         self.assertEqual(len(namespace["artifacts"]), 24)
         self.assertEqual(namespace["failures"], [])

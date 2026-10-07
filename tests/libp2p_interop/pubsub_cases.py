@@ -44,11 +44,11 @@ def case_specs():
                  for version in ("1.0", "1.1") for profile in PROFILES for source, destination in DIRECTIONS)
 
 
-def _read(path):
+def _read(path, *, diagnostic=False):
     if path.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("PubSub actor result exceeds trace byte bound")
     value = json.loads(path.read_text())
-    if not isinstance(value, dict) or value.get("overflow") is True or value.get("error") is not None:
+    if not isinstance(value, dict) or not diagnostic and (value.get("overflow") is True or value.get("error") is not None):
         raise RuntimeError("PubSub actor failed or overflowed its native trace")
     return value
 
@@ -364,7 +364,10 @@ def run_case(spec, binaries, root, *, key=None, fingerprint=None, command_attemp
             artifact["processes"][role] = process
             if files["result"].exists():
                 try:
-                    artifact["raw"][role] = _read(files["result"])
+                    raw = _read(files["result"], diagnostic=True)
+                    artifact["raw"][role] = raw
+                    if raw.get("overflow") is True or raw.get("error") is not None:
+                        errors.append(f"{role} terminal capture: native failure/overflow retained")
                 except Exception as error:
                     errors.append(f"{role} terminal capture: {type(error).__name__}: {error}")
         try:

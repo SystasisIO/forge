@@ -25,7 +25,7 @@ PROMOTION_SCOPES = {
     "inline-muxer": "focused inline-muxer16 only, not full Stage 6 or production support",
     "path": "focused DCUtR12 only, not full Stage 6 or production support",
     "coordinated": "focused coordinated TCP reuse8 only, not full Stage 6 or production support",
-    "pubsub-scoring": "focused native GossipSub v1.0/v1.1 scoring24 only, not full Stage 6 or production support",
+    "pubsub-scoring": "original GossipSub v1.0/v1.1 traffic24 plus four independent accessor-only Rust QUIC shutdown runs; original Rust QUIC shutdown NOT_PROVEN; not full Stage 6 or production support",
 }
 
 
@@ -121,7 +121,7 @@ def main() -> int:
             print(f"FAILED: {error}", file=sys.stderr)
         return result.returncode or 1
     if has_limitations:
-        print("PASS_WITH_DOCUMENTED_LIMITATIONS: canonical runner executed and was validated in this promotion")
+        print(f"PASS_WITH_DOCUMENTED_LIMITATIONS: {PROMOTION_SCOPES[args.suite]}; canonical runner executed and was validated in this promotion")
     else:
         scope = PROMOTION_SCOPES[args.suite]
         print(f"PASS: {scope}; canonical runner executed and was validated in this promotion")

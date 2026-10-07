@@ -87,6 +87,8 @@ EXPECTED_FIXTURE_FILES = {
     "rust_fixture/rust-toolchain.toml",
 }
 EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
+    "pubsub_quic_proof.py",
+    "rust_quic_observer.py",
     "../CMakeLists.txt",
     "check_fixture_lock.py",
     "check_stage6_acceptance.py",
@@ -155,6 +157,7 @@ EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
 }
 EXPECTED_EVIDENCE_SOURCES = {"donor_cases.json", "p2p_donor_capabilities.json", "p2p_feature_inventory.json"}
 EXPECTED_REGRESSION_SOURCES = {
+    "test_pubsub_quic_proof.py", "test_rust_quic_observer.py",
     "../quic_p2p/node_session_fixture_validation.cpp",
     "test_pubsub_cases.py", "test_pubsub_evidence.py", "test_pubsub_acceptance.py", "test_pubsub_wire.py",
     "test_mdns_acceptance.py", "test_mdns_cases.py", "test_mdns_churn_cases.py", "test_mdns_evidence.py",

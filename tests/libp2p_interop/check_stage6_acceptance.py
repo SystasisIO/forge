@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -621,6 +622,52 @@ def validate_execution_provenance(value: object, expected_head: str,
     return paths, errors
 
 
+def validate_quic_observer_provenance(value, inputs, paths):
+    """A separate read-only copy cannot masquerade as the original Rust binary."""
+    from rust_quic_observer import fixture_source_provenance, verify_observer_copy, verify_original_export
+    from pubsub_evidence import require
+    receipt = value.get("rust_quic_observer") if isinstance(value, dict) else None
+    if receipt is None:
+        return ["PubSub acceptance lacks explicit Rust QUIC observer provenance"]
+    try:
+        build = inputs["build_dir"]
+        observer_root = build / "quic-observer"
+        require(isinstance(receipt, dict) and "binary" in receipt and "commands" in receipt,
+                "invalid observer receipt")
+        verify_original_export(build / "fixture-deps", inputs["donors_root"] / "rust-libp2p")
+        verify_observer_copy({key: facts for key, facts in receipt.items() if key not in {"binary", "commands"}},
+                             build / "fixture-deps", observer_root)
+        cargo = value["tools"]["cargo"]["path"]
+        expected = [{"command": [cargo, *arguments, "--frozen", "--features", "quic-cause-observer"],
+                     "cwd": str(observer_root / "rust_fixture"),
+                     "environment": {"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"}}
+                    for arguments in (["test"], ["build", "--release"])]
+        require(receipt["commands"] == expected, "observer Cargo commands/features changed")
+        binary = receipt["binary"]
+        path = observer_root / "rust_fixture/target/release/forge-libp2p-rust-fixture"
+        require(set(binary) == {"path", "sha256"} and binary["path"] == str(path)
+                and path.is_file() and sha256_file(path) == binary["sha256"]
+                and path != paths.get("rust"), "observer binary/hash aliases original Rust")
+        source = inputs["source_dir"] / "rust_fixture"
+        copied = observer_root / "rust_fixture"
+        expected_sources = {file.relative_to(source) for file in source.rglob("*")
+                            if file.is_file() and "target" not in file.relative_to(source).parts}
+        actual_sources = set()
+        for directory, children, files in os.walk(copied):
+            children[:] = [name for name in children if name != "target"]
+            require(not any((Path(directory) / name).is_symlink() for name in children),
+                    "observer fixture has a symlinked source directory")
+            actual_sources.update((Path(directory) / name).relative_to(copied) for name in files)
+        names = sorted(str(path) for path in expected_sources)
+        require(actual_sources == expected_sources
+                and fixture_source_provenance(source, names) == fixture_source_provenance(copied, names),
+                "observer fixture source differs from locked original source")
+        paths["rust-quic-observer"] = path
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        return [f"Rust QUIC observer provenance: {error}"]
+    return []
+
+
 def raw_evidence_paths(value: object) -> set[Path]:
     paths: set[Path] = set()
     if isinstance(value, dict):
@@ -649,6 +696,8 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
     declarations: dict[Path, list[dict]] = {}
     non_stdout: set[Path] = set()
     stores: set[Path] = set()
+    from pubsub_quic_proof import original_stdout_owners
+    diagnostic_owners = original_stdout_owners(artifacts, root, binaries)
 
     def visit(value, process=False, isolated=False):
         if isinstance(value, list):
@@ -689,22 +738,27 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
     for record in artifacts:
         visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns", "path", "coordinated"))
 
-    def clean(view):
+    def clean(view, path):
         terminal = view.get("terminal_status")
+        original = diagnostic_owners.get(path)
+        code = original["returncode"] if original is not None else 0
         return (type(view.get("pid")) is int and view["pid"] > 0
-                and terminal == {"exit_code": 0, "termination": "graceful"}
-                and type(terminal["exit_code"]) is int)
+                and terminal == {"exit_code": code, "termination": "graceful"}
+                and type(terminal["exit_code"]) is int
+                and (original is None or (view["pid"] == original["pid"]
+                     and view["command"] == original["command"])))
 
     verified: set[Path] = set()
     for path, views in declarations.items():
-        owner = next((view for view in views if clean(view)), None)
+        owner = next((view for view in views if clean(view, path)), None)
         if owner is None or path in non_stdout or any(path.is_relative_to(store) for store in stores):
             continue
         if any(
             view["command"] != owner["command"]
             or ("pid" in view and (type(view["pid"]) is not int or view["pid"] != owner["pid"]))
-            or ("terminal_status" in view and not clean(view))
-            or ("exit_code" in view and (type(view["exit_code"]) is not int or view["exit_code"] != 0))
+            or ("terminal_status" in view and not clean(view, path))
+            or ("exit_code" in view and (type(view["exit_code"]) is not int
+                                        or view["exit_code"] != owner["terminal_status"]["exit_code"]))
             or ("requested_log_file" in view and path_within(view["requested_log_file"], root) != path)
             or failure_text(view) or view.get("spawn_error") or view.get("cleanup_errors")
             for view in views
@@ -2262,6 +2316,9 @@ def validate(
     )
     errors.extend(input_errors)
     errors.extend(validate_donor_provenance(root, artifact.get("fixture_provenance"), inputs))
+    if suite == "pubsub-scoring" or isinstance(artifact.get("fixture_provenance"), dict) \
+            and "rust_quic_observer" in artifact["fixture_provenance"]:
+        errors.extend(validate_quic_observer_provenance(artifact.get("fixture_provenance"), inputs, binary_paths))
     errors.extend(validate_runner_argv(
         root, artifact.get("runner_argv"), manifest_path, inputs, binary_paths, suite
     ))
@@ -2304,9 +2361,12 @@ def validate(
             path = path_within(value, artifact_root)
             if path is None or path not in indexed_evidence or path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError("PubSub output absent from verified bounded evidence index")
-            payload, failures = load_evidence_json(path, "PubSub raw output")
-            if failures or payload is None:
-                raise ValueError("; ".join(failures))
+            # Original terminal errors are retained as diagnostics. The scoped
+            # validators require error-free active snapshots or successful full
+            # shutdown respectively; generic text rejection cannot combine them.
+            payload = load_json(path)
+            if not isinstance(payload, dict):
+                raise ValueError("PubSub raw output must be a JSON object")
             return payload
 
         for record in pubsub_records:
@@ -2322,7 +2382,7 @@ def validate(
     if suite == "pubsub-scoring":
         if base_records or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records:
             errors.append("focused PubSub suite contains unrelated records")
-        return errors, False
+        return errors, True
     if pubsub_records and suite != "stage6":
         errors.append("unrelated focused suite contains PubSub records")
     if suite == "coordinated" or coordinated_required or coordinated_records:
