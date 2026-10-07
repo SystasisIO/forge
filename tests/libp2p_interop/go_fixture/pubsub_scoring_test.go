@@ -2316,6 +2316,21 @@ func TestPubsubScoringDrainRetainsResetErrorAndDoesNotInventJoin(t *testing.T) {
 	}
 }
 
+func pubsubScoringUnitCleanupJoin(owners ...<-chan struct{}) {
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for _, done := range owners {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-deadline.C:
+			panic("owned PubSub unit operation failed to join after gate cleanup")
+		}
+	}
+}
+
 func TestPubsubScoringQuiesceJoinsAdmittedCallbacksButKeepsNativeErrorsLive(t *testing.T) {
 	o := newPubsubScoringObserver("sink", strings.Repeat("a", 32))
 	o.local = pubsubScoringUnitConnection(t).local
@@ -2331,11 +2346,14 @@ func TestPubsubScoringQuiesceJoinsAdmittedCallbacksButKeepsNativeErrorsLive(t *t
 	drain := newPubsubScoringDrain()
 	drain.closing = true
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(finished) })
 	go func() {
 		defer close(finished)
 		o.callback(func() { close(entered); <-release })
 	}()
-	<-entered
+	pubsubScoringUnitWait(t, entered)
 	o.mu.Lock()
 	o.pubsubCallbacksClosed = true
 	o.mu.Unlock()
@@ -2347,8 +2365,8 @@ func TestPubsubScoringQuiesceJoinsAdmittedCallbacksButKeepsNativeErrorsLive(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	err := o.quiesceAck(command, drain, root, child, ctx, worker)
 	cancel()
-	close(release)
-	<-finished
+	unblock()
+	pubsubScoringUnitWait(t, finished)
 	if err == nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
 		t.Fatal("ACK preceded admitted callback join")
 	}
@@ -2390,6 +2408,96 @@ func (s *pubsubScoringQuiesceResetStream) Reset() error {
 	return s.resetErr
 }
 
+type pubsubScoringLateTerminalStream struct {
+	pubsubScoringUnitStream
+	operation        string
+	entered, release chan struct{}
+	terminalErr      error
+}
+
+func (s *pubsubScoringLateTerminalStream) Close() error {
+	if s.operation == "close" {
+		close(s.entered)
+		<-s.release
+		return s.terminalErr
+	}
+	return s.pubsubScoringUnitStream.Close()
+}
+
+func (s *pubsubScoringLateTerminalStream) Reset() error {
+	if s.operation == "reset" {
+		close(s.entered)
+		<-s.release
+		return s.terminalErr
+	}
+	return s.pubsubScoringUnitStream.Reset()
+}
+
+func TestPubsubScoringQuiesceTracksLateTerminalAfterRegistryRelease(t *testing.T) {
+	for _, operation := range []string{"close", "reset"} {
+		for _, failed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/failed=%v", operation, failed), func(t *testing.T) {
+				native := &pubsubScoringLateTerminalStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t)},
+					entered: make(chan struct{}), release: make(chan struct{})}
+				wrapped, o := pubsubScoringUnitWrapped(t, native)
+				if err := wrapped.Reset(); err != nil {
+					t.Fatal(err)
+				}
+				if !wrapped.framingJoined() || len(wrapped.drain.streams) != 0 {
+					t.Fatal("initial native disposal did not release the registry owner")
+				}
+				pubsubScoringUnitPrepare(t, o)
+				command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+					Local: o.local.String(), Prepare: o.prepareAck}
+				root, cancelRoot := context.WithCancel(context.Background())
+				child, cancelChild := context.WithCancel(root)
+				defer cancelChild()
+				cancelRoot()
+				wrapped.drain.closing = true
+				o.pubsubCallbacksClosed = true
+				native.operation = operation
+				primary := errors.New("late native terminal failure")
+				if failed {
+					native.terminalErr = primary
+				}
+				finished, result := make(chan struct{}), make(chan error, 1)
+				var releaseOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(native.release) }) }
+				t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(finished) })
+				go func() {
+					defer close(finished)
+					if operation == "close" {
+						result <- wrapped.Close()
+					} else {
+						result <- wrapped.Reset()
+					}
+				}()
+				pubsubScoringUnitWait(t, native.entered)
+				worker := make(chan struct{})
+				close(worker)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+				err := o.quiesceAck(command, wrapped.drain, root, child, ctx, worker)
+				cancel()
+				if err == nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+					t.Fatal("ACK skipped a pending terminal operation on a released wrapper")
+				}
+				unblock()
+				pubsubScoringUnitWait(t, finished)
+				got := <-result
+				if failed && (got != primary || o.failure != primary) || !failed && got != nil {
+					t.Fatal("native terminal result was changed or silenced", got)
+				}
+				ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				err = o.quiesceAck(command, wrapped.drain, root, child, ctx, worker)
+				if failed && err != primary || !failed && err != nil {
+					t.Fatal("completed terminal did not retain its failure/join", err)
+				}
+			})
+		}
+	}
+}
+
 func TestPubsubScoringQuiesceTracksDeclinedHandlerAndInflightOpenDisposals(t *testing.T) {
 	for _, incoming := range []bool{false, true} {
 		for _, failed := range []bool{false, true} {
@@ -2407,14 +2515,23 @@ func TestPubsubScoringQuiesceTracksDeclinedHandlerAndInflightOpenDisposals(t *te
 				command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
 					Local: o.local.String(), Prepare: o.prepareAck}
 				root, cancelRoot := context.WithCancel(context.Background())
+				defer cancelRoot()
 				child, cancelChild := context.WithCancel(root)
 				defer cancelChild()
 				delegate := &pubsubScoringQuiesceUnitHost{stream: s, started: make(chan struct{}), finish: make(chan struct{})}
 				h := &pubsubScoringHost{Host: delegate, ctx: root, observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v10}
 				finished := make(chan struct{})
+				var openOnce, resetOnce sync.Once
+				unblockOpen := func() { openOnce.Do(func() { close(delegate.finish) }) }
+				unblockReset := func() { resetOnce.Do(func() { close(s.release) }) }
+				t.Cleanup(func() {
+					unblockOpen()
+					unblockReset()
+					pubsubScoringUnitCleanupJoin(finished)
+				})
 				if !incoming {
 					go func() { defer close(finished); _, _ = h.NewStream(root, conn.remote, h.protocol) }()
-					<-delegate.started
+					pubsubScoringUnitWait(t, delegate.started)
 				}
 				h.drain.mu.Lock()
 				h.drain.closing = true
@@ -2427,16 +2544,16 @@ func TestPubsubScoringQuiesceTracksDeclinedHandlerAndInflightOpenDisposals(t *te
 					h.SetStreamHandler(h.protocol, func(network.Stream) { t.Error("declined handler ran") })
 					go func() { defer close(finished); delegate.handler(s) }()
 				} else {
-					close(delegate.finish)
+					unblockOpen()
 				}
-				<-s.entered
+				pubsubScoringUnitWait(t, s.entered)
 				worker := make(chan struct{})
 				close(worker)
 				ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 				err := o.quiesceAck(command, h.drain, root, child, ctx, worker)
 				cancel()
-				close(s.release)
-				<-finished
+				unblockReset()
+				pubsubScoringUnitWait(t, finished)
 				if err == nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
 					t.Fatal("held rejected Reset did not prevent ACK")
 				}
@@ -2479,11 +2596,17 @@ func TestPubsubScoringQuiesceRejectsUnjoinedWorkerWriteAndForeignPrepare(t *test
 		t.Fatal("pending command admitted")
 	}
 	root, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
 	child, cancelChild := context.WithCancel(root)
 	defer cancelChild()
 	writeDone := make(chan error, 1)
-	go func() { _, err := wrapped.Write([]byte("native input")); writeDone <- err }()
-	<-s.started[1]
+	writeJoined := make(chan struct{})
+	var drainJoined <-chan struct{}
+	var finishOnce sync.Once
+	unblock := func() { finishOnce.Do(func() { close(s.finish) }) }
+	t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(writeJoined, drainJoined) })
+	go func() { defer close(writeJoined); _, err := wrapped.Write([]byte("native input")); writeDone <- err }()
+	pubsubScoringUnitWait(t, s.started[1])
 	wrapped.drain.mu.Lock()
 	wrapped.drain.closing = true
 	wrapped.drain.mu.Unlock()
@@ -2494,8 +2617,10 @@ func TestPubsubScoringQuiesceRejectsUnjoinedWorkerWriteAndForeignPrepare(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	drainDone := make(chan error, 1)
-	go func() { drainDone <- wrapped.drain.stop(ctx) }()
-	<-s.reset
+	drainFinished := make(chan struct{})
+	drainJoined = drainFinished
+	go func() { defer close(drainFinished); drainDone <- wrapped.drain.stop(ctx) }()
+	pubsubScoringUnitWait(t, s.reset)
 	worker := make(chan struct{})
 	if o.quiesceAck(command, wrapped.drain, root, child, ctx, worker) == nil {
 		t.Fatal("unjoined subscriber admitted")
@@ -2504,7 +2629,9 @@ func TestPubsubScoringQuiesceRejectsUnjoinedWorkerWriteAndForeignPrepare(t *test
 	short, cancelShort := context.WithTimeout(context.Background(), time.Millisecond)
 	err := o.quiesceAck(command, wrapped.drain, root, child, short, worker)
 	cancelShort()
-	close(s.finish)
+	unblock()
+	pubsubScoringUnitWait(t, writeJoined)
+	pubsubScoringUnitWait(t, drainFinished)
 	if err == nil || <-writeDone != nil || <-drainDone != nil {
 		t.Fatal("inflight native write joined prematurely", err)
 	}

@@ -135,6 +135,13 @@ ACK. Native-error observation remains enabled. Python rejects missing/foreign
 ACKs and later native PubSub writes or selected owners. No public join of Go's
 internal router is inferred.
 
+Terminal operations remain globally accounted through RETURN, receipt capture
+and framing finalization even after their stream leaves the retained registry.
+The regression holds a repeated Close/Reset on that released wrapper and requires
+ACK to remain unavailable until the call completes; native failures stay sticky.
+Unit failure paths release their gates and bounded-join their actual owners,
+with fail-closed cleanup if an owner does not finish.
+
 Only then does the fixture publish all donor stop commands before awaiting any
 donor. Forge remains alive until every donor has exited successfully, drained
 native owners and supplied an identity-bound shutdown receipt. Failure cleanup

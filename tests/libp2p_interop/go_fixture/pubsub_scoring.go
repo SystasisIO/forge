@@ -894,6 +894,11 @@ func (d *pubsubScoringDrain) enterHandler() bool {
 	d.active++
 	return !d.closing
 }
+func (d *pubsubScoringDrain) beginTerminal() {
+	d.mu.Lock()
+	d.active++
+	d.mu.Unlock()
+}
 func (d *pubsubScoringDrain) end() {
 	d.mu.Lock()
 	d.active--
@@ -1203,6 +1208,11 @@ type pubsubScoringTerminalReceipt struct {
 }
 
 func (s *pubsubScoringStream) beginOperation(name string, closing bool) pubsubScoringOperation {
+	if closing {
+		// A donor may close an already disposed wrapper: retain the operation,
+		// not just membership in the stream registry, through receipt capture.
+		s.drain.beginTerminal()
+	}
 	s.observer.mu.Lock()
 	prepared, prepareAck := s.observer.prepared, s.observer.prepareAck
 	s.observer.mu.Unlock()
@@ -1519,6 +1529,7 @@ func (s *pubsubScoringStream) framingJoined() bool {
 }
 
 func (s *pubsubScoringStream) endClose(op pubsubScoringOperation, side int, result pubsubScoringOperationReturn, code any) {
+	defer s.drain.end()
 	returned, err := result.order, result.err
 	fields := s.operationFields(op, returned, err)
 	fields["requested_reset_code"] = code
