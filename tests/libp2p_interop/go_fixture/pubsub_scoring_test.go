@@ -363,6 +363,8 @@ type pubsubScoringUnitStream struct {
 	network.Stream
 	conn      network.Conn
 	id        string
+	missingID bool
+	protocol  protocol.ID
 	input     *bytes.Reader
 	output    bytes.Buffer
 	writeN    int
@@ -374,13 +376,21 @@ type pubsubScoringUnitStream struct {
 }
 
 func (s *pubsubScoringUnitStream) ID() string {
+	if s.missingID {
+		return ""
+	}
 	if s.id != "" {
 		return s.id
 	}
 	return "unit-stream"
 }
-func (s *pubsubScoringUnitStream) Conn() network.Conn    { return s.conn }
-func (s *pubsubScoringUnitStream) Protocol() protocol.ID { return pubsub.GossipSubID_v10 }
+func (s *pubsubScoringUnitStream) Conn() network.Conn { return s.conn }
+func (s *pubsubScoringUnitStream) Protocol() protocol.ID {
+	if s.protocol != "" {
+		return s.protocol
+	}
+	return pubsub.GossipSubID_v10
+}
 func (s *pubsubScoringUnitStream) Stat() network.Stats {
 	return network.Stats{Direction: network.DirInbound}
 }
@@ -501,7 +511,7 @@ func TestPubsubScoringAllFramingTerminalsFailBeforeAndAfterPrepare(t *testing.T)
 						delegate := &pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t), input: bytes.NewReader(prefix), writeN: -1}
 						drain := newPubsubScoringDrain()
 						s := &pubsubScoringStream{Stream: delegate, observer: o, drain: drain}
-						if !drain.retain(s) {
+						if retained, err := drain.retain(s); !retained || err != nil {
 							t.Fatal("wrapper not retained")
 						}
 						o.local = delegate.Conn().LocalPeer()
@@ -2011,7 +2021,7 @@ func TestPubsubScoringSampleClosingObserverWakesWaitWithoutSnapshot(t *testing.T
 
 func TestPubsubScoringHostRequiresActualSelectedProtocolAndUniqueStream(t *testing.T) {
 	o := newPubsubScoringObserver("victim", strings.Repeat("a", 32))
-	h := &pubsubScoringHost{ctx: context.Background(), observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v11}
+	h := &pubsubScoringHost{observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v11}
 	s := &pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t)}
 	if _, err := h.wrap(nil); err == nil {
 		t.Fatal("accepted absent stream")
@@ -2098,7 +2108,7 @@ func TestPubsubScoringDrainWaitsForAdmittedWorkAndClosesAdmission(t *testing.T) 
 	drain := newPubsubScoringDrain()
 	delegate := &pubsubScoringUnitStream{reset: make(chan struct{}, 1)}
 	s := &pubsubScoringStream{Stream: delegate, observer: newPubsubScoringObserver("victim", strings.Repeat("a", 32)), drain: drain}
-	if !drain.retain(s) || !drain.begin() {
+	if retained, err := drain.retain(s); !retained || err != nil || !drain.begin() {
 		t.Fatal("unit work not admitted")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -2186,7 +2196,7 @@ func TestPubsubScoringDrainResetsAllWrappersBeforeJoiningAndFinalizingIO(t *test
 			}
 		})
 		s := &pubsubScoringStream{Stream: delegate, observer: o, drain: drain}
-		if !drain.retain(s) {
+		if retained, err := drain.retain(s); !retained || err != nil {
 			t.Fatal("wrapper admission failed")
 		}
 		go func() {
@@ -2306,7 +2316,7 @@ func TestPubsubScoringDrainRetainsResetErrorAndDoesNotInventJoin(t *testing.T) {
 	o := newPubsubScoringObserver("victim", strings.Repeat("a", 32))
 	failure := errors.New("native reset sentinel")
 	s := &pubsubScoringStream{Stream: &pubsubScoringUnitStream{resetErr: failure}, observer: o, drain: drain}
-	if !drain.retain(s) {
+	if retained, err := drain.retain(s); !retained || err != nil {
 		t.Fatal("wrapper not retained")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2399,7 +2409,16 @@ func (h *pubsubScoringQuiesceUnitHost) SetStreamHandler(_ protocol.ID, handler n
 
 type pubsubScoringQuiesceResetStream struct {
 	pubsubScoringUnitStream
-	entered, release chan struct{}
+	entered, release         chan struct{}
+	wrapEntered, wrapRelease chan struct{}
+	wrapOnce                 sync.Once
+}
+
+func (s *pubsubScoringQuiesceResetStream) Conn() network.Conn {
+	if s.wrapEntered != nil {
+		s.wrapOnce.Do(func() { close(s.wrapEntered); <-s.wrapRelease })
+	}
+	return s.pubsubScoringUnitStream.Conn()
 }
 
 func (s *pubsubScoringQuiesceResetStream) Reset() error {
@@ -2519,7 +2538,7 @@ func TestPubsubScoringQuiesceTracksDeclinedHandlerAndInflightOpenDisposals(t *te
 				child, cancelChild := context.WithCancel(root)
 				defer cancelChild()
 				delegate := &pubsubScoringQuiesceUnitHost{stream: s, started: make(chan struct{}), finish: make(chan struct{})}
-				h := &pubsubScoringHost{Host: delegate, ctx: root, observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v10}
+				h := &pubsubScoringHost{Host: delegate, observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v10}
 				finished := make(chan struct{})
 				var openOnce, resetOnce sync.Once
 				unblockOpen := func() { openOnce.Do(func() { close(delegate.finish) }) }
@@ -2571,6 +2590,151 @@ func TestPubsubScoringQuiesceTracksDeclinedHandlerAndInflightOpenDisposals(t *te
 				}
 				if _, err := h.NewStream(root, conn.remote, h.protocol); err != context.Canceled {
 					t.Fatal("new native open passed closed admission", err)
+				}
+			})
+		}
+	}
+}
+
+func TestPubsubScoringClosingBeforeCancelRejectsOnlyValidOwnersNeutrally(t *testing.T) {
+	for _, incoming := range []bool{false, true} {
+		for _, canceled := range []bool{false, true} {
+			for _, fault := range []string{"valid", "id", "protocol", "auth", "duplicate", "capacity", "reset"} {
+				t.Run(fmt.Sprintf("incoming=%v/canceled=%v/%s", incoming, canceled, fault), func(t *testing.T) {
+					conn := pubsubScoringUnitConnection(t)
+					s := &pubsubScoringQuiesceResetStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: conn, id: "admission-race"},
+						entered: make(chan struct{}), release: make(chan struct{}), wrapEntered: make(chan struct{}), wrapRelease: make(chan struct{})}
+					primary := &net.OpError{Op: "reset", Net: "tcp", Err: syscall.ECONNRESET}
+					o := newPubsubScoringObserver("sink", strings.Repeat("a", 32))
+					o.local = conn.local
+					pubsubScoringUnitPrepare(t, o)
+					root, cancelRoot := context.WithCancel(context.Background())
+					defer cancelRoot()
+					child, cancelChild := context.WithCancel(root)
+					defer cancelChild()
+					delegate := &pubsubScoringQuiesceUnitHost{stream: s, started: make(chan struct{}), finish: make(chan struct{})}
+					h := &pubsubScoringHost{Host: delegate, observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v10}
+					switch fault {
+					case "id":
+						s.missingID = true
+					case "protocol":
+						s.protocol = pubsub.GossipSubID_v11
+					case "auth":
+						conn.key = nil
+					case "duplicate":
+						h.drain.seen[s.ID()] = true
+					case "capacity":
+						for index := 0; index < pubsubScoringStreams; index++ {
+							h.drain.seen[fmt.Sprintf("prior-%d", index)] = true
+						}
+					case "reset":
+						s.resetErr = primary
+					}
+					finished := make(chan struct{})
+					var opened network.Stream
+					var openErr error
+					called := false
+					var openOnce, wrapOnce, resetOnce sync.Once
+					unblockOpen := func() { openOnce.Do(func() { close(delegate.finish) }) }
+					unblockWrap := func() { wrapOnce.Do(func() { close(s.wrapRelease) }) }
+					unblockReset := func() { resetOnce.Do(func() { close(s.release) }) }
+					t.Cleanup(func() { unblockOpen(); unblockWrap(); unblockReset(); pubsubScoringUnitCleanupJoin(finished) })
+					if incoming {
+						h.SetStreamHandler(h.protocol, func(network.Stream) { called = true })
+						go func() { defer close(finished); delegate.handler(s) }()
+					} else {
+						go func() { defer close(finished); opened, openErr = h.NewStream(root, conn.remote, h.protocol) }()
+						pubsubScoringUnitWait(t, delegate.started)
+						unblockOpen()
+					}
+					pubsubScoringUnitWait(t, s.wrapEntered) // Admitted caller is still wrapping its actual native return.
+					h.drain.mu.Lock()
+					h.drain.closing = true
+					h.drain.mu.Unlock()
+					o.mu.Lock()
+					o.pubsubCallbacksClosed = true
+					o.mu.Unlock()
+					if root.Err() != nil {
+						t.Fatal("context canceled before admission edge")
+					}
+					if canceled {
+						cancelRoot()
+					}
+					unblockWrap()
+					pubsubScoringUnitWait(t, s.entered)
+					ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+					err := h.drain.stop(ctx)
+					cancel()
+					h.drain.mu.Lock()
+					active := h.drain.active
+					retained := len(h.drain.streams)
+					h.drain.mu.Unlock()
+					if err == nil || active != 1 || retained != 0 {
+						t.Fatal("held native Reset invented a completed join", err, active, retained)
+					}
+					unblockReset()
+					pubsubScoringUnitWait(t, finished)
+					if !canceled && root.Err() != nil {
+						t.Fatal("fixture hid the race by canceling its context")
+					}
+					if opened != nil || called || len(pubsubScoringUnitEvents(o, "protocol")) != 0 || len(pubsubScoringUnitEvents(o, "rpc")) != 0 {
+						t.Fatal("closed admission exported caller/protocol/RPC ownership")
+					}
+					if fault == "valid" || fault == "reset" {
+						if !incoming && openErr != context.Canceled {
+							t.Fatal("closed admission was not explicit cancellation", openErr)
+						}
+					} else if o.failure == nil || !incoming && (openErr == nil || openErr == context.Canceled) {
+						t.Fatal("invalid owner was suppressed by closed/canceled admission", openErr, o.failure)
+					}
+					if fault == "valid" && o.failure != nil {
+						t.Fatal("valid closed admission became fatal", o.failure)
+					}
+					if fault == "reset" && o.failure != primary {
+						t.Fatal("native Reset error was replaced or suppressed", o.failure)
+					}
+					receipts := pubsubScoringUnitEvents(o, "native_rejected_stream_disposal")
+					if len(receipts) != 1 || receipts[0]["returned_order"].(uint64) <= receipts[0]["started_order"].(uint64) ||
+						(fault == "reset") != (receipts[0]["outcome"] == "error") {
+						t.Fatal("native Reset result/RETURN was not preserved", receipts)
+					}
+					cancelRoot()
+					worker := make(chan struct{})
+					close(worker)
+					command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+						Local: o.local.String(), Prepare: o.prepareAck}
+					err = o.quiesceAck(command, h.drain, root, child, context.Background(), worker)
+					if (err == nil) != (fault == "valid") {
+						t.Fatal("quiesce ACK ignored actual disposal/fatal failure", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPubsubScoringRetainChecksInvalidOwnersBeforeClosedAdmission(t *testing.T) {
+	for _, quic := range []bool{false, true} {
+		for _, fault := range []string{"valid", "id", "duplicate", "capacity"} {
+			t.Run(fmt.Sprintf("quic=%v/%s", quic, fault), func(t *testing.T) {
+				drain := newPubsubScoringDrain()
+				drain.closing = true
+				s := &pubsubScoringUnitStream{id: "late-owner", missingID: fault == "id"}
+				if fault == "duplicate" {
+					drain.seen[s.ID()] = true
+				}
+				if fault == "capacity" {
+					for index := 0; index < pubsubScoringStreams; index++ {
+						drain.seen[fmt.Sprintf("prior-%d", index)] = true
+					}
+				}
+				var wrapped pubsubScoringDrainedStream = &pubsubScoringStream{Stream: s, drain: drain}
+				if quic {
+					wrapped = &pubsubQUICHostStream{Stream: s, drain: drain}
+				}
+				retained, err := drain.retain(wrapped)
+				if retained || len(drain.streams) != 0 || (err == nil) != (fault == "valid") {
+					t.Fatal("retention conflated closure and invalid owner", retained, err)
 				}
 			})
 		}

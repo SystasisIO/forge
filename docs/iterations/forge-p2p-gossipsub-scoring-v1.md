@@ -135,6 +135,16 @@ ACK. Native-error observation remains enabled. Python rejects missing/foreign
 ACKs and later native PubSub writes or selected owners. No public join of Go's
 internal router is inferred.
 
+Retention distinguishes closed admission from invalid owners atomically. A
+previously admitted native open or handler may finish after closing is published
+but before context cancellation; a valid stream then returns fixture cancellation
+and is fully reset before its active reservation is released. Empty IDs, wrong
+protocols/authentication, duplicate owners, capacity overflow and failed native
+Reset remain fatal even with an already canceled context. The deterministic
+regression holds the actual rejected Reset across this closing-before-cancel
+boundary, checks its receipt and prevents premature drain completion. It does not
+prove the live QUIC scenario or alter native Close0 acceptance.
+
 Terminal operations remain globally accounted through RETURN, receipt capture
 and framing finalization even after their stream leaves the retained registry.
 The regression holds a repeated Close/Reset on that released wrapper and requires

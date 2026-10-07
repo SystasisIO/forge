@@ -908,15 +908,26 @@ func (d *pubsubScoringDrain) end() {
 	default:
 	}
 }
-func (d *pubsubScoringDrain) retain(s pubsubScoringDrainedStream) bool {
+func (d *pubsubScoringDrain) retain(s pubsubScoringDrainedStream) (bool, error) {
+	id := s.ID()
+	if id == "" {
+		return false, fmt.Errorf("PubSub stream lacks native ID")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closing || len(d.seen) == pubsubScoringStreams || d.seen[s.ID()] {
-		return false
+	// Invalid owners remain fatal even when admission has already closed.
+	if d.seen[id] {
+		return false, fmt.Errorf("PubSub stream has duplicate native ID")
 	}
-	d.seen[s.ID()] = true
-	d.streams[s.ID()] = s
-	return true
+	if len(d.seen) >= pubsubScoringStreams {
+		return false, fmt.Errorf("PubSub observed stream bound exceeded")
+	}
+	if d.closing {
+		return false, nil
+	}
+	d.seen[id] = true
+	d.streams[id] = s
+	return true, nil
 }
 func (d *pubsubScoringDrain) release(s pubsubScoringDrainedStream) {
 	d.mu.Lock()
@@ -961,7 +972,6 @@ func (d *pubsubScoringDrain) stop(ctx context.Context) error {
 
 type pubsubScoringHost struct {
 	host.Host
-	ctx         context.Context
 	observer    *pubsubScoringObserver
 	gater       *pathDialObserver
 	drain       *pubsubScoringDrain
@@ -980,8 +990,15 @@ func (h *pubsubScoringHost) wrap(s network.Stream) (network.Stream, error) {
 	state := s.Conn().ConnState()
 	if h.observer.quic != nil {
 		wrapped := &pubsubQUICHostStream{Stream: s, drain: h.drain}
-		if s.ID() == "" || s.Protocol() != h.protocol || !h.drain.retain(wrapped) {
+		if s.ID() == "" || s.Protocol() != h.protocol {
 			return nil, fmt.Errorf("PubSub QUIC host stream lacks selected protocol/admitted owner")
+		}
+		retained, err := h.drain.retain(wrapped)
+		if err != nil {
+			return nil, err
+		}
+		if !retained {
+			return nil, context.Canceled
 		}
 		h.observer.emit("protocol", "go.network.Stream.Protocol", map[string]any{"connection_id": s.Conn().ID(),
 			"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
@@ -991,8 +1008,15 @@ func (h *pubsubScoringHost) wrap(s network.Stream) (network.Stream, error) {
 	}
 	wrapped := &pubsubScoringStream{Stream: s, observer: h.observer, drain: h.drain,
 		nativeYamux: state.Transport == "tcp" && state.Security == noise.ID && state.StreamMultiplexer == yamux.ID}
-	if s.ID() == "" || s.Protocol() != h.protocol || !h.drain.retain(wrapped) {
+	if s.ID() == "" || s.Protocol() != h.protocol {
 		return nil, fmt.Errorf("PubSub stream lacks selected protocol/admitted owner")
+	}
+	retained, err := h.drain.retain(wrapped)
+	if err != nil {
+		return nil, err
+	}
+	if !retained {
+		return nil, context.Canceled
 	}
 	h.observer.emit("protocol", "go.network.Stream.Protocol", map[string]any{"connection_id": s.Conn().ID(),
 		"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
@@ -1012,7 +1036,7 @@ func (h *pubsubScoringHost) NewStream(ctx context.Context, p peer.ID, ids ...pro
 	wrapped, err := h.wrap(s)
 	if err != nil {
 		h.disposeRejected(s)
-		if h.ctx.Err() == nil {
+		if err != context.Canceled {
 			h.observer.fail(err)
 		}
 	}
@@ -1062,16 +1086,12 @@ func (s *pubsubScoringQUICWriteStream) Write(p []byte) (int, error) {
 }
 func (h *pubsubScoringHost) SetStreamHandler(id protocol.ID, handler network.StreamHandler) {
 	h.Host.SetStreamHandler(id, func(s network.Stream) {
-		admitted := h.drain.enterHandler()
+		h.drain.enterHandler()
 		defer h.drain.end()
-		if !admitted {
-			h.disposeRejected(s)
-			return
-		}
 		wrapped, err := h.wrap(s)
 		if err != nil {
 			h.disposeRejected(s)
-			if h.ctx.Err() == nil {
+			if err != context.Canceled {
 				h.observer.fail(err)
 			}
 			return
@@ -1855,7 +1875,7 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 	if args["version"] == "1.0" {
 		id = pubsub.GossipSubID_v10
 	}
-	observed = &pubsubScoringHost{Host: h, ctx: pubsubCtx, observer: o, gater: gater, drain: newPubsubScoringDrain(), protocol: id,
+	observed = &pubsubScoringHost{Host: h, observer: o, gater: gater, drain: newPubsubScoringDrain(), protocol: id,
 		fingerprint: args["pnet-fingerprint"]}
 	notifier = &network.NotifyBundle{ConnectedF: func(_ network.Network, c network.Conn) {
 		o.nativeCallback(func() {
