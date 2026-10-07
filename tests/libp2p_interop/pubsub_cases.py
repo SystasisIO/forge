@@ -10,7 +10,7 @@ import time
 from process_lifecycle import StopBudget, enter_scope, exit_scope, spawn_owned
 from pubsub_evidence import (
     DIRECTIONS, EVENT_LIMIT, PROFILES, SOURCES, _donor_shutdown_event, _events, _owner, _rpc_peer, _terminal_owners,
-    prepared_snapshot, require, shutdown_ack, validate_case,
+    prepared_snapshot, quiesce_ack, require, shutdown_ack, validate_case,
 )
 from pubsub_wire import validate_rpc_receipt
 
@@ -180,7 +180,7 @@ def _prepare_all(actors, sequence, token, deadline):
     return barrier
 
 
-def _stop_prepared(actors, barrier):
+def _stop_prepared(actors, barrier, *, deadline=None):
     # Recheck every active result before the first stop; never infer preparation from ready/status.
     operations = barrier["operations"]
     if (set(actors) != {"victim", "offender", "replacement", "sink"}
@@ -203,6 +203,39 @@ def _stop_prepared(actors, barrier):
         if row.get("evidence_file") != str(path):
             raise ValueError("foreign prepare snapshot path before stop")
         prepared_snapshot(_read(path), row, current, owner.process.pid)
+    # Keep every host alive while all Go PubSub owners actually quiesce.
+    go = [(role, owner, files) for role, (owner, files) in actors.items() if owner.ready["implementation"] == "go"]
+    for role, owner, files in go:
+        prepared = next(row for row in operations[:4] if row["actor"] == role)
+        command = {"sequence": prepared["command_sequence"] + 1, "kind": "quiesce_shutdown", "actor": role,
+                   "case_token": owner.ready["case_token"], "local_peer_id": owner.ready["peer_id"],
+                   "prepare_ack_sequence": prepared["ack_event_sequence"]}
+        with files["control"].open("a") as output:
+            output.write(json.dumps(command, separators=(",", ":")) + "\n")
+            output.flush()
+        operations.append({"sequence": len(operations) + 1, "kind": "quiesce_requested", "actor": role,
+                           "case_token": command["case_token"], "local_peer_id": command["local_peer_id"], "pid": owner.process.pid,
+                           "command_sequence": command["sequence"], "prepare_ack_sequence": command["prepare_ack_sequence"]})
+    quiesce_deadline = time.monotonic() + 8 if deadline is None else deadline
+    for role, owner, files in go:
+        request = next(row for row in operations[4:4 + len(go)] if row["actor"] == role)
+        def acknowledged(value):
+            return quiesce_ack(value, role, owner.ready["case_token"], owner.ready["peer_id"], owner.process.pid,
+                               request["command_sequence"], request["prepare_ack_sequence"], active=True) is not None
+        value = _await(owner, files["result"], acknowledged, quiesce_deadline)
+        require(owner.process.poll() is None, "Go actor exited before quiesce barrier release")
+        ack = quiesce_ack(value, role, owner.ready["case_token"], owner.ready["peer_id"], owner.process.pid,
+                          request["command_sequence"], request["prepare_ack_sequence"], active=True)
+        require(ack is not None, "missing actual Go quiesce acknowledgement")
+        operations.append({**request, "sequence": len(operations) + 1, "kind": "quiesce_ack",
+                           "quiesce_event_sequence": ack["sequence"]})
+    for role, owner, files in go:
+        request = next(row for row in operations[4:4 + len(go)] if row["actor"] == role)
+        ack = quiesce_ack(_read(files["result"]), role, owner.ready["case_token"], owner.ready["peer_id"],
+                          owner.process.pid, request["command_sequence"], request["prepare_ack_sequence"], active=True)
+        observed = next(row for row in operations if row["kind"] == "quiesce_ack" and row["actor"] == role)
+        require(owner.process.poll() is None and ack is not None and ack["sequence"] == observed["quiesce_event_sequence"],
+                "Go quiesce acknowledgement failed before first Stop")
     def stop(role, owner):
         owner.request_stop()
         operations.append({"sequence": len(operations) + 1, "kind": "stop_requested", "actor": role,
@@ -339,7 +372,7 @@ def run_case(spec, binaries, root, *, key=None, fingerprint=None, command_attemp
         wait("sink", lambda value: _has(value, "delivery", payload_sha256=hashlib.sha256(payload.encode()).hexdigest(),
                                        propagation_peer=peer("replacement")))
         artifact["shutdown_barrier"] = _prepare_all(actors, sequence, token, deadline)
-        _stop_prepared(actors, artifact["shutdown_barrier"])
+        _stop_prepared(actors, artifact["shutdown_barrier"], deadline=deadline)
     except Exception as error:
         errors.append(f"{type(error).__name__}: {error}")
     finally:

@@ -124,6 +124,8 @@ class PubSubCaseTests(unittest.TestCase):
                                "command_kind": "prepare_shutdown", "status": "ok",
                                "source": {"forge": "forge.fixture.native_operation", "rust": "rust.fixture.control-native-operation-completion",
                                           "go": "go.fixture.append_only_control"}[implementation]}]}
+            if implementation == "go":
+                raw.update(pid=pid, active_stream_handlers_and_io=0, active_fixture_workers=1, active_callbacks=0)
             files["result"].write_text(json.dumps(raw))
             state = {"exit_code": None}
             process = SimpleNamespace(pid=pid, poll=lambda state=state: state["exit_code"])
@@ -163,6 +165,36 @@ class PubSubCaseTests(unittest.TestCase):
             process.wait = wait
             actors[role], documents[role] = (owner, files), raw
         return actors, documents, stops
+
+    def acknowledge_quiesce(self, actors, documents, stops, owner, predicate):
+        """Synthetic ACK only after the actual test control command is present."""
+        self.assertEqual(stops, [])
+        for candidate, files in actors.values():
+            if candidate.ready["implementation"] == "go":
+                self.assertEqual(json.loads(files["control"].read_text().splitlines()[-1])["kind"], "quiesce_shutdown")
+        role = owner.ready["actor"]
+        value = documents[role]
+        command = json.loads(actors[role][1]["control"].read_text().splitlines()[-1])
+        self.assertEqual(command["kind"], "quiesce_shutdown")
+        if not any(event["kind"] == "shutdown_quiesced" for event in value["events"]):
+            sequence = len(value["events"]) + 1
+            value["events"].append({"sequence": sequence, "mono_ns": sequence, "kind": "shutdown_quiesced",
+                                    "source": "go.fixture.owned_pubsub_quiesce", "actor": role,
+                                    "case_token": command["case_token"], "local_peer_id": command["local_peer_id"],
+                                    "pid": owner.process.pid, "command_sequence": command["sequence"],
+                                    "prepare_ack_sequence": command["prepare_ack_sequence"], "native_admission_closed": True,
+                                    "pubsub_callback_admission_closed": True,
+                                    "pubsub_context_cancelled": True, "subscriber_context_cancelled": True,
+                                    "active_stream_handlers_and_io": 0, "active_pubsub_streams": 0,
+                                    "active_fixture_workers": 0, "active_callbacks": 0,
+                                    "joined_scope": "fixture_subscriber_admitted_stream_IO_framing_pending_terminal_and_observer_callbacks"})
+            value["events"].append({"sequence": sequence + 1, "mono_ns": sequence + 1, "kind": "command_done",
+                                    "source": "go.fixture.append_only_control", "command_sequence": command["sequence"],
+                                    "command_kind": "quiesce_shutdown", "status": "ok"})
+            value.update(active_stream_handlers_and_io=0, active_fixture_workers=0, active_callbacks=0)
+            actors[role][1]["result"].write_text(json.dumps(value))
+        self.assertTrue(predicate(value))
+        return value
 
     def test_all_four_actual_commands_and_acks_precede_first_stop(self):
         with tempfile.TemporaryDirectory() as root:
@@ -220,11 +252,15 @@ class PubSubCaseTests(unittest.TestCase):
                     owner.request_stop = forge_stop
                 with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline: documents[owner.ready["actor"]]):
                     barrier = _prepare_all(actors, {role: 1 for role in actors}, "a" * 32, 10)
-                _stop_prepared(actors, barrier)
+                with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline:
+                           self.acknowledge_quiesce(actors, documents, stops, owner, predicate)):
+                    _stop_prepared(actors, barrier)
                 self.assertEqual(stops, list(donors + forge))
                 self.assertEqual([row["actor"] for row in barrier["operations"] if row["kind"] == "stop_requested"], stops)
                 self.assertEqual([row["actor"] for row in barrier["operations"] if row["kind"] == "donor_joined"], list(donors))
                 self.assertEqual([row["kind"] for row in barrier["operations"]], ["prepare_ack"] * 4
+                                 + ["quiesce_requested"] * sum(native == "go" for native in implementations.values())
+                                 + ["quiesce_ack"] * sum(native == "go" for native in implementations.values())
                                  + ["stop_requested"] * len(donors) + ["donor_joined"] * len(donors)
                                  + ["stop_requested"] * len(forge))
                 for row in barrier["operations"]:
@@ -344,7 +380,9 @@ class PubSubCaseTests(unittest.TestCase):
                 with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline: documents[owner.ready["actor"]]):
                     barrier = _prepare_all(actors, {role: 1 for role in actors}, "a" * 32, 10)
                 with self.assertRaises((ValueError, RuntimeError, TimeoutError)):
-                    _stop_prepared(actors, barrier)
+                    with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline:
+                               self.acknowledge_quiesce(actors, documents, stops, owner, predicate)):
+                        _stop_prepared(actors, barrier)
                 self.assertEqual(stops, ["offender", "replacement", "sink"])
                 joined = [row["actor"] for row in barrier["operations"] if row["kind"] == "donor_joined"]
                 self.assertEqual(joined, ["offender", "replacement"] if failure == "last_donor_failed" else [])
@@ -352,8 +390,8 @@ class PubSubCaseTests(unittest.TestCase):
                 self.assertFalse(actors["victim"][1]["stop"].exists())
 
     def test_failed_donor_join_keeps_harness_error_and_finally_cleans_every_owner(self):
-        for implementation in ("go", "rust"):
-            with self.subTest(implementation=implementation), tempfile.TemporaryDirectory() as root:
+        for implementation, missing_quiesce in (("go", False), ("rust", False), ("go", True)):
+            with self.subTest(implementation=implementation, missing_quiesce=missing_quiesce), tempfile.TemporaryDirectory() as root:
                 def fail_join(role, raw):
                     if role == "offender":
                         raw["joined"] = False
@@ -385,6 +423,11 @@ class PubSubCaseTests(unittest.TestCase):
                                 event["command_sequence"] = command["sequence"]
                             actors[role][1]["result"].write_text(json.dumps(value))
                             self.assertTrue(predicate(value))
+                        elif command["kind"] == "quiesce_shutdown":
+                            if missing_quiesce and role == "sink":
+                                self.assertFalse(predicate(value))
+                                raise TimeoutError("missing actual Go quiesce ACK")
+                            return self.acknowledge_quiesce(actors, documents, stops, owner, predicate)
                     return value
                 spec = next(case for case in case_specs() if case.source == implementation and case.destination == "forge"
                             and case.version == "1.1" and case.profile == "native_quic")
@@ -396,17 +439,56 @@ class PubSubCaseTests(unittest.TestCase):
                                         Path(root) / "cases")
                 acceptance.assert_not_called()
                 self.assertEqual(artifact["status"], "HARNESS_ERROR")
-                self.assertTrue(any("unjoined" in error for error in artifact["errors"]))
+                self.assertTrue(any(("quiesce ACK" if missing_quiesce else "unjoined") in error for error in artifact["errors"]))
                 self.assertNotIn("evidence", artifact)
-                self.assertEqual([row["actor"] for row in artifact["shutdown_barrier"]["operations"][4:]],
-                                 ["offender", "replacement", "sink"])
-                self.assertEqual(stops, ["offender", "replacement", "sink", "victim"])
+                self.assertEqual([row["actor"] for row in artifact["shutdown_barrier"]["operations"]
+                                 if row["kind"] == "stop_requested"],
+                                 [] if missing_quiesce else ["offender", "replacement", "sink"])
+                self.assertEqual(stops, ["victim", "offender", "replacement", "sink"] if missing_quiesce
+                                 else ["offender", "replacement", "sink", "victim"])
                 self.assertIsNone(current_scope())
                 for role, (owner, files) in actors.items():
                     self.assertTrue(files["stop"].exists())
                     self.assertTrue(owner.closed)
                     self.assertEqual(len(owner.wait_observations), 1)
                     self.assertEqual(artifact["processes"][role]["returncode"], 0)
+
+    def test_all_go_quiesce_commands_precede_wait_and_bad_last_ack_never_releases_any_stop(self):
+        modes = ("missing", "timeout", "pid", "prepare", "callback_admission", "worker", "sticky", "duplicate", "exit", "changed_earlier_ack")
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                implementations = {role: "forge" if role == "victim" else "go"
+                                   for role in ("victim", "offender", "replacement", "sink")}
+                actors, documents, stops = self.shutdown_actors(root, implementations=implementations)
+                with patch("pubsub_cases._await", side_effect=lambda owner, path, predicate, deadline: documents[owner.ready["actor"]]):
+                    barrier = _prepare_all(actors, {role: 1 for role in actors}, "a" * 32, 10)
+                def wait(owner, path, predicate, deadline):
+                    self.assertEqual(stops, [])
+                    if owner.ready["actor"] == "sink" and mode in {"missing", "timeout"}:
+                        self.assertFalse(predicate(documents["sink"]))
+                        raise TimeoutError("quiesce did not acknowledge before existing deadline")
+                    value = self.acknowledge_quiesce(actors, documents, stops, owner, predicate)
+                    if owner.ready["actor"] == "sink":
+                        ack = next(event for event in value["events"] if event["kind"] == "shutdown_quiesced")
+                        if mode == "pid": ack["pid"] += 100
+                        elif mode == "prepare": ack["prepare_ack_sequence"] += 1
+                        elif mode == "callback_admission": ack["pubsub_callback_admission_closed"] = False
+                        elif mode == "worker": ack["active_fixture_workers"] = 1
+                        elif mode == "sticky": value["error"] = "original native TCP error"
+                        elif mode == "duplicate": value["events"].append({**ack, "sequence": len(value["events"]) + 1, "mono_ns": len(value["events"]) + 1})
+                        elif mode == "exit": owner.process.poll = lambda: 0
+                        elif mode == "changed_earlier_ack":
+                            old = documents["offender"]
+                            next(event for event in old["events"] if event["kind"] == "shutdown_quiesced")["pubsub_callback_admission_closed"] = False
+                            actors["offender"][1]["result"].write_text(json.dumps(old))
+                        path.write_text(json.dumps(value))
+                    return value
+                with patch("pubsub_cases._await", side_effect=wait), self.assertRaises((ValueError, RuntimeError, TimeoutError)):
+                    _stop_prepared(actors, barrier, deadline=10)
+                self.assertEqual(stops, [])
+                self.assertFalse(any(row["kind"] in {"stop_requested", "donor_joined"} for row in barrier["operations"]))
+                self.assertEqual([row["actor"] for row in barrier["operations"] if row["kind"] == "quiesce_requested"],
+                                 ["offender", "replacement", "sink"])
 
     def test_changed_or_missing_prepare_capture_never_releases_stop(self):
         for missing in (False, True):

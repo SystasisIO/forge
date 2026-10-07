@@ -126,10 +126,19 @@ pending until both gates pass on the clean exact head.
 
 ### Shutdown Evidence Repairs
 
-The fixture publishes all donor stop commands before awaiting any donor. Forge
-remains alive until every donor has exited successfully, drained native owners
-and supplied an identity-bound shutdown receipt after the common Prepare barrier.
-Failure cleanup still stops all processes, but cannot create acceptance evidence.
+After all four Prepare acknowledgements, the fixture keeps every host alive
+until all Go PubSub owners acknowledge an actual quiesce. PubSub cancellation is
+separate from the live controller. Open/write and application callback admission
+close; retained native I/O/framing/terminal operations, rejected-stream disposal,
+subscriber work and admitted callbacks must drain before the PID/identity-bound
+ACK. Native-error observation remains enabled. Python rejects missing/foreign
+ACKs and later native PubSub writes or selected owners. No public join of Go's
+internal router is inferred.
+
+Only then does the fixture publish all donor stop commands before awaiting any
+donor. Forge remains alive until every donor has exited successfully, drained
+native owners and supplied an identity-bound shutdown receipt. Failure cleanup
+still stops all processes, but cannot create acceptance evidence.
 
 Go QUIC validation distinguishes a failed repeated Close from its independently
 finalized successful Reset. An empty, late-born unselected stream may retain a
@@ -145,7 +154,8 @@ stream during simultaneous peer shutdown. The focused test binds this ordering
 to the actual defer and requires native host/worker/resource disposal. Any
 unjoined test owner exhausts a bounded failure budget and fails the process,
 rather than returning with an orphan background task. Native I/O failures are
-not reclassified. A new canonical run must prove the concurrent private-network
+not reclassified; quiesce does not serialize the donor's concurrent Close/Reset
+or relax the returned-Reset-before-Close rule. A new canonical run must prove the concurrent private-network
 cases; the focused peerless test alone cannot do so.
 
 PR12 retains IDONTWANT, v1.3 extensions and opt-in Partial Messages. Stage 7

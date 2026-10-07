@@ -7,7 +7,7 @@ import unittest
 
 from pubsub_evidence import (
     AUTHENTICATION, GO_QUIC_SOURCES, PROFILES, _events, _go_quic_operations, _go_quic_owner, _owner, _rpc_peer, _same_json, _shutdown_barrier,
-    prepared_snapshot, shutdown_ack, validate_case,
+    prepared_snapshot, quiesce_ack, shutdown_ack, validate_case,
 )
 from rust_upgrade_evidence import BASE58, _peer
 from test_pubsub_wire import field, receipt
@@ -70,7 +70,7 @@ def synthetic_case(*, lower_quic=True):
                         "case_token": token, "actor": name, "local_peer_id": peers[name],
                         "finalized": True, "joined": True, "overflow": False, "error": None, "events": []}
         if name != "victim":
-            actors[name].update(host_close_returned=True, active_stream_handlers_and_io=0,
+            actors[name].update(pid=index, host_close_returned=True, active_stream_handlers_and_io=0,
                                 active_fixture_workers=0, active_callbacks=0)
         processes[name] = {"pid": index, "returncode": 0, "forced_termination": False,
                            "terminal_status": {"exit_code": 0, "termination": "graceful"}}
@@ -174,6 +174,30 @@ def synthetic_case(*, lower_quic=True):
                                       "actor": name, "case_token": token, "local_peer_id": peers[name],
                                       "command_sequence": 1, "ack_event_sequence": ack_sequence,
                                       "evidence_file": f"/synthetic/{name}.prepare-result.json"})
+    for name in names[1:]:
+        prepared = next(row for row in barrier["operations"][:4] if row["actor"] == name)
+        barrier["operations"].append({"sequence": len(barrier["operations"]) + 1, "kind": "quiesce_requested",
+                                      "actor": name, "case_token": token, "local_peer_id": peers[name],
+                                      "pid": processes[name]["pid"], "command_sequence": 2,
+                                      "prepare_ack_sequence": prepared["ack_event_sequence"]})
+    for name in names[1:]:
+        request = next(row for row in barrier["operations"] if row["kind"] == "quiesce_requested" and row["actor"] == name)
+        values = actors[name]["events"]
+        sequence = len(values) + 1
+        values.append({"sequence": sequence, "mono_ns": sequence, "kind": "shutdown_quiesced",
+                       "source": "go.fixture.owned_pubsub_quiesce", "actor": name, "case_token": token,
+                       "local_peer_id": peers[name], "pid": processes[name]["pid"], "command_sequence": 2,
+                       "prepare_ack_sequence": request["prepare_ack_sequence"], "native_admission_closed": True,
+                       "pubsub_callback_admission_closed": True,
+                       "pubsub_context_cancelled": True, "subscriber_context_cancelled": True,
+                       "active_stream_handlers_and_io": 0, "active_pubsub_streams": 0,
+                       "active_fixture_workers": 0, "active_callbacks": 0,
+                       "joined_scope": "fixture_subscriber_admitted_stream_IO_framing_pending_terminal_and_observer_callbacks"})
+        values.append({"sequence": sequence + 1, "mono_ns": sequence + 1, "kind": "command_done",
+                       "source": "go.fixture.append_only_control", "command_sequence": 2,
+                       "command_kind": "quiesce_shutdown", "status": "ok"})
+        barrier["operations"].append({**request, "sequence": len(barrier["operations"]) + 1, "kind": "quiesce_ack",
+                                      "quiesce_event_sequence": sequence})
     for name in names[1:]:
         barrier["operations"].append({"sequence": len(barrier["operations"]) + 1, "kind": "stop_requested",
                                       "actor": name, "case_token": token, "local_peer_id": peers[name]})
@@ -281,9 +305,16 @@ def synthetic_lower_quic(artifact):
         for value in events:
             if "score_observation_sequence" in value:
                 value["score_observation_sequence"] = original_refs[value["score_observation_sequence"]]["sequence"]
+            if value["kind"] == "shutdown_quiesced":
+                value["prepare_ack_sequence"] = original_refs[value["prepare_ack_sequence"]]["sequence"]
         ack = next(value for value in events if value["kind"] == "shutdown_prepared")
         row = next(row for row in artifact["shutdown_barrier"]["operations"][:4] if row["actor"] == raw["actor"])
         row["ack_event_sequence"] = ack["sequence"]
+        for row in artifact["shutdown_barrier"]["operations"]:
+            if row["actor"] == raw["actor"] and row["kind"] in {"quiesce_requested", "quiesce_ack"}:
+                row["prepare_ack_sequence"] = ack["sequence"]
+                if row["kind"] == "quiesce_ack":
+                    row["quiesce_event_sequence"] = original_refs[row["quiesce_event_sequence"]]["sequence"]
         for owner in owners.values():
             base = owner["base"]
             send = {"done": True, "cause_type": "*quic.StreamError", "error_code": 0, "remote": False,
@@ -1585,6 +1616,8 @@ class PubSubEvidenceTests(unittest.TestCase):
                  if key in value]
         joins = [(row, events[row["shutdown_event_sequence"] - 1])
                  for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "donor_joined" and row["actor"] == "sink"]
+        quiesced = [(row, events[row["quiesce_event_sequence"] - 1])
+                    for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "quiesce_ack" and row["actor"] == "sink"]
         events[index:index] = added
         for sequence, event in enumerate(events, 1):
             event.update(sequence=sequence, mono_ns=sequence)
@@ -1597,6 +1630,11 @@ class PubSubEvidenceTests(unittest.TestCase):
         ack = next(event for event in events if event["kind"] == "shutdown_prepared")
         row = next(row for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "prepare_ack" and row["actor"] == "sink")
         row["ack_event_sequence"] = ack["sequence"]
+        for row in artifact["shutdown_barrier"]["operations"]:
+            if row["actor"] == "sink" and row["kind"] in {"quiesce_requested", "quiesce_ack"}:
+                row["prepare_ack_sequence"] = ack["sequence"]
+        for row, target in quiesced:
+            row["quiesce_event_sequence"] = target["sequence"]
 
     def terminal_only_events(self, artifact, outcome, *, private=False):
         """Keep all RPC carriers intact; use a separate real-shaped terminal/disposal owner."""
@@ -2244,6 +2282,83 @@ class PubSubEvidenceTests(unittest.TestCase):
             with self.subTest(position=position), self.assertRaises(ValueError):
                 _events(changed, "rust", changed["case_token"], "victim")
 
+    def test_go_quiesce_requires_exact_owner_resources_and_pre_stop_order(self):
+        baseline = synthetic_case(lower_quic=False)
+        validate_case(baseline)
+        modes = ("missing_request", "missing_ack", "duplicate_ack", "wrong_pid", "boolean_pid", "raw_pid",
+                 "wrong_prepare", "boolean_prepare", "future_prepare", "foreign_token", "foreign_actor", "wrong_source",
+                 "open_admission", "open_callbacks", "live_worker", "live_io", "live_stream", "callback", "boolean_zero",
+                 "live_context", "missing_done", "failed_done", "host_claim", "sticky", "stop_before_ack")
+        for mode in modes:
+            artifact = deepcopy(baseline)
+            rows = artifact["shutdown_barrier"]["operations"]
+            request = next(row for row in rows if row["kind"] == "quiesce_requested")
+            observed = next(row for row in rows if row["kind"] == "quiesce_ack" and row["actor"] == request["actor"])
+            raw = artifact["raw"][request["actor"]]
+            ack = raw["events"][observed["quiesce_event_sequence"] - 1]
+            done = next(event for event in raw["events"] if event.get("command_kind") == "quiesce_shutdown")
+            changes = {
+                "missing_request": lambda: rows.remove(request), "missing_ack": lambda: raw["events"].remove(ack),
+                "duplicate_ack": lambda: raw["events"].append({**ack, "sequence": len(raw["events"]) + 1, "mono_ns": len(raw["events"]) + 1}),
+                "wrong_pid": lambda: ack.update(pid=99), "boolean_pid": lambda: ack.update(pid=True),
+                "raw_pid": lambda: raw.update(pid=99), "wrong_prepare": lambda: ack.update(prepare_ack_sequence=1),
+                "boolean_prepare": lambda: ack.update(prepare_ack_sequence=True),
+                "future_prepare": lambda: ack.update(prepare_ack_sequence=ack["sequence"] + 1),
+                "foreign_token": lambda: ack.update(case_token="b" * 32), "foreign_actor": lambda: ack.update(actor="sink"),
+                "wrong_source": lambda: ack.update(source="go.pubsub.RawTracer.Join"),
+                "open_admission": lambda: ack.update(native_admission_closed=False),
+                "open_callbacks": lambda: ack.update(pubsub_callback_admission_closed=False),
+                "live_worker": lambda: ack.update(active_fixture_workers=1), "live_io": lambda: ack.update(active_stream_handlers_and_io=1),
+                "live_stream": lambda: ack.update(active_pubsub_streams=1), "callback": lambda: ack.update(active_callbacks=1),
+                "boolean_zero": lambda: ack.update(active_callbacks=False), "live_context": lambda: ack.update(pubsub_context_cancelled=False),
+                "missing_done": lambda: raw["events"].remove(done), "failed_done": lambda: done.update(status="error"),
+                "host_claim": lambda: ack.update(host_close_returned=True), "sticky": lambda: raw.update(error="native TCP ECONNRESET"),
+            }
+            if mode == "stop_before_ack":
+                left, right = rows.index(observed), next(index for index, row in enumerate(rows) if row["kind"] == "stop_requested")
+                rows[left], rows[right] = rows[right], rows[left]
+                for sequence, row in enumerate(rows, 1): row["sequence"] = sequence
+            else:
+                changes[mode]()
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                _shutdown_barrier(artifact, artifact["raw"], {name: value["events"] for name, value in artifact["raw"].items()})
+
+    def test_go_quiesce_rejects_late_native_subscription_and_selected_owner_not_logical_submission(self):
+        for kind in ("rpc", "protocol", "rpc_send"):
+            artifact = synthetic_case(lower_quic=False)
+            raw = artifact["raw"]["sink"]
+            if kind == "rpc_send":
+                event = {"kind": kind, "source": "go.pubsub.RawTracer.rpc_send", "wire_receipt": False,
+                         "remote_peer_id": artifact["raw"]["replacement"]["local_peer_id"], "submission_sha256": "c" * 64}
+            else:
+                event = deepcopy(next(value for value in raw["events"] if value["kind"] == kind))
+                if kind == "rpc":
+                    event.update(direction="write", source="go.pubsub.native_stream.write",
+                                 receipt=receipt(field(1, field(1, 1) + field(2, ("forge-pr11:" + artifact["case_token"]).encode())), "write"))
+                else:
+                    event["stream_id"] = "new-native-owner-after-ACK"
+            self.insert_sink_events(artifact, len(raw["events"]) - 1, [event])
+            with self.subTest(kind=kind):
+                if kind == "rpc_send":
+                    _shutdown_barrier(artifact, artifact["raw"], {name: value["events"] for name, value in artifact["raw"].items()})
+                else:
+                    with self.assertRaisesRegex(ValueError, "after quiesce"):
+                        _shutdown_barrier(artifact, artifact["raw"], {name: value["events"] for name, value in artifact["raw"].items()})
+
+    def test_active_go_quiesce_is_not_host_or_process_join(self):
+        artifact = synthetic_case(lower_quic=False)
+        raw = artifact["raw"]["sink"]
+        raw["events"].pop()
+        raw.update(finalized=False, joined=False, host_close_returned=False)
+        row = next(row for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "quiesce_ack" and row["actor"] == "sink")
+        args = (raw, "sink", artifact["case_token"], raw["local_peer_id"], raw["pid"], row["command_sequence"], row["prepare_ack_sequence"])
+        self.assertEqual(quiesce_ack(*args, active=True)["sequence"], row["quiesce_event_sequence"])
+        for field in ("host_close_returned", "finalized", "joined", "active_fixture_workers", "active_stream_handlers_and_io"):
+            changed = deepcopy(raw)
+            changed[field] = True if field in {"host_close_returned", "finalized", "joined"} else 1
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                quiesce_ack(changed, *args[1:], active=True)
+
     def test_donor_join_barrier_rejects_missing_foreign_forged_and_reordered_receipts(self):
         modes = ("missing_join", "missing_prepare", "duplicate_stop", "duplicate_join", "early_join", "early_forge_stop",
                  "foreign_actor", "foreign_peer", "foreign_token", "foreign_pid", "boolean_pid", "foreign_shutdown",
@@ -2253,13 +2368,15 @@ class PubSubEvidenceTests(unittest.TestCase):
             artifact = synthetic_case()
             rows = artifact["shutdown_barrier"]["operations"]
             join = next(row for row in rows if row["kind"] == "donor_joined")
+            stops = [row for row in rows if row["kind"] == "stop_requested"]
+            joins = [row for row in rows if row["kind"] == "donor_joined"]
             raw, process = artifact["raw"][join["actor"]], artifact["processes"][join["actor"]]
             shutdown = raw["events"][join["shutdown_event_sequence"] - 1]
             mutations = {
                 "missing_join": lambda: rows.remove(join),
                 "missing_prepare": lambda: rows.pop(0),
-                "duplicate_stop": lambda: rows[5].update(actor=rows[4]["actor"]),
-                "duplicate_join": lambda: rows[8].update(actor=join["actor"]),
+                "duplicate_stop": lambda: stops[1].update(actor=stops[0]["actor"]),
+                "duplicate_join": lambda: joins[1].update(actor=join["actor"]),
                 "foreign_actor": lambda: join.update(actor="foreign"),
                 "foreign_peer": lambda: join.update(local_peer_id=artifact["raw"]["victim"]["local_peer_id"]),
                 "foreign_token": lambda: join.update(case_token="b" * 32),
@@ -2282,7 +2399,8 @@ class PubSubEvidenceTests(unittest.TestCase):
             if mode in mutations:
                 mutations[mode]()
             else:
-                left, right = (4, 7) if mode == "early_join" else (9, 10)
+                left, right = (rows.index(stops[0]), rows.index(joins[0])) if mode == "early_join" \
+                    else (rows.index(joins[-1]), rows.index(stops[-1]))
                 rows[left], rows[right] = rows[right], rows[left]
             for sequence, row in enumerate(rows, 1):
                 row["sequence"] = sequence
@@ -2299,7 +2417,8 @@ class PubSubEvidenceTests(unittest.TestCase):
         raw["events"].append({"sequence": shutdown_sequence, "mono_ns": shutdown_sequence,
                               "kind": "shutdown_requested", "source": "rust.fixture.native_host_close", "listeners": 1})
         operations = artifact["shutdown_barrier"]["operations"]
-        operations[:] = operations[:4] + [row for row in operations[4:] if row["kind"] == "stop_requested"] \
+        operations[:] = operations[:4] + [row for row in operations[4:] if row["kind"] in {"quiesce_requested", "quiesce_ack"}] \
+            + [row for row in operations[4:] if row["kind"] == "stop_requested"] \
             + [row for row in operations[4:] if row["kind"] == "donor_joined"]
         operations.append({"kind": "donor_joined", "actor": "victim", "case_token": artifact["case_token"],
                            "local_peer_id": raw["local_peer_id"], "pid": artifact["processes"]["victim"]["pid"],

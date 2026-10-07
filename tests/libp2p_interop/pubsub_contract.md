@@ -36,7 +36,9 @@ the indexed native receipts below.
 Control file is an append-only JSONL list with contiguous `sequence` and `kind`.
 Commands are `connect` with `peer_id`/`address`, `publish` with `payload`,
 `sample` with `label`, and `prepare_shutdown` with `actor`, `case_token` and
-`local_peer_id` matching the actual ready host. Completion includes that sequence in a `command_done`
+`local_peer_id` matching the actual ready host. Go additionally accepts one
+`quiesce_shutdown` lifecycle command immediately after Prepare, with the same
+identity/token and the exact `prepare_ack_sequence`. Completion includes that sequence in a `command_done`
 event. Invalid, duplicate or oversized commands fail the actor. Maximum 64
 commands, 16 KiB per line, 1 KiB payload and 2,048 observation events.
 
@@ -50,12 +52,31 @@ fixture commands before closing command admission and emitting exactly one
 `actor`, `case_token`, actual `local_peer_id`, boolean `admission_closed=true`
 and integer `pending_commands=0`. The matching `command_done` follows it with
 `command_kind=prepare_shutdown` and explicit `status=ok`. No later fixture
-command, duplicate prepare or partial appended command is admitted. Native
+application command, duplicate prepare or partial appended command is admitted.
+Only Go's exact, one-time quiesce lifecycle command is allowed. Native
 router/stream observation continues unchanged while prepared.
 
 The runner observes all four exact acknowledgements, then rechecks every active
-result before requesting ANY normal stop. `shutdown_barrier.operations` records
-four identity/token/command/ack-event-bound `prepare_ack` observations, then all
+result before requesting ANY normal stop. It publishes every Go quiesce request
+and waits for every matching native `shutdown_quiesced` acknowledgement before
+any host Stop. The Go PubSub context is independently cancelled while the host
+and controller stay alive. Native open/write admission and PubSub callback
+admission close; admitted I/O, framing, pending terminal operations, subscriber
+work and callbacks must actually drain before ACK. Rejected native streams
+remain accounted through their actual Reset return and disposal receipt. Reset
+errors and prior sticky failures prohibit ACK. Network/native-error observation
+stays enabled; closed application callback admission does not hide errors.
+
+The quiesce ACK binds the actual PID, identity/token, command sequence and
+preceding Prepare ACK. It proves only the named fixture-owned drain, not a join
+of Go's private router goroutines, Host.Close or process completion. Python
+independently rejects missing/foreign ACKs, remaining owners and actual native
+PubSub writes or newly selected owners after ACK. Logical RawTracer submission
+alone is not a native write. A timeout cannot manufacture a successful ACK.
+
+`shutdown_barrier.operations` records four identity/token/command/ack-event-bound
+`prepare_ack` observations, all Go `quiesce_requested` rows, all Go `quiesce_ack`
+rows, then all
 Go/Rust `stop_requested` publications before waiting for any donor. Forge remains
 running until every donor actually exits zero gracefully with clean final raw,
 unchanged Prepare prefix, native host close and zero joined I/O/worker owners.
@@ -69,13 +90,15 @@ Forge `stop_requested` rows be published. Contiguous coordinator sequences prove
 this order, never comparisons between different processes' monotonic clocks.
 Missing, duplicate, foreign or reordered stop/join receipts, delayed/failed
 donor joins and nonzero/forced exits cannot release normal Forge stop. The
-existing native stop budgets, error classification and donor behavior remain
+existing native stop budgets, error classification and donor router behavior remain
 unchanged; donor-first scheduling does not guarantee a successful exchange.
 Missing, foreign, ambiguous or timed-out acknowledgement is `HARNESS_ERROR`.
 Failure cleanup may still stop processes, but cannot manufacture a successful
 barrier or acceptance. Final actor events must retain the exact ACK; preparation
 is NOT native close, resource release, worker join or successful process exit.
-Those actual terminal obligations remain independently required.
+Those actual terminal obligations remain independently required. Quiesce also
+does not serialize the donor's concurrent Close/Reset paths: an earlier or
+concurrent Reset does not qualify as a returned Reset before Close BEGIN.
 
 Every `prepare_ack` also references its distinct canonical
 `<actor>.prepare-result.json` through `evidence_file`. Before any stop, the

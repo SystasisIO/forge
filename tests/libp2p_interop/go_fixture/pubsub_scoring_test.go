@@ -29,6 +29,7 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pubsubpb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -2315,6 +2316,227 @@ func TestPubsubScoringDrainRetainsResetErrorAndDoesNotInventJoin(t *testing.T) {
 	}
 }
 
+func TestPubsubScoringQuiesceJoinsAdmittedCallbacksButKeepsNativeErrorsLive(t *testing.T) {
+	o := newPubsubScoringObserver("sink", strings.Repeat("a", 32))
+	o.local = pubsubScoringUnitConnection(t).local
+	pubsubScoringUnitPrepare(t, o)
+	command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+		Local: o.local.String(), Prepare: o.prepareAck}
+	root, cancelRoot := context.WithCancel(context.Background())
+	child, cancelChild := context.WithCancel(root)
+	defer cancelChild()
+	cancelRoot()
+	worker := make(chan struct{})
+	close(worker)
+	drain := newPubsubScoringDrain()
+	drain.closing = true
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		o.callback(func() { close(entered); <-release })
+	}()
+	<-entered
+	o.mu.Lock()
+	o.pubsubCallbacksClosed = true
+	o.mu.Unlock()
+	called := false
+	o.callback(func() { called = true })
+	if called {
+		t.Fatal("late PubSub callback passed closed admission")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	err := o.quiesceAck(command, drain, root, child, ctx, worker)
+	cancel()
+	close(release)
+	<-finished
+	if err == nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+		t.Fatal("ACK preceded admitted callback join")
+	}
+	if err := o.quiesceAck(command, drain, root, child, context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	o.nativeCallback(func() { called = true })
+	primary := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	o.fail(primary)
+	if !called || o.failure != primary || o.admitQuiesce(command, 0) != primary {
+		t.Fatal("quiesce silenced native observations or replaced sticky TCP error")
+	}
+}
+
+type pubsubScoringQuiesceUnitHost struct {
+	host.Host
+	started, finish chan struct{}
+	stream          network.Stream
+	handler         network.StreamHandler
+}
+
+func (h *pubsubScoringQuiesceUnitHost) NewStream(context.Context, peer.ID, ...protocol.ID) (network.Stream, error) {
+	close(h.started)
+	<-h.finish
+	return h.stream, nil
+}
+func (h *pubsubScoringQuiesceUnitHost) SetStreamHandler(_ protocol.ID, handler network.StreamHandler) {
+	h.handler = handler
+}
+
+type pubsubScoringQuiesceResetStream struct {
+	pubsubScoringUnitStream
+	entered, release chan struct{}
+}
+
+func (s *pubsubScoringQuiesceResetStream) Reset() error {
+	close(s.entered)
+	<-s.release
+	return s.resetErr
+}
+
+func TestPubsubScoringQuiesceTracksDeclinedHandlerAndInflightOpenDisposals(t *testing.T) {
+	for _, incoming := range []bool{false, true} {
+		for _, failed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("incoming=%v/failed=%v", incoming, failed), func(t *testing.T) {
+				conn := pubsubScoringUnitConnection(t)
+				s := &pubsubScoringQuiesceResetStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: conn},
+					entered: make(chan struct{}), release: make(chan struct{})}
+				primary := &net.OpError{Op: "reset", Net: "tcp", Err: syscall.ECONNRESET}
+				if failed {
+					s.resetErr = primary
+				}
+				o := newPubsubScoringObserver("sink", strings.Repeat("a", 32))
+				o.local = conn.local
+				pubsubScoringUnitPrepare(t, o)
+				command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+					Local: o.local.String(), Prepare: o.prepareAck}
+				root, cancelRoot := context.WithCancel(context.Background())
+				child, cancelChild := context.WithCancel(root)
+				defer cancelChild()
+				delegate := &pubsubScoringQuiesceUnitHost{stream: s, started: make(chan struct{}), finish: make(chan struct{})}
+				h := &pubsubScoringHost{Host: delegate, ctx: root, observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v10}
+				finished := make(chan struct{})
+				if !incoming {
+					go func() { defer close(finished); _, _ = h.NewStream(root, conn.remote, h.protocol) }()
+					<-delegate.started
+				}
+				h.drain.mu.Lock()
+				h.drain.closing = true
+				h.drain.mu.Unlock()
+				o.mu.Lock()
+				o.pubsubCallbacksClosed = true
+				o.mu.Unlock()
+				cancelRoot()
+				if incoming {
+					h.SetStreamHandler(h.protocol, func(network.Stream) { t.Error("declined handler ran") })
+					go func() { defer close(finished); delegate.handler(s) }()
+				} else {
+					close(delegate.finish)
+				}
+				<-s.entered
+				worker := make(chan struct{})
+				close(worker)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+				err := o.quiesceAck(command, h.drain, root, child, ctx, worker)
+				cancel()
+				close(s.release)
+				<-finished
+				if err == nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+					t.Fatal("held rejected Reset did not prevent ACK")
+				}
+				receipts := pubsubScoringUnitEvents(o, "native_rejected_stream_disposal")
+				if len(receipts) != 1 || receipts[0]["returned_order"].(uint64) <= receipts[0]["started_order"].(uint64) {
+					t.Fatal("actual rejected Reset RETURN was not captured", receipts)
+				}
+				err = o.quiesceAck(command, h.drain, root, child, context.Background(), worker)
+				if failed {
+					if o.failure != primary || err != primary || receipts[0]["outcome"] != "error" {
+						t.Fatal("native Reset failure was hidden", err)
+					}
+				} else if err != nil || receipts[0]["outcome"] != "ok" {
+					t.Fatal("completed rejected disposal did not join", err)
+				}
+				if _, err := h.NewStream(root, conn.remote, h.protocol); err != context.Canceled {
+					t.Fatal("new native open passed closed admission", err)
+				}
+			})
+		}
+	}
+}
+
+func TestPubsubScoringQuiesceRejectsUnjoinedWorkerWriteAndForeignPrepare(t *testing.T) {
+	s := &pubsubScoringBlockingStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t), reset: make(chan struct{}, 1)},
+		started: [2]chan struct{}{make(chan struct{}), make(chan struct{})}, finish: make(chan struct{})}
+	wrapped, o := pubsubScoringUnitWrapped(t, s)
+	pubsubScoringUnitPrepare(t, o)
+	command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+		Local: o.local.String(), Prepare: o.prepareAck}
+	for _, mutate := range []func(*pubsubScoringCommand){func(c *pubsubScoringCommand) { c.Prepare++ },
+		func(c *pubsubScoringCommand) { c.Actor = "foreign" }, func(c *pubsubScoringCommand) { c.Sequence++ }} {
+		foreign := command
+		mutate(&foreign)
+		if o.admitQuiesce(foreign, 0) == nil {
+			t.Fatal("foreign quiesce admitted")
+		}
+	}
+	if o.admitQuiesce(command, 1) == nil {
+		t.Fatal("pending command admitted")
+	}
+	root, cancelRoot := context.WithCancel(context.Background())
+	child, cancelChild := context.WithCancel(root)
+	defer cancelChild()
+	writeDone := make(chan error, 1)
+	go func() { _, err := wrapped.Write([]byte("native input")); writeDone <- err }()
+	<-s.started[1]
+	wrapped.drain.mu.Lock()
+	wrapped.drain.closing = true
+	wrapped.drain.mu.Unlock()
+	o.mu.Lock()
+	o.pubsubCallbacksClosed = true
+	o.mu.Unlock()
+	cancelRoot()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- wrapped.drain.stop(ctx) }()
+	<-s.reset
+	worker := make(chan struct{})
+	if o.quiesceAck(command, wrapped.drain, root, child, ctx, worker) == nil {
+		t.Fatal("unjoined subscriber admitted")
+	}
+	close(worker)
+	short, cancelShort := context.WithTimeout(context.Background(), time.Millisecond)
+	err := o.quiesceAck(command, wrapped.drain, root, child, short, worker)
+	cancelShort()
+	close(s.finish)
+	if err == nil || <-writeDone != nil || <-drainDone != nil {
+		t.Fatal("inflight native write joined prematurely", err)
+	}
+	if err := o.quiesceAck(command, wrapped.drain, root, child, ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := wrapped.Write([]byte("late subscription")); n != 0 || err != context.Canceled || s.output.Len() != 0 {
+		t.Fatal("native write passed closed admission", n, err)
+	}
+}
+
+func TestPubsubScoringQuiesceAdmissionPreservesNativeWriteResultAndEarlierTCPFailure(t *testing.T) {
+	primary := &net.OpError{Op: "write", Net: "tcp", Err: syscall.ECONNRESET}
+	native := &pubsubScoringUnitStream{writeN: 2, writeErr: primary}
+	drain := newPubsubScoringDrain()
+	quic := &pubsubScoringQUICWriteStream{pubsubQUICHostStream: &pubsubQUICHostStream{Stream: native, drain: drain}}
+	if n, err := quic.Write([]byte("bytes")); n != 2 || err != primary {
+		t.Fatal("admitted native write result changed", n, err)
+	}
+	drain.closing = true
+	if n, err := quic.Write([]byte("later")); n != 0 || err != context.Canceled || native.output.Len() != 2 {
+		t.Fatal("closed QUIC PubSub write admission reached native delegate", n, err)
+	}
+	tcp, o := pubsubScoringUnitWrapped(t, &pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t), writeErr: primary})
+	if n, err := tcp.Write([]byte("input")); n != 0 || err != primary || o.failure != primary {
+		t.Fatal("original TCP error changed", n, err)
+	}
+	if err := o.admitQuiesce(pubsubScoringCommand{}, 0); err != primary || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+		t.Fatal("earlier native TCP error was cleared by quiesce", err)
+	}
+}
+
 func TestPubsubScoringWholeOwnerStopCancelsRootBeforeChildWithoutLiveRemoval(t *testing.T) {
 	// Bind the ordering/no-call regression to the actual deferred teardown,
 	// without introducing injectable lifecycle callbacks into the fixture.
@@ -2448,7 +2670,7 @@ func TestPubsubScoringWholeOwnerStopNativeFixtureJoinsWithoutLeave(t *testing.T)
 	if err := os.WriteFile(args["control-file"], append(command, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	waitFile(args["result-file"], func(value map[string]any) bool {
+	prepared := waitFile(args["result-file"], func(value map[string]any) bool {
 		events, _ := value["events"].([]any)
 		for _, item := range events {
 			event, _ := item.(map[string]any)
@@ -2459,6 +2681,61 @@ func TestPubsubScoringWholeOwnerStopNativeFixtureJoinsWithoutLeave(t *testing.T)
 		}
 		return false
 	})
+	prepareRef := 0
+	for _, item := range prepared["events"].([]any) {
+		event := item.(map[string]any)
+		if event["kind"] == "shutdown_prepared" {
+			prepareRef = int(event["sequence"].(float64))
+		}
+	}
+	if prepareRef == 0 {
+		t.Fatal("missing exact Prepare ACK")
+	}
+	quiesce, err := json.Marshal(pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: args["actor"],
+		Token: args["case-token"], Local: local, Prepare: prepareRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := append(append(append([]byte{}, command...), '\n'), append(quiesce, '\n')...)
+	if err := os.WriteFile(args["control-file"], control, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	quiesced := waitFile(args["result-file"], func(value map[string]any) bool {
+		for _, item := range value["events"].([]any) {
+			event := item.(map[string]any)
+			if event["kind"] == "command_done" && event["command_kind"] == "quiesce_shutdown" && event["status"] == "ok" {
+				return true
+			}
+		}
+		return false
+	})
+	if quiesced["finalized"] != false || quiesced["joined"] != false || quiesced["error"] != nil ||
+		quiesced["active_fixture_workers"] != float64(0) || quiesced["active_stream_handlers_and_io"] != float64(0) {
+		t.Fatal("quiesce did not retain the live controller with joined owned work", quiesced)
+	}
+	acknowledgements := 0
+	for _, item := range quiesced["events"].([]any) {
+		event := item.(map[string]any)
+		if event["kind"] == "shutdown" {
+			t.Fatal("quiesce closed Host before Stop")
+		}
+		if event["kind"] == "shutdown_quiesced" {
+			acknowledgements++
+			if event["pid"] != float64(os.Getpid()) || event["prepare_ack_sequence"] != float64(prepareRef) ||
+				event["pubsub_callback_admission_closed"] != true || event["native_admission_closed"] != true ||
+				event["active_callbacks"] != float64(0) || event["active_pubsub_streams"] != float64(0) {
+				t.Fatal("quiesce ACK lost its actual owner/drain", event)
+			}
+		}
+	}
+	if acknowledgements != 1 {
+		t.Fatal("missing actual quiesce ACK")
+	}
+	select {
+	case <-done:
+		t.Fatal("controller exited before delayed Stop", nativeErr)
+	case <-time.After(25 * time.Millisecond):
+	}
 	if err := os.WriteFile(args["stop-file"], nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

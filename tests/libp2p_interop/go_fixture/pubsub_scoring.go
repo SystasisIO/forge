@@ -110,6 +110,7 @@ type pubsubScoringCommand struct {
 	Actor    string `json:"actor,omitempty"`
 	Token    string `json:"case_token,omitempty"`
 	Local    string `json:"local_peer_id,omitempty"`
+	Prepare  int    `json:"prepare_ack_sequence,omitempty"`
 }
 
 // Decode fields once: encoding/json otherwise silently accepts duplicate keys.
@@ -167,13 +168,19 @@ func decodePubsubScoringCommand(line []byte, next int) (pubsubScoringCommand, er
 		if len(command.Label) == 0 || len(command.Label) > 128 || strings.ContainsRune(command.Label, '\x00') || command.Label == "periodic" {
 			return command, fmt.Errorf("pubsub sample label exceeds bounds")
 		}
-	case "prepare_shutdown":
+	case "prepare_shutdown", "quiesce_shutdown":
 		allowed["actor"], allowed["case_token"], allowed["local_peer_id"] = true, true, true
 		if command.Actor == "" || len(command.Actor) > 64 || len(command.Token) != 32 {
 			return command, fmt.Errorf("invalid prepare_shutdown actor/token")
 		}
 		if _, err = peer.Decode(command.Local); err != nil {
 			return command, fmt.Errorf("invalid prepare_shutdown identity")
+		}
+		if command.Kind == "quiesce_shutdown" {
+			allowed["prepare_ack_sequence"] = true
+			if command.Prepare < 1 || command.Prepare > pubsubScoringEvents {
+				return command, fmt.Errorf("invalid quiesce_shutdown prepare reference")
+			}
 		}
 	default:
 		return command, fmt.Errorf("unknown pubsub command")
@@ -232,28 +239,30 @@ func (c *pubsubScoringControl) read(path string) ([]pubsubScoringCommand, error)
 }
 
 type pubsubScoringObserver struct {
-	mu                  sync.Mutex
-	origin              time.Time
-	local               peer.ID
-	actor, token, topic string
-	events              []map[string]any
-	mesh                map[peer.ID]bool
-	scores              []map[string]any
-	connections         map[string]map[string]any
-	scoreSequence       int
-	inspectionStarted   atomic.Uint64
-	scoreInspection     uint64
-	scoreChanged        chan struct{}
-	wireBytes           int
-	traceBytes          int
-	overflow            bool
-	failure             error
-	closing             bool
-	prepared            bool
-	prepareAck          int
-	callbacks           int
-	callbackChanged     chan struct{}
-	quic                *pubsubQUICObserver
+	mu                    sync.Mutex
+	origin                time.Time
+	local                 peer.ID
+	actor, token, topic   string
+	events                []map[string]any
+	mesh                  map[peer.ID]bool
+	scores                []map[string]any
+	connections           map[string]map[string]any
+	scoreSequence         int
+	inspectionStarted     atomic.Uint64
+	scoreInspection       uint64
+	scoreChanged          chan struct{}
+	wireBytes             int
+	traceBytes            int
+	overflow              bool
+	failure               error
+	closing               bool
+	prepared              bool
+	prepareAck            int
+	quiesced              bool
+	pubsubCallbacksClosed bool
+	callbacks             int
+	callbackChanged       chan struct{}
+	quic                  *pubsubQUICObserver
 }
 
 func newPubsubScoringObserver(actor, token string) *pubsubScoringObserver {
@@ -320,6 +329,78 @@ func (o *pubsubScoringObserver) prepareShutdown(command pubsubScoringCommand, pe
 	return o.failure
 }
 
+func (o *pubsubScoringObserver) admitQuiesce(command pubsubScoringCommand, pending int) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.failure != nil {
+		return o.failure
+	}
+	if !o.prepared || o.quiesced || o.overflow || pending != 0 || command.Kind != "quiesce_shutdown" ||
+		command.Actor != o.actor || command.Token != o.token || command.Local != o.local.String() ||
+		command.Prepare != o.prepareAck || o.prepareAck < 1 ||
+		command.Sequence != o.events[o.prepareAck-1]["command_sequence"].(int)+1 {
+		return fmt.Errorf("quiesce_shutdown requires exact prepared owner and no pending commands/errors")
+	}
+	return nil
+}
+
+func (o *pubsubScoringObserver) quiesceAck(command pubsubScoringCommand, drain *pubsubScoringDrain,
+	pubsubCtx, subscriberCtx, joinCtx context.Context, workerDone <-chan struct{}) error {
+	if err := o.admitQuiesce(command, 0); err != nil {
+		return err
+	}
+	select {
+	case <-workerDone:
+	default:
+		return fmt.Errorf("quiesce_shutdown subscriber has not joined")
+	}
+	if pubsubCtx.Err() == nil || subscriberCtx.Err() == nil {
+		return fmt.Errorf("quiesce_shutdown PubSub/subscriber contexts are still active")
+	}
+	for {
+		drain.mu.Lock()
+		o.mu.Lock()
+		if o.failure != nil || o.overflow || joinCtx.Err() != nil {
+			failure := o.failure
+			o.mu.Unlock()
+			drain.mu.Unlock()
+			if failure != nil {
+				return failure
+			}
+			return fmt.Errorf("quiesce_shutdown callbacks failed/expired: %w", joinCtx.Err())
+		}
+		if !drain.closing || !o.pubsubCallbacksClosed || o.quiesced {
+			o.mu.Unlock()
+			drain.mu.Unlock()
+			return fmt.Errorf("quiesce_shutdown native/callback admission remains open or ACK repeated")
+		}
+		if drain.active == 0 && len(drain.streams) == 0 && o.callbacks == 0 {
+			o.quiesced = true
+			o.emitLocked("shutdown_quiesced", "go.fixture.owned_pubsub_quiesce", map[string]any{
+				"command_sequence": command.Sequence, "prepare_ack_sequence": command.Prepare,
+				"actor": o.actor, "case_token": o.token, "local_peer_id": o.local.String(), "pid": os.Getpid(),
+				"native_admission_closed": drain.closing, "pubsub_callback_admission_closed": o.pubsubCallbacksClosed,
+				"pubsub_context_cancelled":      pubsubCtx.Err() != nil,
+				"subscriber_context_cancelled":  subscriberCtx.Err() != nil,
+				"active_stream_handlers_and_io": drain.active, "active_pubsub_streams": len(drain.streams),
+				"active_fixture_workers": 0, "active_callbacks": o.callbacks,
+				"joined_scope": "fixture_subscriber_admitted_stream_IO_framing_pending_terminal_and_observer_callbacks"})
+			failure := o.failure
+			o.mu.Unlock()
+			drain.mu.Unlock()
+			return failure
+		}
+		o.mu.Unlock()
+		drain.mu.Unlock()
+		select {
+		case <-o.callbackChanged:
+		case <-drain.changed:
+		case <-joinCtx.Done():
+			return fmt.Errorf("quiesce_shutdown callbacks did not drain: %w", joinCtx.Err())
+		}
+	}
+}
+
 func (o *pubsubScoringObserver) emitLocked(kind, source string, fields map[string]any) {
 	if len(o.events) == pubsubScoringEvents {
 		o.overflow = true
@@ -358,8 +439,16 @@ func (o *pubsubScoringObserver) emit(kind, source string, fields map[string]any)
 }
 
 func (o *pubsubScoringObserver) callback(f func()) {
+	o.callbackWithAdmission(f, true)
+}
+
+func (o *pubsubScoringObserver) nativeCallback(f func()) {
+	o.callbackWithAdmission(f, false)
+}
+
+func (o *pubsubScoringObserver) callbackWithAdmission(f func(), pubsub bool) {
 	o.mu.Lock()
-	if o.closing {
+	if o.closing || pubsub && o.pubsubCallbacksClosed {
 		o.mu.Unlock()
 		return
 	}
@@ -772,12 +861,13 @@ func (o *pubsubScoringObserver) connection(c network.Conn, g *pathDialObserver, 
 }
 
 type pubsubScoringDrain struct {
-	mu      sync.Mutex
-	closing bool
-	active  int
-	streams map[string]pubsubScoringDrainedStream
-	seen    map[string]bool
-	changed chan struct{}
+	mu            sync.Mutex
+	closing       bool
+	active        int
+	streams       map[string]pubsubScoringDrainedStream
+	seen          map[string]bool
+	changed       chan struct{}
+	rejectedOrder uint64
 }
 
 type pubsubScoringDrainedStream interface {
@@ -797,6 +887,12 @@ func (d *pubsubScoringDrain) begin() bool {
 	}
 	d.active++
 	return true
+}
+func (d *pubsubScoringDrain) enterHandler() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.active++
+	return !d.closing
 }
 func (d *pubsubScoringDrain) end() {
 	d.mu.Lock()
@@ -886,7 +982,7 @@ func (h *pubsubScoringHost) wrap(s network.Stream) (network.Stream, error) {
 			"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
 			"direction": s.Stat().Direction.String(), "observation_layer": "Swarm_selected_protocol_only",
 			"selection_basis": "native_host_stream_return_not_configured_protocol_list"})
-		return wrapped, nil
+		return &pubsubScoringQUICWriteStream{pubsubQUICHostStream: wrapped}, nil
 	}
 	wrapped := &pubsubScoringStream{Stream: s, observer: h.observer, drain: h.drain,
 		nativeYamux: state.Transport == "tcp" && state.Security == noise.ID && state.StreamMultiplexer == yamux.ID}
@@ -910,23 +1006,66 @@ func (h *pubsubScoringHost) NewStream(ctx context.Context, p peer.ID, ids ...pro
 	}
 	wrapped, err := h.wrap(s)
 	if err != nil {
-		_ = s.Reset()
+		h.disposeRejected(s)
 		if h.ctx.Err() == nil {
 			h.observer.fail(err)
 		}
 	}
 	return wrapped, err
 }
+
+func (h *pubsubScoringHost) disposeRejected(s network.Stream) {
+	if s == nil {
+		h.observer.fail(fmt.Errorf("PubSub native host returned no stream to dispose"))
+		return
+	}
+	if err := h.observer.connection(s.Conn(), h.gater, h.fingerprint); err != nil {
+		h.observer.fail(err)
+	}
+	h.drain.mu.Lock()
+	h.drain.rejectedOrder++
+	started := h.drain.rejectedOrder
+	h.drain.mu.Unlock()
+	err := s.Reset()
+	h.drain.mu.Lock()
+	h.drain.rejectedOrder++
+	returned := h.drain.rejectedOrder
+	h.drain.mu.Unlock()
+	var message, errorType any
+	outcome := "ok"
+	if err != nil {
+		message, errorType, outcome = pubsubScoringDiagnostic(err), fmt.Sprintf("%T", err), "error"
+		h.observer.fail(err)
+	}
+	h.observer.emit("native_rejected_stream_disposal", "go.fixture.rejected_native_stream_reset", map[string]any{
+		"connection_id": s.Conn().ID(), "stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(),
+		"protocol_at_disposal": string(s.Protocol()), "operation": "stream_reset",
+		"started_order": started, "returned_order": returned, "outcome": outcome, "error": message, "error_type": errorType})
+}
+
+// The lower QUIC observer is unchanged; only PubSub-owned write admission closes.
+type pubsubScoringQUICWriteStream struct {
+	*pubsubQUICHostStream
+}
+
+func (s *pubsubScoringQUICWriteStream) Write(p []byte) (int, error) {
+	if !s.drain.begin() {
+		return 0, context.Canceled
+	}
+	defer s.drain.end()
+	return s.pubsubQUICHostStream.Write(p)
+}
 func (h *pubsubScoringHost) SetStreamHandler(id protocol.ID, handler network.StreamHandler) {
 	h.Host.SetStreamHandler(id, func(s network.Stream) {
-		if !h.drain.begin() {
-			_ = s.Reset()
+		admitted := h.drain.enterHandler()
+		defer h.drain.end()
+		if !admitted {
+			h.disposeRejected(s)
 			return
 		}
-		defer h.drain.end()
 		wrapped, err := h.wrap(s)
 		if err != nil {
-			_ = s.Reset()
+			h.disposeRejected(s)
 			if h.ctx.Err() == nil {
 				h.observer.fail(err)
 			}
@@ -1568,9 +1707,11 @@ func (o *pubsubScoringObserver) result(finalized, joined bool, failure error, wo
 
 func runPubsubScoringLive(args map[string]string) (failure error) {
 	o := newPubsubScoringObserver(args["actor"], args["case-token"])
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, stopController := context.WithTimeout(context.Background(), 120*time.Second)
+	defer stopController()
+	pubsubCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	subscriberCtx, stopSubscriber := context.WithCancel(ctx)
+	subscriberCtx, stopSubscriber := context.WithCancel(pubsubCtx)
 	defer stopSubscriber()
 	var h host.Host
 	var sub *pubsub.Subscription
@@ -1654,7 +1795,7 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 			activeStreams = observed.drain.active
 			observed.drain.mu.Unlock()
 		}
-		o.emit("shutdown", "go.fixture.owned_context_cancel_and_drain", map[string]any{"context_cancelled": ctx.Err() != nil,
+		o.emit("shutdown", "go.fixture.owned_context_cancel_and_drain", map[string]any{"context_cancelled": pubsubCtx.Err() != nil,
 			"joined": joined, "host_close_returned": hostClosed, "active_stream_handlers_and_io": activeStreams,
 			"active_fixture_workers": activeWorkers})
 		result := o.result(true, joined, failure, activeWorkers)
@@ -1703,22 +1844,22 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 	if args["version"] == "1.0" {
 		id = pubsub.GossipSubID_v10
 	}
-	observed = &pubsubScoringHost{Host: h, ctx: ctx, observer: o, gater: gater, drain: newPubsubScoringDrain(), protocol: id,
+	observed = &pubsubScoringHost{Host: h, ctx: pubsubCtx, observer: o, gater: gater, drain: newPubsubScoringDrain(), protocol: id,
 		fingerprint: args["pnet-fingerprint"]}
 	notifier = &network.NotifyBundle{ConnectedF: func(_ network.Network, c network.Conn) {
-		o.callback(func() {
+		o.nativeCallback(func() {
 			if err := o.connection(c, gater, args["pnet-fingerprint"]); err != nil {
 				o.fail(err)
 			}
 		})
 	}, DisconnectedF: func(_ network.Network, c network.Conn) {
-		o.callback(func() {
+		o.nativeCallback(func() {
 			o.emit("connection_closed", "go.network.NotifyBundle.Disconnected", map[string]any{"connection_id": c.ID(), "remote_peer_id": c.RemotePeer().String()})
 		})
 	}}
 	h.Network().Notify(notifier)
 	params, score, thresholds := pubsubScoringParameters(o.topic)
-	ps, err := pubsub.NewGossipSub(ctx, observed, pubsub.WithGossipSubProtocols([]protocol.ID{id}, pubsub.GossipSubDefaultFeatures),
+	ps, err := pubsub.NewGossipSub(pubsubCtx, observed, pubsub.WithGossipSubProtocols([]protocol.ID{id}, pubsub.GossipSubDefaultFeatures),
 		pubsub.WithGossipSubParams(params), pubsub.WithFloodPublish(false), pubsub.WithPeerExchange(false),
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictSign), pubsub.WithMaxMessageSize(pubsubScoringFrame),
 		pubsub.WithMessageIdFn(pubsubScoringMessageID),
@@ -1781,7 +1922,17 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 		case <-ctx.Done():
 			return fmt.Errorf("PubSub actor deadline expired: %w", ctx.Err())
 		case <-writeResult.C:
-			if err = pubsubScoringAtomic(args["result-file"], o.result(false, false, nil, 1)); err != nil {
+			workers := 1
+			select {
+			case <-workerDone:
+				workers = 0
+			default:
+			}
+			result := o.result(false, false, nil, workers)
+			observed.drain.mu.Lock()
+			result["active_stream_handlers_and_io"] = observed.drain.active
+			observed.drain.mu.Unlock()
+			if err = pubsubScoringAtomic(args["result-file"], result); err != nil {
 				return err
 			}
 		case <-poll.C:
@@ -1806,17 +1957,22 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 					return fmt.Errorf("PubSub stop with incomplete/unexecuted command")
 				}
 				o.mu.Lock()
-				prepared = o.prepared
+				prepared = o.prepared && o.quiesced
 				o.mu.Unlock()
 				if !prepared {
-					return fmt.Errorf("PubSub stop before prepare_shutdown acknowledgement")
+					return fmt.Errorf("PubSub stop before prepare_shutdown/quiesce_shutdown acknowledgement")
 				}
 				return nil
 			} else if !errors.Is(stopErr, os.ErrNotExist) {
 				return stopErr
 			}
 			for index, command := range commands {
-				if err = o.admitCommand(); err != nil {
+				if command.Kind == "quiesce_shutdown" {
+					err = o.admitQuiesce(command, len(commands)-index-1)
+				} else {
+					err = o.admitCommand()
+				}
+				if err != nil {
 					return err
 				}
 				commandCtx, stopCommand := context.WithTimeout(ctx, 10*time.Second)
@@ -1855,6 +2011,29 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 						return fmt.Errorf("prepare_shutdown with incomplete control command")
 					}
 					err = o.prepareShutdown(command, len(commands)-index-1)
+				case "quiesce_shutdown":
+					observed.drain.mu.Lock()
+					observed.drain.closing = true
+					observed.drain.mu.Unlock()
+					o.mu.Lock()
+					o.pubsubCallbacksClosed = true
+					o.mu.Unlock()
+					cancel()
+					stopSubscriber()
+					joinCtx, stopJoin := context.WithTimeout(ctx, 5*time.Second)
+					err = observed.drain.stop(joinCtx)
+					if err == nil {
+						select {
+						case <-workerDone:
+						case <-joinCtx.Done():
+							err = fmt.Errorf("quiesce_shutdown subscriber did not join: %w", joinCtx.Err())
+						}
+					}
+					if err == nil {
+						err = o.quiesceAck(command, observed.drain, pubsubCtx, subscriberCtx, joinCtx, workerDone)
+					}
+					stopJoin()
+					o.fail(err)
 				}
 				stopCommand()
 				if err != nil {

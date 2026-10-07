@@ -43,6 +43,8 @@ SOURCES["go"].update({
     "native_stream_close_finalized": {"go.pubsub.native_stream.native_operation"},
     "native_stream_io_finalized": {"go.pubsub.native_stream.native_operation"},
     "shutdown": {"go.fixture.owned_context_cancel_and_drain"},
+    "shutdown_quiesced": {"go.fixture.owned_pubsub_quiesce"},
+    "native_rejected_stream_disposal": {"go.fixture.rejected_native_stream_reset"},
     "connection_closed": {"go.network.NotifyBundle.Disconnected"},
 })
 GO_QUIC_SOURCES = {
@@ -173,6 +175,61 @@ def shutdown_ack(raw, implementation, actor, token, local, command_sequence, *, 
             and type(done[0].get("command_sequence")) is int and type(done[0].get("sequence")) is int
             and ack["sequence"] < done[0]["sequence"] <= len(events)
             and events[done[0]["sequence"] - 1] is done[0], "prepare_shutdown completion failed/mismatched")
+    return ack
+
+
+def quiesce_ack(raw, actor, token, local, pid, command_sequence, prepare_ref, *, active=False):
+    """Go-owned PubSub drain only; no host, process, or donor-router join authority."""
+    require(type(pid) is int and pid > 0 and isinstance(raw, dict) and raw.get("pid") == pid
+            and type(raw.get("pid")) is int, "quiesce_shutdown process owner mismatch")
+    require(type(command_sequence) is int and 2 <= command_sequence <= 64
+            and type(prepare_ref) is int and prepare_ref > 0, "invalid quiesce command/prepare reference")
+    # A quiesced owner is still a live process, but may already have actual
+    # framing finalizers. The earlier Prepare snapshot remains unchanged.
+    prepared = shutdown_ack(raw, "go", actor, token, local, command_sequence - 1)
+    require(prepared is not None and prepared["sequence"] == prepare_ref, "quiesce lacks exact preceding Prepare ACK")
+    events = raw["events"]
+    matches = [event for event in events if event.get("kind") == "shutdown_quiesced"]
+    require(len(matches) <= 1, "duplicate quiesce acknowledgement")
+    if not matches:
+        return None
+    ack = matches[0]
+    fields = EVENT_FIELDS | {"actor", "case_token", "local_peer_id", "pid", "command_sequence", "prepare_ack_sequence",
+                             "native_admission_closed", "pubsub_callback_admission_closed", "pubsub_context_cancelled", "subscriber_context_cancelled",
+                             "active_stream_handlers_and_io", "active_pubsub_streams", "active_fixture_workers",
+                             "active_callbacks", "joined_scope"}
+    require(set(ack) == fields and ack.get("source") == "go.fixture.owned_pubsub_quiesce"
+            and ack.get("actor") == actor and ack.get("case_token") == token and ack.get("local_peer_id") == local
+            and type(ack.get("pid")) is int and ack["pid"] == pid
+            and type(ack.get("command_sequence")) is int and ack["command_sequence"] == command_sequence
+            and type(ack.get("prepare_ack_sequence")) is int and ack["prepare_ack_sequence"] == prepare_ref
+            and ack.get("native_admission_closed") is True and ack.get("pubsub_context_cancelled") is True
+            and ack.get("pubsub_callback_admission_closed") is True
+            and ack.get("subscriber_context_cancelled") is True
+            and all(type(ack.get(key)) is int and ack[key] == 0 for key in
+                    ("active_stream_handlers_and_io", "active_pubsub_streams", "active_fixture_workers", "active_callbacks"))
+            and ack.get("joined_scope") == "fixture_subscriber_admitted_stream_IO_framing_pending_terminal_and_observer_callbacks"
+            and type(ack.get("sequence")) is int and prepare_ref < ack["sequence"] <= len(events)
+            and events[ack["sequence"] - 1] is ack, "invalid/foreign/unjoined Go quiesce acknowledgement")
+    done = [event for event in events if event.get("kind") == "command_done"
+            and event.get("command_sequence") == command_sequence]
+    require(len(done) <= 1, "duplicate quiesce command completion")
+    if not done:
+        return None
+    require(done[0].get("source") == "go.fixture.append_only_control" and done[0].get("command_kind") == "quiesce_shutdown"
+            and done[0].get("status") == "ok" and type(done[0].get("command_sequence")) is int
+            and type(done[0].get("sequence")) is int and ack["sequence"] < done[0]["sequence"] <= len(events)
+            and events[done[0]["sequence"] - 1] is done[0], "quiesce completion failed/mismatched")
+    _events(raw, "go", token, actor, active=active)
+    require(not any(event["sequence"] > ack["sequence"] and (event["kind"] == "protocol"
+                    or event["kind"] == "rpc" and event.get("direction") == "write") for event in events),
+            "native PubSub write/selected owner admitted after quiesce ACK")
+    if active:
+        require(all(type(raw.get(key)) is int and raw[key] == 0 for key in
+                    ("active_stream_handlers_and_io", "active_fixture_workers", "active_callbacks")),
+                "active quiesce result retains owned work")
+        require(not any(event.get("kind") == "shutdown" for event in events), "quiesce claims completed host shutdown")
+        require(raw.get("host_close_returned") is not True, "active quiesce claims completed Host.Close")
     return ack
 
 
@@ -572,6 +629,16 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=F
                         "native RPC direction/source mismatch")
         if event.get("kind") == "command_done":
             require(event.get("status", "ok") == "ok", "native command failed")
+        if event.get("kind") == "native_rejected_stream_disposal":
+            require(set(event) == EVENT_FIELDS | {"connection_id", "stream_id", "peer_id", "protocol_at_disposal",
+                    "operation", "started_order", "returned_order", "outcome", "error", "error_type"}
+                    and _id(event.get("connection_id")) and _id(event.get("stream_id")) and _id(event.get("peer_id"))
+                    and event.get("protocol_at_disposal") in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+                    and event.get("operation") == "stream_reset" and event.get("outcome") == "ok"
+                    and event.get("error") is None and event.get("error_type") is None
+                    and type(event.get("started_order")) is int and type(event.get("returned_order")) is int
+                    and 0 < event["started_order"] < event["returned_order"] < 2 ** 64,
+                    "failed/invalid rejected native stream disposal")
         _framing_terminal(event, implementation)
         if event.get("kind") == "native_terminal_state":
             _yamux_terminal_state(raw, event, events)
@@ -656,29 +723,56 @@ def _shutdown_barrier(artifact, actors, events):
     operations = barrier.get("operations")
     names = set(actors)
     donors = {actor for actor, raw in actors.items() if raw["implementation"] in {"go", "rust"}}
-    count = len(donors)
-    require(isinstance(operations, list) and len(operations) == 8 + count
+    go = {actor for actor, raw in actors.items() if raw["implementation"] == "go"}
+    count, go_count = len(donors), len(go)
+    stops_begin, joins_begin, forge_begin = 4 + 2 * go_count, 4 + 2 * go_count + count, 4 + 2 * go_count + 2 * count
+    require(isinstance(operations, list) and len(operations) == 8 + count + 2 * go_count
             and all(isinstance(row, dict) and row.get("actor") in names for row in operations),
             "missing all-actor prepare/stop/donor-join operations")
     require({row["actor"] for row in operations[:4]} == names
-            and {row["actor"] for row in operations[4:4 + count]} == donors
-            and {row["actor"] for row in operations[4 + count:4 + 2 * count]} == donors
-            and {row["actor"] for row in operations[4 + 2 * count:]} == names - donors,
+            and {row["actor"] for row in operations[4:4 + go_count]} == go
+            and {row["actor"] for row in operations[4 + go_count:stops_begin]} == go
+            and {row["actor"] for row in operations[stops_begin:joins_begin]} == donors
+            and {row["actor"] for row in operations[joins_begin:forge_begin]} == donors
+            and {row["actor"] for row in operations[forge_begin:]} == names - donors,
             "missing/duplicate/foreign shutdown actor phase")
     for index, row in enumerate(operations, 1):
         fields = {"sequence", "kind", "actor", "case_token", "local_peer_id"}
-        joined = 4 + count < index <= 4 + 2 * count
+        requested = 4 < index <= 4 + go_count
+        quiesced = 4 + go_count < index <= stops_begin
+        joined = joins_begin < index <= forge_begin
         if index <= 4:
             fields |= {"command_sequence", "ack_event_sequence", "evidence_file"}
         elif joined:
             fields |= {"pid", "shutdown_event_sequence"}
+        elif requested or quiesced:
+            fields |= {"pid", "command_sequence", "prepare_ack_sequence"}
+            if quiesced:
+                fields.add("quiesce_event_sequence")
         require(set(row) == fields, "shutdown operation has missing fields or undeclared claims")
         require(isinstance(row, dict) and type(row.get("sequence")) is int and row["sequence"] == index
-                and row.get("kind") == ("prepare_ack" if index <= 4 else "donor_joined" if joined else "stop_requested"),
+                and row.get("kind") == ("prepare_ack" if index <= 4 else "quiesce_requested" if requested
+                                        else "quiesce_ack" if quiesced else "donor_joined" if joined else "stop_requested"),
                 "stop/join violated all-actor prepare or donor-before-Forge order")
         actor, raw = row["actor"], actors[row["actor"]]
         require(row.get("local_peer_id") == raw["local_peer_id"] and row.get("case_token") == artifact["case_token"],
                 "runner shutdown operation has foreign identity/token")
+        if requested or quiesced:
+            prepared = next(value for value in operations[:4] if value["actor"] == actor)
+            require(type(row["pid"]) is int and row["pid"] > 0 and row["pid"] == artifact["processes"][actor]["pid"]
+                    and type(row["command_sequence"]) is int and row["command_sequence"] == prepared["command_sequence"] + 1
+                    and type(row["prepare_ack_sequence"]) is int
+                    and row["prepare_ack_sequence"] == prepared["ack_event_sequence"], "foreign Go quiesce operation owner/Prepare")
+            if quiesced:
+                request = next(value for value in operations[4:4 + go_count] if value["actor"] == actor)
+                require(all(_same_json(row[key], request[key]) for key in
+                            ("actor", "case_token", "local_peer_id", "pid", "command_sequence", "prepare_ack_sequence")),
+                        "quiesce ACK differs from actual request")
+                ack = quiesce_ack(raw, actor, artifact["case_token"], raw["local_peer_id"], row["pid"],
+                                  row["command_sequence"], row["prepare_ack_sequence"])
+                require(ack is not None and type(row["quiesce_event_sequence"]) is int
+                        and row["quiesce_event_sequence"] == ack["sequence"]
+                        < _donor_shutdown_event(raw, events[actor])["sequence"], "missing exact pre-Stop Go quiesce ACK")
         if joined:
             process = artifact["processes"][actor]
             status = process.get("terminal_status")
@@ -718,7 +812,9 @@ def _shutdown_barrier(artifact, actors, events):
                           and owner.get("authenticated") is True]
                 require(len(owners) == 1 and owners[0]["sequence"] < event["sequence"], "normal close lacks native QUIC owner")
             if event["kind"] == "command_done" and event["sequence"] > ack["sequence"]:
-                require(event.get("command_sequence") == ack["command_sequence"]
+                lifecycle = raw["implementation"] == "go" and event.get("command_kind") == "quiesce_shutdown" \
+                    and type(event.get("command_sequence")) is int and event["command_sequence"] == ack["command_sequence"] + 1
+                require(lifecycle or event.get("command_sequence") == ack["command_sequence"]
                         and event.get("command_kind") == "prepare_shutdown", "fixture command admitted after preparation")
     prepared = {row["actor"]: row["ack_event_sequence"] for row in operations[:4]}
     peers = {raw["local_peer_id"]: actor for actor, raw in actors.items()}
@@ -2017,6 +2113,10 @@ def _validate_traffic(artifact, actors, events, cleanup_framing, expected_finger
             if event.get("kind") == "rpc":
                 _owner(events[name], event, _rpc_peer(event), protocol, transport, expected_fingerprint)
                 validate_rpc_receipt(event.get("receipt"), protocol, event["direction"])
+            if event.get("kind") == "native_rejected_stream_disposal":
+                owner = _connection_owner(events[name], event["connection_id"], event["peer_id"], "go", transport, expected_fingerprint)
+                require(owner["sequence"] < event["sequence"] and event["protocol_at_disposal"] == protocol,
+                        "rejected disposal lacks actual preceding native carrier/profile")
             if actors[name]["implementation"] == "go" and event.get("source") not in GO_QUIC_SOURCES.values() and event.get("kind") in {
                     "stream_io_terminal", "native_stream_operation", "native_stream_close_finalized", "native_stream_io_finalized"}:
                 _stream_owner(events[name], event, event["remote_peer_id"], protocol, transport, expected_fingerprint,

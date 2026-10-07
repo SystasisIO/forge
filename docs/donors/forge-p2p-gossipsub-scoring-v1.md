@@ -151,6 +151,21 @@ entire fixture owner. Host close, stream resets, callback/worker joins and stick
 native failures remain required. The fixture does not claim a public join of
 Go's internal router goroutine, which the pinned donor does not expose.
 
+`comm.go` starts sender and peer-dead goroutines independently: sender defers
+Close while peer-dead calls Reset. `pubsub.go` can reopen an outgoing stream
+while the host remains connected. Fixture command Prepare therefore cannot be
+treated as PubSub termination. Before any host Stop, all Go actors separately
+cancel PubSub, close open/write and application-callback admission and join their
+actual fixture-owned I/O/framing/subscriber/disposal work. Native-error and
+network observation remain enabled. The controller and host stay alive until
+all Go quiesce ACKs have been checked. This fixture ownership barrier changes no
+donor router code and does not claim a join of its private goroutines.
+
+The barrier does not order the donor's concurrent Close/Reset calls. Native
+Close errors remain errors; only the existing exact returned-Reset-before-Close
+observation rule applies. A raw TCP reset, prior failure or malformed frame
+cannot be explained away by preparation, quiesce or later cleanup.
+
 The focused native teardown regression uses the existing Asio gate to exercise
 both an already-queued acquire and stop before coroutine execution. It separately
 holds the tracking ticket until a sticky notification releases it. The prior
