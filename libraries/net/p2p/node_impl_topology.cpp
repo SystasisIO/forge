@@ -69,6 +69,7 @@ import forge.net.transport.session;
 import forge.net.transport.stream;
 import forge.net.yamux.session;
 
+#include "details/certified_peer_record.hxx"
 #include "details/cancellation_latch.hxx"
 #include "details/owner_cancellation.hxx"
 #include "details/lifecycle_wakeup.hxx"
@@ -310,6 +311,7 @@ boost::asio::awaitable<void> node::impl::async_close_topology_sessions(std::vect
       std::sort(session_ids.begin(), session_ids.end());
       session_ids.erase(std::unique(session_ids.begin(), session_ids.end()), session_ids.end());
       removed.reserve(session_ids.size());
+      disconnect_pubsub_sessions_locked(session_ids, std::chrono::steady_clock::now());
       for (const auto id : session_ids) {
          const auto found = sessions.find(id);
          if (found == sessions.end()) {
@@ -324,12 +326,14 @@ boost::asio::awaitable<void> node::impl::async_close_topology_sessions(std::vect
          }
       }
       for (const auto& session : removed) {
-         const auto peer = session->info.remote_peer;
+         const auto& peer = session->info.remote_peer;
          const auto still_connected = std::ranges::any_of(
              sessions, [&](const auto& item) { return item.second->info.remote_peer == peer && !item.second->closed; });
          if (!still_connected) {
             erase_inbound_relay_reservation_locked(peer);
             forget_pubsub_peer_locked(peer);
+         } else {
+            forget_pubsub_endpoint_locked(*session);
          }
       }
       metrics_value.active_sessions = sessions.size();
@@ -514,11 +518,7 @@ detail::topology_manager::callbacks::rendezvous_local_record node::impl::topolog
    }
 
    const auto identify_envelope = signed_envelope::decode(snapshot.document.signed_peer_record);
-   identify_envelope.verify("libp2p-peer-record", local);
-   const auto identify_record = rendezvous::codec::decode_peer_record(identify_envelope.payload);
-   if (identify_record.peer != local) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_identity, "local Identify peer record peer id mismatch");
-   }
+   const auto identify_record = detail::certified_peer_record::open(identify_envelope, local);
    out.signed_peer_record = rendezvous::codec::seal_peer_record(
                                 rendezvous::peer_record{
                                     .peer = local,

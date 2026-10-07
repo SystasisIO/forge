@@ -286,6 +286,8 @@ diagnostics_relays(std::span<const peer_store::relay_record> records, std::size_
        .duplicates = impl.metrics_value.pubsub_duplicates,
        .invalid_messages = impl.metrics_value.pubsub_invalid_messages,
        .control_messages = impl.metrics_value.pubsub_control_messages,
+       .trace_failures = impl.pubsub_value.trace_failures.load(std::memory_order_relaxed),
+       .application_score_failures = impl.pubsub_value.application_score_failures.load(std::memory_order_relaxed),
    };
 }
 

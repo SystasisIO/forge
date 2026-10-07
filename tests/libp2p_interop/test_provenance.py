@@ -839,6 +839,9 @@ def run_private_profile_case(spec, binaries, root):
 from path_cases import run_suite as run_path_suite
 from coordinated_cases import run_suite as run_coordinated_suite
 '''
+        source += '''
+from pubsub_cases import case_specs as pubsub_specs, run_case as run_pubsub_case
+'''
         source += "\ndef main():\n    pass\n"
         if include_private:
             source += '''
@@ -852,6 +855,12 @@ from coordinated_cases import run_suite as run_coordinated_suite
         artifacts.append(artifact)
     for artifact in run_coordinated_suite(binaries, root, pnet_key_file=pnet_key_file,
             pnet_fingerprint=pnet_fingerprint, command_attempt=command_attempt):
+        artifacts.append(artifact)
+'''
+        source += '''
+    for spec in pubsub_specs():
+        artifact = run_pubsub_case(spec, binaries, root, key=pnet_key_file,
+            fingerprint=pnet_fingerprint, command_attempt=command_attempt)
         artifacts.append(artifact)
 '''
         return source

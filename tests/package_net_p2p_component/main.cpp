@@ -1,6 +1,8 @@
 #include <chrono>
 #include <concepts>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -20,6 +22,7 @@ import forge.net.p2p.ipns;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.mdns_policy;
 import forge.net.p2p.provider_registration;
+import forge.net.p2p.pubsub;
 import forge.net.p2p.reachability;
 import forge.net.p2p.reachability_policy;
 import forge.net.p2p.relay;
@@ -81,8 +84,35 @@ static_assert(p2p::node::coordinated_connect_options{}.timeout == std::chrono::s
 static_assert(requires(p2p::node& node, p2p::endpoint remote, p2p::node::coordinated_connect_options options) {
    { node.async_connect_coordinated(remote, options) } -> std::same_as<boost::asio::awaitable<p2p::node::session_info>>;
 });
+static_assert(std::is_same_v<decltype(p2p::pubsub::options{}.scoring),
+                             std::optional<p2p::pubsub::scoring_params>>);
+static_assert(requires(const p2p::node& node) {
+   { node.pubsub_scores() } -> std::same_as<p2p::pubsub::score_snapshot>;
+});
+static_assert(requires(std::span<const std::uint8_t> bytes, const p2p::pubsub::options& options) {
+   { p2p::pubsub::codec::decode_received(bytes, options) } -> std::same_as<p2p::pubsub::codec::received_rpc>;
+});
 
 int main() {
+   auto unsigned_options = p2p::pubsub::options{};
+   unsigned_options.signatures = p2p::pubsub::signature_policy::strict_no_sign;
+   const auto unsigned_message = p2p::pubsub::message{.data = {'p'}, .subject = {"package-unsigned"}};
+   const auto unsigned_frame = p2p::pubsub::codec::encode(p2p::pubsub::rpc{.messages = {unsigned_message}}, unsigned_options);
+   const auto unsigned_received = p2p::pubsub::codec::decode_received(unsigned_frame, unsigned_options);
+   if (unsigned_received.value.messages.size() != 1U || !unsigned_received.invalid_messages.empty()) {
+      return 1;
+   }
+   const auto& unsigned_roundtrip = unsigned_received.value.messages.front();
+   if (unsigned_roundtrip.from || !unsigned_roundtrip.seqno.empty() || !unsigned_roundtrip.signature.empty() ||
+       !unsigned_roundtrip.key.empty() || unsigned_roundtrip.subject != unsigned_message.subject ||
+       unsigned_roundtrip.data != unsigned_message.data) {
+      return 1;
+   }
+   auto scoring = p2p::pubsub::scoring_params{};
+   auto topic_scoring = p2p::pubsub::topic_score_params{};
+   topic_scoring.invalid_message_deliveries_weight = -100.0;
+   scoring.topics.emplace(p2p::pubsub::topic{"package-scoring"}, topic_scoring);
+   p2p::pubsub::validate(scoring);
    p2p::validate(p2p::mdns_policy{});
    const auto scoped_text = "/ip6zone/en0/ip6/fe80::1/tcp/4001";
    const auto scoped_address = forge::multiformats::multiaddr::parse(scoped_text);

@@ -56,6 +56,25 @@ namespace forge::net::p2p {
 
 namespace detail {
 
+std::span<const protocol_id> stream_security_protocols(node::stream_security policy) {
+   switch (policy) {
+   case node::stream_security::tls_and_noise:
+   case node::stream_security::tls:
+   case node::stream_security::noise:
+      break;
+   default:
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid P2P stream security policy");
+   }
+   static const auto protocols = std::array{
+       protocol_id{.value = "/tls/1.0.0"},
+       protocol_id{.value = "/noise"},
+   };
+   const auto allowed = std::span<const protocol_id>{protocols};
+   if (policy == node::stream_security::tls) { return allowed.first(1); }
+   if (policy == node::stream_security::noise) { return allowed.last(1); }
+   return allowed;
+}
+
 void set_cancel(tcp_upgrade_deadline& deadline, std::function<void()> cancel) {
    if (deadline.cancel_current) {
       deadline.cancel_current->arm(std::move(cancel));
@@ -243,7 +262,7 @@ upgrade_outbound_private_tcp(forge::net::tcp::connection connection, const node:
    set_cancel(deadline, [protected_stream] { protected_stream->request_cancel(); });
    auto selected = protocol_id{};
    try {
-      selected = co_await detail::select_private_stream_security_protocol(*protected_stream);
+      selected = co_await detail::select_private_stream_security_protocol(*protected_stream, options.stream_security);
    } catch (const forge::exceptions::base& error) {
       rethrow_private_transport_as_p2p(error);
    }
@@ -288,7 +307,7 @@ upgrade_inbound_private_tcp(forge::net::tcp::connection connection, const node::
    set_cancel(deadline, [protected_stream] { protected_stream->request_cancel(); });
    auto selected = protocol_id{};
    try {
-      selected = co_await detail::accept_private_stream_security_protocol(*protected_stream);
+      selected = co_await detail::accept_private_stream_security_protocol(*protected_stream, options.stream_security);
    } catch (const forge::exceptions::base& error) {
       rethrow_private_transport_as_p2p(error);
    }
@@ -314,22 +333,16 @@ upgrade_inbound_private_tcp(forge::net::tcp::connection connection, const node::
 } // namespace
 
 boost::asio::awaitable<protocol_id>
-detail::select_private_stream_security_protocol(forge::net::p2p::stream& stream) {
-   const auto protocols = std::array{
-       protocol_id{.value = "/tls/1.0.0"},
-       protocol_id{.value = "/noise"},
-   };
+detail::select_private_stream_security_protocol(forge::net::p2p::stream& stream, node::stream_security policy) {
+   const auto protocols = stream_security_protocols(policy);
    auto selected = co_await select_protocol(stream, protocols);
    stream = detail::stream_access::with_buffer(std::move(stream), std::move(selected.buffered));
    co_return std::move(selected.protocol);
 }
 
 boost::asio::awaitable<protocol_id>
-detail::accept_private_stream_security_protocol(forge::net::p2p::stream& stream) {
-   const auto protocols = std::array{
-       protocol_id{.value = "/tls/1.0.0"},
-       protocol_id{.value = "/noise"},
-   };
+detail::accept_private_stream_security_protocol(forge::net::p2p::stream& stream, node::stream_security policy) {
+   const auto protocols = stream_security_protocols(policy);
    auto selected = co_await accept_protocol(stream, protocols);
    stream = detail::stream_access::with_buffer(std::move(stream), std::move(selected.buffered));
    co_return std::move(selected.protocol);
@@ -340,6 +353,10 @@ boost::asio::awaitable<upgraded_session> upgrade_outbound_stream(forge::net::p2p
                                                                  const libp2p_identity_material& identity,
                                                                  std::optional<peer_id> expected_peer,
                                                                  upgrade_callbacks callbacks) {
+   static_cast<void>(detail::stream_security_protocols(options.stream_security));
+   if (options.stream_security == node::stream_security::tls) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "relay circuit streams require Noise security");
+   }
    const auto noise_protocol = protocol_id{.value = "/noise"};
    auto noise_stream = co_await protocol_negotiation::async_select(std::move(stream), noise_protocol);
    co_return co_await finish_noise_outbound(std::move(noise_stream), options, identity, std::move(expected_peer), {},
@@ -351,6 +368,10 @@ boost::asio::awaitable<upgraded_session> upgrade_inbound_stream(forge::net::p2p:
                                                                 const libp2p_identity_material& identity,
                                                                 std::optional<peer_id> expected_peer,
                                                                 upgrade_callbacks callbacks) {
+   static_cast<void>(detail::stream_security_protocols(options.stream_security));
+   if (options.stream_security == node::stream_security::tls) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "relay circuit streams require Noise security");
+   }
    const auto noise_protocol = protocol_id{.value = "/noise"};
    auto noise_stream = co_await protocol_negotiation::async_accept(std::move(stream), {noise_protocol});
    co_return co_await finish_noise_inbound(std::move(noise_stream.stream), options, identity, std::move(expected_peer),
@@ -383,16 +404,13 @@ boost::asio::awaitable<upgraded_session>
 upgrade_outbound_tcp(forge::net::tcp::connection connection, const node::options& options,
                      const libp2p_identity_material& identity, std::optional<peer_id> expected_peer,
                      tcp_upgrade_deadline deadline, upgrade_callbacks callbacks) {
+   const auto protocols = detail::stream_security_protocols(options.stream_security);
    if (options.private_network) {
       co_return co_await upgrade_outbound_private_tcp(std::move(connection), options, identity,
                                                        std::move(expected_peer), deadline, std::move(callbacks));
    }
    auto cleanup = cancel_cleanup{&deadline};
    set_cancel(deadline, [&connection] { connection.cancel(); });
-   const auto protocols = std::array{
-       protocol_id{.value = "/tls/1.0.0"},
-       protocol_id{.value = "/noise"},
-   };
    const auto selected = co_await select_protocol(connection, protocols);
    clear_cancel(deadline);
    if (selected.protocol.value == "/tls/1.0.0") {
@@ -415,16 +433,13 @@ boost::asio::awaitable<upgraded_session>
 upgrade_inbound_tcp(forge::net::tcp::connection connection, const node::options& options,
                     const libp2p_identity_material& identity, std::optional<peer_id> expected_peer,
                     tcp_upgrade_deadline deadline, upgrade_callbacks callbacks) {
+   const auto protocols = detail::stream_security_protocols(options.stream_security);
    if (options.private_network) {
       co_return co_await upgrade_inbound_private_tcp(std::move(connection), options, identity,
                                                       std::move(expected_peer), deadline, std::move(callbacks));
    }
    auto cleanup = cancel_cleanup{&deadline};
    set_cancel(deadline, [&connection] { connection.cancel(); });
-   const auto protocols = std::array{
-       protocol_id{.value = "/tls/1.0.0"},
-       protocol_id{.value = "/noise"},
-   };
    const auto selected = co_await accept_protocol(connection, protocols);
    clear_cancel(deadline);
    if (selected.protocol.value == "/tls/1.0.0") {

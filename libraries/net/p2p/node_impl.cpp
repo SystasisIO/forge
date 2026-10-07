@@ -91,6 +91,7 @@ import forge.multiformats.exceptions;
 import forge.net.transport.exceptions;
 import forge.net.transport.session;
 import forge.net.transport.stream;
+import forge.net.tcp.connection;
 import forge.net.yamux.exceptions;
 import forge.net.yamux.session;
 
@@ -102,6 +103,7 @@ import forge.net.yamux.session;
 #include "details/peer_exchange_learning.hxx"
 #include "details/protocol_capabilities.hxx"
 #include "details/session_lifecycle.hxx"
+#include "details/stream_upgrade.hxx"
 #include "details/topology_peer_exchange_claims.hxx"
 #include "details/worker_stop_bridge.hxx"
 
@@ -382,6 +384,10 @@ void normalize_topology_capacity(node::options& options) noexcept {
 }
 
 void validate(const node::options& options) {
+   static_cast<void>(detail::stream_security_protocols(options.stream_security));
+   if (options.stream_security == node::stream_security::tls && options.relay_policy.client_enabled) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "TLS-only stream security does not support relay clients");
+   }
    validate(options.mdns);
    if (options.mdns.enabled && options.limits.topology.operating_mode == topology::mode::static_only) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS requires managed topology");
@@ -600,6 +606,7 @@ node::impl::impl(forge::asio::runtime& runtime_value, node::options options_valu
           detail::make_dht_profile_states(local, options.dht_profiles, options.dht_record_persistence,
                                           [this](const peer_id& peer) { return store.find_public_key(peer); })),
       peer_exchange_value(options.limits.max_peer_exchange_queue) {
+   initialize_pubsub();
    if (!options.allow_insecure_test_mode) {
       const auto identity_peer = make_peer_id(decode_public_key(identity.public_key));
       if (local != identity_peer) {
@@ -782,8 +789,8 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_l
       append(builtins::rendezvous);
    }
    if (options.capabilities.has(capabilities::pubsub)) {
-      append(builtins::meshsub_v11);
-      if (options.limits.pubsub.allow_v1_0_fallback) {
+      append(pubsub::codec::protocol(options.limits.pubsub.preferred));
+      if (options.limits.pubsub.preferred == pubsub::version::v1_1 && options.limits.pubsub.allow_v1_0_fallback) {
          append(builtins::meshsub_v10);
       }
    }

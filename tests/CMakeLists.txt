@@ -1122,6 +1122,21 @@ add_executable(
    quic_p2p/path_manager_tests.cpp
    quic_p2p/path_session_tests.cpp
    quic_p2p/p2p_tests.cpp
+   quic_p2p/gossipsub_test_shutdown.cpp
+   quic_p2p/gossipsub_test_shutdown_fixture.cpp
+   quic_p2p/gossipsub_test_shutdown_tests.cpp
+   quic_p2p/gossipsub_test_receipts.cpp
+   quic_p2p/gossipsub_validation_tests.cpp
+   quic_p2p/gossipsub_validation_tests.hxx
+   quic_p2p/gossipsub_control_tests.cpp
+   quic_p2p/gossipsub_control_tests.hxx
+   quic_p2p/gossipsub_outbound_tests.cpp
+   quic_p2p/gossipsub_outbound_tests.hxx
+   quic_p2p/stream_security_tests.cpp
+   quic_p2p/pubsub_score_tests.cpp
+   quic_p2p/pubsub_router_tests.cpp
+   quic_p2p/pubsub_router_fixture.cpp
+   quic_p2p/pubsub_router_fixture_resources.cpp
    quic_p2p/chain_signer_tests.cpp
    quic_p2p/chain_signer_fixture.cpp
    quic_p2p/direct_transport_tests.cpp
@@ -1153,6 +1168,101 @@ add_test(NAME test_forge_quic_p2p COMMAND test_forge_quic_p2p WORKING_DIRECTORY 
 set_tests_properties(test_forge_quic_p2p PROPERTIES TIMEOUT 300)
 
 add_executable(
+   test_forge_p2p_pubsub_score
+   unit/main.cpp
+   quic_p2p/pubsub_score_tests.cpp
+)
+target_link_libraries(test_forge_p2p_pubsub_score forge_net_p2p Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_pubsub_score COMMAND test_forge_p2p_pubsub_score WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_pubsub_score PROPERTIES TIMEOUT 60)
+
+add_executable(
+   test_forge_p2p_pubsub_router
+   unit/main.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/pubsub_router_fixture.cpp
+   quic_p2p/pubsub_router_fixture_resources.cpp
+   quic_p2p/pubsub_router_tests.cpp
+   quic_p2p/gossipsub_test_shutdown.cpp
+   quic_p2p/gossipsub_test_shutdown_fixture.cpp
+   quic_p2p/gossipsub_test_shutdown_tests.cpp
+   quic_p2p/gossipsub_test_receipts.cpp
+   quic_p2p/gossipsub_validation_tests.cpp
+   quic_p2p/gossipsub_validation_tests.hxx
+   quic_p2p/gossipsub_control_tests.cpp
+   quic_p2p/gossipsub_control_tests.hxx
+   quic_p2p/gossipsub_outbound_tests.cpp
+   quic_p2p/gossipsub_outbound_tests.hxx
+)
+target_link_libraries(test_forge_p2p_pubsub_router forge_net_p2p Boost::included_unit_test_framework)
+if(UNIX)
+   target_compile_definitions(test_forge_quic_p2p PRIVATE
+      FORGE_GOSSIPSUB_TEST_EXECUTABLE="$<TARGET_FILE:test_forge_quic_p2p>")
+   target_compile_definitions(test_forge_p2p_pubsub_router PRIVATE
+      FORGE_GOSSIPSUB_TEST_EXECUTABLE="$<TARGET_FILE:test_forge_p2p_pubsub_router>")
+endif()
+add_test(NAME test_forge_p2p_pubsub_router COMMAND test_forge_p2p_pubsub_router WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_pubsub_router PROPERTIES TIMEOUT 90)
+
+# The existing node friend has a separate coherent owner here; never link it with the terminal fixture.
+if(UNIX)
+add_executable(
+   test_forge_p2p_pubsub_control_queue
+   unit/main.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/pubsub_router_fixture.cpp
+   quic_p2p/gossipsub_test_shutdown.cpp
+   quic_p2p/control/node_session_fixture.hxx
+   quic_p2p/control/node_session_fixture.cpp
+   quic_p2p/control/node_session_fixture_native.cpp
+   quic_p2p/control/node_session_fixture_dispatch.cpp
+   quic_p2p/control/pubsub_control_allocation.hxx
+   quic_p2p/control/pubsub_control_allocation.cpp
+)
+target_link_libraries(test_forge_p2p_pubsub_control_queue forge_net_p2p Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_pubsub_control_queue COMMAND test_forge_p2p_pubsub_control_queue
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_pubsub_control_queue PROPERTIES TIMEOUT 90)
+endif()
+
+if(UNIX)
+   # Keep the private node_session_fixture and claim allocation symbols out of other native targets.
+   add_executable(
+      test_forge_p2p_pubsub_terminal
+      unit/main.cpp
+      quic_p2p/libp2p_identity_fixture.cpp
+      quic_p2p/node_session_fixture.hxx
+      quic_p2p/node_session_fixture.cpp
+      quic_p2p/node_session_fixture_retention.cpp
+      quic_p2p/node_session_fixture_claim.cpp
+      quic_p2p/node_session_fixture_validation.cpp
+      quic_p2p/pubsub_router_fixture.cpp
+      quic_p2p/gossipsub_test_shutdown.cpp
+      quic_p2p/pubsub_claim_allocation.hxx
+      quic_p2p/pubsub_claim_allocation.cpp
+   )
+   target_link_libraries(test_forge_p2p_pubsub_terminal forge_net_p2p Boost::included_unit_test_framework)
+   add_test(NAME test_forge_p2p_pubsub_terminal COMMAND test_forge_p2p_pubsub_terminal
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+   set_tests_properties(test_forge_p2p_pubsub_terminal PROPERTIES TIMEOUT 60)
+
+   # Isolate replaceable allocation symbols from every native/router aggregate test.
+   add_executable(
+      test_forge_p2p_pubsub_write_allocation
+      unit/main.cpp
+      quic_p2p/libp2p_identity_fixture.cpp
+      quic_p2p/libp2p_identity_fixture.hxx
+      quic_p2p/pubsub_write_allocation_fixture.cpp
+      quic_p2p/pubsub_write_allocation_fixture.hxx
+      quic_p2p/pubsub_write_allocation_tests.cpp
+   )
+   target_link_libraries(test_forge_p2p_pubsub_write_allocation forge_net_p2p Boost::included_unit_test_framework)
+   add_test(NAME test_forge_p2p_pubsub_write_allocation COMMAND test_forge_p2p_pubsub_write_allocation
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+   set_tests_properties(test_forge_p2p_pubsub_write_allocation PROPERTIES TIMEOUT 30)
+endif()
+
+add_executable(
    test_forge_p2p_autorelay
    unit/main.cpp
    quic_p2p/libp2p_identity_fixture.cpp
@@ -1169,6 +1279,7 @@ add_executable(
    test_forge_p2p_path_management
    unit/main.cpp
    quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/stream_security_tests.cpp
    quic_p2p/coordinated_transport_tests.cpp
    quic_p2p/coordinated_node_tests.cpp
    quic_p2p/quic_connector_cleanup_tests.cpp
@@ -1269,6 +1380,8 @@ add_executable(
    libp2p_interop/forge_connection_fixture.cpp
    libp2p_interop/forge_coordinated_fixture.cpp
    libp2p_interop/forge_path_fixture.cpp
+   libp2p_interop/forge_pubsub_fixture.cpp
+   libp2p_interop/forge_pubsub_fixture_tests.cpp
    libp2p_interop/forge_private_profile_fixture.cpp
    libp2p_interop/forge_mdns_fixture.hxx
    libp2p_interop/forge_mdns_fixture.cpp
@@ -1282,6 +1395,12 @@ add_test(
    COMMAND forge_interop_fixture --self-test
 )
 set_tests_properties(test_forge_libp2p_wire_fixture PROPERTIES TIMEOUT 45)
+
+add_test(
+   NAME test_forge_p2p_pubsub_fixture
+   COMMAND forge_interop_fixture --pubsub-self-test
+)
+set_tests_properties(test_forge_p2p_pubsub_fixture PROPERTIES TIMEOUT 45)
 
 set(_forge_libp2p_interop_enabled 0)
 if(FORGE_ENABLE_LIBP2P_INTEROP)
@@ -1479,6 +1598,13 @@ add_test(
 )
 set_tests_properties(test_forge_libp2p_path_wire PROPERTIES TIMEOUT 10)
 add_test(
+   NAME test_forge_libp2p_pubsub_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_pubsub_wire test_pubsub_cases test_pubsub_evidence test_pubsub_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_pubsub_evidence PROPERTIES TIMEOUT 10)
+add_test(
    NAME test_forge_libp2p_private_profile_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest
       test_private_profile_evidence test_private_profile_cases test_private_profile_acceptance
@@ -1539,6 +1665,24 @@ add_custom_target(
       --forge-fixture $<TARGET_FILE:forge_interop_fixture>
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
       --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/autorelay
+      --forge-root ${CMAKE_SOURCE_DIR}
+      --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
+      --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json
+      --expected-head ${_forge_p2p_stage6_expected_head}
+   DEPENDS forge_interop_fixture test_forge_p2p_inventory
+   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+   VERBATIM
+)
+
+add_custom_target(
+   test_forge_p2p_pubsub_acceptance
+   COMMAND ${Python3_EXECUTABLE}
+      ${FORGE_P2P_STAGE6_PROMOTION_WRAPPER}
+      --suite pubsub-scoring
+      --runner ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/runner.py
+      --forge-fixture $<TARGET_FILE:forge_interop_fixture>
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+      --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/pubsub
       --forge-root ${CMAKE_SOURCE_DIR}
       --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
       --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json

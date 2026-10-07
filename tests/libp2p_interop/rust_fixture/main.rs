@@ -46,6 +46,7 @@ mod mdns_fixture;
 mod autonat_fixture;
 mod autorelay;
 mod relay_readiness;
+mod pubsub_scoring;
 
 const KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 const PUBSUB_TOPIC: &str = "forge.pubsub.interop";
@@ -3000,6 +3001,9 @@ async fn dial_relay(opts: Options) -> Result<(), Box<dyn Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(config) = pubsub_scoring::parse_args(&argv)? {
+        return pubsub_scoring::run(config).await;
+    }
     if let Some(config) = coordinated::parse_args(&argv)? {
         coordinated::run(config).await?;
         return Ok(());

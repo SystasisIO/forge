@@ -1576,6 +1576,17 @@ func parsePathArgs(argv []string) (map[string]string, error) {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "pubsub-live" {
+		args, err := parsePubsubScoringArgs(os.Args[2:])
+		if err == nil {
+			err = runPubsubScoringLive(args)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "coordinated-live" {
 		args, err := parseCoordinatedArgs(os.Args[2:])
 		if err == nil {

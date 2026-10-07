@@ -23,6 +23,7 @@ from autorelay_cases import run_suite as run_autorelay_suite
 from autorelay_acceptance import claims_for as autorelay_claims, SCENARIOS as AUTORELAY_SCENARIOS
 from path_cases import run_suite as run_path_suite
 from coordinated_cases import run_suite as run_coordinated_suite
+from pubsub_cases import case_specs as pubsub_specs, run_case as run_pubsub_case
 from mdns_cases import run_suite as run_mdns_suite
 from mdns_isolation_cases import run_suite as run_mdns_isolation_suite
 from mdns_churn_cases import run_suite as run_mdns_churn_suite
@@ -1709,7 +1710,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -2041,6 +2042,19 @@ def main() -> int:
                     if artifact["status"] != "passed":
                         failures.append(f"{artifact['scenario_id']}: " +
                                         "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+            if args.suite == "pubsub-scoring" or args.suite == "stage6" and manifest_registers_profiles(
+                    args.acceptance_manifest, {spec.scenario for spec in pubsub_specs()}):
+                # Public cases must not consume or overwrite the canonical private input.
+                private_pubsub_fingerprint = pnet_fingerprint
+                for spec in pubsub_specs():
+                    pnet_fingerprint = private_pubsub_fingerprint if spec.profile == "private_tcp_yamux" else None
+                    artifact = run_pubsub_case(spec, binaries, root, key=pnet_key_file,
+                        fingerprint=pnet_fingerprint, command_attempt=command_attempt)
+                    artifacts.append(artifact)
+                    if artifact["status"] != "observed":
+                        failures.append(f"{artifact['scenario_id']}: " +
+                                        "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+                pnet_fingerprint = private_pubsub_fingerprint
     except Exception as error:
         failures.append(f"preflight: {error}")
     finally:

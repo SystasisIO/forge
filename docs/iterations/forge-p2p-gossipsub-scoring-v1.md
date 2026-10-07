@@ -3,7 +3,8 @@
 ## Scope And Baseline
 
 Branch: `forge-p2p-gossipsub-scoring-v1`, from the reviewed PR10 merge in `dev`.
-This is preparation, not an implementation or passing acceptance claim.
+Implementation and evidence are in progress. This document is not a passing
+acceptance or production-support claim.
 
 Follow the production implementation roadmap and the donor-first capability
 manifest. PR11 owns `pubsub.gossipsub_v1_0_v1_1`: peer/topic scoring, score decay
@@ -46,11 +47,77 @@ Record authenticated transport and negotiated stream ownership. Go quantizes
 mesh time while Rust uses fractional time; require equivalent documented
 behavior, not artificial equality of floating-point scores.
 
+The four native processes first form two one-member meshes joined by a known,
+subscribed but off-mesh connection. Before the rejection phase, a real publish
+must traverse IHAVE, IWANT and cached MESSAGE on that off-mesh connection.
+After a real rejected publish crosses the P4 threshold, the victim must send
+PRUNE/GRAFT and deliver a new accepted message through the replacement to the
+otherwise unreachable sink. Ignore must neither penalize nor forward.
+
+All actors use a common signed message-ID policy: raw author PeerId bytes
+followed by the eight-byte big-endian sequence. This is the Forge/Go default;
+Rust selects it through its public `ConfigBuilder::message_id_fn`. Its native
+default is textual PeerId plus decimal sequence and is intentionally different.
+No donor router is patched, no score or mesh membership is mutated by the
+observer, and no manual GRAFT is used to manufacture the result.
+
+Raw actor results only establish observations. Canonical promotion also binds
+the clean exact head, immutable donor exports, source/binary hashes, owned PIDs,
+launch arguments, joined shutdown and indexed final JSON snapshots. Rust's
+public Behaviour exposes scores but not P4 counters: unavailable counters stay
+explicitly null, never reconstructed from the score.
+
 Add focused regressions for decay, attack penalties, ignored/transient input,
 mesh recovery, gossip promises, bounds, cancellation and deterministic shutdown.
 Run focused native/package/structure/inventory and live interop acceptance in
 one coordinator-owned build with `-j4`, then two independent exact-head reviews.
 Do not promote planned evidence or infer production support from unit tests.
+
+### Review Evidence Boundaries
+
+Native regressions must distinguish a retired physical session's outcome from
+the current authenticated session's failures, backoff, score and mesh. The
+failure-accounting guard and its bounded mutation share the node lock; cleanup
+must still retire the failed owner if local persistence admission throws.
+
+An unfinished native stream-open keeps a strong transport model owner across
+session retirement and exception cleanup. Moving the session facade must not
+invalidate a suspended Yamux/QUIC receiver. The native reconnect regression
+settles independent Identify/Push streams before measuring resources and
+accounts separately for the old caller's reservation while G2 connects. It
+requires the existing typed cancellation outcome for explicitly canceled G1,
+an exact timeout outcome for the current session and exact reservation return.
+
+Joined node stop clears both staged and active gossip promises without
+resetting token generations or the router's random state. This is Forge's
+explicit deterministic lifecycle contract, not a claim that the pinned donors
+expose the same stop/clear API. The allocation rollback regression sweeps all
+measured preparation sites for two immutable commands; its observed 165 sites
+are not a protocol limit or proof for every possible input.
+
+Remote ephemeral gossip retains its original authenticated physical session
+through admission, staging, writes, outcomes and failure attribution. An expired
+origin cannot create a request or penalty in a replacement session. Independent
+durable GRAFT/PRUNE controls must still drain. The regression uses real G1/G2
+Noise/Yamux sessions and a real received IHAVE, then invokes the late dispatch
+entry deterministically with the retired owner. This proves the entry contract,
+not a naturally reproduced native scheduling race.
+
+Cached MESSAGE replies are bounded individually, rather than aggregating every
+matching cache entry into one oversized RPC. The native regression publishes
+two real cached messages, requests both in one IWANT and requires two separate
+valid wire replies whose combined RPC would exceed the configured payload limit.
+
+Coroutine-factory allocation failure remains a separate runtime coverage gap.
+An ordinal allocator failure during admission is not proof of that exact site:
+Asio frame recycling and allocator selection may change the allocation path.
+Source ordering and general allocation-recovery tests must not be presented as
+a site-specific native factory-OOM regression.
+
+The original pinned Rust QUIC shutdown-cause observation gap remains unresolved.
+Successful traffic, prepare acknowledgements and joined workers do not promote
+an unavailable typed native cause to PASS. See the donor note for the exact
+boundary; canonical acceptance and merge remain pending while this gate is open.
 
 PR12 retains IDONTWANT, v1.3 extensions and opt-in Partial Messages. Stage 7
 retains official plugin configuration/facets; Stage 8 retains production/hostile
