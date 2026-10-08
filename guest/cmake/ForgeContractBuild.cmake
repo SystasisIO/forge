@@ -7,15 +7,35 @@ function(forge_add_contract target)
       )
    endif()
    cmake_parse_arguments(
+      PARSE_ARGV 1
       ARG
       ""
       "CONTRACT;SOURCE_ROOT;DISPATCH_SOURCE;RICARDIAN_CONTRACTS;RICARDIAN_CLAUSES"
-      "SOURCES;COMPILE_CHECKS;LIBRARIES"
-      ${ARGN}
+      "SOURCES;COMPILE_CHECKS;LIBRARIES;COMPILE_DEFINITIONS"
    )
    if(ARG_UNPARSED_ARGUMENTS)
       message(FATAL_ERROR "forge_add_contract(${target}) received unknown arguments: ${ARG_UNPARSED_ARGUMENTS}")
    endif()
+   if("COMPILE_DEFINITIONS" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
+      message(FATAL_ERROR "forge_add_contract(${target}) COMPILE_DEFINITIONS requires values")
+   endif()
+   set(_definition_names)
+   foreach(_definition IN LISTS ARG_COMPILE_DEFINITIONS)
+      string(FIND "${_definition}" "$<" _generator_expression)
+      if(NOT _definition MATCHES "^[A-Za-z_][A-Za-z0-9_]*(=.*)?$"
+         OR NOT _generator_expression EQUAL -1
+         OR _definition MATCHES "[;\r\n#]")
+         message(FATAL_ERROR "forge_add_contract(${target}) unsupported compile definition: ${_definition}")
+      endif()
+      string(REGEX REPLACE "=.*$" "" _definition_name "${_definition}")
+      if(_definition_name MATCHES "^NDEBUG$|^(FORGE_|__|_[A-Z])")
+         message(FATAL_ERROR "forge_add_contract(${target}) reserved compile definition: ${_definition_name}")
+      endif()
+      if(_definition_name IN_LIST _definition_names)
+         message(FATAL_ERROR "forge_add_contract(${target}) duplicate compile definition: ${_definition_name}")
+      endif()
+      list(APPEND _definition_names "${_definition_name}")
+   endforeach()
    if(NOT ARG_SOURCES)
       message(FATAL_ERROR "forge_add_contract(${target}) requires SOURCES")
    endif()
@@ -201,6 +221,9 @@ function(forge_add_contract target)
       "$<$<CONFIG:RelWithDebInfo>:--compiler-argument=-g>"
       "$<$<CONFIG:RelWithDebInfo>:--compiler-argument=-DNDEBUG>"
    )
+   foreach(_definition IN LISTS ARG_COMPILE_DEFINITIONS)
+      list(APPEND _abigen_command "--compiler-argument=-D${_definition}")
+   endforeach()
    list(
       APPEND _abigen_command
       "$<LIST:TRANSFORM,${_compilation_records},PREPEND,--library-compilation=>"
@@ -264,6 +287,7 @@ function(forge_add_contract target)
       PRIVATE
          -Werror=return-type
    )
+   target_compile_definitions("${target}" PRIVATE ${ARG_COMPILE_DEFINITIONS})
    if(_compile_checks)
       add_library("${target}_compile_checks" OBJECT ${_compile_checks})
       set_source_files_properties(
@@ -284,6 +308,9 @@ function(forge_add_contract target)
             "${_source_root}"
       )
       _forge_contract_configure_guest_target("${target}_compile_checks")
+      target_compile_definitions(
+         "${target}_compile_checks" PRIVATE ${ARG_COMPILE_DEFINITIONS}
+      )
       _forge_contract_freeze_guest_target(
          "${target}_compile_checks" "forge_add_contract(${target})"
       )

@@ -113,6 +113,7 @@ forge_add_contract(
    SOURCES contract.cpp
    COMPILE_CHECKS protocol_checks.cpp
    LIBRARIES product_protocol
+   COMPILE_DEFINITIONS PRODUCT_LIMIT=42 "PRODUCT_LABEL=\"configured value\""
 )
 ```
 
@@ -126,6 +127,15 @@ guest configuration, the declaration is complete: sources, compile settings
 and include paths must not be mutated after `forge_add_contract_library()` or
 `forge_add_contract()`. This keeps CMake compilation and Abigen on one semantic
 profile instead of creating consumer-specific module variants.
+An optional `forge_add_contract(COMPILE_DEFINITIONS ...)` list declares literal,
+object-like `NAME` or `NAME=value` macros for that contract only. The same list
+reaches Abigen, its generated dispatcher and implementation wrappers, and
+`COMPILE_CHECKS`; it does not mutate imported library/module owners or neighboring
+contracts. Quote string literal values as in the example. Leading `-D`,
+function-like macros, generator expressions, semicolon lists, newlines and `#`
+are unsupported. Duplicate names, compiler-reserved names (`__...` / `_[A-Z]...`),
+`FORGE_...` SDK definitions and the configuration-owned `NDEBUG` are rejected.
+Omitting the list preserves the existing contract build profile.
 Directory-wide compile options, definitions and includes are rejected for the
 same reason. The guest toolchain rejects external configuration-specific C++
 customization and owns the standard Debug, Release, MinSizeRel and

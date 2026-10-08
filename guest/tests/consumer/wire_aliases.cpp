@@ -1,5 +1,6 @@
 #include <concepts>
 #include <eosio/crypto.hpp>
+#include <string_view>
 
 import forge.chain.protocol.blockchain_parameters;
 import forge.chain.protocol.call_access_mode;
@@ -17,6 +18,9 @@ import forge.contract.deferred_transaction;
 import forge.contract.hash_id;
 import forge.contract.instant_finality;
 import forge.contract.privileged;
+
+static_assert(CONSUMER_DECLARATION_VALUE == 42);
+static_assert(std::string_view{CONSUMER_DECLARATION_TEXT} == "quoted \"value\" with space");
 
 static_assert(std::same_as<forge::contract::code_hash_result, forge::chain::protocol::code_hash_result>);
 static_assert(std::same_as<forge::contract::blockchain_parameters, forge::chain::protocol::blockchain_parameters>);
