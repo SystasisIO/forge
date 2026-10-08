@@ -928,6 +928,36 @@
       ]
     },
     {
+      "id": "gossipsub.native_score_repair",
+      "protocol": "GossipSub",
+      "source": "donors/libp2p-specs/pubsub/gossipsub/gossipsub-v1.1.md",
+      "donor": "Unmodified Go and Rust native GossipSub validation, scoring, gossip and mesh repair",
+      "donor_file": [
+        "donors/go-libp2p-pubsub/score.go", "donors/go-libp2p-pubsub/gossipsub.go",
+        "donors/go-libp2p-pubsub/score_test.go", "donors/rust-libp2p/protocols/gossipsub/src/behaviour.rs",
+        "donors/rust-libp2p/protocols/gossipsub/src/peer_score.rs"
+      ],
+      "donor_case": [
+        "Ignore remains score-neutral and unforwarded", "Reject crosses P4 and graylist thresholds",
+        "native PRUNE and replacement GRAFT", "IHAVE/IWANT cached delivery",
+        "signed message forwarded through repaired mesh", "forced legacy PRUNE wire layout"
+      ],
+      "mapping_state": "mapped",
+      "forge_tests": [
+        "test_forge_p2p_pubsub_score", "test_forge_p2p_pubsub_router",
+        "test_forge_libp2p_pubsub_evidence", "test_forge_p2p_pubsub_acceptance"
+      ],
+      "forge_live_scenario": [
+        { "profile": "quic_stage6", "scenario": "gossipsub_v1_0_fallback" },
+        { "profile": "quic_stage6", "scenario": "gossipsub_v1_1" },
+        { "profile": "tcp_stage6", "scenario": "gossipsub_v1_0_fallback_native_tcp_yamux" },
+        { "profile": "tcp_stage6", "scenario": "gossipsub_v1_1_native_tcp_yamux" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "gossipsub_v1_0_fallback_private_tcp_yamux_pnet" },
+        { "profile": "private_tcp_yamux_pnet", "scenario": "gossipsub_v1_1_private_tcp_yamux_pnet" }
+      ],
+      "known_gap": "Registration names executable evidence, not a current verdict. Rust public Behaviour does not expose P4 counters; native scores, committed validation and actual mesh/RPC transitions are required instead. Production soak remains Stage 8."
+    },
+    {
       "id": "gossipsub.mesh_hardening_and_resource_bounds",
       "protocol": "GossipSub",
       "source": "donors/libp2p-specs/pubsub/gossipsub/gossipsub-v1.1.md",

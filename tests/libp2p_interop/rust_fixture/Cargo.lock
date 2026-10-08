@@ -668,10 +668,12 @@ dependencies = [
  "libp2p-stream",
  "multistream-select",
  "quick-protobuf",
+ "quinn",
  "rand 0.8.7",
  "serde_json",
  "sha2",
  "tokio",
+ "yamux 0.12.1",
  "yamux 0.13.10",
 ]
 

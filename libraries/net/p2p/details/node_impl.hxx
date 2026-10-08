@@ -21,6 +21,7 @@
 #include "peer_exchange_codec.hxx"
 #include "peer_exchange_scheduler.hxx"
 #include "pubsub_backoff.hxx"
+#include "pubsub_control_queue.hxx"
 #include "pubsub_outbound_budget.hxx"
 #include "relay_discovery.hxx"
 #include "relay_transport.hxx"
@@ -55,6 +56,8 @@ class observed_address_manager;
 class host_event_source;
 class mdns_service;
 class coordinated_dial;
+class pubsub_peer_score;
+class pubsub_router;
 
 } // namespace detail
 
@@ -176,8 +179,15 @@ struct node::impl : std::enable_shared_from_this<impl> {
    };
 
    struct pubsub_state {
+      struct request {
+         peer_id peer;
+         std::string id;
+         std::uint64_t generation = 0;
+      };
       struct outbound_generation {
          std::uint64_t session_id = 0;
+         std::uint64_t generation = 0;
+         protocol_id protocol;
          std::shared_ptr<forge::asio::gate> write_gate;
          std::shared_ptr<forge::net::p2p::stream> stream;
          bool snapshot_pending = true;
@@ -199,6 +209,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
          std::size_t requests = 0;
          peer_id source;
          std::uint64_t generation = 0;
+         std::uint64_t score_generation = 0;
+         std::uint64_t cache_epoch = 0;
+         std::map<peer_id, std::size_t> retransmissions;
          std::chrono::steady_clock::time_point retry_after{};
          std::chrono::steady_clock::time_point request_after{};
       };
@@ -224,6 +237,27 @@ struct node::impl : std::enable_shared_from_this<impl> {
       std::map<std::string, validation> validations;
       std::string retry_cursor;
       std::map<peer_id, pubsub::score> scores;
+      struct peer_state {
+         std::uint64_t generation = 0;
+         bool connected = true;
+         std::chrono::steady_clock::time_point retain_until{};
+         std::size_t have = 0;
+         std::size_t requested = 0;
+      };
+      struct fanout_state {
+         std::set<peer_id> peers;
+         std::chrono::steady_clock::time_point last_publish{};
+      };
+      std::map<peer_id, peer_state> peers;
+      std::map<std::string, fanout_state> fanout;
+      std::shared_ptr<detail::pubsub_peer_score> scoring;
+      std::shared_ptr<detail::pubsub_router> router;
+      std::shared_ptr<detail::pubsub_control_queue> controls;
+      std::size_t remote_topic_entries = 0;
+      std::uint64_t epoch = 0;
+      std::uint64_t next_peer_generation = 1;
+      std::atomic_uint64_t trace_failures = 0;
+      std::atomic_uint64_t application_score_failures = 0;
       std::map<peer_id, outbound_generation> outbound;
       detail::connection_singleflight_registry connection_gates;
       detail::pubsub_outbound_budget outbound_budget;
@@ -232,6 +266,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
       std::size_t active_validations = 0;
       std::uint64_t next_validation_generation = 1;
       std::uint64_t next_inbound_generation = 1;
+      std::uint64_t next_outbound_generation = 1;
       std::uint64_t next_seqno = 1;
       bool heartbeat_started = false;
    };
@@ -382,6 +417,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
                                           const std::shared_ptr<forge::asio::gate>& owner_write_gate = {},
                                           const std::shared_ptr<forge::net::p2p::stream>& owner_stream = {}) noexcept;
    void forget_pubsub_peer_locked(const peer_id& peer);
+   void disconnect_pubsub_peer_locked(const peer_id& peer, std::chrono::steady_clock::time_point now);
+   void disconnect_pubsub_sessions_locked(std::span<const std::uint64_t> selected,
+                                          std::chrono::steady_clock::time_point now);
    void finish_pubsub_inbound(const peer_id& peer, std::uint64_t generation);
    void clear_pubsub_outbound_locked();
 
@@ -629,37 +667,110 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    void increment_pubsub_duplicate();
 
-   void increment_pubsub_invalid(const peer_id& peer);
+   [[nodiscard]] bool increment_pubsub_invalid(const std::shared_ptr<session_state>& session,
+       const std::optional<pubsub::topic>& subject, bool protocol_rejected);
 
-   void penalize_pubsub_backoff_violation(const peer_id& peer);
 
    void increment_pubsub_control();
 
    [[nodiscard]] std::vector<std::uint8_t> next_pubsub_seqno();
 
    [[nodiscard]] pubsub::snapshot pubsub_snapshot() const;
+   [[nodiscard]] pubsub::score_snapshot pubsub_scores() const;
+   void initialize_pubsub();
+   [[nodiscard]] bool connect_pubsub_peer_locked(const peer_id& peer);
+   [[nodiscard]] bool pubsub_session_live_locked(const std::shared_ptr<session_state>& session) const noexcept;
+   void forget_pubsub_endpoint_locked(const session_state& session);
+   void sample_pubsub_application_scores(const std::optional<peer_id>& peer = std::nullopt);
+   template<typename Builder>
+   void trace_pubsub(Builder&& build) noexcept {
+      if (!options.limits.pubsub.tracer) { return; }
+      try {
+         const auto event = build();
+         options.limits.pubsub.tracer(event);
+      } catch (...) {
+         pubsub_value.trace_failures.fetch_add(1, std::memory_order_relaxed);
+      }
+   }
+   [[nodiscard]] double pubsub_score_locked(const peer_id& peer);
+   [[nodiscard]] bool pubsub_peer_live_locked(const peer_id& peer) const;
+   [[nodiscard]] bool pubsub_peer_outbound_locked(const peer_id& peer) const;
+   void graft_pubsub_peer_locked(const std::string& topic, const peer_id& peer);
+   void prune_pubsub_peer_locked(const std::string& topic, const peer_id& peer);
+   struct pubsub_control_change {
+      struct action {
+         peer_id peer;
+         std::string topic;
+         detail::pubsub_control_queue::kind operation;
+      };
+      std::vector<action> actions;
+      detail::pubsub_control_queue::prepared queued;
+      detail::pubsub_backoff::prepared_local backoff;
+      std::map<std::string, std::set<peer_id>> mesh;
+   };
+   [[nodiscard]] std::vector<pubsub::peer_info> prepare_pubsub_prune_peers();
+   [[nodiscard]] detail::pubsub_control_queue::command make_pubsub_control_locked(
+       const peer_id& peer, const pubsub::topic& subject, detail::pubsub_control_queue::kind operation,
+       std::chrono::seconds backoff, std::span<const pubsub::peer_info> px);
+   [[nodiscard]] std::optional<pubsub_control_change> prepare_pubsub_controls_locked(
+       std::vector<detail::pubsub_control_queue::command> commands, std::chrono::steady_clock::time_point now);
+   void commit_pubsub_controls_locked(pubsub_control_change change, std::chrono::steady_clock::time_point now) noexcept;
+   [[nodiscard]] bool admit_pubsub_control_locked(detail::pubsub_control_queue::command command,
+                                                 std::chrono::steady_clock::time_point now);
+   struct pubsub_control_dispatch {
+      std::shared_ptr<impl> owner;
+      std::shared_ptr<const detail::pubsub_control_queue::batch> lease;
+      std::shared_ptr<session_state> origin;
+      std::optional<pubsub_state::request> request;
+      pubsub_control_dispatch(std::shared_ptr<impl> owner,
+                              std::shared_ptr<const detail::pubsub_control_queue::batch> lease,
+                              std::shared_ptr<session_state> origin = {});
+      ~pubsub_control_dispatch() noexcept;
+   };
+   [[nodiscard]] bool validate_pubsub_control_locked(const detail::pubsub_control_queue::batch& batch,
+                                                     bool check_intents = true) noexcept;
+   void flush_pubsub_controls(std::optional<peer_id> peer = std::nullopt,
+                              std::map<peer_id, pubsub::control> ephemeral = {},
+                              std::shared_ptr<session_state> origin = {});
+   boost::asio::awaitable<void> run_pubsub_control_dispatch(std::shared_ptr<pubsub_control_dispatch> dispatch,
+                                                           pubsub::rpc ephemeral);
+   [[nodiscard]] std::vector<peer_id> pubsub_publish_peers(const std::string& topic);
+   [[nodiscard]] std::vector<peer_id> pubsub_forward_peers(const std::string& topic,
+                                                         const peer_id& sender, const std::optional<peer_id>& author);
+   [[nodiscard]] std::optional<pubsub_state::request>
+   stage_pubsub_request_locked(const peer_id& peer, const std::vector<std::vector<std::uint8_t>>& ids);
+   void finish_pubsub_request(const pubsub_state::request& request, bool sent,
+                              std::shared_ptr<session_state> origin = {}) noexcept;
+   boost::asio::awaitable<void> handle_pubsub_control(std::shared_ptr<session_state> session, const pubsub::control& value,
+                                                    const protocol_id& protocol);
 
    [[nodiscard]] std::vector<pubsub::subscription> local_pubsub_subscriptions() const;
 
    [[nodiscard]] std::vector<peer_id> pubsub_candidate_peers(const std::string& topic_value,
                                                              std::optional<peer_id> except = std::nullopt) const;
 
-   boost::asio::awaitable<void> send_pubsub_rpc(const peer_id& peer, const pubsub::rpc& value);
-   void record_pubsub_send_failure(const peer_id& peer, const forge::exceptions::base& error);
+   boost::asio::awaitable<bool> send_pubsub_rpc(const peer_id& peer, pubsub::rpc value,
+      std::optional<std::uint64_t>& send_generation,
+      std::shared_ptr<const detail::pubsub_control_queue::batch> control = {}, bool check_intents = true,
+      std::shared_ptr<session_state> origin = {});
+   void record_pubsub_send_failure(const peer_id& peer, const forge::exceptions::base& error,
+      std::optional<std::uint64_t> expected_generation, std::shared_ptr<session_state> origin = {});
 
-   boost::asio::awaitable<std::shared_ptr<session_state>> ensure_pubsub_direct_session(const peer_id& peer);
+   boost::asio::awaitable<std::shared_ptr<session_state>> ensure_pubsub_direct_session(
+       const peer_id& peer, std::shared_ptr<session_state> origin = {});
 
    boost::asio::awaitable<void> announce_pubsub_subscriptions(const peer_id& peer);
 
    void finish_pubsub_validation(const peer_id& peer);
 
    [[nodiscard]] pubsub_state::claim claim_pubsub_message(const peer_id& peer, const std::string& key,
-                                                          const pubsub::message& value, bool requires_validation);
+      const pubsub::message& value, bool requires_validation, const std::shared_ptr<session_state>& session = {});
 
    [[nodiscard]] bool complete_pubsub_message(const std::string& key, std::uint64_t generation,
-                                              pubsub::validation_result result);
+      pubsub::validation_result result, const std::shared_ptr<session_state>& session = {});
 
-   void defer_pubsub_message(const std::string& key, std::uint64_t generation);
+   void defer_pubsub_message(const std::string& key, std::uint64_t generation,
+      const std::shared_ptr<session_state>& session = {});
 
    [[nodiscard]] bool should_request_pubsub_message_locked(const std::string& key, const peer_id& source,
                                                            std::chrono::steady_clock::time_point now);
@@ -672,7 +783,6 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    void prune_pubsub_cache_locked();
 
-   [[nodiscard]] bool pubsub_control_over_limit(const pubsub::control& value) const noexcept;
 
    void launch_pubsub_heartbeat();
 
@@ -725,7 +835,8 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<forge::net::p2p::stream>
    open_protocol_on_direct_session(const peer_id& peer, const protocol_id& protocol,
                                    std::shared_ptr<session_state> session, std::chrono::milliseconds timeout,
-                                   std::shared_ptr<cancellation_latch> cancellation = {});
+                                   std::shared_ptr<cancellation_latch> cancellation = {},
+                                   detail::stream_open_phase* phase = nullptr);
 
    boost::asio::awaitable<forge::net::p2p::stream>
    open_protocol_direct(const peer_id& peer, const protocol_id& protocol, std::chrono::milliseconds timeout,
@@ -791,7 +902,8 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    boost::asio::awaitable<forge::net::p2p::stream> open_session_stream(const std::shared_ptr<session_state>& session,
                                                                        const protocol_id& protocol, bool relay = false,
-                                                                       detail::stream_admission_handler admitted = {});
+                                                                       detail::stream_admission_handler admitted = {},
+                                                                       detail::stream_open_phase* phase = nullptr);
 
    boost::asio::awaitable<forge::net::p2p::stream>
    open_yamux_stream(const peer_id& peer, const std::shared_ptr<forge::net::yamux::session>& yamux,
@@ -876,9 +988,11 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<void> handle_rendezvous(std::shared_ptr<session_state> session,
                                                   forge::net::p2p::stream stream);
 
-   boost::asio::awaitable<void> handle_pubsub(std::shared_ptr<session_state> session, forge::net::p2p::stream stream);
+   boost::asio::awaitable<void> handle_pubsub(std::shared_ptr<session_state> session, forge::net::p2p::stream stream,
+                                           protocol_id protocol);
    boost::asio::awaitable<void> handle_pubsub_stream(std::shared_ptr<session_state> session,
-                                                     forge::net::p2p::stream stream);
+                                                     forge::net::p2p::stream stream, protocol_id protocol,
+                                                     std::uint64_t generation);
 
    boost::asio::awaitable<bool> wait_for_direct_session(const peer_id& peer, std::chrono::milliseconds timeout);
 

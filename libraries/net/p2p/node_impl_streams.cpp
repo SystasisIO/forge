@@ -97,7 +97,10 @@ bind_stream_resource(const std::shared_ptr<detail::resource_stream>& resource, c
 
 boost::asio::awaitable<forge::net::p2p::stream>
 node::impl::open_session_stream(const std::shared_ptr<session_state>& session, const protocol_id& protocol, bool relay,
-                                detail::stream_admission_handler admitted) {
+                                detail::stream_admission_handler admitted, detail::stream_open_phase* phase) {
+   if (phase) {
+      *phase = detail::stream_open_phase::admission;
+   }
    const auto direction = resource_manager::session_direction::outbound;
    auto reservation = resources.reserve_stream(session->info.remote_peer, direction);
    if (!reservation) {
@@ -105,15 +108,35 @@ node::impl::open_session_stream(const std::shared_ptr<session_state>& session, c
          auto lock = std::scoped_lock{mutex};
          ++metrics_value.backpressure_rejections;
          ++metrics_value.protocol_rejections;
+         if (phase) {
+            *phase = detail::stream_open_phase::local_rejected;
+         }
          FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P stream limit reached");
+      }
+      if (phase) {
+         *phase = detail::stream_open_phase::local_failed;
       }
       FORGE_THROW_EXCEPTION(exceptions::internal, "P2P stream resource admission failed");
    }
    auto [guarded, resource] = detail::prepare_resource_stream(std::move(*reservation));
+   auto native_owner = std::shared_ptr<forge::net::transport::detail::session_concept>{};
    auto selected = forge::net::p2p::stream{};
    auto failure = std::exception_ptr{};
    try {
-      auto raw = co_await session->connection.async_open_stream();
+      {
+         const auto lock = std::scoped_lock{mutex};
+         native_owner = forge::net::transport::detail::session_access::cancellation_owner(session->connection);
+         if (!native_owner || !native_owner->valid()) {
+            FORGE_THROW_EXCEPTION(exceptions::closed, "P2P transport session is closed");
+         }
+      }
+      // Retirement can move the facade while the native open or its cleanup is suspended.
+      // Coroutine-frame creation is still local admission, before native work starts.
+      auto opening = native_owner->async_open_stream();
+      if (phase) {
+         *phase = detail::stream_open_phase::native_open;
+      }
+      auto raw = co_await std::move(opening);
       resource->attach(std::move(raw));
       if (admitted) {
          admitted(resource);
@@ -131,6 +154,9 @@ node::impl::open_session_stream(const std::shared_ptr<session_state>& session, c
       }
       admitted.commit();
       detail::stream_access::set_authentication(selected, session->authentication);
+      if (phase) {
+         *phase = detail::stream_open_phase::committed;
+      }
    } catch (...) {
       failure = std::current_exception();
    }
@@ -246,7 +272,11 @@ node::impl::dispatch_registered_handler(const std::shared_ptr<session_state>& se
 
 boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_direct_session(
     const peer_id& peer, const protocol_id& protocol, std::shared_ptr<node::impl::session_state> session,
-    std::chrono::milliseconds timeout, std::shared_ptr<cancellation_latch> cancellation) {
+    std::chrono::milliseconds timeout, std::shared_ptr<cancellation_latch> cancellation,
+    detail::stream_open_phase* phase) {
+   auto local_phase = detail::stream_open_phase::admission;
+   if (!phase) { phase = &local_phase; }
+   *phase = detail::stream_open_phase::admission;
    auto deadline = operation_deadline{runtime.context(), timeout};
    auto cancellation_subscription = cancellation_latch::subscribe(
        cancellation, [stop = deadline.stopping()] noexcept { static_cast<void>(stop.request_stop()); });
@@ -285,7 +315,10 @@ boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_dir
       stream_stop_requested->store(true, std::memory_order_release);
       stream_stop->request_stop();
    });
-   const auto record_open_timeout = [&] {
+   auto failure_recorded = false;
+   const auto record_open_failure = [&] {
+      if (failure_recorded) { return; }
+      failure_recorded = true;
       record_direct_session_failure(session);
    };
    record_path_attempt(path::kind::direct);
@@ -293,14 +326,15 @@ boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_dir
       auto selected = std::optional<forge::net::p2p::stream>{};
       co_await detail::async_run_with_owner_cancellation(
           stream_stop,
-          [this, session, protocol, stream_stop, stream_stop_requested,
+          [this, session, protocol, stream_stop, stream_stop_requested, phase,
            &selected](boost::asio::cancellation_slot slot) -> boost::asio::awaitable<void> {
              if (stream_stop_requested->load(std::memory_order_acquire)) {
                 FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P protocol open canceled before stream admission");
              }
              selected.emplace(co_await open_session_stream(
                  session, protocol, false,
-                 detail::make_owner_stream_admission(slot, stream_stop, detail::owner_stream_lifetime::negotiation)));
+                 detail::make_owner_stream_admission(slot, stream_stop, detail::owner_stream_lifetime::negotiation),
+                 phase));
           });
       const auto completed = deadline.finish();
       if (cancellation && cancellation->stop_requested()) {
@@ -324,7 +358,7 @@ boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_dir
          FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P protocol open canceled");
       }
       if (deadline.timed_out() || !completed) {
-         record_open_timeout();
+         record_open_failure();
          throw_operation_timeout("P2P protocol open");
       }
       if (deadline.stopped()) {
@@ -347,11 +381,21 @@ boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_dir
       if (kind == exceptions::code::canceled || kind == exceptions::code::backpressure_rejected) {
          FORGE_THROW_CODE(kind, error.what());
       }
+      if (*phase == detail::stream_open_phase::local_failed && kind == exceptions::code::internal) {
+         throw;
+      }
+      auto accounting_failure = std::exception_ptr{};
+      try {
+         if (detail::remote_peer_attributable_failure(kind, node_stopped)) {
+            record_open_failure();
+         }
+      } catch (...) {
+         accounting_failure = std::current_exception();
+      }
+      // Local accounting pressure must not leave this failed native owner registered.
       session->closed = true;
       forget_session(session);
-      if (detail::remote_peer_attributable_failure(kind, node_stopped)) {
-         record_direct_session_failure(session);
-      }
+      if (accounting_failure) { std::rethrow_exception(accounting_failure); }
       FORGE_THROW_CODE(kind, error.what());
    } catch (const boost::system::system_error& error) {
       const auto completed = deadline.finish();
@@ -359,7 +403,7 @@ boost::asio::awaitable<forge::net::p2p::stream> node::impl::open_protocol_on_dir
          FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P protocol open canceled");
       }
       if (deadline.timed_out() || !completed) {
-         record_open_timeout();
+         record_open_failure();
          throw_operation_timeout("P2P protocol open");
       }
       auto node_stopped = false;
@@ -411,8 +455,9 @@ node::impl::open_protocol_direct_owned(std::shared_ptr<impl> self, std::shared_p
       const auto open_timeout = attempt_timeout(
           remaining_timeout(started, timeout, "P2P protocol open"),
           direct_attempt_timeout, "P2P protocol open direct attempt");
+      auto phase = detail::stream_open_phase::admission;
       try {
-         auto selected = co_await self->open_protocol_on_direct_session(peer, protocol, session, open_timeout, cancellation);
+         auto selected = co_await self->open_protocol_on_direct_session(peer, protocol, session, open_timeout, cancellation, &phase);
          co_return opened_direct_stream{
              .stream = std::move(selected),
              .remote_endpoint = session->remote_endpoint,
@@ -423,6 +468,9 @@ node::impl::open_protocol_direct_owned(std::shared_ptr<impl> self, std::shared_p
             FORGE_THROW_EXCEPTION(exceptions::canceled, "P2P protocol open canceled");
          }
          const auto p2p_kind = exceptions::code_of(error);
+         if (phase == detail::stream_open_phase::local_failed && p2p_kind == exceptions::code::internal) {
+            throw;
+         }
          if (p2p_kind == exceptions::code::unsupported_protocol || p2p_kind == exceptions::code::protocol_error ||
              p2p_kind == exceptions::code::codec_error) {
             throw;

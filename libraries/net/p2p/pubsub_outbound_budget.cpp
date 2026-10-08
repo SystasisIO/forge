@@ -12,7 +12,7 @@ import forge.net.p2p.identity;
 
 namespace forge::net::p2p::detail {
 
-bool pubsub_outbound_budget::reserve(const peer_id& peer, std::size_t bytes, std::size_t limit) noexcept {
+bool pubsub_outbound_budget::reserve(const peer_id& peer, std::size_t bytes, std::size_t limit) {
    const auto found = reserved_.find(peer);
    const auto peer_reserved = found == reserved_.end() ? 0 : found->second;
    if (bytes > limit || peer_reserved > limit - bytes || total_ > limit - bytes) {

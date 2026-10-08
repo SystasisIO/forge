@@ -143,9 +143,9 @@ class PathInventoryRegistrationTests(unittest.TestCase):
         manifest = self.manifest()
         planned = [(owner, scenario) for owner, entry in manifest["interop_acceptance_registry"]["capabilities"].items()
                    for scenario in entry["scenarios"] if scenario["registration"] == "planned"]
-        self.assertEqual(len(planned), 15)
+        self.assertEqual(len(planned), 9)
         self.assertTrue(all(owner.startswith("pubsub.") for owner, _ in planned))
-        self.assertEqual(len(required_scenarios(manifest, "stage6")[1]), 15)
+        self.assertEqual(len(required_scenarios(manifest, "stage6")[1]), 9)
         states = {value["id"]: value["state"] for value in json.loads((self.source_dir / "p2p_feature_inventory.json").read_text())["features"]}
         self.assertEqual(states["protocol.dcutr"], "partial")
         self.assertEqual(states["transport.tcp_yamux"], "unverified")

@@ -2,6 +2,7 @@ module;
 
 #include <forge/exceptions/macros.hpp>
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,6 +13,10 @@ module forge.multiformats.varint;
 import forge.multiformats.exceptions;
 
 namespace forge::multiformats {
+
+std::size_t varint_encoded_size(std::uint64_t value) noexcept {
+   return value == 0 ? 1 : (std::bit_width(value) + 6) / 7;
+}
 
 bytes varint_encode(std::uint64_t value) {
    auto out = bytes{};

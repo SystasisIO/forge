@@ -24,6 +24,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "../quic_p2p/libp2p_identity_fixture.hxx"

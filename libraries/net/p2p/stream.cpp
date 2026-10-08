@@ -58,7 +58,7 @@ boost::asio::awaitable<void> stream::async_write(forge::net::transport::chunk by
    if (!impl_) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid P2P stream");
    }
-   co_await impl_->transport.async_write(std::move(bytes));
+   return impl_->transport.async_write(std::move(bytes));
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read() {
@@ -84,7 +84,7 @@ boost::asio::awaitable<void> stream::async_write_frame(forge::net::transport::ch
    if (!impl_) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid P2P stream");
    }
-   co_await impl_->transport.async_write_frame(std::move(bytes));
+   return impl_->transport.async_write_frame(std::move(bytes));
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read_frame() {

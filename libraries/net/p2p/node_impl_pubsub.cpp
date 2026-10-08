@@ -10,6 +10,7 @@ module;
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -36,6 +37,8 @@ module;
 #include <boost/asio/detached.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <random>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -66,6 +69,8 @@ import forge.net.yamux.session;
 #include "details/node_impl.hxx"
 #include "details/peer_failure.hxx"
 #include "details/session_lifecycle.hxx"
+#include "details/pubsub_peer_score.hxx"
+#include "details/pubsub_router.hxx"
 
 namespace forge::net::p2p {
 
@@ -89,16 +94,76 @@ void node::impl::invalidate_pubsub_outbound_locked(const peer_id& peer, std::opt
    }
    found->second.write_gate->close();
    pubsub_value.outbound.erase(found);
-   for (auto& [_, mesh] : pubsub_value.mesh) {
-      mesh.erase(peer);
+   for (const auto& [topic, _] : pubsub_value.mesh) {
+      prune_pubsub_peer_locked(topic, peer);
    }
 }
 
 void node::impl::forget_pubsub_peer_locked(const peer_id& peer) {
+   disconnect_pubsub_peer_locked(peer, std::chrono::steady_clock::now());
    pubsub_value.inbound.erase(peer);
-   pubsub_value.peer_topics.erase(peer);
-   for (auto& [_, mesh] : pubsub_value.mesh) {
-      mesh.erase(peer);
+   if (const auto topics = pubsub_value.peer_topics.find(peer); topics != pubsub_value.peer_topics.end()) {
+      pubsub_value.remote_topic_entries -= topics->second.size();
+      pubsub_value.peer_topics.erase(topics);
+   }
+   for (const auto& [topic, _] : pubsub_value.mesh) {
+      prune_pubsub_peer_locked(topic, peer);
+   }
+   for (auto& [_, fanout] : pubsub_value.fanout) {
+      fanout.peers.erase(peer);
+   }
+   if (pubsub_value.router) {
+      pubsub_value.router->forget(peer);
+   }
+}
+
+void node::impl::disconnect_pubsub_peer_locked(const peer_id& peer, std::chrono::steady_clock::time_point now) {
+   if (pubsub_value.controls) { pubsub_value.controls->forget(peer); }
+   const auto row = pubsub_value.peers.find(peer);
+   if (row == pubsub_value.peers.end()) {
+      return;
+   }
+   if (!row->second.connected) {
+      if (row->second.retain_until <= now) {
+         pubsub_value.peers.erase(row);
+         pubsub_value.scores.erase(peer);
+      }
+      return;
+   }
+   const auto retention = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->retain_score
+                                                      : std::chrono::milliseconds{60'000};
+   auto retain = retention.count() != 0;
+   if (pubsub_value.scoring) {
+      // Decide while P1 and active mesh penalties still describe the connected peer.
+      retain = retain && pubsub_value.scoring->score(peer, now) <= 0.0;
+      static_cast<void>(pubsub_value.scoring->disconnect(peer, now));
+   }
+   if (!retain) {
+      pubsub_value.peers.erase(row);
+      pubsub_value.scores.erase(peer);
+   } else {
+      row->second.connected = false;
+      row->second.retain_until = detail::pubsub_router::deadline(now, retention);
+   }
+}
+
+void node::impl::disconnect_pubsub_sessions_locked(std::span<const std::uint64_t> selected,
+                                                   std::chrono::steady_clock::time_point now) {
+   // Exclude the entire committed victim set, not only the sessions already retired.
+   // Admission has published its candidate into sessions before this prepass.
+   for (const auto id : selected) {
+      const auto found = sessions.find(id);
+      if (found == sessions.end()) {
+         continue;
+      }
+      const auto& peer = found->second->info.remote_peer;
+      const auto survivor = std::ranges::any_of(sessions, [&](const auto& item) {
+         return !item.second->closed && item.second->info.remote_peer == peer &&
+                std::ranges::find(selected, item.first) == selected.end();
+      });
+      if (!survivor) {
+         disconnect_pubsub_peer_locked(peer, now);
+      }
    }
 }
 
@@ -114,6 +179,8 @@ void node::impl::finish_pubsub_inbound(const peer_id& peer, std::uint64_t genera
 }
 
 void node::impl::clear_pubsub_outbound_locked() {
+   if (pubsub_value.router) { pubsub_value.router->clear(); }
+   if (pubsub_value.controls) { pubsub_value.controls->clear(); }
    for (const auto& [_, generation] : pubsub_value.outbound) {
       generation.write_gate->close();
    }
@@ -168,33 +235,58 @@ void node::impl::increment_pubsub_duplicate() {
    ++metrics_value.pubsub_duplicates;
 }
 
-void node::impl::increment_pubsub_invalid(const peer_id& peer) {
-   auto offender = std::shared_ptr<session_state>{};
-   const auto malformed_transition =
-       resources.record_malformed(resource_manager::scope{.peer = peer, .protocol = builtins::meshsub_v11});
+bool node::impl::increment_pubsub_invalid(const std::shared_ptr<session_state>& session,
+    const std::optional<pubsub::topic>& subject, bool protocol_rejected) {
+   auto close_offender = false;
+   auto failure = std::exception_ptr{};
    {
-      auto lock = std::scoped_lock{mutex};
+      const auto lock = std::scoped_lock{mutex};
+      if (!pubsub_session_live_locked(session)) { return false; }
+      const auto& peer = session->info.remote_peer;
+      const auto malformed_transition = subject ? resource_manager::transition_result::accepted :
+          resources.record_malformed(resource_manager::scope{.peer = peer, .protocol = builtins::meshsub_v11});
       ++metrics_value.pubsub_invalid_messages;
-      pubsub_value.scores[peer].invalid_messages += 1;
-      pubsub_value.scores[peer].value -= 1.0;
+      if (const auto score = pubsub_value.scores.find(peer); score != pubsub_value.scores.end()) {
+         ++score->second.invalid_messages;
+      }
+      if (protocol_rejected) { ++metrics_value.protocol_rejections; }
+      if (subject && pubsub_value.scoring) {
+         static_cast<void>(pubsub_value.scoring->reject_invalid(peer, *subject, std::chrono::steady_clock::now()));
+      }
+      if (malformed_transition != resource_manager::transition_result::accepted &&
+          malformed_transition != resource_manager::transition_result::policy_rejected) {
+         FORGE_THROW_EXCEPTION(exceptions::internal, "P2P malformed-message resource transition failed");
+      }
       if (malformed_transition == resource_manager::transition_result::policy_rejected) {
          ++metrics_value.connection_rejections;
-         for (const auto& [_, session] : sessions) {
-            if (session->info.remote_peer == peer && !session->closed) {
-               offender = session;
+         close_offender = true;
+         try {
+            // Attribute the same concrete-root failure before this owner can be replaced by G2.
+            if (session->direct_endpoint) {
+               const auto concrete = session->direct_endpoint->to_multiaddr();
+               for (const auto& root : session->direct_roots) {
+                  if (root.to_string() == concrete.to_string()) {
+                     store.mark_address_failure(peer, root, path::kind::direct,
+                         endpoint_backoff_until(peer, root, path::kind::direct));
+                  }
+               }
             }
+            ++metrics_value.direct_failures;
+         } catch (...) {
+            failure = std::current_exception();
          }
       }
    }
-   if (malformed_transition != resource_manager::transition_result::accepted &&
-       malformed_transition != resource_manager::transition_result::policy_rejected) {
-      FORGE_THROW_EXCEPTION(exceptions::internal, "P2P malformed-message resource transition failed");
+   if (close_offender) {
+      try {
+         forget_session(session); // Exact registry owner; never close a replacement found by peer id.
+      } catch (...) {
+         if (!failure) { failure = std::current_exception(); }
+      }
+      request_cancel_session(session);
    }
-   if (offender) {
-      record_direct_session_failure(offender);
-      forget_session(offender);
-      request_cancel_session(offender);
-   }
+   if (failure) { std::rethrow_exception(failure); }
+   return true;
 }
 
 void node::impl::increment_pubsub_control() {
@@ -224,6 +316,8 @@ pubsub::snapshot node::impl::pubsub_snapshot() const {
        .duplicates = metrics_value.pubsub_duplicates,
        .invalid_messages = metrics_value.pubsub_invalid_messages,
        .control_messages = metrics_value.pubsub_control_messages,
+       .trace_failures = pubsub_value.trace_failures.load(std::memory_order_relaxed),
+       .application_score_failures = pubsub_value.application_score_failures.load(std::memory_order_relaxed),
    };
 }
 

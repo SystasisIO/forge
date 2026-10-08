@@ -67,6 +67,12 @@ add_library(
    details/rendezvous_time.hxx
    rendezvous.cpp
    pubsub.cpp
+   pubsub_peer_score.cpp
+   pubsub_peer_score_delivery.cpp
+   pubsub_peer_score_calculation.cpp
+   details/pubsub_peer_score.hxx
+   pubsub_router.cpp
+   details/pubsub_router.hxx
    scoring.cpp
    reachability.cpp
    reachability_policy.cpp
@@ -155,6 +161,9 @@ add_library(
    details/libp2p_identity_material.hxx
    node_impl.cpp
    node_impl_pubsub.cpp
+   node_impl_pubsub_scoring.cpp
+   node_impl_pubsub_control.cpp
+   node_impl_pubsub_queue.cpp
    node_impl_pubsub_outbound.cpp
    node_impl_pubsub_validation.cpp
    node_impl_pubsub_heartbeat.cpp
@@ -186,6 +195,8 @@ add_library(
    details/lifecycle_wakeup.hxx
    identify_service.cpp
    details/identify_service.hxx
+   certified_peer_record.cpp
+   details/certified_peer_record.hxx
    dht_exchange.cpp
    details/dht_exchange.hxx
    dht_fanout.cpp
@@ -218,6 +229,8 @@ add_library(
    details/pubsub_outbound_budget.hxx
    pubsub_backoff.cpp
    details/pubsub_backoff.hxx
+   pubsub_control_queue.cpp
+   details/pubsub_control_queue.hxx
    details/peer_failure.hxx
    relay_discovery.cpp
    details/relay_discovery.hxx

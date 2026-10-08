@@ -234,7 +234,7 @@ boost::asio::awaitable<void> node::impl::handle_relayed_yamux_stream(std::shared
    } else if (admitted.protocol == builtins::rendezvous) {
       co_await handle_rendezvous(session, std::move(admitted.stream));
    } else if (admitted.protocol == builtins::meshsub_v11 || admitted.protocol == builtins::meshsub_v10) {
-      co_await handle_pubsub(session, std::move(admitted.stream));
+      co_await handle_pubsub(session, std::move(admitted.stream), admitted.protocol);
    } else {
       increment_protocol_rejected();
       FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "unsupported negotiated relayed P2P protocol");

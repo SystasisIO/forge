@@ -21,6 +21,9 @@ use multistream_select::{Version, dialer_select_proto, listener_select_proto};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[path = "pubsub_scoring/yamux_error.rs"]
+pub(crate) mod yamux_error;
+
 const CONNECTION_LIMIT: usize = 16;
 const STREAM_LIMIT: usize = 32;
 const EVENT_LIMIT: usize = 256;
@@ -30,7 +33,7 @@ const BODY_LIMIT: usize = 256 * 1024;
 const HEADER: &str = "/multistream/1.0.0\n";
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Observer(Arc<Mutex<State>>, super::application_observer::Observer);
+pub(crate) struct Observer(Arc<Mutex<State>>, super::application_observer::Observer, bool);
 
 #[derive(Debug, Default)]
 struct State {
@@ -248,6 +251,12 @@ impl Connection {
 }
 
 impl Observer {
+    // The opt-in belongs to this clone, never to the shared capture or other fixtures.
+    pub(crate) fn with_pubsub_yamux_errors(mut self) -> Self {
+        self.2 = true;
+        self
+    }
+
     // The legacy DNS summary uses the same causal output receipt, never the latest peer match.
     pub(crate) fn resolved_endpoint(&self, peer: PeerId, point: &ConnectedPoint) -> Option<libp2p::Multiaddr> {
         let snapshot = self.snapshot();
@@ -1050,6 +1059,7 @@ pub(crate) fn native_transport(
     resolver: Option<(libp2p::dns::ResolverConfig, libp2p::dns::ResolverOpts)>,
 ) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn std::error::Error + Send + Sync>> {
     let local_peer = key.public().to_peer_id();
+    let public_yamux_errors = observer.2;
     // Both branches use exactly the pinned TCP builder's security/muxer configurations.
     macro_rules! transport {
         ($security:expr) => {{
@@ -1068,7 +1078,7 @@ pub(crate) fn native_transport(
                             connection.event(0, "authenticated_peer", json!({"peer_id": peer.to_string()}));
                         });
                         let muxer = apply(secure, yamux::Config::default(), outbound, trace.clone(), 1).await?;
-                        Ok::<_, io::Error>((peer, StreamMuxerBox::new(ObservedMuxer { inner: Box::pin(muxer), trace: trace.clone() }), trace))
+                        Ok::<_, io::Error>((peer, yamux_error::boxed(ObservedMuxer { inner: Box::pin(muxer), trace: trace.clone() }, public_yamux_errors), trace))
                     }
                 }).boxed()
         }};
@@ -1136,6 +1146,7 @@ pub(crate) fn native_private_transport(
     observer: Observer,
 ) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn std::error::Error + Send + Sync>> {
     let local_peer = key.public().to_peer_id();
+    let public_yamux_errors = observer.2;
     macro_rules! transport {
         ($security:expr) => {{
             let security = $security;
@@ -1150,7 +1161,7 @@ pub(crate) fn native_private_transport(
                             connection.event(0, "authenticated_peer", json!({"peer_id": peer.to_string()}));
                         });
                         let muxer = apply(secure, yamux::Config::default(), outbound, trace.clone(), 1).await?;
-                        Ok::<_, io::Error>((peer, StreamMuxerBox::new(ObservedMuxer { inner: Box::pin(muxer), trace: trace.clone() }), trace))
+                        Ok::<_, io::Error>((peer, yamux_error::boxed(ObservedMuxer { inner: Box::pin(muxer), trace: trace.clone() }, public_yamux_errors), trace))
                     }
                 }).boxed()
                 .map(|output, point| bind_transport_output(output, point, false)).boxed()
@@ -1217,6 +1228,50 @@ mod tests {
     use super::*;
     use futures::{AsyncReadExt, AsyncWriteExt, FutureExt, future, task::noop_waker};
     use libp2p::core::{Endpoint, upgrade::UpgradeInfo};
+
+    #[test]
+    fn pubsub_public_yamux_conversion_retains_original_raw_error_and_clone_scope() {
+        use yamux_error::tests::{Scenario, native, native_error};
+        let original = Observer::default();
+        let opted = original.clone().with_pubsub_yamux_errors();
+        assert!(!original.2);
+        assert!(opted.2);
+        assert!(Arc::ptr_eq(&original.0, &opted.0));
+        for version012 in [false, true] {
+            for scenario in [Scenario::Closed, Scenario::Io, Scenario::Decode] {
+                for convert in [false, true] {
+                    let expected = bounded_error(native_error(version012, scenario));
+                    let (observer, trace) = fixture_trace();
+                    let mut muxer = native(version012, scenario);
+                    let waker = noop_waker();
+                    let mut cx = Context::from_waker(&waker);
+                    if matches!(scenario, Scenario::Closed) {
+                        assert!(matches!(Pin::new(&mut muxer).poll_close(&mut cx), Poll::Ready(Ok(()))));
+                    }
+                    let mut muxer = yamux_error::boxed(ObservedMuxer { inner: Box::pin(muxer), trace }, convert);
+                    let (kind, result) = if matches!(scenario, Scenario::Io) {
+                        ("muxer_close_error", Pin::new(&mut muxer).poll_close(&mut cx))
+                    } else {
+                        ("muxer_inbound_error", Pin::new(&mut muxer).poll_inbound(&mut cx).map_ok(|_| ()))
+                    };
+                    let Poll::Ready(Err(error)) = result else { panic!("native result was hidden") };
+                    assert_eq!(yamux_error::terminal_state(&error).is_some(), convert && matches!(scenario, Scenario::Closed));
+                    if !convert {
+                        assert!(error.get_ref().unwrap().is::<libp2p::yamux::Error>());
+                    } else if matches!(scenario, Scenario::Io) {
+                        let original_io = error.get_ref().unwrap().downcast_ref::<io::Error>().unwrap();
+                        assert_eq!(original_io.raw_os_error(), Some(38));
+                        assert_eq!(original_io.kind(), io::Error::from_raw_os_error(38).kind());
+                    }
+                    let raw = observer.snapshot();
+                    let errors = raw["connections"][0]["events"].as_array().unwrap().iter()
+                        .filter(|event| event["kind"] == kind).collect::<Vec<_>>();
+                    assert_eq!(errors.len(), 1);
+                    assert_eq!(errors[0]["detail"]["error"], expected);
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn private_transport_boundaries_are_send_static_without_observed_io() {
