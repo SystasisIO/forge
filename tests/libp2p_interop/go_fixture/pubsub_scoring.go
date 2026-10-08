@@ -401,6 +401,120 @@ func (o *pubsubScoringObserver) quiesceAck(command pubsubScoringCommand, drain *
 	}
 }
 
+func (o *pubsubScoringObserver) retainedResetOwner(s pubsubScoringDrainedStream) (map[string]any, error) {
+	stream, ok := s.(network.Stream)
+	if !ok || stream.Conn() == nil {
+		return nil, fmt.Errorf("retained reset lacks its actual host stream owner")
+	}
+	id, connection := stream.ID(), stream.Conn().ID()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, event := range o.events {
+		if event["kind"] == "protocol" && event["source"] == "go.network.Stream.Protocol" &&
+			event["stream_id"] == id && event["connection_id"] == connection {
+			return map[string]any{"connection_id": connection, "stream_id": id, "peer_id": event["peer_id"],
+				"protocol": event["protocol"], "protocol_receipt_sequence": event["sequence"]}, nil
+		}
+	}
+	return nil, fmt.Errorf("retained reset lacks its selected host stream receipt")
+}
+
+func (o *pubsubScoringObserver) preCancelRetainedResetsReturned(command pubsubScoringCommand, drain *pubsubScoringDrain,
+	pubsubCtx, subscriberCtx, joinCtx context.Context, owners []map[string]any, returns []int) error {
+	drain.mu.Lock()
+	defer drain.mu.Unlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.failure != nil {
+		return o.failure
+	}
+	if err := joinCtx.Err(); err != nil {
+		return err
+	}
+	if o.overflow || !o.prepared || o.quiesced || o.prepareAck != command.Prepare ||
+		!drain.closing || !o.pubsubCallbacksClosed ||
+		pubsubCtx.Err() != nil || subscriberCtx.Err() != nil || len(owners) != len(returns) {
+		return fmt.Errorf("pre-cancel reset phase lacks live contexts and closed admission")
+	}
+	o.emitLocked("pre_cancel_retained_resets_returned", "go.fixture.owned_pre_cancel_retained_resets", map[string]any{
+		"command_sequence": command.Sequence, "prepare_ack_sequence": command.Prepare,
+		"actor": o.actor, "case_token": o.token, "local_peer_id": o.local.String(), "pid": os.Getpid(),
+		"retained_owners": owners, "reset_return_receipt_sequences": returns,
+		"native_admission_closed": drain.closing, "pubsub_callback_admission_closed": o.pubsubCallbacksClosed,
+		"pubsub_context_cancelled": false, "subscriber_context_cancelled": false,
+		"active_stream_handlers_and_io": drain.active, "active_pubsub_streams": len(drain.streams),
+		"active_callbacks": o.callbacks,
+		"phase_scope":      "retained_stream_Reset_returns_not_IO_framing_callback_lower_QUIC_or_router_join"})
+	return o.failure
+}
+
+func (o *pubsubScoringObserver) quiesceShutdown(command pubsubScoringCommand, drain *pubsubScoringDrain,
+	pubsubCtx, subscriberCtx, joinCtx context.Context, workerDone <-chan struct{}, cancel, stopSubscriber context.CancelFunc) error {
+	defer func() { cancel(); stopSubscriber() }()
+	if err := o.admitQuiesce(command, 0); err != nil {
+		return err
+	}
+	drain.mu.Lock()
+	o.mu.Lock()
+	drain.closing, o.pubsubCallbacksClosed = true, true
+	streams := make([]pubsubScoringDrainedStream, 0, len(drain.streams))
+	for _, stream := range drain.streams {
+		streams = append(streams, stream)
+	}
+	o.mu.Unlock()
+	drain.mu.Unlock()
+	// Pending opens can require cancellation; only retained Reset calls join here.
+	owners, returns := []map[string]any{}, []int{}
+	var failure error
+	for _, stream := range streams {
+		owner, err := o.retainedResetOwner(stream)
+		if err != nil {
+			failure = errors.Join(failure, err)
+			continue
+		}
+		owners = append(owners, owner)
+		err = stream.Reset()
+		failure = errors.Join(failure, err)
+		o.fail(err)
+		o.mu.Lock()
+		fields := map[string]any{"actor": o.actor, "case_token": o.token, "local_peer_id": o.local.String(),
+			"pid": os.Getpid(), "command_sequence": command.Sequence, "prepare_ack_sequence": command.Prepare,
+			"operation": "stream_reset", "outcome": "ok", "error": nil, "error_type": nil}
+		for key, value := range owner {
+			fields[key] = value
+		}
+		if err != nil {
+			message := err.Error()
+			if len(message) > 512 {
+				message = message[:512]
+			}
+			fields["outcome"], fields["error"], fields["error_type"] = "error", message, fmt.Sprintf("%T", err)
+		}
+		o.emitLocked("pre_cancel_retained_reset_return", "go.fixture.owned_pre_cancel_retained_resets", fields)
+		returns = append(returns, len(o.events))
+		o.mu.Unlock()
+	}
+	o.fail(failure)
+	if failure == nil {
+		failure = o.preCancelRetainedResetsReturned(command, drain, pubsubCtx, subscriberCtx, joinCtx, owners, returns)
+		o.fail(failure)
+	}
+	cancel()
+	stopSubscriber()
+	// Cancellation can start another tracked terminal call or rejected disposal.
+	failure = errors.Join(failure, drain.join(joinCtx, streams))
+	select {
+	case <-workerDone:
+	case <-joinCtx.Done():
+		failure = errors.Join(failure, fmt.Errorf("quiesce_shutdown subscriber did not join: %w", joinCtx.Err()))
+	}
+	o.fail(failure)
+	if failure != nil {
+		return failure
+	}
+	return o.quiesceAck(command, drain, pubsubCtx, subscriberCtx, joinCtx, workerDone)
+}
+
 func (o *pubsubScoringObserver) emitLocked(kind, source string, fields map[string]any) {
 	if len(o.events) == pubsubScoringEvents {
 		o.overflow = true
@@ -938,7 +1052,7 @@ func (d *pubsubScoringDrain) release(s pubsubScoringDrainedStream) {
 	default:
 	}
 }
-func (d *pubsubScoringDrain) stop(ctx context.Context) error {
+func (d *pubsubScoringDrain) resetRetained() ([]pubsubScoringDrainedStream, error) {
 	d.mu.Lock()
 	d.closing = true
 	streams := make([]pubsubScoringDrainedStream, 0, len(d.streams))
@@ -951,6 +1065,13 @@ func (d *pubsubScoringDrain) stop(ctx context.Context) error {
 	for _, s := range streams {
 		failure = errors.Join(failure, s.Reset())
 	}
+	return streams, failure
+}
+func (d *pubsubScoringDrain) stop(ctx context.Context) error {
+	streams, failure := d.resetRetained()
+	return errors.Join(failure, d.join(ctx, streams))
+}
+func (d *pubsubScoringDrain) join(ctx context.Context, streams []pubsubScoringDrainedStream) error {
 	for {
 		d.mu.Lock()
 		active := d.active
@@ -960,12 +1081,12 @@ func (d *pubsubScoringDrain) stop(ctx context.Context) error {
 			joined = s.framingJoined() && joined
 		}
 		if joined {
-			return failure
+			return nil
 		}
 		select {
 		case <-d.changed:
 		case <-ctx.Done():
-			return errors.Join(failure, fmt.Errorf("PubSub native handlers/I/O/framing did not drain: %w", ctx.Err()))
+			return fmt.Errorf("PubSub native handlers/I/O/framing did not drain: %w", ctx.Err())
 		}
 	}
 }
@@ -2086,26 +2207,8 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 					}
 					err = o.prepareShutdown(command, len(commands)-index-1)
 				case "quiesce_shutdown":
-					observed.drain.mu.Lock()
-					observed.drain.closing = true
-					observed.drain.mu.Unlock()
-					o.mu.Lock()
-					o.pubsubCallbacksClosed = true
-					o.mu.Unlock()
-					cancel()
-					stopSubscriber()
 					joinCtx, stopJoin := context.WithTimeout(ctx, 5*time.Second)
-					err = observed.drain.stop(joinCtx)
-					if err == nil {
-						select {
-						case <-workerDone:
-						case <-joinCtx.Done():
-							err = fmt.Errorf("quiesce_shutdown subscriber did not join: %w", joinCtx.Err())
-						}
-					}
-					if err == nil {
-						err = o.quiesceAck(command, observed.drain, pubsubCtx, subscriberCtx, joinCtx, workerDone)
-					}
+					err = o.quiesceShutdown(command, observed.drain, pubsubCtx, subscriberCtx, joinCtx, workerDone, cancel, stopSubscriber)
 					stopJoin()
 					o.fail(err)
 				}

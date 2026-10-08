@@ -2603,6 +2603,287 @@ func pubsubScoringUnitCleanupJoin(owners ...<-chan struct{}) {
 	}
 }
 
+func TestPubsubScoringQuiesceDrainsBeforeCancelInBothReadResetOrders(t *testing.T) {
+	for _, readFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("read_first=%v", readFirst), func(t *testing.T) {
+			native := &pubsubScoringResetUnitStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t)},
+				ioStarted: make(chan struct{}), ioReturn: make(chan struct{}), resetStarted: make(chan struct{}), resetReturn: make(chan struct{}),
+				nativeErr: pubsubScoringUnitLocalReset()}
+			wrapped, o := pubsubScoringUnitWrapped(t, native)
+			readDone, quiesceDone, worker := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			readResult, result := make(chan error, 1), make(chan error, 1)
+			root, cancelRoot := context.WithCancel(context.Background())
+			child, cancelChild := context.WithCancel(root)
+			var readOnce, resetOnce sync.Once
+			unblockRead := func() { readOnce.Do(func() { close(native.ioReturn) }) }
+			unblockReset := func() { resetOnce.Do(func() { close(native.resetReturn) }) }
+			t.Cleanup(func() {
+				unblockRead()
+				unblockReset()
+				cancelRoot()
+				cancelChild()
+				pubsubScoringUnitCleanupJoin(readDone, quiesceDone, worker)
+			})
+			go func() { <-child.Done(); close(worker) }()
+			go func() { defer close(readDone); _, err := wrapped.Read(make([]byte, 1)); readResult <- err }()
+			pubsubScoringUnitWait(t, native.ioStarted)
+			pubsubScoringUnitPrepare(t, o)
+			command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+				Local: o.local.String(), Prepare: o.prepareAck}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			go func() {
+				defer close(quiesceDone)
+				result <- o.quiesceShutdown(command, wrapped.drain, root, child, ctx, worker, cancelRoot, cancelChild)
+			}()
+			pubsubScoringUnitWait(t, native.resetStarted)
+			if root.Err() != nil || child.Err() != nil || len(pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned")) != 0 {
+				t.Fatal("root cancelled or pre-cancel drain claimed while native Reset was held")
+			}
+			if readFirst {
+				unblockRead()
+				pubsubScoringUnitWait(t, readDone)
+				if root.Err() != nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+					t.Fatal("read wake bypassed the actual held Reset RETURN")
+				}
+				unblockReset()
+			} else {
+				unblockReset()
+				select {
+				case <-root.Done():
+				case <-ctx.Done():
+					t.Fatal("retained Reset RETURN did not release context cancellation")
+				}
+				if len(pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned")) != 1 ||
+					len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+					t.Fatal("reset-only phase claimed a held native Read join")
+				}
+				if len(pubsubScoringUnitEvents(o, "native_stream_operation")) == 0 {
+					t.Fatal("native Reset RETURN was not observed")
+				}
+				unblockRead()
+			}
+			pubsubScoringUnitWait(t, quiesceDone)
+			pubsubScoringUnitWait(t, readDone)
+			if <-result != nil || <-readResult != native.nativeErr || root.Err() == nil || child.Err() == nil {
+				t.Fatal("quiesce changed native outcome or omitted mandatory cancellation")
+			}
+			pre, ack := pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned"), pubsubScoringUnitEvents(o, "shutdown_quiesced")
+			resetReturns := pubsubScoringUnitEvents(o, "pre_cancel_retained_reset_return")
+			resets, reads := pubsubScoringUnitEvents(o, "native_stream_operation"), pubsubScoringUnitEvents(o, "stream_io_terminal")
+			if len(pre) != 1 || len(ack) != 1 || len(resets) != 1 || len(reads) != 1 ||
+				pre[0]["sequence"].(int) >= ack[0]["sequence"].(int) || pre[0]["pid"] != os.Getpid() ||
+				pre[0]["case_token"] != o.token || pre[0]["prepare_ack_sequence"] != command.Prepare ||
+				pre[0]["pubsub_context_cancelled"] != false || pre[0]["subscriber_context_cancelled"] != false ||
+				len(resetReturns) != 1 || len(pre[0]["reset_return_receipt_sequences"].([]int)) != 1 ||
+				pre[0]["reset_return_receipt_sequences"].([]int)[0] != resetReturns[0]["sequence"] ||
+				len(pre[0]["retained_owners"].([]map[string]any)) != 1 ||
+				resetReturns[0]["stream_id"] != native.ID() || resetReturns[0]["outcome"] != "ok" {
+				t.Fatal("pre-cancel receipt lacks actual Reset RETURN or its immutable live-context owner", pre, ack)
+			}
+			if (reads[0]["returned_order"].(uint64) < resets[0]["returned_order"].(uint64)) != readFirst {
+				t.Fatal("controlled native Read/Reset return ordering was not exercised")
+			}
+		})
+	}
+}
+
+func TestPubsubScoringQuiesceCancelsBlockedNativeOpenBeforeGlobalJoin(t *testing.T) {
+	conn := pubsubScoringUnitConnection(t)
+	native := &pubsubScoringResetUnitStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: conn},
+		resetStarted: make(chan struct{}), resetReturn: make(chan struct{})}
+	wrapped, o := pubsubScoringUnitWrapped(t, native)
+	delegate := &pubsubScoringQuiesceUnitHost{started: make(chan struct{}), finish: make(chan struct{}), waitForCancel: true}
+	h := &pubsubScoringHost{Host: delegate, observer: o, drain: wrapped.drain, protocol: pubsub.GossipSubID_v10}
+	root, cancelRoot := context.WithCancel(context.Background())
+	child, cancelChild := context.WithCancel(root)
+	openDone, worker, quiesceDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	openResult, result := make(chan error, 1), make(chan error, 1)
+	var resetOnce, openOnce sync.Once
+	unblockReset := func() { resetOnce.Do(func() { close(native.resetReturn) }) }
+	unblockOpen := func() { openOnce.Do(func() { close(delegate.finish) }) }
+	t.Cleanup(func() {
+		unblockReset()
+		unblockOpen()
+		cancelRoot()
+		cancelChild()
+		pubsubScoringUnitCleanupJoin(openDone, worker, quiesceDone)
+	})
+	go func() { <-child.Done(); close(worker) }()
+	go func() { defer close(openDone); _, err := h.NewStream(root, conn.remote, h.protocol); openResult <- err }()
+	pubsubScoringUnitWait(t, delegate.started)
+	pubsubScoringUnitPrepare(t, o)
+	command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+		Local: o.local.String(), Prepare: o.prepareAck}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		defer close(quiesceDone)
+		result <- o.quiesceShutdown(command, h.drain, root, child, ctx, worker, cancelRoot, cancelChild)
+	}()
+	pubsubScoringUnitWait(t, native.resetStarted)
+	if root.Err() != nil || len(pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned")) != 0 {
+		t.Fatal("held retained Reset did not keep the contexts alive")
+	}
+	unblockReset()
+	select {
+	case <-root.Done():
+	case <-ctx.Done():
+		t.Fatal("pre-cancel phase waited for an open that needs context cancellation")
+	}
+	if len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+		t.Fatal("quiesce ACK preceded the blocked native Open RETURN")
+	}
+	unblockOpen()
+	pubsubScoringUnitWait(t, quiesceDone)
+	pubsubScoringUnitWait(t, openDone)
+	pre, ack := pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned"), pubsubScoringUnitEvents(o, "shutdown_quiesced")
+	if <-result != nil || <-openResult != context.Canceled || len(pre) != 1 || len(ack) != 1 ||
+		pre[0]["active_stream_handlers_and_io"] != 1 || pre[0]["active_pubsub_streams"] != 0 ||
+		len(pre[0]["reset_return_receipt_sequences"].([]int)) != 1 ||
+		pre[0]["pubsub_context_cancelled"] != false || ack[0]["active_stream_handlers_and_io"] != 0 {
+		t.Fatal("blocked open was hidden or first phase fabricated an I/O join", pre, ack)
+	}
+}
+
+func TestPubsubScoringQuiesceRejoinsPostCancelTerminalAndRejectedHandler(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed_rejected_reset=%v", failed), func(t *testing.T) {
+			native := &pubsubScoringLateTerminalStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t)},
+				entered: make(chan struct{}), release: make(chan struct{})}
+			wrapped, o := pubsubScoringUnitWrapped(t, native)
+			if err := wrapped.Reset(); err != nil {
+				t.Fatal(err)
+			}
+			pubsubScoringUnitPrepare(t, o)
+			native.operation = "close"
+			rejected := &pubsubScoringQuiesceResetStream{pubsubScoringUnitStream: pubsubScoringUnitStream{conn: native.conn, id: "late-rejected"},
+				entered: make(chan struct{}), release: make(chan struct{})}
+			primary := &net.OpError{Op: "reset", Net: "tcp", Err: syscall.ECONNRESET}
+			if failed {
+				rejected.resetErr = primary
+			}
+			delegate := &pubsubScoringQuiesceUnitHost{}
+			h := &pubsubScoringHost{Host: delegate, observer: o, drain: wrapped.drain, protocol: pubsub.GossipSubID_v10}
+			h.SetStreamHandler(h.protocol, func(network.Stream) { t.Error("closed-admission handler ran") })
+			command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+				Local: o.local.String(), Prepare: o.prepareAck}
+			root, cancelRoot := context.WithCancel(context.Background())
+			child, cancelChild := context.WithCancel(root)
+			terminalDone, handlerDone, worker, quiesceDone := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+			result := make(chan error, 1)
+			var cancelOnce, terminalOnce, resetOnce sync.Once
+			unblockTerminal := func() { terminalOnce.Do(func() { close(native.release) }) }
+			unblockReset := func() { resetOnce.Do(func() { close(rejected.release) }) }
+			t.Cleanup(func() {
+				unblockTerminal()
+				unblockReset()
+				cancelRoot()
+				cancelChild()
+				pubsubScoringUnitCleanupJoin(terminalDone, handlerDone, worker, quiesceDone)
+			})
+			go func() { <-child.Done(); close(worker) }()
+			cancelOwned := func() {
+				cancelOnce.Do(func() {
+					cancelRoot()
+					go func() {
+						defer close(terminalDone)
+						if err := wrapped.Close(); err != nil {
+							t.Error(err)
+						}
+					}()
+					go func() { defer close(handlerDone); delegate.handler(rejected) }()
+					<-native.entered
+					<-rejected.entered
+				})
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			go func() {
+				defer close(quiesceDone)
+				result <- o.quiesceShutdown(command, h.drain, root, child, ctx, worker, cancelOwned, cancelChild)
+			}()
+			pubsubScoringUnitWait(t, native.entered)
+			pubsubScoringUnitWait(t, rejected.entered)
+			if len(pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned")) != 1 ||
+				len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+				t.Fatal("post-cancel native work bypassed the second drain")
+			}
+			unblockTerminal()
+			pubsubScoringUnitWait(t, terminalDone)
+			if len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+				t.Fatal("ACK skipped held rejected Reset")
+			}
+			unblockReset()
+			pubsubScoringUnitWait(t, quiesceDone)
+			got := <-result
+			if failed {
+				if !errors.Is(got, primary) || o.failure != primary || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+					t.Fatal("late actual Reset error was hidden", got)
+				}
+			} else if got != nil || len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 1 {
+				t.Fatal("completed post-cancel owners did not actually join", got)
+			}
+		})
+	}
+}
+
+func TestPubsubScoringQuiesceFirstDrainFailureStillCancelsWithoutACK(t *testing.T) {
+	for _, mode := range []string{"reset_failure", "partial", "timeout", "sticky"} {
+		t.Run(mode, func(t *testing.T) {
+			raw := pubsubScoringUnitFrame(t, nil)
+			native := &pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t), input: bytes.NewReader(raw[:len(raw)-1])}
+			wrapped, o := pubsubScoringUnitWrapped(t, native)
+			pubsubScoringUnitPrepare(t, o)
+			primary := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+			if mode == "reset_failure" {
+				native.resetErr = primary
+			}
+			if mode == "partial" {
+				if _, err := wrapped.Read(make([]byte, len(raw))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "sticky" {
+				o.fail(primary)
+			}
+			if mode == "timeout" {
+				if !wrapped.drain.begin() {
+					t.Fatal("owned work was not admitted")
+				}
+				defer wrapped.drain.end()
+			}
+			command := pubsubScoringCommand{Sequence: 2, Kind: "quiesce_shutdown", Actor: o.actor, Token: o.token,
+				Local: o.local.String(), Prepare: o.prepareAck}
+			root, cancelRoot := context.WithCancel(context.Background())
+			child, cancelChild := context.WithCancel(root)
+			worker := make(chan struct{})
+			go func() { <-child.Done(); close(worker) }()
+			defer pubsubScoringUnitCleanupJoin(worker)
+			defer cancelChild()
+			defer cancelRoot()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			defer cancel()
+			err := o.quiesceShutdown(command, wrapped.drain, root, child, ctx, worker, cancelRoot, cancelChild)
+			preCount := 0
+			if mode == "timeout" {
+				preCount = 1
+			}
+			if err == nil || root.Err() == nil || child.Err() == nil || o.failure == nil ||
+				len(pubsubScoringUnitEvents(o, "pre_cancel_retained_resets_returned")) != preCount ||
+				len(pubsubScoringUnitEvents(o, "shutdown_quiesced")) != 0 {
+				t.Fatal("failed first drain fabricated success or omitted cancellation", err)
+			}
+			if (mode == "sticky" || mode == "reset_failure") && o.failure != primary {
+				t.Fatal("first native TCP failure was overwritten")
+			}
+			if mode == "partial" && len(pubsubScoringUnitEvents(o, "incomplete_rpc_frame")) == 0 {
+				t.Fatal("partial RPC became clean during quiesce")
+			}
+		})
+	}
+}
+
 func TestPubsubScoringQuiesceJoinsAdmittedCallbacksButKeepsNativeErrorsLive(t *testing.T) {
 	o := newPubsubScoringObserver("sink", strings.Repeat("a", 32))
 	o.local = pubsubScoringUnitConnection(t).local
@@ -2658,10 +2939,18 @@ type pubsubScoringQuiesceUnitHost struct {
 	started, finish chan struct{}
 	stream          network.Stream
 	handler         network.StreamHandler
+	waitForCancel   bool
 }
 
-func (h *pubsubScoringQuiesceUnitHost) NewStream(context.Context, peer.ID, ...protocol.ID) (network.Stream, error) {
+func (h *pubsubScoringQuiesceUnitHost) NewStream(ctx context.Context, _ peer.ID, _ ...protocol.ID) (network.Stream, error) {
 	close(h.started)
+	if h.waitForCancel {
+		<-ctx.Done()
+		if h.finish != nil {
+			<-h.finish
+		}
+		return nil, ctx.Err()
+	}
 	<-h.finish
 	return h.stream, nil
 }

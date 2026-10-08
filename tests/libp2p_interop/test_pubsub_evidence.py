@@ -184,6 +184,16 @@ def synthetic_case(*, lower_quic=True):
         request = next(row for row in barrier["operations"] if row["kind"] == "quiesce_requested" and row["actor"] == name)
         values = actors[name]["events"]
         sequence = len(values) + 1
+        values.append({"sequence": sequence, "mono_ns": sequence, "kind": "pre_cancel_retained_resets_returned",
+                       "source": "go.fixture.owned_pre_cancel_retained_resets", "actor": name, "case_token": token,
+                       "local_peer_id": peers[name], "pid": processes[name]["pid"], "command_sequence": 2,
+                       "prepare_ack_sequence": request["prepare_ack_sequence"], "retained_owners": [],
+                       "reset_return_receipt_sequences": [], "native_admission_closed": True,
+                       "pubsub_callback_admission_closed": True, "pubsub_context_cancelled": False,
+                       "subscriber_context_cancelled": False, "active_stream_handlers_and_io": 0,
+                       "active_pubsub_streams": 0, "active_callbacks": 0,
+                       "phase_scope": "retained_stream_Reset_returns_not_IO_framing_callback_lower_QUIC_or_router_join"})
+        sequence += 1
         values.append({"sequence": sequence, "mono_ns": sequence, "kind": "shutdown_quiesced",
                        "source": "go.fixture.owned_pubsub_quiesce", "actor": name, "case_token": token,
                        "local_peer_id": peers[name], "pid": processes[name]["pid"], "command_sequence": 2,
@@ -305,7 +315,7 @@ def synthetic_lower_quic(artifact):
         for value in events:
             if "score_observation_sequence" in value:
                 value["score_observation_sequence"] = original_refs[value["score_observation_sequence"]]["sequence"]
-            if value["kind"] == "shutdown_quiesced":
+            if value["kind"] in {"shutdown_quiesced", "pre_cancel_retained_resets_returned"}:
                 value["prepare_ack_sequence"] = original_refs[value["prepare_ack_sequence"]]["sequence"]
         ack = next(value for value in events if value["kind"] == "shutdown_prepared")
         row = next(row for row in artifact["shutdown_barrier"]["operations"][:4] if row["actor"] == raw["actor"])
@@ -1626,11 +1636,13 @@ class PubSubEvidenceTests(unittest.TestCase):
                   "lower_connection_receipt_sequence", "score_observation_sequence", "candidate_write_receipt_sequence",
                   "candidate_protocol_frame_sequence", "pending_receipt_sequence", "native_join_receipt_sequence",
                   "negotiation_cleanup_pending_receipt_sequence", "native_call_begin_prepare_ack_sequence",
-                  "peer_header_frame_sequence", "cleanup_owner_disposal_receipt_sequence", "first_owner_disposal_receipt_sequence"}
-        references = [(event, key, events[event[key] - 1]) for event in events + added for key in fields
+                  "peer_header_frame_sequence", "cleanup_owner_disposal_receipt_sequence", "first_owner_disposal_receipt_sequence",
+                  "protocol_receipt_sequence"}
+        referenced_values = [value for event in events + added for value in [event] + event.get("retained_owners", [])]
+        references = [(event, key, events[event[key] - 1]) for event in referenced_values for key in fields
                       if type(event.get(key)) is int and event[key] > 0]
         lists = [(value, key, [events[ref - 1] for ref in value[key]]) for event in events + added
-                 for value in (event, event.get("negotiation_snapshot", {})) for key in ("negotiation_frame_sequences", "frame_sequences")
+                 for value in (event, event.get("negotiation_snapshot", {})) for key in ("negotiation_frame_sequences", "frame_sequences", "reset_return_receipt_sequences")
                  if key in value]
         joins = [(row, events[row["shutdown_event_sequence"] - 1])
                  for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "donor_joined" and row["actor"] == "sink"]
@@ -2467,6 +2479,61 @@ class PubSubEvidenceTests(unittest.TestCase):
                 event.update(sequence=sequence, mono_ns=sequence)
             with self.subTest(position=position), self.assertRaises(ValueError):
                 _events(changed, "rust", changed["case_token"], "victim")
+
+    def test_go_pre_cancel_retained_reset_phase_keeps_live_work_until_final_ack(self):
+        artifact = synthetic_case(lower_quic=False)
+        raw = artifact["raw"]["sink"]
+        phase = next(event for event in raw["events"] if event["kind"] == "pre_cancel_retained_resets_returned")
+        selected = next(event for event in raw["events"] if event["kind"] == "protocol")
+        returned = {key: phase[key] for key in ("actor", "case_token", "local_peer_id", "pid", "command_sequence", "prepare_ack_sequence")}
+        returned.update({key: selected[key] for key in ("connection_id", "stream_id", "peer_id", "protocol")},
+                        kind="pre_cancel_retained_reset_return", source="go.fixture.owned_pre_cancel_retained_resets",
+                        protocol_receipt_sequence=selected["sequence"], operation="stream_reset", outcome="ok", error=None, error_type=None)
+        self.insert_sink_events(artifact, phase["sequence"] - 1, [returned])
+        phase.update(retained_owners=[{key: returned[key] for key in ("connection_id", "stream_id", "peer_id", "protocol", "protocol_receipt_sequence")}],
+                     reset_return_receipt_sequences=[returned["sequence"]], active_stream_handlers_and_io=1,
+                     active_pubsub_streams=1, active_callbacks=1)
+        validate_case(artifact)
+        modes = ("missing", "duplicate", "foreign_pid", "foreign_ack", "future_ack", "boolean_ack", "cancelled",
+                 "open_admission", "callback_admission", "false_join", "boolean_count", "missing_return", "foreign_return",
+                 "duplicate_ref", "foreign_owner", "boolean_ref", "failed_reset", "half_close", "foreign_protocol",
+                 "unauthenticated", "wrong_profile", "return_after_phase", "phase_after_ack", "sticky", "unknown_field")
+        for mode in modes:
+            changed = deepcopy(artifact)
+            owner = changed["raw"]["sink"]
+            observed = next(event for event in owner["events"] if event["kind"] == "pre_cancel_retained_resets_returned")
+            native = next(event for event in owner["events"] if event["kind"] == "pre_cancel_retained_reset_return")
+            ack = next(event for event in owner["events"] if event["kind"] == "shutdown_quiesced")
+            mutations = {
+                "missing": lambda: observed.update(kind="score", source="go.pubsub.WithPeerScoreInspect"),
+                "duplicate": lambda: self.insert_sink_events(changed, observed["sequence"], [deepcopy(observed)]),
+                "foreign_pid": lambda: observed.update(pid=owner["pid"] + 1),
+                "foreign_ack": lambda: observed.update(prepare_ack_sequence=1),
+                "future_ack": lambda: observed.update(prepare_ack_sequence=ack["sequence"]),
+                "boolean_ack": lambda: observed.update(prepare_ack_sequence=True),
+                "cancelled": lambda: observed.update(pubsub_context_cancelled=True),
+                "open_admission": lambda: observed.update(native_admission_closed=False),
+                "callback_admission": lambda: observed.update(pubsub_callback_admission_closed=False),
+                "false_join": lambda: observed.update(phase_scope="all_native_and_router_joined"),
+                "boolean_count": lambda: observed.update(active_callbacks=True),
+                "missing_return": lambda: observed.update(reset_return_receipt_sequences=[]),
+                "foreign_return": lambda: observed.update(reset_return_receipt_sequences=[ack["sequence"]]),
+                "duplicate_ref": lambda: observed["reset_return_receipt_sequences"].append(native["sequence"]),
+                "foreign_owner": lambda: observed["retained_owners"][0].update(stream_id="foreign"),
+                "boolean_ref": lambda: native.update(protocol_receipt_sequence=True),
+                "failed_reset": lambda: native.update(outcome="error", error="retained native error", error_type="*net.OpError"),
+                "half_close": lambda: native.update(operation="stream_close_read"),
+                "foreign_protocol": lambda: native.update(protocol_receipt_sequence=ack["sequence"]),
+                "unauthenticated": lambda: next(event for event in owner["events"] if event["kind"] == "connection").update(authenticated=False),
+                "wrong_profile": lambda: changed["case"].update(profile="native_quic"),
+                "return_after_phase": lambda: self.insert_sink_events(changed, ack["sequence"] - 1, [native], relocate=True),
+                "phase_after_ack": lambda: self.insert_sink_events(changed, ack["sequence"], [observed], relocate=True),
+                "sticky": lambda: owner.update(error="original native TCP failure"),
+                "unknown_field": lambda: observed.update(io_joined=True),
+            }
+            mutations[mode]()
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                validate_case(changed)
 
     def test_go_quiesce_requires_exact_owner_resources_and_pre_stop_order(self):
         baseline = synthetic_case(lower_quic=False)

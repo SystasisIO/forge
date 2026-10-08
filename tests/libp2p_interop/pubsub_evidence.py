@@ -44,6 +44,8 @@ SOURCES["go"].update({
     "native_stream_io_finalized": {"go.pubsub.native_stream.native_operation"},
     "shutdown": {"go.fixture.owned_context_cancel_and_drain"},
     "shutdown_quiesced": {"go.fixture.owned_pubsub_quiesce"},
+    "pre_cancel_retained_reset_return": {"go.fixture.owned_pre_cancel_retained_resets"},
+    "pre_cancel_retained_resets_returned": {"go.fixture.owned_pre_cancel_retained_resets"},
     "native_rejected_stream_disposal": {"go.fixture.rejected_native_stream_reset"},
     "connection_closed": {"go.network.NotifyBundle.Disconnected"},
 })
@@ -231,6 +233,79 @@ def quiesce_ack(raw, actor, token, local, pid, command_sequence, prepare_ref, *,
         require(not any(event.get("kind") == "shutdown" for event in events), "quiesce claims completed host shutdown")
         require(raw.get("host_close_returned") is not True, "active quiesce claims completed Host.Close")
     return ack
+
+
+def _go_pre_cancel_resets(raw, events, *, active):
+    """Host-owned Reset RETURN ordering only, not lower QUIC or global join proof."""
+    returns = [event for event in events if event["kind"] == "pre_cancel_retained_reset_return"]
+    phases = [event for event in events if event["kind"] == "pre_cancel_retained_resets_returned"]
+    acks = [event for event in events if event["kind"] == "shutdown_quiesced"]
+    require(len(phases) <= 1 and len(acks) <= 1 and len(returns) <= 64, "ambiguous pre-cancel retained Reset phase")
+    common = {"actor", "case_token", "local_peer_id", "pid", "command_sequence", "prepare_ack_sequence"}
+    owner_fields = {"connection_id", "stream_id", "peer_id", "protocol", "protocol_receipt_sequence"}
+    phase_fields = {"retained_owners", "reset_return_receipt_sequences", "native_admission_closed",
+                    "pubsub_callback_admission_closed", "pubsub_context_cancelled", "subscriber_context_cancelled",
+                    "active_stream_handlers_and_io", "active_pubsub_streams", "active_callbacks", "phase_scope"}
+    for event in returns + phases:
+        extra = owner_fields | {"operation", "outcome", "error", "error_type"} if event["kind"] == "pre_cancel_retained_reset_return" else phase_fields
+        require(set(event) == EVENT_FIELDS | common | extra
+                and event["source"] == "go.fixture.owned_pre_cancel_retained_resets"
+                and all(_same_json(event[key], raw.get(key)) for key in ("actor", "case_token", "local_peer_id", "pid"))
+                and type(event["pid"]) is int and event["pid"] > 0
+                and type(event["command_sequence"]) is int and 2 <= event["command_sequence"] <= 64
+                and type(event["prepare_ack_sequence"]) is int,
+                "invalid/foreign pre-cancel retained Reset owner/fields")
+        prepared = shutdown_ack(raw, "go", raw["actor"], raw["case_token"], raw["local_peer_id"],
+                                event["command_sequence"] - 1, _check_operations=False)
+        require(prepared is not None and prepared["sequence"] == event["prepare_ack_sequence"] < event["sequence"]
+                and any(value["kind"] == "command_done" and value.get("command_kind") == "prepare_shutdown"
+                        and type(value.get("command_sequence")) is int and value["command_sequence"] == event["command_sequence"] - 1
+                        and prepared["sequence"] < value["sequence"] < event["sequence"] for value in events),
+                "pre-cancel retained Reset lacks exact completed Prepare ACK")
+        if event["kind"] == "pre_cancel_retained_reset_return":
+            ref = event["protocol_receipt_sequence"]
+            require(type(ref) is int and 0 < ref < event["sequence"] and all(_id(event[key]) for key in owner_fields - {"protocol_receipt_sequence"})
+                    and event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+                    and event["operation"] == "stream_reset" and event["outcome"] == "ok"
+                    and event["error"] is None and event["error_type"] is None,
+                    "failed/invalid pre-cancel retained full Reset RETURN")
+            selected = events[ref - 1]
+            require(selected["kind"] == "protocol" and selected["source"] == "go.network.Stream.Protocol"
+                    and all(_same_json(selected.get(key), event[key]) for key in owner_fields - {"protocol_receipt_sequence"}),
+                    "retained Reset RETURN has foreign host protocol owner")
+            owners = [value for value in events if value["kind"] == "connection" and value.get("connection_id") == event["connection_id"]]
+            selections = [value for value in events if value["kind"] == "protocol" and value["source"] == "go.network.Stream.Protocol"
+                          and value.get("connection_id") == event["connection_id"] and value.get("stream_id") == event["stream_id"]]
+            require(len(owners) == 1 and len(selections) == 1 and owners[0].get("authenticated") is True
+                    and owners[0].get("peer_id") == event["peer_id"] and owners[0]["sequence"] < ref,
+                    "retained Reset RETURN lacks unambiguous authenticated host owner")
+    if not phases:
+        require(not acks and (not returns or active), "missing pre-cancel retained Reset phase before quiesce ACK")
+        return
+    phase = phases[0]
+    require(phase["native_admission_closed"] is True and phase["pubsub_callback_admission_closed"] is True
+            and phase["pubsub_context_cancelled"] is False and phase["subscriber_context_cancelled"] is False
+            and all(type(phase[key]) is int and 0 <= phase[key] < 2**32 for key in
+                    ("active_stream_handlers_and_io", "active_pubsub_streams", "active_callbacks"))
+            and phase["phase_scope"] == "retained_stream_Reset_returns_not_IO_framing_callback_lower_QUIC_or_router_join",
+            "pre-cancel retained Reset phase falsely claims cancellation/join")
+    refs, owners = phase["reset_return_receipt_sequences"], phase["retained_owners"]
+    require(type(refs) is list and type(owners) is list and len(refs) == len(owners) == len(returns)
+            and all(type(ref) is int and 0 < ref < phase["sequence"] for ref in refs)
+            and refs == [event["sequence"] for event in returns] and len(set(refs)) == len(refs)
+            and all(type(owner) is dict and set(owner) == owner_fields for owner in owners),
+            "retained Reset phase has missing/duplicate/foreign snapshot/RETURN references")
+    identities = set()
+    for owner, event in zip(owners, returns):
+        require(all(_same_json(owner[key], event[key]) for key in owner_fields)
+                and all(_same_json(phase[key], event[key]) for key in common),
+                "retained Reset phase differs from exact snapshot owner/RETURN")
+        identity = (owner["connection_id"], owner["stream_id"])
+        require(identity not in identities, "duplicate retained snapshot owner")
+        identities.add(identity)
+    require((active and not acks) or (len(acks) == 1 and phase["sequence"] < acks[0]["sequence"]
+            and all(_same_json(phase[key], acks[0].get(key)) for key in common)),
+            "pre-cancel retained Reset phase lacks ordered matching quiesce ACK")
 
 
 def _framing_terminal(event, implementation):
@@ -719,6 +794,7 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=F
     if implementation == "go":
         _go_native_operations(events)
         verified_cleanup = _go_quic_operations(raw, events, terminal=not active)
+        _go_pre_cancel_resets(raw, events, active=active)
         if cleanup_framing is not None:
             cleanup_framing.update(verified_cleanup)
     return events
@@ -2169,6 +2245,8 @@ def _validate_traffic(artifact, actors, events, cleanup_framing, expected_finger
                 owner = _connection_owner(events[name], event["connection_id"], event["peer_id"], "go", transport, expected_fingerprint)
                 require(owner["sequence"] < event["sequence"] and event["protocol_at_disposal"] == protocol,
                         "rejected disposal lacks actual preceding native carrier/profile")
+            if event.get("kind") == "pre_cancel_retained_reset_return":
+                _stream_owner(events[name], event, event["peer_id"], protocol, transport, expected_fingerprint)
             if actors[name]["implementation"] == "go" and event.get("source") not in GO_QUIC_SOURCES.values() and event.get("kind") in {
                     "stream_io_terminal", "native_stream_operation", "native_stream_close_finalized", "native_stream_io_finalized"}:
                 _stream_owner(events[name], event, event["remote_peer_id"], protocol, transport, expected_fingerprint,

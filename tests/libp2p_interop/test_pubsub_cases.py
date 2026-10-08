@@ -178,6 +178,19 @@ class PubSubCaseTests(unittest.TestCase):
         self.assertEqual(command["kind"], "quiesce_shutdown")
         if not any(event["kind"] == "shutdown_quiesced" for event in value["events"]):
             sequence = len(value["events"]) + 1
+            value["events"].append({"sequence": sequence, "mono_ns": sequence,
+                                    "kind": "pre_cancel_retained_resets_returned",
+                                    "source": "go.fixture.owned_pre_cancel_retained_resets", "actor": role,
+                                    "case_token": command["case_token"], "local_peer_id": command["local_peer_id"],
+                                    "pid": owner.process.pid, "command_sequence": command["sequence"],
+                                    "prepare_ack_sequence": command["prepare_ack_sequence"],
+                                    "retained_owners": [], "reset_return_receipt_sequences": [],
+                                    "native_admission_closed": True, "pubsub_callback_admission_closed": True,
+                                    "pubsub_context_cancelled": False, "subscriber_context_cancelled": False,
+                                    "active_stream_handlers_and_io": 0, "active_pubsub_streams": 0,
+                                    "active_callbacks": 0,
+                                    "phase_scope": "retained_stream_Reset_returns_not_IO_framing_callback_lower_QUIC_or_router_join"})
+            sequence += 1
             value["events"].append({"sequence": sequence, "mono_ns": sequence, "kind": "shutdown_quiesced",
                                     "source": "go.fixture.owned_pubsub_quiesce", "actor": role,
                                     "case_token": command["case_token"], "local_peer_id": command["local_peer_id"],

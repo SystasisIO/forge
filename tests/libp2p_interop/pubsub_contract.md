@@ -62,10 +62,26 @@ router/stream observation continues unchanged while prepared.
 The runner observes all four exact acknowledgements, then rechecks every active
 result before requesting ANY normal stop. It publishes every Go quiesce request
 and waits for every matching native `shutdown_quiesced` acknowledgement before
-any host Stop. The Go PubSub context is independently cancelled while the host
-and controller stay alive. Native open/write admission and PubSub callback
-admission close; admitted I/O, framing, pending terminal operations, subscriber
-work and callbacks must actually drain before ACK. Rejected native streams
+any host Stop. Native open/write and PubSub callback admission close atomically
+with a snapshot of retained host streams. Their full Reset calls return with
+the PubSub/subscriber contexts still alive. Each
+`pre_cancel_retained_reset_return` and the single
+`pre_cancel_retained_resets_returned` use source
+`go.fixture.owned_pre_cancel_retained_resets`, binding actual PID, identity/token,
+command and preceding completed Prepare ACK. The phase contains exact
+`retained_owners` (connection/host-stream/peer/protocol and indexed host protocol
+receipt) and their own ordered `reset_return_receipt_sequences`, not arbitrary
+Close/window receipts or inferred Swarm-to-lower-QUIC stream mappings. Python
+revalidates exact owner/ref membership, successful full Reset returns and
+phase-before-ACK ordering. This phase proves only retained Reset returns:
+active I/O, callbacks and streams may remain nonzero; it claims no framing,
+lower QUIC or router join. Pending native opens can require context cancellation
+and are not awaited before cancel. Root cancellation then subscriber cancellation
+are mandatory on success and failure. Post-cancel accounting joins the snapshot
+and all tracked late terminal/rejected disposal work without a second Reset of
+the snapshot. The host and controller remain alive. Admitted I/O, framing,
+pending terminal operations, subscriber work and callbacks must actually drain
+before ACK, within the same existing budget. Rejected native streams
 remain accounted through their actual Reset return and disposal receipt. Reset
 errors and prior sticky failures prohibit ACK. Network/native-error observation
 stays enabled; closed application callback admission does not hide errors.
