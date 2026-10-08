@@ -104,6 +104,62 @@ The codec does not authenticate metadata or bind it to WASM: the package owner
 must verify the artifact hashes and their provenance before use. Do not create
 a second manually maintained enum schema or log private payloads on failures.
 
+## Exact JSON scalar inputs
+
+Existing `abi_json_to_bin` calls retain their compatible conversions and exported
+function signatures. To reject scalar coercion at an external JSON boundary, use
+the overload with an explicit final policy:
+
+```cpp
+const auto bytes = forge::chain::api::abi_json_to_bin(
+   abi.value, metadata.value, "request", input.value, {},
+   forge::chain::api::abi_json_scalar_policy::exact);
+```
+
+The overload without enum metadata accepts the same final `limits, policy`
+arguments. `compatible` selects the original behavior explicitly. Binary output
+and `abi_bin_to_json` are unchanged.
+
+`exact` requires JSON booleans for `bool`, JSON integers within the declared
+signed/unsigned width for integers up to 64 bits and `varint32`/`varuint32`, and
+canonical decimal strings within range for `int128`/`uint128`. Numeric strings,
+fractional values, boolean-to-integer conversion and narrowing overflow fail
+with `invalid_json` before scalar packing. Floating-point inputs reuse Schema's
+finite, range and exact-representability checks; a value that cannot be represented
+exactly by `float32`/`float64` is rejected.
+
+The same checks apply through ABI aliases, optional fields, arrays, inherited
+records and variants in the existing serialization traversal. Omitted/null
+optional fields still mean absence. Diagnostics preserve the resolved ABI type,
+field/index path and binary offset. Unknown record keys remain rejected in both
+policies.
+
+This is a scalar policy, not a separate JSON parser or a new object schema.
+Positional record arrays retain the existing ABI behavior. Protocol-specific
+scalars such as names, timestamps, assets, keys, signatures, checksums and
+`float128` keep their existing canonical handlers and resource limits.
+
+## Total container element budget
+
+`abi_serialization_limits::max_total_container_elements` bounds the sum of dynamic
+and fixed array elements for one encoded or decoded ABI value. The existing
+`max_container_elements` still bounds each individual array. Aliases, optional
+arrays, nested arrays and arrays in separate record fields consume the same
+traversal budget. The overflow-safe check runs before allocating the output array
+or iterating its members; zero-width records therefore cannot expand without
+charging the budget merely because their binary payload is empty.
+
+The new field is appended and defaults to `std::numeric_limits<std::size_t>::max()`
+to preserve the previous default. A zero budget accepts empty arrays and scalars;
+an exact budget accepts exactly that aggregate number of elements. Exhaustion
+reports `size_limit` with the array's path and offset. Enum metadata remains
+bounded by its independent metadata limits.
+
+Consumers must rebuild against the updated `abi_serialization_limits` definition
+because the public C++ value layout grows. No ABI artifact, Raw wire, guest
+intrinsic or persisted record layout changes; existing source initializers can
+keep omitting the new field.
+
 ## Signing APIs
 
 `forge.chain.api.transaction_signer` is a transport-neutral `1.0` API with

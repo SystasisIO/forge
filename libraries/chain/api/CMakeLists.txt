@@ -41,4 +41,5 @@ target_link_libraries(
       forge_asio
       forge_codec_hex
       forge_raw
+      forge_schema
 )

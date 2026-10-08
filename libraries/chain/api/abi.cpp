@@ -27,6 +27,9 @@ import forge.crypto.digest.sha256;
 import forge.crypto.digest.sha512;
 import forge.raw.raw;
 import forge.raw.varint;
+import forge.schema.diagnostic;
+import forge.schema.object;
+import forge.schema.value_kind;
 import forge.variant.containers;
 import forge.variant.conversion;
 import forge.variant.described;
@@ -100,9 +103,17 @@ class traversal_context {
       return limits_;
    }
 
+   void consume_elements(std::size_t count, std::string_view type, std::string_view path, std::size_t offset) {
+      if (count > limits_.max_total_container_elements - consumed_elements_) {
+         fail(abi_error_code::size_limit, "ABI containers exceed the total element limit", type, path, offset);
+      }
+      consumed_elements_ += count;
+   }
+
  private:
    abi_serialization_limits limits_;
    std::chrono::steady_clock::time_point deadline_;
+   std::size_t consumed_elements_ = 0;
 };
 
 class binary_writer {
@@ -181,6 +192,26 @@ template <typename T> T value_from_json(const forge::variant& value) {
    using forge::from_variant;
    from_variant(value, result);
    return result;
+}
+
+forge::schema::input_value scalar_input(const forge::variant& value, std::string_view type, std::string_view path,
+                                        std::size_t offset) {
+   switch (value.get_type()) {
+   case forge::variant::null_type:
+      return {};
+   case forge::variant::bool_type:
+      return forge::schema::input_value{value.as_bool()};
+   case forge::variant::int64_type:
+      return forge::schema::input_value{value.as_int64()};
+   case forge::variant::uint64_type:
+      return forge::schema::input_value{value.as_uint64()};
+   case forge::variant::double_type:
+      return forge::schema::input_value{value.as_double()};
+   case forge::variant::string_type:
+      return forge::schema::input_value{value.get_string()};
+   default:
+      fail(abi_error_code::invalid_json, "ABI scalar requires a scalar JSON value", type, path, offset);
+   }
 }
 
 template <typename T> forge::variant json_from_value(const T& value) {
@@ -314,8 +345,10 @@ std::string variant_path(std::string_view path, std::string_view selected) {
 
 class serializer {
  public:
-   serializer(const protocol::abi_def& abi, traversal_context& context, const protocol::abi_metadata* metadata = nullptr)
-       : abi_{abi}, context_{context} {
+   serializer(const protocol::abi_def& abi, traversal_context& context,
+              const protocol::abi_metadata* metadata = nullptr,
+              abi_json_scalar_policy policy = abi_json_scalar_policy::compatible)
+       : abi_{abi}, context_{context}, scalar_policy_{policy} {
       load();
       validate();
       if (metadata != nullptr) {
@@ -735,6 +768,7 @@ class serializer {
             fail(abi_error_code::invalid_json, "ABI fixed array has an incorrect number of values", resolved, path,
                  writer.tellp());
          }
+         context_.consume_elements(values.size(), resolved, path, writer.tellp());
          if (parsed.form == type_form::array) {
             pack_length(writer, values.size(), resolved, path);
          }
@@ -788,6 +822,7 @@ class serializer {
                                                                         context_.limits().max_container_elements,
                                                                         "ABI array exceeds the element limit"))
                                : parsed.fixed_size;
+         context_.consume_elements(size, resolved, path, reader.tellp());
          auto values = forge::variants{};
          values.reserve(std::min(size, std::size_t{1024}));
          for (auto index = std::size_t{}; index < size; ++index) {
@@ -949,9 +984,33 @@ class serializer {
    }
 
    template <typename T>
+   void validate_scalar(std::string_view type, const forge::variant& value, binary_writer& writer,
+                        std::string_view path) const {
+      if (scalar_policy_ != abi_json_scalar_policy::exact) {
+         return;
+      }
+      if (value.is_string() && value.get_string().size() > context_.limits().max_string_bytes) {
+         fail(abi_error_code::size_limit, "ABI scalar string exceeds the string limit", type, path, writer.tellp());
+      }
+      auto diagnostics = std::vector<forge::schema::diagnostic>{};
+      forge::schema::validate_exact_input_value<T>(scalar_input(value, type, path, writer.tellp()), path, diagnostics);
+      if (!diagnostics.empty()) {
+         fail(abi_error_code::invalid_json, "Invalid exact ABI scalar: " + diagnostics.front().message, type, path,
+              writer.tellp());
+      }
+   }
+
+   template <typename T>
    void encode_converted(std::string_view type, const forge::variant& value, binary_writer& writer,
                          std::string_view path) const {
       try {
+         if constexpr (forge::schema::integral_value<T> || std::is_floating_point_v<T>) {
+            validate_scalar<T>(type, value, writer, path);
+         } else if constexpr (std::is_same_v<T, forge::signed_int>) {
+            validate_scalar<std::int32_t>(type, value, writer, path);
+         } else if constexpr (std::is_same_v<T, forge::unsigned_int>) {
+            validate_scalar<std::uint32_t>(type, value, writer, path);
+         }
          pack_raw(writer, value_from_json<T>(value), type, path);
       } catch (const abi_serialization_error&) {
          throw;
@@ -1288,6 +1347,7 @@ class serializer {
 
    const protocol::abi_def& abi_;
    traversal_context& context_;
+   abi_json_scalar_policy scalar_policy_;
    std::map<std::string, enum_definition, std::less<>> enums_;
    std::map<std::string, std::string, std::less<>> aliases_;
    std::map<std::string, const protocol::struct_def*, std::less<>> structs_;
@@ -1306,12 +1366,16 @@ const abi_diagnostic& abi_serialization_error::diagnostic() const noexcept {
 
 namespace {
 
-protocol::bytes encode_abi(const protocol::abi_def& abi, const protocol::abi_metadata* metadata,
-                           std::string_view type, const forge::variant& value, abi_serialization_limits limits) {
+protocol::bytes encode_abi(const protocol::abi_def& abi, const protocol::abi_metadata* metadata, std::string_view type,
+                           const forge::variant& value, abi_serialization_limits limits,
+                           abi_json_scalar_policy policy = abi_json_scalar_policy::compatible) {
+   if (policy != abi_json_scalar_policy::compatible && policy != abi_json_scalar_policy::exact) {
+      fail(abi_error_code::invalid_json, "Unknown ABI JSON scalar policy", type, type, 0U);
+   }
    auto context = traversal_context{limits};
    auto writer = binary_writer{limits.max_binary_bytes};
    try {
-      serializer{abi, context, metadata}.encode(type, value, writer);
+      serializer{abi, context, metadata, policy}.encode(type, value, writer);
       return std::move(writer).take();
    } catch (const abi_serialization_error&) {
       throw;
@@ -1353,6 +1417,11 @@ protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, std::string_view t
    return encode_abi(abi, nullptr, type, value, limits);
 }
 
+protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, std::string_view type, const forge::variant& value,
+                                abi_serialization_limits limits, abi_json_scalar_policy policy) {
+   return encode_abi(abi, nullptr, type, value, limits, policy);
+}
+
 forge::variant abi_bin_to_json(const protocol::abi_def& abi, std::string_view type,
                                std::span<const std::uint8_t> binary, abi_serialization_limits limits) {
    return decode_abi(abi, nullptr, type, binary, limits);
@@ -1361,6 +1430,12 @@ forge::variant abi_bin_to_json(const protocol::abi_def& abi, std::string_view ty
 protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
                                 std::string_view type, const forge::variant& value, abi_serialization_limits limits) {
    return encode_abi(abi, &metadata, type, value, limits);
+}
+
+protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
+                                std::string_view type, const forge::variant& value, abi_serialization_limits limits,
+                                abi_json_scalar_policy policy) {
+   return encode_abi(abi, &metadata, type, value, limits, policy);
 }
 
 forge::variant abi_bin_to_json(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
