@@ -743,6 +743,7 @@ type pubsubQUICReturn struct {
 	ack             int
 	reset, terminal *pubsubQUICReset
 	resetSucceeded  bool
+	peerRead        bool
 	selected        string
 	parentContext   pubsubQUICContext
 }
@@ -800,8 +801,9 @@ func (s *pubsubQUICStream) nativeReturned(op pubsubQUICOperation, n int, err err
 		if outer, ok := err.(*network.StreamError); ok && outer != nil && outer.ErrorCode == 0 {
 			if cause, typed := outer.TransportError.(*quic.StreamError); typed && cause != nil && cause.ErrorCode == 0 &&
 				cause.StreamID == s.nativeID && cause.Remote == outer.Remote &&
-				((op.name == "stream_read" && s.direction == network.DirOutbound && !cause.Remote && result.resetSucceeded) ||
+				((op.name == "stream_read" && s.direction == network.DirOutbound && (cause.Remote || result.resetSucceeded)) ||
 					(op.name == "stream_write" && s.direction == network.DirInbound && cause.Remote)) {
+				result.peerRead = op.name == "stream_read" && cause.Remote
 				s.abortReturn = &result
 			}
 		}
@@ -1345,8 +1347,9 @@ func (s *pubsubQUICStream) queueStreamAbortLocked(op pubsubQUICOperation, result
 		return false
 	}
 	localRead := s.direction == network.DirOutbound && op.name == "stream_read" && !cause.Remote && result.resetSucceeded
+	peerRead := s.direction == network.DirOutbound && op.name == "stream_read" && cause.Remote && result.peerRead
 	peerWrite := s.direction == network.DirInbound && op.name == "stream_write" && cause.Remote && sample.done && sample.cause == cause
-	if !localRead && !peerWrite {
+	if !localRead && !peerRead && !peerWrite {
 		return false
 	}
 	refs, valid := s.streamAbortShapeLocked()
@@ -1400,6 +1403,9 @@ func (s *pubsubQUICStream) streamAbortValidLocked() bool {
 	}
 	if close := abort.close; close != nil {
 		if close.reset == nil || !close.reset.completed || close.reset.err != nil || close.reset.sequence == 0 || close.contextSequence == 0 || abort.closePending == 0 {
+			return false
+		}
+		if s.abortReturn.peerRead && close.reset.started <= abort.returned {
 			return false
 		}
 	}
@@ -1761,8 +1767,9 @@ func (s *pubsubQUICStream) close(name string, side int, code *network.StreamErro
 	}
 	if err != nil && s.abortReturn != nil && s.abortClose == nil && name == "stream_close" && result.selected == "" &&
 		op.ack == s.abortReturn.ack && s.abortReturn.order < op.started && classification == "opaque_unwrapped_native_error" && !result.parentContext.done &&
-		op.reset != nil && op.reset.ack == op.ack && op.reset.completed && op.reset.err == nil && op.reset.returned < op.started {
-		if cause, ok := sample.cause.(*quic.StreamError); sample.done && ok && cause != nil && !cause.Remote &&
+		op.reset != nil && op.reset.ack == op.ack && op.reset.completed && op.reset.err == nil && op.reset.returned < op.started &&
+		(!s.abortReturn.peerRead || op.reset.started > s.abortReturn.order) {
+		if cause, ok := sample.cause.(*quic.StreamError); sample.done && ok && cause != nil && (!cause.Remote || s.abortReturn.peerRead) &&
 			cause.ErrorCode == 0 && cause.StreamID == s.nativeID {
 			expectedErrors := 0
 			if s.abort != nil {

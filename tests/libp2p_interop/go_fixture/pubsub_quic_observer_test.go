@@ -1360,15 +1360,16 @@ func pubsubQUICUnitStreamAbort(t *testing.T, inbound bool, tail []byte) (*pubsub
 }
 
 func TestPubsubQUICStreamAbortPreservesSplitWritesAndOriginalErrorsUntilNativeJoin(t *testing.T) {
-	for _, inbound := range []bool{false, true} {
+	for _, branch := range []string{"local_read", "peer_write", "peer_read_local_context", "peer_read_remote_context"} {
+		inbound, peerRead := branch == "peer_write", strings.HasPrefix(branch, "peer_read_")
 		for _, opaqueClose := range []bool{false, true} {
 			if inbound && opaqueClose {
 				continue // Peer Write's immutable remote send cause cannot become local Close context.
 			}
-			t.Run(fmt.Sprintf("inbound=%v/close=%v", inbound, opaqueClose), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/close=%v", branch, opaqueClose), func(t *testing.T) {
 				o, s, raw := pubsubQUICUnitStreamAbort(t, inbound, nil)
-				cause := &quic.StreamError{StreamID: raw.id, Remote: inbound}
-				failure := &network.StreamError{Remote: inbound, TransportError: cause}
+				cause := &quic.StreamError{StreamID: raw.id, Remote: inbound || peerRead}
+				failure := &network.StreamError{Remote: cause.Remote, TransportError: cause}
 				if inbound {
 					raw.cancel(cause)
 					raw.writeErr, raw.writeN = failure, 0
@@ -1376,11 +1377,30 @@ func TestPubsubQUICStreamAbortPreservesSplitWritesAndOriginalErrorsUntilNativeJo
 						// A failed native ACK emits no bytes. Preserve the native count as well.
 						t.Fatal("ACK Write changed native result", n, err)
 					}
+				} else if peerRead {
+					// Receive and send causes are distinct actual context observations.
+					if branch == "peer_read_remote_context" {
+						raw.cancel(&quic.StreamError{StreamID: raw.id, Remote: true})
+					}
+					raw.input, raw.readErr = nil, failure
+					if n, err := s.Read(make([]byte, 1)); n != 0 || err != failure {
+						t.Fatal("peer Read changed original result", n, err)
+					}
+					s.mu.Lock()
+					joined := s.streamAbortValidLocked()
+					s.mu.Unlock()
+					if s.abort == nil || s.abort.reset != nil || joined {
+						t.Fatal("peer Read borrowed a Reset or invented disposal")
+					}
 				} else {
 					raw.input, raw.readErr = nil, failure
 					raw.readStart, raw.readEnd = make(chan struct{}), make(chan struct{})
-					returned := make(chan error, 1)
+					returned, done := make(chan error, 1), make(chan struct{})
+					var release sync.Once
+					unblock := func() { release.Do(func() { close(raw.readEnd) }) }
+					t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(done) })
 					go func() {
+						defer close(done)
 						n, err := s.Read(make([]byte, 1))
 						if n != 0 {
 							returned <- fmt.Errorf("changed native n=%d", n)
@@ -1388,11 +1408,12 @@ func TestPubsubQUICStreamAbortPreservesSplitWritesAndOriginalErrorsUntilNativeJo
 							returned <- err
 						}
 					}()
-					<-raw.readStart
+					pubsubScoringUnitWait(t, raw.readStart)
 					if err := s.Reset(); err != nil {
 						t.Fatal(err)
 					}
-					close(raw.readEnd)
+					unblock()
+					pubsubScoringUnitWait(t, done)
 					if err := <-returned; err != failure {
 						t.Fatal("Read changed original error", err)
 					}
@@ -1437,6 +1458,10 @@ func TestPubsubQUICStreamAbortPreservesSplitWritesAndOriginalErrorsUntilNativeJo
 				original := pubsubQUICEvent(o, s.abort.errorSequence, "native_quic_negotiation_io_return", "go.quic.native_stream.io_return")
 				if original["outcome"] != "error" || original["error_type"] != "*network.StreamError" || original["successful_prefix_bytes"] != 0 {
 					t.Fatal("original return changed", original)
+				}
+				if peerRead && (original["same_send_context_cause"] != false || finals[0]["owned_reset_receipt_sequence"] != 0 ||
+					latest.started <= original["returned_order"].(uint64)) {
+					t.Fatal("peer Read acquired cause/old Reset authority", original, finals)
 				}
 				if opaqueClose {
 					final := pubsubScoringUnitEvents(o, "native_quic_terminal_finalized")
@@ -1534,14 +1559,14 @@ func TestPubsubQUICStreamAbortRejectsInvalidBytesCausesAndOwnedDisposal(t *testi
 }
 
 func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *testing.T) {
-	for _, mode := range []string{"complete", "future_reset", "failed_reset", "partial_prefix", "sticky"} {
+	for _, mode := range []string{"complete", "peer_complete", "future_reset", "failed_reset", "partial_prefix", "sticky"} {
 		t.Run(mode, func(t *testing.T) {
 			var tail []byte
 			if mode == "partial_prefix" {
 				tail = []byte{5, 1}
 			}
 			o, s, raw := pubsubQUICUnitStreamAbort(t, false, tail)
-			if mode != "future_reset" {
+			if mode != "future_reset" && mode != "peer_complete" {
 				if mode == "failed_reset" {
 					raw.resetErr = syscall.ECONNRESET
 				}
@@ -1552,7 +1577,8 @@ func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *test
 			}
 			delayed := &pubsubQUICUnitDelayedContext{Context: raw.ctx, entered: make(chan struct{}), release: make(chan struct{})}
 			s.sendContext = delayed
-			failure := &network.StreamError{TransportError: &quic.StreamError{StreamID: raw.id}}
+			failure := &network.StreamError{Remote: mode == "peer_complete",
+				TransportError: &quic.StreamError{StreamID: raw.id, Remote: mode == "peer_complete"}}
 			closeFailure := errors.New("unit original opaque Close")
 			raw.input, raw.readErr, raw.closeErr = nil, failure, closeFailure
 			returned, joined := make(chan error, 1), make(chan struct{})
@@ -1560,7 +1586,7 @@ func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *test
 			t.Cleanup(func() { release.Do(func() { close(delayed.release) }); pubsubScoringUnitCleanupJoin(joined) })
 			go func() { defer close(joined); _, err := s.Read(make([]byte, 1)); returned <- err }()
 			pubsubScoringUnitWait(t, delayed.entered)
-			if mode == "future_reset" {
+			if mode == "future_reset" || mode == "peer_complete" {
 				_ = s.Reset()
 			}
 			if err := s.Close(); err != closeFailure {
@@ -1569,14 +1595,15 @@ func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *test
 			if s.abort != nil || s.finalize() {
 				t.Fatal("Read publication/native I/O join was invented")
 			}
-			if mode == "complete" && (o.failure != nil || s.abortClose == nil || s.abortClosePending == 0) {
+			valid := mode == "complete" || mode == "peer_complete"
+			if valid && (o.failure != nil || s.abortClose == nil || s.abortClosePending == 0) {
 				t.Fatal("sealed RETURN could not retain bounded Close candidate", o.failure)
 			}
 			release.Do(func() { close(delayed.release) })
+			pubsubScoringUnitWait(t, joined)
 			if err := <-returned; err != failure {
 				t.Fatal("original Read return changed", err)
 			}
-			pubsubScoringUnitWait(t, joined)
 			_ = s.finalize()
 			if err := s.connection.Close(); err != nil {
 				t.Fatal("native unit connection Close failed", err)
@@ -1586,7 +1613,7 @@ func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *test
 			if err := o.quic.join(ctx); err != nil {
 				t.Fatal("native unit connection/stream observations did not join", err)
 			}
-			if mode != "complete" {
+			if !valid {
 				if o.failure == nil {
 					t.Fatal("invalid delayed Close/Read cleared native failure")
 				}
@@ -1604,6 +1631,82 @@ func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *test
 			if closePending["sequence"].(int) >= read["sequence"].(int) || closePending["negotiation_abort_returned_order"] != read["returned_order"] ||
 				read["returned_order"].(uint64) >= s.abort.close.fields["started_order"].(uint64) {
 				t.Fatal("publication replaced native causality", closePending, read)
+			}
+		})
+	}
+}
+
+func TestPubsubQUICPeerReadAbortRequiresActualPostReadResetAndCurrentCloseContext(t *testing.T) {
+	for _, mode := range []string{"prior_only", "failed", "explicit", "pending", "future_close_reset",
+		"live_context", "nonzero_context", "foreign_context", "wrapped_context", "known_close"} {
+		t.Run(mode, func(t *testing.T) {
+			o, s, raw := pubsubQUICUnitStreamAbort(t, false, nil)
+			if err := s.Reset(); err != nil {
+				t.Fatal(err)
+			}
+			failure := &network.StreamError{Remote: true, TransportError: &quic.StreamError{StreamID: raw.id, Remote: true}}
+			raw.input, raw.readErr = nil, failure
+			if n, err := s.Read(make([]byte, 1)); n != 0 || err != failure || s.abort == nil || s.abort.reset != nil {
+				t.Fatal("peer Read lost native result or borrowed prior Reset", n, err)
+			}
+			var done chan struct{}
+			if mode == "pending" {
+				raw.resetStart, raw.resetEnd = make(chan struct{}), make(chan struct{})
+				done = make(chan struct{})
+				var release sync.Once
+				unblock := func() { release.Do(func() { close(raw.resetEnd) }) }
+				t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(done) })
+				go func() { defer close(done); _ = s.Reset() }()
+				pubsubScoringUnitWait(t, raw.resetStart)
+				if s.finalize() || o.failure != nil {
+					t.Fatal("pending native Reset was joined or failed prematurely")
+				}
+				// The in-flight attempt cannot supply Close-BEGIN authority from the older success.
+				raw.closeErr = errors.New("original opaque Close")
+				if err := s.Close(); err != raw.closeErr || o.failure == nil {
+					t.Fatal("pending Reset borrowed the older success", err)
+				}
+				unblock()
+				pubsubScoringUnitWait(t, done)
+			} else if mode == "explicit" {
+				_ = s.ResetWithError(0)
+			} else if mode != "prior_only" && mode != "future_close_reset" {
+				if mode == "failed" {
+					raw.resetErr = syscall.ECONNRESET
+				}
+				_ = s.Reset()
+			}
+			if strings.HasSuffix(mode, "_context") || mode == "known_close" || mode == "future_close_reset" {
+				ctx, cancel := context.WithCancelCause(context.Background())
+				t.Cleanup(func() { cancel(context.Canceled) })
+				cause := error(&quic.StreamError{StreamID: raw.id, Remote: true})
+				switch mode {
+				case "nonzero_context":
+					cause = &quic.StreamError{StreamID: raw.id, ErrorCode: 1, Remote: true}
+				case "foreign_context":
+					cause = &quic.StreamError{StreamID: raw.id + 4, Remote: true}
+				case "wrapped_context":
+					cause = fmt.Errorf("wrapped: %w", cause)
+				}
+				if mode != "live_context" {
+					cancel(cause)
+				}
+				s.sendContext = ctx
+				raw.closeErr = errors.New("original opaque Close")
+				if mode == "known_close" {
+					raw.closeErr = io.ErrClosedPipe
+				}
+				if err := s.Close(); err != raw.closeErr {
+					t.Fatal("Close changed its native error", err)
+				}
+				if mode == "future_close_reset" {
+					// A Reset after Close BEGIN cannot retroactively authorize that Close.
+					_ = s.Reset()
+				}
+			}
+			_ = s.finalize()
+			if o.failure == nil {
+				t.Fatal("invalid peer Read disposal/Close escaped sticky failure", mode)
 			}
 		})
 	}

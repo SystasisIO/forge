@@ -660,15 +660,18 @@ The pending outcome is `negotiation_stream_reset_abort_pending`; its
 `owned_reset_started_order/owned_reset_returned_order` identify the local
 Read's latest successful full Reset sealed before Read RETURN. Peer Write
 uses zeros and requires the actual identical current send-context cause;
-there is no causal remote-reset claim.
+outbound peer Read also uses zeros and does not borrow any prior Reset or
+send-context cause. Its original direct receive error and the independent
+current send-context observation may have distinct cause pointers. There is
+no causal remote-reset claim.
 
 The final outcome is `negotiation_stream_reset_abort`, with `accepted=true`,
 the original pending reference, exact framing/native-join references,
 `owner_disposal_receipt_sequence`, preserved
 `first_owner_disposal_receipt_sequence`, `owned_reset_receipt_sequence`
-(zero for peer Write) and `close_finalization_receipt_sequence` (zero when
+(zero for peer Read/Write) and `close_finalization_receipt_sequence` (zero when
 there is no failed Close). Disposal is the latest actual successful full
-Reset on the same owner/ACK; for peer Write its BEGIN is after error RETURN.
+Reset on the same owner/ACK; for peer Read/Write its BEGIN is after error RETURN.
 Its sealed parent context equals the original error's parent context. The
 abort framing receipt adds `negotiation_abort_pending_receipt_sequence` and
 `abort_owner_disposal_receipt_sequence`, retains false framing/selection flags
@@ -677,9 +680,13 @@ actual native I/O/terminal join. Half-close, explicit ResetWithError or a
 disposal boolean supplies no full-disposal authority.
 
 An optional failed full Close is independent: only
-`opaque_unwrapped_native_error`, the actual Close RETURN's direct local
+`opaque_unwrapped_native_error`, the actual Close RETURN's direct
 StreamError0 send context with this StreamID, and the latest successful nil
-full Reset RETURN before Close BEGIN qualify. Its native error remains an
+full Reset RETURN before Close BEGIN qualify. Only the outbound peer Read
+branch permits either local or remote current zero send context. For that
+branch the Reset captured at Close BEGIN must also have begun after Read
+RETURN: an old Reset followed by a new Reset after Close BEGIN cannot authorize
+the Close. Its native error remains an
 error, `native_close_succeeded=false`, `terminal_state_cause=unknown`.
 `native_quic_negotiation_abort_close_pending` uses the same cleanup source and
 identity, its raw `operation_receipt_sequence`, actual
@@ -702,6 +709,35 @@ selection/RPC claims, unfinished native calls, overflow or earlier sticky
 failure remain fatal. The case owner dispatch uses only exact independently
 validated receipt identities; no source-prefix/flag exemption or donor
 modification is introduced. Original failed artifacts remain failed.
+
+### Late Native-Only Selection And Disposal
+
+A separate physical QUIC owner registered after its actual Prepare ACK may
+complete native multistream negotiation without exporting any application
+authority. Its actual Accept BEGIN ACK may remain zero; it is not retrofitted
+with a stream Prepare baseline. The authenticated CapableConn/native StreamID,
+real preceding ACK and live parent Prepare baseline are independently checked.
+Exactly four canonical native frames must contain both multistream headers and
+the matching meshsub proposal/ACK. Every observed native successful prefix and
+intermediate parser snapshot must agree with those frames. No RPC, lazy
+application bytes or selected application-I/O receipt is permitted on this owner.
+
+An active snapshot may retain those checked native facts provisionally, even
+before disposal or Host.Close exists. It supplies no completed-cleanup claim.
+Terminal validation additionally requires all handshake bytes accounted for,
+actual successful full Reset(s) after every observed negotiation I/O RETURN,
+the exact first published successful full-disposal reference, latest successful
+Reset, zero-residue framing and the actual all-observed-native-calls join. Failed/half/explicit
+Reset, missing/foreign/duplicate refs, later native I/O, unfinished join,
+overflow and prior sticky failure remain fatal.
+
+Only the exact independently validated lower `protocol` receipt may pass the
+post-quiesce blanket protocol-publication check. Legacy host protocol and all
+RPC admission checks stay unchanged. This is a native-only negotiation/disposal
+contract, not a claim that a handler was rejected or why it was not called,
+nor proof of remote Reset/ACK delivery, graceful close or router/process join.
+No Swarm/native stream-ID mapping, event-adjacency association or new native
+emitter is introduced. Original failed artifacts remain unchanged.
 
 ## Router Configuration
 
