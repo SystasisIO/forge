@@ -45,6 +45,8 @@ type pubsubQUICUnitStream struct {
 	readEnd    chan struct{}
 	resetStart chan struct{}
 	resetEnd   chan struct{}
+	closeStart chan struct{}
+	closeEnd   chan struct{}
 }
 
 func (s *pubsubQUICUnitStream) Context() context.Context { return s.ctx }
@@ -71,7 +73,14 @@ func (s *pubsubQUICUnitStream) Write(p []byte) (int, error) {
 	_, _ = s.output.Write(p[:n])
 	return n, s.writeErr
 }
-func (s *pubsubQUICUnitStream) Close() error      { s.closes++; return s.closeErr }
+func (s *pubsubQUICUnitStream) Close() error {
+	s.closes++
+	if s.closeStart != nil {
+		close(s.closeStart)
+		<-s.closeEnd
+	}
+	return s.closeErr
+}
 func (s *pubsubQUICUnitStream) CloseRead() error  { s.half++; return s.closeErr }
 func (s *pubsubQUICUnitStream) CloseWrite() error { s.half++; return s.closeErr }
 func (s *pubsubQUICUnitStream) Reset() error {
@@ -95,12 +104,13 @@ func (s *pubsubQUICUnitStream) SetWriteDeadline(value time.Time) error { return 
 
 type pubsubQUICUnitCapable struct {
 	*pubsubScoringUnitConn
-	native  *quic.Conn
-	stream  network.MuxedStream
-	err     error
-	closed  int
-	ctxSeen context.Context
-	code    network.ConnErrorCode
+	native       *quic.Conn
+	stream       network.MuxedStream
+	err          error
+	closed       int
+	ctxSeen      context.Context
+	code         network.ConnErrorCode
+	closeContext context.CancelCauseFunc
 }
 
 func (c *pubsubQUICUnitCapable) Transport() transport.Transport { return nil }
@@ -118,7 +128,13 @@ func (c *pubsubQUICUnitCapable) OpenStream(ctx context.Context) (network.MuxedSt
 	return c.stream, c.err
 }
 func (c *pubsubQUICUnitCapable) AcceptStream() (network.MuxedStream, error) { return c.stream, c.err }
-func (c *pubsubQUICUnitCapable) Close() error                               { c.closed++; return c.err }
+func (c *pubsubQUICUnitCapable) Close() error {
+	c.closed++
+	if c.err == nil && c.closeContext != nil {
+		c.closeContext(&quic.ApplicationError{})
+	}
+	return c.err
+}
 func (c *pubsubQUICUnitCapable) CloseWithError(code network.ConnErrorCode) error {
 	c.code = code
 	return c.Close()
@@ -704,6 +720,56 @@ func TestPubsubQUICLocalReadFallsBackToSealedSuccessfulResetAfterOpaqueClose(t *
 	}
 }
 
+func TestPubsubQUICReadPinsCompletedResetWhileIndependentCloseStillRuns(t *testing.T) {
+	for _, delayedPublication := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delayed_close_publication=%v", delayedPublication), func(t *testing.T) {
+			o, s, raw, _ := pubsubQUICUnit(t, network.DirOutbound)
+			pubsubQUICUnitSelect(t, s, raw, "/meshsub/1.1.0")
+			pubsubQUICUnitPrepare(t, o)
+			if err := s.Reset(); err != nil {
+				t.Fatal(err)
+			}
+			reset := s.reset
+			raw.input = nil
+			raw.readErr = &network.StreamError{TransportError: &quic.StreamError{StreamID: s.nativeID}}
+			raw.closeErr = errors.New("unit opaque native Close result")
+			entered, release := make(chan struct{}), make(chan struct{})
+			if delayedPublication {
+				s.sendContext = &pubsubQUICUnitDelayedContext{Context: raw.ctx, entered: entered, release: release}
+			} else {
+				raw.closeStart, raw.closeEnd = entered, release
+			}
+			finished, result := make(chan struct{}), make(chan error, 1)
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(finished) })
+			go func() { defer close(finished); result <- s.Close() }()
+			pubsubScoringUnitWait(t, entered)
+			if n, err := s.Read(make([]byte, 1)); n != 0 || err != raw.readErr {
+				t.Fatal("native Read changed", n, err)
+			}
+			unblock()
+			pubsubScoringUnitWait(t, finished)
+			if <-result != raw.closeErr {
+				t.Fatal("native Close error changed")
+			}
+			if !s.finalize() || o.failure != nil {
+				t.Fatal("independent completed Reset/Close chain failed", o.failure)
+			}
+			terminals := pubsubScoringUnitEvents(o, "stream_io_terminal")
+			finals := pubsubScoringUnitEvents(o, "native_quic_terminal_finalized")
+			if len(terminals) != 1 || terminals[0]["outcome"] != "owned_read_terminal_pending" || len(finals) != 2 {
+				t.Fatal("Read did not retain its completed full Reset", terminals, finals)
+			}
+			for _, final := range finals {
+				if final["accepted"] != true || final["owned_terminal_receipt_sequence"] != reset.sequence {
+					t.Fatal("finalizer borrowed the unfinished Close or another Reset", final)
+				}
+			}
+		})
+	}
+}
+
 func TestPubsubQUICLocalReadResetFallbackCannotClearStickyFailures(t *testing.T) {
 	for _, mode := range []string{"true_close_error", "earlier_io_error", "failed_reset", "missing_reset", "partial_rpc"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1245,6 +1311,335 @@ func pubsubQUICUnitCandidateError(t *testing.T, s *pubsubQUICStream, raw *pubsub
 		t.Fatal("candidate error/count changed", n, err)
 	}
 	return failure
+}
+
+func pubsubQUICUnitStreamAbort(t *testing.T, inbound bool, tail []byte) (*pubsubScoringObserver, *pubsubQUICStream, *pubsubQUICUnitStream) {
+	t.Helper()
+	o, s, raw, cancelParent := pubsubQUICUnitLateCandidate(t)
+	if inbound {
+		var original *pubsubQUICStream
+		o, original, _, cancelParent = pubsubQUICUnit(t, network.DirInbound)
+		pubsubQUICUnitPrepare(t, o)
+		ctx, cancel := context.WithCancelCause(context.Background())
+		t.Cleanup(func() { cancel(context.Canceled) })
+		raw = &pubsubQUICUnitStream{ctx: ctx, cancel: cancel, id: 4, writeN: -1}
+		original.connection.CapableConn.(*pubsubQUICUnitCapable).stream = raw
+		observed, err := original.connection.AcceptStream()
+		var ok bool
+		s, ok = observed.(*pubsubQUICStream)
+		if err != nil || !ok {
+			t.Fatal("native delegate AcceptStream was not observed", err)
+		}
+	}
+	// These tests exercise whole-owner join, not merely Reset of one stream.
+	// The unit delegate's successful connection Close finishes its own context.
+	s.connection.CapableConn.(*pubsubQUICUnitCapable).closeContext = cancelParent
+	header := pubsubQUICUnitToken("/multistream/1.0.0\n")
+	proposal := pubsubQUICUnitToken("/meshsub/1.1.0\n")
+	if inbound {
+		if n, err := s.Write(header); n != len(header) || err != nil {
+			t.Fatal(n, err)
+		}
+		pubsubQUICUnitRead(t, s, raw, append(append([]byte{}, header...), proposal...))
+		if len(tail) != 0 {
+			pubsubQUICUnitRead(t, s, raw, tail)
+		}
+	} else {
+		if n, err := s.Write(append(append([]byte{}, header...), proposal...)); n != len(header)+len(proposal) || err != nil {
+			t.Fatal(n, err)
+		}
+		pubsubQUICUnitCandidateHeader(t, s, raw)
+		if tail == nil {
+			tail = pubsubQUICUnitSubscription(t, o.topic)
+		}
+		if n, err := s.Write(tail); n != len(tail) || err != nil {
+			t.Fatal(n, err)
+		}
+	}
+	return o, s, raw
+}
+
+func TestPubsubQUICStreamAbortPreservesSplitWritesAndOriginalErrorsUntilNativeJoin(t *testing.T) {
+	for _, inbound := range []bool{false, true} {
+		for _, opaqueClose := range []bool{false, true} {
+			if inbound && opaqueClose {
+				continue // Peer Write's immutable remote send cause cannot become local Close context.
+			}
+			t.Run(fmt.Sprintf("inbound=%v/close=%v", inbound, opaqueClose), func(t *testing.T) {
+				o, s, raw := pubsubQUICUnitStreamAbort(t, inbound, nil)
+				cause := &quic.StreamError{StreamID: raw.id, Remote: inbound}
+				failure := &network.StreamError{Remote: inbound, TransportError: cause}
+				if inbound {
+					raw.cancel(cause)
+					raw.writeErr, raw.writeN = failure, 0
+					if n, err := s.Write(pubsubQUICUnitToken("/meshsub/1.1.0\n")); n != 0 || err != failure {
+						// A failed native ACK emits no bytes. Preserve the native count as well.
+						t.Fatal("ACK Write changed native result", n, err)
+					}
+				} else {
+					raw.input, raw.readErr = nil, failure
+					raw.readStart, raw.readEnd = make(chan struct{}), make(chan struct{})
+					returned := make(chan error, 1)
+					go func() {
+						n, err := s.Read(make([]byte, 1))
+						if n != 0 {
+							returned <- fmt.Errorf("changed native n=%d", n)
+						} else {
+							returned <- err
+						}
+					}()
+					<-raw.readStart
+					if err := s.Reset(); err != nil {
+						t.Fatal(err)
+					}
+					close(raw.readEnd)
+					if err := <-returned; err != failure {
+						t.Fatal("Read changed original error", err)
+					}
+				}
+				if o.failure != nil || s.abort == nil || len(pubsubScoringUnitEvents(o, "native_quic_negotiation_abort_finalized")) != 0 {
+					t.Fatal("abort was lost or prematurely finalized", o.failure)
+				}
+				captured := s.abort.reset
+				if err := s.Reset(); err != nil {
+					t.Fatal(err)
+				}
+				latest := s.reset
+				var closeError error
+				if opaqueClose {
+					closeError = errors.New("unit native opaque Close")
+					raw.closeErr = closeError
+					if err := s.Close(); err != closeError {
+						t.Fatal("Close error changed", err)
+					}
+					if s.abort.close == nil || s.abort.close.reset != latest || s.abort.close.reset == captured {
+						t.Fatal("Close borrowed old Reset")
+					}
+				}
+				if !s.finalize() || o.failure != nil {
+					t.Fatal("valid abort framing did not join", o.failure)
+				}
+				if err := s.connection.Close(); err != nil {
+					t.Fatal("native unit connection Close failed", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := o.quic.join(ctx); err != nil {
+					t.Fatal(err)
+				}
+				finals := pubsubScoringUnitEvents(o, "native_quic_negotiation_abort_finalized")
+				if o.failure != nil || len(finals) != 1 || finals[0]["accepted"] != true || finals[0]["protocol"] != "" ||
+					finals[0]["framing_clean"] != false || finals[0]["negotiation_complete"] != false || finals[0]["selected_rpc_authority"] != false ||
+					finals[0]["owner_disposal_receipt_sequence"] != latest.sequence ||
+					len(pubsubScoringUnitEvents(o, "rpc"))+len(pubsubScoringUnitEvents(o, "protocol")) != 0 {
+					t.Fatal("abort acquired RPC authority", o.failure, finals)
+				}
+				original := pubsubQUICEvent(o, s.abort.errorSequence, "native_quic_negotiation_io_return", "go.quic.native_stream.io_return")
+				if original["outcome"] != "error" || original["error_type"] != "*network.StreamError" || original["successful_prefix_bytes"] != 0 {
+					t.Fatal("original return changed", original)
+				}
+				if opaqueClose {
+					final := pubsubScoringUnitEvents(o, "native_quic_terminal_finalized")
+					if len(final) != 1 || final[0]["accepted"] != true || final[0]["native_close_succeeded"] != false ||
+						final[0]["owned_terminal_receipt_sequence"] != latest.sequence || raw.closeErr != closeError {
+						t.Fatal("opaque Close lost independent latest Reset proof", final)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPubsubQUICStreamAbortRejectsInvalidBytesCausesAndOwnedDisposal(t *testing.T) {
+	for _, mode := range []string{"partial", "trailing", "wrong_topic", "malformed", "wrapped", "nonzero", "foreign", "remote_read",
+		"no_reset", "failed_reset", "future_reset", "half_close", "explicit_reset", "superseded_failed_reset", "opaque_errno", "wrapped_close",
+		"typed_close", "wrong_send_context", "sticky", "overflow", "inbound_tail"} {
+		t.Run(mode, func(t *testing.T) {
+			identity := newPubsubScoringObserver("victim", strings.Repeat("a", 32))
+			tail := pubsubQUICUnitSubscription(t, identity.topic)
+			switch mode {
+			case "partial":
+				tail = tail[:len(tail)-1]
+			case "trailing":
+				tail = append(tail, 0)
+			case "wrong_topic":
+				tail = pubsubQUICUnitSubscription(t, "foreign-topic")
+			case "malformed":
+				tail = []byte{1, 255}
+			}
+			inbound := mode == "inbound_tail"
+			o, s, raw := pubsubQUICUnitStreamAbort(t, inbound, tail)
+			cause := &quic.StreamError{StreamID: raw.id}
+			failure := error(&network.StreamError{TransportError: cause})
+			switch mode {
+			case "wrapped":
+				failure = fmt.Errorf("wrapped: %w", failure)
+			case "nonzero":
+				failure = &network.StreamError{ErrorCode: 1, TransportError: &quic.StreamError{StreamID: raw.id, ErrorCode: 1}}
+			case "foreign":
+				failure = &network.StreamError{TransportError: &quic.StreamError{StreamID: raw.id + 4}}
+			case "remote_read":
+				failure = &network.StreamError{Remote: true, TransportError: &quic.StreamError{StreamID: raw.id, Remote: true}}
+			case "sticky":
+				o.fail(syscall.ECONNRESET)
+			case "overflow":
+				o.overflow = true
+			case "failed_reset":
+				raw.resetErr = syscall.ECONNRESET
+			}
+			if mode != "no_reset" && mode != "future_reset" {
+				_ = s.Reset()
+			}
+			raw.input, raw.readErr = nil, failure
+			if n, err := s.Read(make([]byte, 1)); n != 0 || err != failure {
+				t.Fatal("negative altered original Read", n, err)
+			}
+			switch mode {
+			case "future_reset":
+				_ = s.Reset()
+			case "half_close":
+				_ = s.CloseRead()
+			case "explicit_reset":
+				_ = s.ResetWithError(0)
+			case "superseded_failed_reset":
+				raw.resetErr = syscall.ECONNRESET
+				_ = s.Reset()
+			case "opaque_errno", "wrapped_close", "typed_close", "wrong_send_context":
+				raw.closeErr = syscall.ECONNRESET
+				if mode == "wrapped_close" {
+					raw.closeErr = fmt.Errorf("wrapped: %w", errors.New("native opaque"))
+				}
+				if mode == "typed_close" {
+					raw.closeErr = &quic.StreamError{StreamID: raw.id}
+				}
+				if mode == "wrong_send_context" {
+					raw.closeErr = errors.New("native opaque")
+					ctx, cancel := context.WithCancelCause(context.Background())
+					cancel(&quic.StreamError{StreamID: raw.id + 4})
+					s.sendContext = ctx
+				}
+				if err := s.Close(); err != raw.closeErr {
+					t.Fatal("negative altered original Close")
+				}
+			}
+			_ = s.finalize()
+			if o.failure == nil {
+				t.Fatal("invalid abort lost its sticky failure", mode)
+			}
+			if mode == "sticky" && o.failure != syscall.ECONNRESET {
+				t.Fatal("earlier native failure was replaced")
+			}
+		})
+	}
+}
+
+func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *testing.T) {
+	for _, mode := range []string{"complete", "future_reset", "failed_reset", "partial_prefix", "sticky"} {
+		t.Run(mode, func(t *testing.T) {
+			var tail []byte
+			if mode == "partial_prefix" {
+				tail = []byte{5, 1}
+			}
+			o, s, raw := pubsubQUICUnitStreamAbort(t, false, tail)
+			if mode != "future_reset" {
+				if mode == "failed_reset" {
+					raw.resetErr = syscall.ECONNRESET
+				}
+				_ = s.Reset()
+			}
+			if mode == "sticky" {
+				o.fail(syscall.ECONNRESET)
+			}
+			delayed := &pubsubQUICUnitDelayedContext{Context: raw.ctx, entered: make(chan struct{}), release: make(chan struct{})}
+			s.sendContext = delayed
+			failure := &network.StreamError{TransportError: &quic.StreamError{StreamID: raw.id}}
+			closeFailure := errors.New("unit original opaque Close")
+			raw.input, raw.readErr, raw.closeErr = nil, failure, closeFailure
+			returned, joined := make(chan error, 1), make(chan struct{})
+			var release sync.Once
+			t.Cleanup(func() { release.Do(func() { close(delayed.release) }); pubsubScoringUnitCleanupJoin(joined) })
+			go func() { defer close(joined); _, err := s.Read(make([]byte, 1)); returned <- err }()
+			pubsubScoringUnitWait(t, delayed.entered)
+			if mode == "future_reset" {
+				_ = s.Reset()
+			}
+			if err := s.Close(); err != closeFailure {
+				t.Fatal("original Close return changed", err)
+			}
+			if s.abort != nil || s.finalize() {
+				t.Fatal("Read publication/native I/O join was invented")
+			}
+			if mode == "complete" && (o.failure != nil || s.abortClose == nil || s.abortClosePending == 0) {
+				t.Fatal("sealed RETURN could not retain bounded Close candidate", o.failure)
+			}
+			release.Do(func() { close(delayed.release) })
+			if err := <-returned; err != failure {
+				t.Fatal("original Read return changed", err)
+			}
+			pubsubScoringUnitWait(t, joined)
+			_ = s.finalize()
+			if err := s.connection.Close(); err != nil {
+				t.Fatal("native unit connection Close failed", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := o.quic.join(ctx); err != nil {
+				t.Fatal("native unit connection/stream observations did not join", err)
+			}
+			if mode != "complete" {
+				if o.failure == nil {
+					t.Fatal("invalid delayed Close/Read cleared native failure")
+				}
+				if mode == "sticky" && o.failure != syscall.ECONNRESET {
+					t.Fatal("prior failure was changed")
+				}
+				return
+			}
+			final := pubsubScoringUnitEvents(o, "native_quic_terminal_finalized")
+			if o.failure != nil || len(final) != 1 || final[0]["accepted"] != true || final[0]["native_close_succeeded"] != false {
+				t.Fatal(o.failure, final)
+			}
+			read := pubsubQUICEvent(o, s.abort.errorSequence, "native_quic_negotiation_io_return", "go.quic.native_stream.io_return")
+			closePending := pubsubQUICEvent(o, s.abort.closePending, "native_quic_negotiation_abort_close_pending", "go.quic.native_stream.negotiation_cleanup")
+			if closePending["sequence"].(int) >= read["sequence"].(int) || closePending["negotiation_abort_returned_order"] != read["returned_order"] ||
+				read["returned_order"].(uint64) >= s.abort.close.fields["started_order"].(uint64) {
+				t.Fatal("publication replaced native causality", closePending, read)
+			}
+		})
+	}
+}
+
+func TestPubsubQUICStreamAbortCannotJoinWithLiveNativeConnectionContext(t *testing.T) {
+	o, s, raw := pubsubQUICUnitStreamAbort(t, false, nil)
+	if err := s.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	failure := &network.StreamError{TransportError: &quic.StreamError{StreamID: raw.id}}
+	raw.input, raw.readErr = nil, failure
+	if n, err := s.Read(make([]byte, 1)); n != 0 || err != failure {
+		t.Fatal("original Read changed", n, err)
+	}
+	if !s.finalize() || o.failure != nil {
+		t.Fatal("stream did not actually finalize", o.failure)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Deterministic exhausted join budget; no timer extension or retry.
+	if err := o.quic.join(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal("live native connection was treated as joined", err)
+	}
+	if len(pubsubScoringUnitEvents(o, "native_quic_join")) != 0 ||
+		len(pubsubScoringUnitEvents(o, "native_quic_negotiation_abort_finalized")) != 0 ||
+		len(pubsubScoringUnitEvents(o, "native_quic_terminal_finalized")) != 0 {
+		t.Fatal("stream disposal fabricated connection join/abort finalization")
+	}
+	if err := s.connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.connection.connectionContext.Done():
+	default:
+		t.Fatal("successful unit native Close left its own context live")
+	}
 }
 
 func TestPubsubQUICNegotiationAbortedCleanupRequiresActualJoinWithoutACKAuthority(t *testing.T) {

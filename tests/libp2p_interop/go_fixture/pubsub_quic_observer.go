@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -449,39 +450,54 @@ type pubsubQUICCleanupDisposal struct {
 	ack, sequence                 int
 }
 
+type pubsubQUICStreamAbort struct {
+	sequence, errorSequence, ack, framingSequence int
+	returned                                      uint64
+	err                                           error
+	reset                                         *pubsubQUICReset
+	ioSequences                                   []int
+	close                                         *pubsubQUICPending
+	closePending                                  int
+	finished                                      bool
+}
+
 type pubsubQUICStream struct {
 	network.MuxedStream
-	connection      *pubsubQUICConn
-	nativeID        quic.StreamID
-	sendContext     context.Context
-	direction       network.Direction
-	receipt         int
-	nativeBeginAck  int
-	createdAck      int
-	createdContext  pubsubQUICContext
-	mu              sync.Mutex
-	order           uint64
-	activeIO        [2]int
-	activeClose     int
-	ending          [2]bool
-	read, write     pubsubScoringDecoder
-	negotiation     [2]pubsubQUICDirection
-	frames          []int
-	proposals       int
-	proposal, reply string
-	selected        string
-	touchedPubsub   bool
-	pubsub          atomic.Bool
-	failed          bool
-	earlyError      error
-	finalized       bool
-	disposal        int
-	reset, terminal *pubsubQUICReset
-	pending         []pubsubQUICPending
-	candidateWrite  int
-	cleanup         *pubsubQUICCleanup
-	cleanupRead     *pubsubQUICReturn
-	cleanupDisposal *pubsubQUICCleanupDisposal
+	connection        *pubsubQUICConn
+	nativeID          quic.StreamID
+	sendContext       context.Context
+	direction         network.Direction
+	receipt           int
+	nativeBeginAck    int
+	createdAck        int
+	createdContext    pubsubQUICContext
+	mu                sync.Mutex
+	order             uint64
+	activeIO          [2]int
+	activeClose       int
+	ending            [2]bool
+	read, write       pubsubScoringDecoder
+	negotiation       [2]pubsubQUICDirection
+	frames            []int
+	proposals         int
+	proposal, reply   string
+	selected          string
+	touchedPubsub     bool
+	pubsub            atomic.Bool
+	failed            bool
+	earlyError        error
+	finalized         bool
+	disposal          int
+	reset, terminal   *pubsubQUICReset
+	pending           []pubsubQUICPending
+	candidateWrite    int
+	cleanup           *pubsubQUICCleanup
+	cleanupRead       *pubsubQUICReturn
+	cleanupDisposal   *pubsubQUICCleanupDisposal
+	abort             *pubsubQUICStreamAbort
+	abortReturn       *pubsubQUICReturn
+	abortClose        *pubsubQUICPending
+	abortClosePending int
 }
 
 func pubsubQUICIsPubsub(protocol string) bool {
@@ -653,10 +669,13 @@ func (s *pubsubQUICStream) begin(name string, side int) pubsubQUICOperation {
 	defer s.mu.Unlock()
 	s.order++
 	op := pubsubQUICOperation{name: name, started: s.order, ack: ack}
-	if s.finalized && (pubsubQUICIsPubsub(s.selected) || s.cleanup != nil) {
+	if s.finalized && (pubsubQUICIsPubsub(s.selected) || s.cleanup != nil || s.abort != nil) {
 		s.failLocked(fmt.Errorf("native QUIC operation after observation join"))
 	}
 	if side >= 0 {
+		if s.abortReturn != nil {
+			s.failLocked(fmt.Errorf("native QUIC I/O after bounded negotiation abort"))
+		}
 		s.activeIO[side]++
 		if s.activeIO[side] > 1 {
 			s.failLocked(fmt.Errorf("concurrent native QUIC prefix observations are ambiguous"))
@@ -771,6 +790,20 @@ func (s *pubsubQUICStream) nativeReturned(op pubsubQUICOperation, n int, err err
 		if qualifies(s.reset) {
 			result.reset = s.reset
 			result.resetSucceeded = s.reset.completed && s.reset.err == nil && s.reset.returned < result.order
+		}
+	}
+	// Seal the actual error RETURN independently of later context/event publication.
+	// This slot is not acceptance: the complete prefix and original cause must
+	// still pass queueStreamAbortLocked and the actual disposal/native join.
+	if s.abortReturn == nil && n == 0 && result.selected == "" && ack != 0 && ack == s.createdAck &&
+		op.ack == ack && !parent.done {
+		if outer, ok := err.(*network.StreamError); ok && outer != nil && outer.ErrorCode == 0 {
+			if cause, typed := outer.TransportError.(*quic.StreamError); typed && cause != nil && cause.ErrorCode == 0 &&
+				cause.StreamID == s.nativeID && cause.Remote == outer.Remote &&
+				((op.name == "stream_read" && s.direction == network.DirOutbound && !cause.Remote && result.resetSucceeded) ||
+					(op.name == "stream_write" && s.direction == network.DirInbound && cause.Remote)) {
+				s.abortReturn = &result
+			}
 		}
 	}
 	return result
@@ -1170,6 +1203,256 @@ func (s *pubsubQUICStream) queueNegotiationCleanupLocked(op pubsubQUICOperation,
 	return true
 }
 
+// Validate the entire unselected owner, not merely its terminal error or tail.
+func (s *pubsubQUICStream) streamAbortShapeLocked() ([]int, bool) {
+	return s.streamAbortPrefixLocked(1)
+}
+
+func (s *pubsubQUICStream) streamAbortPrefixLocked(expectedErrors int) ([]int, bool) {
+	if s.failed || s.earlyError != nil || s.selected != "" || s.reply != "" || s.proposals != 1 || !pubsubQUICIsPubsub(s.proposal) {
+		return nil, false
+	}
+	q := s.connection.owner
+	q.mu.Lock()
+	base, exists := q.connBase[s.connection.native]
+	registered := q.streams[pubsubQUICKey{s.connection.native, s.nativeID}] == s && q.connections[s.connection.native] == s.connection
+	q.mu.Unlock()
+	if !registered || !exists || base.done || s.createdAck == 0 || s.createdContext.done || s.receipt <= s.createdAck ||
+		(s.direction == network.DirOutbound && !s.latePreparedOwner()) {
+		return nil, false
+	}
+	o := q.observation
+	o.mu.Lock()
+	healthy := o.prepared && o.prepareAck == s.createdAck && o.failure == nil && !o.overflow
+	events := append([]map[string]any{}, o.events...)
+	o.mu.Unlock()
+	if !healthy {
+		return nil, false
+	}
+	var observed [2][]byte
+	errorsObserved := 0
+	refs := []int{}
+	for _, event := range events {
+		if event["kind"] != "native_quic_negotiation_io_return" || !s.ownsFields(event, false) {
+			continue
+		}
+		if event["protocol"] != "" || event["protocol_at_native_return"] != "" || event["prepare_ack_sequence"] != s.createdAck ||
+			event["terminal_prepare_ack_sequence"] != s.createdAck || event["successful_prefix_valid"] != true {
+			return nil, false
+		}
+		snapshot, ok := event["negotiation_snapshot"].(map[string]any)
+		if !ok || snapshot["capture_complete"] != true || snapshot["parser_failed"] != false || snapshot["selected_protocol"] != "" || snapshot["reply"] != "" {
+			return nil, false
+		}
+		prefix, ok := pubsubQUICSnapshotBytes(snapshot["successful_prefix"])
+		if !ok || event["successful_prefix_bytes"] != len(prefix) {
+			return nil, false
+		}
+		if event["error"] != nil {
+			errorsObserved++
+			if event["outcome"] != "error" || event["error_type"] != "*network.StreamError" || len(prefix) != 0 {
+				return nil, false
+			}
+		}
+		side := 0
+		if event["direction"] == "write" {
+			side = 1
+		}
+		if len(prefix) != 0 && (event["outcome"] != "ok" || event["error"] != nil ||
+			(side == 1 && event["requested_bytes"] != len(prefix))) {
+			return nil, false
+		}
+		if len(observed[side])+len(prefix) > pubsubScoringFrame+512 {
+			return nil, false
+		}
+		observed[side] = append(observed[side], prefix...)
+		refs = append(refs, event["sequence"].(int))
+	}
+	var expected [2][]byte
+	var frameCounts [2]int
+	for _, ref := range s.frames {
+		frame := pubsubQUICEvent(o, ref, "multistream_frame", "go.quic.native_stream.multistream")
+		if !s.ownsFields(frame, false) {
+			return nil, false
+		}
+		direction, ok := frame["direction"].(string)
+		token, typed := frame["protocol"].(string)
+		if !ok || !typed || (direction != "read" && direction != "write") {
+			return nil, false
+		}
+		side := 0
+		if direction == "write" {
+			side = 1
+		}
+		wanted := "/multistream/1.0.0"
+		proposalSide := (s.direction == network.DirOutbound && side == 1) || (s.direction == network.DirInbound && side == 0)
+		if proposalSide && len(expected[side]) != 0 {
+			wanted = s.proposal
+		}
+		if token != wanted {
+			return nil, false
+		}
+		raw, valid := s.negotiationFrameLocked(ref, direction, token)
+		if !valid {
+			return nil, false
+		}
+		expected[side] = append(expected[side], raw...)
+		frameCounts[side]++
+	}
+	for side, direction := range s.negotiation {
+		if len(direction.buffer) != 0 {
+			return nil, false
+		}
+		proposalSide := (s.direction == network.DirOutbound && side == 1) || (s.direction == network.DirInbound && side == 0)
+		if proposalSide {
+			if !direction.header || !direction.paused || direction.token != s.proposal {
+				return nil, false
+			}
+			if s.direction == network.DirOutbound {
+				if !pubsubQUICSubscriptionBytes(direction.tail, o.topic) {
+					return nil, false
+				}
+			} else if len(direction.tail) != 0 {
+				return nil, false
+			}
+		} else if direction.paused || direction.token != "" || len(direction.tail) != 0 {
+			return nil, false
+		}
+		if !bytes.Equal(observed[side], append(expected[side], direction.tail...)) {
+			return nil, false
+		}
+	}
+	return refs, errorsObserved == expectedErrors && ((s.direction == network.DirOutbound && frameCounts[1] == 2 && frameCounts[0] <= 1) ||
+		(s.direction == network.DirInbound && frameCounts[0] == 2 && frameCounts[1] == 1))
+}
+
+func (s *pubsubQUICStream) abortFields() map[string]any {
+	fields := s.fields()
+	o := s.connection.owner.observation
+	fields["actor"], fields["case_token"], fields["local_peer_id"], fields["pid"] = o.actor, o.token, o.local.String(), os.Getpid()
+	return fields
+}
+
+func (s *pubsubQUICStream) queueStreamAbortLocked(op pubsubQUICOperation, result pubsubQUICReturn, sequence, n int, err error, sample pubsubQUICContext) bool {
+	outer, ok := err.(*network.StreamError)
+	if !ok || outer == nil || outer.ErrorCode != 0 || n != 0 || s.abort != nil || s.cleanup != nil || result.selected != "" ||
+		result.ack == 0 || result.ack != s.createdAck || op.ack != result.ack || result.parentContext.done ||
+		s.abortReturn == nil || s.abortReturn.order != result.order {
+		return false
+	}
+	cause, ok := outer.TransportError.(*quic.StreamError)
+	if !ok || cause == nil || cause.ErrorCode != 0 || cause.StreamID != s.nativeID || cause.Remote != outer.Remote {
+		return false
+	}
+	localRead := s.direction == network.DirOutbound && op.name == "stream_read" && !cause.Remote && result.resetSucceeded
+	peerWrite := s.direction == network.DirInbound && op.name == "stream_write" && cause.Remote && sample.done && sample.cause == cause
+	if !localRead && !peerWrite {
+		return false
+	}
+	refs, valid := s.streamAbortShapeLocked()
+	if !valid || sequence == 0 {
+		return false
+	}
+	fields := s.abortFields()
+	fields["operation_receipt_sequence"], fields["prepare_ack_sequence"], fields["negotiation_io_receipt_sequences"] = sequence, result.ack, refs
+	fields["negotiation_complete"], fields["framing_clean"], fields["selected_rpc_authority"], fields["candidate_bytes_complete"] = false, false, false, true
+	fields["terminal_outcome"], fields["terminal_state_cause"] = "negotiation_stream_reset_abort_pending", "unknown"
+	fields["owned_reset_started_order"], fields["owned_reset_returned_order"] = uint64(0), uint64(0)
+	var reset *pubsubQUICReset
+	if localRead {
+		reset = result.reset
+		fields["owned_reset_started_order"], fields["owned_reset_returned_order"] = reset.started, reset.returned
+	}
+	sequencePending := pubsubQUICReceipt(s.connection.owner.observation, "native_quic_negotiation_abort_pending", "go.quic.native_stream.negotiation_cleanup", fields)
+	if sequencePending == 0 {
+		return false
+	}
+	s.abort = &pubsubQUICStreamAbort{sequence: sequencePending, errorSequence: sequence, ack: result.ack, returned: result.order,
+		err: err, reset: reset, ioSequences: refs, close: s.abortClose, closePending: s.abortClosePending}
+	return true
+}
+
+func (s *pubsubQUICStream) streamAbortValidLocked() bool {
+	abort := s.abort
+	if abort == nil || s.activeIO[0]+s.activeIO[1]+s.activeClose != 0 || !s.ending[0] || !s.ending[1] ||
+		len(s.read.buffer)+len(s.write.buffer) != 0 || s.read.failed || s.write.failed || len(s.pending) != 0 {
+		return false
+	}
+	refs, valid := s.streamAbortShapeLocked()
+	if !valid || len(refs) != len(abort.ioSequences) {
+		return false
+	}
+	for index := range refs {
+		if refs[index] != abort.ioSequences[index] {
+			return false
+		}
+	}
+	reset := s.reset
+	if reset == nil || !reset.completed || reset.err != nil || reset.ack != abort.ack || reset.sequence == 0 {
+		return false
+	}
+	if abort.reset != nil {
+		if !abort.reset.completed || abort.reset.err != nil || abort.reset.sequence == 0 || abort.reset.returned >= abort.returned {
+			return false
+		}
+	} else if reset.started <= abort.returned {
+		return false
+	}
+	if close := abort.close; close != nil {
+		if close.reset == nil || !close.reset.completed || close.reset.err != nil || close.reset.sequence == 0 || close.contextSequence == 0 || abort.closePending == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *pubsubQUICStream) finishStreamAbort(joinSequence int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	abort := s.abort
+	if abort == nil || abort.finished {
+		return
+	}
+	o := s.connection.owner.observation
+	join := pubsubQUICEvent(o, joinSequence, "native_quic_join", "go.quic.fixture.owned_observation_join")
+	accepted := s.finalized && abort.framingSequence != 0 && joinSequence > abort.framingSequence &&
+		join != nil && join["active_native_calls"] == 0 && s.streamAbortValidLocked()
+	disposal, closeFinal := 0, 0
+	if s.reset != nil {
+		disposal = s.reset.sequence
+	}
+	if close := abort.close; close != nil {
+		fields := s.abortFields()
+		fields["operation_receipt_sequence"], fields["negotiation_abort_pending_receipt_sequence"] = close.sequence, abort.sequence
+		fields["pending_receipt_sequence"] = abort.closePending
+		fields["framing_receipt_sequence"], fields["native_join_receipt_sequence"] = abort.framingSequence, joinSequence
+		fields["owner_disposal_receipt_sequence"], fields["owned_terminal_receipt_sequence"] = disposal, close.reset.sequence
+		fields["prepare_ack_sequence"], fields["send_context_receipt_sequence"] = abort.ack, close.contextSequence
+		fields["terminal_outcome"], fields["terminal_state_cause"], fields["native_close_succeeded"] = "negotiation_abort_close_pending", "unknown", false
+		fields["accepted"] = accepted
+		closeFinal = pubsubQUICReceipt(o, "native_quic_terminal_finalized", "go.quic.native_stream.finalize", fields)
+		if closeFinal == 0 || !accepted {
+			o.fail(close.err)
+		}
+	}
+	fields := s.abortFields()
+	fields["pending_receipt_sequence"], fields["operation_receipt_sequence"] = abort.sequence, abort.errorSequence
+	fields["prepare_ack_sequence"], fields["negotiation_io_receipt_sequences"] = abort.ack, abort.ioSequences
+	fields["framing_receipt_sequence"], fields["native_join_receipt_sequence"] = abort.framingSequence, joinSequence
+	fields["owner_disposal_receipt_sequence"], fields["first_owner_disposal_receipt_sequence"] = disposal, s.disposal
+	fields["owned_reset_receipt_sequence"], fields["close_finalization_receipt_sequence"] = 0, closeFinal
+	if abort.reset != nil {
+		fields["owned_reset_receipt_sequence"] = abort.reset.sequence
+	}
+	fields["terminal_outcome"], fields["terminal_state_cause"] = "negotiation_stream_reset_abort", "unknown"
+	fields["negotiation_complete"], fields["framing_clean"], fields["selected_rpc_authority"], fields["candidate_bytes_complete"] = false, false, false, accepted
+	fields["accepted"] = accepted && (abort.close == nil || closeFinal != 0)
+	if pubsubQUICReceipt(o, "native_quic_negotiation_abort_finalized", "go.quic.native_stream.negotiation_cleanup", fields) == 0 || !accepted {
+		o.fail(abort.err)
+	}
+	abort.finished = true
+}
+
 func (s *pubsubQUICStream) pinCleanupDisposalLocked() {
 	pending, disposal := s.cleanup, s.cleanupDisposal
 	if pending != nil && pending.disposalSequence == 0 && disposal != nil && disposal.sequence != 0 &&
@@ -1336,7 +1619,7 @@ func (s *pubsubQUICStream) io(p []byte, side int) (int, error) {
 						fields["outcome"], fields["peer_reset_reason"] = "peer_zero_reset_pending", "unknown"
 					} else if side == 0 {
 						terminal := result.terminal
-						if terminal == nil && result.resetSucceeded {
+						if result.resetSucceeded {
 							terminal = result.reset // Successful full Reset sealed before this RETURN.
 						}
 						if terminal != nil {
@@ -1371,7 +1654,8 @@ func (s *pubsubQUICStream) io(p []byte, side int) (int, error) {
 			q.observation.fail(err)
 		}
 	} else if err != nil && err != io.EOF && s.selected == "" && s.earlyError == nil {
-		if !s.queueNegotiationCleanupLocked(op, result, passiveSequence, n, err) {
+		if !s.queueNegotiationCleanupLocked(op, result, passiveSequence, n, err) &&
+			!s.queueStreamAbortLocked(op, result, passiveSequence, n, err, sample) {
 			s.earlyError = err
 			if s.touchedPubsub {
 				s.failLocked(err)
@@ -1461,6 +1745,7 @@ func (s *pubsubQUICStream) close(name string, side int, code *network.StreamErro
 		s.passiveReturnLocked(fields, result, err, sample, connectionSample, nil)
 	}
 	candidate := false
+	abortClose := false
 	if err != nil && pubsubQUICIsPubsub(s.selected) && name == "stream_close" && op.ack != 0 && classification == "opaque_unwrapped_native_error" {
 		if cause, ok := sample.cause.(*quic.StreamError); sample.done && ok && cause != nil && cause.ErrorCode == 0 && cause.StreamID == s.nativeID {
 			owned := op.reset != nil && op.reset.ack == op.ack && op.reset.completed && op.reset.err == nil && op.reset.returned < op.started
@@ -1473,6 +1758,22 @@ func (s *pubsubQUICStream) close(name string, side int, code *network.StreamErro
 				}
 			}
 		}
+	}
+	if err != nil && s.abortReturn != nil && s.abortClose == nil && name == "stream_close" && result.selected == "" &&
+		op.ack == s.abortReturn.ack && s.abortReturn.order < op.started && classification == "opaque_unwrapped_native_error" && !result.parentContext.done &&
+		op.reset != nil && op.reset.ack == op.ack && op.reset.completed && op.reset.err == nil && op.reset.returned < op.started {
+		if cause, ok := sample.cause.(*quic.StreamError); sample.done && ok && cause != nil && !cause.Remote &&
+			cause.ErrorCode == 0 && cause.StreamID == s.nativeID {
+			expectedErrors := 0
+			if s.abort != nil {
+				expectedErrors = 1
+			}
+			_, abortClose = s.streamAbortPrefixLocked(expectedErrors)
+		}
+	}
+	if abortClose {
+		fields["terminal_state_cause"], fields["native_close_succeeded"] = "unknown", false
+		fields["observed_reset_started_order"], fields["observed_reset_returned_order"] = op.reset.started, op.reset.returned
 	}
 	sequence := 0
 	if pubsubQUICIsPubsub(s.selected) || result.selected == "" {
@@ -1493,6 +1794,17 @@ func (s *pubsubQUICStream) close(name string, side int, code *network.StreamErro
 		if candidate {
 			s.queueLocked(pubsubQUICPending{sequence: sequence, ack: op.ack, returned: returned, err: err,
 				fields: fields, reset: op.reset, contextSequence: contextSequence})
+		} else if abortClose {
+			s.abortClose = &pubsubQUICPending{sequence: sequence, ack: op.ack, returned: returned, err: err,
+				fields: fields, reset: op.reset, contextSequence: contextSequence}
+			pendingFields := s.abortFields()
+			pendingFields["operation_receipt_sequence"], pendingFields["negotiation_abort_returned_order"] = sequence, s.abortReturn.order
+			pendingFields["prepare_ack_sequence"], pendingFields["terminal_state_cause"], pendingFields["native_close_succeeded"] = op.ack, "unknown", false
+			pendingFields["observed_reset_started_order"], pendingFields["observed_reset_returned_order"] = op.reset.started, op.reset.returned
+			s.abortClosePending = pubsubQUICReceipt(s.connection.owner.observation, "native_quic_negotiation_abort_close_pending", "go.quic.native_stream.negotiation_cleanup", pendingFields)
+			if s.abort != nil {
+				s.abort.close, s.abort.closePending = s.abortClose, s.abortClosePending
+			}
 		} else if err != nil && pubsubQUICIsPubsub(s.selected) {
 			s.connection.owner.observation.fail(err)
 		}
@@ -1500,11 +1812,14 @@ func (s *pubsubQUICStream) close(name string, side int, code *network.StreamErro
 			s.failLocked(fmt.Errorf("native QUIC PubSub explicit nonzero reset code"))
 		}
 	}
-	if err != nil && s.selected == "" && s.earlyError == nil {
+	if err != nil && !abortClose && s.selected == "" && s.earlyError == nil {
 		s.earlyError = err
 		if s.touchedPubsub {
 			s.failLocked(err)
 		}
+	}
+	if s.abort != nil && name != "stream_reset" && name != "stream_close" {
+		s.failLocked(fmt.Errorf("negotiation abort requires full Reset/Close, not a half-close or explicit reset code"))
 	}
 	if op.reset != nil && name == "stream_reset" {
 		op.reset.sequence = sequence
@@ -1576,17 +1891,31 @@ func (s *pubsubQUICStream) finalize() bool {
 		fields["negotiation_snapshot"] = s.negotiationSnapshotLocked(nil)
 	}
 	cleanup := s.cleanup != nil && s.negotiationCleanupValidLocked()
+	abortClean := s.abort != nil && s.streamAbortValidLocked()
 	if s.cleanup != nil {
 		fields["candidate_bytes_complete"], fields["selected_rpc_authority"] = cleanup, false
 		fields["negotiation_cleanup_pending_receipt_sequence"] = s.cleanup.sequence
 		fields["peer_header_frame_sequence"] = s.cleanup.peerHeaderSequence
 		fields["cleanup_owner_disposal_receipt_sequence"] = s.cleanup.disposalSequence
 	}
+	if s.abort != nil {
+		fields["candidate_bytes_complete"], fields["selected_rpc_authority"] = abortClean, false
+		fields["negotiation_abort_pending_receipt_sequence"] = s.abort.sequence
+		fields["abort_owner_disposal_receipt_sequence"] = 0
+		if s.reset != nil {
+			fields["abort_owner_disposal_receipt_sequence"] = s.reset.sequence
+		}
+	}
 	framingSequence := pubsubQUICReceipt(q.observation, "native_quic_framing_finalized", "go.quic.native_stream.finalize", fields)
 	if s.cleanup != nil {
 		s.cleanup.framingSequence = framingSequence
 		if !cleanup || framingSequence == 0 {
 			q.observation.fail(s.cleanup.err)
+		}
+	} else if s.abort != nil {
+		s.abort.framingSequence = framingSequence
+		if !abortClean || framingSequence == 0 {
+			q.observation.fail(s.abort.err)
 		}
 	} else if !clean || s.disposal == 0 || framingSequence == 0 {
 		q.observation.fail(fmt.Errorf("native QUIC PubSub negotiation/framing/disposal incomplete"))
@@ -1670,6 +1999,7 @@ func (q *pubsubQUICObserver) join(ctx context.Context) error {
 					"joined_scope": "fixture_lower_stream_IO_and_operations_not_all_donor_goroutines"})
 				for _, s := range streams {
 					s.finishNegotiationCleanup(sequence)
+					s.finishStreamAbort(sequence)
 				}
 				return nil
 			}

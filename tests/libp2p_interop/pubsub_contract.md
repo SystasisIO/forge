@@ -408,8 +408,12 @@ not classify any outcome.
 For `owned_read_terminal_pending` only, one intervening failed RepeatClose does
 not supersede a successful full Reset when both independent terminal finalizers
 reference that exact Reset on the same authenticated owner, protocol and Prepare
-ACK. Native counters must prove Reset RETURN < Close BEGIN < Close RETURN < Read
-RETURN, even if Reset/Close receipts publish after the Read receipt. The Close's
+ACK. Native counters must prove Reset RETURN < Close BEGIN < Read RETURN and
+Reset RETURN < Read RETURN; Close RETURN may precede or follow Read RETURN.
+Close's own BEGIN < RETURN and exact current context remain mandatory, even if
+Reset/Close receipts publish after the Read receipt. At Read RETURN, a latest
+already completed nil full Reset is retained instead of an unfinished Close.
+The Close's
 complete native-send-context and finalization checks must pass before this link
 is accepted; `accepted=true` alone is not proof. Its send context annotates only
 the original Close error, never the Read cause or graceful shutdown. Any other
@@ -620,6 +624,84 @@ receipt identity exported after complete independent chain validation, not by
 kind, source prefix or cleanup flags. Such framing retains `protocol=''` and
 `selected_rpc_authority=false`; it never enters the selected RPC owner path.
 Unvalidated or incomplete chains receive no cleanup dispatch authority.
+
+### Unselected Direct Stream-Reset Abort
+
+A separate bounded chain may observe an unselected owner's direct
+`*network.StreamError` with direct `*quic.StreamError`, both code zero, exact
+native StreamID and matching Remote, while retaining original `n=0/error` and
+`outcome=error`. This is an unknown-reason negotiation abort, not a selected
+protocol, graceful close, RPC, score or delivery receipt. Its authenticated
+physical parent, actor/token/PID and real preceding Prepare ACK are required;
+the parent context was live at Prepare and at this actual native RETURN.
+Outbound Open BEGIN must have that same actual ACK. An inbound Accept BEGIN
+may remain zero when it genuinely began before Prepare; registration and
+native I/O BEGIN/RETURN still require the real ACK and live parent baseline,
+never an invented stream Prepare snapshot.
+
+All native negotiation I/O references are indexed and independently consumed
+in order. Outbound bytes must be exactly canonical header/proposal and one
+complete canonical SUBSCRIBE for `forge-pr11:<case-token>`, including split
+native Writes; an optional peer header may arrive before the SUBSCRIBE Write.
+Inbound bytes are exactly read header/proposal and write header, with no RPC
+tail; the failed ACK Write contributes zero bytes, not a selected ACK. No
+reply, selected protocol, partial/trailing/malformed frame or unconsumed bytes
+are allowed. Captured lengths/hashes and each intermediate parser snapshot
+must agree with the exact native successful prefixes.
+
+`native_quic_negotiation_abort_pending` and
+`native_quic_negotiation_abort_finalized` use source
+`go.quic.native_stream.negotiation_cleanup`, native owner and actor/token/PID,
+`operation_receipt_sequence`, `prepare_ack_sequence`,
+`negotiation_io_receipt_sequences`, `terminal_state_cause=unknown`, and
+`negotiation_complete=false`, `framing_clean=false`,
+`selected_rpc_authority=false`, `candidate_bytes_complete=true`.
+The pending outcome is `negotiation_stream_reset_abort_pending`; its
+`owned_reset_started_order/owned_reset_returned_order` identify the local
+Read's latest successful full Reset sealed before Read RETURN. Peer Write
+uses zeros and requires the actual identical current send-context cause;
+there is no causal remote-reset claim.
+
+The final outcome is `negotiation_stream_reset_abort`, with `accepted=true`,
+the original pending reference, exact framing/native-join references,
+`owner_disposal_receipt_sequence`, preserved
+`first_owner_disposal_receipt_sequence`, `owned_reset_receipt_sequence`
+(zero for peer Write) and `close_finalization_receipt_sequence` (zero when
+there is no failed Close). Disposal is the latest actual successful full
+Reset on the same owner/ACK; for peer Write its BEGIN is after error RETURN.
+Its sealed parent context equals the original error's parent context. The
+abort framing receipt adds `negotiation_abort_pending_receipt_sequence` and
+`abort_owner_disposal_receipt_sequence`, retains false framing/selection flags
+and identical negotiation bytes, but requires both RPC residues zero and
+actual native I/O/terminal join. Half-close, explicit ResetWithError or a
+disposal boolean supplies no full-disposal authority.
+
+An optional failed full Close is independent: only
+`opaque_unwrapped_native_error`, the actual Close RETURN's direct local
+StreamError0 send context with this StreamID, and the latest successful nil
+full Reset RETURN before Close BEGIN qualify. Its native error remains an
+error, `native_close_succeeded=false`, `terminal_state_cause=unknown`.
+`native_quic_negotiation_abort_close_pending` uses the same cleanup source and
+identity, its raw `operation_receipt_sequence`, actual
+`negotiation_abort_returned_order`, ACK and captured
+`observed_reset_started_order/observed_reset_returned_order`. The saved native
+abort RETURN must precede Close BEGIN; publication of that abort/pending may
+follow Close publication. This counter-bound slot cannot borrow a future
+native error or Reset, and does not clear any sticky failure.
+Its separate `native_quic_terminal_finalized` links that Close pending,
+actual abort pending, exact latest Reset at Close BEGIN, its own current
+send-context receipt and the complete framing/disposal/native join; outcome
+is `negotiation_abort_close_pending`. Only this independently validated chain
+permits the raw opaque Close annotation, never native Close success.
+
+Every pending needs exactly one finalizer after the real native join. Active
+snapshots may retain independently verified pending facts, not claim joined
+cleanup. Missing/duplicate/orphan links, future/foreign ACK/owner/Reset,
+wrapped/known/errno/nonzero cause, ambiguous counters, incomplete bytes,
+selection/RPC claims, unfinished native calls, overflow or earlier sticky
+failure remain fatal. The case owner dispatch uses only exact independently
+validated receipt identities; no source-prefix/flag exemption or donor
+modification is introduced. Original failed artifacts remain failed.
 
 ## Router Configuration
 

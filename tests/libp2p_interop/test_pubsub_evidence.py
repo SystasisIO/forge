@@ -478,11 +478,24 @@ class PubSubEvidenceTests(unittest.TestCase):
                     self.assertLess(read["sequence"], close["sequence"])
                     self.assertLess(close["sequence"], reset["sequence"])
 
+    def test_lower_quic_read_can_return_before_independent_repeat_close_returns(self):
+        for delayed in (False, True):
+            artifact = synthetic_case()
+            reset, close, read, _, close_final, read_final = self.lower_repeat_close_read_events(
+                artifact, delayed_publication=delayed)
+            close["returned_order"] = 25
+            artifact["raw"]["sink"]["events"][close["send_context_receipt_sequence"] - 1]["returned_order"] = 25
+            with self.subTest(delayed_publication=delayed):
+                validate_case(artifact)
+                self.assertLess(reset["returned_order"], close["started_order"])
+                self.assertLess(read["returned_order"], close["returned_order"])
+                self.assertEqual(read_final["owned_terminal_receipt_sequence"], close_final["owned_terminal_receipt_sequence"])
+
     def test_lower_quic_repeat_close_read_chain_keeps_independent_error_and_join_guards(self):
         modes = ("other_reset", "foreign_owner", "foreign_protocol", "foreign_ack", "boolean_ack", "missing_close_final",
                  "duplicate_close_final", "missing_close_context", "wrong_final_context", "nonzero_context", "foreign_context",
                  "errno_close", "wrapped_close", "joined_close", "sentinel_close", "reset_pending", "reset_failure",
-                 "close_after_read", "new_reset", "new_reset_with_error", "new_terminal", "read_residue", "framing_residue",
+                 "reset_after_read", "new_reset", "new_reset_with_error", "new_terminal", "read_residue", "framing_residue",
                  "failed_disposal", "half_disposal", "unfinished_framing", "unfinished_native_io", "sticky")
         for mode in modes:
             artifact = synthetic_case()
@@ -523,8 +536,8 @@ class PubSubEvidenceTests(unittest.TestCase):
                 target.update(replacement)
             elif mode == "duplicate_close_final":
                 self.insert_sink_events(artifact, events.index(close_final), [deepcopy(close_final)])
-            elif mode == "close_after_read":
-                close["returned_order"] = send_context["returned_order"] = 25
+            elif mode == "reset_after_read":
+                reset["returned_order"] = 25
             else:
                 extra = deepcopy(reset)
                 extra.update(started_order=18 if mode == "other_reset" else 24,
@@ -978,6 +991,249 @@ class PubSubEvidenceTests(unittest.TestCase):
         return {"write": write, "original": original, "pending": pending, "disposal": disposal,
                 "framing": framing, "final": final, "stream": stream, "parent": parent, "join": joined,
                 "header": header, "header_return": header_return, "first": first}
+
+    def lower_stream_abort_events(self, artifact, *, inbound=False, close=False, delayed_publication=False, delayed_read=False):
+        """Separate actual-shaped StreamError abort; no selected RPC or graceful cause."""
+        rows = self.lower_cleanup_events(artifact, peer_header=True, prior_disposal=not inbound)
+        raw, events = artifact["raw"]["sink"], artifact["raw"]["sink"]["events"]
+        write, header = rows["write"], rows["header_return"]
+        original, pending, disposal, framing, final = (rows[key] for key in ("original", "pending", "disposal", "framing", "final"))
+        stream, first = rows["stream"], rows["first"]
+        live = deepcopy(write["connection_context_at_prepare"])
+        # The parent becomes terminal later, not a borrowed cause for this stream's RETURN.
+        self.insert_sink_events(artifact, framing["sequence"] - 1, [rows["parent"]], relocate=True)
+        owned = [value for value in events if value.get("native_connection_id") == stream["native_connection_id"]
+                 and value.get("native_stream_id") == stream["native_stream_id"]]
+        for value in owned:
+            if "connection_context" in value:
+                value["connection_context"] = deepcopy(live)
+            if inbound:
+                value["stream_direction"] = "Inbound"
+        tail = bytes.fromhex(write["negotiation_snapshot"]["write"]["lazy_tail"]["hex"])
+        prefix = bytes.fromhex(write["negotiation_snapshot"]["successful_prefix"]["hex"])
+        prefix = prefix[:-len(tail)]
+        write.update(requested_bytes=len(prefix), successful_prefix_bytes=len(prefix))
+        write["negotiation_snapshot"]["successful_prefix"] = self.cleanup_capture(prefix)
+        write["negotiation_snapshot"]["write"]["lazy_tail"] = self.cleanup_capture(b"")
+        header["negotiation_snapshot"]["write"]["lazy_tail"] = self.cleanup_capture(b"")
+        lazy = None
+        if inbound:
+            stream["native_call_begin_prepare_ack_sequence"] = 0  # Preserve the actual pre-Prepare Accept BEGIN.
+            for value in owned:
+                if value["kind"] == "multistream_frame":
+                    before = value["direction"]
+                    value["direction"] = "read" if before == "write" else "write"
+                    value["receipt"][value["direction"]] = value["receipt"].pop(before)
+                if "negotiation_snapshot" in value:
+                    state = value["negotiation_snapshot"]
+                    state["read"], state["write"] = state["write"], state["read"]
+                    state["read"]["lazy_tail"] = self.cleanup_capture(b"")
+            write.update(direction="read", operation="stream_read")
+            header.update(direction="write", operation="stream_write")
+            original.update(direction="write", operation="stream_write", requested_bytes=15)
+        else:
+            lazy = deepcopy(header)
+            lazy.update(direction="write", operation="stream_write", started_order=5, returned_order=6,
+                        requested_bytes=len(tail), successful_prefix_bytes=len(tail))
+            lazy["negotiation_snapshot"]["successful_prefix"] = self.cleanup_capture(tail)
+            lazy["negotiation_snapshot"]["write"]["lazy_tail"] = self.cleanup_capture(tail)
+            self.insert_sink_events(artifact, header["sequence"], [lazy])
+            original.update(started_order=7, returned_order=10)
+            first.update(started_order=8, returned_order=9)
+            disposal.update(started_order=11, returned_order=12)
+        original.pop("same_native_connection_context_cause")
+        original.update(error_type="*network.StreamError", typed_cause="libp2p_quic_stream_error", remote=inbound,
+                        transport_error_type="*quic.StreamError", transport_error_remote=inbound,
+                        transport_native_stream_id=stream["native_stream_id"], same_send_context_cause=inbound)
+        if inbound:
+            original["send_context"] = {"done": True, "cause_type": "*quic.StreamError", "error_code": 0,
+                    "remote": True, "native_stream_id": stream["native_stream_id"], "error": "synthetic current peer send cause"}
+        else:
+            original["send_context"] = deepcopy(first["send_context"])
+        base = {key: original[key] for key in ("native_connection_id", "native_stream_id", "connection_receipt_sequence",
+                "native_stream_receipt_sequence", "remote_peer_id", "stream_direction", "protocol", "owner_basis")}
+        identity = {key: raw[key] for key in ("actor", "case_token", "local_peer_id", "pid")}
+        flags = {"negotiation_complete": False, "framing_clean": False, "selected_rpc_authority": False,
+                 "candidate_bytes_complete": True, "terminal_state_cause": "unknown"}
+
+        def replace(value, kind, fields):
+            indexed = {key: value[key] for key in ("sequence", "mono_ns")}
+            value.clear()
+            value.update(**indexed, kind=kind, source=GO_QUIC_SOURCES[kind], **base, **identity, **fields)
+
+        calls = [value for value in events if value["kind"] == "native_quic_negotiation_io_return"
+                 and value.get("native_stream_id") == stream["native_stream_id"]
+                 and value.get("native_connection_id") == stream["native_connection_id"]]
+        common = {**flags, "operation_receipt_sequence": original["sequence"],
+                  "prepare_ack_sequence": original["prepare_ack_sequence"],
+                  "negotiation_io_receipt_sequences": [value["sequence"] for value in calls]}
+        replace(pending, "native_quic_negotiation_abort_pending", {
+            **common, "terminal_outcome": "negotiation_stream_reset_abort_pending",
+            "owned_reset_started_order": 0 if inbound else first["started_order"],
+            "owned_reset_returned_order": 0 if inbound else first["returned_order"]})
+        framing.pop("peer_header_frame_sequence")
+        framing.pop("cleanup_owner_disposal_receipt_sequence")
+        framing.pop("negotiation_cleanup_pending_receipt_sequence")
+        framing.update(negotiation_abort_pending_receipt_sequence=pending["sequence"],
+                       abort_owner_disposal_receipt_sequence=disposal["sequence"])
+        replace(final, "native_quic_negotiation_abort_finalized", {
+            **common, "terminal_outcome": "negotiation_stream_reset_abort", "accepted": True,
+            "pending_receipt_sequence": pending["sequence"], "framing_receipt_sequence": framing["sequence"],
+            "native_join_receipt_sequence": rows["join"]["sequence"], "owner_disposal_receipt_sequence": disposal["sequence"],
+            "first_owner_disposal_receipt_sequence": first["sequence"], "owned_reset_receipt_sequence": 0 if inbound else first["sequence"],
+            "close_finalization_receipt_sequence": 0})
+        close_row = context = close_pending = close_final = None
+        if close:
+            close_row = deepcopy(disposal)
+            close_row.update(operation="stream_close", started_order=disposal["returned_order"] + 1,
+                    returned_order=disposal["returned_order"] + 2, outcome="error", error="synthetic opaque native Close",
+                    error_type="*errors.errorString", typed_cause="opaque", native_close_error_classification="opaque_unwrapped_native_error",
+                    send_context_receipt_sequence=0, terminal_state_cause="unknown", native_close_succeeded=False,
+                    observed_reset_started_order=disposal["started_order"], observed_reset_returned_order=disposal["returned_order"])
+            context = {"sequence": 0, "mono_ns": 0, "kind": "native_quic_send_context",
+                       "source": GO_QUIC_SOURCES["native_quic_send_context"], **base,
+                       **{key: deepcopy(close_row[key]) for key in ("started_order", "returned_order", "prepare_ack_sequence", "send_context", "connection_context")},
+                       "observation_phase": "unselected_at_native_return", "protocol_at_native_return": "",
+                       "observation_basis": "same_lower_delegate_Context_at_actual_Close_RETURN"}
+            close_pending = {"sequence": 0, "mono_ns": 0}
+            replace(close_pending, "native_quic_negotiation_abort_close_pending", {
+                "operation_receipt_sequence": 0, "negotiation_abort_returned_order": original["returned_order"],
+                **{key: close_row[key] for key in ("prepare_ack_sequence", "terminal_state_cause", "native_close_succeeded",
+                                                 "observed_reset_started_order", "observed_reset_returned_order")}})
+            self.insert_sink_events(artifact, framing["sequence"] - 1, [context, close_row, close_pending])
+            close_row["send_context_receipt_sequence"] = context["sequence"]
+            close_pending["operation_receipt_sequence"] = close_row["sequence"]
+            close_final = {"sequence": 0, "mono_ns": 0}
+            replace(close_final, "native_quic_terminal_finalized", {
+                "operation_receipt_sequence": close_row["sequence"], "pending_receipt_sequence": close_pending["sequence"],
+                "negotiation_abort_pending_receipt_sequence": pending["sequence"], "framing_receipt_sequence": framing["sequence"],
+                "native_join_receipt_sequence": rows["join"]["sequence"], "owner_disposal_receipt_sequence": disposal["sequence"],
+                "owned_terminal_receipt_sequence": disposal["sequence"], "prepare_ack_sequence": original["prepare_ack_sequence"],
+                "send_context_receipt_sequence": context["sequence"], "terminal_outcome": "negotiation_abort_close_pending",
+                "terminal_state_cause": "unknown", "native_close_succeeded": False, "accepted": True})
+            self.insert_sink_events(artifact, final["sequence"] - 1, [close_final])
+            final["close_finalization_receipt_sequence"] = close_final["sequence"]
+            if delayed_read:
+                self.insert_sink_events(artifact, original["sequence"] - 1, [context, close_row, close_pending], relocate=True)
+        if delayed_publication:
+            self.insert_sink_events(artifact, (close_pending or pending)["sequence"], [disposal], relocate=True)
+        return {**rows, "lazy": lazy, "close": close_row, "context": context,
+                "close_pending": close_pending, "close_final": close_final}
+
+    def test_stream_abort_exact_split_prefix_or_inbound_proposal_preserves_error_and_no_authority(self):
+        for inbound in (False, True):
+            for close in (False, True):
+                if inbound and close:
+                    continue  # A peer send-context cause cannot be retrofitted to the local opaque-Close path.
+                for delayed in (False, True):
+                    with self.subTest(inbound=inbound, close=close, delayed=delayed):
+                        artifact = synthetic_case()
+                        rows = self.lower_stream_abort_events(artifact, inbound=inbound, close=close, delayed_publication=delayed)
+                        before = deepcopy(artifact)
+                        validate_case(artifact)
+                        self.assertTrue(_same_json(before, artifact))
+                        self.assertEqual(rows["original"]["outcome"], "error")
+                        self.assertFalse(rows["final"]["selected_rpc_authority"])
+                        if close:
+                            self.assertEqual(rows["close"]["outcome"], "error")
+                            self.assertFalse(rows["close_final"]["native_close_succeeded"])
+                            self.assertEqual(rows["close_final"]["owned_terminal_receipt_sequence"], rows["disposal"]["sequence"])
+                        if inbound:
+                            self.assertEqual(rows["stream"]["native_call_begin_prepare_ack_sequence"], 0)
+
+    def test_stream_abort_rejects_forged_ack_owner_prefix_reset_and_finalization(self):
+        changes = {
+            "zero_ack": ("pending", "prepare_ack_sequence", 0),
+            "future_ack": ("stream", "native_call_begin_prepare_ack_sequence", 2**32),
+            "foreign_owner": ("pending", "remote_peer_id", peer_id(99)),
+            "foreign_pid": ("pending", "pid", 999),
+            "foreign_parent": ("disposal", "connection_context", {"done": True, "cause_type": "*qerr.ApplicationError", "error_code": 1, "remote": True, "native_stream_id": None, "error": "foreign"}),
+            "wrapped": ("original", "error_type", "*fmt.wrapError"),
+            "errno": ("original", "typed_cause", "opaque"),
+            "nonzero": ("original", "error_code", 1),
+            "cause_mismatch": ("original", "transport_error_remote", True),
+            "foreign_stream": ("original", "transport_native_stream_id", 99),
+            "successful_error_bytes": ("original", "successful_prefix_bytes", 1),
+            "bool_counter": ("first", "started_order", True),
+            "future_reset": ("first", "returned_order", 11),
+            "half_disposal": ("disposal", "operation", "stream_close_read"),
+            "failed_disposal": ("disposal", "error", "original failure"),
+            "no_join": ("join", "active_native_calls", 1),
+            "residue": ("framing", "pending_read_frame_bytes", 1),
+            "unfinished_io": ("framing", "io_joined", False),
+            "selected_claim": ("final", "selected_rpc_authority", True),
+            "native_success_claim": ("close_final", "native_close_succeeded", True),
+            "wrapped_close": ("close", "error_type", "*fmt.wrapError"),
+            "known_close": ("close", "native_close_error_classification", "known_sentinel_error"),
+            "nonzero_close_context": ("context", "send_context", {"done": True, "cause_type": "*quic.StreamError", "error_code": 1, "remote": False, "native_stream_id": 4, "error": "nonzero"}),
+        }
+        for mode, (name, field_name, value) in changes.items():
+            with self.subTest(mode=mode):
+                artifact = synthetic_case()
+                rows = self.lower_stream_abort_events(artifact, close=True)
+                rows[name][field_name] = value
+                with self.assertRaises(ValueError): validate_case(artifact)
+
+    def test_stream_abort_delayed_read_publication_keeps_independent_close_native_orders(self):
+        artifact = synthetic_case()
+        rows = self.lower_stream_abort_events(artifact, close=True, delayed_read=True)
+        validate_case(artifact)
+        self.assertLess(rows["close_pending"]["sequence"], rows["original"]["sequence"])
+        self.assertLess(rows["original"]["returned_order"], rows["close"]["started_order"])
+        self.assertEqual(rows["close_pending"]["negotiation_abort_returned_order"], rows["original"]["returned_order"])
+        for mode in ("future_error", "bool_counter", "wrong_owner", "future_reset", "foreign_final"):
+            with self.subTest(mode=mode):
+                changed = deepcopy(artifact)
+                events = changed["raw"]["sink"]["events"]
+                original, pending, disposal, close_final = (events[rows[key]["sequence"] - 1] for key in
+                                                            ("original", "close_pending", "disposal", "close_final"))
+                if mode == "future_error": pending["negotiation_abort_returned_order"] = events[rows["close"]["sequence"] - 1]["returned_order"] + 1
+                if mode == "bool_counter": pending["negotiation_abort_returned_order"] = True
+                if mode == "wrong_owner": pending["native_stream_id"] += 4
+                if mode == "future_reset": disposal["returned_order"] = original["returned_order"] + 100
+                if mode == "foreign_final": close_final["pending_receipt_sequence"] = rows["pending"]["sequence"]
+                with self.assertRaises(ValueError): validate_case(changed)
+        for name in ("pending", "close_pending", "close_final", "final"):
+            for duplicate in (False, True):
+                with self.subTest(receipt=name, duplicate=duplicate):
+                    artifact = synthetic_case()
+                    rows = self.lower_stream_abort_events(artifact, close=True)
+                    if duplicate:
+                        self.insert_sink_events(artifact, rows[name]["sequence"], [deepcopy(rows[name])])
+                    else:
+                        rows[name].update(kind="command_done", source="go.fixture.append_only_control")
+                    with self.assertRaises(ValueError): validate_case(artifact)
+        for mode in ("old_reset", "superseded", "tail_hash", "partial", "trailing", "malformed", "wrong_topic", "header_hash", "sticky", "overflow", "peer_cause"):
+            with self.subTest(mode=mode):
+                artifact = synthetic_case()
+                rows = self.lower_stream_abort_events(artifact, close=mode != "peer_cause", inbound=mode == "peer_cause")
+                if mode == "old_reset":
+                    rows["close"].update(observed_reset_started_order=rows["first"]["started_order"], observed_reset_returned_order=rows["first"]["returned_order"])
+                    rows["close_pending"].update(observed_reset_started_order=rows["first"]["started_order"], observed_reset_returned_order=rows["first"]["returned_order"])
+                    rows["close_final"]["owned_terminal_receipt_sequence"] = rows["first"]["sequence"]
+                elif mode == "superseded":
+                    newer = deepcopy(rows["disposal"])
+                    newer.update(operation="stream_reset_with_error", requested_reset_code=0, started_order=15, returned_order=16)
+                    self.insert_sink_events(artifact, rows["final"]["sequence"], [newer])
+                elif mode in {"sticky", "overflow"}:
+                    artifact["raw"]["sink"]["error" if mode == "sticky" else "overflow"] = "earlier failure" if mode == "sticky" else True
+                elif mode == "peer_cause":
+                    rows["original"]["same_send_context_cause"] = False
+                elif mode == "header_hash":
+                    rows["header"]["receipt"]["read"]["framed_sha256"] = "0" * 64
+                elif mode == "partial":
+                    rows["original"]["negotiation_snapshot"]["read"]["partial_frame"] = self.cleanup_capture(b"\x10")
+                else:
+                    snapshot = rows["original"]["negotiation_snapshot"]
+                    captured = snapshot["write"]["lazy_tail"]
+                    data = bytes.fromhex(captured["hex"])
+                    if mode == "tail_hash": captured["sha256"] = "0" * 64
+                    else:
+                        if mode == "trailing": data += b"\x00"
+                        if mode == "malformed": data = b"\x01\xff"
+                        if mode == "wrong_topic": data = data.replace(b"forge-pr11:", b"wrong-pr11:")
+                        snapshot["write"]["lazy_tail"] = self.cleanup_capture(data)
+                with self.assertRaises(ValueError): validate_case(artifact)
 
     def test_cleanup_only_complete_chain_preserves_raw_error_and_no_selected_authority(self):
         for close in (False, True):
@@ -1637,12 +1893,14 @@ class PubSubEvidenceTests(unittest.TestCase):
                   "candidate_protocol_frame_sequence", "pending_receipt_sequence", "native_join_receipt_sequence",
                   "negotiation_cleanup_pending_receipt_sequence", "native_call_begin_prepare_ack_sequence",
                   "peer_header_frame_sequence", "cleanup_owner_disposal_receipt_sequence", "first_owner_disposal_receipt_sequence",
-                  "protocol_receipt_sequence"}
+                  "protocol_receipt_sequence", "negotiation_abort_pending_receipt_sequence", "abort_owner_disposal_receipt_sequence",
+                  "owned_reset_receipt_sequence", "close_finalization_receipt_sequence"}
         referenced_values = [value for event in events + added for value in [event] + event.get("retained_owners", [])]
         references = [(event, key, events[event[key] - 1]) for event in referenced_values for key in fields
                       if type(event.get(key)) is int and event[key] > 0]
         lists = [(value, key, [events[ref - 1] for ref in value[key]]) for event in events + added
-                 for value in (event, event.get("negotiation_snapshot", {})) for key in ("negotiation_frame_sequences", "frame_sequences", "reset_return_receipt_sequences")
+                 for value in (event, event.get("negotiation_snapshot", {})) for key in (
+                     "negotiation_frame_sequences", "frame_sequences", "reset_return_receipt_sequences", "negotiation_io_receipt_sequences")
                  if key in value]
         joins = [(row, events[row["shutdown_event_sequence"] - 1])
                  for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "donor_joined" and row["actor"] == "sink"]
