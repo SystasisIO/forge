@@ -131,6 +131,45 @@ same reason. The guest toolchain rejects external configuration-specific C++
 customization and owns the standard Debug, Release, MinSizeRel and
 RelWithDebInfo flags. Abigen receives that same selected configuration profile,
 so `NDEBUG` and other configuration semantics match the compiled guest modules.
+For payload types hidden inside raw bytes, declare their qualified names as
+additional ABI roots and optionally request enum metadata:
+
+```cmake
+forge_add_contract(
+   example
+   SOURCES entry.cpp
+   LIBRARIES example_contract
+   ABI_ROOT_TYPES example::request example::state
+   ABI_METADATA
+)
+```
+
+Roots are resolved from the dispatch source and its imported modules. They use
+the normal ABI encoder and add no actions. `ABI_METADATA` generates
+`example.abi.metadata.json` beside the standard ABI, includes it in the
+`example_artifacts` dependency set and publishes the path through
+`FORGE_CONTRACT_ABI_METADATA_FILE` on both targets. Multi-configuration builds
+also expose `FORGE_CONTRACT_ABI_METADATA_FILE_<CONFIG>`. Without the flag, those
+properties are empty and the artifact is not declared. The installed SDK
+carries this declaration helper and the described metadata protocol module;
+products install their generated companion artifact with ordinary CMake:
+
+```cmake
+install(FILES "$<TARGET_PROPERTY:example,FORGE_CONTRACT_ABI_METADATA_FILE>"
+        DESTINATION share/example)
+```
+
+When the guest declaration enables metadata, a host launcher also specifies
+`forge_add_contract_project(... ABI_METADATA)` to declare the companion
+byproduct and expose the same file properties. This flag describes an expected
+guest artifact; the host never reconstructs the guest target graph or roots.
+
+The companion schema and conversion rules are documented in
+[Abigen](../libraries/tooling/abi/README.md) and
+[Chain API](../libraries/chain/api/README.md). The standard contract manifest
+continues to bind the WASM and Chain ABI only; products that use metadata must
+include its digest in their own package trust boundary.
+
 Single-configuration builds publish artifacts directly under `artifacts/`.
 Multi-configuration builds isolate WASM, ABI, manifest, dispatcher and wrapper
 outputs under configuration-specific directories such as

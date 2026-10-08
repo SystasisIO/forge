@@ -32,6 +32,13 @@ add_test(
 )
 set_tests_properties(test_forge_vm_wasm_interpret_unit PROPERTIES LABELS vm_wasm_interpret)
 
+add_executable(test_forge_vm_wasm_prepared_validation main.cpp prepared_validation_tests.cpp)
+target_link_libraries(test_forge_vm_wasm_prepared_validation PRIVATE
+   forge_vm_wasm_interpret Boost::included_unit_test_framework)
+add_test(NAME test_forge_vm_wasm_prepared_validation
+   COMMAND test_forge_vm_wasm_prepared_validation --catch_system_errors=no)
+set_tests_properties(test_forge_vm_wasm_prepared_validation PROPERTIES LABELS vm_wasm_interpret TIMEOUT 10)
+
 add_executable(
    test_forge_vm_wasm_interpret_internal
    main.cpp

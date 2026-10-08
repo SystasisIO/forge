@@ -14,6 +14,7 @@ module;
 export module forge.chain.api.abi;
 
 export import forge.chain.protocol.abi;
+export import forge.chain.protocol.abi_metadata;
 export import forge.chain.protocol.transaction;
 export import forge.exceptions;
 export import forge.variant.value;
@@ -64,6 +65,8 @@ struct abi_serialization_limits {
    std::size_t max_binary_bytes = 8U << 20U;
    std::size_t max_string_bytes = 1U << 20U;
    std::size_t max_container_elements = 1U << 20U;
+   std::size_t max_metadata_bytes = 1U << 20U;
+   std::size_t max_metadata_entries = 1U << 16U;
 };
 
 using abi_resolver = std::function<std::optional<protocol::abi_def>(protocol::account_name)>;
@@ -73,6 +76,14 @@ using abi_resolver = std::function<std::optional<protocol::abi_def>(protocol::ac
 
 [[nodiscard]] forge::variant abi_bin_to_json(const protocol::abi_def& abi, std::string_view type,
                                              std::span<const std::uint8_t> binary,
+                                             abi_serialization_limits limits = {});
+
+[[nodiscard]] protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
+                                              std::string_view type, const forge::variant& value,
+                                              abi_serialization_limits limits = {});
+
+[[nodiscard]] forge::variant abi_bin_to_json(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
+                                             std::string_view type, std::span<const std::uint8_t> binary,
                                              abi_serialization_limits limits = {});
 
 [[nodiscard]] forge::variant action_to_variant(const protocol::action& action, const abi_resolver& resolve,

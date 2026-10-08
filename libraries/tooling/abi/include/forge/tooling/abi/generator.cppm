@@ -36,12 +36,15 @@ struct request {
    std::vector<known_module> known_modules;
    std::vector<std::filesystem::path> source_wrappers;
    std::vector<std::string> compiler_arguments;
+   std::vector<std::string> abi_root_types;
+   std::filesystem::path metadata;
 };
 
 struct artifacts {
    std::filesystem::path abi;
    std::filesystem::path dispatcher;
    std::vector<std::filesystem::path> source_wrappers;
+   std::filesystem::path metadata;
 };
 
 artifacts generate(const request& options);

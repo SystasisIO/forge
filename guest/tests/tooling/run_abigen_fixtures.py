@@ -40,6 +40,8 @@ def invoke(
     ricardian_clauses=None,
     bare_outputs=False,
     error_contains=None,
+    abi_roots=(),
+    metadata=False,
 ):
     output.mkdir(parents=True, exist_ok=True)
     abi = output / f"{source.stem}.abi"
@@ -76,6 +78,10 @@ def invoke(
         command.extend(("--ricardian-contracts", str(ricardian_contracts)))
     if ricardian_clauses is not None:
         command.extend(("--ricardian-clauses", str(ricardian_clauses)))
+    for root in abi_roots:
+        command.extend(("--abi-root", root))
+    if metadata:
+        command.extend(("--metadata", str(output / f"{source.stem}.abi.metadata.json")))
     source_wrappers = []
     for index, _ in enumerate(additional_sources, start=1):
         wrapper = output / f"{source.stem}.source-{index}.cpp"
@@ -265,10 +271,78 @@ def main():
     parser.add_argument("--build-dir", required=True, type=pathlib.Path)
     parser.add_argument("--fixtures", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument("--metadata-codec", type=pathlib.Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     manifest = check_donor_manifest(args.fixtures)
     run_donor_fixtures(args, manifest)
+
+    root_source = args.fixtures / "abi_roots_metadata.cpp"
+    default_roots = invoke(args, "rootfixture", root_source, args.output / "roots-default")
+    assert "request" not in by_name(default_roots["structs"])
+    roots_output = args.output / "roots-metadata"
+    roots = invoke(args, "rootfixture", root_source, roots_output,
+                   abi_roots=("example::request",), metadata=True)
+    roots_without_metadata = invoke(args, "rootfixture", root_source, args.output / "roots-only",
+                                    abi_roots=("example::request",))
+    assert roots == roots_without_metadata
+    root_aliases = {entry["new_type_name"]: entry for entry in roots["types"]}
+    assert root_aliases["code"]["type"] == "uint8"
+    assert root_aliases["shape"]["type"] == "code"
+    assert root_aliases["shape_alias"]["type"] == "shape"
+    assert set(by_name(roots["actions"])) == {"submit"}
+    assert by_name(roots["structs"])["request"]["fields"] == [
+        {"name": "child", "type": "nested"},
+        {"name": "maybe", "type": "shape_alias?"},
+        {"name": "list", "type": "shape_alias[]"},
+        {"name": "fixed", "type": "shape[2]"},
+        {"name": "selection", "type": "variant_shape_alias_nested"},
+    ]
+    metadata_path = roots_output / "abi_roots_metadata.abi.metadata.json"
+    root_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert root_metadata["version"] == "forge::abi-metadata/1.0"
+    assert root_metadata["roots"] == [{"cpp_type": "example::request", "type": "request"}]
+    assert by_name(root_metadata["enums"])["shape"] == {
+        "name": "shape", "type": "uint8", "values": [{"name": "circle", "value": "0"}, {"name": "tall", "value": "2"}]}
+    assert by_name(root_metadata["enums"])["direction"] == {
+        "name": "direction", "type": "int16", "values": [{"name": "backward", "value": "-3"}, {"name": "forward", "value": "7"}]}
+    first_metadata = metadata_path.read_bytes()
+    invoke(args, "rootfixture", root_source, roots_output, abi_roots=("example::request",), metadata=True)
+    assert metadata_path.read_bytes() == first_metadata
+    if args.metadata_codec:
+        subprocess.run([str(args.metadata_codec), str(roots_output / "abi_roots_metadata.abi"),
+                        str(metadata_path)], check=True)
+    invoke(args, "rootfixture", root_source, args.output / "roots-unknown",
+           abi_roots=("example::missing",), succeeds=False, error_contains="unknown or ambiguous contract ABI root type")
+    invoke(args, "rootfixture", root_source, args.output / "roots-duplicate",
+           abi_roots=("example::request", "::example::request"), succeeds=False,
+           error_contains="duplicate contract ABI root type")
+    duplicate_output = args.output / "roots-duplicate-mapping"
+    invoke(args, "rootfixture", root_source, duplicate_output,
+           abi_roots=("example::request", "alias::request"), metadata=True, succeeds=False,
+           error_contains="duplicate contract ABI root type mapping")
+    assert not (duplicate_output / "abi_roots_metadata.abi").exists()
+    assert not (duplicate_output / "abi_roots_metadata.abi.metadata.json").exists()
+    enum_source = args.fixtures / "abi_enum_duplicate_metadata.cpp"
+    invoke(args, "enumfixture", enum_source, args.output / "enum-default")
+    invoke(args, "enumfixture", enum_source, args.output / "enum-duplicate", metadata=True,
+           succeeds=False, error_contains="enum with duplicate numeric values")
+    empty_enum = args.fixtures / "abi_enum_empty_metadata.cpp"
+    invoke(args, "emptyenum", empty_enum, args.output / "enum-empty-default")
+    empty_enum_output = args.output / "enum-empty-metadata"
+    invoke(args, "emptyenum", empty_enum, empty_enum_output, metadata=True,
+           succeeds=False, error_contains="enum with no values")
+    assert not (empty_enum_output / "abi_enum_empty_metadata.abi").exists()
+    assert not (empty_enum_output / "abi_enum_empty_metadata.abi.metadata.json").exists()
+    unsupported_enum = args.fixtures / "abi_enum_unsupported_metadata.cpp"
+    unsupported_default = invoke(args, "wideenum", unsupported_enum, args.output / "enum-unsupported-default")
+    assert {entry["new_type_name"]: entry["type"] for entry in unsupported_default["types"]} == {
+        "boolean_flag": "bool", "signed_wide": "int128", "unsigned_wide": "uint128"}
+    unsupported_enum_output = args.output / "enum-unsupported-metadata"
+    invoke(args, "wideenum", unsupported_enum, unsupported_enum_output, metadata=True,
+           succeeds=False, error_contains="enum metadata integer type")
+    assert not (unsupported_enum_output / "abi_enum_unsupported_metadata.abi").exists()
+    assert not (unsupported_enum_output / "abi_enum_unsupported_metadata.abi.metadata.json").exists()
 
     features = invoke(
         args,

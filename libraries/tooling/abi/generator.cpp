@@ -40,6 +40,7 @@ module;
 module forge.tooling.abi.generator;
 
 import forge.chain.protocol.abi;
+import forge.chain.protocol.abi_metadata;
 import forge.chain.protocol.types;
 import forge.codec.json;
 import forge.db.ids.typed_id;
@@ -143,6 +144,9 @@ struct schema {
    bool has_apply = false;
    bool has_eosio_dispatch = false;
    bool failed = false;
+   std::vector<std::string> requested_roots;
+   protocol::abi_metadata metadata;
+   bool collect_metadata = false;
 };
 
 std::string make_forward_declaration(const clang::RecordDecl& declaration) {
@@ -355,6 +359,28 @@ class type_encoder {
          }
          const auto name = declaration->getNameAsString();
          add_alias(name, target, declaration->getLocation(), declaration_identity(*declaration));
+         if (output_.collect_metadata &&
+             std::ranges::none_of(output_.metadata.enums, [&](const auto& entry) { return entry.name == name; })) {
+            const auto integer_type = encode(declaration->getIntegerType().getCanonicalType());
+            static constexpr auto metadata_integer_types = std::array<std::string_view, 8>{
+                "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"};
+            if (std::ranges::find(metadata_integer_types, integer_type) == metadata_integer_types.end()) {
+               fail("enum metadata integer type " + integer_type, declaration->getLocation());
+            }
+            auto definition = protocol::abi_enum_def{.name = name, .type = integer_type};
+            auto values = std::set<std::string>{};
+            for (const auto* enumerator : declaration->enumerators()) {
+               auto value = llvm::toString(enumerator->getInitVal(), 10);
+               if (!values.insert(value).second) {
+                  fail("enum with duplicate numeric values", enumerator->getLocation());
+               }
+               definition.values.push_back({enumerator->getNameAsString(), std::move(value)});
+            }
+            if (definition.values.empty()) {
+               fail("enum with no values", declaration->getLocation());
+            }
+            output_.metadata.enums.push_back(std::move(definition));
+         }
          return name;
       }
       if (const auto* array = context_.getAsConstantArrayType(type)) {
@@ -1544,12 +1570,71 @@ class consumer final : public clang::ASTConsumer {
       auto contract_visitor =
           visitor{context, compiler_.getSema(), output_, source_record_codecs_, contract_name_, source_};
       contract_visitor.TraverseDecl(context.getTranslationUnitDecl());
+      if (is_dispatch_source_) {
+         auto encoder = type_encoder{context, output_, source_record_codecs_};
+         for (const auto& name : output_.requested_roots) {
+            const auto* declaration = find_root(context, name);
+            if (declaration == nullptr) {
+               const auto id = context.getDiagnostics().getCustomDiagID(
+                   clang::DiagnosticsEngine::Error, "unknown or ambiguous contract ABI root type '%0'");
+               context.getDiagnostics().Report(id) << name;
+               output_.failed = true;
+               continue;
+            }
+            auto type = encoder.encode(context.getTypeDeclType(declaration));
+            if (std::ranges::any_of(output_.metadata.roots, [&](const auto& root) { return root.type == type; })) {
+               const auto id = context.getDiagnostics().getCustomDiagID(
+                   clang::DiagnosticsEngine::Error, "duplicate contract ABI root type mapping '%0' to '%1'");
+               context.getDiagnostics().Report(id) << name << type;
+               output_.failed = true;
+               continue;
+            }
+            output_.metadata.roots.push_back({name, std::move(type)});
+         }
+      }
       const auto found = contract_visitor.found_contract();
       found_ = found_ || found;
       dispatch_source_found_ = dispatch_source_found_ || (is_dispatch_source_ && found);
    }
 
  private:
+   const clang::TypeDecl* find_root(clang::ASTContext& context, std::string_view name) {
+      auto* scope = static_cast<clang::DeclContext*>(context.getTranslationUnitDecl());
+      auto remaining = name;
+      if (remaining.starts_with("::")) {
+         remaining.remove_prefix(2U);
+      }
+      while (!remaining.empty()) {
+         const auto separator = remaining.find("::");
+         const auto part = remaining.substr(0U, separator);
+         if (part.empty() || !std::ranges::all_of(part, [](unsigned char character) {
+                return llvm::isAlnum(character) || character == '_';
+             }) || llvm::isDigit(static_cast<unsigned char>(part.front()))) {
+            return nullptr;
+         }
+         auto lookup = clang::LookupResult{
+             compiler_.getSema(), context.DeclarationNames.getIdentifier(&context.Idents.get(part)),
+             clang::SourceLocation{}, clang::Sema::LookupOrdinaryName};
+         lookup.suppressDiagnostics();
+         if (!compiler_.getSema().LookupQualifiedName(lookup, scope) || !lookup.isSingleResult()) {
+            return nullptr;
+         }
+         auto* declaration = lookup.getFoundDecl()->getUnderlyingDecl();
+         if (separator == std::string_view::npos) {
+            return llvm::dyn_cast<clang::TypeDecl>(declaration);
+         }
+         if (auto* alias = llvm::dyn_cast<clang::NamespaceAliasDecl>(declaration)) {
+            scope = alias->getNamespace();
+         } else if (auto* next_scope = llvm::dyn_cast<clang::DeclContext>(declaration)) {
+            scope = next_scope;
+         } else {
+            return nullptr;
+         }
+         remaining.remove_prefix(separator + 2U);
+      }
+      return nullptr;
+   }
+
    clang::CompilerInstance& compiler_;
    schema& output_;
    std::set<std::string>& source_record_codecs_;
@@ -1995,6 +2080,8 @@ void canonicalize(schema& output) {
    std::ranges::sort(output.tables, by_name);
    std::ranges::sort(output.calls, by_name);
    std::ranges::sort(output.clauses, [](const auto& left, const auto& right) { return left.id < right.id; });
+   std::ranges::sort(output.metadata.roots, {}, &protocol::abi_root_def::cpp_type);
+   std::ranges::sort(output.metadata.enums, {}, &protocol::abi_enum_def::name);
 }
 
 void write_abi(const schema& input, const forge::tooling::abi::request& options) {
@@ -2340,6 +2427,23 @@ void write_source_wrappers(const schema& input, const forge::tooling::abi::reque
 namespace forge::tooling::abi {
 
 artifacts generate(const request& options) {
+   auto root_names = std::set<std::string>{};
+   for (const auto& root : options.abi_root_types) {
+      if (root.empty() || !root_names.insert(root.starts_with("::") ? root.substr(2U) : root).second) {
+         throw std::runtime_error{"empty or duplicate contract ABI root type: " + root};
+      }
+   }
+   if (!options.metadata.empty()) {
+      const auto metadata_path = std::filesystem::weakly_canonical(std::filesystem::absolute(options.metadata));
+      auto other_paths = options.sources;
+      other_paths.insert(other_paths.end(), options.source_wrappers.begin(), options.source_wrappers.end());
+      other_paths.insert(other_paths.end(), {options.abi, options.dispatcher, options.depfile});
+      for (const auto& other : other_paths) {
+         if (!other.empty() && metadata_path == std::filesystem::weakly_canonical(std::filesystem::absolute(other))) {
+            throw std::runtime_error{"ABI metadata output must have a distinct path"};
+         }
+      }
+   }
    auto load_error = std::string{};
    if (llvm::sys::DynamicLibrary::LoadLibraryPermanently(options.attribute_plugin.c_str(), &load_error)) {
       throw std::runtime_error{"failed to load contract attribute plugin: " + load_error};
@@ -2383,7 +2487,7 @@ artifacts generate(const request& options) {
    // Discover namespace-scope ABI records before the strict pass so contract code can use their generated codecs.
    auto discovery_compilation = clang::tooling::FixedCompilationDatabase{".", arguments};
    auto discovery_tool = clang::tooling::ClangTool{discovery_compilation, source_paths};
-   auto discovery = schema{};
+   auto discovery = schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
    auto discovery_found = false;
    auto discovery_dispatch_source_found = false;
    auto discovery_dependencies = source_dependencies{};
@@ -2408,7 +2512,7 @@ artifacts generate(const request& options) {
    if (!codec_prelude.empty()) {
       tool.mapVirtualFile(codec_prelude_path, codec_prelude);
    }
-   auto output = schema{};
+   auto output = schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
    auto found = false;
    auto dispatch_source_found = false;
    auto dependencies = source_dependencies{};
@@ -2453,10 +2557,18 @@ artifacts generate(const request& options) {
    load_ricardian(output, options);
    canonicalize(output);
    write_abi(output, options);
+   if (!options.metadata.empty()) {
+      const auto encoded = forge::codec::json::write(output.metadata, {.pretty = true});
+      if (!encoded.ok()) {
+         throw std::runtime_error{"unable to encode contract ABI metadata"};
+      }
+      write_text(options.metadata, encoded.text + '\n');
+   }
    write_dispatcher(output, options);
    write_source_wrappers(output, options);
    write_depfile(options, dependencies);
-   return {.abi = options.abi, .dispatcher = options.dispatcher, .source_wrappers = options.source_wrappers};
+   return {.abi = options.abi, .dispatcher = options.dispatcher, .source_wrappers = options.source_wrappers,
+           .metadata = options.metadata};
 }
 
 } // namespace forge::tooling::abi
