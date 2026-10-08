@@ -49,10 +49,26 @@ pubsub_backoff::clock::time_point pubsub_backoff::deadline(clock::time_point now
    return now + std::chrono::duration_cast<clock::duration>(duration);
 }
 
-void pubsub_backoff::expire(clock::time_point now) noexcept {
+pubsub_backoff::clock::duration pubsub_backoff::graft_slack(std::chrono::milliseconds heartbeat) noexcept {
+   if (heartbeat <= std::chrono::milliseconds::zero()) { return clock::duration::zero(); }
+   const auto maximum = clock::duration::max();
+   if (heartbeat >= std::chrono::duration_cast<std::chrono::milliseconds>(maximum / 2)) {
+      return maximum;
+   }
+   return std::chrono::duration_cast<clock::duration>(heartbeat) * 2;
+}
+
+pubsub_backoff::clock::time_point pubsub_backoff::with_slack(clock::time_point until,
+                                                           clock::duration slack) noexcept {
+   if (until == clock::time_point{} || slack <= clock::duration::zero()) { return until; }
+   return until >= clock::time_point::max() - slack ? clock::time_point::max() : until + slack;
+}
+
+void pubsub_backoff::expire(clock::time_point now, clock::duration slack) noexcept {
    for (auto topic = entries_.begin(); topic != entries_.end();) {
       for (auto peer = topic->second.begin(); peer != topic->second.end();) {
-         if (peer->second.local_until <= now && peer->second.remote_until <= now) {
+         if (with_slack(peer->second.local_until, slack) <= now &&
+             with_slack(peer->second.remote_until, slack) <= now) {
             peer = topic->second.erase(peer);
             --size_;
          } else {
@@ -65,10 +81,10 @@ void pubsub_backoff::expire(clock::time_point now) noexcept {
          ++topic;
       }
    }
-   if (local_saturated_until_ <= now) {
+   if (with_slack(local_saturated_until_, slack) <= now) {
       local_saturated_until_ = {};
    }
-   if (remote_saturated_until_ <= now) {
+   if (with_slack(remote_saturated_until_, slack) <= now) {
       remote_saturated_until_ = {};
    }
 }
@@ -205,8 +221,19 @@ pubsub_backoff::status pubsub_backoff::get_status(direction kind, const std::str
    return now < saturated_until ? status::saturated : status::none;
 }
 
-bool pubsub_backoff::blocked(const std::string& topic, const peer_id& peer, clock::time_point now) const noexcept {
-   return local_status(topic, peer, now) != status::none || remote_status(topic, peer, now) != status::none;
+bool pubsub_backoff::graft_blocked(const std::string& topic, const peer_id& peer, clock::time_point now,
+                                  clock::duration slack) const noexcept {
+   // Incoming penalties use the exact deadline; only outgoing GRAFT waits for donor-style slack.
+   if (now < with_slack(local_saturated_until_, slack) || now < with_slack(remote_saturated_until_, slack)) {
+      return true;
+   }
+   if (const auto topic_found = entries_.find(topic); topic_found != entries_.end()) {
+      if (const auto peer_found = topic_found->second.find(peer); peer_found != topic_found->second.end()) {
+         return now < with_slack(peer_found->second.local_until, slack) ||
+                now < with_slack(peer_found->second.remote_until, slack);
+      }
+   }
+   return false;
 }
 
 std::size_t pubsub_backoff::size() const noexcept {

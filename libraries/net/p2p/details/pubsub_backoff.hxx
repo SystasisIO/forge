@@ -40,7 +40,8 @@ class pubsub_backoff {
    [[nodiscard]] static std::chrono::seconds remote_duration(std::chrono::seconds requested,
                                                               std::chrono::seconds fallback) noexcept;
 
-   void expire(clock::time_point now) noexcept;
+   [[nodiscard]] static clock::duration graft_slack(std::chrono::milliseconds heartbeat) noexcept;
+   void expire(clock::time_point now, clock::duration slack = clock::duration::zero()) noexcept;
    void record_local(const std::string& topic, const peer_id& peer, std::chrono::seconds duration,
                      clock::time_point now, std::size_t limit) noexcept;
    void record_remote(const std::string& topic, const peer_id& peer, std::chrono::seconds duration,
@@ -50,7 +51,8 @@ class pubsub_backoff {
                                      clock::time_point now) const noexcept;
    [[nodiscard]] status remote_status(const std::string& topic, const peer_id& peer,
                                       clock::time_point now) const noexcept;
-   [[nodiscard]] bool blocked(const std::string& topic, const peer_id& peer, clock::time_point now) const noexcept;
+   [[nodiscard]] bool graft_blocked(const std::string& topic, const peer_id& peer, clock::time_point now,
+                                     clock::duration slack) const noexcept;
    [[nodiscard]] std::size_t size() const noexcept;
 
  private:
@@ -61,6 +63,7 @@ class pubsub_backoff {
 
    [[nodiscard]] static clock::time_point deadline(clock::time_point now,
                                                     std::chrono::seconds duration) noexcept;
+   [[nodiscard]] static clock::time_point with_slack(clock::time_point until, clock::duration slack) noexcept;
    void record(direction kind, const std::string& topic, const peer_id& peer, std::chrono::seconds duration,
                clock::time_point now, std::size_t limit) noexcept;
    [[nodiscard]] status get_status(direction kind, const std::string& topic, const peer_id& peer,

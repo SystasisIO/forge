@@ -3,12 +3,14 @@ module;
 #include <boost/test/unit_test.hpp>
 #include <forge/exceptions/macros.hpp>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -433,6 +435,8 @@ void unsubscribe_sends_leave_and_enforces_backoff_until_expiry() {
 }
 
 void heartbeat_obeys_sent_and_received_prune_backoff_until_expiry() {
+   auto nodes = std::array<std::atomic<node*>, 3>{};
+   auto bilateral_at = std::atomic<std::chrono::steady_clock::duration::rep>{0};
    auto state = pubsub_router_fixture{};
    auto config = control_options(state.topic);
    config.limits.mesh_n = config.limits.mesh_n_low = config.limits.mesh_n_high = 1;
@@ -446,48 +450,81 @@ void heartbeat_obeys_sent_and_received_prune_backoff_until_expiry() {
    remote_config.limits.mesh_n_high = 4;
    remote_config.limits.heartbeat_initial_delay = 2'050ms;
    remote_config.limits.heartbeat_interval = 50ms;
+   config.scoring->app_specific_score = [&](const peer_id&) {
+      const auto observed_before = std::chrono::steady_clock::now().time_since_epoch().count();
+      const auto owner = nodes[0].load();
+      const auto a = nodes[1].load();
+      const auto b = nodes[2].load();
+      if (owner && a && b && owner->pubsub_snapshot().mesh_edges == 2U &&
+          gossipsub_mesh_peer(*a, owner->local_peer(), state.topic) &&
+          gossipsub_mesh_peer(*b, owner->local_peer(), state.topic)) {
+         auto unset = std::chrono::steady_clock::duration::rep{0};
+         bilateral_at.compare_exchange_strong(unset, observed_before);
+      }
+      return 0.0;
+   };
    const auto address = "/ip4/127.0.0.1/udp/0/quic-v1";
    auto& server = state.add("heartbeat-backoff-server", config, {}, address);
    auto& first = state.add("heartbeat-backoff-first", remote_config, {}, address);
    auto& second = state.add("heartbeat-backoff-second", remote_config, {}, address);
+   nodes[0].store(&server);
+   nodes[1].store(&first);
+   nodes[2].store(&second);
    auto first_shutdown = gossipsub_test_shutdown{state.runtime, first, server};
    auto second_shutdown = gossipsub_test_shutdown{state.runtime, second, server};
    state.subscribe(server);
    state.subscribe(first);
    state.subscribe(second);
-   // Both physical sessions are outbound from server, so Dhi=1 still admits the setup's second GRAFT.
-   connect_announced(state, server, first);
+   // Native GRAFTs establish both sides before the server's next heartbeat trims the oversized mesh.
+   connect_ready(state, server, first);
    connect_announced(state, server, second);
-   auto first_stream = state.open(first, server);
-   auto second_stream = state.open(second, server);
-   const auto graft = pubsub::rpc{.control_value = pubsub::control{.grafts = {{.subject = state.topic}}}};
-   state.send(first_stream, graft);
-   read_barrier(state, first_stream, server, first.local_peer());
-   // This precedes the mutation that can make the mesh oversized. A write receipt
-   // comes after local PRUNE commit and is not a safe start for the full backoff.
-   const auto before_prune = std::chrono::steady_clock::now();
-   state.send(second_stream, graft);
-   read_barrier(state, second_stream, server, second.local_peer());
    BOOST_REQUIRE(server.pubsub_snapshot().peers == 2U);
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 2U);
    BOOST_REQUIRE(state.wait([&] {
       return control_count(state, server, first.local_peer(), pubsub::trace_kind::rpc_write, true) +
              control_count(state, server, second.local_peer(), pubsub::trace_kind::rpc_write, true) == 1U;
    }));
+   BOOST_REQUIRE(bilateral_at.load() != 0);
+   const auto before_prune = std::chrono::steady_clock::time_point{
+       std::chrono::steady_clock::duration{bilateral_at.load()}};
+   for (const auto remote : {&first, &second}) {
+      auto native_graft = false;
+      for (const auto source : {remote, &server}) {
+         if (remote == &second && source == &server) { continue; }
+         const auto& target = source == &server ? *remote : server;
+         for (const auto& event : state.receipts(*source)) {
+            if (event.kind != pubsub::trace_kind::rpc_write || event.peer != target.local_peer() || event.frame.empty()) {
+               continue;
+            }
+            const auto rpc = pubsub::codec::decode(event.frame);
+            if (rpc.control_value && std::ranges::any_of(rpc.control_value->grafts,
+                [&](const auto& entry) { return entry.subject == state.topic; })) {
+               BOOST_REQUIRE(event.session != 0 && event.stream >= 0 && event.generation != 0);
+               const auto received = state.receipts(target);
+               native_graft = std::ranges::any_of(received, [&](const auto& receipt) {
+                  return receipt.kind == pubsub::trace_kind::rpc_read && receipt.peer == source->local_peer() &&
+                         receipt.frame == event.frame && receipt.session != 0 && receipt.stream >= 0 && receipt.generation != 0;
+               });
+               if (native_graft) { break; }
+            }
+         }
+         if (native_graft) { break; }
+      }
+      BOOST_REQUIRE(native_graft);
+   }
    const auto first_prune = last_prune(state, server, first.local_peer(), pubsub::trace_kind::rpc_write);
    auto* pruned = first_prune ? &first : &second;
    auto* retained = first_prune ? &second : &first;
-   auto* retained_stream = first_prune ? &second_stream : &first_stream;
    expect_prune(state, server, *pruned, 0, config.limits.prune_backoff);
    const auto prune = last_prune(state, server, pruned->local_peer(), pubsub::trace_kind::rpc_write);
    const auto received_prune = last_prune(state, *pruned, server.local_peer(), pubsub::trace_kind::rpc_read);
    BOOST_REQUIRE(prune && received_prune);
+   const auto initial_grafts = control_count(state, server, pruned->local_peer(), pubsub::trace_kind::rpc_write, false) +
+                               control_count(state, *pruned, server.local_peer(), pubsub::trace_kind::rpc_write, false);
    BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 1U);
    BOOST_TEST(!gossipsub_mesh_peer(server, pruned->local_peer(), state.topic));
    BOOST_TEST(gossipsub_mesh_peer(server, retained->local_peer(), state.topic));
    const auto sessions = server.metrics().active_sessions;
    BOOST_REQUIRE(sessions == 2U);
-   forge::asio::blocking::run(state.runtime, retained_stream->async_close());
    forge::asio::blocking::run(state.runtime, retained->async_stop());
    BOOST_REQUIRE(state.wait([&] {
       return server.metrics().active_sessions == 1U && server.pubsub_snapshot().peers == 1U &&
@@ -497,10 +534,37 @@ void heartbeat_obeys_sent_and_received_prune_backoff_until_expiry() {
    const auto controls = server.pubsub_snapshot().control_messages;
    const auto remote_controls = pruned->pubsub_snapshot().control_messages;
    const auto invalid = server.pubsub_snapshot().invalid_messages;
-   const auto safe_after = before_prune + config.limits.prune_backoff;
+   const auto local_after = before_prune + config.limits.prune_backoff + 2 * config.limits.heartbeat_interval;
+   const auto remote_after = received_prune->observed + config.limits.prune_backoff +
+                             2 * remote_config.limits.heartbeat_interval;
+   const auto safe_after = std::max(local_after, remote_after);
+   const auto report = [&](std::string_view phase) {
+      auto out = std::ostringstream{};
+      out << "heartbeat/backoff phase=" << phase << " server=" << server.local_peer().to_string()
+          << " pruned=" << pruned->local_peer().to_string()
+          << " retained=" << retained->local_peer().to_string() << '\n';
+      for (const auto owner : {&server, pruned}) {
+         const auto peer = owner == &server ? pruned->local_peer() : server.local_peer();
+         const auto score = score_of(*owner, peer);
+         out << "owner=" << owner->local_peer().to_string() << " penalty=" << score.behaviour_penalty
+             << " score=" << score.value << " mesh=" << gossipsub_mesh_peer(*owner, peer, state.topic) << '\n';
+         auto shown = std::size_t{};
+         for (const auto& event : state.receipts(*owner)) {
+            if (event.peer != peer || event.frame.empty() || ++shown > 128U) { continue; }
+            const auto rpc = pubsub::codec::decode(event.frame);
+            if (!rpc.control_value) { continue; }
+            out << "rpc kind=" << static_cast<int>(event.kind)
+                << " at_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(event.observed.time_since_epoch()).count()
+                << " session=" << event.session << " stream=" << event.stream << " generation=" << event.generation
+                << " grafts=" << rpc.control_value->grafts.size() << " prunes=" << rpc.control_value->prunes.size() << '\n';
+         }
+      }
+      std::cerr << out.str();
+   };
    BOOST_REQUIRE(state.wait([&] { return std::chrono::steady_clock::now() >= safe_after; }, 8s));
    const auto check_graft_history = [&](const node& owner, const peer_id& peer,
-                                       const pubsub_router_receipt& boundary) {
+                                       const pubsub_router_receipt& boundary,
+                                       std::chrono::steady_clock::time_point eligible_after) {
       for (const auto& event : state.receipts(owner)) {
          if (event.kind != pubsub::trace_kind::rpc_write || event.peer != peer ||
              event.observed < boundary.observed || event.frame.empty()) {
@@ -509,27 +573,31 @@ void heartbeat_obeys_sent_and_received_prune_backoff_until_expiry() {
          const auto rpc = pubsub::codec::decode(event.frame);
          if (rpc.control_value && std::ranges::any_of(rpc.control_value->grafts,
              [&](const auto& entry) { return entry.subject == state.topic; })) {
-            BOOST_CHECK(event.observed >= safe_after);
+            BOOST_CHECK(event.observed >= eligible_after);
          }
       }
    };
-   check_graft_history(server, pruned->local_peer(), *prune);
-   check_graft_history(*pruned, server.local_peer(), *received_prune);
+   check_graft_history(server, pruned->local_peer(), *prune, local_after);
+   check_graft_history(*pruned, server.local_peer(), *received_prune, remote_after);
    // Other legal control frames are not mesh transitions. Inspect their actual
    // GRAFT timestamps, rather than treating a short quiet sample as the gate.
    BOOST_TEST(server.pubsub_snapshot().control_messages >= controls);
    BOOST_TEST(pruned->pubsub_snapshot().control_messages >= remote_controls);
    BOOST_TEST(server.pubsub_snapshot().invalid_messages == invalid);
+   if (score_of(server, pruned->local_peer()).behaviour_penalty != 0 ||
+       score_of(*pruned, server.local_peer()).behaviour_penalty != 0) { report("before-rejoin"); }
    check_behaviour(server, pruned->local_peer(), 0);
    check_behaviour(*pruned, server.local_peer(), 0);
-   BOOST_REQUIRE(state.wait([&] {
+   const auto restored = state.wait([&] {
       return gossipsub_mesh_peer(server, pruned->local_peer(), state.topic) &&
              gossipsub_mesh_peer(*pruned, server.local_peer(), state.topic);
-   }, 8s));
-   check_graft_history(server, pruned->local_peer(), *prune);
-   check_graft_history(*pruned, server.local_peer(), *received_prune);
+   }, 8s);
+   if (!restored) { report("rejoin-timeout"); }
+   BOOST_REQUIRE(restored);
+   check_graft_history(server, pruned->local_peer(), *prune, local_after);
+   check_graft_history(*pruned, server.local_peer(), *received_prune, remote_after);
    const auto grafts = control_count(state, server, pruned->local_peer(), pubsub::trace_kind::rpc_write, false) +
-                       control_count(state, *pruned, server.local_peer(), pubsub::trace_kind::rpc_write, false);
+                       control_count(state, *pruned, server.local_peer(), pubsub::trace_kind::rpc_write, false) - initial_grafts;
    BOOST_TEST(grafts >= 1U);
    BOOST_TEST(grafts <= 2U); // Concurrent native GRAFTs are idempotent, not an ordering assumption.
    BOOST_TEST(server.pubsub_snapshot().peers == 1U);
@@ -539,7 +607,6 @@ void heartbeat_obeys_sent_and_received_prune_backoff_until_expiry() {
    BOOST_TEST(server.pubsub_snapshot().invalid_messages == invalid);
    check_behaviour(server, pruned->local_peer(), 0);
    check_behaviour(*pruned, server.local_peer(), 0);
-   forge::asio::blocking::run(state.runtime, (first_prune ? first_stream : second_stream).async_close());
    second_shutdown.join();
    first_shutdown.join();
 }

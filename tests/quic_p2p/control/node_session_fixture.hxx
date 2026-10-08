@@ -13,6 +13,7 @@ struct node_session_fixture {
    static void queue_legacy_bytes();
    static void queue_ephemeral_bound();
    static void backoff_allocation_refusal();
+   static void backoff_graft_slack();
    static void control_preparation_allocation_rollback();
    static void native_heartbeat_allocation_recovery();
    static void native_retry(bool rejected, bool legacy = false);

@@ -136,7 +136,7 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_control(
       const auto gossip_threshold = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->thresholds.gossip_threshold : 0.0;
       const auto px_threshold = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->thresholds.accept_px_threshold : 0.0;
       const auto backoff_limit = detail::pubsub_backoff::limit_for(limits.max_topics, options.limits.max_sessions);
-      pubsub_value.backoffs.expire(now);
+      pubsub_value.backoffs.expire(now, detail::pubsub_backoff::graft_slack(limits.heartbeat_interval));
       const auto reject = [&](const pubsub::topic& subject) {
          try {
             const auto committed = admit_pubsub_control_locked(make_pubsub_control_locked(peer, subject,

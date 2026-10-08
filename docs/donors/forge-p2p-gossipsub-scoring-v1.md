@@ -46,6 +46,17 @@ History advances per heartbeat, not per inserted message. IHAVE eligibility
 and IWANT follow-up penalties follow donor thresholds. A promise belongs to a
 successfully sent request, not merely a locally assembled RPC.
 
+Outgoing GRAFT waits for backoff plus two configured heartbeat intervals;
+incoming GRAFT penalties still use the exact advertised backoff deadline.
+Go's `clearBackoff` retains entries with two default heartbeat intervals and
+periodic cleanup; Rust's `backoff.rs` separates exact expiry from configured
+slack. Forge adopts that separation, not identical donor cleanup scheduling.
+Both backoff directions and bounded saturation retain their outgoing slack,
+with saturating duration arithmetic and unchanged wire PRUNE duration.
+The native heartbeat regression uses actual bilateral GRAFT/PRUNE receipts and
+a zero-valued nonblocking application-score checkpoint, not unilateral raw
+GRAFT injection or timer-phase assumptions.
+
 Go's `RPC.split` and oversized-gossip handling split IHAVE/IWANT by IDs rather
 than discarding a complete advertisement when it exceeds the wire envelope.
 Forge's codec owns a lazy cursor and allocation-free size calculation over the

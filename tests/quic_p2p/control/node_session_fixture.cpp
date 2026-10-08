@@ -285,6 +285,66 @@ void node_session_fixture::backoff_allocation_refusal() {
    BOOST_TEST(existing.size() == 0U);
 }
 
+void node_session_fixture::backoff_graft_slack() {
+   using backoff = detail::pubsub_backoff;
+   const auto now = backoff::clock::time_point{100s};
+   const auto remote = peer(9);
+   const auto subject = std::string{"topic"};
+   const auto slack = backoff::graft_slack(400ms);
+   BOOST_CHECK(slack == 800ms);
+   auto sender = backoff{};
+   auto receiver = backoff{};
+   sender.record_local(subject, remote, 10s, now, 2);
+   receiver.record_remote(subject, remote, 10s, now + 750ms, 2);
+   sender.expire(now + 10s, slack);
+   BOOST_CHECK(sender.local_status(subject, remote, now + 10s) == backoff::status::none);
+   BOOST_CHECK(receiver.remote_status(subject, remote, now + 10s) == backoff::status::exact);
+   BOOST_TEST(sender.graft_blocked(subject, remote, now + 10s, slack));
+   BOOST_TEST(sender.size() == 1U);
+   BOOST_TEST(sender.graft_blocked(subject, remote, now + 10s + 799ms, slack));
+   BOOST_TEST(!sender.graft_blocked(subject, remote, now + 10s + 800ms, slack));
+   BOOST_CHECK(receiver.remote_status(subject, remote, now + 10s + 800ms) == backoff::status::none);
+   receiver.expire(now + 10s + 750ms, slack);
+   BOOST_TEST(receiver.graft_blocked(subject, remote, now + 11s, slack));
+   BOOST_TEST(!receiver.graft_blocked(subject, remote, now + 11s + 550ms, slack));
+   receiver.expire(now + 11s + 550ms, slack);
+   BOOST_TEST(receiver.size() == 0U);
+
+   // Monotonic extensions and transactional preparation retain both exact and slack boundaries.
+   sender.record_remote(subject, remote, 20s, now + 1s, 2);
+   auto prepared = sender.prepare_local(std::vector<backoff::local_request>{{subject, remote, 30s}}, now, 2);
+   sender.commit_local(std::move(prepared));
+   sender.record_local(subject, remote, 1s, now + 2s, 2);
+   BOOST_CHECK(sender.local_status(subject, remote, now + 29s) == backoff::status::exact);
+   BOOST_CHECK(sender.local_status(subject, remote, now + 30s) == backoff::status::none);
+   sender.expire(now + 30s, slack);
+   BOOST_TEST(sender.graft_blocked(subject, remote, now + 30s, slack));
+   sender.expire(now + 30s + 800ms, slack);
+   BOOST_TEST(sender.size() == 0U);
+
+   // Capacity refusal remains conservative after exact expiry without inventing a peer penalty.
+   auto saturated = backoff{};
+   saturated.record_local(subject, remote, 10s, now, 1);
+   saturated.record_remote(subject, peer(10), 20s, now, 1);
+   saturated.expire(now + 20s, slack);
+   BOOST_CHECK(saturated.remote_status(subject, peer(10), now + 20s) == backoff::status::none);
+   BOOST_TEST(saturated.graft_blocked(subject, peer(10), now + 20s, slack));
+   BOOST_TEST(saturated.size() == 0U);
+   saturated.expire(now + 20s + 800ms, slack);
+   BOOST_TEST(!saturated.graft_blocked(subject, peer(10), now + 20s + 800ms, slack));
+
+   BOOST_CHECK(backoff::graft_slack(std::chrono::milliseconds::max()) == backoff::clock::duration::max());
+   auto extreme = backoff{};
+   const auto end = backoff::clock::time_point::max();
+   extreme.record_remote(subject, remote, 1s, end - 100ms, 1);
+   extreme.expire(end - 1ms, slack);
+   BOOST_TEST(extreme.graft_blocked(subject, remote, end - 1ms, slack));
+   BOOST_CHECK(extreme.remote_status(subject, remote, end - 1ms) == backoff::status::exact);
+   extreme.expire(end, slack);
+   BOOST_TEST(extreme.size() == 0U);
+   BOOST_TEST(!extreme.graft_blocked(subject, remote, end, slack));
+}
+
 } // namespace forge::net::p2p
 
 BOOST_AUTO_TEST_CASE(control_queue_overflow_checked_capacity) { forge::net::p2p::node_session_fixture::queue_bounds(); }
@@ -295,3 +355,4 @@ BOOST_AUTO_TEST_CASE(control_queue_encoded_byte_bound_includes_inflight) { forge
 BOOST_AUTO_TEST_CASE(control_queue_v10_bytes_unchanged_and_v11_args_frozen) { forge::net::p2p::node_session_fixture::queue_legacy_bytes(); }
 BOOST_AUTO_TEST_CASE(control_queue_ephemeral_dispatch_peer_and_byte_bound) { forge::net::p2p::node_session_fixture::queue_ephemeral_bound(); }
 BOOST_AUTO_TEST_CASE(control_backoff_first_and_second_allocation_refusal_saturates_without_partial_rows) { forge::net::p2p::node_session_fixture::backoff_allocation_refusal(); }
+BOOST_AUTO_TEST_CASE(control_backoff_outgoing_slack_preserves_exact_incoming_deadline_and_bounds) { forge::net::p2p::node_session_fixture::backoff_graft_slack(); }

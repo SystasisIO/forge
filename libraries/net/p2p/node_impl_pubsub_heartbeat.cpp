@@ -166,7 +166,8 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
             outbound.insert(session->info.remote_peer);
          }
       }
-      pubsub_value.backoffs.expire(now);
+      const auto graft_slack = detail::pubsub_backoff::graft_slack(limits.heartbeat_interval);
+      pubsub_value.backoffs.expire(now, graft_slack);
       const auto high = std::min(limits.mesh_n_high, limits.max_peers_per_topic);
       const auto target = std::min(limits.mesh_n, high);
       const auto gossip_threshold = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->thresholds.gossip_threshold : 0.0;
@@ -187,7 +188,8 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
          auto peers = std::vector<peer_id>{};
          for (const auto& [peer, topics] : pubsub_value.peer_topics) {
             if (topics.contains(topic) && pubsub_peer_live_locked(peer) && !excluded.contains(peer) &&
-                score(peer) >= threshold && (!mesh_candidate || !pubsub_value.backoffs.blocked(topic, peer, now))) {
+                score(peer) >= threshold &&
+                (!mesh_candidate || !pubsub_value.backoffs.graft_blocked(topic, peer, now, graft_slack))) {
                peers.push_back(peer);
             }
          }
