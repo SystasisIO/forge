@@ -985,6 +985,34 @@ BOOST_AUTO_TEST_CASE(chain_abi_exact_integer_scalars_and_varints_enforce_native_
    }
 }
 
+BOOST_AUTO_TEST_CASE(chain_abi_exact_strings_reject_coercion_at_roots_and_optional_alias_fields) {
+   auto abi = empty_abi();
+   abi.types.push_back({"text", "string"});
+   abi.structs.push_back({"holder", "", {{"prompt", "text?"}}});
+   const auto exact = chain_api::abi_json_scalar_policy::exact;
+   const auto scalar = forge::variant{std::int64_t{42}};
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "string", scalar) == forge::raw::pack(std::string{"42"}));
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "string", scalar, {}, chain_api::abi_json_scalar_policy::compatible) ==
+              chain_api::abi_json_to_bin(abi, "string", scalar));
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "string", forge::variant{"42"}, {}, exact) ==
+              forge::raw::pack(std::string{"42"}));
+   for (const auto& value :
+        {scalar, forge::variant{1.25}, forge::variant{true}, forge::variant{}, array(42), object({{"value", 42}})}) {
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(abi, "string", value, {}, exact)),
+                            chain_api::abi_serialization_error, [](const auto& error) {
+                               return error.diagnostic().code == chain_api::abi_error_code::invalid_json &&
+                                      error.diagnostic().type == "string" && error.diagnostic().path == "string";
+                            });
+   }
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(abi, forge::chain::protocol::abi_metadata{}, "holder",
+                                                    object({{"prompt", scalar}}), {}, exact)),
+       chain_api::abi_serialization_error, [](const auto& error) {
+          return error.diagnostic().code == chain_api::abi_error_code::invalid_json &&
+                 error.diagnostic().path == "holder.prompt";
+       });
+}
+
 BOOST_AUTO_TEST_CASE(chain_abi_exact_scalar_policy_follows_optional_alias_array_and_variant_paths) {
    auto abi = empty_abi();
    abi.types = {{"count", "int32"}, {"optional_count", "count?"}, {"stream_flag", "bool"}};

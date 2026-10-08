@@ -1202,6 +1202,7 @@ class serializer {
    }
 
    void encode_string(const forge::variant& value, binary_writer& writer, std::string_view path) const {
+      validate_scalar<std::string>("string", value, writer, path);
       const auto text = value.as_string();
       if (text.size() > context_.limits().max_string_bytes) {
          fail(abi_error_code::size_limit, "ABI string exceeds the byte limit", "string", path, writer.tellp());

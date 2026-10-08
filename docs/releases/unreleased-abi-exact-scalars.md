@@ -8,7 +8,9 @@ binary decoding, package components and guest intrinsics are unchanged.
 
 External JSON consumers can now reject string/float/bool conversion to integer,
 integer narrowing overflow and numeric/string conversion to boolean before ABI
-packing. The policy uses existing Schema exact scalar validation, including
+packing. ABI strings also reject numeric, boolean and null values in exact mode;
+compatible mode retains its existing string conversions. The policy uses
+existing Schema exact scalar validation, including
 signed/unsigned widths, 32-bit varints, canonical decimal 128-bit integers and
 finite/range/precision checks for `float32`/`float64`. It follows the existing
 ABI aliases, optional fields, arrays, records and variants and preserves typed
