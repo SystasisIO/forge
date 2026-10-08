@@ -6,7 +6,7 @@ import hashlib
 import unittest
 
 from pubsub_evidence import (
-    AUTHENTICATION, GO_QUIC_SOURCES, HEADER, PROFILES, QUIC_OWNER_FIELDS, _events, _go_quic_operations, _go_quic_owner, _owner, _rpc_peer, _same_json, _shutdown_barrier,
+    AUTHENTICATION, GO_QUIC_SOURCES, HEADER, PROFILES, QUIC_OWNER_FIELDS, _events, _go_quic_operations, _go_quic_owner, _owner, _rpc_peer, _same_json, _shutdown_barrier, _terminal_owners,
     prepared_snapshot, quiesce_ack, shutdown_ack, validate_case,
 )
 from rust_upgrade_evidence import BASE58, _peer
@@ -57,6 +57,59 @@ def synthetic_yamux_terminal(*, private=False, version012=False):
                 {"connection_trace_id": 1, "connection_id": "unit-connection", "peer_id": peer_id(2),
                  "dropped": True, "close_returned": False, "native_terminal_observed": True}]},
             "task_join": {"fixture_owned_tasks_joined": True, "overflow": False, "errors": []}}
+
+
+def synthetic_non_pubsub_failure(*, protocol="/ipfs/id/1.0.0", prepared=False, active=True):
+    """Exact passive Rust observer shape, not native execution or cleanup authority."""
+    source, token = "rust.libp2p.passive-upgraded-stream-io", "a" * 32
+    stack = {"transport": "quic", "security": "/tls/1.0.0", "muxer": "quic",
+             "authentication_basis": AUTHENTICATION["rust"]["quic"]}
+    endpoint = {"direction": "outbound", "upgrade_role": "outbound",
+                "remote_address": "/ip4/127.0.0.1/udp/41000/quic-v1"}
+    connection = {"connection_trace_id": 1, "connection_id": "7", "swarm_connection_id": "7",
+                  "peer_id": peer_id(2), "remote_peer_id": peer_id(2), "stream_trace_id": None, "stream_id": None,
+                  "endpoint": endpoint, "native_stack": stack}
+    owner = {**deepcopy(connection), "stream_trace_id": 2, "stream_id": "1:2"}
+    events = []
+
+    def emit(kind, fields, *, wire_owner=False):
+        value = {**deepcopy(owner if wire_owner else connection), "sequence": len(events) + 1,
+                 "mono_ns": len(events) + 1, "kind": kind, "source": source, **fields}
+        events.append(value)
+        return value
+
+    emit("connection", {**stack, "authenticated": True, "remote_address": endpoint["remote_address"],
+                        "owner_basis": "exact_native_transport_output_muxer"})
+    emit("connection_established", {"owner_basis": "unique_authenticated_output_peer_and_endpoint"})
+    emit("stream_opened", {"direction": "inbound"}, wire_owner=True)
+    refs = []
+    for side, body in (("read", (HEADER + "\n").encode()), ("read", (protocol + "\n").encode()),
+                       ("write", (HEADER + "\n").encode()), ("write", b"na\n")):
+        refs.append(emit("native_multistream_frame", {"direction": side, "receipt": receipt(body, side),
+                    "io_basis": "successful_native_read" if side == "read" else "successful_native_write_not_remote_ack"},
+                    wire_owner=True)["sequence"])
+    if prepared:
+        events.append({"sequence": len(events) + 1, "mono_ns": len(events) + 1, "kind": "shutdown_prepared",
+                       "source": "rust.fixture.prepare_shutdown", "command_sequence": 1, "actor": "victim",
+                       "case_token": token, "local_peer_id": peer_id(1), "admission_closed": True, "pending_commands": 0})
+        events.append({"sequence": len(events) + 1, "mono_ns": len(events) + 1, "kind": "command_done",
+                       "source": "rust.fixture.control-native-operation-completion", "command_sequence": 1,
+                       "command_kind": "prepare_shutdown", "status": "ok"})
+    emit("non_pubsub_negotiation_failure", {"operation": "stream_read", "io_kind": "ConnectionReset",
+        "raw_os_error": None, "native_error_type": "quinn::ReadError", "native_error_variant": "Reset",
+        "error_code": 0, "error_boundary": "io_error_get_ref_direct_quinn_ReadError", "typed_cause": "quinn_read_reset_0",
+        "prepared": prepared, "message": "stream reset by peer: error 0", "negotiation_frame_sequences": refs,
+        "rejected_protocol": protocol, "protocol": "", "negotiation_complete": False, "selected_rpc_authority": False,
+        "pubsub_proposed": False, "parser_failed": False, "ignored_body_observed": False, "pending_read_frame_bytes": 0,
+        "pending_write_frame_bytes": 0, "pending_rpc_bytes": 0}, wire_owner=True)
+    raw = {"schema_version": 1, "implementation": "rust", "case_token": token, "actor": "victim",
+           "local_peer_id": peer_id(1), "finalized": not active, "joined": not active, "overflow": False,
+           "error": None, "events": events}
+    if not active:
+        raw.update(native_close={"live_muxers": 0, "live_streams": 0, "connections": [
+            {"connection_trace_id": 1, "connection_id": "7", "peer_id": peer_id(2), "dropped": True, "close_returned": True}]},
+            task_join={"fixture_owned_tasks_joined": True, "overflow": False, "errors": []})
+    return raw
 
 
 def synthetic_case(*, lower_quic=True):
@@ -3124,6 +3177,95 @@ class PubSubEvidenceTests(unittest.TestCase):
             changed["events"][0][field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 _events(changed, "rust", token, "victim")
+
+    def test_non_pubsub_na_reset_diagnostic_never_claims_selection_or_future_join(self):
+        for protocol in ("/ipfs/id/1.0.0", "/ipfs/ping/1.0.0", "/ipfs/id/push/1.0.0"):
+            for prepared in (False, True):
+                for active in (False, True):
+                    with self.subTest(protocol=protocol, prepared=prepared, active=active):
+                        raw = synthetic_non_pubsub_failure(protocol=protocol, prepared=prepared, active=active)
+                        before = deepcopy(raw)
+                        _events(raw, "rust", raw["case_token"], "victim", active=active)
+                        self.assertEqual(raw, before)
+                        self.assertFalse(any(event["kind"] in {"protocol", "rpc", "expected_native_close"}
+                                             for event in raw["events"]))
+                        if active:
+                            self.assertNotIn("native_close", raw)
+                        else:
+                            _terminal_owners(raw)
+
+    def test_non_pubsub_na_reset_requires_exact_native_cause_owner_bytes_and_empty_state(self):
+        mutations = (
+            lambda r: r["events"][-1].update(error_code=1),
+            lambda r: r["events"][-1].update(error_code=False),
+            lambda r: r["events"][-1].update(native_error_type="io::Error"),
+            lambda r: r["events"][-1].update(native_error_variant="ConnectionLost"),
+            lambda r: r["events"][-1].update(error_boundary="StdError_source_chain"),
+            lambda r: r["events"][-1].update(typed_cause="unclassified"),
+            lambda r: r["events"][-1].update(raw_os_error=38),
+            lambda r: r["events"][-1].update(operation="stream_write"),
+            lambda r: r["events"][-1].update(connection_trace_id=2),
+            lambda r: r["events"][-1].update(stream_id="1:3", stream_trace_id=3),
+            lambda r: r["events"][-1].update(remote_peer_id=peer_id(3)),
+            lambda r: r["events"][-1]["native_stack"].update(authentication_basis="fixture_ready"),
+            lambda r: r["events"][0].update(authenticated=False),
+            lambda r: r["events"][0].update(connection_trace_id=True),
+            lambda r: r["events"][0].update(remote_address="/ip4/127.0.0.1/tcp/41000"),
+            lambda r: r["events"][1].update(owner_basis="adjacent_session"),
+            lambda r: r["events"][2].update(direction="outbound"),
+            lambda r: r["events"][3].update(stream_trace_id=3),
+            lambda r: r["events"][3]["receipt"]["read"].update(framed_sha256="0" * 64),
+            lambda r: r["events"][3].update(receipt=receipt(b"/not-the-header\n", "read")),
+            lambda r: r["events"][6].update(receipt=receipt(b"na", "write")),
+            lambda r: r["events"][6].update(receipt=receipt(b"/ipfs/id/1.0.0\n", "write")),
+            lambda r: r["events"][-1].update(negotiation_frame_sequences=[4, 5, 6]),
+            lambda r: r["events"][-1].update(negotiation_frame_sequences=[4, 5, 6, 6]),
+            lambda r: r["events"][-1].update(negotiation_frame_sequences=[True, 5, 6, 7]),
+            lambda r: r["events"][-1].update(pubsub_proposed=True),
+            lambda r: r["events"][-1].update(parser_failed=True),
+            lambda r: r["events"][-1].update(ignored_body_observed=True),
+            lambda r: r["events"][-1].update(pending_read_frame_bytes=1),
+            lambda r: r["events"][-1].update(pending_write_frame_bytes=1),
+            lambda r: r["events"][-1].update(pending_rpc_bytes=1),
+            lambda r: r["events"][-1].update(pending_rpc_bytes=False),
+            lambda r: r["events"][-1].update(selected_rpc_authority=True),
+            lambda r: r["events"][-1].update(accepted=True),
+            lambda r: r["events"][-1].update(prepared=True),
+            lambda r: r.update(error="earlier sticky native error"),
+            lambda r: r.update(overflow=True),
+        )
+        for mutation in mutations:
+            for active in (False, True):
+                raw = synthetic_non_pubsub_failure(active=active)
+                mutation(raw)
+                with self.subTest(mutation=mutation, active=active), self.assertRaises(ValueError):
+                    _events(raw, "rust", raw["case_token"], "victim", active=active)
+        for protocol in (HEADER, "/meshsub/1.0.0", "/meshsub/1.2.0", "/floodsub/1.0.0"):
+            raw = synthetic_non_pubsub_failure(protocol=protocol)
+            with self.subTest(protocol=protocol), self.assertRaises(ValueError):
+                _events(raw, "rust", raw["case_token"], "victim", active=True)
+
+    def test_non_pubsub_na_diagnostic_cannot_hide_another_proposal_selection_or_partial_drop(self):
+        for kind in ("native_multistream_frame", "protocol", "rpc", "stream_dropped"):
+            raw = synthetic_non_pubsub_failure()
+            extra = deepcopy(raw["events"][4])
+            extra.update(sequence=len(raw["events"]) + 1, mono_ns=len(raw["events"]) + 1, kind=kind)
+            if kind == "native_multistream_frame":
+                extra["receipt"] = receipt(b"/ipfs/ping/1.0.0\n", "read")
+            elif kind == "stream_dropped":
+                extra.update(partial_frame=True)
+            raw["events"].append(extra)
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                _events(raw, "rust", raw["case_token"], "victim", active=True)
+        raw = synthetic_non_pubsub_failure(active=False)
+        _events(raw, "rust", raw["case_token"], "victim")
+        raw["native_close"]["live_streams"] = 1
+        with self.assertRaises(ValueError):
+            _terminal_owners(raw)
+        raw["native_close"]["live_streams"] = 0
+        raw["task_join"]["errors"] = ["worker did not join"]
+        with self.assertRaises(ValueError):
+            _terminal_owners(raw)
 
     def test_public_yamux_terminal_state_requires_exact_type_owner_ack_and_disposal(self):
         for private in (False, True):

@@ -140,13 +140,32 @@ prepare. Only an owned QUIC error with a public typed
 Public `ReadError/WriteError::ConnectionLost`, direct `io::Error::get_ref()` and
 `StdError::source()` chains are inspected with an eight-node bound; diagnostic
 text and `io::ErrorKind` are never used to infer normal closure. Nonzero close,
-reset, timeout, transport errors, arbitrary errno 38 and hidden/unclassified
+resets outside the non-PubSub transcript diagnostic below, timeout, transport
+errors, arbitrary errno 38 and hidden/unclassified
 causes remain fatal. The pinned libp2p QUIC connection wrapper has a private
 field and transparent `source()`; it does not expose the public Quinn variant
 for normal connection closes. That evidence gap remains fail-closed, not a
 permission to classify the wrapper or its text as normal. Locked Quinn
 `ApplicationClose` is not itself `StdError`. The fixture's direct Quinn dependency
 is exactly the already locked 0.11.11 with default features disabled.
+
+`native_multistream_frame` captures only complete successful native negotiation
+bytes on the actual authenticated muxer/substream, with bounded byte/hash receipts.
+`non_pubsub_negotiation_failure` is a distinct diagnostic for an inbound QUIC
+stream with exactly the canonical read/write HEADERs, one non-PubSub read proposal
+and a fully successful write of `na` on that same owner. No meshsub/floodsub proposal,
+selection, RPC, ignored body bytes, partial/pending frame, parser failure, overflow
+or earlier sticky error may exist. Another proposal invalidates the transcript.
+Only `io::Error::get_ref().downcast_ref::<quinn::ReadError>()` directly yielding
+`Reset(0)` at the original Read RETURN qualifies; nested/wrapped, opaque, nonzero
+and other native errors remain fatal. The original `Poll::Ready(Err)` is returned
+unchanged, and the owned diagnostic retains its bounded original error/cause.
+Python independently checks the preceding successful frame receipts, exact
+authenticated owner, fully written rejection and empty state. This grants no
+selected protocol, RPC, scoring, delivery, framing-completion, accepted cleanup,
+reset-delivery, graceful cause or expected-native-close authority. Active evidence
+does not borrow a future join; terminal physical disposal and actual task/process
+joins remain independent requirements. Previous failed artifacts are unchanged.
 
 The maintainer-approved 2026-10-08 observation contract separates the four
 Rust QUIC cases into original-wire and instrumented-shutdown gates. An isolated

@@ -673,6 +673,11 @@ struct WireStream {
     proposal_direction: usize,
     proposal: Option<String>,
     negotiation_frames: usize,
+    negotiation_receipts: Vec<usize>,
+    rejected_protocol: Option<String>,
+    pubsub_proposed: bool,
+    ignored_bytes: bool,
+    non_pubsub_reported: bool,
     listing: bool,
     selected: Option<String>,
     excluded: bool,
@@ -716,6 +721,11 @@ impl WireStream {
             proposal_direction: usize::from(outbound),
             proposal: None,
             negotiation_frames: 0,
+            negotiation_receipts: Vec::new(),
+            rejected_protocol: None,
+            pubsub_proposed: false,
+            ignored_bytes: false,
+            non_pubsub_reported: false,
             listing: false,
             selected: None,
             excluded: false,
@@ -736,12 +746,17 @@ impl WireStream {
         if self.failed || self.connection.is_none() {
             return;
         }
+        if self.non_pubsub_reported && !bytes.is_empty() {
+            self.fail("native wire bytes after non-PubSub negotiation reset");
+            return;
+        }
         for byte in bytes {
             if self.excluded
                 || (direction == self.proposal_direction
                     && self.proposal.as_deref().is_some_and(|p| !meshsub(p)))
             {
                 // V1Lazy may write another protocol's opaque body before its ACK. Never parse it as RPC.
+                self.ignored_bytes = true;
                 break;
             }
             let negotiation = self.selected.is_none()
@@ -776,6 +791,24 @@ impl WireStream {
             if self.negotiation_frames > 66 {
                 return Err(invalid("native negotiation attempt limit exceeded"));
             }
+            let side = if direction == 0 { "read" } else { "write" };
+            let mut receipt = json!({"framed_hex": hex(&frame.framed)});
+            receipt[side] = json!({"framed_bytes": frame.framed.len(),
+                "framed_sha256": format!("{:x}", Sha256::digest(&frame.framed)),
+                "frames": 1, "complete_frames": true, "invalid_or_over_limit": false});
+            let mut capture = self.evidence.lock();
+            let sequence = capture.events.len() + 1;
+            capture.owned(
+                self.connection.unwrap(),
+                Some(self.stream),
+                "native_multistream_frame",
+                json!({"direction": side, "receipt": receipt,
+                    "io_basis": if direction == 0 { "successful_native_read" }
+                                else { "successful_native_write_not_remote_ack" }}),
+            );
+            if capture.events.len() == sequence {
+                self.negotiation_receipts.push(sequence);
+            }
         }
         if !self.headers[direction] {
             if frame.body != b"/multistream/1.0.0\n" {
@@ -801,6 +834,9 @@ impl WireStream {
                 }
                 match protocol_token(&frame.body) {
                     Ok(protocol) => {
+                        self.pubsub_proposed |=
+                            protocol.starts_with("/meshsub/") || protocol.starts_with("/floodsub/");
+                        self.rejected_protocol = None;
                         self.proposal = Some(protocol.to_owned());
                         self.other_rejected = false;
                     }
@@ -831,6 +867,7 @@ impl WireStream {
         if frame.body == b"na\n" {
             // Donor listener_select resumes RecvMessage after NotAvailable, on the SAME substream.
             self.other_rejected = !meshsub(proposal);
+            self.rejected_protocol = self.other_rejected.then(|| proposal.to_owned());
             self.proposal = None;
             self.pending = Vec::new();
             self.pending_bytes = 0;
@@ -857,6 +894,84 @@ impl WireStream {
         }
         self.pending_bytes = 0;
         Ok(())
+    }
+
+    fn non_pubsub_read_error(&mut self, error: &io::Error) -> bool {
+        let Some(quinn::ReadError::Reset(code)) = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<quinn::ReadError>())
+        else {
+            return false;
+        };
+        if *code != 0u32.into()
+            || self.proposal_direction != 0
+            || self.headers != [true; 2]
+            || self.negotiation_frames != 4
+            || self.negotiation_receipts.len() != 4
+            || !self.other_rejected
+            || self.failed
+            || self.excluded
+            || self.listing
+            || self.selected.is_some()
+            || self.proposal.is_some()
+            || self.pubsub_proposed
+            || self.ignored_bytes
+            || self.non_pubsub_reported
+            || self.pending_bytes != 0
+            || !self.pending.is_empty()
+            || self.frames.iter().any(Frames::partial)
+            || !self.rejected_protocol.as_ref().is_some_and(|p| {
+                p != "/multistream/1.0.0"
+                    && p.len() < 256
+                    && p.is_ascii()
+                    && p.bytes().all(|byte| byte > 32)
+            })
+        {
+            return false;
+        }
+        let Some(id) = self.connection else {
+            return false;
+        };
+        let mut capture = self.evidence.lock();
+        if capture.error.is_some()
+            || capture.overflow
+            || !capture.connections.get(id).is_some_and(|owner| {
+                matches!(owner.stack, NativeStack::Quic)
+                    && owner.native_id.is_some()
+                    && owner.swarm_id.is_some()
+                    && !owner.dropped
+                    && !owner.closed
+                    && !owner.terminal
+            })
+            || !self.negotiation_receipts.iter().all(|sequence| {
+                sequence
+                    .checked_sub(1)
+                    .and_then(|index| capture.events.get(index))
+                    .is_some_and(|event| {
+                        event["kind"] == "native_multistream_frame"
+                            && event["connection_trace_id"] == id + 1
+                            && event["stream_trace_id"] == self.stream
+                    })
+            })
+        {
+            return false;
+        }
+        let prepared = capture.prepared;
+        capture.owned(id, Some(self.stream), "non_pubsub_negotiation_failure", json!({
+            "operation": "stream_read", "io_kind": format!("{:?}", error.kind()),
+            "raw_os_error": error.raw_os_error(), "native_error_type": "quinn::ReadError",
+            "native_error_variant": "Reset", "error_code": code.into_inner(),
+            "error_boundary": "io_error_get_ref_direct_quinn_ReadError",
+            "typed_cause": "quinn_read_reset_0", "prepared": prepared,
+            "message": error.to_string().chars().take(512).collect::<String>(),
+            "negotiation_frame_sequences": self.negotiation_receipts,
+            "rejected_protocol": self.rejected_protocol, "protocol": "",
+            "negotiation_complete": false, "selected_rpc_authority": false,
+            "pubsub_proposed": false, "parser_failed": false, "ignored_body_observed": false,
+            "pending_read_frame_bytes": 0, "pending_write_frame_bytes": 0, "pending_rpc_bytes": 0
+        }));
+        self.non_pubsub_reported = capture.error.is_none() && !capture.overflow;
+        self.non_pubsub_reported
     }
 
     fn exclude_body(&mut self) {
@@ -994,12 +1109,16 @@ impl<T: AsyncRead + Unpin> AsyncRead for ObservedIo<T> {
         let result = Pin::new(&mut this.inner).poll_read(cx, bytes);
         match &result {
             Poll::Ready(Ok(count)) => this.wire.feed(0, &bytes[..*count]),
-            Poll::Ready(Err(e)) => this.wire.evidence.lock().native_error(
-                this.wire.connection,
-                Some(this.wire.stream),
-                "stream_read",
-                e,
-            ),
+            Poll::Ready(Err(e)) => {
+                if !this.wire.non_pubsub_read_error(e) {
+                    this.wire.evidence.lock().native_error(
+                        this.wire.connection,
+                        Some(this.wire.stream),
+                        "stream_read",
+                        e,
+                    );
+                }
+            }
             _ => {}
         }
         result

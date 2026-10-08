@@ -74,6 +74,8 @@ SOURCES["go"]["rpc"].update({"go.quic.native_stream.read", "go.quic.native_strea
 QUIC_OWNER_FIELDS = {"native_connection_id", "native_stream_id", "connection_receipt_sequence",
                      "native_stream_receipt_sequence", "remote_peer_id", "stream_direction", "protocol", "owner_basis"}
 EVENT_FIELDS = {"sequence", "mono_ns", "kind", "source"}
+RUST_WIRE_OWNER_FIELDS = {"connection_trace_id", "stream_trace_id", "remote_peer_id", "swarm_connection_id",
+                         "peer_id", "connection_id", "stream_id", "endpoint", "native_stack"}
 QUIC_CONTEXT_FIELDS = {"done", "cause_type", "error_code", "remote", "native_stream_id", "error"}
 SOURCES["rust"].update({
     **{kind: {"rust.libp2p.passive-upgraded-stream-io"}
@@ -86,7 +88,8 @@ SOURCES["rust"].update({
 for _implementation in SOURCES:
     SOURCES[_implementation]["shutdown_prepared"] = {_implementation + ".fixture.prepare_shutdown"}
 SOURCES["rust"].update({kind: {"rust.libp2p.passive-upgraded-stream-io"}
-                        for kind in ("native_io_error", "expected_native_close", "native_terminal_state")})
+                        for kind in ("native_io_error", "expected_native_close", "native_terminal_state",
+                                     "native_multistream_frame", "non_pubsub_negotiation_failure")})
 AUTHENTICATION = {
     "forge": {profile: "native_session_upgrade_output" for profile in PROFILES.values()},
     "go": {"quic": "native_quic_TLS_InterceptSecured_and_RemotePublicKey",
@@ -735,6 +738,101 @@ def _yamux_terminal_state(raw, event, events):
             "Yamux typed Closed did not establish actual owner close/drop/join")
 
 
+def _rust_multistream_frame(event):
+    side, receipt = event.get("direction"), event.get("receipt")
+    require(set(event) == EVENT_FIELDS | RUST_WIRE_OWNER_FIELDS | {"direction", "receipt", "io_basis"}
+            and side in {"read", "write"} and isinstance(receipt, dict) and set(receipt) == {"framed_hex", side}
+            and event["io_basis"] == ("successful_native_read" if side == "read"
+                                      else "successful_native_write_not_remote_ack"),
+            "invalid Rust successful multistream frame receipt")
+    encoded = receipt["framed_hex"]
+    require(isinstance(encoded, str) and 4 <= len(encoded) <= 32770 and len(encoded) % 2 == 0
+            and re.fullmatch(r"[0-9a-f]+", encoded), "unbounded/malformed Rust multistream bytes")
+    wire = bytes.fromhex(encoded)
+    length, offset = _varint(wire, 0)
+    require(offset <= 2 and 0 < length < 16384 and offset + length == len(wire)
+            and _same_json(receipt[side], {"framed_bytes": len(wire), "frames": 1,
+                "framed_sha256": hashlib.sha256(wire).hexdigest(), "complete_frames": True,
+                "invalid_or_over_limit": False}), "Rust multistream framing/hash differs from native bytes")
+    return wire[offset:]
+
+
+def _rust_non_pubsub_failure(raw, event, events):
+    details = {"operation", "io_kind", "raw_os_error", "native_error_type", "native_error_variant",
+               "error_code", "error_boundary", "typed_cause", "prepared", "message", "negotiation_frame_sequences",
+               "rejected_protocol", "protocol", "negotiation_complete", "selected_rpc_authority", "pubsub_proposed",
+               "parser_failed", "ignored_body_observed", "pending_read_frame_bytes", "pending_write_frame_bytes", "pending_rpc_bytes"}
+    require(set(event) == EVENT_FIELDS | RUST_WIRE_OWNER_FIELDS | details
+            and event["operation"] == "stream_read" and event["native_error_type"] == "quinn::ReadError"
+            and event["native_error_variant"] == "Reset" and type(event["error_code"]) is int and event["error_code"] == 0
+            and event["error_boundary"] == "io_error_get_ref_direct_quinn_ReadError"
+            and event["typed_cause"] == "quinn_read_reset_0" and event["raw_os_error"] is None
+            and isinstance(event["io_kind"], str) and 0 < len(event["io_kind"]) <= 64
+            and isinstance(event["message"], str) and len(event["message"]) <= 512
+            and type(event["prepared"]) is bool and event["protocol"] == ""
+            and all(event[field] is False for field in ("negotiation_complete", "selected_rpc_authority",
+                                                       "pubsub_proposed", "parser_failed", "ignored_body_observed"))
+            and all(type(event[field]) is int and event[field] == 0 for field in
+                    ("pending_read_frame_bytes", "pending_write_frame_bytes", "pending_rpc_bytes")),
+            "invalid Rust direct non-PubSub negotiation-failure diagnostic")
+    trace, stream = event["connection_trace_id"], event["stream_trace_id"]
+    require(type(trace) is int and 1 <= trace <= 16 and type(stream) is int and 1 <= stream <= 64
+            and event["stream_id"] == f"{trace}:{stream}" and event["connection_id"] == event["swarm_connection_id"]
+            and event["peer_id"] == event["remote_peer_id"], "non-PubSub diagnostic has foreign physical owner")
+    connection = _connection_owner(events, event["connection_id"], event["peer_id"], "rust", "quic", None)
+    require(connection["sequence"] < event["sequence"] and _same_json(connection.get("connection_trace_id"), trace)
+            and _same_json(event["endpoint"], connection.get("endpoint"))
+            and _same_json(event["native_stack"], connection.get("native_stack"))
+            and _same_json(event["native_stack"], {"transport": "quic", "security": "/tls/1.0.0", "muxer": "quic",
+                            "authentication_basis": AUTHENTICATION["rust"]["quic"]}),
+            "non-PubSub diagnostic lacks exact authenticated QUIC output")
+    bound = [value for value in events if value.get("kind") == "connection_established"
+             and value.get("connection_trace_id") == trace]
+    require(len(bound) == 1 and bound[0]["sequence"] < event["sequence"]
+            and bound[0].get("owner_basis") == "unique_authenticated_output_peer_and_endpoint"
+            and all(_same_json(bound[0].get(field), connection.get(field)) for field in
+                    RUST_WIRE_OWNER_FIELDS - {"stream_id", "stream_trace_id"}),
+            "non-PubSub diagnostic borrowed an unbound/foreign Swarm connection")
+    owned = [value for value in events if value.get("connection_trace_id") == trace
+             and value.get("stream_trace_id") == stream]
+    opened = [value for value in owned if value.get("kind") == "stream_opened"]
+    frames = [value for value in owned if value.get("kind") == "native_multistream_frame"]
+    failures = [value for value in owned if value.get("kind") == "non_pubsub_negotiation_failure"]
+    refs = event["negotiation_frame_sequences"]
+    require(len(opened) == len(failures) == 1 and failures[0] is event and opened[0].get("direction") == "inbound"
+            and isinstance(refs, list) and len(refs) == len(frames) == 4 and all(type(ref) is int for ref in refs)
+            and refs == [value["sequence"] for value in frames]
+            and opened[0]["sequence"] < refs[0] < refs[1] < refs[2] < refs[3] < event["sequence"]
+            and all(all(_same_json(value.get(field), event[field]) for field in RUST_WIRE_OWNER_FIELDS)
+                    for value in [opened[0], *frames])
+            and not any(value.get("kind") in {"protocol", "rpc", "wire_message", "graft", "prune", "native_io_error"}
+                        or value.get("kind") == "stream_dropped" and value.get("partial_frame") is not False for value in owned),
+            "non-PubSub diagnostic has incomplete/extra transcript or application/error authority")
+    transcript = {side: [] for side in ("read", "write")}
+    for frame in frames:
+        transcript[frame["direction"]].append(wire_token(frame["receipt"]["framed_hex"]))
+    protocol = event["rejected_protocol"]
+    require(_id(protocol) and protocol != HEADER and not protocol.startswith(("/meshsub/", "/floodsub/"))
+            and transcript == {"read": [HEADER, protocol], "write": [HEADER, "na"]}
+            and next(value["sequence"] for value in frames if wire_token(value["receipt"]["framed_hex"]) == "na")
+                > next(value["sequence"] for value in frames if value["direction"] == "read"
+                       and wire_token(value["receipt"]["framed_hex"]) != HEADER),
+            "non-PubSub failure lacks actual HEADER/proposal/fully-written na")
+    require(not any(value.get("kind") in {"native_close", "host_muxer_dropped", "connection_closed"}
+                    and value["sequence"] < event["sequence"]
+                    and (value.get("connection_trace_id") == trace or value.get("connection_id") == event["connection_id"])
+                    for value in events), "non-PubSub reset borrowed a previously closed carrier")
+    prepared = [value for value in events if value.get("kind") == "shutdown_prepared" and value["sequence"] < event["sequence"]]
+    require(len(prepared) <= 1 and event["prepared"] is bool(prepared), "non-PubSub diagnostic changed actual Prepare phase")
+    if prepared:
+        ack = prepared[0]
+        require(ack.get("source") == "rust.fixture.prepare_shutdown"
+                and all(ack.get(field) == raw[field] for field in ("actor", "case_token", "local_peer_id"))
+                and ack.get("admission_closed") is True and type(ack.get("pending_commands")) is int
+                and ack["pending_commands"] == 0 and type(ack.get("command_sequence")) is int,
+                "non-PubSub diagnostic lacks its actual owned Prepare ACK")
+
+
 def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=False):
     require(isinstance(raw, dict) and type(raw.get("schema_version")) is int
             and raw["schema_version"] == 1, "missing PubSub actor schema")
@@ -773,6 +871,10 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=F
                     and 0 < event["started_order"] < event["returned_order"] < 2 ** 64,
                     "failed/invalid rejected native stream disposal")
         _framing_terminal(event, implementation)
+        if implementation == "rust" and event.get("kind") == "native_multistream_frame":
+            _rust_multistream_frame(event)
+        if implementation == "rust" and event.get("kind") == "non_pubsub_negotiation_failure":
+            _rust_non_pubsub_failure(raw, event, events)
         if event.get("kind") == "native_terminal_state":
             _yamux_terminal_state(raw, event, events)
         if event.get("kind") == "expected_native_close":

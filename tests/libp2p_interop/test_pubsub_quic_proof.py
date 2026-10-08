@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from pubsub_cases import Case
 from pubsub_evidence import validate_active_case, validate_case
-from pubsub_quic_proof import SCOPE, needs_observer, validate_original, validate_split
+from pubsub_quic_proof import SCOPE, complete_case, needs_observer, validate_original, validate_split
 from test_pubsub_acceptance import Index
 from test_pubsub_evidence import synthetic_case
 from provenance import sha256_file
@@ -156,6 +156,138 @@ class OriginalSourceBindingTests(unittest.TestCase):
                     record["attempts"].append(deepcopy(record["attempts"][0]))
                 with self.assertRaises((ValueError, OSError)):
                     validate_original(record, self.spec, Path("/unit"), index.binaries, index.load)
+
+
+class CompleteCaseTests(unittest.TestCase):
+    """Double matrix selection/native execution, never the original active-proof checks."""
+
+    spec = Case("go", "forge", "1.1", "native_quic")
+
+    def test_pre_prepare_failure_is_reported_without_launching_companion_or_mutating_original(self):
+        index = Index()
+        original = index.record(self.spec)
+        original.pop("shutdown_barrier")
+        diagnostic = "RuntimeError: sink native failure before prepare_shutdown"
+        original.update(status="HARNESS_ERROR", errors=[diagnostic], cleanup_errors=["sink terminal join failed"])
+        original["raw"]["sink"]["error"] = "native failure before prepare_shutdown"
+        before = json.dumps(original, separators=(",", ":")).encode()
+        with patch("pubsub_quic_proof.needs_observer", return_value=True), \
+                patch("pubsub_quic_proof._snapshot", side_effect=index.load) as snapshot, \
+                patch("pubsub_quic_proof.run_case") as companion:
+            result = complete_case(original, self.spec, index.binaries, Path("/unit"), "/unit/rust-observer")
+        snapshot.assert_not_called()
+        companion.assert_not_called()
+        self.assertIs(result["original"], original)
+        self.assertEqual(json.dumps(original, separators=(",", ":")).encode(), before)
+        self.assertEqual(result["status"], "HARNESS_ERROR")
+        self.assertIsNone(result["shutdown"])
+        self.assertNotIn("evidence", result)
+        self.assertIn("original: " + diagnostic, result["errors"])
+        self.assertEqual(result["cleanup_errors"], ["original: sink terminal join failed"])
+        self.assertTrue(any("missing/invalid original active Prepare barrier" in error for error in result["errors"]))
+        self.assertFalse(any("KeyError" in error for error in result["errors"]))
+
+    def test_incomplete_or_forged_prepare_and_invalid_active_proof_never_launch_companion(self):
+        for mode in ("source", "operations", "missing", "duplicate", "foreign", "kind",
+                     "missing_ack", "snapshot_owner", "prefix", "overflow", "sticky", "traffic",
+                     "foreign_binary", "indexed_result", "indexed_ready", "missing_indexed", "attempt"):
+            with self.subTest(mode=mode):
+                index = Index()
+                original = index.record(self.spec)
+                barrier = original["shutdown_barrier"]
+                row = barrier["operations"][3]
+                snapshot = index.payloads[row["evidence_file"]]
+                if mode == "source":
+                    barrier["source"] = "python.fixture.fabricated_prepare_barrier"
+                elif mode == "operations":
+                    barrier["operations"] = None
+                elif mode == "missing":
+                    barrier["operations"] = barrier["operations"][:3]
+                elif mode == "duplicate":
+                    barrier["operations"][3] = deepcopy(barrier["operations"][2])
+                elif mode == "foreign":
+                    row["actor"] = "foreign"
+                elif mode == "kind":
+                    row["kind"] = "stop_requested"
+                elif mode == "missing_ack":
+                    snapshot["result"]["events"] = [event for event in snapshot["result"]["events"]
+                                                      if event["kind"] != "shutdown_prepared"]
+                elif mode == "snapshot_owner":
+                    snapshot["pid"] += 100
+                elif mode == "prefix":
+                    snapshot["result"]["events"][0]["peer_id"] = "foreign"
+                elif mode == "overflow":
+                    snapshot["result"]["overflow"] = True
+                elif mode == "sticky":
+                    snapshot["result"]["error"] = "native failure before prepare_shutdown"
+                elif mode == "traffic":
+                    victim = index.payloads[barrier["operations"][0]["evidence_file"]]["result"]
+                    next(event for event in victim["events"] if event.get("label") == "penalized")["peer_scores"][0]["value"] = 0
+                elif mode == "foreign_binary":
+                    original["processes"]["sink"]["command"][0] = "/unit/rust-observer"
+                elif mode == "indexed_result":
+                    index.payloads[original["processes"]["sink"]["outputs"][1]["log_file"]]["events"][0]["peer_id"] = "foreign"
+                elif mode == "indexed_ready":
+                    index.payloads[original["processes"]["sink"]["outputs"][0]["log_file"]]["local_peer_id"] = "foreign"
+                elif mode == "missing_indexed":
+                    index.payloads.pop(original["processes"]["sink"]["outputs"][1]["log_file"])
+                else:
+                    original["attempts"][-1]["pid"] += 100
+                before = json.dumps(original, separators=(",", ":")).encode()
+                with patch("pubsub_quic_proof.needs_observer", return_value=True), \
+                        patch("pubsub_quic_proof._snapshot", side_effect=index.load), \
+                        patch("pubsub_quic_proof.run_case") as companion:
+                    result = complete_case(original, self.spec, index.binaries, Path("/unit"), "/unit/rust-observer")
+                companion.assert_not_called()
+                self.assertEqual(result["status"], "HARNESS_ERROR")
+                self.assertIsNone(result["shutdown"])
+                self.assertNotIn("evidence", result)
+                self.assertEqual(json.dumps(original, separators=(",", ":")).encode(), before)
+
+    def test_valid_original_active_prefix_allows_separate_shutdown_despite_original_terminal_failure(self):
+        index = Index()
+        original = index.record(self.spec)
+        snapshots = {row["actor"]: index.load(row["evidence_file"])
+                     for row in original["shutdown_barrier"]["operations"][:4]}
+        facts = validate_active_case(original, snapshots)
+        original.update(status="HARNESS_ERROR", errors=["original shutdown NOT_PROVEN"])
+        original["raw"]["sink"]["error"] = "opaque native shutdown failure after Prepare"
+        owner = original["processes"]["sink"]
+        owner["returncode"] = owner["terminal_status"]["exit_code"] = 1
+        attempt = next(row for row in original["attempts"] if row["pid"] == owner["pid"])
+        attempt["exit_code"] = attempt["terminal_status"]["exit_code"] = 1
+        index.payloads[owner["outputs"][1]["log_file"]] = deepcopy(original["raw"]["sink"])
+        before = json.dumps(original, separators=(",", ":")).encode()
+        shutdown = {"case_token": "b" * 32}
+        with patch("pubsub_quic_proof.needs_observer", return_value=True), \
+                patch("pubsub_quic_proof._snapshot", side_effect=index.load), \
+                patch("pubsub_quic_proof.run_case", return_value=shutdown) as companion, \
+                patch("pubsub_quic_proof.validate_case", return_value=facts) as terminal:
+            result = complete_case(original, self.spec, index.binaries, Path("/unit"), "/unit/rust-observer")
+        companion.assert_called_once_with(self.spec, {**index.binaries, "rust": "/unit/rust-observer"},
+                                          Path("/unit/quic-observer"), command_attempt=None)
+        terminal.assert_called_once_with(shutdown)
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["evidence"], {"original_wire": facts, "instrumented_shutdown": facts,
+                                            "original_shutdown": "NOT_PROVEN"})
+        self.assertIs(result["original"], original)
+        self.assertEqual(json.dumps(original, separators=(",", ":")).encode(), before)
+
+    def test_failed_original_diagnostics_are_bounded_without_truncating_original(self):
+        original = {"errors": ["e" * 2048] * 12, "cleanup_errors": ["c" * 2048] * 12}
+        before = json.dumps(original, separators=(",", ":")).encode()
+        with patch("pubsub_quic_proof.needs_observer", return_value=True), \
+                patch("pubsub_quic_proof.run_case") as companion:
+            result = complete_case(original, self.spec, {}, Path("/unit"), "/unit/rust-observer")
+        companion.assert_not_called()
+        self.assertEqual(result["errors"][:8], ["original: " + "e" * 1024] * 8)
+        self.assertEqual(len(result["errors"]), 9)
+        self.assertEqual(result["cleanup_errors"], ["original: " + "c" * 1024] * 8)
+        self.assertEqual(result["status"], "HARNESS_ERROR")
+        self.assertIsNone(result["shutdown"])
+        self.assertNotIn("evidence", result)
+        self.assertEqual(json.dumps(original, separators=(",", ":")).encode(), before)
 
 
 class SplitProofBindingTests(unittest.TestCase):

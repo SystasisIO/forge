@@ -29,12 +29,21 @@ def complete_case(original, spec, binaries, root, observer_binary, *, command_at
               "acceptance_scenario_id": spec.scenario, "runner_scenario_id": spec.runner_id,
               "case": asdict(spec), "proof_scope": SCOPE, "original": original,
               "shutdown": None, "status": "HARNESS_ERROR", "errors": [], "cleanup_errors": []}
+    active_valid = False
     try:
         require(needs_observer(spec), "QUIC observer outside exact Rust matrix")
-        snapshots = {}
-        for row in original["shutdown_barrier"]["operations"][:4]:
-            snapshots[row["actor"]] = _snapshot(row["evidence_file"])
-        wire = validate_active_case(original, snapshots)
+        require(isinstance(original, dict), "invalid original active proof")
+        barrier = original.get("shutdown_barrier")
+        require(isinstance(barrier, dict) and set(barrier) == {"source", "operations"}
+                and barrier.get("source") == "python.fixture.all_actor_prepare_barrier"
+                and isinstance(barrier.get("operations"), list), "missing/invalid original active Prepare barrier")
+        rows = barrier["operations"][:4]
+        require(len(rows) == 4 and all(isinstance(row, dict) for row in rows)
+                and {row.get("actor") for row in rows} == {"victim", "offender", "replacement", "sink"}
+                and all(row.get("kind") == "prepare_ack" for row in rows),
+                "original active proof lacks four distinct Prepare ACK references")
+        wire, _, _ = validate_original(original, spec, root, binaries, _snapshot)
+        active_valid = True
         observer_binaries = dict(binaries, rust=observer_binary)
         shutdown = run_case(spec, observer_binaries, Path(root) / "quic-observer", command_attempt=command_attempt)
         result["shutdown"] = shutdown
@@ -45,6 +54,12 @@ def complete_case(original, spec, binaries, root, observer_binary, *, command_at
                               "original_shutdown": "NOT_PROVEN"}
         result["status"] = "observed"
     except (ValueError, TypeError, KeyError, OSError, RuntimeError) as error:
+        if not active_valid and isinstance(original, dict):
+            for field in ("errors", "cleanup_errors"):
+                diagnostics = original.get(field)
+                if isinstance(diagnostics, list):
+                    result[field].extend(f"original: {message[:1024]}" for message in diagnostics[:8]
+                                         if isinstance(message, str))
         result["errors"].append(f"{type(error).__name__}: {error}")
     return result
 

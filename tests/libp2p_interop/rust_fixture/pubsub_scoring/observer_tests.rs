@@ -293,12 +293,10 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let listener_key = identity::Keypair::generate_ed25519();
         let dialer_key = identity::Keypair::generate_ed25519();
-        let mut listener = libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(
-            &listener_key,
-        ));
-        let mut dialer = libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(
-            &dialer_key,
-        ));
+        let mut listener =
+            libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(&listener_key));
+        let mut dialer =
+            libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(&dialer_key));
         listener
             .listen_on(
                 ListenerId::next(),
@@ -326,14 +324,16 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                     local_addr,
                     send_back_addr,
                     ..
-                } =
-                    poll_fn(|cx| Pin::new(&mut listener).poll(cx)).await
+                } = poll_fn(|cx| Pin::new(&mut listener).poll(cx)).await
                 else {
                     panic!("missing actual QUIC incoming connection")
                 };
                 (
                     upgrade.await.unwrap(),
-                    ConnectedPoint::Listener { local_addr, send_back_addr },
+                    ConnectedPoint::Listener {
+                        local_addr,
+                        send_back_addr,
+                    },
                 )
             },
             async {
@@ -366,7 +366,12 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
         };
         for (peer, point, error, cause) in [
             (listener_peer, listener_point, local, "quinn_locally_closed"),
-            (dialer_peer, dialer_point, remote, "quinn_application_closed_0"),
+            (
+                dialer_peer,
+                dialer_point,
+                remote,
+                "quinn_application_closed_0",
+            ),
         ] {
             assert!(matches!(error, libp2p::quic::Error::Connection(_)));
             let error = io::Error::other(error);
@@ -384,18 +389,26 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                 let id = evidence
                     .connection(peer, point.clone(), NativeStack::Quic)
                     .unwrap();
-                evidence.bind(peer, &point, ConnectionId::new_unchecked(7)).unwrap();
+                evidence
+                    .bind(peer, &point, ConnectionId::new_unchecked(7))
+                    .unwrap();
                 if prepared {
                     prepare(&evidence);
                 }
-                evidence.lock().native_error(Some(id), None, "muxer_inbound", &error);
+                evidence
+                    .lock()
+                    .native_error(Some(id), None, "muxer_inbound", &error);
                 let capture = evidence.lock();
                 let accepted = prepared && QUIC_CAUSE_OBSERVER_ENABLED;
                 assert_eq!(capture.error.is_none(), accepted);
                 let record = capture.events.last().unwrap();
                 assert_eq!(
                     record["kind"],
-                    if accepted { "expected_native_close" } else { "native_io_error" }
+                    if accepted {
+                        "expected_native_close"
+                    } else {
+                        "native_io_error"
+                    }
                 );
                 assert_eq!(record["prepared"], prepared);
                 assert_eq!(record["operation"], "muxer_inbound");
@@ -447,18 +460,25 @@ fn current_typed_quic_causes_require_prepare_and_never_hide_nonzero_or_sticky_fa
                 quinn::ReadError::ConnectionLost(cause),
             );
             let original = (error.kind(), error.raw_os_error(), error.to_string());
-            evidence.lock().native_error(Some(id), Some(wire.stream), "stream_read", &error);
+            evidence
+                .lock()
+                .native_error(Some(id), Some(wire.stream), "stream_read", &error);
             assert_eq!(evidence.lock().error.is_none(), prepared && case < 2);
             assert_eq!(
                 (error.kind(), error.raw_os_error(), error.to_string()),
                 original
             );
             if case == 6 {
-                assert_eq!(evidence.lock().error.as_deref(), Some("earlier native error"));
+                assert_eq!(
+                    evidence.lock().error.as_deref(),
+                    Some("earlier native error")
+                );
             }
             if !prepared {
                 assert!(
-                    evidence.prepare(2, "victim", &"a".repeat(32), PeerId::random(), 0).is_err()
+                    evidence
+                        .prepare(2, "victim", &"a".repeat(32), PeerId::random(), 0)
+                        .is_err()
                 );
                 assert!(!evidence.lock().prepared);
             }
@@ -662,6 +682,227 @@ impl AsyncWrite for OneErrorIo {
     }
     fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Err(self.get_mut().0.take().unwrap()))
+    }
+}
+
+fn quic_wire(outbound: bool) -> (Evidence, usize, WireStream) {
+    let evidence = Evidence::default();
+    let peer = PeerId::random();
+    let point = ConnectedPoint::Dialer {
+        address: "/ip4/127.0.0.1/udp/41000/quic-v1".parse().unwrap(),
+        role_override: Endpoint::Dialer,
+        port_use: PortUse::Reuse,
+    };
+    let id = evidence
+        .connection(peer, point.clone(), NativeStack::Quic)
+        .unwrap();
+    evidence
+        .bind(peer, &point, ConnectionId::new_unchecked(7))
+        .unwrap();
+    let wire = WireStream::new(evidence.clone(), Some(id), outbound);
+    (evidence, id, wire)
+}
+
+fn reject_other(wire: &mut WireStream, protocol: &str) {
+    let proposal = wire.proposal_direction;
+    for (side, body) in [
+        (proposal, b"/multistream/1.0.0\n".to_vec()),
+        (proposal, format!("{protocol}\n").into_bytes()),
+        (1 - proposal, b"/multistream/1.0.0\n".to_vec()),
+        (1 - proposal, b"na\n".to_vec()),
+    ] {
+        for byte in framed(&body) {
+            wire.feed(side, &[byte]);
+        }
+    }
+}
+
+#[test]
+fn non_pubsub_na_direct_reset_is_diagnostic_and_returns_the_exact_native_error() {
+    for prepared in [false, true] {
+        for protocol in ["/ipfs/id/1.0.0", "/ipfs/ping/1.0.0", "/ipfs/id/push/1.0.0"] {
+            let (evidence, id, mut wire) = quic_wire(false);
+            reject_other(&mut wire, protocol);
+            if prepared {
+                prepare(&evidence);
+            }
+            let error = io::Error::from(quinn::ReadError::Reset(0u32.into()));
+            let expected = (error.kind(), error.raw_os_error(), error.to_string());
+            let identity = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<quinn::ReadError>()
+                .unwrap() as *const _;
+            let mut stream = ObservedIo {
+                inner: OneErrorIo(Some(error)),
+                wire,
+            };
+            let waker = noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            let Poll::Ready(Err(actual)) = Pin::new(&mut stream).poll_read(&mut cx, &mut [0; 8])
+            else {
+                panic!("native Reset was hidden");
+            };
+            assert_eq!(
+                (actual.kind(), actual.raw_os_error(), actual.to_string()),
+                expected
+            );
+            assert_eq!(
+                actual
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<quinn::ReadError>()
+                    .unwrap() as *const _,
+                identity
+            );
+            let capture = evidence.lock();
+            assert!(capture.error.is_none() && !capture.overflow);
+            let diagnostic = capture.events.last().unwrap();
+            assert_eq!(diagnostic["kind"], "non_pubsub_negotiation_failure");
+            assert_eq!(diagnostic["connection_trace_id"], id + 1);
+            assert_eq!(diagnostic["stream_trace_id"], 1);
+            assert_eq!(diagnostic["rejected_protocol"], protocol);
+            assert_eq!(diagnostic["prepared"], prepared);
+            assert_eq!(diagnostic["typed_cause"], "quinn_read_reset_0");
+            assert_eq!(diagnostic["error_code"], 0);
+            assert_eq!(diagnostic["message"], actual.to_string());
+            let refs = diagnostic["negotiation_frame_sequences"]
+                .as_array()
+                .unwrap();
+            assert_eq!(refs.len(), 4);
+            for reference in refs {
+                let frame = &capture.events[reference.as_u64().unwrap() as usize - 1];
+                assert_eq!(frame["kind"], "native_multistream_frame");
+                assert_eq!(frame["stream_id"], diagnostic["stream_id"]);
+                assert_eq!(frame["connection_id"], diagnostic["connection_id"]);
+            }
+            assert!(!capture.events.iter().any(|event| matches!(
+                event["kind"].as_str(),
+                Some("protocol" | "rpc" | "expected_native_close" | "native_io_error")
+            )));
+            assert_eq!(capture.live_streams, 1);
+            assert_eq!(capture.live_muxers, 1);
+            drop(capture);
+            drop(stream);
+            assert_eq!(evidence.lock().live_streams, 0);
+            assert!(evidence.lock().error.is_none());
+        }
+    }
+}
+
+#[test]
+fn non_pubsub_reset_requires_complete_same_owner_na_without_any_pubsub_or_parser_failure() {
+    for mode in 0..23 {
+        let (evidence, id, mut wire) = quic_wire(mode == 18);
+        if matches!(mode, 0 | 1 | 19) {
+            wire.feed(0, &framed(b"/multistream/1.0.0\n"));
+            wire.feed(0, &framed(b"/ipfs/id/1.0.0\n"));
+            if mode != 19 {
+                wire.feed(1, &framed(b"/multistream/1.0.0\n"));
+            }
+            if mode == 1 {
+                wire.feed(1, &[3, b'n']);
+            }
+            if mode == 19 {
+                wire.feed(1, &framed(b"na\n"));
+            }
+        } else if mode == 22 {
+            reject_other(&mut wire, "/meshsub/1.1.0");
+            wire.feed(0, &framed(b"/ipfs/id/1.0.0\n"));
+            wire.feed(1, &framed(b"na\n"));
+        } else {
+            reject_other(
+                &mut wire,
+                if mode == 2 {
+                    "/meshsub/1.1.0"
+                } else {
+                    "/ipfs/id/1.0.0"
+                },
+            );
+        }
+        match mode {
+            3 => wire.feed(0, &framed(b"/ipfs/ping/1.0.0\n")),
+            4 => wire.feed(0, &[3, b'/']),
+            5 => wire.pending_bytes = 1,
+            6 => wire.pending.push((
+                0,
+                NativeFrame {
+                    body: vec![0],
+                    framed: vec![1, 0],
+                },
+            )),
+            7 => wire.fail("earlier parser failure"),
+            8 => evidence.lock().fail("earlier sticky I/O failure"),
+            9 => evidence.lock().overflow = true,
+            10 => evidence.lock().connections[id].native_id = None,
+            11 => evidence.lock().connections[id].stack = NativeStack::NoiseYamux,
+            12 => wire.stream += 1,
+            13 => wire.ignored_bytes = true,
+            20 => evidence.lock().connections[id].dropped = true,
+            21 => evidence.lock().connections[id].swarm_id = None,
+            _ => (),
+        }
+        let error = match mode {
+            14 => io::Error::from(quinn::ReadError::Reset(7u32.into())),
+            15 => io::Error::other(io::Error::from(quinn::ReadError::Reset(0u32.into()))),
+            16 => io::Error::other("opaque reset 0"),
+            17 => io::Error::from_raw_os_error(38),
+            _ => io::Error::from(quinn::ReadError::Reset(0u32.into())),
+        };
+        let expected = (error.kind(), error.raw_os_error(), error.to_string());
+        let mut stream = ObservedIo {
+            inner: OneErrorIo(Some(error)),
+            wire,
+        };
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let Poll::Ready(Err(actual)) = Pin::new(&mut stream).poll_read(&mut cx, &mut [0; 8]) else {
+            panic!("native error hidden in mode {mode}");
+        };
+        assert_eq!(
+            (actual.kind(), actual.raw_os_error(), actual.to_string()),
+            expected
+        );
+        let capture = evidence.lock();
+        assert!(capture.error.is_some(), "mode {mode}");
+        assert!(
+            !capture
+                .events
+                .iter()
+                .any(|event| event["kind"] == "non_pubsub_negotiation_failure"),
+            "mode {mode}"
+        );
+        if mode == 8 {
+            assert_eq!(capture.error.as_deref(), Some("earlier sticky I/O failure"));
+        }
+    }
+}
+
+#[test]
+fn non_pubsub_read_reset_does_not_authorize_write_errors_or_later_wire_bytes() {
+    for write_error in [false, true] {
+        let (evidence, _, mut wire) = quic_wire(false);
+        reject_other(&mut wire, "/ipfs/id/1.0.0");
+        let mut stream = ObservedIo {
+            inner: OneErrorIo(Some(io::Error::from(quinn::ReadError::Reset(0u32.into())))),
+            wire,
+        };
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        if write_error {
+            assert!(matches!(
+                Pin::new(&mut stream).poll_write(&mut cx, b"x"),
+                Poll::Ready(Err(_))
+            ));
+        } else {
+            assert!(matches!(
+                Pin::new(&mut stream).poll_read(&mut cx, &mut [0; 8]),
+                Poll::Ready(Err(_))
+            ));
+            assert!(evidence.lock().error.is_none());
+            stream.wire.feed(0, &[1, 0]);
+        }
+        assert!(evidence.lock().error.is_some());
     }
 }
 
