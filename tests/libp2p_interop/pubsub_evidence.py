@@ -1365,7 +1365,8 @@ def _quic_negotiation_snapshot(events, event, *, is_io):
     return captured, touched
 
 
-def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=False, abort_error=False, abort_close=False, abort_peer_read=False):
+def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=False, abort_error=False, abort_close=False,
+                        abort_peer_read=False, empty_stream_error=False, negotiation_reset=False):
     """Unselected native returns describe physical owners, never accepted PubSub outcomes."""
     connection, stream = _go_quic_stream(events, event, diagnostic=True)
     require(connection["local_peer_id"] == raw["local_peer_id"] and _quic_diagnostic_phase(event)
@@ -1385,7 +1386,7 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=
     if cleanup_error or empty_error:
         extra |= {"error_code", "remote", "transport_error_type", "transport_error_code", "transport_error_remote",
                   "same_native_connection_context_cause"}
-    if abort_error:
+    if abort_error or empty_stream_error:
         extra |= {"error_code", "remote", "transport_error_type", "transport_error_code", "transport_error_remote",
                   "transport_native_stream_id", "same_send_context_cause"}
     if abort_close:
@@ -1426,7 +1427,7 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=
                 "diagnostic error is not a sealed direct same-parent AppClosed0 native return")
         parent = _quic_zero_context(event["connection_context"])
         require(parent["remote"] is event["remote"], "diagnostic native return borrowed a mismatched parent cause")
-    elif abort_error:
+    elif abort_error or empty_stream_error:
         require(is_io and event["outcome"] == "error" and event["error_type"] == "*network.StreamError"
                 and event["typed_cause"] == "libp2p_quic_stream_error" and event["transport_error_type"] == "*quic.StreamError"
                 and type(event["error_code"]) is int and event["error_code"] == 0
@@ -1468,7 +1469,7 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=
         require(event["direction"] in {"read", "write"} and event["operation"] == "stream_" + event["direction"], "invalid diagnostic I/O direction")
     else:
         require(event["operation"] in {"stream_close", "stream_close_read", "stream_close_write", "stream_reset", "stream_reset_with_error"}
-                and (type(event["requested_reset_code"]) is int and event["requested_reset_code"] == 0
+                and (type(event["requested_reset_code"]) is int and event["requested_reset_code"] == (4097 if negotiation_reset else 0)
                      if event["operation"] == "stream_reset_with_error" else event["requested_reset_code"] is None), "invalid diagnostic reset/close operation")
         if event["operation"] == "stream_close":
             context = _quic_ref(events, event["send_context_receipt_sequence"], "native_quic_send_context", event["sequence"])
@@ -1490,6 +1491,93 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=
     if event["protocol"]:
         _go_quic_owner(events, event, event["remote_peer_id"], event["protocol"], "quic", diagnostic=True)
     return captured, touched
+
+
+def _quic_empty_negotiation_cleanup(raw, events, *, terminal, excluded_owners):
+    """Passive pending rows in active snapshots; exact disposal/join at terminal."""
+    anchors = [value for value in events if (
+        value.get("kind") == "native_stream_operation" and value.get("operation") == "stream_reset_with_error"
+        and value.get("requested_reset_code") == 4097
+        or value.get("kind") == "native_quic_negotiation_io_return" and value.get("outcome") == "error"
+        and (value.get("error_type") == "*network.StreamError" or value.get("transport_error_type") == "*quic.StreamError"
+             or value.get("typed_cause") == "libp2p_quic_stream_error"))]
+    if not anchors:
+        return {}
+    require(raw.get("error") is None and raw.get("overflow") is False,
+            "empty native negotiation cannot clear a sticky failure or overflow")
+    if terminal:
+        require(raw.get("finalized") is True and raw.get("joined") is True,
+                "empty native negotiation cleanup lacks actual terminal state")
+        _terminal_owners(raw)
+    lower = [value for value in events if value.get("source") in GO_QUIC_SOURCES.values()
+             or value.get("source") in {"go.quic.native_stream.read", "go.quic.native_stream.write"}]
+    joined = _quic_native_join(lower) if terminal or any(value["kind"] == "native_quic_join" for value in lower) else None
+    diagnostics, owners_seen = {}, set()
+    for anchor in anchors:
+        connection, stream = _go_quic_stream(events, anchor, diagnostic=True)
+        key = (stream["native_connection_id"], stream["native_stream_id"])
+        if key in excluded_owners or key in owners_seen:
+            continue
+        owners_seen.add(key)
+        ack = stream["prepare_ack_sequence"]
+        require(stream["stream_direction"] == "Inbound" and stream["native_call_begin_prepare_ack_sequence"] == 0
+                and type(ack) is int and 0 < ack < stream["sequence"]
+                and connection["local_peer_id"] == raw["local_peer_id"],
+                "empty negotiation changed its real Accept BEGIN or registration Prepare")
+        rows = _quic_prepare_rows(raw, anchor, events, ack)
+        require((stream["native_connection_id"], stream["native_stream_id"]) not in rows
+                and any(key[0] == stream["native_connection_id"] for key in rows),
+                "empty negotiation invented stream baseline or lacks actual parent baseline")
+        require(_quic_zero_context(stream["send_context_at_stream_return"], stream["native_stream_id"])["remote"] is True,
+                "empty negotiation registration lacks its direct current remote stream context")
+        owned = [value for value in events if value.get("native_connection_id") == stream["native_connection_id"]
+                 and _same_json(value.get("native_stream_id"), stream["native_stream_id"])]
+        calls = [value for value in owned if value is not stream]
+        io = [value for value in calls if value.get("kind") == "native_quic_negotiation_io_return"]
+        resets = [value for value in calls if value.get("kind") == "native_stream_operation"]
+        require(len(calls) == len(io) + len(resets) and len(io) <= 2 and len(resets) <= 1
+                and all(type(value.get("direction")) is str for value in io)
+                and len({value["direction"] for value in io}) == len(io)
+                and all(value["direction"] in {"write", "read"} for value in io)
+                and all(value.get("operation") == "stream_reset_with_error" and value.get("requested_reset_code") == 4097
+                        for value in resets),
+                "empty negotiation has duplicate/extra/invalid native calls or application authority")
+        require(not terminal or len(io) == 2 and len(resets) == 1,
+                "terminal empty negotiation lacks both original I/O receipts and full native4097 disposal")
+        disposal = resets[0] if resets else None
+        orders = set()
+        for value in calls:
+            require(_quic_same_owner(value, anchor) and value["sequence"] not in diagnostics
+                    and value["protocol"] == "" and (joined is None or value["sequence"] < joined["sequence"]),
+                    "empty negotiation borrowed owner or has post-join observation")
+            is_io = value.get("kind") == "native_quic_negotiation_io_return"
+            captured, touched = _go_quic_diagnostic(raw, events, value, empty_stream_error=is_io,
+                                                   negotiation_reset=value is disposal)
+            snapshot = value["negotiation_snapshot"]
+            require(captured == 0 and touched is False and snapshot["frame_sequences"] == []
+                    and snapshot["proposal"] == snapshot["reply"] == snapshot["selected_protocol"] == ""
+                    and snapshot["proposals"] == 0
+                    and value["prepare_ack_sequence"] == value["terminal_prepare_ack_sequence"]
+                    == value["prepare_snapshot_ack_sequence"] == ack
+                    and value["prepare_baseline_present"] is False and value["stream_prepare_baseline_present"] is False
+                    and value["connection_prepare_baseline_present"] is True,
+                    "empty negotiation has bytes/selection or changed actual Prepare baseline")
+            _quic_context(value["connection_context"], live=True)
+            _quic_context(value["connection_context_at_prepare"], live=True)
+            send = _quic_zero_context(value["send_context"], stream["native_stream_id"])
+            require(send["remote"] is True and (not is_io or value["remote"] is True)
+                    and (value.get("direction") != "write" or value["same_send_context_cause"] is True),
+                    "empty negotiation has local/mismatched/borrowed send cause")
+            require(value["started_order"] not in orders and value["returned_order"] not in orders,
+                    "empty negotiation has ambiguous native call counters")
+            orders.update((value["started_order"], value["returned_order"]))
+            diagnostics[value["sequence"]] = value
+        io.sort(key=lambda value: value["started_order"])
+        require((len(io) < 2 or [value["direction"] for value in io] == ["write", "read"]
+                 and io[0]["returned_order"] < io[1]["started_order"])
+                and (disposal is None or all(value["returned_order"] < disposal["started_order"] for value in io)),
+                "empty negotiation disposal was early or I/O continued after disposal")
+    return diagnostics
 
 
 def _quic_subscription_candidate(data, topic):
@@ -1729,7 +1817,9 @@ def _quic_stream_aborts(raw, events, *, terminal):
         observed = {"read": b"", "write": b""}
         for value in calls:
             _go_quic_diagnostic(raw, events, value, abort_error=value is original)
-            require(value["prepare_ack_sequence"] == ack and value["protocol"] == "", "abort prefix has foreign preparation/selection")
+            require(value["prepare_ack_sequence"] == ack and value["protocol"] == ""
+                    and value["returned_order"] <= original["returned_order"],
+                    "abort prefix has foreign preparation/selection or later native I/O")
             snapshot = value["negotiation_snapshot"]
             side = value["direction"]
             prefix = _quic_captured_bytes(snapshot["successful_prefix"], 16 * 1024 + 512)
@@ -2018,6 +2108,8 @@ def _go_quic_operations(raw, events, *, terminal):
             "native QUIC physical owner capture exceeds fixture bounds")
     abort_errors, abort_closes, abort_proofs, abort_owners = _quic_stream_aborts(raw, events, terminal=terminal)
     native_only_proofs, native_only_owners = _quic_late_selected_cleanup(raw, events, terminal=terminal)
+    empty_native_diagnostics = _quic_empty_negotiation_cleanup(raw, events, terminal=terminal,
+                                                              excluded_owners=abort_owners | native_only_owners)
     base = EVENT_FIELDS | QUIC_OWNER_FIELDS
     operations, pending, frames, finals, contexts, orders = {}, {}, {}, {}, {}, {}
     diagnostics, diagnostic_contexts, diagnostic_touched, captured_bytes = {}, {}, set(), 0
@@ -2042,6 +2134,9 @@ def _go_quic_operations(raw, events, *, terminal):
             require(event["local_peer_id"] == raw["local_peer_id"], "lower connection has foreign local actor identity")
             continue
         if kind == "native_quic_join":
+            continue
+        if event["sequence"] in empty_native_diagnostics:
+            require(empty_native_diagnostics[event["sequence"]] is event, "foreign empty native diagnostic dispatch")
             continue
         if event["sequence"] in abort_proofs:
             require(abort_proofs[event["sequence"]] is event, "foreign abort proof dispatch")

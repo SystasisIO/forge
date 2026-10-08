@@ -509,6 +509,44 @@ score, delivery, selected protocol or framing receipt authority and does not
 infer why the parent closed. Opaque/wrapped/errno/nonzero errors and prior
 sticky failures remain fatal.
 
+An independent no-byte native-negotiation disposal gate covers only a late
+inbound native owner whose actual Accept BEGIN ACK remains zero and whose
+registration and operation/RETURN ACKs match the indexed live parent Prepare.
+There is no stream-at-Prepare baseline. Exactly one Write followed by one Read
+returns `(0, error)`: both original errors are direct `*network.StreamError`
+with direct `*quic.StreamError`, zero codes, Remote=true and the exact native
+stream ID. Write must match its own current send-context cause; Read does not
+borrow that cause. Current send contexts retain the direct same-ID remote-zero
+state, while the parent contexts sealed at each native RETURN and at Prepare
+remain live. Every snapshot and successful prefix is wholly empty: no header,
+proposal, reply, selected protocol, partial bytes, lazy tail, parser failure,
+RPC or application authority is allowed on that owner.
+
+Only the same owner's nil `ResetWithError(StreamProtocolNegotiationFailed)`
+with requested code `0x1001` (4097), BEGIN after both error RETURNs, disposes
+this exact empty chain. Both directions are canceled by the pinned native
+QUIC implementation; this is not proof of remote reset delivery or the reason
+for the earlier cancellation. No later I/O, half-close, other reset code,
+failed/early/missing disposal, foreign/ambiguous owner or pending native call
+qualifies. An active snapshot may retain a strictly validated pending subset
+of these native rows, including Write before Read/Reset or Reset4097 published
+before delayed I/O receipts. Every present row still requires the exact
+authenticated owner, real ACK, direct current cause, empty bytes and unique
+native counters; any present Reset must already have its successful native
+4097 RETURN after every observed error RETURN. Pending diagnostics export no
+accepted cleanup authority, claim neither completed cleanup nor host/global
+native join, and cannot borrow future receipts or fabricate absent calls. Terminal
+acceptance additionally requires all receipts to precede the actual zero-call
+native join, with final host, subscriber and callback ownership checks.
+Native errors stay `outcome=error`; this gate exports no protocol, RPC, score,
+delivery or framing authority and makes no graceful-close claim. Existing
+AppClosed0 and qualified PubSub-abort contracts are unchanged. A tentative
+sealed native RETURN alone cannot activate the PubSub-abort I/O guard; once
+qualified, the abort's entire indexed native call list and RETURN counters
+still reject extra I/O, including delayed receipt publication. Prior sticky
+failure, malformed capture and overflow remain fatal. Historical failed
+artifacts are not rewritten or promoted by this implementation.
+
 ### Negotiation-Aborted Cleanup Only
 
 Every `native_quic_stream` additionally has the immutable

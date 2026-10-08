@@ -938,6 +938,105 @@ func TestPubsubQUICUnselectedReturnsCaptureExactPrefixOwnerAndCurrentContexts(t 
 	}
 }
 
+func TestPubsubQUICEmptyInboundNegotiationPreservesReturnsAndProtocolFailureDisposal(t *testing.T) {
+	for _, delayedPublication := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delayed_write=%v", delayedPublication), func(t *testing.T) {
+			o, original, _, cancelParent := pubsubQUICUnit(t, network.DirInbound)
+			ctx, cancelSend := context.WithCancelCause(context.Background())
+			t.Cleanup(func() { cancelSend(context.Canceled) })
+			raw := &pubsubQUICUnitStream{ctx: ctx, cancel: cancelSend, id: 4, writeN: 0}
+			writeCause := &quic.StreamError{StreamID: raw.id, Remote: true}
+			writeError := &network.StreamError{Remote: true, TransportError: writeCause}
+			readError := &network.StreamError{Remote: true, TransportError: &quic.StreamError{StreamID: raw.id, Remote: true}}
+			cancelSend(writeCause)
+			raw.writeErr, raw.readErr = writeError, readError
+			paused := &pubsubQUICUnitRegistrationPause{pubsubQUICUnitStream: raw,
+				entered: make(chan struct{}), release: make(chan struct{})}
+			capable := original.connection.CapableConn.(*pubsubQUICUnitCapable)
+			capable.stream, capable.closeContext = paused, cancelParent
+			accepted, acceptDone := make(chan network.MuxedStream, 1), make(chan struct{})
+			var releaseAccept sync.Once
+			t.Cleanup(func() { releaseAccept.Do(func() { close(paused.release) }); pubsubScoringUnitCleanupJoin(acceptDone) })
+			go func() {
+				defer close(acceptDone)
+				stream, err := original.connection.AcceptStream()
+				if err != nil {
+					accepted <- nil
+					return
+				}
+				accepted <- stream
+			}()
+			pubsubScoringUnitWait(t, paused.entered)
+			pubsubQUICUnitPrepare(t, o)
+			releaseAccept.Do(func() { close(paused.release) })
+			pubsubScoringUnitWait(t, acceptDone)
+			s, ok := (<-accepted).(*pubsubQUICStream)
+			if !ok || s.nativeBeginAck != 0 || s.createdAck != o.prepareAck {
+				t.Fatal("actual Accept BEGIN/registration phase lost")
+			}
+			var delayed *pubsubQUICUnitDelayedContext
+			var writeDone chan struct{}
+			writeReturned := make(chan error, 1)
+			var releaseWrite sync.Once
+			write := func() {
+				n, err := s.Write(pubsubQUICUnitToken("/multistream/1.0.0\n"))
+				if n != 0 {
+					writeReturned <- fmt.Errorf("changed native Write count %d", n)
+				} else {
+					writeReturned <- err
+				}
+			}
+			if delayedPublication {
+				delayed = &pubsubQUICUnitDelayedContext{Context: raw.ctx, entered: make(chan struct{}), release: make(chan struct{})}
+				s.sendContext = delayed
+				writeDone = make(chan struct{})
+				t.Cleanup(func() { releaseWrite.Do(func() { close(delayed.release) }); pubsubScoringUnitCleanupJoin(writeDone) })
+				go func() { defer close(writeDone); write() }()
+				pubsubScoringUnitWait(t, delayed.entered)
+			} else {
+				write()
+			}
+			if n, err := s.Read(make([]byte, 1)); n != 0 || err != readError {
+				t.Fatal("native Read changed", n, err)
+			}
+			if delayedPublication {
+				releaseWrite.Do(func() { close(delayed.release) })
+				pubsubScoringUnitWait(t, writeDone)
+			}
+			if err := <-writeReturned; err != writeError || o.failure != nil || s.failed || s.abort != nil || s.abortReturn == nil {
+				t.Fatal("empty tentative RETURN became a PubSub abort/failure", err, o.failure)
+			}
+			if err := s.ResetWithError(network.StreamProtocolNegotiationFailed); err != nil || raw.resetCode != 4097 {
+				t.Fatal("native negotiation-failure disposal changed", err, raw.resetCode)
+			}
+			if err := s.connection.Close(); err != nil {
+				t.Fatal(err)
+			}
+			joinContext, cancelJoin := context.WithTimeout(context.Background(), time.Second)
+			defer cancelJoin()
+			if err := o.quic.join(joinContext); err != nil || o.failure != nil {
+				t.Fatal("actual native operations did not join", err, o.failure)
+			}
+			returns := pubsubScoringUnitEvents(o, "native_quic_negotiation_io_return")
+			if len(returns) != 2 {
+				t.Fatal("missing original native returns", returns)
+			}
+			for _, event := range returns {
+				snapshot := event["negotiation_snapshot"].(map[string]any)
+				if event["outcome"] != "error" || event["successful_prefix_bytes"] != 0 || snapshot["parser_failed"] != false ||
+					snapshot["touched_pubsub"] != false || len(snapshot["frame_sequences"].([]int)) != 0 {
+					t.Fatal("empty original return acquired bytes/authority", event)
+				}
+			}
+			for _, kind := range []string{"protocol", "rpc", "multistream_frame", "native_quic_framing_finalized", "native_quic_negotiation_abort_pending"} {
+				if len(pubsubScoringUnitEvents(o, kind)) != 0 {
+					t.Fatal("empty cleanup exported PubSub authority", kind)
+				}
+			}
+		})
+	}
+}
+
 func TestPubsubQUICUnselectedOperationsCaptureExistingDisposalWithoutCompletingNegotiation(t *testing.T) {
 	for _, mode := range []string{"full_close", "reset", "half_close", "failed_close", "late_stream", "before_prepare"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1559,7 +1658,7 @@ func TestPubsubQUICStreamAbortRejectsInvalidBytesCausesAndOwnedDisposal(t *testi
 }
 
 func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *testing.T) {
-	for _, mode := range []string{"complete", "peer_complete", "future_reset", "failed_reset", "partial_prefix", "sticky"} {
+	for _, mode := range []string{"complete", "peer_complete", "future_reset", "failed_reset", "partial_prefix", "sticky", "extra_io"} {
 		t.Run(mode, func(t *testing.T) {
 			var tail []byte
 			if mode == "partial_prefix" {
@@ -1586,6 +1685,11 @@ func TestPubsubQUICAbortCloseBindsSealedReadBeforeDelayedReadPublication(t *test
 			t.Cleanup(func() { release.Do(func() { close(delayed.release) }); pubsubScoringUnitCleanupJoin(joined) })
 			go func() { defer close(joined); _, err := s.Read(make([]byte, 1)); returned <- err }()
 			pubsubScoringUnitWait(t, delayed.entered)
+			if mode == "extra_io" {
+				if n, err := s.Write(nil); n != 0 || err != nil || o.failure != nil {
+					t.Fatal("tentative sealed RETURN became a qualified abort", n, err, o.failure)
+				}
+			}
 			if mode == "future_reset" || mode == "peer_complete" {
 				_ = s.Reset()
 			}

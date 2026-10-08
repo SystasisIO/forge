@@ -795,6 +795,217 @@ class PubSubEvidenceTests(unittest.TestCase):
                 with self.subTest(close=close, mode=mode), self.assertRaises(ValueError):
                     validate_case(artifact)
 
+    def empty_native_negotiation_events(self, artifact, *, delayed_publication=False):
+        disposal = self.lower_diagnostic_events(artifact, "late_reset")
+        events = artifact["raw"]["sink"]["events"]
+        stream = events[disposal["native_stream_receipt_sequence"] - 1]
+        send = {"done": True, "cause_type": "*quic.StreamError", "error_code": 0, "remote": True,
+                "native_stream_id": stream["native_stream_id"], "error": "synthetic current remote stream zero"}
+        stream.update(stream_direction="Inbound", native_call_begin_prepare_ack_sequence=0,
+                      send_context_at_stream_return=deepcopy(send))
+        disposal.update(stream_direction="Inbound", operation="stream_reset_with_error", requested_reset_code=4097,
+                        started_order=5, returned_order=6, send_context=deepcopy(send))
+        fields = {key: deepcopy(value) for key, value in disposal.items() if key not in {"kind", "source", "requested_reset_code"}}
+        io = []
+        for direction, start in (("write", 1), ("read", 3)):
+            original = {**deepcopy(fields), "kind": "native_quic_negotiation_io_return",
+                        "source": GO_QUIC_SOURCES["native_quic_negotiation_io_return"], "operation": "stream_" + direction,
+                        "direction": direction, "started_order": start, "returned_order": start + 1,
+                        "requested_bytes": 20 if direction == "write" else 1, "successful_prefix_bytes": 0,
+                        "successful_prefix_valid": True, "outcome": "error", "error": "synthetic direct remote native stream zero",
+                        "error_type": "*network.StreamError", "typed_cause": "libp2p_quic_stream_error",
+                        "error_code": 0, "remote": True, "transport_error_type": "*quic.StreamError",
+                        "transport_error_code": 0, "transport_error_remote": True,
+                        "transport_native_stream_id": stream["native_stream_id"], "same_send_context_cause": direction == "write"}
+            original["negotiation_snapshot"]["successful_prefix"] = self.cleanup_capture(b"")
+            io.append(original)
+        self.insert_sink_events(artifact, events.index(disposal) + int(delayed_publication),
+                                list(reversed(io)) if delayed_publication else io)
+        return stream, *io, disposal, next(value for value in events if value["kind"] == "native_quic_join")
+
+    def test_empty_native_negotiation_cleanup_retains_remote_errors_and_begin_zero(self):
+        for delayed in (False, True):
+            artifact = synthetic_case()
+            stream, write, read, disposal, joined = self.empty_native_negotiation_events(artifact, delayed_publication=delayed)
+            raw = artifact["raw"]["sink"]
+            before = deepcopy(artifact)
+            with self.subTest(delayed_publication=delayed):
+                validate_case(artifact)
+                self.assertEqual(_go_quic_operations(raw, raw["events"], terminal=True), {})
+                self.assertTrue(_same_json(before, artifact))
+                self.assertEqual(stream["native_call_begin_prepare_ack_sequence"], 0)
+                self.assertEqual(disposal["requested_reset_code"], 4097)
+                self.assertLess(write["returned_order"], read["started_order"])
+                self.assertLess(read["returned_order"], disposal["started_order"])
+                self.assertLess(disposal["sequence"], joined["sequence"])
+                for original in (write, read):
+                    self.assertEqual(original["outcome"], "error")
+                    self.assertIs(original["stream_prepare_baseline_present"], False)
+                    with self.assertRaises(ValueError):
+                        _go_quic_owner(raw["events"], original, original["remote_peer_id"], "", "quic")
+                if delayed:
+                    self.assertLess(disposal["sequence"], read["sequence"])
+                    self.assertLess(read["sequence"], write["sequence"])
+
+    def test_empty_native_negotiation_active_snapshot_never_borrows_future_native_or_host_join(self):
+        artifact = synthetic_case()
+        _, write, read, disposal, _ = self.empty_native_negotiation_events(artifact, delayed_publication=True)
+        active = deepcopy(artifact["raw"]["sink"])
+        active.update(finalized=False, joined=False, host_close_returned=False)
+        active["events"] = active["events"][:max(value["sequence"] for value in (write, read, disposal))]
+        before = deepcopy(active)
+        prepared = next(value for value in active["events"] if value["kind"] == "shutdown_prepared")
+        quiesced = next(value for value in active["events"] if value["kind"] == "shutdown_quiesced")
+        self.assertFalse(any(value["kind"] in {"native_quic_join", "shutdown"} for value in active["events"]))
+        self.assertEqual(_go_quic_operations(active, active["events"], terminal=False), {})
+        self.assertIs(shutdown_ack(active, "go", "sink", active["case_token"], active["local_peer_id"],
+                                   prepared["command_sequence"], active=True), prepared)
+        self.assertIs(quiesce_ack(active, "sink", active["case_token"], active["local_peer_id"], active["pid"],
+                                 quiesced["command_sequence"], prepared["sequence"], active=True), quiesced)
+        self.assertTrue(_same_json(before, active))
+        with self.assertRaises(ValueError):
+            _go_quic_operations(active, active["events"], terminal=True)
+        for mode in ("cause", "bytes", "disposal"):
+            changed = deepcopy(active)
+            call, reset = changed["events"][read["sequence"] - 1], changed["events"][disposal["sequence"] - 1]
+            if mode == "cause":
+                call["transport_error_code"] = 1
+            elif mode == "bytes":
+                call["negotiation_snapshot"]["read"]["partial_frame"] = self.cleanup_capture(b"\x01")
+            elif mode == "disposal":
+                reset.update(outcome="error", error="native Reset failure", error_type="syscall.Errno", typed_cause="opaque")
+            with self.subTest(active_mutation=mode), self.assertRaises(ValueError):
+                _go_quic_operations(changed, changed["events"], terminal=False)
+
+    def test_empty_native_negotiation_active_partial_publication_is_pending_not_cleanup_authority(self):
+        for stage in ("after_reset", "after_write", "after_read", "before_reset"):
+            artifact = synthetic_case()
+            _, write, read, disposal, _ = self.empty_native_negotiation_events(
+                artifact, delayed_publication=stage in {"after_reset", "after_read"})
+            last = {"after_reset": disposal, "after_write": write, "after_read": read, "before_reset": read}[stage]
+            active = deepcopy(artifact["raw"]["sink"])
+            active.update(finalized=False, joined=False, host_close_returned=False)
+            active["events"] = active["events"][:last["sequence"]]
+            prepared = next(value for value in active["events"] if value["kind"] == "shutdown_prepared")
+            quiesced = next(value for value in active["events"] if value["kind"] == "shutdown_quiesced")
+            before = deepcopy(active)
+            with self.subTest(stage=stage):
+                self.assertEqual(_go_quic_operations(active, active["events"], terminal=False), {})
+                self.assertIs(shutdown_ack(active, "go", "sink", active["case_token"], active["local_peer_id"],
+                                           prepared["command_sequence"], active=True), prepared)
+                self.assertIs(quiesce_ack(active, "sink", active["case_token"], active["local_peer_id"], active["pid"],
+                                         quiesced["command_sequence"], prepared["sequence"], active=True), quiesced)
+                self.assertTrue(_same_json(before, active))
+                # Even a forged global join cannot supply either missing native receipt.
+                terminal = deepcopy(artifact["raw"]["sink"])
+                missing = next(value for value in (write, read, disposal) if value["sequence"] > last["sequence"])
+                target = terminal["events"][missing["sequence"] - 1]
+                sequence, mono = target["sequence"], target["mono_ns"]
+                target.clear()
+                target.update(sequence=sequence, mono_ns=mono, kind="score", source="go.pubsub.WithPeerScoreInspect", peer_scores=[])
+                with self.assertRaises(ValueError):
+                    _go_quic_operations(terminal, terminal["events"], terminal=True)
+            for mode in ("foreign_owner", "foreign_ack", "bool_counter", "nonzero", "bytes", "wrapped", "sticky"):
+                changed = deepcopy(active)
+                row = changed["events"][last["sequence"] - 1]
+                if mode == "foreign_owner":
+                    row["native_stream_id"] = 8
+                elif mode == "foreign_ack":
+                    row["prepare_ack_sequence"] = prepared["sequence"] + 1
+                elif mode == "bool_counter":
+                    row["returned_order"] = True
+                elif mode == "nonzero":
+                    row["send_context"]["error_code"] = 1
+                elif mode == "bytes":
+                    row["negotiation_snapshot"]["read"]["partial_frame"] = self.cleanup_capture(b"\x01")
+                elif mode == "wrapped":
+                    if row["kind"] == "native_quic_negotiation_io_return":
+                        row["error_type"] = "*fmt.wrapError"
+                    else:
+                        row.update(outcome="error", error="wrapped native Reset failure", error_type="*fmt.wrapError", typed_cause="opaque")
+                else:
+                    changed["error"] = "earlier sticky native error"
+                with self.subTest(stage=stage, mutation=mode), self.assertRaises(ValueError):
+                    _go_quic_operations(changed, changed["events"], terminal=False)
+
+    def test_empty_native_negotiation_cleanup_rejects_unowned_bytes_causes_and_disposal(self):
+        modes = ("foreign_owner", "foreign_peer", "foreign_parent", "foreign_ack", "zero_ack", "future_ack", "bool_ack",
+                 "retrofitted_begin", "missing_parent_baseline", "fake_stream_baseline", "wrong_basis", "wrapped", "opaque", "errno",
+                 "nonzero", "local", "mismatch_remote", "foreign_cause", "send_cause", "send_link", "parent_terminal",
+                 "prefix", "partial", "tail", "header", "proposal", "parser_failed", "bad_hash", "capture_overflow",
+                 "half_close", "other_code", "failed_reset", "early_reset", "after_write_only", "wrong_counter", "bool_counter",
+                 "missing_read", "missing_write", "missing_reset", "duplicate_reset", "post_io", "framing", "selected", "rpc",
+                 "missing_join", "active_join", "unjoined_host", "sticky", "overflow", "extra_field")
+        for mode in modes:
+            artifact = synthetic_case()
+            stream, write, read, disposal, joined = self.empty_native_negotiation_events(artifact, delayed_publication=True)
+            raw, events = artifact["raw"]["sink"], artifact["raw"]["sink"]["events"]
+            mutations = {
+                "foreign_owner": lambda: read.update(native_stream_id=8),
+                "foreign_peer": lambda: read.update(remote_peer_id=peer_id(7)),
+                "foreign_parent": lambda: disposal.update(native_connection_id="foreign"),
+                "foreign_ack": lambda: write.update(prepare_ack_sequence=stream["sequence"]),
+                "zero_ack": lambda: stream.update(prepare_ack_sequence=0),
+                "future_ack": lambda: stream.update(prepare_ack_sequence=read["sequence"]),
+                "bool_ack": lambda: read.update(terminal_prepare_ack_sequence=True),
+                "retrofitted_begin": lambda: stream.update(native_call_begin_prepare_ack_sequence=stream["prepare_ack_sequence"]),
+                "missing_parent_baseline": lambda: read.update(connection_prepare_baseline_present=False),
+                "fake_stream_baseline": lambda: read.update(stream_prepare_baseline_present=True),
+                "wrong_basis": lambda: read.update(context_observation_basis="prior_stream_cause"),
+                "wrapped": lambda: read.update(error_type="*fmt.wrapError"),
+                "opaque": lambda: read.update(transport_error_type="*errors.errorString"),
+                "errno": lambda: read.update(error_type="syscall.Errno"),
+                "nonzero": lambda: read.update(transport_error_code=7),
+                "local": lambda: read.update(remote=False, transport_error_remote=False),
+                "mismatch_remote": lambda: write.update(transport_error_remote=False),
+                "foreign_cause": lambda: read.update(transport_native_stream_id=8),
+                "send_cause": lambda: write["send_context"].update(native_stream_id=8),
+                "send_link": lambda: write.update(same_send_context_cause=False),
+                "parent_terminal": lambda: read.update(connection_context=deepcopy(read["send_context"])),
+                "prefix": lambda: write.update(successful_prefix_bytes=1),
+                "partial": lambda: read["negotiation_snapshot"]["read"].update(partial_frame=self.cleanup_capture(b"\x01")),
+                "tail": lambda: disposal["negotiation_snapshot"]["write"].update(lazy_tail=self.cleanup_capture(b"\x01")),
+                "header": lambda: read["negotiation_snapshot"]["read"].update(header_seen=True),
+                "proposal": lambda: write["negotiation_snapshot"].update(proposal="/meshsub/1.1.0", proposals=1),
+                "parser_failed": lambda: read["negotiation_snapshot"].update(parser_failed=True),
+                "bad_hash": lambda: write["negotiation_snapshot"]["successful_prefix"].update(sha256="0" * 64),
+                "capture_overflow": lambda: write["negotiation_snapshot"]["successful_prefix"].update(bytes=4 * 1024 * 1024 + 1),
+                "half_close": lambda: disposal.update(operation="stream_close_read", requested_reset_code=None),
+                "other_code": lambda: disposal.update(requested_reset_code=4098),
+                "failed_reset": lambda: disposal.update(outcome="error", error="original reset failure", error_type="syscall.Errno", typed_cause="opaque"),
+                "early_reset": lambda: disposal.update(started_order=0),
+                "after_write_only": lambda: read.update(started_order=7, returned_order=8),
+                "wrong_counter": lambda: read.update(started_order=2),
+                "bool_counter": lambda: read.update(returned_order=True),
+                "active_join": lambda: joined.update(active_native_calls=1),
+                "unjoined_host": lambda: raw.update(host_close_returned=False),
+                "sticky": lambda: raw.update(error="earlier TCP ECONNRESET"),
+                "overflow": lambda: raw.update(overflow=True),
+                "extra_field": lambda: read.update(accepted=True),
+            }
+            if mode in mutations:
+                mutations[mode]()
+            elif mode.startswith("missing_"):
+                target = {"missing_read": read, "missing_write": write, "missing_reset": disposal, "missing_join": joined}[mode]
+                sequence, mono = target["sequence"], target["mono_ns"]
+                target.clear()
+                target.update(sequence=sequence, mono_ns=mono, kind="score", source="go.pubsub.WithPeerScoreInspect", peer_scores=[])
+            else:
+                if mode == "duplicate_reset":
+                    added = deepcopy(disposal)
+                    added.update(started_order=7, returned_order=8)
+                elif mode == "post_io":
+                    added = deepcopy(read)
+                    added.update(started_order=7, returned_order=8)
+                else:
+                    original = next(value for value in events if value["kind"] == {
+                        "framing": "native_quic_framing_finalized", "selected": "protocol", "rpc": "rpc"}[mode])
+                    added = deepcopy(original)
+                    added.update({key: disposal[key] for key in QUIC_OWNER_FIELDS})
+                self.insert_sink_events(artifact, events.index(joined), [added])
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                validate_case(artifact)
+
     def test_lower_unselected_diagnostics_are_not_selected_proof_and_do_not_mutate_receipts(self):
         for mode in ("prefix", "late_reset", "late_close"):
             artifact = synthetic_case()

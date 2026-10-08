@@ -673,7 +673,7 @@ func (s *pubsubQUICStream) begin(name string, side int) pubsubQUICOperation {
 		s.failLocked(fmt.Errorf("native QUIC operation after observation join"))
 	}
 	if side >= 0 {
-		if s.abortReturn != nil {
+		if s.abort != nil {
 			s.failLocked(fmt.Errorf("native QUIC I/O after bounded negotiation abort"))
 		}
 		s.activeIO[side]++
@@ -1240,6 +1240,11 @@ func (s *pubsubQUICStream) streamAbortPrefixLocked(expectedErrors int) ([]int, b
 		}
 		if event["protocol"] != "" || event["protocol_at_native_return"] != "" || event["prepare_ack_sequence"] != s.createdAck ||
 			event["terminal_prepare_ack_sequence"] != s.createdAck || event["successful_prefix_valid"] != true {
+			return nil, false
+		}
+		// A sealed RETURN is not yet an abort candidate, but a committed candidate
+		// must still reject later I/O even when its receipt published first.
+		if s.abortReturn != nil && event["returned_order"].(uint64) > s.abortReturn.order {
 			return nil, false
 		}
 		snapshot, ok := event["negotiation_snapshot"].(map[string]any)
