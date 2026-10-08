@@ -59,7 +59,7 @@
     "rust_fixture/autonat.rs": "f03829c7f97f94eee625a90def197f12fb6a2f3016ea5c2810bd2d68c29d289b",
     "rust_fixture/autorelay.rs": "bae81b034542c164a27df7ed19cd26595422ac72b93d939d3e5d219a46980166",
     "rust_fixture/coordinated.rs": "8b3a8e4e23bd7508de7b1d3d205c5267b3ebf938330cd8c4616eeb66e964abdd",
-    "rust_fixture/main.rs": "91680f914c0208202e9889847eb132e9f8d0f298876d969e5ece43593bfbba7f",
+    "rust_fixture/main.rs": "50096ed94683ce9ac4dfbb6dfcc5d3e702f8c91bb7f77a39d4e02bbedbcac690",
     "rust_fixture/mdns.rs": "5a9a6f38461e4342eff979f3cdf8e946412b121ba91402002aed3bdc8180c8ae",
     "rust_fixture/path.rs": "a114dda6e1bf8bc7a9da1180777dd62baea86cb882c2f5972f80341436248956",
     "rust_fixture/path_application.rs": "9a8f88a75c2a94274cf4785f9fd58c0b7b83b227f6889f1320a49fc735cc0ce1",
@@ -72,6 +72,7 @@
     "rust_fixture/pubsub_scoring/transport.rs": "aac8af53577107ebade5401c9e44ebe18b1cb3ddb94c9167804b57afb9d0dec0",
     "rust_fixture/pubsub_scoring/yamux_error.rs": "a9394a2f45de49f3bdff8f6135a612c7398a1f225fe38136a2dff02f9fa8c9e1",
     "rust_fixture/relay_readiness.rs": "c9ae063010f512e152a5493276ac42215c901a80aa72ed3232b53d29416801e0",
+    "rust_fixture/quic_shutdown_tests.rs": "038c9dedc9733d9dd264b91eb7e0f91a701bd2cf0e071140f0e7038b36e73a5b",
     "rust_fixture/rust-toolchain.toml": "32d99b8237d5832435d362c395422d69f52348a9fd1a154f70336d2991403064",
     "rust_fixture/task_owner.rs": "98ad462a07f1a72c9011ce15f87b477a959560bac502df7e79b7bd9df5eb703e",
     "rust_fixture/upgrade_observer.rs": "dbcc689b12958b775f73a0e639fb35476c3ba0b4c0a5f883ac79fb18b21a067c"
@@ -86,7 +87,7 @@
     "autorelay_cases.py": "a199351a95f658d9f260f0ffe7b9b4712fd5690eac351733703a6168fbe3c0f9",
     "autorelay_evidence.py": "7673ddf648ea324c34942d0eed7221223f417331732cc8b77a0ada9e07dc6ebb",
     "autorelay_wire.py": "864ef19e15fed82071d1b988aba3350d25b05ef26d3cc164554427d4735a3b37",
-    "check_fixture_lock.py": "8e1be0794be3c82ff4262bad6e76dfe001dab0f13393de1a178e3b42ae851b40",
+    "check_fixture_lock.py": "248635b44bb0e70a07456e5bff906726884f60ef37705afa2cbdfc595cf7cb71",
     "check_p2p_feature_inventory.py": "817da14677ff2e9814fc2100fc01ab71c7109ce4f151a5410f2e8cfa0c0d36ee",
     "check_stage6_acceptance.py": "b294e7b994054846a4b553384fdeca4f215bfe61242a7359dc80cdaf405e7d3d",
     "coordinated_acceptance.py": "278daf9587039ee065f05441796839ea0217a9529d685451b6cdcf1eb5901fa0",
@@ -151,6 +152,8 @@
     "p2p_feature_inventory.json": "5e298ec56f7a9b4311339eb548797816fcbc2db48cd6cf6ee606c831a42bba2b"
   },
   "regression_sources": {
+    "reproduce_quic_shutdown.py": "10143efb0e6b0c8933667daa4c0d4f17fef1e89a3f70b7e5c64016e85b17dfdd",
+    "rust_quic_source_proposal.patch": "abc55235479a2067a549974ccf3f5c395533959113da528edbc41c82be52e834",
     "../quic_p2p/node_session_fixture_validation.cpp": "780b298a464d86c6e806e7aec964e524f211f6cff4374cf6a7dfe18d7ca1d9cf",
     "test_autonat_acceptance.py": "f9fd3048ef4566aefd7b2402e9e4b5e1aa182551239324f249154169febfe37f",
     "test_autonat_cases.py": "fbd60f7b3c36215d95c28fc2bccb77716c14b0403ce86cf09e1fcd16d5010bad",

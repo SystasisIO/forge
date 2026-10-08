@@ -122,8 +122,13 @@ errors and independently prove traffic through active indexed snapshots; a
 separate accessor-only TEST COPY repeats the full scenario and proves shutdown.
 Tokens, owners and causes are never borrowed between executions. Original
 shutdown remains `NOT_PROVEN`; combined acceptance is explicitly scoped to
-original-wire/instrumented-shutdown. Canonical acceptance and merge remain
-pending until both gates pass on the clean exact head.
+original-wire/instrumented-shutdown. PR11 merged after both scoped gates passed
+on the reviewed head; this did not prove original-donor shutdown.
+
+The post-merge [original Rust QUIC diagnosis](../donors/forge-net-p2p-rust-quic-shutdown-v1.md)
+isolates the opaque-error limitation with native and two-host reproductions.
+It prepares an upstream error-source proposal without modifying the canonical
+donor or relaxing the original shutdown classification.
 
 ### Shutdown Evidence Repairs
 

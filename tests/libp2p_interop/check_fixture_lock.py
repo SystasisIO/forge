@@ -66,6 +66,7 @@ EXPECTED_FIXTURE_FILES = {
     "rust_fixture/Cargo.lock",
     "rust_fixture/Cargo.toml",
     "rust_fixture/main.rs",
+    "rust_fixture/quic_shutdown_tests.rs",
     "rust_fixture/pubsub_scoring.rs",
     "rust_fixture/pubsub_scoring/observer.rs",
     "rust_fixture/pubsub_scoring/observer_tests.rs",
@@ -157,6 +158,7 @@ EXPECTED_RUNTIME_ARTIFACT_SOURCES = {
 }
 EXPECTED_EVIDENCE_SOURCES = {"donor_cases.json", "p2p_donor_capabilities.json", "p2p_feature_inventory.json"}
 EXPECTED_REGRESSION_SOURCES = {
+    "reproduce_quic_shutdown.py", "rust_quic_source_proposal.patch",
     "test_pubsub_quic_proof.py", "test_rust_quic_observer.py",
     "../quic_p2p/node_session_fixture_validation.cpp",
     "test_pubsub_cases.py", "test_pubsub_evidence.py", "test_pubsub_acceptance.py", "test_pubsub_wire.py",

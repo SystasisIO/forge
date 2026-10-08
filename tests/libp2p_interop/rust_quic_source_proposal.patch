@@ -1,0 +1,66 @@
+diff --git a/transports/quic/src/lib.rs b/transports/quic/src/lib.rs
+--- a/transports/quic/src/lib.rs
++++ b/transports/quic/src/lib.rs
+@@ -111,4 +111,60 @@
+ /// Error on an established [`Connection`].
+-#[derive(Debug, thiserror::Error)]
+-#[error(transparent)]
++#[derive(Debug)]
+ pub struct ConnectionError(quinn::ConnectionError);
++
++impl std::fmt::Display for ConnectionError {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        std::fmt::Display::fmt(&self.0, formatter)
++    }
++}
++
++impl std::error::Error for ConnectionError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        Some(&self.0)
++    }
++}
++
++#[cfg(test)]
++mod connection_error_source_tests {
++    use std::error::Error as _;
++
++    use super::{ConnectionError, Error};
++
++    #[test]
++    fn connection_error_preserves_source_and_formatting() {
++        let causes = [
++            quinn::ConnectionError::LocallyClosed,
++            quinn::ConnectionError::Reset,
++            quinn::ConnectionError::TimedOut,
++            quinn::ConnectionError::TransportError(
++                quinn::TransportErrorCode::PROTOCOL_VIOLATION.into(),
++            ),
++            quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
++                error_code: 0_u32.into(),
++                reason: Vec::new().into(),
++            }),
++            quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
++                error_code: 17_u32.into(),
++                reason: b"test refusal".to_vec().into(),
++            }),
++        ];
++        for cause in causes {
++            let error = ConnectionError(cause.clone());
++            assert_eq!(error.source().unwrap().downcast_ref::<quinn::ConnectionError>(), Some(&cause));
++            assert_eq!(format!("{error}"), format!("{cause}"));
++            assert_eq!(format!("{error:>80}"), format!("{cause:>80}"));
++            assert_eq!(format!("{error:.3}"), format!("{cause:.3}"));
++            assert_eq!(format!("{error:#}"), format!("{cause:#}"));
++
++            let outer = Error::Connection(error);
++            assert_eq!(outer.source().unwrap().downcast_ref::<quinn::ConnectionError>(), Some(&cause));
++            assert_eq!(format!("{outer}"), format!("{cause}"));
++            let boxed = std::io::Error::new(std::io::ErrorKind::Other, outer);
++            assert_eq!(boxed.kind(), std::io::ErrorKind::Other);
++            assert_eq!(boxed.to_string(), cause.to_string());
++            let typed = boxed.get_ref().unwrap().source().unwrap();
++            assert_eq!(typed.downcast_ref::<quinn::ConnectionError>(), Some(&cause));
++            assert!(typed.source().and_then(|cause| cause.source()).is_none());
++        }
++    }
++}
