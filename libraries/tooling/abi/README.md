@@ -100,11 +100,16 @@ enum behavior remain unchanged. Roots still work without a metadata output.
 Metadata never changes `abi_def`: it is a separate
 `forge::chain::protocol::abi_metadata` JSON artifact with version
 `forge::abi-metadata/1.0`, the C++ root to ABI type mapping, and enum names,
-integer types and named values. Names and values come from the Clang AST;
+canonical integer types and named values. The ordinary ABI retains any underlying
+C++ alias chain. Names and values come from the Clang AST;
 there is no handwritten enum list. Decimal strings preserve signed and
 unsigned 64-bit values exactly. Duplicate enum numeric values are rejected
 only when metadata is requested because their string representation would be
-ambiguous. The runtime consumer is the existing
+ambiguous; empty enums are also rejected in that mode. Requested roots must map
+to distinct ABI types, including roots named through namespace aliases.
+Enum metadata supports signed and unsigned 8-, 16-, 32- and 64-bit integers;
+other underlying types are rejected only when metadata is requested.
+The runtime consumer is the existing
 [Chain API ABI codec](../../chain/api/README.md).
 
 ## Dependencies

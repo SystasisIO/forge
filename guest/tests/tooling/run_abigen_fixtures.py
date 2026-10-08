@@ -283,6 +283,13 @@ def main():
     roots_output = args.output / "roots-metadata"
     roots = invoke(args, "rootfixture", root_source, roots_output,
                    abi_roots=("example::request",), metadata=True)
+    roots_without_metadata = invoke(args, "rootfixture", root_source, args.output / "roots-only",
+                                    abi_roots=("example::request",))
+    assert roots == roots_without_metadata
+    root_aliases = {entry["new_type_name"]: entry for entry in roots["types"]}
+    assert root_aliases["code"]["type"] == "uint8"
+    assert root_aliases["shape"]["type"] == "code"
+    assert root_aliases["shape_alias"]["type"] == "shape"
     assert set(by_name(roots["actions"])) == {"submit"}
     assert by_name(roots["structs"])["request"]["fields"] == [
         {"name": "child", "type": "nested"},
@@ -310,10 +317,32 @@ def main():
     invoke(args, "rootfixture", root_source, args.output / "roots-duplicate",
            abi_roots=("example::request", "::example::request"), succeeds=False,
            error_contains="duplicate contract ABI root type")
+    duplicate_output = args.output / "roots-duplicate-mapping"
+    invoke(args, "rootfixture", root_source, duplicate_output,
+           abi_roots=("example::request", "alias::request"), metadata=True, succeeds=False,
+           error_contains="duplicate contract ABI root type mapping")
+    assert not (duplicate_output / "abi_roots_metadata.abi").exists()
+    assert not (duplicate_output / "abi_roots_metadata.abi.metadata.json").exists()
     enum_source = args.fixtures / "abi_enum_duplicate_metadata.cpp"
     invoke(args, "enumfixture", enum_source, args.output / "enum-default")
     invoke(args, "enumfixture", enum_source, args.output / "enum-duplicate", metadata=True,
            succeeds=False, error_contains="enum with duplicate numeric values")
+    empty_enum = args.fixtures / "abi_enum_empty_metadata.cpp"
+    invoke(args, "emptyenum", empty_enum, args.output / "enum-empty-default")
+    empty_enum_output = args.output / "enum-empty-metadata"
+    invoke(args, "emptyenum", empty_enum, empty_enum_output, metadata=True,
+           succeeds=False, error_contains="enum with no values")
+    assert not (empty_enum_output / "abi_enum_empty_metadata.abi").exists()
+    assert not (empty_enum_output / "abi_enum_empty_metadata.abi.metadata.json").exists()
+    unsupported_enum = args.fixtures / "abi_enum_unsupported_metadata.cpp"
+    unsupported_default = invoke(args, "wideenum", unsupported_enum, args.output / "enum-unsupported-default")
+    assert {entry["new_type_name"]: entry["type"] for entry in unsupported_default["types"]} == {
+        "boolean_flag": "bool", "signed_wide": "int128", "unsigned_wide": "uint128"}
+    unsupported_enum_output = args.output / "enum-unsupported-metadata"
+    invoke(args, "wideenum", unsupported_enum, unsupported_enum_output, metadata=True,
+           succeeds=False, error_contains="enum metadata integer type")
+    assert not (unsupported_enum_output / "abi_enum_unsupported_metadata.abi").exists()
+    assert not (unsupported_enum_output / "abi_enum_unsupported_metadata.abi.metadata.json").exists()
 
     features = invoke(
         args,

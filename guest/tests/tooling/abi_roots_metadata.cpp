@@ -8,7 +8,8 @@ import forge.contract;
 
 namespace example {
 
-enum class shape : std::uint8_t { circle = 0, tall = 2 };
+using code = unsigned char;
+enum class shape : code { circle = 0, tall = 2 };
 enum class direction : std::int16_t { backward = -3, forward = 7 };
 using shape_alias = shape;
 
@@ -26,6 +27,8 @@ struct request {
 };
 
 } // namespace example
+
+namespace alias = example;
 
 class [[forge::contract("rootfixture")]] rootfixture : public forge::contract::context {
  public:

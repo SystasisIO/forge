@@ -361,7 +361,13 @@ class type_encoder {
          add_alias(name, target, declaration->getLocation(), declaration_identity(*declaration));
          if (output_.collect_metadata &&
              std::ranges::none_of(output_.metadata.enums, [&](const auto& entry) { return entry.name == name; })) {
-            auto definition = protocol::abi_enum_def{.name = name, .type = target};
+            const auto integer_type = encode(declaration->getIntegerType().getCanonicalType());
+            static constexpr auto metadata_integer_types = std::array<std::string_view, 8>{
+                "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"};
+            if (std::ranges::find(metadata_integer_types, integer_type) == metadata_integer_types.end()) {
+               fail("enum metadata integer type " + integer_type, declaration->getLocation());
+            }
+            auto definition = protocol::abi_enum_def{.name = name, .type = integer_type};
             auto values = std::set<std::string>{};
             for (const auto* enumerator : declaration->enumerators()) {
                auto value = llvm::toString(enumerator->getInitVal(), 10);
@@ -369,6 +375,9 @@ class type_encoder {
                   fail("enum with duplicate numeric values", enumerator->getLocation());
                }
                definition.values.push_back({enumerator->getNameAsString(), std::move(value)});
+            }
+            if (definition.values.empty()) {
+               fail("enum with no values", declaration->getLocation());
             }
             output_.metadata.enums.push_back(std::move(definition));
          }
@@ -1572,7 +1581,15 @@ class consumer final : public clang::ASTConsumer {
                output_.failed = true;
                continue;
             }
-            output_.metadata.roots.push_back({name, encoder.encode(context.getTypeDeclType(declaration))});
+            auto type = encoder.encode(context.getTypeDeclType(declaration));
+            if (std::ranges::any_of(output_.metadata.roots, [&](const auto& root) { return root.type == type; })) {
+               const auto id = context.getDiagnostics().getCustomDiagID(
+                   clang::DiagnosticsEngine::Error, "duplicate contract ABI root type mapping '%0' to '%1'");
+               context.getDiagnostics().Report(id) << name << type;
+               output_.failed = true;
+               continue;
+            }
+            output_.metadata.roots.push_back({name, std::move(type)});
          }
       }
       const auto found = contract_visitor.found_contract();
