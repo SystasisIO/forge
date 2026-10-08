@@ -4,6 +4,9 @@ This is a fixture interface, not an acceptance result. Donor source remains
 immutable. Actors use the real router with scoring and application validation.
 The coordinator controls connectivity and publications, never mesh membership
 or score values. Native observations are captured without changing decisions.
+This document describes implemented PR11 fixture behavior and its acceptance
+contract. Run-specific results remain in the PR and captured receipts; this
+contract makes no production-readiness or fresh-run acceptance claim.
 
 ## Command And Ownership
 
@@ -302,6 +305,40 @@ immutable candidate/finalizer links and the indexed native prepare ACK. Every
 candidate requires exactly one matching accepted finalizer; bool/int and
 float/int substitutions are rejected. The four-actor barrier, real host/task
 join and successful native process exits remain separate obligations.
+
+`concurrent_reset_close_pending` is a separate, unknown-cause observation, not an
+extension of `repeat_close_pending`. Only a direct outer local
+`*yamux.StreamError{ErrorCode:0, Remote:false}` from full Close on the actual
+authenticated TCP/Noise/Yamux owner qualifies. Close BEGIN must follow the real
+Prepare ACK and atomically pin that wrapper's latest already-running full Reset:
+Reset BEGIN < Close BEGIN, with Reset incomplete and its native RETURN/receipt
+still zero at Close BEGIN. Both operations must begin Prepared with the same
+ACK. A future Reset, explicit ResetWithError, half-close, remote/nonzero cause,
+wrapped error, superseded attempt or prior sticky failure cannot qualify.
+
+The original Close error is returned unchanged and retained in the immutable
+operation receipt with `native_close_succeeded=false` and
+`terminal_state_cause=unknown`. Its `reset_started_order` identifies the captured
+active attempt; `reset_returned_order` and `reset_receipt_sequence` remain zero.
+The separate `native_stream_close_finalized` copies that observation and adds
+only `observed_reset_receipt_sequence` and `observed_reset_returned_order`, never
+`causal_reset_*`. Python independently binds the exact successful full Reset
+receipt, owner, protocol, ACK and counters. That Reset must still be the latest
+attempt before finalization, and its positive RETURN must follow Close BEGIN;
+it may precede or follow Close RETURN. Receipt publication order is not native
+call order. The finalizer's `owner_disposal_receipt_sequence` must reference this
+same successful Reset, not an older disposal. Both decoders must be finalized
+with zero residue, all native I/O/terminal operations actually joined and no
+sticky failure/overflow. Missing/duplicate finalizers or disposal remain fatal.
+Close itself is never recorded as successful, and this rule grants no Read,
+Write, RPC, delivery, scoring or graceful-close authority.
+
+The pinned donor supports observing this overlap without assigning its cause:
+`go-yamux/v5 v5.0.1`, `stream.go` ResetWithError (266-299) sets local `writeErr`
+under the state lock before sendReset/cleanup and native RETURN; CloseWrite
+(302-331) can return that stored error, and Close (364-368) delegates to it.
+Neither donor behavior nor native results are changed. Successful full disposal
+and join are independent evidence, not proof that Reset physically caused Close.
 
 ## Go Lower QUIC Evidence
 

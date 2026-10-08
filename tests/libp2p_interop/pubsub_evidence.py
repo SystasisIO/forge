@@ -283,7 +283,7 @@ def _framing_terminal(event, implementation):
         require(implementation == "go" and event.get("source") == "go.pubsub.native_stream.native_operation",
                 "invalid native stream operation authority")
         allowed = {"owned_reset_pending", "peer_zero_reset_pending", "owned_read_terminal_pending"} \
-            if kind == "native_stream_io_finalized" else {"ok", "repeat_close_pending"}
+            if kind == "native_stream_io_finalized" else {"ok", "repeat_close_pending", "concurrent_reset_close_pending"}
         require(type(event.get("outcome")) is str and event["outcome"] in allowed, "native close/reset error remains fatal")
         if kind != "native_stream_operation":
             require(event.get("accepted") is True and event.get("framing_clean") is True
@@ -304,6 +304,7 @@ def _go_native_operations(events):
     terminal = {"direction", "successful_prefix_bytes", "pending_frame_bytes"}
     peer = {"terminal_prepare_ack_sequence", "peer_reset_reason"}
     read_terminal = {"terminal_state_cause", "terminal_started_order", "terminal_returned_order", "terminal_receipt_sequence"}
+    concurrent_close = {"terminal_state_cause", "native_close_succeeded"}
     finalized = {"operation_receipt_sequence", "accepted", "io_joined", "read_finalized", "write_finalized",
                  "pending_read_frame_bytes", "pending_write_frame_bytes", "framing_clean", "native_owner_disposed",
                  "owner_disposal_receipt_sequence"}
@@ -331,10 +332,14 @@ def _go_native_operations(events):
         is_io = kind in {"stream_io_terminal", "native_stream_io_finalized"}
         is_peer = event["outcome"] == "peer_zero_reset_pending"
         is_read_terminal = event["outcome"] == "owned_read_terminal_pending"
+        is_concurrent_close = event["outcome"] == "concurrent_reset_close_pending"
         extra = ((terminal if is_io else set()) | (peer if is_peer else set())
                  | (read_terminal if is_read_terminal else set()) | (finalized if is_final else set())
+                 | (concurrent_close if is_concurrent_close else set())
                  | ({"observed_terminal_receipt_sequence"} if is_final and is_read_terminal else set())
-                 | (causal_reset if is_final and not is_peer and not is_read_terminal else set()))
+                 | ({"observed_reset_receipt_sequence", "observed_reset_returned_order"}
+                    if is_final and is_concurrent_close else set())
+                 | (causal_reset if is_final and not is_peer and not is_read_terminal and not is_concurrent_close else set()))
         require(set(event) == common | extra, "native operation receipt fields differ from exact contract")
         require(type(event["sequence"]) is int and 1 <= event["sequence"] <= len(events)
                 and events[event["sequence"] - 1] is event
@@ -416,6 +421,15 @@ def _go_native_operations(events):
                     and type(event["error_code"]) is int and event["error_code"] == 0 and type(event["remote"]) is bool
                     and isinstance(event["error"], str) and 0 < len(event["error"]) <= 512,
                     "repeat Close lacks exact outer native Yamux StreamError0")
+        elif is_concurrent_close:
+            require(operation == "stream_close" and event["prepared"] is True and event["native_yamux"] is True
+                    and event["typed_cause"] == "yamux_stream_error" and event["error_type"] == "*yamux.StreamError"
+                    and type(event["error_code"]) is int and event["error_code"] == 0 and event["remote"] is False
+                    and event["terminal_state_cause"] == "unknown" and event["native_close_succeeded"] is False
+                    and 0 < event["reset_started_order"] < event["started_order"]
+                    and event["reset_receipt_sequence"] == 0 and event["reset_returned_order"] == 0
+                    and isinstance(event["error"], str) and 0 < len(event["error"]) <= 512,
+                    "concurrent Close lacks direct local Yamux0 and active Reset-at-BEGIN observation")
         elif operation != "stream_close":
             require(event["reset_receipt_sequence"] == 0 and event["reset_returned_order"] == 0
                     and (event["outcome"] == "owned_reset_pending" or event["reset_started_order"] == 0),
@@ -431,7 +445,7 @@ def _go_native_operations(events):
                     "reused native operation ordering counter")
             used.update((event["started_order"], event["returned_order"]))
             receipts[event["sequence"]] = event
-            if event["outcome"] in {"repeat_close_pending", "owned_reset_pending", "peer_zero_reset_pending", "owned_read_terminal_pending"}:
+            if event["outcome"] in {"repeat_close_pending", "concurrent_reset_close_pending", "owned_reset_pending", "peer_zero_reset_pending", "owned_read_terminal_pending"}:
                 pending[event["sequence"]] = event
     require(set(pending) == set(resolutions), "native terminal lacks actual joined zero-residue finalization")
     for reference, event in resolutions.items():
@@ -439,11 +453,12 @@ def _go_native_operations(events):
         is_io = original["kind"] == "stream_io_terminal"
         is_peer = original["outcome"] == "peer_zero_reset_pending"
         is_read_terminal = original["outcome"] == "owned_read_terminal_pending"
+        is_concurrent_close = original["outcome"] == "concurrent_reset_close_pending"
         require(event["kind"] == ("native_stream_io_finalized" if is_io else "native_stream_close_finalized")
                 and reference < event["sequence"]
                 and all(_same_json(original[key], event[key]) for key in (common - {"sequence", "mono_ns", "kind", "source"})
                         | (terminal if is_io else set()) | (peer if is_peer else set())
-                        | (read_terminal if is_read_terminal else set())),
+                        | (read_terminal if is_read_terminal else set()) | (concurrent_close if is_concurrent_close else set())),
                 "native terminal finalization differs from immutable operation receipt")
         disposal_ref = event["owner_disposal_receipt_sequence"]
         require(type(disposal_ref) is int and disposal_ref > 0, "missing indexed native owner disposal receipt")
@@ -455,6 +470,23 @@ def _go_native_operations(events):
                 and all(_same_json(disposal[key], original[key]) for key in (
                     "connection_id", "stream_id", "remote_peer_id", "protocol", "native_yamux")),
                 "native terminal lacks successful full disposal on exact wrapper")
+        if is_concurrent_close:
+            reset_ref = event["observed_reset_receipt_sequence"]
+            reset = receipts.get(reset_ref) if type(reset_ref) is int else None
+            require(reset is not None and reset_ref == disposal_ref and reset["operation"] == "stream_reset"
+                    and reset["prepared"] is True and reset["prepare_ack_sequence"] == original["prepare_ack_sequence"]
+                    and reset["started_order"] == original["reset_started_order"]
+                    and type(event["observed_reset_returned_order"]) is int
+                    and reset["returned_order"] == event["observed_reset_returned_order"]
+                    and reset["started_order"] < original["started_order"] < reset["returned_order"],
+                    "concurrent Close lacks the exact overlapping successful Prepared full Reset disposal")
+            attempts = [value for value in receipts.values() if value["kind"] == "native_stream_operation"
+                        and value["operation"] in {"stream_reset", "stream_reset_with_error"}
+                        and value["connection_id"] == original["connection_id"] and value["stream_id"] == original["stream_id"]
+                        and value["sequence"] < event["sequence"]]
+            require(attempts and max(value["started_order"] for value in attempts) == reset["started_order"],
+                    "concurrent Close borrows a superseded Reset attempt")
+            continue
         if is_peer:
             continue
         if is_read_terminal:

@@ -3,8 +3,9 @@
 ## Scope And Baseline
 
 Branch: `forge-p2p-gossipsub-scoring-v1`, from the reviewed PR10 merge in `dev`.
-Implementation and evidence are in progress. This document is not a passing
-acceptance or production-support claim.
+This document describes the implementation and acceptance contract. Run-specific
+results remain in the PR and immutable receipts; it makes no production-support
+claim.
 
 Follow the production implementation roadmap and the donor-first capability
 manifest. PR11 owns `pubsub.gossipsub_v1_0_v1_1`: peer/topic scoring, score decay
@@ -172,8 +173,24 @@ to the actual defer and requires native host/worker/resource disposal. Any
 unjoined test owner exhausts a bounded failure budget and fails the process,
 rather than returning with an orphan background task. Native I/O failures are
 not reclassified; quiesce does not serialize the donor's concurrent Close/Reset
-or relax the returned-Reset-before-Close rule. A new canonical run must prove the concurrent private-network
-cases; the focused peerless test alone cannot do so.
+or relax the returned-Reset-before-Close rule for repeated Close.
+
+A separate concurrent Reset/Close observation retains a direct local Yamux
+code-zero Close error with unknown cause and `native_close_succeeded=false`.
+At Close BEGIN it pins the exact already-running full Reset on that authenticated
+owner. Finalization requires that same Prepared Reset to return successfully,
+publish its indexed receipt and fully dispose the owner, with all observed
+operations joined, both RPC decoders clean and no prior failure or overflow.
+Reset may return before or after Close RETURN; its receipt proves disposal,
+never the cause of the Close error. A future or superseded Reset cannot supply
+this evidence. Wrapped, nonzero, remote or pre-Prepare errors remain fatal.
+
+The donor baseline is `go-yamux/v5@v5.0.1`: `ResetWithError` changes the stream
+state before sending/reset cleanup completes; `CloseWrite` returns the stored
+write error from `halfReset`. Go PubSub's sender defers Close while peer-dead
+cleanup independently resets the stream. Controlled regressions cover both
+native-return orders and adversarial receipts. Fresh canonical evidence is
+required for live acceptance; prior failed runs remain failed.
 
 PR12 retains IDONTWANT, v1.3 extensions and opt-in Partial Messages. Stage 7
 retains official plugin configuration/facets; Stage 8 retains production/hostile

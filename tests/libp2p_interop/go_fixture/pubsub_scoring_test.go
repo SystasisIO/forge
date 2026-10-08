@@ -1612,14 +1612,194 @@ func TestPubsubScoringRepeatCloseDoesNotWaitForIOOrBorrowInFlightReset(t *testin
 			}
 			final := pubsubScoringUnitEvents(o, "native_stream_close_finalized")
 			if resetInFlight {
-				if len(final) != 0 || o.failure != nativeClose {
-					t.Fatal("later Reset return reinterpreted earlier fatal Close")
+				if len(final) != 1 || final[0]["accepted"] != true || final[0]["outcome"] != "concurrent_reset_close_pending" ||
+					final[0]["terminal_state_cause"] != "unknown" || final[0]["native_close_succeeded"] != false || o.failure != nil {
+					t.Fatal("joined overlap lacks its distinct unknown-cause observation")
+				}
+				if _, causal := final[0]["causal_reset_receipt_sequence"]; causal {
+					t.Fatal("overlapping Reset was promoted to a prior causal Reset")
 				}
 			} else if len(final) != 1 || final[0]["accepted"] != true || o.failure != nil {
 				t.Fatal("joined clean repeat Close not resolved")
 			}
 		})
 	}
+}
+
+func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *testing.T) {
+	for _, mode := range []string{"clean", "partial", "remote", "nonzero", "wrapped", "joined", "outer_network", "half_close", "errno", "preprepare", "reset_preprepare",
+		"sticky", "sticky_after", "overflow", "unadmitted", "reset_failure", "wrong_ack", "superseded", "explicit_reset"} {
+		t.Run(mode, func(t *testing.T) {
+			native := error(&nativeyamux.StreamError{})
+			switch mode {
+			case "remote":
+				native = &nativeyamux.StreamError{Remote: true}
+			case "nonzero":
+				native = &nativeyamux.StreamError{ErrorCode: 7}
+			case "wrapped":
+				native = fmt.Errorf("wrapped: %w", native)
+			case "joined":
+				native = errors.Join(native, syscall.ECONNRESET)
+			case "outer_network":
+				native = pubsubScoringUnitLocalReset()
+			case "errno":
+				native = syscall.ECONNRESET
+			}
+			delegate := &pubsubScoringResetUnitStream{pubsubScoringUnitStream: pubsubScoringUnitStream{
+				conn: pubsubScoringUnitConnection(t), closeErr: native}, nativeErr: io.EOF,
+				ioStarted: make(chan struct{}), ioReturn: make(chan struct{}), resetStarted: make(chan struct{}), resetReturn: make(chan struct{})}
+			if mode == "partial" {
+				delegate.prefix = []byte{0x80}
+			}
+			if mode == "reset_failure" {
+				delegate.resetErr = syscall.ENOSYS
+			}
+			s, o := pubsubScoringUnitWrapped(t, delegate)
+			ioDone, resetDone, closeDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var ioOnce, resetOnce sync.Once
+			unblock := func() {
+				ioOnce.Do(func() { close(delegate.ioReturn) })
+				resetOnce.Do(func() { close(delegate.resetReturn) })
+			}
+			var readN int
+			var readErr, resetErr, closeErr error
+			go func() { defer close(ioDone); readN, readErr = s.Read(make([]byte, 1)) }()
+			t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(ioDone) })
+			pubsubScoringUnitWait(t, delegate.ioStarted)
+			if mode != "preprepare" && mode != "reset_preprepare" {
+				pubsubScoringUnitPrepare(t, o)
+			}
+			go func() { defer close(resetDone); resetErr = s.Reset() }()
+			t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(resetDone) })
+			pubsubScoringUnitWait(t, delegate.resetStarted)
+			if mode == "reset_preprepare" {
+				pubsubScoringUnitPrepare(t, o)
+			}
+			var primary error
+			switch mode {
+			case "sticky":
+				primary = syscall.ECONNRESET
+				o.fail(primary)
+			case "overflow":
+				o.overflow = true
+			case "unadmitted":
+				s.nativeYamux = false
+			case "wrong_ack":
+				o.prepareAck++
+			case "explicit_reset":
+				if err := s.ResetWithError(0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			go func() {
+				defer close(closeDone)
+				if mode == "half_close" {
+					closeErr = s.CloseWrite()
+				} else {
+					closeErr = s.Close()
+				}
+			}()
+			t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(closeDone) })
+			pubsubScoringUnitWait(t, closeDone)
+			if closeErr != native || s.framingJoined() || len(pubsubScoringUnitEvents(o, "native_stream_close_finalized")) != 0 {
+				t.Fatal("Close altered its native result or waited/invented join")
+			}
+			var observed map[string]any
+			for _, event := range pubsubScoringUnitEvents(o, "native_stream_operation") {
+				if event["operation"] == "stream_close" || mode == "half_close" && event["operation"] == "stream_close_write" {
+					observed = event
+				}
+			}
+			pending := mode == "clean" || mode == "partial" || mode == "reset_failure" || mode == "superseded" || mode == "sticky_after"
+			if observed == nil || (observed["outcome"] == "concurrent_reset_close_pending") != pending {
+				t.Fatal("unrelated Close error was deferred", observed)
+			}
+			before, _ := json.Marshal(observed)
+			if mode == "sticky_after" {
+				primary = syscall.ECONNRESET
+				o.fail(primary)
+			}
+			if mode == "superseded" {
+				newer := s.beginOperation("stream_reset", true)
+				s.endClose(newer, -1, s.returnedOperation(newer, delegate.pubsubScoringUnitStream.Reset()), nil)
+			}
+			resetOnce.Do(func() { close(delegate.resetReturn) })
+			pubsubScoringUnitWait(t, resetDone)
+			if len(pubsubScoringUnitEvents(o, "native_stream_close_finalized")) != 0 {
+				t.Fatal("successful Reset invented the unfinished I/O join")
+			}
+			ioOnce.Do(func() { close(delegate.ioReturn) })
+			pubsubScoringUnitWait(t, ioDone)
+			if resetErr != delegate.resetErr || readN != len(delegate.prefix) || readErr != io.EOF {
+				t.Fatal("native Reset/Read results changed")
+			}
+			final := pubsubScoringUnitEvents(o, "native_stream_close_finalized")
+			if pending {
+				if len(final) != 1 || final[0]["accepted"] != (mode == "clean") || final[0]["native_close_succeeded"] != false ||
+					final[0]["terminal_state_cause"] != "unknown" {
+					t.Fatal("overlap bypassed full Reset/framing proof", final)
+				}
+				if mode == "clean" {
+					pubsubScoringUnitDisposal(t, o, final[0])
+					if final[0]["observed_reset_receipt_sequence"] != final[0]["owner_disposal_receipt_sequence"] {
+						t.Fatal("observation used unrelated disposal")
+					}
+				}
+				if _, causal := final[0]["causal_reset_receipt_sequence"]; causal {
+					t.Fatal("unknown-cause observation fabricated a causal Reset")
+				}
+			} else if len(final) != 0 {
+				t.Fatal("unrelated native error received an overlap finalizer")
+			}
+			after, _ := json.Marshal(observed)
+			if !bytes.Equal(before, after) || (o.failure == nil) != (mode == "clean") || primary != nil && o.failure != primary ||
+				mode == "reset_failure" && o.failure != delegate.resetErr {
+				t.Fatal("finalization changed raw evidence or cleared/replaced the first error")
+			}
+		})
+	}
+}
+
+func TestPubsubScoringConcurrentResetClosePinsLateSuccessfulResetPublication(t *testing.T) {
+	delegate := &pubsubScoringResetUnitStream{pubsubScoringUnitStream: pubsubScoringUnitStream{
+		conn: pubsubScoringUnitConnection(t), closeErr: &nativeyamux.StreamError{}},
+		resetStarted: make(chan struct{}), resetReturn: make(chan struct{})}
+	s, o := pubsubScoringUnitWrapped(t, delegate)
+	pubsubScoringUnitPrepare(t, o)
+	reset := s.beginOperation("stream_reset", true)
+	returned := make(chan struct{})
+	var resetResult pubsubScoringOperationReturn
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(delegate.resetReturn) }) }
+	go func() { defer close(returned); resetResult = s.returnedOperation(reset, delegate.Reset()) }()
+	t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(returned) })
+	pubsubScoringUnitWait(t, delegate.resetStarted)
+	closeOp := s.beginOperation("stream_close", true)
+	closeResult := s.returnedOperation(closeOp, delegate.Close())
+	if closeResult.err != delegate.closeErr || !closeOp.resetPending || closeOp.reset != reset.reset {
+		t.Fatal("Close did not preserve its active Reset-at-BEGIN observation")
+	}
+	unblock()
+	pubsubScoringUnitWait(t, returned)
+	if resetResult.err != nil || reset.reset.sequence != 0 || resetResult.order <= closeResult.order {
+		t.Fatal("mock native return order/result changed")
+	}
+	s.endClose(closeOp, -1, closeResult, nil)
+	raw := pubsubScoringUnitEvents(o, "native_stream_operation")
+	if len(raw) != 1 || raw[0]["outcome"] != "concurrent_reset_close_pending" || raw[0]["reset_returned_order"] != uint64(0) ||
+		raw[0]["reset_receipt_sequence"] != 0 || len(pubsubScoringUnitEvents(o, "native_stream_close_finalized")) != 0 || s.framingJoined() {
+		t.Fatal("delayed Reset publication fabricated completion", raw)
+	}
+	before, _ := json.Marshal(raw[0])
+	s.endClose(reset, -1, resetResult, nil)
+	final := pubsubScoringUnitEvents(o, "native_stream_close_finalized")
+	after, _ := json.Marshal(raw[0])
+	if len(final) != 1 || final[0]["accepted"] != true || final[0]["observed_reset_receipt_sequence"] != reset.reset.sequence ||
+		final[0]["observed_reset_returned_order"] != resetResult.order || final[0]["owner_disposal_receipt_sequence"] != reset.reset.sequence ||
+		reset.reset.sequence <= raw[0]["sequence"].(int) || !bytes.Equal(before, after) || o.failure != nil || !s.framingJoined() {
+		t.Fatal("late publication changed immutable unknown-cause Close or lost exact full disposal")
+	}
+	pubsubScoringUnitDisposal(t, o, final[0])
 }
 
 type pubsubScoringPhaseUnitStream struct {
@@ -1634,6 +1814,29 @@ func (s *pubsubScoringPhaseUnitStream) Close() error {
 	close(s.closeStarted)
 	<-s.closeReturn
 	return s.closeErr
+}
+
+func TestPubsubScoringCloseNeverBorrowsResetStartedAfterItsBegin(t *testing.T) {
+	delegate := &pubsubScoringPhaseUnitStream{pubsubScoringUnitStream: pubsubScoringUnitStream{
+		conn: pubsubScoringUnitConnection(t), closeErr: &nativeyamux.StreamError{}},
+		closeStarted: make(chan struct{}), closeReturn: make(chan struct{})}
+	s, o := pubsubScoringUnitWrapped(t, delegate)
+	pubsubScoringUnitPrepare(t, o)
+	done := make(chan struct{})
+	var result error
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(delegate.closeReturn) }) }
+	go func() { defer close(done); result = s.Close() }()
+	t.Cleanup(func() { unblock(); pubsubScoringUnitCleanupJoin(done) })
+	pubsubScoringUnitWait(t, delegate.closeStarted)
+	if err := s.Reset(); err != nil {
+		t.Fatal("native later Reset changed", err)
+	}
+	unblock()
+	pubsubScoringUnitWait(t, done)
+	if result != delegate.closeErr || o.failure != result || len(pubsubScoringUnitEvents(o, "native_stream_close_finalized")) != 0 {
+		t.Fatal("future successful Reset reinterpreted unrelated Close")
+	}
 }
 
 func TestPubsubScoringRepeatClosePinsNativeReturnBeforeResetReceiptPublication(t *testing.T) {
@@ -1756,22 +1959,61 @@ func TestPubsubScoringDelayedResetPublicationNeverAllowsOldAttemptFallback(t *te
 			if err := s.Close(); err != delegate.closeErr {
 				t.Fatal("native Close result changed")
 			}
+			var closeReceipt map[string]any
+			var before []byte
 			if mode == "new_start" {
+				for _, event := range pubsubScoringUnitEvents(o, "native_stream_operation") {
+					if event["operation"] == "stream_close" {
+						closeReceipt = event
+					}
+				}
+				if closeReceipt == nil || closeReceipt["outcome"] != "concurrent_reset_close_pending" ||
+					closeReceipt["reset_started_order"] != newer.started || closeReceipt["reset_returned_order"] != uint64(0) ||
+					closeReceipt["reset_receipt_sequence"] != 0 || closeReceipt["native_close_succeeded"] != false ||
+					closeReceipt["terminal_state_cause"] != "unknown" || o.failure != nil {
+					t.Fatal("Close borrowed the old returned Reset instead of capturing the latest active attempt")
+				}
+				before, _ = json.Marshal(closeReceipt)
+				// Even real old disposal/publication cannot authorize the still-pending new attempt.
+				s.endClose(reset, -1, result, nil)
+				if !s.disposed || s.disposalReceipt != reset.reset.sequence || s.framingJoined() ||
+					len(pubsubScoringUnitEvents(o, "native_stream_close_finalized")) != 0 || o.failure != nil {
+					t.Fatal("old successful Reset invented the pending new Reset's disposal/join authority")
+				}
 				newerResult = s.returnedOperation(newer, delegate.Reset())
 			}
 			if newer.reset != nil {
 				s.endClose(newer, -1, newerResult, nil)
 			}
-			s.endClose(reset, -1, result, nil)
+			if mode != "new_start" {
+				s.endClose(reset, -1, result, nil)
+			}
 			final := pubsubScoringUnitEvents(o, "native_stream_close_finalized")
-			if mode == "partial" || mode == "sticky" {
+			if mode == "new_start" {
+				after, _ := json.Marshal(closeReceipt)
+				if len(final) != 1 || final[0]["accepted"] != true || final[0]["outcome"] != "concurrent_reset_close_pending" ||
+					final[0]["native_close_succeeded"] != false || final[0]["terminal_state_cause"] != "unknown" ||
+					final[0]["error"] != closeReceipt["error"] || final[0]["error_type"] != closeReceipt["error_type"] ||
+					final[0]["observed_reset_receipt_sequence"] != newer.reset.sequence ||
+					final[0]["observed_reset_returned_order"] != newerResult.order ||
+					final[0]["owner_disposal_receipt_sequence"] != newer.reset.sequence ||
+					final[0]["owner_disposal_receipt_sequence"] == reset.reset.sequence ||
+					final[0]["operation_receipt_sequence"] != closeReceipt["sequence"] ||
+					!bytes.Equal(before, after) || !s.framingJoined() || o.failure != nil {
+					t.Fatal("concurrent Close finalized using old/reset fallback instead of the exact new successful disposal")
+				}
+				if _, causal := final[0]["causal_reset_receipt_sequence"]; causal {
+					t.Fatal("concurrent observation borrowed old causal Reset authority")
+				}
+				pubsubScoringUnitDisposal(t, o, final[0])
+			} else if mode == "partial" || mode == "sticky" {
 				if len(final) != 1 || final[0]["accepted"] != (mode == "sticky") {
 					t.Fatal("delayed publication bypassed framing finalization")
 				}
 			} else if len(final) != 0 {
 				t.Fatal("old successful Reset authorized a superseded Close")
 			}
-			if o.failure == nil || (primary != nil && o.failure != primary) {
+			if mode != "new_start" && (o.failure == nil || (primary != nil && o.failure != primary)) {
 				t.Fatal("delayed publication cleared or changed first failure")
 			}
 		})

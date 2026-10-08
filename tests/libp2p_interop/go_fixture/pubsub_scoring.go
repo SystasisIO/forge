@@ -1191,6 +1191,7 @@ type pubsubScoringOperation struct {
 	resetReturned uint64
 	resetStarted  uint64
 	reset         *pubsubScoringResetAttempt
+	resetPending  bool
 	readTerminal  *pubsubScoringReadTerminalAttempt
 }
 
@@ -1243,6 +1244,9 @@ func (s *pubsubScoringStream) beginOperation(name string, closing bool) pubsubSc
 	if name == "stream_close" && s.reset != nil && s.reset.completed && s.reset.err == nil {
 		op.reset = s.reset
 		op.resetReceipt, op.resetReturned, op.resetStarted = s.reset.sequence, s.reset.returned, s.reset.started
+	} else if name == "stream_close" && s.reset != nil && !s.reset.completed && s.reset.returned == 0 {
+		// Observe the active attempt at BEGIN, never a Reset that starts later.
+		op.reset, op.resetStarted, op.resetPending = s.reset, s.reset.started, true
 	}
 	if name == "stream_reset" {
 		s.reset = &pubsubScoringResetAttempt{started: op.started, prepared: prepared, prepareAck: prepareAck}
@@ -1486,7 +1490,7 @@ func (s *pubsubScoringStream) finalizeFraming() {
 		s.finalizing += len(receipts)
 		clean = s.residue[0] == 0 && s.residue[1] == 0 && !s.read.failed && !s.write.failed
 	}
-	residue, disposed, disposalReceipt := s.residue, s.disposed, s.disposalReceipt
+	residue, disposed, disposalReceipt, latestReset := s.residue, s.disposed, s.disposalReceipt, s.reset
 	s.mu.Unlock()
 	for _, receipt := range receipts {
 		fields := make(map[string]any, len(receipt.fields)+8)
@@ -1494,7 +1498,16 @@ func (s *pubsubScoringStream) finalizeFraming() {
 			fields[key] = value
 		}
 		accepted := clean && disposed && disposalReceipt != 0
-		if receipt.fields["outcome"] == "peer_zero_reset_pending" || receipt.terminal != nil {
+		if receipt.fields["outcome"] == "concurrent_reset_close_pending" {
+			reset := receipt.reset
+			s.observer.mu.Lock()
+			accepted = accepted && s.observer.prepared && s.observer.failure == nil && !s.observer.overflow &&
+				reset == latestReset && reset.completed && reset.err == nil && reset.sequence != 0 && reset.prepared &&
+				reset.prepareAck == s.observer.prepareAck && receipt.fields["prepare_ack_sequence"] == reset.prepareAck &&
+				reset.started < receipt.fields["started_order"].(uint64) && reset.returned > receipt.fields["started_order"].(uint64)
+			s.observer.mu.Unlock()
+			fields["observed_reset_receipt_sequence"], fields["observed_reset_returned_order"] = reset.sequence, reset.returned
+		} else if receipt.fields["outcome"] == "peer_zero_reset_pending" || receipt.terminal != nil {
 			s.observer.mu.Lock()
 			accepted = accepted && s.observer.prepared && s.observer.failure == nil && !s.observer.overflow
 			if receipt.terminal == nil {
@@ -1517,6 +1530,12 @@ func (s *pubsubScoringStream) finalizeFraming() {
 		fields["operation_receipt_sequence"], fields["accepted"] = receipt.sequence, accepted
 		fields["native_owner_disposed"] = disposed
 		fields["owner_disposal_receipt_sequence"] = disposalReceipt
+		if receipt.fields["outcome"] == "concurrent_reset_close_pending" {
+			fields["owner_disposal_receipt_sequence"] = 0
+			if receipt.reset.completed && receipt.reset.err == nil {
+				fields["owner_disposal_receipt_sequence"] = receipt.reset.sequence
+			}
+		}
 		fields["io_joined"], fields["read_finalized"], fields["write_finalized"] = true, true, true
 		fields["pending_read_frame_bytes"], fields["pending_write_frame_bytes"] = residue[0], residue[1]
 		fields["framing_clean"] = clean
@@ -1556,13 +1575,27 @@ func (s *pubsubScoringStream) endClose(op pubsubScoringOperation, side int, resu
 	cause, typed := err.(*nativeyamux.StreamError)
 	candidate := typed && cause.ErrorCode == 0 && op.name == "stream_close" && op.prepared && s.nativeYamux &&
 		op.reset != nil && op.resetStarted > 0 && op.resetReturned > 0 && op.resetReturned < op.started
+	concurrent := typed && cause.ErrorCode == 0 && !cause.Remote && op.name == "stream_close" && op.prepared &&
+		op.prepareAck != 0 && s.nativeYamux && op.resetPending && op.reset != nil && op.resetStarted < op.started &&
+		op.reset.prepared && op.reset.prepareAck == op.prepareAck
+	if concurrent {
+		s.mu.Lock()
+		concurrent = s.reset == op.reset
+		s.mu.Unlock()
+		s.observer.mu.Lock()
+		concurrent = concurrent && s.observer.failure == nil && !s.observer.overflow
+		s.observer.mu.Unlock()
+	}
 	if candidate {
 		fields["outcome"] = "repeat_close_pending"
+	} else if concurrent {
+		fields["outcome"] = "concurrent_reset_close_pending"
+		fields["terminal_state_cause"], fields["native_close_succeeded"] = "unknown", false
 	} else if err != nil {
 		s.observer.fail(err)
 	}
 	sequence := s.operationReceipt("native_stream_operation", "go.pubsub.native_stream.native_operation", fields)
-	if candidate {
+	if candidate || concurrent {
 		s.queueTerminal(pubsubScoringTerminalReceipt{sequence: sequence, fields: fields, err: err,
 			kind: "native_stream_close_finalized", reset: op.reset, returned: returned})
 	}

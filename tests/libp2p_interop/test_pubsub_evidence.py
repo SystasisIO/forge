@@ -1573,6 +1573,20 @@ class PubSubEvidenceTests(unittest.TestCase):
         resolution.pop("causal_reset_returned_order")
         return observed, resolution
 
+    def concurrent_reset_close_events(self, artifact, *, late_publication=False, reset_return_first=False):
+        """Synthetic overlap/disposal observation, never a causal or native acceptance result."""
+        reset, observed, final = self.owned_reset_events(artifact, repeat_close=True, late_reset_publication=late_publication)
+        reset["returned_order"] = 3 if reset_return_first else 4
+        changes = {"outcome": "concurrent_reset_close_pending", "started_order": 2,
+                   "returned_order": 4 if reset_return_first else 3, "reset_receipt_sequence": 0,
+                   "reset_returned_order": 0, "terminal_state_cause": "unknown", "native_close_succeeded": False}
+        observed.update(changes)
+        final.update(changes, observed_reset_receipt_sequence=reset["sequence"],
+                     observed_reset_returned_order=reset["returned_order"])
+        final.pop("causal_reset_receipt_sequence")
+        final.pop("causal_reset_returned_order")
+        return reset, observed, final
+
     def owned_read_terminal_events(self, artifact, *, late_publication=False):
         """Synthetic sentinel observation; Closed/Reset is not a physical-cause claim."""
         close, observed, resolution = self.owned_reset_events(artifact, io_first=late_publication)
@@ -1602,7 +1616,7 @@ class PubSubEvidenceTests(unittest.TestCase):
         events = artifact["raw"]["sink"]["events"]
         fields = {"prepare_ack_sequence", "terminal_prepare_ack_sequence", "reset_receipt_sequence",
                   "operation_receipt_sequence", "causal_reset_receipt_sequence", "owner_disposal_receipt_sequence",
-                  "terminal_receipt_sequence", "observed_terminal_receipt_sequence", "connection_receipt_sequence",
+                  "terminal_receipt_sequence", "observed_terminal_receipt_sequence", "observed_reset_receipt_sequence", "connection_receipt_sequence",
                   "native_stream_receipt_sequence", "framing_receipt_sequence", "connection_context_receipt_sequence",
                   "send_context_receipt_sequence", "owned_terminal_receipt_sequence", "prepare_snapshot_ack_sequence",
                   "lower_connection_receipt_sequence", "score_observation_sequence", "candidate_write_receipt_sequence",
@@ -1644,6 +1658,8 @@ class PubSubEvidenceTests(unittest.TestCase):
             self.peer_zero_reset_events(artifact)
             records = tuple(event for event in artifact["raw"]["sink"]["events"]
                             if event["kind"] in {"stream_io_terminal", "native_stream_operation", "native_stream_io_finalized"})
+        elif outcome == "concurrent_close":
+            records = self.concurrent_reset_close_events(artifact, late_publication=True)
         else:
             records = self.owned_reset_events(artifact, repeat_close=outcome == "repeat_close", late_reset_publication=True)
         events = artifact["raw"]["sink"]["events"]
@@ -1672,7 +1688,7 @@ class PubSubEvidenceTests(unittest.TestCase):
                     _owner(raw["events"], event, event["peer_id"], protocol, transport, fingerprint)
 
     def test_terminal_only_carriers_use_canonical_owner_without_requiring_rpc(self):
-        for outcome in ("owned_reset", "peer_zero", "owned_read", "repeat_close"):
+        for outcome in ("owned_reset", "peer_zero", "owned_read", "repeat_close", "concurrent_close"):
             for private in (False, True):
                 artifact = synthetic_case(lower_quic=False)
                 connection, _, _ = self.terminal_only_events(artifact, outcome, private=private)
@@ -1686,7 +1702,7 @@ class PubSubEvidenceTests(unittest.TestCase):
     def test_terminal_only_carrier_cannot_borrow_valid_rpc_authentication_or_profile(self):
         mutations = ("profile", "authentication_basis", "missing_address", "address", "address_peer", "protocol",
                      "fingerprint", "missing_fingerprint", "unverified_pnet", "boolean_pnet")
-        for outcome in ("owned_reset", "peer_zero", "owned_read", "repeat_close"):
+        for outcome in ("owned_reset", "peer_zero", "owned_read", "repeat_close", "concurrent_close"):
             for mutation in mutations:
                 private = mutation in {"fingerprint", "missing_fingerprint", "unverified_pnet", "boolean_pnet"}
                 artifact = synthetic_case(lower_quic=False)
@@ -1727,7 +1743,7 @@ class PubSubEvidenceTests(unittest.TestCase):
                         validate_case(artifact, expected_fingerprint=fingerprint)
 
     def test_terminal_only_owner_indexes_reject_identical_and_conflicting_duplicates(self):
-        for outcome in ("owned_reset", "peer_zero", "owned_read", "repeat_close"):
+        for outcome in ("owned_reset", "peer_zero", "owned_read", "repeat_close", "concurrent_close"):
             for kind in ("connection", "protocol"):
                 for conflicting in (False, True):
                     for late in (False, True):
@@ -2038,6 +2054,113 @@ class PubSubEvidenceTests(unittest.TestCase):
         observed.update(started_order=5, returned_order=6)
         resolution.update(started_order=5, returned_order=6, operation_receipt_sequence=observed["sequence"])
         with self.assertRaisesRegex(ValueError, "superseded"):
+            validate_case(artifact)
+
+    def test_concurrent_reset_close_is_unknown_and_requires_exact_joined_disposal(self):
+        for late in (False, True):
+            for reset_first in (False, True):
+                artifact = synthetic_case(lower_quic=False)
+                reset, observed, final = self.concurrent_reset_close_events(
+                    artifact, late_publication=late, reset_return_first=reset_first)
+                original = deepcopy(artifact)
+                with self.subTest(late_publication=late, reset_return_first=reset_first):
+                    validate_case(artifact)
+                    self.assertTrue(_same_json(original, artifact))
+                    self.assertEqual(observed["reset_returned_order"], 0)
+                    self.assertEqual(observed["reset_receipt_sequence"], 0)
+                    self.assertLess(reset["started_order"], observed["started_order"])
+                    self.assertLess(observed["started_order"], reset["returned_order"])
+                    self.assertEqual(final["observed_reset_receipt_sequence"], final["owner_disposal_receipt_sequence"])
+                    self.assertIs(final["native_close_succeeded"], False)
+                    self.assertEqual(final["terminal_state_cause"], "unknown")
+                    self.assertNotIn("causal_reset_receipt_sequence", final)
+                    self.assertNotIn("causal_reset_returned_order", final)
+
+    def test_concurrent_reset_close_rejects_nonlocal_wrapped_or_unprepared_observations(self):
+        changes = [("remote", True), ("remote", 0), ("error_code", 7), ("error_code", False),
+                   ("error_type", "*network.StreamError"), ("error_type", "*fmt.wrapError"),
+                   ("error_type", "*errors.joinError"), ("error_type", "syscall.Errno"),
+                   ("typed_cause", "opaque"), ("operation", "stream_close_read"),
+                   ("native_yamux", False), ("prepared", False), ("prepare_ack_sequence", 0),
+                   ("prepare_ack_sequence", True), ("prepare_ack_sequence", 999),
+                   ("reset_started_order", 0), ("reset_started_order", True), ("reset_started_order", 5),
+                   ("reset_returned_order", 4), ("reset_receipt_sequence", 1),
+                   ("native_close_succeeded", True), ("native_close_succeeded", 0),
+                   ("terminal_state_cause", "graceful"), ("protocol", "/meshsub/1.0.0"),
+                   ("stream_id", "foreign"), ("transport_error_type", "*net.OpError")]
+        for key, value in changes:
+            artifact = synthetic_case(lower_quic=False)
+            _, observed, final = self.concurrent_reset_close_events(artifact, late_publication=True)
+            observed[key] = final[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                validate_case(artifact)
+
+    def test_concurrent_reset_close_rejects_foreign_failed_missing_or_unjoined_disposal(self):
+        mutations = [
+            lambda a, r, o, f: r.update(stream_id="foreign"),
+            lambda a, r, o, f: r.update(remote_peer_id=a["raw"]["offender"]["local_peer_id"]),
+            lambda a, r, o, f: r.update(protocol="/meshsub/1.0.0"),
+            lambda a, r, o, f: r.update(prepared=False, prepare_ack_sequence=0),
+            lambda a, r, o, f: r.update(prepare_ack_sequence=True),
+            lambda a, r, o, f: r.update(prepare_ack_sequence=999),
+            lambda a, r, o, f: r.update(operation="stream_close_read"),
+            lambda a, r, o, f: r.update(operation="stream_reset_with_error", requested_reset_code=0),
+            lambda a, r, o, f: r.update(outcome="error", error="native reset failure", typed_cause="opaque", error_type="syscall.Errno"),
+            lambda a, r, o, f: r.update(returned_order=7),
+            lambda a, r, o, f: f.update(observed_reset_receipt_sequence=0),
+            lambda a, r, o, f: f.update(observed_reset_receipt_sequence=True),
+            lambda a, r, o, f: f.update(observed_reset_receipt_sequence=o["sequence"]),
+            lambda a, r, o, f: f.update(observed_reset_returned_order=4.0),
+            lambda a, r, o, f: f.update(owner_disposal_receipt_sequence=o["sequence"]),
+            lambda a, r, o, f: f.update(causal_reset_receipt_sequence=r["sequence"]),
+            lambda a, r, o, f: f.update(io_joined=False),
+            lambda a, r, o, f: f.update(native_owner_disposed=False),
+            lambda a, r, o, f: f.update(read_finalized=False),
+            lambda a, r, o, f: f.update(write_finalized=False),
+            lambda a, r, o, f: f.update(pending_read_frame_bytes=1),
+            lambda a, r, o, f: f.update(pending_write_frame_bytes=1),
+            lambda a, r, o, f: f.update(framing_clean=False),
+            lambda a, r, o, f: a["raw"]["sink"].update(error="earlier sticky TCP failure"),
+            lambda a, r, o, f: a["raw"]["sink"].update(overflow=True),
+            lambda a, r, o, f: a["raw"]["sink"]["events"].remove(f),
+            lambda a, r, o, f: a["raw"]["sink"]["events"].remove(r),
+        ]
+        for mutation in mutations:
+            artifact = synthetic_case(lower_quic=False)
+            records = self.concurrent_reset_close_events(artifact, late_publication=True)
+            mutation(artifact, *records)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate_case(artifact)
+        artifact = synthetic_case(lower_quic=False)
+        _, _, final = self.concurrent_reset_close_events(artifact)
+        events = artifact["raw"]["sink"]["events"]
+        events.append({**final, "sequence": len(events) + 1, "mono_ns": len(events) + 1})
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            validate_case(artifact)
+
+    def test_concurrent_reset_close_never_rebinds_a_completed_future_or_superseding_reset(self):
+        artifact = synthetic_case(lower_quic=False)
+        reset, observed, final = self.concurrent_reset_close_events(artifact)
+        reset["returned_order"] = 3
+        observed.update(started_order=4, returned_order=5)
+        final.update(started_order=4, returned_order=5, observed_reset_returned_order=3)
+        with self.assertRaisesRegex(ValueError, "overlapping"):
+            validate_case(artifact)
+        for explicit in (False, True):
+            artifact = synthetic_case(lower_quic=False)
+            reset, observed, final = self.concurrent_reset_close_events(artifact, late_publication=True)
+            newer = {**reset, "started_order": 5, "returned_order": 6}
+            if explicit:
+                newer.update(operation="stream_reset_with_error", requested_reset_code=0)
+            self.insert_sink_events(artifact, final["sequence"] - 1, [newer])
+            with self.subTest(explicit=explicit), self.assertRaisesRegex(ValueError, "superseded"):
+                validate_case(artifact)
+        artifact = synthetic_case(lower_quic=False)
+        reset, observed, final = self.concurrent_reset_close_events(artifact)
+        reset.update(started_order=4, returned_order=5)
+        observed["reset_started_order"] = final["reset_started_order"] = 4
+        final["observed_reset_returned_order"] = 5
+        with self.assertRaises(ValueError):
             validate_case(artifact)
 
     def test_repeat_close_accepts_late_publication_only_with_exact_native_return_and_finalizer(self):
