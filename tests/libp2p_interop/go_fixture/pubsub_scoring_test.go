@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -2743,6 +2744,90 @@ func TestPubsubScoringQuiesceCancelsBlockedNativeOpenBeforeGlobalJoin(t *testing
 		len(pre[0]["reset_return_receipt_sequences"].([]int)) != 1 ||
 		pre[0]["pubsub_context_cancelled"] != false || ack[0]["active_stream_handlers_and_io"] != 0 {
 		t.Fatal("blocked open was hidden or first phase fabricated an I/O join", pre, ack)
+	}
+}
+
+func TestPubsubScoringRetainPublishesProtocolBeforeShutdownCanSnapshot(t *testing.T) {
+	for _, quicOwner := range []bool{false, true} {
+		t.Run(fmt.Sprintf("quic_owner=%v", quicOwner), func(t *testing.T) {
+			o := newPubsubScoringObserver("victim", strings.Repeat("a", 32))
+			drain := newPubsubScoringDrain()
+			h := &pubsubScoringHost{observer: o, drain: drain}
+			native := &pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t), id: "atomic-retention"}
+			var owner pubsubScoringDrainedStream = &pubsubScoringStream{Stream: native, observer: o, drain: drain}
+			if quicOwner {
+				owner = &pubsubQUICHostStream{Stream: native, drain: drain}
+			}
+			fields := map[string]any{"connection_id": native.Conn().ID(), "stream_id": native.ID(),
+				"peer_id": native.Conn().RemotePeer().String(), "protocol": string(native.Protocol())}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			retained, snapshotted := make(chan struct{}), make(chan struct{})
+			results := make(chan error, 2)
+			o.mu.Lock()
+			var release sync.Once
+			unblock := func() { release.Do(o.mu.Unlock) }
+			snapshotStarted := false
+			t.Cleanup(func() {
+				unblock()
+				pubsubScoringUnitCleanupJoin(retained)
+				if snapshotStarted {
+					pubsubScoringUnitCleanupJoin(snapshotted)
+				}
+			})
+			go func() {
+				defer close(retained)
+				ok, err := h.retainProtocol(owner, fields)
+				if !ok && err == nil {
+					err = fmt.Errorf("native owner unexpectedly rejected")
+				}
+				results <- err
+			}()
+			// Hold receipt publication, then observe the actual admission mutex.
+			for drain.mu.TryLock() {
+				drain.mu.Unlock()
+				if ctx.Err() != nil {
+					t.Fatal("retain never acquired its admission mutex")
+				}
+				runtime.Gosched()
+			}
+			snapshotStarted = true
+			go func() {
+				defer close(snapshotted)
+				drain.mu.Lock()
+				present := drain.streams[owner.ID()] == owner
+				drain.mu.Unlock()
+				_, err := o.retainedResetOwner(owner)
+				if !present {
+					err = fmt.Errorf("shutdown lost the admitted native owner")
+				}
+				results <- err
+			}()
+			select {
+			case <-snapshotted:
+				t.Fatal("shutdown saw retained state before protocol publication")
+			default:
+			}
+			unblock()
+			pubsubScoringUnitWait(t, retained)
+			pubsubScoringUnitWait(t, snapshotted)
+			if first, second := <-results, <-results; first != nil || second != nil {
+				t.Fatal("retention/publication did not linearize", first, second)
+			}
+
+			// The opposite order rejects without inventing a protocol receipt.
+			closed := &pubsubScoringHost{observer: newPubsubScoringObserver("victim", strings.Repeat("a", 32)),
+				drain: newPubsubScoringDrain()}
+			closed.drain.mu.Lock()
+			closed.drain.closing = true
+			closed.drain.mu.Unlock()
+			if ok, err := closed.retainProtocol(owner, fields); ok || err != nil {
+				t.Fatal("owner admitted after shutdown publication", ok, err)
+			}
+			if len(closed.observer.events) != 0 || len(closed.drain.streams) != 0 {
+				t.Fatal("rejected owner acquired a protocol/retained receipt")
+			}
+		})
 	}
 }
 

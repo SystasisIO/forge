@@ -1023,12 +1023,15 @@ func (d *pubsubScoringDrain) end() {
 	}
 }
 func (d *pubsubScoringDrain) retain(s pubsubScoringDrainedStream) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.retainLocked(s)
+}
+func (d *pubsubScoringDrain) retainLocked(s pubsubScoringDrainedStream) (bool, error) {
 	id := s.ID()
 	if id == "" {
 		return false, fmt.Errorf("PubSub stream lacks native ID")
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	// Invalid owners remain fatal even when admission has already closed.
 	if d.seen[id] {
 		return false, fmt.Errorf("PubSub stream has duplicate native ID")
@@ -1100,6 +1103,17 @@ type pubsubScoringHost struct {
 	fingerprint string
 }
 
+func (h *pubsubScoringHost) retainProtocol(s pubsubScoringDrainedStream, fields map[string]any) (bool, error) {
+	// Shutdown must never observe a retained owner without its protocol receipt.
+	h.drain.mu.Lock()
+	defer h.drain.mu.Unlock()
+	retained, err := h.drain.retainLocked(s)
+	if err == nil && retained {
+		h.observer.emit("protocol", "go.network.Stream.Protocol", fields)
+	}
+	return retained, err
+}
+
 func (h *pubsubScoringHost) wrap(s network.Stream) (network.Stream, error) {
 	if s == nil {
 		return nil, fmt.Errorf("PubSub native host returned no stream")
@@ -1114,17 +1128,16 @@ func (h *pubsubScoringHost) wrap(s network.Stream) (network.Stream, error) {
 		if s.ID() == "" || s.Protocol() != h.protocol {
 			return nil, fmt.Errorf("PubSub QUIC host stream lacks selected protocol/admitted owner")
 		}
-		retained, err := h.drain.retain(wrapped)
+		retained, err := h.retainProtocol(wrapped, map[string]any{"connection_id": s.Conn().ID(),
+			"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
+			"direction": s.Stat().Direction.String(), "observation_layer": "Swarm_selected_protocol_only",
+			"selection_basis": "native_host_stream_return_not_configured_protocol_list"})
 		if err != nil {
 			return nil, err
 		}
 		if !retained {
 			return nil, context.Canceled
 		}
-		h.observer.emit("protocol", "go.network.Stream.Protocol", map[string]any{"connection_id": s.Conn().ID(),
-			"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
-			"direction": s.Stat().Direction.String(), "observation_layer": "Swarm_selected_protocol_only",
-			"selection_basis": "native_host_stream_return_not_configured_protocol_list"})
 		return &pubsubScoringQUICWriteStream{pubsubQUICHostStream: wrapped}, nil
 	}
 	wrapped := &pubsubScoringStream{Stream: s, observer: h.observer, drain: h.drain,
@@ -1132,17 +1145,16 @@ func (h *pubsubScoringHost) wrap(s network.Stream) (network.Stream, error) {
 	if s.ID() == "" || s.Protocol() != h.protocol {
 		return nil, fmt.Errorf("PubSub stream lacks selected protocol/admitted owner")
 	}
-	retained, err := h.drain.retain(wrapped)
+	retained, err := h.retainProtocol(wrapped, map[string]any{"connection_id": s.Conn().ID(),
+		"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
+		"direction":       s.Stat().Direction.String(),
+		"selection_basis": "native_host_stream_return_not_configured_protocol_list"})
 	if err != nil {
 		return nil, err
 	}
 	if !retained {
 		return nil, context.Canceled
 	}
-	h.observer.emit("protocol", "go.network.Stream.Protocol", map[string]any{"connection_id": s.Conn().ID(),
-		"stream_id": s.ID(), "peer_id": s.Conn().RemotePeer().String(), "protocol": string(s.Protocol()),
-		"direction":       s.Stat().Direction.String(),
-		"selection_basis": "native_host_stream_return_not_configured_protocol_list"})
 	return wrapped, nil
 }
 func (h *pubsubScoringHost) NewStream(ctx context.Context, p peer.ID, ids ...protocol.ID) (network.Stream, error) {
