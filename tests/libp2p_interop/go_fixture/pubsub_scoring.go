@@ -1219,13 +1219,14 @@ type pubsubScoringReadTerminalAttempt struct {
 }
 
 type pubsubScoringTerminalReceipt struct {
-	sequence int
-	fields   map[string]any
-	err      error
-	kind     string
-	reset    *pubsubScoringResetAttempt
-	terminal *pubsubScoringReadTerminalAttempt
-	returned uint64
+	sequence          int
+	fields            map[string]any
+	err               error
+	kind              string
+	reset             *pubsubScoringResetAttempt
+	terminal          *pubsubScoringReadTerminalAttempt
+	returned          uint64
+	finalizationOrder uint64
 }
 
 func (s *pubsubScoringStream) beginOperation(name string, closing bool) pubsubScoringOperation {
@@ -1487,6 +1488,13 @@ func (s *pubsubScoringStream) finalizeFraming() {
 	clean := false
 	if s.directionsJoinedLocked() {
 		receipts, s.pendingTerminal = s.pendingTerminal, nil
+		for index := range receipts {
+			if receipts[index].fields["outcome"] == "concurrent_reset_close_pending" {
+				// Seal joined state and the latest attempt on the same native-order ledger.
+				s.operationOrder++
+				receipts[index].finalizationOrder = s.operationOrder
+			}
+		}
 		s.finalizing += len(receipts)
 		clean = s.residue[0] == 0 && s.residue[1] == 0 && !s.read.failed && !s.write.failed
 	}
@@ -1501,12 +1509,14 @@ func (s *pubsubScoringStream) finalizeFraming() {
 		if receipt.fields["outcome"] == "concurrent_reset_close_pending" {
 			reset := receipt.reset
 			s.observer.mu.Lock()
-			accepted = accepted && s.observer.prepared && s.observer.failure == nil && !s.observer.overflow &&
+			accepted = accepted && s.observer.prepared && !s.observer.quiesced && s.observer.failure == nil && !s.observer.overflow &&
 				reset == latestReset && reset.completed && reset.err == nil && reset.sequence != 0 && reset.prepared &&
 				reset.prepareAck == s.observer.prepareAck && receipt.fields["prepare_ack_sequence"] == reset.prepareAck &&
-				reset.started < receipt.fields["started_order"].(uint64) && reset.returned > receipt.fields["started_order"].(uint64)
+				reset.started < receipt.fields["started_order"].(uint64) && reset.returned > receipt.fields["started_order"].(uint64) &&
+				receipt.returned < receipt.finalizationOrder && reset.returned < receipt.finalizationOrder
 			s.observer.mu.Unlock()
 			fields["observed_reset_receipt_sequence"], fields["observed_reset_returned_order"] = reset.sequence, reset.returned
+			fields["finalization_order"] = receipt.finalizationOrder
 		} else if receipt.fields["outcome"] == "peer_zero_reset_pending" || receipt.terminal != nil {
 			s.observer.mu.Lock()
 			accepted = accepted && s.observer.prepared && s.observer.failure == nil && !s.observer.overflow
@@ -1583,7 +1593,7 @@ func (s *pubsubScoringStream) endClose(op pubsubScoringOperation, side int, resu
 		concurrent = s.reset == op.reset
 		s.mu.Unlock()
 		s.observer.mu.Lock()
-		concurrent = concurrent && s.observer.failure == nil && !s.observer.overflow
+		concurrent = concurrent && !s.observer.quiesced && s.observer.failure == nil && !s.observer.overflow
 		s.observer.mu.Unlock()
 	}
 	if candidate {

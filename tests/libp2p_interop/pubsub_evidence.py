@@ -310,6 +310,7 @@ def _go_native_operations(events):
                  "owner_disposal_receipt_sequence"}
     causal_reset = {"causal_reset_receipt_sequence", "causal_reset_returned_order"}
     connections, streams, receipts, pending, resolutions, orders, acks = {}, {}, {}, {}, {}, {}, {}
+    quiesced = False
     for event in events:
         kind = event.get("kind")
         if event.get("source") in GO_QUIC_SOURCES.values():
@@ -325,6 +326,8 @@ def _go_native_operations(events):
         elif kind == "shutdown_prepared" and event.get("source") == "go.fixture.prepare_shutdown":
             require(type(event.get("sequence")) is int, "invalid native preparation sequence")
             acks[event["sequence"]] = event
+        elif kind == "shutdown_quiesced" and event.get("source") == "go.fixture.owned_pubsub_quiesce":
+            quiesced = True
         if kind not in {"stream_io_terminal", "native_stream_operation", "native_stream_close_finalized", "native_stream_io_finalized"}:
             continue
         _framing_terminal(event, "go")
@@ -337,7 +340,7 @@ def _go_native_operations(events):
                  | (read_terminal if is_read_terminal else set()) | (finalized if is_final else set())
                  | (concurrent_close if is_concurrent_close else set())
                  | ({"observed_terminal_receipt_sequence"} if is_final and is_read_terminal else set())
-                 | ({"observed_reset_receipt_sequence", "observed_reset_returned_order"}
+                 | ({"observed_reset_receipt_sequence", "observed_reset_returned_order", "finalization_order"}
                     if is_final and is_concurrent_close else set())
                  | (causal_reset if is_final and not is_peer and not is_read_terminal and not is_concurrent_close else set()))
         require(set(event) == common | extra, "native operation receipt fields differ from exact contract")
@@ -422,6 +425,7 @@ def _go_native_operations(events):
                     and isinstance(event["error"], str) and 0 < len(event["error"]) <= 512,
                     "repeat Close lacks exact outer native Yamux StreamError0")
         elif is_concurrent_close:
+            require(not quiesced, "concurrent Close observation occurs after actual quiesce ACK")
             require(operation == "stream_close" and event["prepared"] is True and event["native_yamux"] is True
                     and event["typed_cause"] == "yamux_stream_error" and event["error_type"] == "*yamux.StreamError"
                     and type(event["error_code"]) is int and event["error_code"] == 0 and event["remote"] is False
@@ -439,6 +443,12 @@ def _go_native_operations(events):
             require(type(reference) is int and reference > 0 and reference not in resolutions,
                     "missing/duplicate native terminal finalization reference")
             resolutions[reference] = event
+            if is_concurrent_close:
+                seal = event["finalization_order"]
+                used = orders.setdefault(owner, set())
+                require(type(seal) is int and 0 < seal < 2**64 and seal not in used,
+                        "invalid/reused concurrent Close finalization ordering seal")
+                used.add(seal)
         else:
             used = orders.setdefault(owner, set())
             require(event["started_order"] not in used and event["returned_order"] not in used,
@@ -480,10 +490,20 @@ def _go_native_operations(events):
                     and reset["returned_order"] == event["observed_reset_returned_order"]
                     and reset["started_order"] < original["started_order"] < reset["returned_order"],
                     "concurrent Close lacks the exact overlapping successful Prepared full Reset disposal")
-            attempts = [value for value in receipts.values() if value["kind"] == "native_stream_operation"
+            operations = [value for value in receipts.values()
+                          if value["connection_id"] == original["connection_id"] and value["stream_id"] == original["stream_id"]]
+            attempts = [value for value in operations if value["kind"] == "native_stream_operation"
                         and value["operation"] in {"stream_reset", "stream_reset_with_error"}
-                        and value["connection_id"] == original["connection_id"] and value["stream_id"] == original["stream_id"]
-                        and value["sequence"] < event["sequence"]]
+                        and value["started_order"] < original["started_order"]]
+            require(attempts and max(value["started_order"] for value in attempts) == reset["started_order"],
+                    "concurrent Close borrows a superseded Reset-at-BEGIN attempt")
+            seal = event["finalization_order"]
+            before_seal = [value for value in operations if value["started_order"] < seal]
+            require(original["returned_order"] < seal and reset["returned_order"] < seal
+                    and all(value["returned_order"] < seal for value in before_seal),
+                    "concurrent Close seal precedes a native operation RETURN/join")
+            attempts = [value for value in before_seal if value["kind"] == "native_stream_operation"
+                        and value["operation"] in {"stream_reset", "stream_reset_with_error"}]
             require(attempts and max(value["started_order"] for value in attempts) == reset["started_order"],
                     "concurrent Close borrows a superseded Reset attempt")
             continue

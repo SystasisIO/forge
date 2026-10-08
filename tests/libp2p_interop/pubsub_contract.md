@@ -321,15 +321,25 @@ operation receipt with `native_close_succeeded=false` and
 `terminal_state_cause=unknown`. Its `reset_started_order` identifies the captured
 active attempt; `reset_returned_order` and `reset_receipt_sequence` remain zero.
 The separate `native_stream_close_finalized` copies that observation and adds
-only `observed_reset_receipt_sequence` and `observed_reset_returned_order`, never
-`causal_reset_*`. Python independently binds the exact successful full Reset
-receipt, owner, protocol, ACK and counters. That Reset must still be the latest
-attempt before finalization, and its positive RETURN must follow Close BEGIN;
+`observed_reset_receipt_sequence`, `observed_reset_returned_order` and
+`finalization_order`, never `causal_reset_*`. The finalization order is a new,
+unique counter on the same wrapper's native-operation ledger, sealed under its
+mutex with the joined state and latest Reset snapshot. It is stored in the
+terminal receipt, never added to or substituted into the original Close fields.
+Python independently binds the exact successful full Reset receipt, owner,
+protocol, ACK and counters. Across all receipts, including those published after
+the finalizer, this must be the latest Reset/ResetWithError START before both
+Close BEGIN and the finalization seal. Every observed native operation begun
+before that seal must have returned strictly before it; the seal cannot reuse
+any native BEGIN/RETURN counter or another seal. Reset's positive RETURN must follow Close BEGIN;
 it may precede or follow Close RETURN. Receipt publication order is not native
 call order. The finalizer's `owner_disposal_receipt_sequence` must reference this
 same successful Reset, not an older disposal. Both decoders must be finalized
 with zero residue, all native I/O/terminal operations actually joined and no
-sticky failure/overflow. Missing/duplicate finalizers or disposal remain fatal.
+sticky failure/overflow. Both the new candidate and its finalizer require the
+observer not yet quiesced, and Python rejects either after the actual
+`shutdown_quiesced` ACK. That ACK still requires the real owned drain. Missing/
+duplicate finalizers or disposal remain fatal.
 Close itself is never recorded as successful, and this rule grants no Read,
 Write, RPC, delivery, scoring or graceful-close authority.
 

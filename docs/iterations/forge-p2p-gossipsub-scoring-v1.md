@@ -184,6 +184,11 @@ operations joined, both RPC decoders clean and no prior failure or overflow.
 Reset may return before or after Close RETURN; its receipt proves disposal,
 never the cause of the Close error. A future or superseded Reset cannot supply
 this evidence. Wrapped, nonzero, remote or pre-Prepare errors remain fatal.
+The finalizer seals the native operation order while claiming joined state.
+The independent checker considers all native BEGIN counters, including receipts
+published after finalization, to reject superseded attempts and operations that
+have not returned by that seal. Both the new observation and its finalizer must
+precede the actual quiesce acknowledgement.
 
 The donor baseline is `go-yamux/v5@v5.0.1`: `ResetWithError` changes the stream
 state before sending/reset cleanup completes; `CloseWrite` returns the stored

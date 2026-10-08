@@ -1582,9 +1582,13 @@ class PubSubEvidenceTests(unittest.TestCase):
                    "reset_returned_order": 0, "terminal_state_cause": "unknown", "native_close_succeeded": False}
         observed.update(changes)
         final.update(changes, observed_reset_receipt_sequence=reset["sequence"],
-                     observed_reset_returned_order=reset["returned_order"])
+                     observed_reset_returned_order=reset["returned_order"], finalization_order=5)
         final.pop("causal_reset_receipt_sequence")
         final.pop("causal_reset_returned_order")
+        events = artifact["raw"]["sink"]["events"]
+        index = next(event["sequence"] - 1 for event in events if event["kind"] == "shutdown_quiesced")
+        records = sorted((reset, observed, final), key=lambda value: value["sequence"])
+        self.insert_sink_events(artifact, index, records, relocate=True)
         return reset, observed, final
 
     def owned_read_terminal_events(self, artifact, *, late_publication=False):
@@ -1611,7 +1615,7 @@ class PubSubEvidenceTests(unittest.TestCase):
         return close, observed, disposal, resolution
 
     @staticmethod
-    def insert_sink_events(artifact, index, added):
+    def insert_sink_events(artifact, index, added, *, relocate=False):
         """Resequence synthetic facts while retaining exact indexed native references."""
         events = artifact["raw"]["sink"]["events"]
         fields = {"prepare_ack_sequence", "terminal_prepare_ack_sequence", "reset_receipt_sequence",
@@ -1632,6 +1636,9 @@ class PubSubEvidenceTests(unittest.TestCase):
                  for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "donor_joined" and row["actor"] == "sink"]
         quiesced = [(row, events[row["quiesce_event_sequence"] - 1])
                     for row in artifact["shutdown_barrier"]["operations"] if row["kind"] == "quiesce_ack" and row["actor"] == "sink"]
+        if relocate:
+            index -= sum(position < index and any(event is value for value in added) for position, event in enumerate(events))
+            events[:] = [event for event in events if not any(event is value for value in added)]
         events[index:index] = added
         for sequence, event in enumerate(events, 1):
             event.update(sequence=sequence, mono_ns=sequence)
@@ -2073,6 +2080,10 @@ class PubSubEvidenceTests(unittest.TestCase):
                     self.assertEqual(final["observed_reset_receipt_sequence"], final["owner_disposal_receipt_sequence"])
                     self.assertIs(final["native_close_succeeded"], False)
                     self.assertEqual(final["terminal_state_cause"], "unknown")
+                    self.assertGreater(final["finalization_order"], max(reset["returned_order"], observed["returned_order"]))
+                    self.assertNotIn("finalization_order", observed)
+                    ack = next(event for event in artifact["raw"]["sink"]["events"] if event["kind"] == "shutdown_quiesced")
+                    self.assertLess(final["sequence"], ack["sequence"])
                     self.assertNotIn("causal_reset_receipt_sequence", final)
                     self.assertNotIn("causal_reset_returned_order", final)
 
@@ -2133,8 +2144,7 @@ class PubSubEvidenceTests(unittest.TestCase):
                 validate_case(artifact)
         artifact = synthetic_case(lower_quic=False)
         _, _, final = self.concurrent_reset_close_events(artifact)
-        events = artifact["raw"]["sink"]["events"]
-        events.append({**final, "sequence": len(events) + 1, "mono_ns": len(events) + 1})
+        self.insert_sink_events(artifact, final["sequence"], [deepcopy(final)])
         with self.assertRaisesRegex(ValueError, "duplicate"):
             validate_case(artifact)
 
@@ -2143,12 +2153,13 @@ class PubSubEvidenceTests(unittest.TestCase):
         reset, observed, final = self.concurrent_reset_close_events(artifact)
         reset["returned_order"] = 3
         observed.update(started_order=4, returned_order=5)
-        final.update(started_order=4, returned_order=5, observed_reset_returned_order=3)
+        final.update(started_order=4, returned_order=5, observed_reset_returned_order=3, finalization_order=6)
         with self.assertRaisesRegex(ValueError, "overlapping"):
             validate_case(artifact)
         for explicit in (False, True):
             artifact = synthetic_case(lower_quic=False)
             reset, observed, final = self.concurrent_reset_close_events(artifact, late_publication=True)
+            final["finalization_order"] = 7
             newer = {**reset, "started_order": 5, "returned_order": 6}
             if explicit:
                 newer.update(operation="stream_reset_with_error", requested_reset_code=0)
@@ -2159,9 +2170,61 @@ class PubSubEvidenceTests(unittest.TestCase):
         reset, observed, final = self.concurrent_reset_close_events(artifact)
         reset.update(started_order=4, returned_order=5)
         observed["reset_started_order"] = final["reset_started_order"] = 4
-        final["observed_reset_returned_order"] = 5
+        final.update(observed_reset_returned_order=5, finalization_order=6)
         with self.assertRaises(ValueError):
             validate_case(artifact)
+
+    def test_concurrent_reset_close_checks_late_published_reset_at_begin_and_at_join_seal(self):
+        for stage in ("begin", "seal"):
+            for explicit in (False, True):
+                artifact = synthetic_case(lower_quic=False)
+                reset, observed, final = self.concurrent_reset_close_events(artifact, late_publication=True)
+                reset["returned_order"] = 5
+                observed.update(started_order=4 if stage == "begin" else 2,
+                                returned_order=6 if stage == "begin" else 4)
+                final.update(started_order=observed["started_order"], returned_order=observed["returned_order"],
+                             observed_reset_returned_order=5, finalization_order=7)
+                newer = {**reset, "started_order": 2 if stage == "begin" else 3,
+                         "returned_order": 3 if stage == "begin" else 6}
+                if explicit:
+                    newer.update(operation="stream_reset_with_error", requested_reset_code=0)
+                self.insert_sink_events(artifact, final["sequence"], [newer])
+                self.assertGreater(newer["sequence"], final["sequence"])
+                with self.subTest(stage=stage, explicit=explicit), self.assertRaisesRegex(ValueError, "superseded"):
+                    validate_case(artifact)
+
+    def test_concurrent_reset_close_seal_rejects_unjoined_returns_and_scalar_or_counter_reuse(self):
+        for value in (True, 5.0, 0, 2**64, 1, 2, 3, 4):
+            artifact = synthetic_case(lower_quic=False)
+            _, _, final = self.concurrent_reset_close_events(artifact)
+            final["finalization_order"] = value
+            with self.subTest(seal=value), self.assertRaises(ValueError):
+                validate_case(artifact)
+        artifact = synthetic_case(lower_quic=False)
+        reset, _, final = self.concurrent_reset_close_events(artifact)
+        final["finalization_order"] = 7
+        operation = {**reset, "operation": "stream_close_read", "started_order": 5, "returned_order": 9}
+        self.insert_sink_events(artifact, final["sequence"], [operation])
+        with self.assertRaisesRegex(ValueError, "seal.*RETURN/join"):
+            validate_case(artifact)
+        artifact = synthetic_case(lower_quic=False)
+        reset, _, final = self.concurrent_reset_close_events(artifact)
+        operation = {**reset, "operation": "stream_close_read", "started_order": 5, "returned_order": 6}
+        self.insert_sink_events(artifact, final["sequence"], [operation])
+        with self.assertRaisesRegex(ValueError, "reused native operation ordering counter"):
+            validate_case(artifact)
+
+    def test_concurrent_reset_close_pending_and_final_cannot_follow_real_quiesce_ack(self):
+        for pending_too in (False, True):
+            artifact = synthetic_case(lower_quic=False)
+            _, observed, final = self.concurrent_reset_close_events(artifact)
+            events = artifact["raw"]["sink"]["events"]
+            ack = next(value for value in events if value["kind"] == "shutdown_quiesced")
+            moved = [observed, final] if pending_too else [final]
+            self.insert_sink_events(artifact, ack["sequence"], moved, relocate=True)
+            self.assertGreater(final["sequence"], ack["sequence"])
+            with self.subTest(pending_too=pending_too), self.assertRaisesRegex(ValueError, "after actual quiesce ACK"):
+                validate_case(artifact)
 
     def test_repeat_close_accepts_late_publication_only_with_exact_native_return_and_finalizer(self):
         for publish_before_close_receipt in (False, True):

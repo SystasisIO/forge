@@ -1628,7 +1628,7 @@ func TestPubsubScoringRepeatCloseDoesNotWaitForIOOrBorrowInFlightReset(t *testin
 
 func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *testing.T) {
 	for _, mode := range []string{"clean", "partial", "remote", "nonzero", "wrapped", "joined", "outer_network", "half_close", "errno", "preprepare", "reset_preprepare",
-		"sticky", "sticky_after", "overflow", "unadmitted", "reset_failure", "wrong_ack", "superseded", "explicit_reset"} {
+		"sticky", "sticky_after", "quiesced", "quiesced_after", "quiesced_sticky", "overflow", "unadmitted", "reset_failure", "wrong_ack", "superseded", "explicit_reset"} {
 		t.Run(mode, func(t *testing.T) {
 			native := error(&nativeyamux.StreamError{})
 			switch mode {
@@ -1680,6 +1680,12 @@ func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *
 			case "sticky":
 				primary = syscall.ECONNRESET
 				o.fail(primary)
+			case "quiesced":
+				o.quiesced = true
+			case "quiesced_sticky":
+				o.quiesced = true
+				primary = syscall.ENOSYS
+				o.fail(primary)
 			case "overflow":
 				o.overflow = true
 			case "unadmitted":
@@ -1710,7 +1716,7 @@ func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *
 					observed = event
 				}
 			}
-			pending := mode == "clean" || mode == "partial" || mode == "reset_failure" || mode == "superseded" || mode == "sticky_after"
+			pending := mode == "clean" || mode == "partial" || mode == "reset_failure" || mode == "superseded" || mode == "sticky_after" || mode == "quiesced_after"
 			if observed == nil || (observed["outcome"] == "concurrent_reset_close_pending") != pending {
 				t.Fatal("unrelated Close error was deferred", observed)
 			}
@@ -1718,6 +1724,9 @@ func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *
 			if mode == "sticky_after" {
 				primary = syscall.ECONNRESET
 				o.fail(primary)
+			}
+			if mode == "quiesced_after" {
+				o.quiesced = true
 			}
 			if mode == "superseded" {
 				newer := s.beginOperation("stream_reset", true)
@@ -1744,6 +1753,10 @@ func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *
 					if final[0]["observed_reset_receipt_sequence"] != final[0]["owner_disposal_receipt_sequence"] {
 						t.Fatal("observation used unrelated disposal")
 					}
+					seal, ok := final[0]["finalization_order"].(uint64)
+					if !ok || seal <= final[0]["returned_order"].(uint64) || seal <= final[0]["observed_reset_returned_order"].(uint64) {
+						t.Fatal("new finalizer lacks its strictly later native-order join seal")
+					}
 				}
 				if _, causal := final[0]["causal_reset_receipt_sequence"]; causal {
 					t.Fatal("unknown-cause observation fabricated a causal Reset")
@@ -1755,6 +1768,9 @@ func TestPubsubScoringConcurrentResetCloseKeepsUnknownCauseAndStrictFailures(t *
 			if !bytes.Equal(before, after) || (o.failure == nil) != (mode == "clean") || primary != nil && o.failure != primary ||
 				mode == "reset_failure" && o.failure != delegate.resetErr {
 				t.Fatal("finalization changed raw evidence or cleared/replaced the first error")
+			}
+			if _, mutated := observed["finalization_order"]; mutated {
+				t.Fatal("finalization mutated the original native Close observation")
 			}
 		})
 	}
@@ -1798,6 +1814,10 @@ func TestPubsubScoringConcurrentResetClosePinsLateSuccessfulResetPublication(t *
 		final[0]["observed_reset_returned_order"] != resetResult.order || final[0]["owner_disposal_receipt_sequence"] != reset.reset.sequence ||
 		reset.reset.sequence <= raw[0]["sequence"].(int) || !bytes.Equal(before, after) || o.failure != nil || !s.framingJoined() {
 		t.Fatal("late publication changed immutable unknown-cause Close or lost exact full disposal")
+	}
+	seal, ok := final[0]["finalization_order"].(uint64)
+	if !ok || seal <= closeResult.order || seal <= resetResult.order || seal != s.operationOrder {
+		t.Fatal("joined/latest-Reset snapshot did not seal a unique native order")
 	}
 	pubsubScoringUnitDisposal(t, o, final[0])
 }
