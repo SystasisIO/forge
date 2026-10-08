@@ -5,7 +5,10 @@ module;
 #include <cstddef>
 #include <limits>
 #include <map>
+#include <new>
+#include <span>
 #include <string>
+#include <utility>
 
 module forge.net.p2p.node;
 
@@ -46,10 +49,26 @@ pubsub_backoff::clock::time_point pubsub_backoff::deadline(clock::time_point now
    return now + std::chrono::duration_cast<clock::duration>(duration);
 }
 
-void pubsub_backoff::expire(clock::time_point now) noexcept {
+pubsub_backoff::clock::duration pubsub_backoff::graft_slack(std::chrono::milliseconds heartbeat) noexcept {
+   if (heartbeat <= std::chrono::milliseconds::zero()) { return clock::duration::zero(); }
+   const auto maximum = clock::duration::max();
+   if (heartbeat >= std::chrono::duration_cast<std::chrono::milliseconds>(maximum / 2)) {
+      return maximum;
+   }
+   return std::chrono::duration_cast<clock::duration>(heartbeat) * 2;
+}
+
+pubsub_backoff::clock::time_point pubsub_backoff::with_slack(clock::time_point until,
+                                                           clock::duration slack) noexcept {
+   if (until == clock::time_point{} || slack <= clock::duration::zero()) { return until; }
+   return until >= clock::time_point::max() - slack ? clock::time_point::max() : until + slack;
+}
+
+void pubsub_backoff::expire(clock::time_point now, clock::duration slack) noexcept {
    for (auto topic = entries_.begin(); topic != entries_.end();) {
       for (auto peer = topic->second.begin(); peer != topic->second.end();) {
-         if (peer->second.local_until <= now && peer->second.remote_until <= now) {
+         if (with_slack(peer->second.local_until, slack) <= now &&
+             with_slack(peer->second.remote_until, slack) <= now) {
             peer = topic->second.erase(peer);
             --size_;
          } else {
@@ -62,11 +81,66 @@ void pubsub_backoff::expire(clock::time_point now) noexcept {
          ++topic;
       }
    }
-   if (local_saturated_until_ <= now) {
+   if (with_slack(local_saturated_until_, slack) <= now) {
       local_saturated_until_ = {};
    }
-   if (remote_saturated_until_ <= now) {
+   if (with_slack(remote_saturated_until_, slack) <= now) {
       remote_saturated_until_ = {};
+   }
+}
+
+pubsub_backoff::prepared_local pubsub_backoff::prepare_local(
+    std::span<const local_request> requests, clock::time_point now, std::size_t limit) const {
+   auto out = prepared_local{.saturated_until = local_saturated_until_};
+   auto added = std::size_t{};
+   for (const auto& request : requests) {
+      const auto until = deadline(now, request.duration);
+      if (until <= now) { continue; }
+      const auto existing_topic = entries_.find(request.topic);
+      const auto existing = existing_topic == entries_.end() ? nullptr : [&]() -> const entry* {
+         const auto peer = existing_topic->second.find(request.peer);
+         return peer == existing_topic->second.end() ? nullptr : &peer->second;
+      }();
+      auto staged_topic = out.rows.find(request.topic);
+      if (staged_topic != out.rows.end()) {
+         const auto staged = staged_topic->second.find(request.peer);
+         if (staged != staged_topic->second.end()) {
+            staged->second.local_until = std::max(staged->second.local_until, until);
+            continue;
+         }
+      }
+      if (!existing && (size_ >= limit || added >= limit - size_)) {
+         out.saturated_until = std::max(out.saturated_until, until);
+         continue;
+      }
+      auto value = existing ? *existing : entry{};
+      value.local_until = std::max(value.local_until, until);
+      out.rows[request.topic].emplace(request.peer, value);
+      if (!existing) { ++added; }
+   }
+   return out;
+}
+
+void pubsub_backoff::commit_local(prepared_local value) noexcept {
+   local_saturated_until_ = std::max(local_saturated_until_, value.saturated_until);
+   while (!value.rows.empty()) {
+      auto topic = value.rows.extract(value.rows.begin());
+      const auto existing = entries_.find(topic.key());
+      if (existing == entries_.end()) {
+         size_ += topic.mapped().size();
+         entries_.insert(std::move(topic));
+         continue;
+      }
+      while (!topic.mapped().empty()) {
+         auto peer = topic.mapped().extract(topic.mapped().begin());
+         const auto row = existing->second.find(peer.key());
+         if (row == existing->second.end()) {
+            existing->second.insert(std::move(peer));
+            ++size_;
+         } else {
+            row->second.local_until = std::max(row->second.local_until, peer.mapped().local_until);
+         }
+      }
    }
 }
 
@@ -104,13 +178,23 @@ void pubsub_backoff::record(direction kind, const std::string& topic, const peer
       return;
    }
 
-   auto& value = entries_[topic][peer];
-   if (kind == direction::local) {
-      value.local_until = until;
-   } else {
-      value.remote_until = until;
+   try {
+      const auto [topic_row, inserted] = entries_.try_emplace(topic);
+      try {
+         auto value = entry{};
+         if (kind == direction::local) { value.local_until = until; }
+         else { value.remote_until = until; }
+         topic_row->second.emplace(peer, value);
+      } catch (const std::bad_alloc&) {
+         if (inserted) { entries_.erase(topic_row); }
+         throw;
+      }
+      ++size_;
+   } catch (const std::bad_alloc&) {
+      // Same conservative, direction-specific refusal as capacity saturation, without a partial row.
+      auto& saturated_until = kind == direction::local ? local_saturated_until_ : remote_saturated_until_;
+      saturated_until = std::max(saturated_until, until);
    }
-   ++size_;
 }
 
 pubsub_backoff::status pubsub_backoff::local_status(const std::string& topic, const peer_id& peer,
@@ -137,8 +221,19 @@ pubsub_backoff::status pubsub_backoff::get_status(direction kind, const std::str
    return now < saturated_until ? status::saturated : status::none;
 }
 
-bool pubsub_backoff::blocked(const std::string& topic, const peer_id& peer, clock::time_point now) const noexcept {
-   return local_status(topic, peer, now) != status::none || remote_status(topic, peer, now) != status::none;
+bool pubsub_backoff::graft_blocked(const std::string& topic, const peer_id& peer, clock::time_point now,
+                                  clock::duration slack) const noexcept {
+   // Incoming penalties use the exact deadline; only outgoing GRAFT waits for donor-style slack.
+   if (now < with_slack(local_saturated_until_, slack) || now < with_slack(remote_saturated_until_, slack)) {
+      return true;
+   }
+   if (const auto topic_found = entries_.find(topic); topic_found != entries_.end()) {
+      if (const auto peer_found = topic_found->second.find(peer); peer_found != topic_found->second.end()) {
+         return now < with_slack(peer_found->second.local_until, slack) ||
+                now < with_slack(peer_found->second.remote_until, slack);
+      }
+   }
+   return false;
 }
 
 std::size_t pubsub_backoff::size() const noexcept {

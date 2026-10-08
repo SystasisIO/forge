@@ -43,9 +43,13 @@ struct upgrade_callbacks {
 
 namespace detail {
 
-boost::asio::awaitable<protocol_id> select_private_stream_security_protocol(forge::net::p2p::stream& stream);
+[[nodiscard]] std::span<const protocol_id> stream_security_protocols(node::stream_security policy);
 
-boost::asio::awaitable<protocol_id> accept_private_stream_security_protocol(forge::net::p2p::stream& stream);
+boost::asio::awaitable<protocol_id> select_private_stream_security_protocol(
+    forge::net::p2p::stream& stream, node::stream_security policy = node::stream_security::tls_and_noise);
+
+boost::asio::awaitable<protocol_id> accept_private_stream_security_protocol(
+    forge::net::p2p::stream& stream, node::stream_security policy = node::stream_security::tls_and_noise);
 
 } // namespace detail
 

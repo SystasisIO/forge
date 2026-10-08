@@ -1,4 +1,5 @@
 #include <concepts>
+#include <string>
 #include <utility>
 
 import forge.api.core.binding;

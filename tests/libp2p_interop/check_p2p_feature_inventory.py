@@ -34,6 +34,8 @@ from private_profile_acceptance import (
     expected_contract as private_profile_expected_contract,
 )
 from private_profile_cases import case_specs as private_profile_case_specs
+from pubsub_acceptance import OWNER_ID as PUBSUB_OWNER_ID, SCENARIOS as PUBSUB_SCENARIOS
+from pubsub_cases import case_specs as pubsub_case_specs
 from stage6_evidence_contract import (
     AUTORELAY_NATIVE_DIRECTIONS,
     AUTORELAY_NATIVE_PROFILES,
@@ -176,7 +178,7 @@ def has_registered_live_interop(case: object) -> bool:
         return False
     return any(
         isinstance(reference, str)
-        and reference.strip().split()[0] == "test_forge_libp2p_interop"
+        and reference.strip().split()[0] in {"test_forge_libp2p_interop", "test_forge_p2p_pubsub_acceptance"}
         for reference in tests
         if reference.strip()
     )
@@ -515,12 +517,50 @@ def registered_runner_acceptance_pairs(runner_path: Path) -> set[tuple[str, str]
         raise ValueError("AutoRelay registration must cover all 6 exact native role/transport scenarios")
     if any(key not in runner_scenario_ids for key in autorelay):
         raise ValueError("AutoRelay registration must be declared in LIVE_SCENARIO_PROFILES")
-    return registered_private_profile_pairs(tree) | registered_path_pairs(tree) | {
+    return registered_private_profile_pairs(tree) | registered_path_pairs(tree) | registered_pubsub_pairs(tree) | {
         (runner_scenario_id, scenario_id)
         for runner_scenario_id, scenario_ids in {**acceptance_scenarios, **autonat, **mdns, **autorelay}.items()
         for scenario_id in scenario_ids
         if scenario_id not in PRIVATE_PROFILE_SCENARIOS and scenario_id not in PATH_REGISTRATION_SCENARIOS
     }
+
+
+def registered_pubsub_pairs(tree: ast.Module) -> set[tuple[str, str]]:
+    """Bind the closed matrix to owned native actor execution, not success labels."""
+    imports = {(statement.module, alias.name): alias.asname or alias.name
+               for statement in tree.body if isinstance(statement, ast.ImportFrom)
+               for alias in statement.names}
+    specs = imports.get(("pubsub_cases", "case_specs"))
+    execute = imports.get(("pubsub_cases", "run_case"))
+    if specs is None and execute is None:
+        return set()
+    mains = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"]
+    if specs is None or execute is None or len(mains) != 1:
+        raise ValueError("PubSub registration requires its complete native adapter in one runner main")
+    loops = [node for node in ast.walk(mains[0]) if isinstance(node, ast.For)
+             and isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+             and node.iter.func.id == specs]
+    if len(loops) != 1 or not isinstance(loops[0].target, ast.Name) or loops[0].iter.args or loops[0].iter.keywords:
+        raise ValueError("PubSub registration requires exactly one full unfiltered native matrix")
+    loop = loops[0]
+    calls = [node for node in ast.walk(loop) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == execute]
+    keywords = {"key": "pnet_key_file", "fingerprint": "pnet_fingerprint", "command_attempt": "command_attempt"}
+    if (len(calls) != 1 or len(calls[0].args) != 3
+            or [arg.id for arg in calls[0].args if isinstance(arg, ast.Name)] != [loop.target.id, "binaries", "root"]
+            or len(calls[0].keywords) != len(keywords)
+            or {item.arg: item.value.id for item in calls[0].keywords if isinstance(item.value, ast.Name)} != keywords):
+        raise ValueError("PubSub registration must bind tracked native attempts and canonical private inputs")
+    assignments = [node for node in loop.body if isinstance(node, ast.Assign)
+                   and node.value is calls[0] and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)]
+    if len(assignments) != 1 or not any(
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute) and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "artifacts" and node.value.func.attr == "append"
+            and len(node.value.args) == 1 and isinstance(node.value.args[0], ast.Name)
+            and node.value.args[0].id == assignments[0].targets[0].id for node in loop.body):
+        raise ValueError("PubSub registration must retain every owned native result")
+    return {(spec.runner_id, spec.scenario) for spec in pubsub_case_specs()}
 
 
 def registered_runner_pair_errors(
@@ -543,6 +583,39 @@ def registered_runner_pair_errors(
             )
         )
     return errors
+
+
+def pubsub_registration_source_errors(root: Path, capability_id: str, capability: dict, scenario: dict) -> list[str]:
+    name = scenario.get("id")
+    if name not in PUBSUB_SCENARIOS:
+        return []
+    spec = next(value for value in pubsub_case_specs() if value.scenario == name)
+    private = spec.profile == "private_tcp_yamux"
+    expected = {"id": name, "runner_scenario_id": spec.runner_id,
+                "profile": "private_network" if private else "native",
+                "transport_stack": ["tcp", "pnet", "yamux"] if private else
+                                   ["quic"] if spec.profile == "native_quic" else ["tcp", "yamux"],
+                "activation": "enabled", "registration": "registered",
+                "source_case_id": "gossipsub.native_score_repair",
+                "evidence_contract": evidence_contract_for(name), "expected_status": "passed",
+                "required_directions": scenario.get("required_directions")}
+    if private:
+        expected["requires_capabilities"] = ["security.private_network_psk"]
+    directions = scenario.get("required_directions")
+    sources = {"pubsub_cases.py", "pubsub_evidence.py", "pubsub_acceptance.py", "pubsub_wire.py",
+               "forge_pubsub_fixture.cpp", "forge_pubsub_fixture.hxx", "go_fixture/pubsub_scoring.go",
+               "rust_fixture/pubsub_scoring.rs", "rust_fixture/pubsub_scoring/observer.rs"}
+    if (capability_id != PUBSUB_OWNER_ID or scenario != expected
+            or capability.get("decision") != "stage_6"
+            or capability.get("planned_branch") != "forge-p2p-gossipsub-scoring-v1"
+            or capability.get("profiles") != ["native", "private_network"]
+            or capability.get("interop_applicability") != "go_and_rust"
+            or not isinstance(directions, list) or len(directions) != 4
+            or any(not isinstance(direction, str) for direction in directions)
+            or set(directions) != {"forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"}
+            or any(not (root / "tests/libp2p_interop" / source).is_file() for source in sources)):
+        return [f"donor capability {capability_id}: PubSub registration differs from the exact native contract"]
+    return []
 
 
 def public_surface_snapshot(
@@ -1417,7 +1490,8 @@ def main() -> int:
         for acceptance in acceptance_capabilities.values()
     )
     executable_contracts = (set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS
-                            | MDNS_EVIDENCE_CONTRACTS | PATH_EVIDENCE_CONTRACTS)
+                            | MDNS_EVIDENCE_CONTRACTS | PATH_EVIDENCE_CONTRACTS
+                            | {evidence_contract_for(name) for name in PUBSUB_SCENARIOS})
     if registered_pr9:
         executable_contracts |= AUTORELAY_EVIDENCE_CONTRACTS
 
@@ -1574,7 +1648,7 @@ def main() -> int:
                 if capability.get("decision") != "current" and not (
                     capability.get("decision") == "stage_6" and scenario_id in (
                         set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_NATIVE_PROFILES)
-                        | set(PRIVATE_PROFILE_SCENARIOS) | set(PATH_REGISTRATION_SCENARIOS)
+                        | set(PRIVATE_PROFILE_SCENARIOS) | set(PATH_REGISTRATION_SCENARIOS) | set(PUBSUB_SCENARIOS)
                     )
                 ):
                     errors.append(
@@ -1592,6 +1666,8 @@ def main() -> int:
                     errors.extend(private_profile_source_errors(root, capability_id, capability, scenario))
                 if scenario_id in PATH_REGISTRATION_SCENARIOS:
                     errors.extend(path_registration_source_errors(root, capability_id, capability, scenario))
+                if scenario_id in PUBSUB_SCENARIOS:
+                    errors.extend(pubsub_registration_source_errors(root, capability_id, capability, scenario))
                 if scenario_id not in PRIVATE_PROFILE_SCENARIOS and (
                         not isinstance(source_case_id, str) or not has_registered_live_interop(source_case)):
                     errors.append(f"donor capability {capability_id}: current scenario lacks a registered donor case")

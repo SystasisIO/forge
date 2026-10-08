@@ -23,6 +23,8 @@ from autorelay_cases import run_suite as run_autorelay_suite
 from autorelay_acceptance import claims_for as autorelay_claims, SCENARIOS as AUTORELAY_SCENARIOS
 from path_cases import run_suite as run_path_suite
 from coordinated_cases import run_suite as run_coordinated_suite
+from pubsub_cases import case_specs as pubsub_specs, run_case as run_pubsub_case
+from pubsub_quic_proof import needs_observer as needs_quic_observer, complete_case as complete_pubsub_case
 from mdns_cases import run_suite as run_mdns_suite
 from mdns_isolation_cases import run_suite as run_mdns_isolation_suite
 from mdns_churn_cases import run_suite as run_mdns_churn_suite
@@ -1061,7 +1063,7 @@ def refresh_rust_fixture_source(source: Path, work: Path) -> None:
 
 
 def prepare_rust_fixture(source_dir: Path, build_dir: Path, cargo_tool: str,
-                         environment: dict[str, str]) -> tuple[Path, list[dict]]:
+                         environment: dict[str, str], *, quic_observer=False) -> tuple[Path, list[dict]]:
     work = build_dir / "rust_fixture"
     refresh_rust_fixture_source(source_dir / "rust_fixture", work)
     commands = [
@@ -1076,6 +1078,9 @@ def prepare_rust_fixture(source_dir: Path, build_dir: Path, cargo_tool: str,
             "environment": {"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"},
         },
     ]
+    if quic_observer:
+        for command in commands:
+            command["command"] += ["--features", "quic-cause-observer"]
     for command in commands:
         run(command["command"], cwd=work, env=environment)
     return work / "target" / "release" / "forge-libp2p-rust-fixture", commands
@@ -1709,7 +1714,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -1834,6 +1839,17 @@ def main() -> int:
                 implementation: {"path": str(binary), "sha256": sha256_file(binary)}
                 for implementation, binary in binaries.items()
             })
+            observer_binary = None
+            if args.suite == "pubsub-scoring" or args.suite == "stage6" and manifest_registers_profiles(
+                    args.acceptance_manifest, {spec.scenario for spec in pubsub_specs()}):
+                from rust_quic_observer import prepare_observer_copy
+                observer_root = build_dir / "quic-observer"
+                observer = prepare_observer_copy(fixture_deps, observer_root)
+                observer_binary, observer_commands = prepare_rust_fixture(
+                    source_dir, observer_root, tools["cargo"]["path"], rust_environment, quic_observer=True)
+                observer.update(binary={"path": str(observer_binary), "sha256": sha256_file(observer_binary)},
+                                commands=observer_commands)
+                provenance["rust_quic_observer"] = observer
 
             if root.exists():
                 shutil.rmtree(root)
@@ -2041,6 +2057,22 @@ def main() -> int:
                     if artifact["status"] != "passed":
                         failures.append(f"{artifact['scenario_id']}: " +
                                         "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+            if args.suite == "pubsub-scoring" or args.suite == "stage6" and manifest_registers_profiles(
+                    args.acceptance_manifest, {spec.scenario for spec in pubsub_specs()}):
+                # Public cases must not consume or overwrite the canonical private input.
+                private_pubsub_fingerprint = pnet_fingerprint
+                for spec in pubsub_specs():
+                    pnet_fingerprint = private_pubsub_fingerprint if spec.profile == "private_tcp_yamux" else None
+                    artifact = run_pubsub_case(spec, binaries, root, key=pnet_key_file,
+                        fingerprint=pnet_fingerprint, command_attempt=command_attempt)
+                    if needs_quic_observer(spec):
+                        artifact = complete_pubsub_case(artifact, spec, binaries, root, observer_binary,
+                                                       command_attempt=command_attempt)
+                    artifacts.append(artifact)
+                    if artifact["status"] != "observed":
+                        failures.append(f"{artifact['scenario_id']}: " +
+                                        "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
+                pnet_fingerprint = private_pubsub_fingerprint
     except Exception as error:
         failures.append(f"preflight: {error}")
     finally:

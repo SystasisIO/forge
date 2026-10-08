@@ -5,6 +5,7 @@ module;
 #include <exception>
 #include <limits>
 #include <memory>
+#include <new>
 #include <span>
 #include <utility>
 #include <vector>
@@ -80,6 +81,22 @@ std::int64_t resource_stream::id() const noexcept {
    return stream_.id();
 }
 
+bool resource_stream::is_memory_rejection(const std::exception& error) noexcept {
+   return dynamic_cast<const memory_rejected*>(&error) != nullptr;
+}
+
+resource_stream::preparation_failed::preparation_failed(std::exception_ptr failure) noexcept
+    : failure_(std::move(failure)) {}
+
+std::exception_ptr resource_stream::preparation_failed::failure() const noexcept {
+   return failure_;
+}
+
+std::exception_ptr resource_stream::preparation_failure(const std::exception& error) noexcept {
+   const auto prepared = dynamic_cast<const preparation_failed*>(&error);
+   return prepared ? prepared->failure() : std::exception_ptr{};
+}
+
 resource_manager::stream_reservation::bind_result resource_stream::bind_protocol(const protocol_id& value) noexcept {
    return reservation_.bind_protocol(value);
 }
@@ -100,44 +117,72 @@ resource_stream::reserve_memory(std::uint64_t bytes, resource_manager::memory_pr
 }
 
 boost::asio::awaitable<void> resource_stream::async_write(std::span<const std::uint8_t> bytes) {
-   auto admitted = reservation_.reserve_memory(bytes.size(), resource_manager::memory_priority::high);
-   if (!admitted) {
-      FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P node queued-byte budget exhausted");
+   auto owned = forge::net::transport::chunk{};
+   // Awaitable creation can allocate too; only execution of the lower body may have native effects.
+   auto write = boost::asio::awaitable<void>{};
+   try {
+      auto admitted = reservation_.reserve_memory(bytes.size(), resource_manager::memory_priority::high);
+      if (!admitted) {
+         FORGE_THROW_EXCEPTION(memory_rejected, "P2P node queued-byte budget exhausted");
+      }
+      owned = forge::net::transport::chunk{bytes};
+      forge::net::transport::detail::chunk_access::attach_lifetime(owned, memory_lifetime(std::move(*admitted)));
+      write = stream_.async_write(std::move(owned));
+   } catch (const std::bad_alloc&) {
+      throw preparation_failed{std::current_exception()};
    }
-   auto owned = forge::net::transport::chunk{bytes};
-   forge::net::transport::detail::chunk_access::attach_lifetime(owned, memory_lifetime(std::move(*admitted)));
-   co_await stream_.async_write(std::move(owned));
+   co_await std::move(write);
 }
 
 boost::asio::awaitable<void> resource_stream::async_write_chunk(forge::net::transport::chunk bytes) {
-   auto admitted = reservation_.reserve_memory(bytes.size(), resource_manager::memory_priority::high);
-   if (!admitted) {
-      FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P node queued-byte budget exhausted");
+   auto write = boost::asio::awaitable<void>{};
+   try {
+      auto admitted = reservation_.reserve_memory(bytes.size(), resource_manager::memory_priority::high);
+      if (!admitted) {
+         FORGE_THROW_EXCEPTION(memory_rejected, "P2P node queued-byte budget exhausted");
+      }
+      forge::net::transport::detail::chunk_access::attach_lifetime(bytes, memory_lifetime(std::move(*admitted)));
+      write = stream_.async_write(std::move(bytes));
+   } catch (const std::bad_alloc&) {
+      throw preparation_failed{std::current_exception()};
    }
-   forge::net::transport::detail::chunk_access::attach_lifetime(bytes, memory_lifetime(std::move(*admitted)));
-   co_await stream_.async_write(std::move(bytes));
+   co_await std::move(write);
 }
 
 boost::asio::awaitable<void> resource_stream::async_write_frame(std::span<const std::uint8_t> bytes) {
-   auto admitted = reservation_.reserve_memory(framed_size(bytes.size()), resource_manager::memory_priority::always);
-   if (!admitted) {
-      FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P node queued-byte budget exhausted");
+   auto encoded = forge::net::transport::chunk{};
+   auto write = boost::asio::awaitable<void>{};
+   try {
+      auto admitted = reservation_.reserve_memory(framed_size(bytes.size()), resource_manager::memory_priority::always);
+      if (!admitted) {
+         FORGE_THROW_EXCEPTION(memory_rejected, "P2P node queued-byte budget exhausted");
+      }
+      encoded = forge::net::transport::chunk{forge::net::transport::encode_frame(bytes)};
+      forge::net::transport::detail::chunk_access::attach_lifetime(encoded, memory_lifetime(std::move(*admitted)));
+      write = stream_.async_write(std::move(encoded));
+   } catch (const std::bad_alloc&) {
+      throw preparation_failed{std::current_exception()};
    }
-   auto encoded = forge::net::transport::chunk{forge::net::transport::encode_frame(bytes)};
-   forge::net::transport::detail::chunk_access::attach_lifetime(encoded, memory_lifetime(std::move(*admitted)));
-   co_await stream_.async_write(std::move(encoded));
+   co_await std::move(write);
 }
 
 boost::asio::awaitable<void> resource_stream::async_write_frame_chunk(forge::net::transport::chunk bytes) {
-   auto admitted = reservation_.reserve_memory(framed_size(bytes.size()), resource_manager::memory_priority::always);
-   if (!admitted) {
-      FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "P2P node queued-byte budget exhausted");
+   auto encoded = forge::net::transport::chunk{};
+   auto write = boost::asio::awaitable<void>{};
+   try {
+      auto admitted = reservation_.reserve_memory(framed_size(bytes.size()), resource_manager::memory_priority::always);
+      if (!admitted) {
+         FORGE_THROW_EXCEPTION(memory_rejected, "P2P node queued-byte budget exhausted");
+      }
+      auto [payload, source_lifetime] = forge::net::transport::detail::chunk_access::consume(std::move(bytes));
+      encoded = forge::net::transport::chunk{forge::net::transport::encode_frame(payload)};
+      forge::net::transport::detail::chunk_access::attach_lifetime(encoded, std::move(source_lifetime));
+      forge::net::transport::detail::chunk_access::attach_lifetime(encoded, memory_lifetime(std::move(*admitted)));
+      write = stream_.async_write(std::move(encoded));
+   } catch (const std::bad_alloc&) {
+      throw preparation_failed{std::current_exception()};
    }
-   auto [payload, source_lifetime] = forge::net::transport::detail::chunk_access::consume(std::move(bytes));
-   auto encoded = forge::net::transport::chunk{forge::net::transport::encode_frame(payload)};
-   forge::net::transport::detail::chunk_access::attach_lifetime(encoded, std::move(source_lifetime));
-   forge::net::transport::detail::chunk_access::attach_lifetime(encoded, memory_lifetime(std::move(*admitted)));
-   co_await stream_.async_write(std::move(encoded));
+   co_await std::move(write);
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> resource_stream::async_read() {

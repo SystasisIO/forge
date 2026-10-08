@@ -79,12 +79,15 @@ import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
 import forge.net.p2p.topology;
 import forge.net.pnet.protector;
+import forge.variant.value;
+import forge.variant.containers;
 
 #include "forge_autonat_fixture.hxx"
 #include "forge_autorelay_fixture.hxx"
 #include "forge_connection_fixture.hxx"
 #include "forge_mdns_fixture.hxx"
 #include "forge_path_fixture.hxx"
+#include "forge_pubsub_fixture.hxx"
 #include "forge_private_profile_fixture.hxx"
 #include "forge_coordinated_fixture.hxx"
 
@@ -222,6 +225,9 @@ std::map<std::string, std::string> parse_args(int argc, char** argv) {
       auto key = std::string{argv[i]};
       if (!key.starts_with("--")) {
          throw std::runtime_error{"unexpected positional argument: " + key};
+      }
+      if (key == "--command") {
+         throw std::runtime_error{"--command cannot replace the positional command"};
       }
       if (i + 1 >= argc) {
          throw std::runtime_error{"missing value for " + key};
@@ -2361,6 +2367,40 @@ int main(int argc, char** argv) {
       }
       if (args.at("command") == "build-info") {
          return build_info_mode();
+      }
+      if (args.at("command") == "--pubsub-self-test") {
+         if (argc != 2) { throw std::runtime_error{"PubSub fixture self-test accepts no flags"}; }
+         forge::test::libp2p_interop::forge_pubsub_fixture::self_test();
+         std::cout << "PubSub fixture self-test: PASS (synthetic units only; NOT live interoperability proof)\n";
+         return 0;
+      }
+      if (args.at("command") == "pubsub-live") {
+         if ((argc - 2) % 2 != 0 || args.size() != 1 + static_cast<std::size_t>((argc - 2) / 2)) {
+            throw std::runtime_error{"pubsub-live requires unique flag/value pairs"};
+         }
+         return forge::test::libp2p_interop::forge_pubsub_fixture::run(args, {
+             .make_options = [](const auto& arguments) {
+                auto options = node_options(required(arguments, "store-dir"), generate_libp2p_identity());
+                if (required(arguments, "transport") == "tcp-pnet-noise") {
+                   configure_private_network(options, arguments, "tcp-pnet");
+                }
+                options.allow_insecure_test_mode = false;
+                options.capabilities = {.bits = forge::net::p2p::capabilities::pubsub |
+                    (required(arguments, "transport") == "quic" ? forge::net::p2p::capabilities::direct_quic : 0)};
+                options.dht_profiles.clear();
+                options.relay_policy.service_enabled = false;
+                options.relay_policy.client_enabled = false;
+                options.relay_policy.auto_discovery_enabled = false;
+                options.path_policy = {.allow_direct = true, .allow_hole_punch = false, .allow_relay = false};
+                options.reachability_policy.client_v1_enabled = false;
+                options.reachability_policy.client_v2_enabled = false;
+                options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+                options.limits.topology.dht_enabled = false;
+                options.limits.topology.rendezvous_enabled = false;
+                options.limits.topology.peer_exchange_enabled = false;
+                return options;
+             },
+         });
       }
       if (args.at("command") == "coordinated-live") {
          if ((argc - 2) % 2 != 0 || args.size() != 1 + static_cast<std::size_t>((argc - 2) / 2)) {

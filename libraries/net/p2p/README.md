@@ -163,9 +163,67 @@ The following surfaces are not production claims yet:
   chunks retain their explicit child memory reservations until transport drain,
   acknowledgement or reset. Full ingress, handshake, decoder and native queue
   memory accounting remains future Stage 6 work;
-- GossipSub donor-consistent scoring, autonomous mesh selection, v1.2/v1.3 and
-  opt-in Partial Messages implementation remain Stage 6 work;
+- GossipSub v1.0/v1.1 scoring and autonomous mesh selection have a new native
+  implementation and registered acceptance suite, whose final exact-head
+  verdict remains pending. v1.2/v1.3 and opt-in Partial Messages remain PR12;
   transport topology is owned by the managed topology service above.
+
+### GossipSub Scoring (Preview)
+
+`pubsub::options::scoring` enables validated per-peer/per-topic P1-P7 scoring.
+The node owns decay, negative-score retention, threshold eligibility, mesh
+repair, opportunistic graft and successfully sent IWANT promises. Ignore,
+retry, cancellation and local queue pressure are not malicious behavior.
+Application score callbacks run outside node and score locks. IP colocation
+uses authenticated direct endpoints, never third-party advertised hints or
+the relay's address attributed to a remote peer.
+
+`node::pubsub_scores()` returns copied read-only score and actual mesh facts.
+The optional synchronous tracer receives completed original framed RPCs and
+committed validation/delivery facts outside state locks. Its spans are valid
+only during the callback; observers must copy any data they retain, must not
+block the network executor and cannot mutate routing through the trace API.
+
+Message history uses heartbeat windows. Local flood publish, unsubscribed
+fanout and forwarding through a subscribed mesh are separate paths. PRUNE
+encoding follows the negotiated stream: v1.0 excludes v1.1 PX/backoff fields.
+IHAVE and IWANT are split incrementally by actual protobuf payload size.
+`max_rpc_size` excludes the length prefix, which still counts toward queued
+memory. Individually unencodable gossip IDs are skipped without hiding durable
+GRAFT/PRUNE intents or creating an IWANT promise for unsent data.
+Remote ephemeral replies retain their original authenticated session; a retired
+owner cannot penalize a replacement peer lifetime or create its delivery promise.
+Cached MESSAGE replies use individually bounded RPCs, even when several matching
+entries would exceed the payload limit in a combined response.
+For `codec::next_gossip()`, start with a default cursor and keep the input control
+immutable until traversal ends. An out-of-range
+cursor is rejected with `invalid_options`, rather than permitting a stalled loop.
+
+`max_graft_per_peer` limits outbound GRAFT entries in one durable batch, not
+inbound processing. Remaining GRAFT intents stay queued; PRUNE is selected first.
+Inbound GRAFT entries all pass the existing topic, score, backoff and mesh checks,
+subject to the RPC byte/count bounds. Callers that previously relied on this
+field as an inbound cap must use those receive/resource limits instead.
+
+The focused acceptance target is `test_forge_p2p_pubsub_acceptance`; codec,
+score-engine or synthetic checker tests alone do not establish interoperability.
+See the [donor traceability note](../../../docs/donors/forge-p2p-gossipsub-scoring-v1.md)
+for composition, Rust score-counter visibility and the unresolved typed QUIC
+shutdown-cause observation gate. Unavailable native causes are not promoted to
+successful shutdown using diagnostic strings, another stream's cause or retries.
+
+The native receive boundary enforces signature policies before cache admission
+and IWANT fulfillment. StrictNoSign requires all four authentication protobuf
+fields to be absent, not merely empty; StrictSign requires an eight-byte sequence
+number. Raw codec and cryptographic helper operations are not substitutes for
+receive-policy validation. Self-origin replay from a foreign peer is a P4
+rejection even after local message history expires, without a malformed strike.
+
+`codec::decode_received()` shares the raw decoder's single protobuf parse and
+returns the decoded RPC plus rejected message topics. It checks authentication
+field presence and strict sequence width, not cryptographic authenticity; the
+native node verifies remaining signatures before cache, promise or handler use.
+Rejected messages still count toward the original RPC element limit.
 
 P2P WebSocket `/ws` and `/wss` multiaddrs remain parseable but unsupported for
 dial/listen until Stage 9. WebTransport and WebRTC are separately deferred
@@ -536,7 +594,27 @@ std::vector<forge::net::p2p::endpoint> advertised = node.local_endpoints();
 ```
 
 QUIC and TCP+TLS/Noise+Yamux are currently registered direct transports. TCP
-prefers libp2p TLS (`/tls/1.0.0`) and keeps Noise as fallback. `/ws` and `/wss`
+uses `node::options::stream_security`, with `node::stream_security::tls_and_noise`
+as the default: offer libp2p TLS (`/tls/1.0.0`) first, then Noise (`/noise`) if the
+peer rejects the TLS protocol during multistream-select. `node::stream_security::tls`
+and `node::stream_security::noise` restrict both incoming and outgoing TCP
+security negotiation to that single protocol, including PNET-protected TCP and
+coordinated connections with reversed security roles. A selected protocol's
+handshake or identity failure is terminal; it does not fall back to another
+security protocol.
+
+```cpp
+forge::net::p2p::node::options options;
+options.stream_security = forge::net::p2p::node::stream_security::noise;
+```
+
+QUIC still uses its native TLS security regardless of this stream policy. Relay
+circuit endpoints currently support only Noise: TLS-only options must disable
+`relay_policy.client_enabled` or node validation rejects them. TLS-only relay
+service forwarding remains supported when its client role is disabled; the
+service forwards the inner byte stream without terminating its security.
+
+`/ws` and `/wss`
 multiaddrs are parseable but direct dial/listen returns typed unsupported until
 a dedicated compatibility block wires a production transport. Future transports
 must use the same private direct profile boundary.

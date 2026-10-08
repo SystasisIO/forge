@@ -42,6 +42,34 @@ Deferred in E.2a:
 
 ## Notes
 
+### Explicit Stream Security Policy
+
+Forge's additive `node::stream_security` policy maps to these pinned donors:
+
+- Go `9cfe2cc00be5b20a0be737f002c99f81b92255c5`: `options.go:Security`
+  appends the enabled security transports; `p2p/net/upgrader/upgrader.go:New`
+  preserves their protocol order and `negotiateSecurity` selects from that list.
+  `setupSecurity` runs only the selected handshake, not a second security
+  protocol after handshake failure.
+- Rust `22fb4c784fc55ad8b15d05fdc9f98d663107d4cb`:
+  `libp2p/src/builder/phase/tcp.rs:with_tcp` accepts a singleton security upgrade
+  or an ordered tuple. `libp2p/src/builder/select_security.rs:SelectSecurityUpgrade`
+  concatenates protocol offers in preference order and delegates the selected
+  inbound/outbound handshake without retrying another upgrade on failure.
+
+`tls_and_noise` retains Forge's existing TLS-first order; `tls` and `noise`
+are singleton allowlists. The same private `stream_upgrade` helper owns ordinary
+TCP and PNET negotiation in both security roles. Neither PNET nor physical TCP
+direction changes the configured allowlist, expected Peer ID or Yamux role.
+QUIC TLS is independent. Relay endpoint upgrades remain Noise-only, so TLS-only
+relay clients are rejected while service-only circuit forwarding is allowed.
+
+`tests/quic_p2p/stream_security_tests.cpp` exercises native authentication,
+mixed/default/singleton compatibility, disjoint rejection, PNET, expected-peer
+rejection, reversed native upgrade roles, public node propagation and unchanged
+QUIC TLS. It is registered in the existing aggregate and path-management test
+targets. Source additions are not a native or donor-live acceptance claim.
+
 - `fcl_tcp` remains raw TCP and does not know Peer ID, Noise, multistream-select
   or Yamux.
 - `fcl_yamux` remains reusable mux mechanics and does not know P2P identity or

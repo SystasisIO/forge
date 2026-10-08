@@ -2,12 +2,22 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
+#include <new>
 #include <optional>
 #include <string>
 
 namespace forge::net::p2p::detail {
+
+enum class stream_open_phase : std::uint8_t {
+   admission,
+   local_rejected,
+   local_failed,
+   native_open,
+   committed,
+};
 
 class resource_stream final : public forge::net::transport::detail::stream_concept {
  public:
@@ -17,6 +27,8 @@ class resource_stream final : public forge::net::transport::detail::stream_conce
    void attach(forge::net::transport::stream stream) noexcept;
    [[nodiscard]] bool valid() const noexcept override;
    [[nodiscard]] std::int64_t id() const noexcept override;
+   [[nodiscard]] static bool is_memory_rejection(const std::exception& error) noexcept;
+   [[nodiscard]] static std::exception_ptr preparation_failure(const std::exception& error) noexcept;
    [[nodiscard]] resource_manager::stream_reservation::bind_result bind_protocol(const protocol_id& value) noexcept;
    [[nodiscard]] resource_manager::stream_reservation::bind_result bind_service_for_protocol(const protocol_id& value,
                                                                                              bool dht_profile) noexcept;
@@ -35,6 +47,20 @@ class resource_stream final : public forge::net::transport::detail::stream_conce
    void request_cancel() noexcept;
 
  private:
+   class memory_rejected final : public exceptions::backpressure_rejected {
+    public:
+      using exceptions::backpressure_rejected::backpressure_rejected;
+   };
+
+   class preparation_failed final : public std::bad_alloc {
+    public:
+      explicit preparation_failed(std::exception_ptr failure) noexcept;
+      [[nodiscard]] std::exception_ptr failure() const noexcept;
+
+    private:
+      std::exception_ptr failure_;
+   };
+
    enum class terminal_state : std::uint8_t {
       active,
       cancel_requested,

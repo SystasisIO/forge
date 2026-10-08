@@ -57,6 +57,12 @@ export namespace forge::net::p2p {
 
 class node {
  public:
+   enum class stream_security : std::uint8_t {
+      tls_and_noise,
+      tls,
+      noise,
+   };
+
    struct limits {
       std::size_t max_sessions = 1024;
       std::size_t session_low_watermark = 1024;
@@ -91,6 +97,7 @@ class node {
       path::policy path_policy{};
       forge::net::p2p::reachability_policy reachability_policy{};
       std::optional<forge::net::p2p::private_network::options> private_network;
+      node::stream_security stream_security = node::stream_security::tls_and_noise;
       address_resolution::policy dns_resolution{};
       forge::net::dns::resolver_options dns_resolver{};
       dialing::policy direct_dial{};
@@ -244,6 +251,7 @@ class node {
    boost::asio::awaitable<pubsub::message> async_publish(pubsub::topic subject, std::vector<std::uint8_t> data,
                                                          pubsub::publish_options options);
    [[nodiscard]] pubsub::snapshot pubsub_snapshot() const;
+   [[nodiscard]] pubsub::score_snapshot pubsub_scores() const;
    boost::asio::awaitable<std::chrono::milliseconds> async_ping(peer_id peer);
    boost::asio::awaitable<std::chrono::milliseconds> async_ping(peer_id peer, open_options options);
    boost::asio::awaitable<hole_punch::status>

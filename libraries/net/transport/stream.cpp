@@ -134,14 +134,14 @@ boost::asio::awaitable<void> stream::async_write(std::span<const std::uint8_t> b
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_chunk(chunk{bytes});
+   return impl_->model->async_write_chunk(chunk{bytes});
 }
 
 boost::asio::awaitable<void> stream::async_write(chunk bytes) {
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_chunk(std::move(bytes));
+   return impl_->model->async_write_chunk(std::move(bytes));
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read() {
@@ -163,14 +163,14 @@ boost::asio::awaitable<void> stream::async_write_frame(std::span<const std::uint
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_frame_chunk(chunk{bytes});
+   return impl_->model->async_write_frame_chunk(chunk{bytes});
 }
 
 boost::asio::awaitable<void> stream::async_write_frame(chunk bytes) {
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_frame_chunk(std::move(bytes));
+   return impl_->model->async_write_frame_chunk(std::move(bytes));
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read_frame() {
