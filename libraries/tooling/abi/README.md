@@ -69,6 +69,44 @@ Modern `[[forge::action]]` and `[[forge::call]]` parameters must be named so
 their ABI fields are usable by clients. The EOSIO spelling preserves CDT's
 legacy unnamed-parameter output for source and ABI compatibility.
 
+## Additional roots and enum metadata
+
+Opaque raw payloads do not expose their inner C++ types to ABI discovery. Name
+those types explicitly with `request::abi_root_types`; Abigen resolves each
+qualified name in the dispatch source, including its imported modules, and
+uses the ordinary ABI type encoder recursively. A root may be a named record,
+enum or type alias, including an alias for a container or variant. Template
+expressions, unresolved or ambiguous names, and duplicate roots are rejected.
+Types must be visible to the dispatch source. No public action is introduced.
+
+```cpp
+import forge.tooling.abi.generator;
+
+auto artifacts = forge::tooling::abi::generate({
+   .contract = "example",
+   .abi = "example.abi",
+   .dispatcher = "example.dispatcher.cpp",
+   .attribute_plugin = "attr-plugin",
+   .sysroot = "wasm32-sysroot",
+   .sources = {"example.cpp"},
+   .abi_root_types = {"example::request"},
+   .metadata = "example.abi.metadata.json",
+});
+```
+
+The CLI equivalents are repeatable `--abi-root example::request` and optional
+`--metadata example.abi.metadata.json`. Without these options, ABI and numeric
+enum behavior remain unchanged. Roots still work without a metadata output.
+Metadata never changes `abi_def`: it is a separate
+`forge::chain::protocol::abi_metadata` JSON artifact with version
+`forge::abi-metadata/1.0`, the C++ root to ABI type mapping, and enum names,
+integer types and named values. Names and values come from the Clang AST;
+there is no handwritten enum list. Decimal strings preserve signed and
+unsigned 64-bit values exactly. Duplicate enum numeric values are rejected
+only when metadata is requested because their string representation would be
+ambiguous. The runtime consumer is the existing
+[Chain API ABI codec](../../chain/api/README.md).
+
 ## Dependencies
 
 - `forge_chain_protocol` and `forge_codec_json` for canonical ABI values;

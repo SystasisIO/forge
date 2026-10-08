@@ -3,6 +3,7 @@ module;
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -313,9 +314,13 @@ std::string variant_path(std::string_view path, std::string_view selected) {
 
 class serializer {
  public:
-   serializer(const protocol::abi_def& abi, traversal_context& context) : abi_{abi}, context_{context} {
+   serializer(const protocol::abi_def& abi, traversal_context& context, const protocol::abi_metadata* metadata = nullptr)
+       : abi_{abi}, context_{context} {
       load();
       validate();
+      if (metadata != nullptr) {
+         load_metadata(*metadata);
+      }
    }
 
    void encode(std::string_view type, const forge::variant& value, binary_writer& writer) const {
@@ -331,6 +336,116 @@ class serializer {
       const protocol::struct_def* owner = nullptr;
       const protocol::field_def* field = nullptr;
    };
+
+   struct enum_definition {
+      std::string type;
+      std::map<std::string, forge::variant, std::less<>> values;
+      std::map<std::string, std::string, std::less<>> names;
+   };
+
+   forge::variant enum_number(std::string_view type, std::string_view text, std::string_view path) const {
+      const auto signed_integer = type.starts_with("int");
+      if (!signed_integer && !type.starts_with("uint")) {
+         fail(abi_error_code::invalid_abi, "Enum underlying type must be a fixed-width integer", type, path, 0U);
+      }
+      const auto width = type.substr(signed_integer ? 3U : 4U);
+      if (width != "8" && width != "16" && width != "32" && width != "64") {
+         fail(abi_error_code::invalid_abi, "Enum underlying type must be a fixed-width integer", type, path, 0U);
+      }
+      const auto bits = width == "8" ? 8U : width == "16" ? 16U : width == "32" ? 32U : 64U;
+      if (signed_integer) {
+         auto number = std::int64_t{};
+         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+         const auto minimum = bits == 64U ? std::numeric_limits<std::int64_t>::min() : -(std::int64_t{1} << (bits - 1U));
+         const auto maximum = bits == 64U ? std::numeric_limits<std::int64_t>::max() : (std::int64_t{1} << (bits - 1U)) - 1;
+         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || number < minimum ||
+             number > maximum || std::to_string(number) != text) {
+            fail(abi_error_code::invalid_abi, "Invalid or out-of-range enum metadata value", type, path, 0U);
+         }
+         return forge::variant{number};
+      }
+      auto number = std::uint64_t{};
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+      const auto maximum = bits == 64U ? std::numeric_limits<std::uint64_t>::max() : (std::uint64_t{1} << bits) - 1U;
+      if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || number > maximum ||
+          std::to_string(number) != text) {
+         fail(abi_error_code::invalid_abi, "Invalid or out-of-range enum metadata value", type, path, 0U);
+      }
+      return forge::variant{number};
+   }
+
+   void load_metadata(const protocol::abi_metadata& metadata) {
+      auto bytes = std::size_t{};
+      auto entries = std::size_t{};
+      const auto consume = [&](std::string_view text, bool entry = false) {
+         context_.check(1U, "abi_metadata", "metadata", 0U);
+         if ((entry && entries++ >= context_.limits().max_metadata_entries) ||
+             text.size() > context_.limits().max_string_bytes ||
+             text.size() > context_.limits().max_metadata_bytes - std::min(bytes, context_.limits().max_metadata_bytes)) {
+            fail(abi_error_code::size_limit, "ABI metadata exceeds the configured limit", "abi_metadata", "metadata", 0U);
+         }
+         bytes += text.size();
+      };
+      consume(metadata.version);
+      if (metadata.version != "forge::abi-metadata/1.0") {
+         fail(abi_error_code::invalid_abi, "Unsupported ABI metadata version", "abi_metadata", "metadata.version", 0U);
+      }
+      auto roots = std::set<std::string, std::less<>>{};
+      auto root_types = std::set<std::string, std::less<>>{};
+      for (const auto& root : metadata.roots) {
+         consume(root.cpp_type, true);
+         consume(root.type);
+         if (root.cpp_type.empty() || !roots.insert(root.cpp_type).second || !root_types.insert(root.type).second) {
+            fail(abi_error_code::duplicate_definition, "Empty or duplicate ABI metadata root", root.type, "metadata.roots", 0U);
+         }
+         validate_type(root.type, "metadata.roots", 1U);
+      }
+      for (const auto& definition : metadata.enums) {
+         consume(definition.name, true);
+         consume(definition.type);
+         require_definition_name(definition.name, "metadata.enums", "enum");
+         if (!aliases_.contains(definition.name) || resolve_alias(definition.name, "metadata.enums", 1U) != definition.type) {
+            fail(abi_error_code::invalid_abi, "Enum metadata must match an existing ABI integer alias", definition.name,
+                 "metadata.enums", 0U);
+         }
+         if (definition.values.empty()) {
+            fail(abi_error_code::invalid_abi, "Enum metadata must contain named values", definition.name, "metadata.enums", 0U);
+         }
+         auto target = enum_definition{.type = definition.type};
+         for (const auto& value : definition.values) {
+            consume(value.name, true);
+            consume(value.value);
+            const auto number = enum_number(definition.type, value.value, "metadata.enums.values");
+            if (value.name.empty() || !target.values.emplace(value.name, number).second ||
+                !target.names.emplace(value.value, value.name).second) {
+               fail(abi_error_code::duplicate_definition, "Empty or duplicate enum metadata name or value", definition.name,
+                    "metadata.enums.values", 0U);
+            }
+         }
+         if (!enums_.emplace(definition.name, std::move(target)).second) {
+            fail(abi_error_code::duplicate_definition, "Duplicate ABI enum metadata", definition.name, "metadata.enums", 0U);
+         }
+      }
+   }
+
+   const enum_definition* find_enum(std::string_view type, std::string_view path, std::size_t depth) const {
+      if (enums_.empty()) {
+         return nullptr;
+      }
+      auto current = type;
+      for (auto count = std::size_t{}; count <= aliases_.size(); ++count) {
+         context_.check(depth + count, current, path, 0U);
+         if (const auto found = enums_.find(current); found != enums_.end()) {
+            return &found->second;
+         }
+         const auto alias = aliases_.find(current);
+         if (alias == aliases_.end()) {
+            return nullptr;
+         }
+         current = alias->second;
+      }
+      fail(abi_error_code::circular_definition, "Circular ABI type definition", type, path, 0U);
+   }
 
    void load() {
       context_.check(1U, "abi_def", "abi", 0U);
@@ -592,6 +707,20 @@ class serializer {
    void encode_value(std::string_view type, const forge::variant& value, binary_writer& writer, std::string_view path,
                      std::size_t depth, bool extensions_allowed) const {
       context_.check(depth, type, path, writer.tellp());
+      if (const auto* definition = find_enum(type, path, depth)) {
+         if (!value.is_string()) {
+            fail(abi_error_code::invalid_json, "Enum JSON value must be a named string", type, path, writer.tellp());
+         }
+         if (value.get_string().size() > context_.limits().max_string_bytes) {
+            fail(abi_error_code::size_limit, "Enum JSON name exceeds the string limit", type, path, writer.tellp());
+         }
+         const auto found = definition->values.find(value.get_string());
+         if (found == definition->values.end()) {
+            fail(abi_error_code::invalid_json, "Unknown enum JSON name", type, path, writer.tellp());
+         }
+         encode_builtin(definition->type, found->second, writer, path, depth);
+         return;
+      }
       const auto resolved = resolve_alias(type, path, depth);
       const auto parsed = parse_type(resolved);
       if (parsed.form == type_form::array || parsed.form == type_form::fixed_array) {
@@ -641,6 +770,16 @@ class serializer {
    forge::variant decode_value(std::string_view type, binary_reader& reader, std::string_view path, std::size_t depth,
                                bool extensions_allowed) const {
       context_.check(depth, type, path, reader.tellp());
+      if (const auto* definition = find_enum(type, path, depth)) {
+         const auto number = decode_builtin(definition->type, reader, path, depth);
+         const auto key = definition->type.starts_with("int") ? std::to_string(number.as_int64())
+                                                               : std::to_string(number.as_uint64());
+         const auto found = definition->names.find(key);
+         if (found == definition->names.end()) {
+            fail(abi_error_code::invalid_binary, "Unknown enum binary value", type, path, reader.tellp());
+         }
+         return forge::variant{found->second};
+      }
       const auto resolved = resolve_alias(type, path, depth);
       const auto parsed = parse_type(resolved);
       if (parsed.form == type_form::array || parsed.form == type_form::fixed_array) {
@@ -1149,6 +1288,7 @@ class serializer {
 
    const protocol::abi_def& abi_;
    traversal_context& context_;
+   std::map<std::string, enum_definition, std::less<>> enums_;
    std::map<std::string, std::string, std::less<>> aliases_;
    std::map<std::string, const protocol::struct_def*, std::less<>> structs_;
    std::map<std::string, const protocol::variant_def*, std::less<>> variants_;
@@ -1164,12 +1304,14 @@ const abi_diagnostic& abi_serialization_error::diagnostic() const noexcept {
    return diagnostic_;
 }
 
-protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, std::string_view type, const forge::variant& value,
-                                abi_serialization_limits limits) {
+namespace {
+
+protocol::bytes encode_abi(const protocol::abi_def& abi, const protocol::abi_metadata* metadata,
+                           std::string_view type, const forge::variant& value, abi_serialization_limits limits) {
    auto context = traversal_context{limits};
    auto writer = binary_writer{limits.max_binary_bytes};
    try {
-      serializer{abi, context}.encode(type, value, writer);
+      serializer{abi, context, metadata}.encode(type, value, writer);
       return std::move(writer).take();
    } catch (const abi_serialization_error&) {
       throw;
@@ -1181,15 +1323,15 @@ protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, std::string_view t
    }
 }
 
-forge::variant abi_bin_to_json(const protocol::abi_def& abi, std::string_view type,
-                               std::span<const std::uint8_t> binary, abi_serialization_limits limits) {
+forge::variant decode_abi(const protocol::abi_def& abi, const protocol::abi_metadata* metadata, std::string_view type,
+                          std::span<const std::uint8_t> binary, abi_serialization_limits limits) {
    if (binary.size() > limits.max_binary_bytes) {
       fail(abi_error_code::size_limit, "ABI binary size limit exceeded", type, type, 0U);
    }
    auto context = traversal_context{limits};
    auto reader = binary_reader{binary};
    try {
-      auto result = serializer{abi, context}.decode(type, reader);
+      auto result = serializer{abi, context, metadata}.decode(type, reader);
       if (reader.remaining() != 0U) {
          fail(abi_error_code::trailing_bytes, "ABI binary contains trailing bytes", type, type, reader.tellp());
       }
@@ -1202,6 +1344,29 @@ forge::variant abi_bin_to_json(const protocol::abi_def& abi, std::string_view ty
    } catch (...) {
       fail(abi_error_code::invalid_binary, "Unable to convert ABI binary value", type, type, reader.tellp());
    }
+}
+
+} // namespace
+
+protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, std::string_view type, const forge::variant& value,
+                                abi_serialization_limits limits) {
+   return encode_abi(abi, nullptr, type, value, limits);
+}
+
+forge::variant abi_bin_to_json(const protocol::abi_def& abi, std::string_view type,
+                               std::span<const std::uint8_t> binary, abi_serialization_limits limits) {
+   return decode_abi(abi, nullptr, type, binary, limits);
+}
+
+protocol::bytes abi_json_to_bin(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
+                                std::string_view type, const forge::variant& value, abi_serialization_limits limits) {
+   return encode_abi(abi, &metadata, type, value, limits);
+}
+
+forge::variant abi_bin_to_json(const protocol::abi_def& abi, const protocol::abi_metadata& metadata,
+                               std::string_view type, std::span<const std::uint8_t> binary,
+                               abi_serialization_limits limits) {
+   return decode_abi(abi, &metadata, type, binary, limits);
 }
 
 forge::variant action_to_variant(const protocol::action& action, const abi_resolver& resolve,

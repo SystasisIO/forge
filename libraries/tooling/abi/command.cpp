@@ -30,6 +30,10 @@ request parse(int argc, const char* const* argv) {
          result.contract = next();
       } else if (option == "--abi") {
          result.abi = next();
+      } else if (option == "--metadata") {
+         result.metadata = next();
+      } else if (option == "--abi-root") {
+         result.abi_root_types.emplace_back(next());
       } else if (option == "--dispatch") {
          result.dispatcher = next();
       } else if (option == "--depfile") {

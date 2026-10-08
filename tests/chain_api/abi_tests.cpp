@@ -11,6 +11,7 @@
 #include <vector>
 
 import forge.chain.api.abi;
+import forge.codec.json;
 import forge.crypto.asymmetric;
 import forge.raw.raw;
 
@@ -765,4 +766,149 @@ BOOST_AUTO_TEST_CASE(chain_abi_rejects_invalid_definition_shapes) {
                          chain_api::abi_serialization_error, [](const auto& error) {
                             return error.diagnostic().code == chain_api::abi_error_code::circular_definition;
                          });
+}
+
+namespace {
+
+protocol::abi_def enum_abi() {
+   auto abi = empty_abi();
+   abi.types = {{"shape", "uint8"}, {"shape_alias", "shape"}, {"shapes", "shape_alias[]"}};
+   abi.structs = {
+       {"nested", "", {{"shape", "shape_alias"}}},
+       {"request", "", {{"child", "nested"}, {"maybe", "shape_alias?"}, {"list", "shapes"},
+                          {"fixed", "shape[2]"}, {"selection", "choice"}}},
+   };
+   abi.variants.value = {{"choice", {"shape_alias", "nested"}}};
+   return abi;
+}
+
+protocol::abi_metadata enum_metadata() {
+   return {.roots = {{"example::request", "request"}},
+           .enums = {{"shape", "uint8", {{"circle", "0"}, {"tall", "2"}}}}};
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(chain_abi_metadata_preserves_raw_bytes_for_nested_enum_shapes) {
+   const auto abi = enum_abi();
+   const auto metadata = enum_metadata();
+   const auto input = object({{"child", object({{"shape", "tall"}})}, {"maybe", "circle"},
+                              {"list", array("circle", "tall")}, {"fixed", array("tall", "circle")},
+                              {"selection", array("shape_alias", "tall")}});
+   const auto expected = std::vector<std::uint8_t>{2, 1, 0, 2, 0, 2, 2, 0, 0, 2};
+   const auto bytes = chain_api::abi_json_to_bin(abi, metadata, "request", input);
+   BOOST_TEST(bytes == expected, boost::test_tools::per_element());
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, metadata, "request", bytes) == input);
+   BOOST_TEST(chain_api::abi_bin_to_json(abi, "shape", std::array<std::uint8_t, 1>{2}).as_uint64() == 2U);
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "shape", forge::variant{2U}) == std::vector<std::uint8_t>{2},
+              boost::test_tools::per_element());
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, metadata, "shape?", forge::variant{}) == std::vector<std::uint8_t>{0},
+              boost::test_tools::per_element());
+   const auto nested_variant = array("nested", object({{"shape", "circle"}}));
+   const auto nested_bytes = chain_api::abi_json_to_bin(abi, metadata, "choice", nested_variant);
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, metadata, "choice", nested_bytes) == nested_variant);
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_metadata_rejects_unknown_names_numbers_and_paths) {
+   const auto abi = enum_abi();
+   const auto metadata = enum_metadata();
+   for (const auto& value : {forge::variant{"unknown"}, forge::variant{255U}, forge::variant{2U}}) {
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(abi, metadata, "shape", value)),
+                            chain_api::abi_serialization_error, [](const auto& error) {
+                               return error.diagnostic().code == chain_api::abi_error_code::invalid_json &&
+                                      error.diagnostic().path == "shape";
+                            });
+   }
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(abi, metadata, "nested", object({{"shape", "unknown"}}))),
+       chain_api::abi_serialization_error, [](const auto& error) { return error.diagnostic().path == "nested.shape"; });
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(abi, metadata, "shape", forge::variant{std::string(33, 'x')},
+                                                   {.max_string_bytes = 32})),
+       chain_api::abi_serialization_error, [](const auto& error) {
+          return error.diagnostic().code == chain_api::abi_error_code::size_limit;
+       });
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_bin_to_json(abi, metadata, "shape", std::array<std::uint8_t, 1>{1})),
+       chain_api::abi_serialization_error, [](const auto& error) {
+          return error.diagnostic().code == chain_api::abi_error_code::invalid_binary && error.diagnostic().offset == 1U;
+       });
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_metadata_validates_schema_and_limits_before_conversion) {
+   const auto abi = enum_abi();
+   const auto check = [&](const protocol::abi_metadata& metadata) {
+      BOOST_CHECK_THROW(static_cast<void>(chain_api::abi_json_to_bin(abi, metadata, "uint8", forge::variant{0U})),
+                        chain_api::abi_serialization_error);
+   };
+   auto metadata = enum_metadata();
+   metadata.version = "future";
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.enums.push_back(metadata.enums.front());
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.enums.front().values.push_back({"other", "2"});
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.enums.front().values.push_back({"tall", "3"});
+   check(metadata);
+   for (const auto& invalid : {"-1", "256", "02", "", "18446744073709551616"}) {
+      metadata = enum_metadata();
+      metadata.enums.front().values.front().value = invalid;
+      check(metadata);
+   }
+   metadata = enum_metadata();
+   metadata.enums.front().type = "uint16";
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.enums.front().name = "missing";
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.enums.front().values.clear();
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.roots.front().type = "missing";
+   check(metadata);
+   metadata = enum_metadata();
+   metadata.roots.push_back(metadata.roots.front());
+   check(metadata);
+   for (const auto limits : {chain_api::abi_serialization_limits{.max_metadata_bytes = 3},
+                             chain_api::abi_serialization_limits{.max_metadata_entries = 2},
+                             chain_api::abi_serialization_limits{.max_string_bytes = 3}}) {
+      BOOST_CHECK_EXCEPTION(
+          static_cast<void>(chain_api::abi_json_to_bin(abi, enum_metadata(), "shape", forge::variant{"circle"}, limits)),
+          chain_api::abi_serialization_error, [](const auto& error) {
+             return error.diagnostic().code == chain_api::abi_error_code::size_limit;
+          });
+   }
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_metadata_preserves_extreme_integer_enum_values) {
+   auto abi = empty_abi();
+   abi.types = {{"signed_enum", "int64"}, {"unsigned_enum", "uint64"}};
+   const auto metadata = protocol::abi_metadata{
+       .enums = {{"signed_enum", "int64", {{"minimum", "-9223372036854775808"}}},
+                 {"unsigned_enum", "uint64", {{"maximum", "18446744073709551615"}}}}};
+   for (const auto& [type, value] : {std::pair{"signed_enum", "minimum"}, std::pair{"unsigned_enum", "maximum"}}) {
+      const auto bytes = chain_api::abi_json_to_bin(abi, metadata, type, forge::variant{value});
+      BOOST_TEST(bytes.size() == 8U);
+      BOOST_TEST(chain_api::abi_bin_to_json(abi, metadata, type, bytes).get_string() == value);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_metadata_uses_existing_exact_json_codec) {
+   const auto encoded = forge::codec::json::write(enum_metadata());
+   BOOST_REQUIRE(encoded.ok());
+   const auto decoded = forge::codec::json::read<protocol::abi_metadata>(encoded.text, {
+       .unknown_fields = forge::codec::json::unknown_field_policy::error,
+       .described_records = forge::codec::json::described_record_policy::exact});
+   BOOST_REQUIRE(decoded.ok());
+   BOOST_TEST(decoded.value.enums.front().values.back().name == "tall");
+   BOOST_TEST(decoded.value.roots.front().cpp_type == "example::request");
+   const auto invalid = forge::codec::json::read<protocol::abi_metadata>(
+       R"({"version":"forge::abi-metadata/1.0","roots":[],"enums":[],"unknown":1})", {
+       .unknown_fields = forge::codec::json::unknown_field_policy::error,
+       .described_records = forge::codec::json::described_record_policy::exact});
+   BOOST_TEST(!invalid.ok());
 }

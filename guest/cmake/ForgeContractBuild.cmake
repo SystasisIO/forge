@@ -8,9 +8,9 @@ function(forge_add_contract target)
    endif()
    cmake_parse_arguments(
       ARG
-      ""
+      "ABI_METADATA"
       "CONTRACT;SOURCE_ROOT;DISPATCH_SOURCE;RICARDIAN_CONTRACTS;RICARDIAN_CLAUSES"
-      "SOURCES;COMPILE_CHECKS;LIBRARIES"
+      "SOURCES;COMPILE_CHECKS;LIBRARIES;ABI_ROOT_TYPES"
       ${ARGN}
    )
    if(ARG_UNPARSED_ARGUMENTS)
@@ -146,6 +146,10 @@ function(forge_add_contract target)
    set(_dispatcher "${_generated}/${target}.dispatcher.cpp")
    set(_manifest "${_output_dir}/${target}.contract.json")
    set(_depfile "${_generated}/${target}.abi.d")
+   set(_abi_metadata)
+   if(ARG_ABI_METADATA)
+      set(_abi_metadata "${_output_dir}/${target}.abi.metadata.json")
+   endif()
 
    set(_implementation_sources ${_sources})
    list(REMOVE_ITEM _implementation_sources "${_dispatch_source}")
@@ -219,10 +223,16 @@ function(forge_add_contract target)
    if(_ricardian_clauses)
       list(APPEND _abigen_command --ricardian-clauses "${_ricardian_clauses}")
    endif()
+   foreach(_root IN LISTS ARG_ABI_ROOT_TYPES)
+      list(APPEND _abigen_command --abi-root "${_root}")
+   endforeach()
+   if(_abi_metadata)
+      list(APPEND _abigen_command --metadata "${_abi_metadata}")
+   endif()
    list(APPEND _abigen_command ${_sources})
 
    add_custom_command(
-      OUTPUT "${_abi}" "${_dispatcher}" ${_implementation_wrappers}
+      OUTPUT "${_abi}" "${_dispatcher}" ${_implementation_wrappers} ${_abi_metadata}
       COMMAND
          ${CMAKE_COMMAND} -E make_directory "${_output_dir}" "${_generated}"
       COMMAND ${_abigen_command}
@@ -368,6 +378,7 @@ function(forge_add_contract target)
          RUNTIME_OUTPUT_DIRECTORY "${_output_dir}"
          FORGE_CONTRACT_WASM_FILE "${_output_dir}/${target}.wasm"
          FORGE_CONTRACT_ABI_FILE "${_abi}"
+         FORGE_CONTRACT_ABI_METADATA_FILE "${_abi_metadata}"
          FORGE_CONTRACT_MANIFEST_FILE "${_manifest}"
    )
    foreach(_configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
@@ -385,6 +396,14 @@ function(forge_add_contract target)
                "${_artifact_root}/${_configuration}/${target}.contract.json"
       )
    endforeach()
+   if(_abi_metadata)
+      foreach(_configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+         string(TOUPPER "${_configuration}" _configuration_upper)
+         set_target_properties("${target}" PROPERTIES
+            "FORGE_CONTRACT_ABI_METADATA_FILE_${_configuration_upper}"
+            "${_artifact_root}/${_configuration}/${target}.abi.metadata.json")
+      endforeach()
+   endif()
 
    set(_manifest_llvm_commit_args)
    if(NOT ForgeContract_LLVM_COMMIT STREQUAL "")
@@ -421,12 +440,13 @@ function(forge_add_contract target)
          "${ForgeContract_MANIFEST}"
       VERBATIM
    )
-   add_custom_target("${target}_artifacts" ALL DEPENDS "${_manifest}")
+   add_custom_target("${target}_artifacts" ALL DEPENDS "${_manifest}" ${_abi_metadata})
    set_target_properties(
       "${target}_artifacts"
       PROPERTIES
          FORGE_CONTRACT_WASM_FILE "${_output_dir}/${target}.wasm"
          FORGE_CONTRACT_ABI_FILE "${_abi}"
+         FORGE_CONTRACT_ABI_METADATA_FILE "${_abi_metadata}"
          FORGE_CONTRACT_MANIFEST_FILE "${_manifest}"
    )
    foreach(_configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
@@ -442,6 +462,14 @@ function(forge_add_contract target)
                "${_artifact_root}/${_configuration}/${target}.contract.json"
       )
    endforeach()
+   if(_abi_metadata)
+      foreach(_configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+         string(TOUPPER "${_configuration}" _configuration_upper)
+         set_target_properties("${target}_artifacts" PROPERTIES
+            "FORGE_CONTRACT_ABI_METADATA_FILE_${_configuration_upper}"
+            "${_artifact_root}/${_configuration}/${target}.abi.metadata.json")
+      endforeach()
+   endif()
    _forge_contract_freeze_guest_target(
       "${target}" "forge_add_contract(${target})"
    )

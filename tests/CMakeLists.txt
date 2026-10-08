@@ -301,12 +301,18 @@ add_executable(
 )
 target_link_libraries(
    test_forge_chain_api
+   forge_codec_json
    forge_chain_api
    forge_api_http
    forge_codec_xml
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_chain_api COMMAND test_forge_chain_api WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+if(FORGE_ENABLE_TOOLING)
+   add_executable(test_forge_abi_metadata_artifact chain_api/abi_metadata_artifact.cpp)
+   target_link_libraries(test_forge_abi_metadata_artifact forge_chain_api forge_codec_json)
+endif()
 
 add_executable(
    test_forge_chain_portable_verified_client

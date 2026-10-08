@@ -55,6 +55,55 @@ transports carry the same bytes without a transport-specific cursor DTO.
 Concrete controllers, state schemas, persistence, protocol publication and
 network policy remain in downstream products.
 
+## Dynamic ABI enum strings
+
+`forge.chain.api.abi` exports the standard ABI and its optional
+`forge.chain.protocol.abi_metadata` companion. Use the metadata overloads when
+Abigen-generated enum names must survive a dynamic JSON/raw boundary:
+
+```cpp
+import forge.chain.api.abi;
+import forge.codec.json;
+
+namespace protocol = forge::chain::protocol;
+namespace json = forge::codec::json;
+
+const auto abi = json::load<protocol::abi_def>("example.abi");
+const auto metadata = json::load<protocol::abi_metadata>("example.abi.metadata.json", {
+   .unknown_fields = json::unknown_field_policy::error,
+   .described_records = json::described_record_policy::exact,
+});
+if (!abi.ok() || !metadata.ok()) {
+   // Reject the package with the reported diagnostics.
+   return;
+}
+const auto input = json::read_value(R"({"shape":"circle"})");
+if (!input.ok()) {
+   return;
+}
+const auto bytes = forge::chain::api::abi_json_to_bin(
+   abi.value, metadata.value, "request", input.value);
+const auto output = forge::chain::api::abi_bin_to_json(
+   abi.value, metadata.value, "request", bytes);
+```
+
+The codec knows no concrete request or enum C++ type. It validates metadata
+against the ABI before conversion, follows aliases and containers, and uses
+the same recursive struct/optional/variant serializer. Metadata-enabled enums
+accept named JSON strings only; unknown names and binary integer values fail
+with a typed `abi_serialization_error` and an exact path. Missing or mismatched
+integer aliases, duplicate enum names/numbers and roots, invalid numeric ranges,
+unsupported versions and resource limits fail before encoding or decoding.
+
+`abi_serialization_limits::max_metadata_bytes` bounds aggregate metadata text
+and `max_metadata_entries` bounds roots, enums and named values. Existing
+string, recursion and deadline limits also apply. Parse artifact JSON with
+exact described records and unknown-field rejection before using the codec.
+The ordinary overloads retain their numeric enum behavior and Chain raw bytes.
+The codec does not authenticate metadata or bind it to WASM: the package owner
+must verify the artifact hashes and their provenance before use. Do not create
+a second manually maintained enum schema or log private payloads on failures.
+
 ## Signing APIs
 
 `forge.chain.api.transaction_signer` is a transport-neutral `1.0` API with
