@@ -299,7 +299,7 @@ function(forge_add_contract target)
          "-Wl,--export-if-defined=__forge_call"
          "-Wl,--export-memory"
          "-Wl,--stack-first"
-         "-Wl,-z,stack-size=8192"
+         "-Wl,-z,stack-size=32768"
          "-Wl,--initial-memory=131072"
          "-Wl,--max-memory=16777216"
          "-Wl,--allow-undefined"

@@ -65,6 +65,17 @@ forge_add_contract(
 )
 
 forge_add_contract(
+   donorcompat
+   SOURCES donor_compatibility.cpp
+)
+
+forge_add_contract(
+   dispatchshdw
+   SOURCES dispatch_shadow.cpp dispatch_shadow_helper.cpp
+   DISPATCH_SOURCE dispatch_shadow.cpp
+)
+
+forge_add_contract(
    legacyhello
    SOURCES legacy_hello.cpp
 )

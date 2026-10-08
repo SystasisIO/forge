@@ -18,15 +18,23 @@ export import forge.contract.fixed_bytes;
 
 import forge.contract.datastream;
 import forge.contract.intrinsics;
+import forge.contract.ignore;
 import forge.contract.varint;
 
 export namespace forge::contract {
 
 namespace detail {
 
+template <typename T> struct action_argument {
+   using type = T;
+};
+template <typename T> struct action_argument<ignore<T>> {
+   using type = ignore_wrapper<T>;
+};
+
 template <typename> struct action_method;
 template <typename Class, typename Result, typename... Args> struct action_method<Result (Class::*)(Args...)> {
-   using arguments = std::tuple<std::decay_t<Args>...>;
+   using arguments = std::tuple<typename action_argument<std::decay_t<Args>>::type...>;
 };
 template <typename Class, typename Result, typename... Args>
 struct action_method<Result (Class::*)(Args...) const> : action_method<Result (Class::*)(Args...)> {};
@@ -144,7 +152,7 @@ template <name::raw Name, auto... Methods> struct variant_action_wrapper {
 
    template <std::size_t Variant, typename... Args> [[nodiscard]] action to_action(Args&&... args) const {
       constexpr auto method = get_mem_ptr<Variant>();
-      using arguments = typename detail::action_method<decltype(method)>::arguments;
+      using arguments = typename detail::action_method<std::remove_cv_t<decltype(method)>>::arguments;
       static_assert(std::constructible_from<arguments, Args...>, "variant action arguments do not match the method");
       return action{permissions, code, action_name,
                     std::tuple_cat(std::tuple{unsigned_int{static_cast<std::uint32_t>(Variant)}},

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <locale.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,6 +20,8 @@ int isupper(int value);
 int isxdigit(int value);
 int tolower(int value);
 int toupper(int value);
+int tolower_l(int value, locale_t locale);
+int toupper_l(int value, locale_t locale);
 
 #ifdef __cplusplus
 }

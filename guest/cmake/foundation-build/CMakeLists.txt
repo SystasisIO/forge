@@ -267,35 +267,7 @@ forge_guest_add_implementation_archive(
 )
 
 set(_runtime "${FORGE_SOURCE_DIR}/guest/libraries/runtime")
-add_library(
-   forge_guest_runtime STATIC
-   "${_runtime}/allocator.cpp"
-   "${_runtime}/allocator_new_delete.cpp"
-   "${_runtime}/errno.cpp"
-   "${_runtime}/memory.cpp"
-)
+# Use the same canonical runtime declaration as the standalone library build.
+# It owns forge_guest_runtime and forge_guest_math, including pinned libc inputs.
+add_subdirectory("${_runtime}" runtime)
 forge_guest_configure_target(forge_guest_runtime)
-target_include_directories(forge_guest_runtime PRIVATE "${_runtime}")
-install(TARGETS forge_guest_runtime ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-
-file(GLOB _forge_guest_math_sources CONFIGURE_DEPENDS "${FORGE_GUEST_LIBC_SOURCE_DIR}/src/math/*.c")
-add_library(forge_guest_math STATIC ${_forge_guest_math_sources})
-set_target_properties(forge_guest_math PROPERTIES OUTPUT_NAME m)
-target_compile_features(forge_guest_math PRIVATE c_std_11)
-target_include_directories(
-   forge_guest_math
-   PRIVATE
-      "${FORGE_GUEST_LIBC_SOURCE_DIR}/src/internal"
-      "${FORGE_GUEST_LIBC_SOURCE_DIR}/arch/eos"
-)
-target_compile_options(
-   forge_guest_math
-   PRIVATE
-      -idirafter
-      "${FORGE_GUEST_LIBC_SOURCE_DIR}/include"
-      -ffreestanding
-      -fvisibility=hidden
-      -fno-ident
-      -mcpu=mvp
-)
-install(TARGETS forge_guest_math ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

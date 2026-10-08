@@ -146,6 +146,11 @@ def check_features(abi):
     assert varint_fields["unsigned_value"]["type"] == "unsigned_int"
     assert varint_fields["signed_value"]["type"] == "signed_int"
     assert by_name(structs["extension"]["fields"])["value"]["type"] == "uint32$"
+    assert structs["extended_symbol"]["fields"] == [
+        {"name": "sym", "type": "symbol"},
+        {"name": "contract", "type": "name"},
+    ]
+    assert structs["extrewards"]["fields"] == [{"name": "rewards", "type": "extended_symbol"}]
     assert by_name(structs["named"]["fields"])["owner"]["type"] == "my_account"
     assert by_name(abi["action_results"])["result"]["result_type"] == "result_value"
     assert by_name(abi["calls"])["sum"] == {

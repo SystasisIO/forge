@@ -16,9 +16,9 @@ typedef long fpos_t;
 extern "C" {
 #endif
 
-extern FILE* stdin;
-extern FILE* stdout;
-extern FILE* stderr;
+extern FILE* const stdin;
+extern FILE* const stdout;
+extern FILE* const stderr;
 
 void clearerr(FILE* stream);
 int fclose(FILE* stream);
@@ -62,6 +62,7 @@ int vprintf(const char* format, va_list arguments);
 int vscanf(const char* format, va_list arguments);
 int vsnprintf(char* buffer, size_t size, const char* format, va_list arguments);
 int vsprintf(char* buffer, const char* format, va_list arguments);
+int vasprintf(char** buffer, const char* format, va_list arguments);
 int vsscanf(const char* buffer, const char* format, va_list arguments);
 
 #ifdef __cplusplus

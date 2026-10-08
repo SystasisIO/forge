@@ -686,6 +686,13 @@ class type_encoder {
          return "action";
       }
 
+      if (qualified == "forge::chain::protocol::extended_symbol") {
+         // Antelope ABI has no extended_symbol builtin. Keep the pinned CDT
+         // public field spelling while its existing raw codec owns the bytes.
+         add_synthetic_struct("extended_symbol", {{"sym", "symbol"}, {"contract", "name"}});
+         return "extended_symbol";
+      }
+
       static const auto known = std::vector<std::pair<std::string_view, std::string_view>>{
           {"forge::chain::protocol::name", "name"},
           {"forge::contract::compatibility::name", "name"},
@@ -694,7 +701,6 @@ class type_encoder {
           {"forge::chain::protocol::asset", "asset"},
           {"forge::contract::compatibility::asset", "asset"},
           {"eosio::asset", "asset"},
-          {"forge::chain::protocol::extended_symbol", "extended_symbol"},
           {"forge::chain::protocol::extended_asset", "extended_asset"},
           {"forge::contract::compatibility::extended_asset", "extended_asset"},
           {"eosio::extended_asset", "extended_asset"},
@@ -1420,7 +1426,7 @@ class visitor final : public clang::RecursiveASTVisitor<visitor> {
           .name = method_info.name,
           .type = method_info.type,
           .result = method_info.result,
-          .class_name = declaration.getQualifiedNameAsString(),
+          .class_name = "::" + declaration.getQualifiedNameAsString(),
           .method_name = method.getNameAsString(),
           .source = source_,
       });
@@ -1468,7 +1474,7 @@ class visitor final : public clang::RecursiveASTVisitor<visitor> {
           .type = method_info.type,
           .result = method_info.result,
           .id = identifier,
-          .class_name = method.getParent()->getQualifiedNameAsString(),
+          .class_name = "::" + method.getParent()->getQualifiedNameAsString(),
           .method_name = method.getNameAsString(),
           .source = source_,
       });
@@ -1510,7 +1516,7 @@ class visitor final : public clang::RecursiveASTVisitor<visitor> {
       output_.notifications.push_back(notification_shape{
           .code = code,
           .action = action,
-          .class_name = declaration.getQualifiedNameAsString(),
+          .class_name = "::" + declaration.getQualifiedNameAsString(),
           .method_name = method.getNameAsString(),
           .source = source_,
       });
