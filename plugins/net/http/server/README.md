@@ -107,6 +107,14 @@ plugins:
 `api-base-path` is the default base path for published typed APIs. A
 publication can override it with `publish_options::base_path`.
 
+`publish_options::error_renderer` optionally customizes external error responses
+while retaining typed `FORGE_EXPORT_API` / `FORGE_HTTP_API` method declarations
+and this plugin's server. It has the same synchronous, borrowed-context contract
+as `forge.api.http.error_renderer`. This is a code-level presentation callback,
+not a serializable configuration field. Leaving it empty preserves the standard
+Forge error format. Native route mounts are reserved for protocol surfaces such
+as a guarded WebSocket upgrade; ordinary HTTP methods should use typed APIs.
+
 Plaintext `mode: disabled` is accepted only for `127.0.0.1`, `::1` or the
 explicit `localhost` spelling, which binds `127.0.0.1`. Wildcard and public
 addresses are rejected. TLS modes are `server` and `mutual`:

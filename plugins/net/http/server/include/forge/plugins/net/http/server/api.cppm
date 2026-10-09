@@ -35,7 +35,8 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
    virtual boost::asio::awaitable<void> reload_tls() = 0;
 
    template <typename Interface> boost::asio::awaitable<void> publish(publish_options options = {}) {
-      co_await publish(std::make_unique<typed_binding_spec<Interface>>(), std::move(options));
+      auto binding = std::make_unique<typed_binding_spec<Interface>>(std::move(options.error_renderer));
+      co_await publish(std::move(binding), std::move(options));
    }
 
  protected:
@@ -48,10 +49,15 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
  private:
    template <typename Interface> class typed_binding_spec final : public binding_spec {
     public:
+      explicit typed_binding_spec(forge::api::http::error_renderer renderer) : renderer_{std::move(renderer)} {}
+
       [[nodiscard]] forge::api::http::binding_plan build(const forge::api::core::registry& registry) const override {
          auto plan = forge::api::core::binding().serve(registry).build();
-         return forge::api::http::binding().use(std::move(plan)).bind<Interface>().build();
+         return forge::api::http::binding().use(std::move(plan)).errors(renderer_).bind<Interface>().build();
       }
+
+    private:
+      forge::api::http::error_renderer renderer_;
    };
 
    [[nodiscard]] virtual const forge::api::core::registry& registry() const = 0;

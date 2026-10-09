@@ -175,6 +175,7 @@ enum class status : std::uint16_t {
    deadline_exceeded = 504,
    unavailable = 503,
    internal = 500,
+   bad_gateway = 502,
 };
 
 struct error_identity {
@@ -235,7 +236,7 @@ BOOST_DESCRIBE_ENUM(stream_direction, input, output)
 BOOST_DESCRIBE_ENUM(capability, unary, server_stream, client_stream, bidirectional_stream, stream_window)
 BOOST_DESCRIBE_ENUM(surface, none, local, remote)
 BOOST_DESCRIBE_ENUM(status, ok, invalid_argument, unauthenticated, permission_denied, not_found, conflict,
-                    failed_precondition, resource_exhausted, deadline_exceeded, unavailable, internal)
+                    failed_precondition, resource_exhausted, deadline_exceeded, unavailable, internal, bad_gateway)
 BOOST_DESCRIBE_STRUCT(api_id, (), (value))
 BOOST_DESCRIBE_STRUCT(api_version, (), (major, revision))
 BOOST_DESCRIBE_STRUCT(api_ref, (), (id, major, min_revision))

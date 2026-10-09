@@ -138,10 +138,37 @@ before invoking the handler when the emitted codec is not acceptable.
   `streaming_response`, `stream_response`, `bytes_response`, `empty_response`,
   `body_stream`, `body_bytes` and multipart/form-data bypass DTO codecs.
 - Error bodies use the route error codec and the shared Forge API error payload
-  shape.
+  shape by default. `binding().errors(renderer)` supplies a publication default;
+  `route_options::error_renderer` can override it for an explicit route.
 - Do not log request bodies, headers or query strings before redaction.
 - Keep protocol-specific error names, signing, authorization and storage policy
   outside this library.
+
+## External Error Representations
+
+`forge.api.http.error_renderer` is an optional synchronous presentation boundary.
+The callback receives `error_context`: the original request, proposed HTTP status,
+sanitized core error payload and, for a local catch, a borrowed exception pointer.
+It returns an owned native HTTP response or `std::nullopt` to retain the standard
+representation. A renderer failure also retains the standard representation.
+
+The context and its exception pointer must not escape the callback. A callback
+may inspect explicitly supported typed exception data; it must not expose
+`what()`, private diagnostic fields or undeclared exceptions. Already projected
+remote errors have no local exception pointer. Unexpected non-Forge failures also
+reach an installed renderer as a safe internal error with no exception pointer;
+without a renderer their existing exception propagation remains unchanged. Status and body customization
+also covers parsing and content negotiation failures before method invocation.
+Endpoint headers and the route cache policy are applied to the final response.
+The callback owns the returned response's HTTP version, keep-alive and payload
+framing; `forge::net::http::make_text_response(context.request, ...)` provides
+these mechanics for an ordinary buffered response.
+This hook does not intercept errors emitted after an API stream has started;
+those still use the stream's existing terminal error frames.
+
+Install the renderer before adding routes with `.bind<Interface>()` or `.post()`.
+The default remains unchanged for all existing API consumers. Protocol-specific
+DTOs and renderers belong to the application, not Forge.
 
 ## Common Mistakes
 
@@ -156,6 +183,7 @@ before invoking the handler when the emitted codec is not acceptable.
 
 ## Tests
 
+- `test_forge_http_error_renderer`
 - `test_forge_api_core`
 - `test_forge_http_websocket`
 - `test_forge_package_api_http_component`

@@ -43,6 +43,7 @@ import forge.net.http.client;
 import forge.net.http.connection;
 import forge.api.http.parameters;
 import forge.net.http.file;
+export import forge.api.http.error_renderer;
 export import forge.api.http.mapping;
 export import forge.api.http.openapi;
 import forge.net.http.middleware;
@@ -116,6 +117,7 @@ struct route_options {
    body_codec response_body_codec = body_codec::json;
    error_codec error_body_codec = error_codec::json;
    cache_policy cache = cache_policy::unspecified;
+   forge::api::http::error_renderer error_renderer;
 };
 
 class binding_plan {
@@ -143,6 +145,12 @@ class binding_builder {
 
    binding_builder& use(forge::api::core::binding_plan plan) {
       plan_ = std::move(plan);
+      return *this;
+   }
+
+   // Applies to routes added after this call. A per-route renderer takes precedence.
+   binding_builder& errors(error_renderer renderer) {
+      error_renderer_ = std::move(renderer);
       return *this;
    }
 
@@ -1514,52 +1522,53 @@ class binding_builder {
       };
    }
 
+   [[nodiscard]] static response render_error_response(const request& request_value, status status_code,
+                                                        const forge::api::core::error_payload& payload,
+                                                        const route_options& options,
+                                                        const std::shared_ptr<endpoint_state>& endpoint,
+                                                        const forge::exceptions::base* cause) {
+      auto output = std::optional<response>{};
+      if (options.error_renderer) {
+         try {
+            output = options.error_renderer(error_context{request_value, status_code, payload, cause});
+         } catch (...) {
+            // Rendering is a protocol customization, never a new failure path.
+            // Fall back to the already sanitized standard error representation.
+         }
+      }
+      if (!output) {
+         output = make_text_response(request_value, status_code,
+                                     encode_error_payload(payload, options.error_body_codec),
+                                     std::string{detail::content_type(options.error_body_codec)});
+      }
+      merge_endpoint_headers(*output, endpoint);
+      apply_cache_policy(*output, options);
+      return std::move(*output);
+   }
+
    [[nodiscard]] static response make_http_error_response(const request& request_value, std::string error,
                                                           std::string message, status status_code,
                                                           const route_options& options,
-                                                          const std::shared_ptr<endpoint_state>& endpoint = {}) {
+                                                          const std::shared_ptr<endpoint_state>& endpoint = {},
+                                                          const forge::exceptions::base* cause = nullptr) {
       const auto payload = make_http_error_payload(std::move(error), std::move(message), status_code);
-      auto output =
-          make_text_response(request_value, status_code, encode_error_payload(payload, options.error_body_codec),
-                             std::string{detail::content_type(options.error_body_codec)});
-      merge_endpoint_headers(output, endpoint);
-      apply_cache_policy(output, options);
-      return output;
+      return render_error_response(request_value, status_code, payload, options, endpoint, cause);
    }
 
    [[nodiscard]] static response make_error_response(const request& request_value,
                                                      const forge::api::core::error_payload& payload,
                                                      const route_options& options,
-                                                     const std::shared_ptr<endpoint_state>& endpoint = {}) {
-      auto output = make_text_response(request_value, http_status(payload.status_code),
-                                       encode_error_payload(payload, options.error_body_codec),
-                                       std::string{detail::content_type(options.error_body_codec)});
-      merge_endpoint_headers(output, endpoint);
-      apply_cache_policy(output, options);
-      return output;
+                                                     const std::shared_ptr<endpoint_state>& endpoint = {},
+                                                     const forge::exceptions::base* cause = nullptr) {
+      return render_error_response(request_value, http_status(payload.status_code), payload, options, endpoint, cause);
    }
 
    [[nodiscard]] static response make_validation_response(const request& request_value, std::string_view message,
                                                           const route_options& options,
-                                                          const std::shared_ptr<endpoint_state>& endpoint = {}) {
-      auto output = make_text_response(request_value, static_cast<status>(422),
-                                       encode_error_payload(
-                                           forge::api::core::error_payload{
-                                               .error = "validation_error",
-                                               .message = std::string{message},
-                                               .retryable = false,
-                                               .status_code = forge::api::core::status::invalid_argument,
-                                               .identity =
-                                                   {
-                                                       .category = "forge.api.http",
-                                                       .code = 422,
-                                                   },
-                                           },
-                                           options.error_body_codec),
-                                       std::string{detail::content_type(options.error_body_codec)});
-      merge_endpoint_headers(output, endpoint);
-      apply_cache_policy(output, options);
-      return output;
+                                                          const std::shared_ptr<endpoint_state>& endpoint = {},
+                                                          const forge::exceptions::base* cause = nullptr) {
+      const auto payload = make_http_error_payload("validation_error", std::string{message}, static_cast<status>(422));
+      return render_error_response(request_value, static_cast<status>(422), payload, options, endpoint, cause);
    }
 
    [[nodiscard]] static bool same_header_name(std::string_view left, std::string_view right) noexcept {
@@ -1885,6 +1894,9 @@ class binding_builder {
                                         std::string explicit_name) {
       using interface_type = typename method_class<decltype(Method)>::type;
       using argument_tuple = detail::http_method_argument_tuple_t<Method>;
+      if (!options.error_renderer) {
+         options.error_renderer = error_renderer_;
+      }
       auto plan = plan_;
       auto name = explicit_name.empty() ? method_name<interface_type, Request, Response>() : std::move(explicit_name);
       return [plan = std::move(plan), verb, path = std::move(path), options = std::move(options),
@@ -1923,14 +1935,14 @@ class binding_builder {
             auto stream_handler = [plan, options, name,
                                    canonical_method_descriptor](stream_request& request_value)
                 -> boost::asio::awaitable<stream_response> {
-               if (plan.local == nullptr) {
-                  FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
-                                        "HTTP API binding has no local registry");
-               }
-               auto pinned = plan.pin(interface_type::ref());
                const auto& method_descriptor = canonical_method_descriptor;
-               auto trusted = detail::trusted_invocation_for(request_value.context);
                try {
+                  if (plan.local == nullptr) {
+                     FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                           "HTTP API binding has no local registry");
+                  }
+                  auto pinned = plan.pin(interface_type::ref());
+                  auto trusted = detail::trusted_invocation_for(request_value.context);
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
                   validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
@@ -1998,14 +2010,20 @@ class binding_builder {
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "unsupported_media_type",
                                                               error.message(), status::unsupported_media_type,
-                                                              options));
+                                                              options, {}, &error));
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "not_acceptable",
-                                                              error.message(), status::not_acceptable, options));
+                                                              error.message(), status::not_acceptable, options, {}, &error));
                } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return buffered(make_validation_response(request_value.context.request, error.message(), options));
+                  co_return buffered(make_validation_response(request_value.context.request, error.message(), options, {}, &error));
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
+                  co_return buffered(make_error_response(request_value.context.request, payload, options, {}, &error));
+               } catch (...) {
+                  if (!options.error_renderer) {
+                     throw;
+                  }
+                  const auto payload = forge::api::core::make_internal_error_payload();
                   co_return buffered(make_error_response(request_value.context.request, payload, options));
                }
             };
@@ -2037,15 +2055,15 @@ class binding_builder {
             auto stream_handler = [plan, options, name,
                                    canonical_method_descriptor](stream_request& request_value)
                 -> boost::asio::awaitable<stream_response> {
-               if (plan.local == nullptr) {
-                  FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
-                                        "HTTP API binding has no local registry");
-               }
-               auto pinned = plan.pin(interface_type::ref());
                const auto& method_descriptor = canonical_method_descriptor;
-               auto trusted = detail::trusted_invocation_for(request_value.context);
                auto endpoint = std::shared_ptr<endpoint_state>{};
                try {
+                  if (plan.local == nullptr) {
+                     FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                           "HTTP API binding has no local registry");
+                  }
+                  auto pinned = plan.pin(interface_type::ref());
+                  auto trusted = detail::trusted_invocation_for(request_value.context);
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
                   validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
@@ -2076,16 +2094,22 @@ class binding_builder {
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "unsupported_media_type",
                                                               error.message(), status::unsupported_media_type,
-                                                              options, endpoint));
+                                                              options, endpoint, &error));
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "not_acceptable",
                                                               error.message(), status::not_acceptable, options,
-                                                              endpoint));
+                                                              endpoint, &error));
                } catch (const forge::net::http::exceptions::bad_request& error) {
                   co_return buffered(
-                      make_validation_response(request_value.context.request, error.message(), options, endpoint));
+                      make_validation_response(request_value.context.request, error.message(), options, endpoint, &error));
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
+                  co_return buffered(make_error_response(request_value.context.request, payload, options, endpoint, &error));
+               } catch (...) {
+                  if (!options.error_renderer) {
+                     throw;
+                  }
+                  const auto payload = forge::api::core::make_internal_error_payload();
                   co_return buffered(make_error_response(request_value.context.request, payload, options, endpoint));
                }
             };
@@ -2115,14 +2139,14 @@ class binding_builder {
          } else {
             auto handler = [plan, options, name,
                             canonical_method_descriptor](route_context& context) -> boost::asio::awaitable<response> {
-               if (plan.local == nullptr) {
-                  FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
-                                        "HTTP API binding has no local registry");
-               }
-               auto pinned = plan.pin(interface_type::ref());
                const auto& method_descriptor = canonical_method_descriptor;
                auto endpoint = std::shared_ptr<endpoint_state>{};
                try {
+                  if (plan.local == nullptr) {
+                     FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                           "HTTP API binding has no local registry");
+                  }
+                  auto pinned = plan.pin(interface_type::ref());
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
                   validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
@@ -2149,14 +2173,20 @@ class binding_builder {
                   }
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return make_http_error_response(context.request, "unsupported_media_type", error.message(),
-                                                     status::unsupported_media_type, options, endpoint);
+                                                     status::unsupported_media_type, options, endpoint, &error);
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return make_http_error_response(context.request, "not_acceptable", error.message(),
-                                                     status::not_acceptable, options, endpoint);
+                                                     status::not_acceptable, options, endpoint, &error);
                } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return make_validation_response(context.request, error.message(), options, endpoint);
+                  co_return make_validation_response(context.request, error.message(), options, endpoint, &error);
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
+                  co_return make_error_response(context.request, payload, options, endpoint, &error);
+               } catch (...) {
+                  if (!options.error_renderer) {
+                     throw;
+                  }
+                  const auto payload = forge::api::core::make_internal_error_payload();
                   co_return make_error_response(context.request, payload, options, endpoint);
                }
             };
@@ -2199,6 +2229,7 @@ class binding_builder {
 
    router* target_ = nullptr;
    forge::api::core::binding_plan plan_;
+   error_renderer error_renderer_;
    std::vector<mount_action> steps_;
 };
 
