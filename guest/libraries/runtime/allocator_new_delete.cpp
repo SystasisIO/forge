@@ -154,6 +154,6 @@ extern "C" [[noreturn]] void abort() {
    contract_abort("contract aborted");
 }
 
-extern "C" [[noreturn]] void __cxa_pure_virtual() {
-   contract_abort("pure virtual function called");
+extern "C" [[noreturn]] void __assert_fail(const char* expression, const char*, int, const char*) {
+   contract_abort(expression == nullptr ? "contract assertion failed" : expression);
 }

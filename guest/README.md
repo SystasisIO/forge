@@ -113,6 +113,7 @@ forge_add_contract(
    SOURCES contract.cpp
    COMPILE_CHECKS protocol_checks.cpp
    LIBRARIES product_protocol
+   COMPILE_DEFINITIONS PRODUCT_LIMIT=42 "PRODUCT_LABEL=\"configured value\""
 )
 ```
 
@@ -126,6 +127,15 @@ guest configuration, the declaration is complete: sources, compile settings
 and include paths must not be mutated after `forge_add_contract_library()` or
 `forge_add_contract()`. This keeps CMake compilation and Abigen on one semantic
 profile instead of creating consumer-specific module variants.
+An optional `forge_add_contract(COMPILE_DEFINITIONS ...)` list declares literal,
+object-like `NAME` or `NAME=value` macros for that contract only. The same list
+reaches Abigen, its generated dispatcher and implementation wrappers, and
+`COMPILE_CHECKS`; it does not mutate imported library/module owners or neighboring
+contracts. Quote string literal values as in the example. Leading `-D`,
+function-like macros, generator expressions, semicolon lists, newlines and `#`
+are unsupported. Duplicate names, compiler-reserved names (`__...` / `_[A-Z]...`),
+`FORGE_...` SDK definitions and the configuration-owned `NDEBUG` are rejected.
+Omitting the list preserves the existing contract build profile.
 Directory-wide compile options, definitions and includes are rejected for the
 same reason. The guest toolchain rejects external configuration-specific C++
 customization and owns the standard Debug, Release, MinSizeRel and
@@ -351,11 +361,33 @@ core facilities needed by production contracts, including containers,
 iterators, algorithms, tuples, optional, variant, span, string views, concepts,
 numeric types and utilities.
 
+Localization and `<regex>` use the pinned upstream libc++ implementation.
+The freestanding locale substrate supports deterministic ASCII `C`/`POSIX`
+only; the empty locale name also selects `C`, never a host environment locale.
+Unsupported named locales fail (`newlocale`/`setlocale` return null with
+`EINVAL`; with exceptions disabled libc++ terminates a failed named-locale
+construction through the contract check). There are no locale files or host
+locale imports. The C substrate is compiled from pinned CDT musl sources;
+source and lifetime policy are recorded in `libraries/runtime/PROVENANCE.md`.
+
 Dynamic allocation uses the CDT-derived linear-memory allocator behind normal
 C++ and C APIs. All non-template Forge guest implementation is compiled once
 into the SDK sysroot. Each contract compiles module interfaces only to produce
 compiler-local BMI files and links the finished archives instead of rebuilding
-Forge sources:
+Forge sources.
+
+The standard linker profile reserves 32 KiB of guest stack. The prior 8 KiB
+reserve is insufficient for the canonical musl quad-precision formatter:
+the measured Release `printf_core` frame is 8160 bytes (float formatting is
+inlined), with another 288-byte `vfprintf` frame plus caller frames, and a real
+default-profile Cstdlib fixture trapped out of bounds. This is a bounded build
+resource reserve, not a change to contract source, action/row ABI, long-double
+ABI or formatting algorithms. It does not promise unbounded recursion.
+The executable default-profile fixture has an initial memory of two 64-KiB
+pages and a declared maximum of 256 pages, below the existing chain-compatible
+528-page ceiling. Its stack-pointer initializer is 32768. These measured limits
+are fixture evidence, not a guarantee that every contract has the same initial
+memory requirement.
 
 ```cpp
 #include <cstddef>
@@ -379,6 +411,16 @@ are reused and coalesced; allocation grows WebAssembly linear memory when
 needed. Allocation exhaustion and failed contract checks terminate through the
 canonical `env.eosio_assert_message` intrinsic. C++ exceptions and RTTI are
 disabled.
+
+Global destructors are registered by the real musl `__cxa_atexit` registry,
+including allocation-backed spill after 32 registrations. Explicit C `exit`
+drains callbacks in reverse registration order and then invokes `eosio_exit`;
+`_Exit`/`eosio_exit` do not drain them. The pinned musl `__cxa_finalize` is empty.
+Returning from `apply` does **not** execute registered global destructors.
+Before each invocation the VM resets globals and guest linear memory; startup
+constructors run again, and all prior invocation allocations and registry state
+are discarded, including after a trap or host exit. The runtime does not add an
+automatic per-action shutdown or persistent cross-invocation guest state.
 
 The allocator owns only guest linear memory. It provides no host heap, files,
 sockets, threads, clocks or random device.

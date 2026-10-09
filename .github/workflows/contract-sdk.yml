@@ -193,6 +193,7 @@ jobs:
             -DForge_DIR="$GITHUB_WORKSPACE/build/forge-prefix/lib/cmake/Forge" \
             -DFORGE_CONTRACT_TEST_WASM="$GITHUB_WORKSPACE/build/contract-consumer/artifacts/hello.wasm" \
             -DFORGE_CONTRACT_TEST_RECORD_WASM="$GITHUB_WORKSPACE/build/contract-consumer/artifacts/recordtest.wasm" \
+            -DFORGE_CONTRACT_TEST_GUEST_MACRO_WASM="$GITHUB_WORKSPACE/build/contract-consumer/artifacts/guestmacro.wasm" \
             -DFORGE_CONTRACT_TEST_ALLOCATOR_WASM="$GITHUB_WORKSPACE/build/contract-consumer/artifacts/allocatortst.wasm" \
             -DFORGE_CONTRACT_TEST_LEGACY_WASM="$GITHUB_WORKSPACE/build/contract-consumer/artifacts/legacyhello.wasm" \
             -DFORGE_CONTRACT_TEST_LEGACY_NOTIFICATION_WASM="$GITHUB_WORKSPACE/build/contract-consumer/artifacts/legacynotify.wasm" \
@@ -341,7 +342,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/build/contract-sdk-release-prefix/lib/cmake/ForgeContract/ForgeContractToolchain.cmake" \
             -DForgeContract_DIR="$GITHUB_WORKSPACE/build/contract-sdk-release-prefix/lib/cmake/ForgeContract"
           cmake --build build/contract-release-consumer \
-            --target hello recordtest allocatortst legacyhello legacynotify multisource dbhost \
+            --target hello guestmacro recordtest allocatortst legacyhello legacynotify multisource dbhost \
                      multiidx legacymidx midxerrors legmidxerr midxextend legmidxext \
                      oracle recovery looping surface \
                      forge_contract_database_intrinsic_fixtures forge_contract_multi_index_fixtures \
@@ -353,6 +354,7 @@ jobs:
             -DForge_DIR="$GITHUB_WORKSPACE/build/forge-prefix/lib/cmake/Forge" \
             -DFORGE_CONTRACT_TEST_WASM="$GITHUB_WORKSPACE/build/contract-release-consumer/artifacts/hello.wasm" \
             -DFORGE_CONTRACT_TEST_RECORD_WASM="$GITHUB_WORKSPACE/build/contract-release-consumer/artifacts/recordtest.wasm" \
+            -DFORGE_CONTRACT_TEST_GUEST_MACRO_WASM="$GITHUB_WORKSPACE/build/contract-release-consumer/artifacts/guestmacro.wasm" \
             -DFORGE_CONTRACT_TEST_ALLOCATOR_WASM="$GITHUB_WORKSPACE/build/contract-release-consumer/artifacts/allocatortst.wasm" \
             -DFORGE_CONTRACT_TEST_LEGACY_WASM="$GITHUB_WORKSPACE/build/contract-release-consumer/artifacts/legacyhello.wasm" \
             -DFORGE_CONTRACT_TEST_LEGACY_NOTIFICATION_WASM="$GITHUB_WORKSPACE/build/contract-release-consumer/artifacts/legacynotify.wasm" \

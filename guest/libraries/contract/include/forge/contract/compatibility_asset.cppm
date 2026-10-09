@@ -2,6 +2,7 @@ module;
 
 #include <compare>
 #include <cstdint>
+#include <string>
 
 export module forge.contract.compatibility_asset;
 
@@ -32,6 +33,7 @@ struct asset {
    }
 
    void set_amount(std::int64_t value);
+   [[nodiscard]] std::string to_string() const;
    asset operator-() const;
    asset& operator+=(const asset& value);
    asset& operator-=(const asset& value);

@@ -2,6 +2,7 @@ module;
 
 #include <compare>
 #include <cstdint>
+#include <string>
 
 module forge.contract.compatibility_asset;
 
@@ -14,6 +15,10 @@ void asset::set_amount(std::int64_t value) {
    auto converted = protocol_value();
    converted.set_amount(value);
    assign(converted);
+}
+
+std::string asset::to_string() const {
+   return chain::protocol::to_string(protocol_value());
 }
 
 asset asset::operator-() const {

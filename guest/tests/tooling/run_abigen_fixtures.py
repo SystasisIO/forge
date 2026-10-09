@@ -40,6 +40,7 @@ def invoke(
     ricardian_clauses=None,
     bare_outputs=False,
     error_contains=None,
+    compiler_arguments=(),
 ):
     output.mkdir(parents=True, exist_ok=True)
     abi = output / f"{source.stem}.abi"
@@ -76,6 +77,7 @@ def invoke(
         command.extend(("--ricardian-contracts", str(ricardian_contracts)))
     if ricardian_clauses is not None:
         command.extend(("--ricardian-clauses", str(ricardian_clauses)))
+    command.extend(f"--compiler-argument={argument}" for argument in compiler_arguments)
     source_wrappers = []
     for index, _ in enumerate(additional_sources, start=1):
         wrapper = output / f"{source.stem}.source-{index}.cpp"
@@ -146,6 +148,11 @@ def check_features(abi):
     assert varint_fields["unsigned_value"]["type"] == "unsigned_int"
     assert varint_fields["signed_value"]["type"] == "signed_int"
     assert by_name(structs["extension"]["fields"])["value"]["type"] == "uint32$"
+    assert structs["extended_symbol"]["fields"] == [
+        {"name": "sym", "type": "symbol"},
+        {"name": "contract", "type": "name"},
+    ]
+    assert structs["extrewards"]["fields"] == [{"name": "rewards", "type": "extended_symbol"}]
     assert by_name(structs["named"]["fields"])["owner"]["type"] == "my_account"
     assert by_name(abi["action_results"])["result"]["result_type"] == "result_value"
     assert by_name(abi["calls"])["sum"] == {
@@ -352,9 +359,19 @@ def main():
         "guestmacro",
         args.fixtures.parent / "consumer" / "guest_macro_contract.cpp",
         args.output / "guest-macro",
+        compiler_arguments=(
+            "-DCONSUMER_DECLARATION_VALUE=42",
+            r'-DCONSUMER_DECLARATION_TEXT="quoted \"value\" with space"',
+        ),
     )
-    if [action["name"] for action in guest_macro["actions"]] != ["run"]:
+    if len(guest_macro["actions"]) != 2 or {
+        action["name"] for action in guest_macro["actions"]
+    } != {"run", "declared"}:
         raise RuntimeError("abigen did not analyze the guest contract translation unit")
+    if next(
+        item for item in guest_macro["action_results"] if item["name"] == "declared"
+    )["result_type"] != "string":
+        raise RuntimeError("abigen did not preserve the declared macro-selected action result")
 
     implicit_contract = invoke(
         args,

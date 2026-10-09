@@ -52,7 +52,9 @@ struct [[forge::table("foreign"), forge::contract("otherfixture")]] foreign_reco
    std::uint64_t id = 0;
 };
 
-class [[forge::contract("abifixture")]] abifixture : public forge::contract::context {
+namespace dispatcher_shadow {
+
+class [[forge::contract("abifixture")]] code : public forge::contract::context {
  public:
    using context::context;
 
@@ -104,8 +106,13 @@ class [[forge::contract("abifixture")]] abifixture : public forge::contract::con
    [[forge::action]] void extension(forge::contract::binary_extension<std::uint32_t> value) {
       static_cast<void>(value);
    }
+   [[forge::action]] void extrewards(forge::chain::protocol::extended_symbol rewards) {
+      static_cast<void>(rewards);
+   }
 
    [[forge::call]] std::uint32_t sum(std::uint32_t a, std::uint32_t b) {
       return a + b;
    }
 };
+
+} // namespace dispatcher_shadow
