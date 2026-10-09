@@ -25,6 +25,8 @@ export namespace forge::net::p2p::pubsub {
 enum class version : std::uint8_t {
    v1_0,
    v1_1,
+   v1_2,
+   v1_3,
 };
 
 enum class validation_result : std::uint8_t {
@@ -222,6 +224,10 @@ struct limits {
    std::size_t gossip_lazy = 6;
    double gossip_factor = 0.25;
    std::size_t gossip_retransmission = 3;
+   // Local wire budgets, not peer capability or protocol-version requirements.
+   std::size_t max_idontwant_message_id_size = 256;
+   std::size_t max_partial_group_id_size = 256;
+   std::size_t max_partial_metadata_size = 64 * 1024;
 };
 
 struct options {
@@ -241,6 +247,9 @@ void validate(const options& opts);
 struct subscription {
    bool subscribe = true;
    topic subject;
+   // Presence is wire data; only a subscribed, extension-enabled runtime acts on these flags.
+   std::optional<bool> requests_partial;
+   std::optional<bool> supports_sending_partial;
 };
 
 struct message {
@@ -257,6 +266,20 @@ struct peer_info {
    std::vector<std::uint8_t> signed_peer_record;
 };
 
+// Wire advertisement only. First-RPC placement and mutual support belong to the stream owner.
+struct extensions {
+   std::optional<bool> partial_messages;
+};
+
+// Preserve proto2 presence, including explicitly empty application-defined bytes.
+// Data uses max_data_size, metadata/group have separate bounds, the payload uses max_message_size.
+struct partial_message {
+   std::optional<topic> subject;
+   std::optional<std::vector<std::uint8_t>> group_id;
+   std::optional<std::vector<std::uint8_t>> data;
+   std::optional<std::vector<std::uint8_t>> metadata;
+};
+
 struct control {
    struct ihave {
       topic subject;
@@ -264,6 +287,10 @@ struct control {
    };
 
    struct iwant {
+      std::vector<std::vector<std::uint8_t>> message_ids;
+   };
+
+   struct idontwant {
       std::vector<std::vector<std::uint8_t>> message_ids;
    };
 
@@ -281,12 +308,15 @@ struct control {
    std::vector<iwant> want;
    std::vector<graft> grafts;
    std::vector<prune> prunes;
+   std::vector<idontwant> dont_want;
+   std::optional<pubsub::extensions> extensions;
 };
 
 struct rpc {
    std::vector<subscription> subscriptions;
    std::vector<message> messages;
    std::optional<control> control_value;
+   std::optional<partial_message> partial;
 };
 
 struct publish_options {

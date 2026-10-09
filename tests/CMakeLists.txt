@@ -1134,6 +1134,7 @@ add_executable(
    quic_p2p/gossipsub_outbound_tests.hxx
    quic_p2p/stream_security_tests.cpp
    quic_p2p/pubsub_score_tests.cpp
+   quic_p2p/pubsub_codec_tests.cpp
    quic_p2p/pubsub_router_tests.cpp
    quic_p2p/pubsub_router_fixture.cpp
    quic_p2p/pubsub_router_fixture_resources.cpp
@@ -1166,6 +1167,15 @@ target_link_libraries(
 target_compile_definitions(test_forge_quic_p2p PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
 add_test(NAME test_forge_quic_p2p COMMAND test_forge_quic_p2p WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_quic_p2p PROPERTIES TIMEOUT 300)
+
+add_executable(
+   test_forge_p2p_pubsub_codec
+   unit/main.cpp
+   quic_p2p/pubsub_codec_tests.cpp
+)
+target_link_libraries(test_forge_p2p_pubsub_codec forge_net_p2p Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_pubsub_codec COMMAND test_forge_p2p_pubsub_codec WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_pubsub_codec PROPERTIES TIMEOUT 60)
 
 add_executable(
    test_forge_p2p_pubsub_score

@@ -51,7 +51,7 @@ import forge.net.transport.stream;
 // thread-local and one-shot. The native trace probe arms only after completed I/O.
 void* operator new(std::size_t size) {
    using fixture = forge::tests::p2p::pubsub_write_allocation_fixture;
-   if (fixture::reject_allocation(fixture::allocator::scalar_new)) {
+   if (fixture::reject_allocation(fixture::allocator::scalar_new, size)) {
       throw std::bad_alloc{};
    }
    for (;;) {
@@ -72,7 +72,7 @@ void operator delete(void* value, std::size_t) noexcept {
 
 extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
    using fixture = forge::tests::p2p::pubsub_write_allocation_fixture;
-   if (fixture::reject_allocation(fixture::allocator::aligned_alloc)) {
+   if (fixture::reject_allocation(fixture::allocator::aligned_alloc, size)) {
       errno = ENOMEM;
       return nullptr; // Asio's actual frame allocator constructs the original std::bad_alloc.
    }
@@ -92,6 +92,7 @@ namespace forge::tests::p2p {
 namespace transport = forge::net::transport;
 
 thread_local bool pubsub_write_allocation_fixture::_armed = false;
+thread_local std::size_t pubsub_write_allocation_fixture::_minimum_size = 0;
 thread_local pubsub_write_allocation_fixture::allocator pubsub_write_allocation_fixture::_rejected_by = allocator::none;
 thread_local pubsub_write_allocation_fixture::trace_result* pubsub_write_allocation_fixture::_trace_target = nullptr;
 
@@ -117,15 +118,17 @@ class pubsub_write_allocation_fixture::write_model final : public transport::det
    bool _open = true;
 };
 
-pubsub_write_allocation_fixture::allocation_scope::allocation_scope() noexcept {
+pubsub_write_allocation_fixture::allocation_scope::allocation_scope(std::size_t minimum_size) noexcept {
    _rejected_by = allocator::none;
    _trace_target = nullptr;
+   _minimum_size = minimum_size;
    _armed = true;
 }
 
 pubsub_write_allocation_fixture::allocation_scope::~allocation_scope() {
    _armed = false;
    _trace_target = nullptr;
+   _minimum_size = 0;
 }
 
 pubsub_write_allocation_fixture::allocator
@@ -136,11 +139,12 @@ pubsub_write_allocation_fixture::allocation_scope::rejected_by() const noexcept 
 void pubsub_write_allocation_fixture::arm_trace_allocation(trace_result& observed) noexcept {
    _rejected_by = allocator::none;
    _trace_target = &observed;
+   _minimum_size = 0;
    _armed = true;
 }
 
-bool pubsub_write_allocation_fixture::reject_allocation(allocator source) noexcept {
-   if (!_armed) { return false; }
+bool pubsub_write_allocation_fixture::reject_allocation(allocator source, std::size_t size) noexcept {
+   if (!_armed || size < _minimum_size) { return false; }
    _armed = false;
    _rejected_by = source;
    if (_trace_target) {

@@ -185,7 +185,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "e08b00ab7d35b255d16d8ecbbf8b3b61b766388885354a0ec47f29e7e360e854",
+      "sha256": "00215095f94808315e54cd64807654cbfd929eac6499c3219e378c88a3a6f487",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -873,13 +873,13 @@
       "state": "partial",
       "owner": "net.p2p.node",
       "normal_activation": "node_lifecycle_over_connected_peers",
-      "configuration": "node PubSub options include validated opt-in P1-P7 scoring and v1.0/v1.1 routing limits; plugin configuration and Partial Messages remain later stages",
+      "configuration": "node PubSub options include validated opt-in P1-P7 scoring and v1.0/v1.1 routing limits; v1.2/v1.3 codec values exist but extension runtime acceptance is pending; plugin configuration remains Stage 7",
       "resource_ownership": "bounded heartbeat-window message history, validation generations, score retention, gossip promises, mesh and admitted outbound queues",
       "persistence": "none by protocol design",
       "maintenance": "node heartbeat owns score decay, score-aware mesh repair, opportunistic graft and promise expiry; new native scoring acceptance is registered but its exact-head verdict is pending",
       "diagnostics": "read-only peer/topic score snapshots, pubsub metrics and passive completed-RPC/validation trace",
       "intended_disposition": "prove_native_scoring_acceptance_then_complete_extensions_plugin_and_stage8_soak",
-      "builtin_protocols": [ "meshsub_v11", "meshsub_v10" ],
+      "builtin_protocols": [ "meshsub_v13", "meshsub_v12", "meshsub_v11", "meshsub_v10" ],
       "capabilities": [ "pubsub" ],
       "evidence": {
         "layers": [ "codec", "state_machine", "raw_node", "official_plugin", "donor_interop" ],
@@ -889,7 +889,7 @@
           "tests/libp2p_interop/pubsub_cases.py", "tests/libp2p_interop/pubsub_evidence.py",
           "tests/libp2p_interop/pubsub_acceptance.py" ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins", "test_forge_libp2p_interop",
-          "test_forge_p2p_pubsub_score", "test_forge_p2p_pubsub_router", "test_forge_libp2p_pubsub_evidence",
+          "test_forge_p2p_pubsub_score", "test_forge_p2p_pubsub_codec", "test_forge_p2p_pubsub_router", "test_forge_libp2p_pubsub_evidence",
           "test_forge_p2p_pubsub_acceptance" ],
         "donor_sources": [ "docs/donors/fcl-p2p-gossipsub-v1.md", "docs/donors/forge-p2p-gossipsub-scoring-v1.md" ],
         "donor_cases": [

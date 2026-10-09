@@ -48,7 +48,7 @@ class pubsub_write_allocation_fixture {
 
    class allocation_scope {
     public:
-      allocation_scope() noexcept;
+      explicit allocation_scope(std::size_t minimum_size = 0) noexcept;
       ~allocation_scope();
       allocation_scope(const allocation_scope&) = delete;
       allocation_scope& operator=(const allocation_scope&) = delete;
@@ -58,11 +58,12 @@ class pubsub_write_allocation_fixture {
    [[nodiscard]] static result observe(factory selected);
    [[nodiscard]] static trace_result observe_native_trace(std::uint64_t (*outbound_bytes)(const void*));
    static void arm_trace_allocation(trace_result&) noexcept;
-   [[nodiscard]] static bool reject_allocation(allocator source) noexcept;
+   [[nodiscard]] static bool reject_allocation(allocator source, std::size_t size) noexcept;
 
  private:
    class write_model;
    static thread_local bool _armed;
+   static thread_local std::size_t _minimum_size;
    static thread_local allocator _rejected_by;
    static thread_local trace_result* _trace_target;
 };
