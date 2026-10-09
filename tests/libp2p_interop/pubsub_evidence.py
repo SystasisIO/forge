@@ -1622,7 +1622,8 @@ def _quic_outbound_cancelled_before_negotiation(raw, events, *, terminal, exclud
         calls = [value for value in owned if value is not stream]
         io = [value for value in calls if value.get("kind") == "native_quic_negotiation_io_return"]
         resets = [value for value in calls if value.get("kind") == "native_stream_operation"]
-        require(len(calls) == len(io) + len(resets) and 1 <= len(io) <= 2 and 1 <= len(resets) <= 3
+        require(len(calls) == len(io) + len(resets) and 1 <= len(io) <= 2 and len(resets) <= 3
+                and (not terminal or len(resets) > 0)
                 and all(type(value.get("direction")) is str for value in io)
                 and len({value["direction"] for value in io}) == len(io)
                 and all(value["direction"] in {"read", "write"} for value in io)
@@ -1654,7 +1655,14 @@ def _quic_outbound_cancelled_before_negotiation(raw, events, *, terminal, exclud
             orders.update((value["started_order"], value["returned_order"]))
         for value in io:
             preceding = [reset for reset in resets if reset["started_order"] < value["started_order"]]
-            require(preceding and max(preceding, key=lambda reset: reset["started_order"])["returned_order"] < value["started_order"],
+            latest = max(preceding, key=lambda reset: reset["started_order"]) if preceding else None
+            lower_bound = latest["started_order"] if latest else 0
+            missing = value["started_order"] - lower_bound - 1 - sum(
+                lower_bound < order < value["started_order"] for order in orders)
+            # An active publication prefix may omit a sealed Reset BEGIN/RETURN pair.
+            # This exports pending diagnostics only; terminal validation never borrows it.
+            require(latest is not None and latest["returned_order"] < value["started_order"]
+                    or not terminal and missing >= 2,
                     "outbound native I/O lacks its latest successful full Reset before BEGIN")
         lower = [value for value in events if value.get("source") in GO_QUIC_SOURCES.values()
                  or value.get("source") in {"go.quic.native_stream.read", "go.quic.native_stream.write"}]

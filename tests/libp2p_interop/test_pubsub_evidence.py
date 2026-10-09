@@ -940,8 +940,72 @@ class PubSubEvidenceTests(unittest.TestCase):
                     original["negotiation_snapshot"]["read"]["partial_frame"] = self.cleanup_capture(b"\x01")
                 else:
                     changed["error"] = "earlier sticky native failure"
-                with self.subTest(stage=end["operation"], mutation=mode), self.assertRaises(ValueError):
-                    _go_quic_operations(changed, changed["events"], terminal=False)
+                with self.subTest(stage=end["operation"], mutation=mode):
+                    if mode == "future_reset":
+                        # Missing counters 1/2 can still belong to an unpublished real Reset.
+                        self.assertEqual(_go_quic_operations(changed, changed["events"], terminal=False), {})
+                        complete = deepcopy(artifact["raw"]["sink"])
+                        complete["events"][first["sequence"] - 1].update(started_order=11, returned_order=12)
+                        with self.assertRaises(ValueError):
+                            _go_quic_operations(complete, complete["events"], terminal=True)
+                    else:
+                        with self.assertRaises(ValueError):
+                            _go_quic_operations(changed, changed["events"], terminal=False)
+
+    def test_outbound_cancelled_before_negotiation_read_publication_can_precede_its_reset_receipt(self):
+        artifact = synthetic_case()
+        _, first, read, _, _, _, _ = self.outbound_cancelled_before_negotiation_events(artifact)
+        events = artifact["raw"]["sink"]["events"]
+        self.insert_sink_events(artifact, events.index(first), [read], relocate=True)
+        self.assertLess(first["returned_order"], read["started_order"])
+        self.assertLess(read["sequence"], first["sequence"])
+        validate_case(artifact)
+        active = deepcopy(artifact["raw"]["sink"])
+        active.update(finalized=False, joined=False, host_close_returned=False)
+        active["events"] = active["events"][:read["sequence"]]
+        before = deepcopy(active)
+        prepared = next(value for value in active["events"] if value["kind"] == "shutdown_prepared")
+        quiesced = next(value for value in active["events"] if value["kind"] == "shutdown_quiesced")
+        self.assertEqual(_go_quic_operations(active, active["events"], terminal=False), {})
+        self.assertIs(shutdown_ack(active, "go", "sink", active["case_token"], active["local_peer_id"],
+                                   prepared["command_sequence"], active=True), prepared)
+        self.assertIs(quiesce_ack(active, "sink", active["case_token"], active["local_peer_id"], active["pid"],
+                                 quiesced["command_sequence"], prepared["sequence"], active=True), quiesced)
+        self.assertTrue(_same_json(before, active))
+        # Real global joins in the complete artifact cannot supply an omitted Reset receipt.
+        incomplete = deepcopy(artifact["raw"]["sink"])
+        reset = incomplete["events"][first["sequence"] - 1]
+        sequence, mono = reset["sequence"], reset["mono_ns"]
+        reset.clear()
+        reset.update(sequence=sequence, mono_ns=mono, kind="score", source="go.pubsub.WithPeerScoreInspect", peer_scores=[])
+        with self.assertRaises(ValueError):
+            _go_quic_operations(incomplete, incomplete["events"], terminal=True)
+        for mode in ("no_native_gap", "foreign_owner", "foreign_ack", "bool_counter", "nonzero", "remote",
+                     "wrapped", "unknown", "bytes", "sticky"):
+            changed = deepcopy(active)
+            original = changed["events"][read["sequence"] - 1]
+            if mode == "no_native_gap":
+                original.update(started_order=1, returned_order=2)
+            elif mode == "foreign_owner":
+                original["native_stream_id"] = 8
+            elif mode == "foreign_ack":
+                original["prepare_ack_sequence"] = 0
+            elif mode == "bool_counter":
+                original["started_order"] = True
+            elif mode == "nonzero":
+                original["transport_error_code"] = 1
+            elif mode == "remote":
+                original.update(remote=True, transport_error_remote=True)
+            elif mode == "wrapped":
+                original["error_type"] = "*fmt.wrapError"
+            elif mode == "unknown":
+                original.update(error_type="*errors.errorString", transport_error_type="*errors.errorString", typed_cause="opaque")
+            elif mode == "bytes":
+                original["negotiation_snapshot"]["read"]["partial_frame"] = self.cleanup_capture(b"\x01")
+            else:
+                changed["error"] = "earlier sticky native failure"
+            with self.subTest(mutation=mode), self.assertRaises(ValueError):
+                _go_quic_operations(changed, changed["events"], terminal=False)
 
     def test_outbound_cancelled_before_negotiation_rejects_forged_owner_cause_bytes_and_disposal(self):
         modes = ("foreign_reset", "foreign_peer", "foreign_parent", "wrong_auth", "zero_begin", "future_begin", "bool_ack",

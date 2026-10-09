@@ -151,3 +151,9 @@ before each I/O BEGIN. The stream never selected a protocol or transmitted
 negotiation/application bytes. This calls for a separate exact empty-outbound
 disposal check, not a change to Rust or Go transport behavior or an exception
 for unknown errors.
+
+The subsequent `ce71a68f` run was interrupted during fixture compilation,
+before live actors started, when review found that active snapshots could
+publish Read before the already-sealed Reset receipt. Incomplete active
+native-counter ranges must remain pending; terminal evidence still requires
+every actual Reset and return. No acceptance result is claimed for that run.
