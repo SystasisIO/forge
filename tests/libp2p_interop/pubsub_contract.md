@@ -169,8 +169,11 @@ joins remain independent requirements. Previous failed artifacts are unchanged.
 
 The maintainer-approved 2026-10-08 observation contract separates the four
 Rust QUIC cases into original-wire and instrumented-shutdown gates. An isolated
-copy of pinned Rust adds only a read-only `ConnectionError::inner()` accessor;
-the fixture enables `quic-cause-observer` only for its separate binary. Complete
+copy of pinned Rust exposes the current Quinn error through standard
+`ConnectionError::source()`, with an unchanged forwarding `Display`.
+This locally approved replacement for the earlier accessor recipe is not an
+upstream release. The fixture enables `quic-cause-observer` only for its separate
+binary as a provenance marker; both binaries traverse the same public error chain. Complete
 original/observed Git trees, the exact patch and all source/binary hashes must
 validate. No native result, polling, close or router behavior changes.
 

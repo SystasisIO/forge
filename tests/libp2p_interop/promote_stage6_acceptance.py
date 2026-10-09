@@ -25,7 +25,7 @@ PROMOTION_SCOPES = {
     "inline-muxer": "focused inline-muxer16 only, not full Stage 6 or production support",
     "path": "focused DCUtR12 only, not full Stage 6 or production support",
     "coordinated": "focused coordinated TCP reuse8 only, not full Stage 6 or production support",
-    "pubsub-scoring": "original GossipSub v1.0/v1.1 traffic24 plus four independent accessor-only Rust QUIC shutdown runs; original Rust QUIC shutdown NOT_PROVEN; not full Stage 6 or production support",
+    "pubsub-scoring": "original GossipSub v1.0/v1.1 traffic24 plus four independent standard-error-source-patched Rust QUIC shutdown runs; original Rust QUIC shutdown NOT_PROVEN; not full Stage 6 or production support",
 }
 
 

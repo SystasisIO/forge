@@ -125,10 +125,13 @@ wire/scoring proof and an explicitly instrumented full shutdown proof. The
 original terminal errors, exit codes and snapshots are retained; original
 shutdown remains `NOT_PROVEN`, never explained by another execution's cause.
 
-The isolated TEST COPY adds only `ConnectionError::inner() ->
-&quinn::ConnectionError`. No router, polling, error outcome, close, dependency
-or wire behavior is modified. A separately enabled fixture feature reads the
-current owner's error through that accessor. The fixed Git tree, exact patch,
+The isolated TEST COPY now implements standard `ConnectionError::source()`
+returning the current Quinn error and forwards the original `Display`.
+It replaces the earlier accessor-only recipe by explicit maintainer approval;
+the patch is local and has not been submitted upstream. No router, polling,
+error outcome, close, dependency or wire behavior is modified. Both fixture
+variants traverse the same public chain; the separate feature marks copy
+provenance only. The fixed Git tree, exact patch,
 before/after file membership and hashes, separate binary and Cargo commands are
 independently checked. Every other donor source must remain byte-identical.
 

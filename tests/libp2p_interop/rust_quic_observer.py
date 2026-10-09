@@ -30,19 +30,33 @@ _DECLARATION = (
     b"#[error(transparent)]\n"
     b"pub struct ConnectionError(quinn::ConnectionError);\n"
 )
-ACCESSOR = (
-    b"\nimpl ConnectionError {\n"
-    b"    pub fn inner(&self) -> &quinn::ConnectionError {\n"
-    b"        &self.0\n"
+SOURCE_IMPLEMENTATION = (
+    b"/// Error on an established [`Connection`].\n"
+    b"#[derive(Debug)]\n"
+    b"pub struct ConnectionError(quinn::ConnectionError);\n"
+    b"\nimpl std::fmt::Display for ConnectionError {\n"
+    b"    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n"
+    b"        std::fmt::Display::fmt(&self.0, formatter)\n"
+    b"    }\n"
+    b"}\n"
+    b"\nimpl std::error::Error for ConnectionError {\n"
+    b"    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {\n"
+    b"        Some(&self.0)\n"
     b"    }\n"
     b"}\n"
 )
-ACCESSOR_PATCH = (
+# Only the implementation hunk of rust_quic_source_proposal.patch is installed.
+# Its donor-side unit module is deliberately not part of this copy recipe.
+SOURCE_PATCH = (
     b"--- a/transports/quic/src/lib.rs\n"
     b"+++ b/transports/quic/src/lib.rs\n"
-    b"@@ -111,4 +111,10 @@\n"
-    + b"".join(b" " + line for line in _DECLARATION.splitlines(keepends=True))
-    + b"".join(b"+" + line for line in ACCESSOR.splitlines(keepends=True))
+    b"@@ -111,4 +111,15 @@\n"
+    b" /// Error on an established [`Connection`].\n"
+    b"-#[derive(Debug, thiserror::Error)]\n"
+    b"-#[error(transparent)]\n"
+    b"+#[derive(Debug)]\n"
+    b" pub struct ConnectionError(quinn::ConnectionError);\n"
+    + b"".join(b"+" + line for line in SOURCE_IMPLEMENTATION.splitlines(keepends=True)[3:])
 )
 
 
@@ -119,7 +133,7 @@ def _snapshot(root: Path) -> tuple[dict, bytes]:
 
     tree = visit(root).hex()
     if QUIC_SOURCE not in files:
-        raise ValueError("missing QUIC accessor source")
+        raise ValueError("missing QUIC error source")
     graph = hashlib.sha256()
     for relative in sorted(files):
         graph.update(relative.encode("utf-8"))
@@ -137,7 +151,8 @@ def original_provenance(fixture_deps: Path) -> dict:
         raise ValueError("original Rust export does not match the pinned Git tree")
     if source.count(_DECLARATION) != 1 or not source.endswith(_DECLARATION):
         raise ValueError("unexpected or already patched QUIC source")
-    if b"impl ConnectionError" in source:
+    if (b"impl ConnectionError" in source
+            or b"impl std::error::Error for ConnectionError" in source):
         raise ValueError("QUIC source already has a ConnectionError implementation")
     return snapshot
 
@@ -239,15 +254,15 @@ def _receipt(fixture_deps: Path, observer_root: Path, original: dict, observed: 
         "original_fixture_deps": str(fixture_deps), "observer_root": str(observer_root),
         "copied_donor": "fixture-deps/rust-libp2p",
         "original": original, "observed": observed,
-        "patch": {"path": QUIC_SOURCE, "unified_diff": ACCESSOR_PATCH.decode("ascii"),
-                  "sha256": hashlib.sha256(ACCESSOR_PATCH).hexdigest(),
+        "patch": {"path": QUIC_SOURCE, "unified_diff": SOURCE_PATCH.decode("ascii"),
+                  "sha256": hashlib.sha256(SOURCE_PATCH).hexdigest(),
                   "source_before_sha256": original["files"][QUIC_SOURCE]["sha256"],
                   "source_after_sha256": observed["files"][QUIC_SOURCE]["sha256"]},
     }
 
 
 def prepare_observer_copy(fixture_deps: Path, observer_root: Path) -> dict:
-    """Create a fresh full Rust donor copy containing only the exact accessor."""
+    """Create a fresh full Rust donor copy with the exact standard-source fix."""
     fixture_deps, observer_root = _roots(fixture_deps, observer_root)
     original = original_provenance(fixture_deps)
     dependencies = observer_root / "fixture-deps"
@@ -268,7 +283,7 @@ def prepare_observer_copy(fixture_deps: Path, observer_root: Path) -> dict:
     target = destination / QUIC_SOURCE
     temporary = target.with_name("lib.rs.quic-cause-observer")
     with temporary.open("xb") as value:
-        value.write(before + ACCESSOR)
+        value.write(before.removesuffix(_DECLARATION) + SOURCE_IMPLEMENTATION)
     temporary.chmod(target.stat().st_mode & 0o777)
     temporary.replace(target)
     observed, _ = _snapshot(destination)
@@ -290,15 +305,15 @@ def verify_observer_copy(receipt: dict, fixture_deps: Path, observer_root: Path)
         raise ValueError("observer fixture-deps must contain only rust-libp2p")
     observed, source = _snapshot(dependencies / "rust-libp2p")
     original_source = (fixture_deps / "rust-libp2p" / QUIC_SOURCE).read_bytes()
-    if source != original_source + ACCESSOR:
-        raise ValueError("observer QUIC source is not the exact accessor-only patch")
+    if source != original_source.removesuffix(_DECLARATION) + SOURCE_IMPLEMENTATION:
+        raise ValueError("observer QUIC source is not the exact standard-source patch")
     if observed["files"].keys() != original["files"].keys():
         raise ValueError("observer source file membership changed")
     for relative, facts in original["files"].items():
         actual = observed["files"][relative]
         if ((relative != QUIC_SOURCE and actual != facts)
                 or actual["mode"] != facts["mode"]):
-            raise ValueError(f"non-accessor Rust source change: {relative}")
+            raise ValueError(f"out-of-recipe Rust source change: {relative}")
     if original_provenance(fixture_deps) != original:
         raise ValueError("original export changed during observer verification")
     expected = _receipt(fixture_deps, observer_root, original, observed)

@@ -29,6 +29,7 @@ class RustQuicObserverCopyTests(unittest.TestCase):
         self.checkout = self.root / "donor-checkout"
         self.checkout.mkdir()
         self.source = b"// fixture prefix\n" * 110 + observer._DECLARATION
+        self.patched_source = self.source.removesuffix(observer._DECLARATION) + observer.SOURCE_IMPLEMENTATION
         sources = {
             observer.QUIC_SOURCE: self.source,
             "Cargo.toml": b"[workspace]\n",
@@ -66,7 +67,7 @@ class RustQuicObserverCopyTests(unittest.TestCase):
     def verify(self, receipt):
         observer.verify_observer_copy(receipt, self.dependencies, self.observed_root)
 
-    def test_exact_accessor_only_full_tree_copy_and_original_archive_binding(self):
+    def test_exact_standard_source_full_tree_copy_and_original_archive_binding(self):
         with patch.object(observer.subprocess, "run", return_value=subprocess.CompletedProcess(
             [], 0, stdout=self.archive,
         )) as command:
@@ -83,7 +84,9 @@ class RustQuicObserverCopyTests(unittest.TestCase):
         self.assertEqual((self.donor / observer.QUIC_SOURCE).read_bytes(), self.source)
         copied = self.observed_root / "fixture-deps" / "rust-libp2p"
         after = (copied / observer.QUIC_SOURCE).read_bytes()
-        self.assertEqual(after, self.source + observer.ACCESSOR)
+        self.assertEqual(after, self.patched_source)
+        self.assertNotIn(b"pub fn inner", after)
+        self.assertNotIn(b"#[cfg(test)]", after)
         self.assertEqual(list((self.observed_root / "fixture-deps").iterdir()), [copied])
         self.assertEqual((self.dependencies / "go-libp2p" / "sentinel").read_bytes(),
                          b"original other donor stays untouched\n")
@@ -103,9 +106,19 @@ class RustQuicObserverCopyTests(unittest.TestCase):
                          sha256_file(copied / observer.QUIC_SOURCE))
         actual_diff = "".join(difflib.unified_diff(
             self.source.decode().splitlines(keepends=True), after.decode().splitlines(keepends=True),
-            fromfile="a/" + observer.QUIC_SOURCE, tofile="b/" + observer.QUIC_SOURCE, n=4,
+            fromfile="a/" + observer.QUIC_SOURCE, tofile="b/" + observer.QUIC_SOURCE, n=1,
         ))
-        self.assertEqual(actual_diff, observer.ACCESSOR_PATCH.decode())
+        self.assertEqual(actual_diff, observer.SOURCE_PATCH.decode())
+
+    def test_recipe_matches_proposal_implementation_without_donor_unit_module(self):
+        proposal = Path(__file__).with_name("rust_quic_source_proposal.patch").read_bytes()
+        hunk = proposal.split(b"@@ -111,4 +111,60 @@\n", 1)[1]
+        implementation, _ = hunk.split(b"+#[cfg(test)]\n", 1)
+        reconstructed = b"".join(
+            line[1:] for line in implementation.splitlines(keepends=True)
+            if line.startswith((b" ", b"+"))
+        )
+        self.assertEqual(reconstructed, observer.SOURCE_IMPLEMENTATION + b"\n")
 
     def test_original_must_match_archive_not_self_declared_receipt(self):
         with patch.object(observer.subprocess, "run", return_value=subprocess.CompletedProcess(
@@ -130,12 +143,17 @@ class RustQuicObserverCopyTests(unittest.TestCase):
         self.assertFalse(self.observed_root.exists())
 
     def test_already_patched_source_is_not_reused(self):
-        (self.donor / observer.QUIC_SOURCE).write_bytes(self.source + observer.ACCESSOR)
-        altered, _ = observer._snapshot(self.donor)
-        with patch.object(observer, "PINNED_GIT_TREE", altered["git_tree"]):
-            with self.assertRaises(ValueError):
-                self.prepare()
-        self.assertFalse(self.observed_root.exists())
+        for source in (
+            self.patched_source,
+            self.source + b"\nimpl ConnectionError { pub fn inner(&self) -> &quinn::ConnectionError { &self.0 } }\n",
+        ):
+            with self.subTest(source=source[-100:]):
+                (self.donor / observer.QUIC_SOURCE).write_bytes(source)
+                altered, _ = observer._snapshot(self.donor)
+                with patch.object(observer, "PINNED_GIT_TREE", altered["git_tree"]):
+                    with self.assertRaises(ValueError):
+                        self.prepare()
+                self.assertFalse(self.observed_root.exists())
 
     def test_original_and_observer_symlinks_and_hardlinks_are_rejected(self):
         path = self.donor / "Cargo.toml"
@@ -197,14 +215,27 @@ class RustQuicObserverCopyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.verify(forged)
 
-    def test_observed_wrong_accessor_other_file_extra_file_and_mode_are_rejected(self):
+    def test_observed_wrong_source_other_file_extra_file_and_mode_are_rejected(self):
         receipt = self.prepare()
         copied = self.observed_root / "fixture-deps" / "rust-libp2p"
-        accessor = copied / observer.QUIC_SOURCE
-        accessor.write_bytes(self.source + observer.ACCESSOR.replace(b"&self.0", b"panic!()"))
-        with self.assertRaises(ValueError):
-            self.verify(receipt)
-        accessor.write_bytes(self.source + observer.ACCESSOR)
+        target = copied / observer.QUIC_SOURCE
+        for wrong in (
+            self.patched_source.replace(b"Some(&self.0)", b"None"),
+            self.patched_source.replace(b"std::fmt::Display::fmt(&self.0, formatter)", b"write!(formatter, \"changed\")"),
+            self.patched_source + b"\n#[cfg(test)]\nmod unregistered_donor_tests {}\n",
+            self.source + b"\nimpl ConnectionError { pub fn inner(&self) -> &quinn::ConnectionError { &self.0 } }\n",
+        ):
+            with self.subTest(source=wrong[-100:]):
+                target.write_bytes(wrong)
+                with self.assertRaises(ValueError):
+                    self.verify(receipt)
+                # Updating the declared after-hashes cannot authorize another recipe.
+                observed, _ = observer._snapshot(copied)
+                forged = observer._receipt(self.dependencies, self.observed_root,
+                                           receipt["original"], observed)
+                with self.assertRaises(ValueError):
+                    self.verify(forged)
+        target.write_bytes(self.patched_source)
         original = (copied / "Cargo.toml").read_bytes()
         (copied / "Cargo.toml").write_bytes(b"changed unrelated module\n")
         with self.assertRaises(ValueError):
@@ -214,7 +245,7 @@ class RustQuicObserverCopyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify(receipt)
         (copied / "extra.rs").unlink()
-        accessor.chmod(0o755)
+        target.chmod(0o755)
         with self.assertRaises(ValueError):
             self.verify(receipt)
 

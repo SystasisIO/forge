@@ -282,7 +282,7 @@ fn normal_read_error() -> io::Error {
 }
 
 #[tokio::test]
-async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
+async fn actual_quic_standard_source_is_visible_only_in_diagnostic_copy() {
     use futures::future::{Either, join, poll_fn, select};
     use libp2p::{
         Transport,
@@ -374,6 +374,30 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
             ),
         ] {
             assert!(matches!(error, libp2p::quic::Error::Connection(_)));
+            let libp2p::quic::Error::Connection(wrapper) = &error else {
+                unreachable!()
+            };
+            let wrapper_source = wrapper
+                .source()
+                .and_then(|source| source.downcast_ref::<quinn::ConnectionError>());
+            let outer_source = error
+                .source()
+                .and_then(|source| source.downcast_ref::<quinn::ConnectionError>());
+            if QUIC_CAUSE_OBSERVER_ENABLED {
+                let source = wrapper_source.expect("copy must expose the actual standard source");
+                assert!(std::ptr::eq(
+                    source,
+                    outer_source.expect("outer standard source")
+                ));
+                assert_eq!(connection_cause(source), (cause, true));
+                assert_eq!(error.to_string(), source.to_string());
+                assert_eq!(format!("{error:>80}"), format!("{source:>80}"));
+                assert_eq!(format!("{error:.3}"), format!("{source:.3}"));
+                assert_eq!(format!("{error:#}"), format!("{source:#}"));
+            } else {
+                assert!(wrapper_source.is_none());
+                assert!(outer_source.is_none());
+            }
             let error = io::Error::other(error);
             let expected = (error.kind(), error.raw_os_error(), error.to_string());
             assert_eq!(
@@ -384,7 +408,7 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                     ("quic_connection_cause_unavailable", false)
                 }
             );
-            for prepared in [false, true] {
+            for (prepared, prior_failure) in [(false, false), (true, false), (true, true)] {
                 let evidence = Evidence::default();
                 let id = evidence
                     .connection(peer, point.clone(), NativeStack::Quic)
@@ -395,12 +419,18 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                 if prepared {
                     prepare(&evidence);
                 }
+                if prior_failure {
+                    evidence.lock().fail("earlier native failure");
+                }
                 evidence
                     .lock()
                     .native_error(Some(id), None, "muxer_inbound", &error);
                 let capture = evidence.lock();
                 let accepted = prepared && QUIC_CAUSE_OBSERVER_ENABLED;
-                assert_eq!(capture.error.is_none(), accepted);
+                assert_eq!(capture.error.is_none(), accepted && !prior_failure);
+                if prior_failure {
+                    assert_eq!(capture.error.as_deref(), Some("earlier native failure"));
+                }
                 let record = capture.events.last().unwrap();
                 assert_eq!(
                     record["kind"],
@@ -421,6 +451,11 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                     expected
                 );
             }
+            let mut deep = error;
+            for _ in 0..8 {
+                deep = io::Error::other(deep);
+            }
+            assert_eq!(native_cause(&deep), ("source_chain_limit", false));
         }
         poll_fn(|cx| Pin::new(&mut dialer_connection).poll_close(cx))
             .await
@@ -526,6 +561,11 @@ fn public_quinn_and_native_transparent_source_chains_are_bounded_and_typed() {
             reason: Vec::new().into(),
         }),
     ] {
+        let standard_source = io::Error::other(libp2p::quic::Error::Io(io::Error::other(
+            quinn::ReadError::ConnectionLost(error.clone()),
+        )));
+        assert_eq!(native_cause(&standard_source), connection_cause(&error));
+        assert!(!native_cause(&standard_source).1);
         assert!(
             !native_cause(&io::Error::new(
                 io::ErrorKind::NotConnected,

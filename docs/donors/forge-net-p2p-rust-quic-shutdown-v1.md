@@ -3,7 +3,8 @@
 ## Status And Scope
 
 Follow-up to Stage 6 PR11 on Forge `7491447cfe6fd19476afcbe5339b55663dcdacbd`.
-This note records a diagnostic investigation, not a new acceptance result.
+This note records a diagnostic investigation and the maintainer-approved local
+test recipe, not a new acceptance result.
 Original Rust QUIC shutdown remains `NOT_PROVEN`. Neither historical raw
 errors nor the separate instrumented-companion receipts are reclassified.
 No Forge runtime, wire protocol, canonical donor pin or acceptance gate changes.
@@ -45,8 +46,8 @@ Neither observation erases the original muxer error.
 
 ## Reproduction
 
-`tests/libp2p_interop/rust_fixture/quic_shutdown_tests.rs` uses only original
-public native QUIC transports, authenticates both identities and exchanges
+`tests/libp2p_interop/rust_fixture/quic_shutdown_tests.rs` uses public native
+QUIC transports, authenticates both identities and exchanges
 bytes in both directions. Three bounded cases cover each side closing first
 and both close futures completing before terminal observations. The third is
 not proof that the close operations overlap concurrently.
@@ -56,7 +57,10 @@ cargo test --locked --offline -j4 original_quic_ -- --nocapture --test-threads=1
 ```
 
 Run this from an exported `rust_fixture` with its pinned `fixture-deps`, as for
-the ordinary interop build. Tests join their own scoped futures and dispose of
+the ordinary interop build. Run the same tests in the isolated copy with
+`--features quic-cause-observer`: original muxer errors must remain opaque,
+whereas the copy must expose its own exact typed source. Stream error causes
+are never used to classify a muxer error. Tests join their own scoped futures and dispose of
 streams, connections and transports. The public transport does not expose an
 endpoint-idle/internal-task join; the diagnostic explicitly does not claim it.
 
@@ -82,10 +86,10 @@ close completed normally when it won the ordering. This isolates a diagnostic
 API limitation, not evidence of failed traffic or a Forge shutdown hang. It
 does not establish that every unknown native error is benign.
 
-## Upstream Proposal
+## Local Patch And Deferred Proposal
 
 `tests/libp2p_interop/rust_quic_source_proposal.patch` is an explicit proposal,
-not an automatically applied build patch. It makes `ConnectionError::source()`
+not a submitted upstream patch. It makes `ConnectionError::source()`
 return the actual Quinn error. `Display` delegates the original formatter,
 preserving width, precision and alternate formatting. There are no transport,
 polling, close-result, authentication or wire changes and no new accessor API.
@@ -101,18 +105,29 @@ Error reporters may display the same message at two levels. Downcasting also
 requires the consumer to use the same Quinn type/version. The actual pinned
 donor and the original exported tree remain unmodified.
 
+The maintainer approved local testing and deferred upstream submission.
+`rust_quic_observer.py` installs only the implementation hunk, not the proposal's
+unit-test module, in a separate fresh copy. Its receipt records the exact
+applied diff/hash, original and copied source graphs and the sole changed file.
+An accessor-only receipt cannot validate this recipe. The fixture uses the
+standard source chain in both builds; the copy feature marks provenance and
+selects strict native-boundary test expectations, not error classification.
+
 ## Exit Gate
 
-1. Submit the proposal and reproduction upstream; do not present the local
-   proposal as an official Rust libp2p change.
-2. After acceptance, review and pin the official revision. Adapt the fixture's
-   early opaque-error return to traverse the newly available standard source
-   chain, retaining failure for unknown causes.
+1. Keep the canonical donor untouched. Build the separate source-patched copy
+   with exact source/binary/command provenance. Do not send the patch upstream.
+2. Test both variants, retaining failure for unknown causes and strict separate
+   expectations for opaque original versus exposed copied native muxer errors.
 3. Check nonzero closes, resets, timeouts, missing owners and delayed failures;
    an accepted zero-code close still requires Prepare, exact owner and actual
    disposal/join evidence. Do not hide a native `Err` or call it `poll_close=Ok`.
-4. Run the original-donor strict matrix on the final clean Forge head. Only
-   that result can remove the original shutdown `NOT_PROVEN` classification.
+4. Run the canonical 24 original traffic cases plus four independent copied
+   shutdown cases on the final clean Forge head. Preserve original errors and
+   `NOT_PROVEN`; only the expressly scoped combined result can pass.
+5. After clean reviews and scoped acceptance, continue PR12. Future upstream
+   submission/pinning is separate work. Only a successful unmodified-donor
+   shutdown gate can remove the original `NOT_PROVEN` classification.
 
 Stage 8 remains responsible for long-duration and hostile-network proof.
 This follow-up does not implement PR12 GossipSub extensions or claim global

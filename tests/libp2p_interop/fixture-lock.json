@@ -66,13 +66,13 @@
     "rust_fixture/private_profile.rs": "00588553bc0bbc422188300d3d7c3f67349636e1d0450d7c3ef9e392cdd6f34e",
     "rust_fixture/provider.rs": "b1feb9223c6ccd2b8435de3b54f7660d8381217788e1dfd4f166f2bdaf7ab618",
     "rust_fixture/pubsub_scoring.rs": "58522fda956f83ae29f8cd7fd4f1df084de391605b0dffebd308e7037325065f",
-    "rust_fixture/pubsub_scoring/observer.rs": "17a6d9dea87a6172b7f96b9f938a842de179af9c2d07229b9910c2c66ca3ec0f",
-    "rust_fixture/pubsub_scoring/observer_tests.rs": "89eb161f91f6bd9c221adb7056ef69740617216adda438a8843f1b32668d370e",
+    "rust_fixture/pubsub_scoring/observer.rs": "f9e8c4a15b1515f11a7df532116765b5a1df35df39a6fbc0316fd4f76a7a38c4",
+    "rust_fixture/pubsub_scoring/observer_tests.rs": "85d568bde04c2ae612174fbae6bab186b26cf299dd1552a67ef71003b9a5f03e",
     "rust_fixture/pubsub_scoring/tests.rs": "9f70de68e0728748697b3287d5e208c56391ba100c5aff5d5001a01cc351dc78",
     "rust_fixture/pubsub_scoring/transport.rs": "aac8af53577107ebade5401c9e44ebe18b1cb3ddb94c9167804b57afb9d0dec0",
     "rust_fixture/pubsub_scoring/yamux_error.rs": "a9394a2f45de49f3bdff8f6135a612c7398a1f225fe38136a2dff02f9fa8c9e1",
     "rust_fixture/relay_readiness.rs": "c9ae063010f512e152a5493276ac42215c901a80aa72ed3232b53d29416801e0",
-    "rust_fixture/quic_shutdown_tests.rs": "038c9dedc9733d9dd264b91eb7e0f91a701bd2cf0e071140f0e7038b36e73a5b",
+    "rust_fixture/quic_shutdown_tests.rs": "438dae5133cf7145063b70e5093e2ecb5d523ca9c6a4c9d0fa7f285b1fb39e0d",
     "rust_fixture/rust-toolchain.toml": "32d99b8237d5832435d362c395422d69f52348a9fd1a154f70336d2991403064",
     "rust_fixture/task_owner.rs": "98ad462a07f1a72c9011ce15f87b477a959560bac502df7e79b7bd9df5eb703e",
     "rust_fixture/upgrade_observer.rs": "dbcc689b12958b775f73a0e639fb35476c3ba0b4c0a5f883ac79fb18b21a067c"
@@ -132,7 +132,7 @@
     "private_profile_cases.py": "f50c9444850d7681cb7ed2e59f583366c6e3f1ed0dea0073f92dad833019ad88",
     "private_profile_evidence.py": "7f85eb2a12cb635c9ac6610666fb381398785f2520774a975650734815b5c6eb",
     "process_lifecycle.py": "5eadfb3e092c78170df121caba30a58daa5a0c95703c9bd2a19c23ebb7995a8d",
-    "promote_stage6_acceptance.py": "e2d54648a4083e0ec48ec418e390890511f482a85fdfed3a30fd0aedc5a79678",
+    "promote_stage6_acceptance.py": "e2baa707eb51312f85a08582a5226d1c0a85dd2e0e261a462d5e8b5d0a1674c7",
     "provenance.py": "9ae5c8ffa3d9dcd646c2a5c7148e79cd5086d60ecb156d81374fda2ca00609ec",
     "provider_evidence.py": "673d8caa86a01e0ffd90ad5149059dab9aba489d5af839794e03711f1deea660",
     "pubsub_acceptance.py": "4a2dd58f58b6ba72d78421fbf5deec1dbaed4fc328a23e18bde3e09742e70f25",
@@ -144,7 +144,7 @@
     "stage6_evidence_contract.py": "a0b4ad1476518941b7b82922c26cc48adaa301dfb657239035e363a10f62f88d",
     "upgrade_evidence.py": "37dd2b768a363152e54e3a9640ec3419c10c62e03051b6891df22128ffd47532",
     "pubsub_quic_proof.py": "79ba62c023588679f576ee729bb9574104314dcc71c76071eadc83c167a1dc31",
-    "rust_quic_observer.py": "1a2067946e40910719fcff91ff2617a49fb9d73e9e7c48a52d8a8061b68cd0d1"
+    "rust_quic_observer.py": "714e6e37e317749b56a2c5b461c02d69b5d977abdb613c70969c7a53130f85f4"
   },
   "evidence_sources": {
     "donor_cases.json": "c8aeab2c5126bed10f3e046d67169e802bfda918e3d6be216895fa6ade2e54a8",
@@ -195,7 +195,7 @@
     "test_rust_upgrade_evidence.py": "cff3ea00fac6561c182eeef9b4fbb90f5d543b3f4d7588a49e56b8c347e01e17",
     "test_upgrade_evidence.py": "beed646e65c0e0c4b40a733a05f4f8a847b026fb5f033a152761023644ea671c",
     "test_pubsub_quic_proof.py": "c8066c6310c9ce7bfe003dd933186d237389a7ff9bc4770ef927f27390699838",
-    "test_rust_quic_observer.py": "8141d98b1c575e36be6a3ae4e50959c6ceb18172417460e65ec394df52747f04"
+    "test_rust_quic_observer.py": "7f8ffff664d0b54b14bd381cea77091006051a454ce5a26a788406a844ad0b0c"
   },
   "dependency_graphs": {
     "go": {

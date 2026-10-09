@@ -43,7 +43,9 @@ fn connection_cause(error: &quinn::ConnectionError) -> (&'static str, bool) {
 }
 
 fn native_cause(error: &io::Error) -> (&'static str, bool) {
+    // The feature marks copy provenance; classification uses this error's public chain only.
     let mut current: &(dyn StdError + 'static) = error;
+    let mut quic_connection = false;
     for _ in 0..8 {
         if let Some(error) = current.downcast_ref::<quinn::ConnectionError>() {
             return connection_cause(error);
@@ -58,22 +60,10 @@ fn native_cause(error: &io::Error) -> (&'static str, bool) {
         {
             return connection_cause(error);
         }
-        if let Some(libp2p::quic::Error::Connection(connection)) =
-            current.downcast_ref::<libp2p::quic::Error>()
-        {
-            #[cfg(feature = "quic-cause-observer")]
-            {
-                // Only the isolated, provenance-checked donor copy has this read-only accessor.
-                return connection_cause(connection.inner());
-            }
-            #[cfg(not(feature = "quic-cause-observer"))]
-            let _ = connection;
-            #[cfg(not(feature = "quic-cause-observer"))]
-            {
-                // The pinned donor's transparent private wrapper erases the public Quinn cause.
-                return ("quic_connection_cause_unavailable", false);
-            }
-        }
+        quic_connection |= matches!(
+            current.downcast_ref::<libp2p::quic::Error>(),
+            Some(libp2p::quic::Error::Connection(_))
+        );
         let next = if let Some(error) = current.downcast_ref::<io::Error>() {
             error
                 .get_ref()
@@ -82,7 +72,14 @@ fn native_cause(error: &io::Error) -> (&'static str, bool) {
             current.source()
         };
         let Some(next) = next else {
-            return ("unclassified", false);
+            return (
+                if quic_connection {
+                    "quic_connection_cause_unavailable"
+                } else {
+                    "unclassified"
+                },
+                false,
+            );
         };
         current = next;
     }

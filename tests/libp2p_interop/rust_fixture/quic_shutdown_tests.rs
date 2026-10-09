@@ -1,6 +1,6 @@
-//! Original-donor public-boundary probe, not PubSub acceptance evidence.
+//! Public-source boundary probe for the original donor and diagnostic copy.
 //! Setup follows rust-libp2p 22fb4c784fc55ad8b15d05fdc9f98d663107d4cb
-//! transports/quic/tests/{smoke,stream_compliance}.rs. No observer is installed.
+//! transports/quic/tests/{smoke,stream_compliance}.rs. No stream cause is borrowed.
 
 use std::{error::Error, io, panic::AssertUnwindSafe, pin::Pin, time::Duration};
 
@@ -22,6 +22,7 @@ use tokio::time::timeout;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
+const SOURCE_OBSERVER_ENABLED: bool = cfg!(feature = "quic-cause-observer");
 
 #[derive(Clone, Copy, Debug)]
 enum Order {
@@ -92,7 +93,8 @@ impl Peer {
         eprintln!(
             "{}",
             json!({
-                "probe": "original_quic_shutdown", "schedule": format!("{order:?}"),
+                "probe": "quic_shutdown_source_boundary", "schedule": format!("{order:?}"),
+                "quic_cause_observer": SOURCE_OBSERVER_ENABLED,
                 "operation": "muxer_close", "role": self.role,
                 "local_peer": self.id.to_string(), "authenticated_remote": self.remote.map(|p| p.to_string()),
                 "ok": result.is_ok(), "error": result.as_ref().err().map(error_text),
@@ -115,7 +117,8 @@ impl Peer {
         eprintln!(
             "{}",
             json!({
-                "probe": "original_quic_shutdown", "schedule": format!("{order:?}"),
+                "probe": "quic_shutdown_source_boundary", "schedule": format!("{order:?}"),
+                "quic_cause_observer": SOURCE_OBSERVER_ENABLED,
                 "operation": "muxer_inbound_after_read", "role": self.role,
                 "local_peer": self.id.to_string(), "authenticated_remote": self.remote.map(|p| p.to_string()),
                 "ok": inbound.is_ok(), "error": inbound.as_ref().err().map(error_text),
@@ -123,10 +126,9 @@ impl Peer {
                 "public_quinn_cause": inbound.as_ref().err().and_then(|e| public_cause(e)).map(|e| format!("{e:?}")),
             })
         );
-        assert!(matches!(&inbound, Err(quic::Error::Connection(_))));
-        assert!(
-            public_cause(inbound.as_ref().err().unwrap()).is_none(),
-            "original muxer wrapper must not borrow this or another stream's typed cause"
+        assert_muxer_source(
+            inbound.as_ref().err().expect("native inbound error"),
+            locally_closed,
         );
     }
 
@@ -145,7 +147,8 @@ impl Peer {
         eprintln!(
             "{}",
             json!({
-                "probe": "original_quic_shutdown", "schedule": format!("{order:?}"),
+                "probe": "quic_shutdown_source_boundary", "schedule": format!("{order:?}"),
+                "quic_cause_observer": SOURCE_OBSERVER_ENABLED,
                 "operation": "stream_read", "role": self.role, "local_peer": self.id.to_string(),
                 "authenticated_remote": self.remote.map(|p| p.to_string()),
                 "ownership": "stream_returned_by_this_retained_native_connection",
@@ -157,17 +160,8 @@ impl Peer {
                 "typed_connection_cause": cause.map(|e| format!("{e:?}")),
             })
         );
-        let cause = cause.expect("original stream must expose direct ReadError::ConnectionLost");
-        match locally_closed {
-            Some(true) => assert_eq!(cause, &quinn::ConnectionError::LocallyClosed),
-            Some(false) => assert!(matches!(cause,
-                quinn::ConnectionError::ApplicationClosed(close) if close.error_code.into_inner() == 0
-            )),
-            None => assert!(
-                matches!(cause, quinn::ConnectionError::LocallyClosed)
-                    || matches!(cause, quinn::ConnectionError::ApplicationClosed(close) if close.error_code.into_inner() == 0)
-            ),
-        }
+        let cause = cause.expect("stream must expose direct ReadError::ConnectionLost");
+        assert_terminal_cause(cause, locally_closed);
         let read_error = read.as_ref().unwrap_err();
         assert_eq!(read_error.kind(), io::ErrorKind::NotConnected);
         assert_eq!(read_error.raw_os_error(), None);
@@ -183,7 +177,8 @@ impl Peer {
             eprintln!(
                 "{}",
                 json!({
-                    "probe": "original_quic_shutdown", "schedule": format!("{order:?}"),
+                    "probe": "quic_shutdown_source_boundary", "schedule": format!("{order:?}"),
+                    "quic_cause_observer": SOURCE_OBSERVER_ENABLED,
                     "operation": "stream_close", "role": self.role,
                     "ok": result.is_ok(), "error": result.as_ref().err().map(error_text),
                 })
@@ -231,8 +226,45 @@ fn public_cause<'a>(mut error: &'a (dyn Error + 'static)) -> Option<&'a quinn::C
 fn check_close(result: Result<(), quic::Error>) {
     // Remote/simultaneous poll_close is an observation, not an Ok-only premise.
     if let Err(error) = result {
-        assert!(matches!(&error, quic::Error::Connection(_)), "{error:?}");
-        assert!(public_cause(&error).is_none());
+        assert_muxer_source(&error, None);
+    }
+}
+
+fn assert_muxer_source(error: &quic::Error, locally_closed: Option<bool>) {
+    let quic::Error::Connection(wrapper) = error else {
+        panic!("unexpected native error: {error:?}")
+    };
+    if SOURCE_OBSERVER_ENABLED {
+        let source = wrapper
+            .source()
+            .and_then(|source| source.downcast_ref::<quinn::ConnectionError>())
+            .expect("diagnostic copy must expose this muxer's actual standard source");
+        let outer = error
+            .source()
+            .and_then(|source| source.downcast_ref::<quinn::ConnectionError>())
+            .expect("outer native error standard source");
+        assert!(std::ptr::eq(source, outer));
+        assert_eq!(public_cause(error), Some(source));
+        assert_terminal_cause(source, locally_closed);
+        assert_eq!(error.to_string(), source.to_string());
+    } else {
+        assert!(
+            public_cause(error).is_none(),
+            "original muxer source remains opaque"
+        );
+    }
+}
+
+fn assert_terminal_cause(cause: &quinn::ConnectionError, locally_closed: Option<bool>) {
+    match locally_closed {
+        Some(true) => assert_eq!(cause, &quinn::ConnectionError::LocallyClosed),
+        Some(false) => assert!(matches!(cause,
+            quinn::ConnectionError::ApplicationClosed(close) if close.error_code.into_inner() == 0
+        )),
+        None => assert!(
+            matches!(cause, quinn::ConnectionError::LocallyClosed)
+                || matches!(cause, quinn::ConnectionError::ApplicationClosed(close) if close.error_code.into_inner() == 0)
+        ),
     }
 }
 
@@ -399,7 +431,8 @@ async fn probe(order: Order) {
     eprintln!(
         "{}",
         json!({
-            "probe": "original_quic_shutdown", "schedule": format!("{order:?}"),
+            "probe": "quic_shutdown_source_boundary", "schedule": format!("{order:?}"),
+            "quic_cause_observer": SOURCE_OBSERVER_ENABLED,
             "operation": "test_owner_join", "ok": cleanup_ok,
             "streams_and_connections_released": owners_released,
             "test_tasks_spawned": 0, "transports_dropped": 2,
