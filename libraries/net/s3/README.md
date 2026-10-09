@@ -121,6 +121,9 @@ dispatch raises `canceled`; a passed deadline raises `deadline`. Stopped or
 full admission raises `stopped`/`busy`. Known 404, denied access and failed write
 conditions map to `not_found`, `denied` and `conflict`. AWS raw error messages,
 credentials and full signed URLs are never attached to errors.
+Unexpected backend failures are sanitized and use the same typed boundary:
+`service` before possible mutation and `unknown_outcome` after it. Existing
+Forge errors retain their type, source location and redacted context.
 
 Each request has finite connection/request timeouts and an operation deadline.
 SDK progress callbacks observe caller stop tokens, pool stop, client stop and
@@ -136,6 +139,9 @@ may have succeeded. Failed cleanup, a lost begin response or a process crash
 can leave uploads behind. Configure the bucket's incomplete-upload lifecycle
 and keep an application recovery journal; the client does not claim to clean
 every orphan. Multipart errors include the known upload identity for recovery.
+Their context also records whether cleanup was attempted and confirmed, and
+whether completion had been attempted. Failed cleanup does not replace the
+original failure.
 
 ## Credentials and URLs
 

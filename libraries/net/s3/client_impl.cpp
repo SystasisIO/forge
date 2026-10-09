@@ -1,5 +1,7 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
+
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/core/client/DefaultRetryStrategy.h>
@@ -50,6 +52,7 @@ module forge.net.s3.client;
 
 import forge.asio.compute;
 
+#include "details/backend_call.hxx"
 #include "details/client_impl.hxx"
 
 namespace forge::net::s3 {
@@ -75,7 +78,7 @@ void validate_object(const object& target, bool version_allowed = true) {
        target.bucket.find("..") != std::string::npos || target.bucket.find(".-") != std::string::npos ||
        target.bucket.find("-.") != std::string::npos || target.key.find('\0') != std::string::npos ||
        target.version.find('\0') != std::string::npos) {
-      throw exceptions::invalid_options{"S3 object identity is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 object identity is invalid");
    }
 }
 
@@ -83,14 +86,14 @@ void validate_write(const write_options& write) {
    if (write.content_type.empty() || write.content_type.size() > 256 ||
        write.content_type.find_first_of("\r\n") != std::string::npos || write.if_match.size() > 1024 ||
        write.if_match.find_first_of("\r\n") != std::string::npos || (write.if_absent && !write.if_match.empty())) {
-      throw exceptions::invalid_options{"S3 write options are invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 write options are invalid");
    }
 }
 
 void validate_session(const multipart& session) {
    validate_object(session.target, false);
    if (session.id.empty() || session.id.size() > 2048 || session.id.find('\0') != std::string::npos) {
-      throw exceptions::invalid_options{"S3 multipart identity is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 multipart identity is invalid");
    }
 }
 
@@ -127,11 +130,11 @@ template <typename Result> metadata describe(const Result& result, std::uint64_t
 void validate_range(const read_options& read, std::uint64_t maximum) {
    if (read.max_bytes == 0 || read.max_bytes > maximum || read.if_match.size() > 1024 ||
        read.if_match.find_first_of("\r\n") != std::string::npos) {
-      throw exceptions::invalid_options{"S3 read limit or condition is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 read limit or condition is invalid");
    }
    if (read.range && (read.range->size == 0 || read.range->size > read.max_bytes ||
                       read.range->offset > std::numeric_limits<std::uint64_t>::max() - read.range->size)) {
-      throw exceptions::invalid_options{"S3 byte range is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 byte range is invalid");
    }
 }
 
@@ -152,7 +155,8 @@ void check_read(const Aws::S3::Model::GetObjectResult& result, const read_option
                        !string(result.GetContentRange())
                             .starts_with("bytes " + std::to_string(read.range->offset) + "-" +
                                          std::to_string(read.range->offset + read.range->size - 1) + "/")))) {
-      throw exceptions::transport{"S3 response length or Content-Range does not match the requested content"};
+      FORGE_THROW_EXCEPTION(exceptions::transport,
+                            "S3 response length or Content-Range does not match the requested content");
    }
 }
 
@@ -218,7 +222,7 @@ struct client::impl::backend {
          if (value.access_key.empty() || value.secret_key.empty() || value.access_key.size() > 256 ||
              value.secret_key.size() > 4096 || value.session_token.size() > 16384 ||
              (value.expires && *value.expires <= std::chrono::system_clock::now())) {
-            throw exceptions::invalid_options{"S3 credentials are absent, expired, or exceed limits"};
+            FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 credentials are absent, expired, or exceed limits");
          }
          const auto lock = std::scoped_lock{mutex};
          identity = std::move(value);
@@ -235,7 +239,7 @@ struct client::impl::backend {
       void require_valid() {
          const auto lock = std::scoped_lock{mutex};
          if (identity.expires && *identity.expires <= std::chrono::system_clock::now()) {
-            throw exceptions::denied{"S3 credentials expired before request signing"};
+            FORGE_THROW_EXCEPTION(exceptions::denied, "S3 credentials expired before request signing");
          }
       }
 
@@ -261,18 +265,21 @@ struct client::impl::backend {
             bytes = std::move(*value);
             size = bytes.size();
             if (size > memory_limit || range) {
-               throw exceptions::limit{"S3 memory upload exceeds its limit"};
+               FORGE_THROW_EXCEPTION(exceptions::limit, "S3 memory upload exceeds its limit");
             }
          } else {
             const auto& path = std::get<std::filesystem::path>(input);
             file.open(path, std::ios::binary | std::ios::ate);
-            if (!file || file.tellg() < 0 || !std::filesystem::is_regular_file(path)) {
-               throw exceptions::io{"S3 upload source is not a readable regular file"};
+            std::error_code error;
+            const auto regular = std::filesystem::is_regular_file(path, error);
+            if (!file || file.tellg() < 0 || !regular || error) {
+               FORGE_THROW_EXCEPTION(exceptions::io, "S3 upload source is not a readable regular file",
+                                     forge::exceptions::ctx("filesystem_status", error.value()));
             }
             size = static_cast<std::uint64_t>(file.tellg());
             if (range) {
                if (range->size == 0 || range->offset > size || range->size > size - range->offset) {
-                  throw exceptions::invalid_options{"S3 source range exceeds the file"};
+                  FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 source range exceeds the file");
                }
                base = range->offset;
                size = range->size;
@@ -280,7 +287,7 @@ struct client::impl::backend {
             file.seekg(static_cast<std::streamoff>(base));
          }
          if (size > maximum || size > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
-            throw exceptions::limit{"S3 upload source exceeds its limit"};
+            FORGE_THROW_EXCEPTION(exceptions::limit, "S3 upload source exceeds its limit");
          }
          setg(buffer.data(), buffer.data(), buffer.data());
       }
@@ -359,7 +366,7 @@ struct client::impl::backend {
             file = std::fopen(temporary.string().c_str(), "wbx");
          }
          if (file == nullptr) {
-            throw exceptions::io{"S3 download temporary file cannot be created"};
+            FORGE_THROW_EXCEPTION(exceptions::io, "S3 download temporary file cannot be created");
          }
       }
 
@@ -401,7 +408,7 @@ struct client::impl::backend {
 
       void publish(const std::filesystem::path& destination) {
          if (!file || std::fflush(file) != 0) {
-            throw exceptions::io{"S3 download flush failed"};
+            FORGE_THROW_EXCEPTION(exceptions::io, "S3 download flush failed");
          }
 #ifdef _WIN32
          const auto synced = _commit(_fileno(file));
@@ -411,12 +418,12 @@ struct client::impl::backend {
          const auto closed = std::fclose(file);
          file = nullptr;
          if (synced != 0 || closed != 0) {
-            throw exceptions::io{"S3 download sync failed"};
+            FORGE_THROW_EXCEPTION(exceptions::io, "S3 download sync failed");
          }
          std::error_code error;
          std::filesystem::rename(temporary, destination, error);
          if (error) {
-            throw exceptions::io{"S3 download destination cannot be published"};
+            FORGE_THROW_EXCEPTION(exceptions::io, "S3 download destination cannot be published");
          }
          temporary.clear();
       }
@@ -513,9 +520,10 @@ struct client::impl::backend {
    template <typename Outcome> static void check(const Outcome& outcome, activity& call) {
       if (call.response_exceeded.load()) {
          if (call.mutating && call.started.load()) {
-            throw exceptions::unknown_outcome{"S3 mutation response exceeded the control response limit"};
+            FORGE_THROW_EXCEPTION(exceptions::unknown_outcome,
+                                  "S3 mutation response exceeded the control response limit");
          }
-         throw exceptions::limit{"S3 control response exceeded 1 MiB"};
+         FORGE_THROW_EXCEPTION(exceptions::limit, "S3 control response exceeded 1 MiB");
       }
       if (outcome.IsSuccess()) {
          return;
@@ -523,33 +531,35 @@ struct client::impl::backend {
       const auto& error = outcome.GetError();
       const auto status = static_cast<unsigned>(error.GetResponseCode());
       if (status == 404) {
-         throw exceptions::not_found{"S3 object or upload does not exist"};
+         FORGE_THROW_EXCEPTION(exceptions::not_found, "S3 object or upload does not exist");
       }
       if (status == 401 || status == 403) {
-         throw exceptions::denied{"S3 request was denied"};
+         FORGE_THROW_EXCEPTION(exceptions::denied, "S3 request was denied");
       }
       if (status == 409 || status == 412) {
-         throw exceptions::conflict{"S3 write condition failed"};
+         FORGE_THROW_EXCEPTION(exceptions::conflict, "S3 write condition failed");
       }
       if (status >= 400 && status < 500 && status != 408 && status != 429) {
-         throw exceptions::service{"S3 rejected the request", {forge::exceptions::ctx("status", status)}};
+         FORGE_THROW_EXCEPTION(exceptions::service, "S3 rejected the request",
+                               forge::exceptions::ctx("status", status));
       }
       if (call.mutating && call.started.load()) {
-         throw exceptions::unknown_outcome{"S3 mutation has no confirmed result; reconcile before retry"};
+         FORGE_THROW_EXCEPTION(exceptions::unknown_outcome,
+                               "S3 mutation has no confirmed result; reconcile before retry");
       }
       call.check();
       if (status < 400) {
-         throw exceptions::transport{"S3 transport or response integrity failed"};
+         FORGE_THROW_EXCEPTION(exceptions::transport, "S3 transport or response integrity failed");
       }
-      throw exceptions::service{"S3 service failed", {forge::exceptions::ctx("status", status)}};
+      FORGE_THROW_EXCEPTION(exceptions::service, "S3 service failed", forge::exceptions::ctx("status", status));
    }
 
    void check_sink(const sink& output) {
       if (output.exceeded) {
-         throw exceptions::limit{"S3 response exceeds the configured byte limit"};
+         FORGE_THROW_EXCEPTION(exceptions::limit, "S3 response exceeds the configured byte limit");
       }
       if (output.failed) {
-         throw exceptions::io{"S3 download file write failed"};
+         FORGE_THROW_EXCEPTION(exceptions::io, "S3 download file write failed");
       }
    }
 };
@@ -576,7 +586,7 @@ client::impl::impl(asio::compute::executor executor, config options)
        _options.operation_timeout.count() <= 0 || _options.connect_timeout > std::chrono::minutes{5} ||
        _options.request_timeout > std::chrono::minutes{10} || _options.operation_timeout > std::chrono::hours{24} ||
        _options.max_presign_lifetime.count() <= 0 || _options.max_presign_lifetime > std::chrono::hours{24 * 7}) {
-      throw exceptions::invalid_options{"S3 client configuration is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 client configuration is invalid");
    }
    _backend = std::make_unique<backend>(_options);
    _options.identity = {};
@@ -587,7 +597,7 @@ client::impl::~impl() = default;
 client::impl::activity::activity(std::shared_ptr<impl> value, request_options request, bool mutation)
     : owner{std::move(value)}, options{std::move(request)}, mutating{mutation} {
    if (!owner) {
-      throw exceptions::stopped{"S3 client is empty"};
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "S3 client is empty");
    }
    deadline = std::chrono::steady_clock::now() + owner->_options.operation_timeout;
    if (options.deadline) {
@@ -595,11 +605,11 @@ client::impl::activity::activity(std::shared_ptr<impl> value, request_options re
    }
    const auto lock = std::scoped_lock{owner->_mutex};
    if (owner->_closed) {
-      throw exceptions::stopped{"S3 client is stopped"};
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "S3 client is stopped");
    }
    check();
    if (owner->_active == owner->_options.max_calls) {
-      throw exceptions::busy{"S3 client call limit reached"};
+      FORGE_THROW_EXCEPTION(exceptions::busy, "S3 client call limit reached");
    }
    ++owner->_active;
 }
@@ -625,19 +635,19 @@ bool client::impl::activity::interrupted() const noexcept {
 void client::impl::activity::check() const {
    if (interrupted()) {
       if (mutating && started.load()) {
-         throw exceptions::unknown_outcome{"S3 mutation was interrupted after dispatch"};
+         FORGE_THROW_EXCEPTION(exceptions::unknown_outcome, "S3 mutation was interrupted after dispatch");
       }
       if (std::chrono::steady_clock::now() >= deadline) {
-         throw exceptions::deadline{"S3 operation deadline reached"};
+         FORGE_THROW_EXCEPTION(exceptions::deadline, "S3 operation deadline reached");
       }
-      throw exceptions::canceled{"S3 operation was canceled"};
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "S3 operation was canceled");
    }
 }
 
 void client::impl::update(credentials identity) {
    const auto lock = std::scoped_lock{_mutex};
    if (_closed) {
-      throw exceptions::stopped{"S3 client is stopped"};
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "S3 client is stopped");
    }
    const auto signing_lock = std::scoped_lock{_backend->signing_mutex};
    _backend->identity->update(std::move(identity));
@@ -670,7 +680,7 @@ boost::asio::awaitable<void> client::impl::drain(std::shared_ptr<impl> owner) {
    {
       const auto lock = std::scoped_lock{owner->_mutex};
       if (owner->_draining) {
-         throw exceptions::busy{"S3 shutdown is already being awaited"};
+         FORGE_THROW_EXCEPTION(exceptions::busy, "S3 shutdown is already being awaited");
       }
       owner->_draining = true;
       wait = owner->_active != 0;
@@ -697,14 +707,14 @@ boost::asio::awaitable<void> client::impl::drain(std::shared_ptr<impl> owner) {
    if (!submitted) {
       const auto lock = std::scoped_lock{owner->_mutex};
       owner->_draining = false;
-      throw exceptions::busy{"S3 SDK shutdown needs one dedicated worker slot"};
+      FORGE_THROW_EXCEPTION(exceptions::busy, "S3 SDK shutdown needs one dedicated worker slot");
    }
    try {
       co_await std::move(*submitted).wait();
    } catch (...) {
       const auto lock = std::scoped_lock{owner->_mutex};
       owner->_draining = false;
-      throw;
+      detail::backend_call([] { throw; });
    }
    const auto lock = std::scoped_lock{owner->_mutex};
    owner->_draining = false;
@@ -719,7 +729,7 @@ metadata client::impl::head(const object& target, activity& call) {
    backend::check(outcome, call);
    const auto& result = outcome.GetResult();
    if (result.GetContentLength() < 0) {
-      throw exceptions::service{"S3 returned a negative object size"};
+      FORGE_THROW_EXCEPTION(exceptions::service, "S3 returned a negative object size");
    }
    return describe(result, static_cast<std::uint64_t>(result.GetContentLength()));
 }
@@ -770,7 +780,7 @@ signed_url client::impl::presign(const object& target, std::chrono::seconds life
    validate_object(target, false);
    if (lifetime.count() <= 0 || lifetime > _options.max_presign_lifetime ||
        (verb != method::get && verb != method::put)) {
-      throw exceptions::invalid_options{"S3 signing lifetime or method is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 signing lifetime or method is invalid");
    }
    call.check();
    const auto signing_lock = std::scoped_lock{_backend->signing_mutex};
@@ -778,14 +788,14 @@ signed_url client::impl::presign(const object& target, std::chrono::seconds life
    const auto expires = _backend->identity->expiry(now + lifetime);
    lifetime = std::chrono::duration_cast<std::chrono::seconds>(expires - now);
    if (lifetime.count() <= 0) {
-      throw exceptions::denied{"S3 credentials expire before the requested URL can be used"};
+      FORGE_THROW_EXCEPTION(exceptions::denied, "S3 credentials expire before the requested URL can be used");
    }
    auto url = _backend->signing->GeneratePresignedUrl(aws_string(target.bucket), aws_string(target.key),
                                                       verb == method::get ? Aws::Http::HttpMethod::HTTP_GET
                                                                           : Aws::Http::HttpMethod::HTTP_PUT,
                                                       static_cast<std::uint64_t>(lifetime.count()));
    if (url.empty()) {
-      throw exceptions::service{"S3 URL signing failed"};
+      FORGE_THROW_EXCEPTION(exceptions::service, "S3 URL signing failed");
    }
    return {crypto::core::secret_string{string(url)}, now + lifetime};
 }
@@ -809,12 +819,12 @@ part client::impl::upload(const multipart& session, std::uint32_t number,
                           std::optional<byte_range> range, activity& call) {
    validate_session(session);
    if (number == 0 || number > 10000) {
-      throw exceptions::invalid_options{"S3 multipart part number is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 multipart part number is invalid");
    }
    auto source =
        std::make_shared<backend::source>(std::move(input), range, _options.part_bytes, _options.max_memory_bytes, call);
    if (source->size == 0) {
-      throw exceptions::invalid_options{"S3 multipart part is empty"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 multipart part is empty");
    }
    auto body = Aws::MakeShared<Aws::IOStream>("forge.s3", source.get());
    Aws::S3::Model::UploadPartRequest request;
@@ -832,7 +842,7 @@ part client::impl::upload(const multipart& session, std::uint32_t number,
 part_page client::impl::parts(const multipart& session, std::uint32_t after, std::size_t limit, activity& call) {
    validate_session(session);
    if (after > 10000 || limit == 0 || limit > 1000) {
-      throw exceptions::invalid_options{"S3 part listing bounds are invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 part listing bounds are invalid");
    }
    Aws::S3::Model::ListPartsRequest request;
    set_object(request, session.target);
@@ -847,7 +857,7 @@ part_page client::impl::parts(const multipart& session, std::uint32_t after, std
       if (value.GetPartNumber() <= static_cast<int>(after) || value.GetPartNumber() > 10000 || value.GetSize() < 0 ||
           page.parts.size() >= limit ||
           (!page.parts.empty() && value.GetPartNumber() <= static_cast<int>(page.parts.back().number))) {
-         throw exceptions::service{"S3 returned an invalid part listing"};
+         FORGE_THROW_EXCEPTION(exceptions::service, "S3 returned an invalid part listing");
       }
       page.parts.push_back({static_cast<std::uint32_t>(value.GetPartNumber()),
                             static_cast<std::uint64_t>(value.GetSize()), string(value.GetETag())});
@@ -855,7 +865,7 @@ part_page client::impl::parts(const multipart& session, std::uint32_t after, std
    if (outcome.GetResult().GetIsTruncated()) {
       const auto next = outcome.GetResult().GetNextPartNumberMarker();
       if (next <= static_cast<int>(after) || next > 10000) {
-         throw exceptions::service{"S3 part listing cursor did not advance"};
+         FORGE_THROW_EXCEPTION(exceptions::service, "S3 part listing cursor did not advance");
       }
       page.next = static_cast<std::uint32_t>(next);
    }
@@ -867,7 +877,7 @@ metadata client::impl::complete(const multipart& session, std::vector<part> part
    validate_session(session);
    validate_write(conditions);
    if (parts.empty() || parts.size() > 10000) {
-      throw exceptions::invalid_options{"S3 completion part count is invalid"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 completion part count is invalid");
    }
    std::sort(parts.begin(), parts.end(),
              [](const part& left, const part& right) { return left.number < right.number; });
@@ -878,7 +888,7 @@ metadata client::impl::complete(const multipart& session, std::vector<part> part
       if (value.number != index + 1 || value.etag.empty() || value.etag.size() > 1024 ||
           value.size > _options.part_bytes || value.size > _options.max_object_bytes - size ||
           (index + 1 < parts.size() && value.size < 5 * 1024 * 1024)) {
-         throw exceptions::invalid_options{"S3 completion parts are invalid or exceed limits"};
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 completion parts are invalid or exceed limits");
       }
       size += value.size;
       Aws::S3::Model::CompletedPart native;
@@ -918,7 +928,7 @@ metadata client::impl::put(const object& target, std::variant<std::vector<std::b
                                                    _options.max_memory_bytes, call);
    if (source->size < _options.multipart_threshold) {
       if (source->size > 5ULL * 1024 * 1024 * 1024) {
-         throw exceptions::limit{"S3 single upload exceeds 5 GiB"};
+         FORGE_THROW_EXCEPTION(exceptions::limit, "S3 single upload exceeds 5 GiB");
       }
       auto body = Aws::MakeShared<Aws::IOStream>("forge.s3", source.get());
       Aws::S3::Model::PutObjectRequest request;
@@ -935,7 +945,8 @@ metadata client::impl::put(const object& target, std::variant<std::vector<std::b
       return result;
    }
    if ((source->size + _options.part_bytes - 1) / _options.part_bytes > 10000) {
-      throw exceptions::limit{"S3 automatic multipart exceeds 10000 parts; configure a larger part size"};
+      FORGE_THROW_EXCEPTION(exceptions::limit,
+                            "S3 automatic multipart exceeds 10000 parts; configure a larger part size");
    }
    auto session = begin(target, write, call);
    auto completed = std::vector<part>{};
@@ -950,7 +961,7 @@ metadata client::impl::put(const object& target, std::variant<std::vector<std::b
          stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
          if (static_cast<std::size_t>(stream.gcount()) != bytes.size()) {
             call.check();
-            throw exceptions::io{"S3 multipart source ended early"};
+            FORGE_THROW_EXCEPTION(exceptions::io, "S3 multipart source ended early");
          }
          remaining -= bytes.size();
          completed.push_back(
@@ -962,25 +973,31 @@ metadata client::impl::put(const object& target, std::variant<std::vector<std::b
       return result;
    } catch (...) {
       const auto original = std::current_exception();
+      auto cleanup_attempted = false;
+      auto cleanup_confirmed = false;
       if (!completing) {
-         Aws::S3::Model::AbortMultipartUploadRequest cleanup;
-         set_object(cleanup, session.target);
-         cleanup.SetUploadId(aws_string(session.id));
-         // One finite best-effort cleanup call. Failed cleanup needs bucket lifecycle/recovery.
-         auto output = std::make_shared<backend::response>(call.response_exceeded);
-         cleanup.SetResponseStreamFactory([output] { return Aws::New<Aws::IOStream>("forge.s3", output.get()); });
          try {
-            static_cast<void>(_backend->client->AbortMultipartUpload(cleanup));
+            Aws::S3::Model::AbortMultipartUploadRequest cleanup;
+            set_object(cleanup, session.target);
+            cleanup.SetUploadId(aws_string(session.id));
+            // One finite best-effort cleanup call. Failed cleanup needs bucket lifecycle/recovery.
+            auto output = std::make_shared<backend::response>(call.response_exceeded);
+            cleanup.SetResponseStreamFactory([output] { return Aws::New<Aws::IOStream>("forge.s3", output.get()); });
+            cleanup_attempted = true;
+            cleanup_confirmed = _backend->client->AbortMultipartUpload(cleanup).IsSuccess();
          } catch (...) {
          }
       }
       try {
-         std::rethrow_exception(original);
+         return detail::backend_call([&]() -> metadata { std::rethrow_exception(original); }, &call.started);
       } catch (forge::exceptions::base& error) {
          error.append_context("multipart session needs reconciliation",
                               {forge::exceptions::ctx("upload_id", session.id),
                                forge::exceptions::ctx("bucket", session.target.bucket),
-                               forge::exceptions::ctx("key", session.target.key)});
+                               forge::exceptions::ctx("key", session.target.key),
+                               forge::exceptions::ctx("cleanup_attempted", cleanup_attempted),
+                               forge::exceptions::ctx("cleanup_confirmed", cleanup_confirmed),
+                               forge::exceptions::ctx("completion_attempted", completing)});
          throw;
       }
    }

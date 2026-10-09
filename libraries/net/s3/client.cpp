@@ -1,5 +1,7 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
+
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <coroutine>
@@ -19,12 +21,13 @@ module forge.net.s3.client;
 
 import forge.asio.compute;
 
+#include "details/backend_call.hxx"
 #include "details/client_impl.hxx"
 
 namespace forge::net::s3 {
 
 client::client(asio::compute::executor executor, config options)
-    : _impl{std::make_shared<impl>(std::move(executor), std::move(options))} {}
+    : _impl{detail::backend_call([&] { return std::make_shared<impl>(std::move(executor), std::move(options)); })} {}
 
 client::~client() {
    request_stop();
@@ -140,9 +143,9 @@ boost::asio::awaitable<void> client::abort(multipart session, request_options op
 
 void client::update_credentials(credentials identity) {
    if (!_impl) {
-      throw exceptions::stopped{"S3 client is empty"};
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "S3 client is empty");
    }
-   _impl->update(std::move(identity));
+   detail::backend_call([&] { _impl->update(std::move(identity)); });
 }
 void client::request_stop() noexcept {
    if (_impl) {

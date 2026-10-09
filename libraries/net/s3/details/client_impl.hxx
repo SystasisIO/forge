@@ -54,10 +54,11 @@ struct client::impl : std::enable_shared_from_this<client::impl> {
              [owner, call, work = std::move(work)](asio::compute::context& context) mutable -> result_type {
                 call->worker_stop = context.stop_token();
                 call->check();
-                return std::invoke(work, *owner, *call);
+                return detail::backend_call([&] { return std::invoke(work, *owner, *call); },
+                                            call->mutating ? &call->started : nullptr);
              });
          if (!submitted) {
-            throw exceptions::busy{"S3 blocking executor is full"};
+            FORGE_THROW_EXCEPTION(exceptions::busy, "S3 blocking executor is full");
          }
          if constexpr (std::is_void_v<result_type>) {
             co_await std::move(*submitted).wait();
@@ -66,12 +67,12 @@ struct client::impl : std::enable_shared_from_this<client::impl> {
          }
       } catch (const asio::exceptions::canceled&) {
          if (mutating && call->started.load()) {
-            throw exceptions::unknown_outcome{
-                "S3 mutation was interrupted; reconcile the object or upload before retry"};
+            FORGE_THROW_EXCEPTION(exceptions::unknown_outcome,
+                                  "S3 mutation was interrupted; reconcile the object or upload before retry");
          }
-         throw exceptions::canceled{"S3 operation was canceled before a confirmed result"};
+         FORGE_THROW_EXCEPTION(exceptions::canceled, "S3 operation was canceled before a confirmed result");
       } catch (const asio::exceptions::rejected&) {
-         throw exceptions::stopped{"S3 blocking executor is stopped"};
+         FORGE_THROW_EXCEPTION(exceptions::stopped, "S3 blocking executor is stopped");
       }
    }
 

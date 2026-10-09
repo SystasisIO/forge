@@ -7,6 +7,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <forge/exceptions/macros.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -17,12 +18,16 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <source_location>
 #include <stop_token>
 #include <string>
 #include <vector>
+#include <utility>
 
 import forge.asio.compute;
 import forge.net.s3.client;
+
+#include "../../libraries/net/s3/details/backend_call.hxx"
 
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
@@ -35,13 +40,97 @@ void require(bool value, const char* message) {
    }
 }
 
-template <typename Error, typename Work> asio::awaitable<void> expect(Work work) {
+template <typename Error> void check_error(const Error& error) {
+   require(std::string_view{error.code().category().name()} == "forge.net.s3", "S3 error category was lost");
+   require(error.code().value() == static_cast<int>(Error::value), "S3 error code does not match its type");
+   require(error.location().line() != 0 &&
+               std::string_view{error.location().file_name()}.find("net/s3/") != std::string_view::npos,
+           "S3 error source location was lost");
+}
+
+template <typename Error, typename Work>
+asio::awaitable<void> expect(Work work, std::function<void(const Error&)> inspect = {}) {
    try {
       co_await work();
-   } catch (const Error&) {
+   } catch (const Error& error) {
+      check_error(error);
+      if (inspect) {
+         inspect(error);
+      }
       co_return;
    }
    throw std::runtime_error{"expected typed S3 exception was not raised"};
+}
+
+void backend_failures() {
+   auto observed = false;
+   try {
+      forge::net::s3::detail::backend_call([] { throw std::runtime_error{"private SDK URL and credentials"}; });
+   } catch (const s3::exceptions::service& error) {
+      check_error(error);
+      require(std::string_view{error.what()}.find("private SDK") == std::string_view::npos,
+              "raw backend diagnostics escaped sanitization");
+      observed = true;
+   }
+   require(observed, "unexpected backend read error was not typed");
+
+   observed = false;
+   std::atomic<bool> started{false};
+   auto side_effects = 0;
+   try {
+      forge::net::s3::detail::backend_call(
+          [&] {
+             ++side_effects;
+             started.store(true);
+             throw std::runtime_error{"private SDK URL and credentials"};
+          },
+          &started);
+   } catch (const s3::exceptions::unknown_outcome& error) {
+      check_error(error);
+      require(std::string_view{error.what()}.find("private SDK") == std::string_view::npos,
+              "unknown mutation leaked raw backend diagnostics");
+      observed = true;
+   }
+   require(observed && side_effects == 1, "unexpected mutation failure was retried or lost uncertainty");
+
+   observed = false;
+   started.store(false);
+   try {
+      forge::net::s3::detail::backend_call([] { throw 7; }, &started);
+   } catch (const s3::exceptions::service& error) {
+      check_error(error);
+      observed = true;
+   }
+   require(observed, "unexpected failure before dispatch became an unknown mutation");
+
+   observed = false;
+   const auto location = std::source_location::current();
+   try {
+      forge::net::s3::detail::backend_call([&] {
+         FORGE_THROW_EXCEPTION(s3::exceptions::denied, "typed fixture failure",
+                               forge::exceptions::secret("identity", "test-secret"));
+      });
+   } catch (const s3::exceptions::denied& error) {
+      require(error.location().line() > location.line() &&
+                  std::string_view{error.location().file_name()} == location.file_name(),
+              "backend boundary replaced the typed error source location");
+      require(error.context().size() == 1 && error.context().front().redacted &&
+                  std::string_view{error.what()}.find("test-secret") == std::string_view::npos,
+              "backend boundary replaced typed redacted context");
+      observed = true;
+   }
+   require(observed, "backend boundary replaced an existing Forge error type");
+}
+
+bool frame_has(const forge::exceptions::base& error, std::string_view key, std::string_view value) {
+   for (const auto& frame : error.context_frames()) {
+      for (const auto& field : frame.context) {
+         if (field.key == key && field.value == value) {
+            return true;
+         }
+      }
+   }
+   return false;
 }
 
 struct endpoint : std::enable_shared_from_this<endpoint> {
@@ -53,6 +142,8 @@ struct endpoint : std::enable_shared_from_this<endpoint> {
    unsigned unknowns = 0;
    unsigned signed_requests = 0;
    bool fail_part = false;
+   bool fail_abort = false;
+   bool lose_completion_response = false;
    bool slow = false;
    bool delay_part = false;
    bool bad_range = false;
@@ -142,13 +233,21 @@ struct endpoint : std::enable_shared_from_this<endpoint> {
          } else if (query.find("uploadId=") != std::string::npos) {
             if (request.method() == http::verb::delete_) {
                ++self->aborts;
-               self->uploads.clear();
+               if (self->fail_abort) {
+                  error(http::status::internal_server_error, "InternalError");
+               } else {
+                  self->uploads.clear();
+               }
             } else if (request.method() == http::verb::post) {
                std::string combined;
                for (const auto& [number, bytes] : self->uploads) {
                   combined += bytes;
                }
                self->objects[path] = std::move(combined);
+               if (self->lose_completion_response) {
+                  socket.close();
+                  co_return;
+               }
                response.body() = "<CompleteMultipartUploadResult><Location>fixture</Location><Bucket>bucket</Bucket>"
                                  "<Key>multipart</Key><ETag>\"fixture-etag\"</ETag></CompleteMultipartUploadResult>";
             } else {
@@ -274,6 +373,17 @@ asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::co
       file.write("end-of-file-marker", 17);
    }
    const auto multi_target = s3::object{"bucket", "multipart", {}};
+   const auto loop = directory / "loop";
+   std::filesystem::create_symlink("loop", loop);
+   const auto mutations_before = server->mutations;
+   co_await expect<s3::exceptions::io>([&] { return client.put(target, loop); },
+                                       [](const auto& error) {
+                                          require(error.context().size() == 1 &&
+                                                      error.context().front().key == "filesystem_status" &&
+                                                      error.context().front().value != "0",
+                                                  "filesystem failure was not typed with its numeric status");
+                                       });
+   require(server->mutations == mutations_before, "invalid file source reached a mutation request");
    const auto multipart = co_await client.put(multi_target, source);
    require(multipart.size == large_size && server->uploads.size() == 2, "automatic multipart is wrong");
    auto read = s3::read_options{};
@@ -300,9 +410,38 @@ asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::co
 
    server->fail_part = true;
    const auto aborted_before = server->aborts;
-   co_await expect<s3::exceptions::unknown_outcome>([&] { return client.put(multi_target, source); });
+   co_await expect<s3::exceptions::unknown_outcome>(
+       [&] { return client.put(multi_target, source); },
+       [](const auto& error) {
+          require(frame_has(error, "upload_id", "fixture-upload") && frame_has(error, "bucket", "bucket") &&
+                      frame_has(error, "key", "multipart") && frame_has(error, "cleanup_attempted", "true") &&
+                      frame_has(error, "cleanup_confirmed", "true") &&
+                      frame_has(error, "completion_attempted", "false"),
+                  "multipart failure lost its upload identity or cleanup evidence");
+       });
    require(server->aborts == aborted_before + 1, "failed multipart did not attempt cleanup");
+   server->fail_abort = true;
+   co_await expect<s3::exceptions::unknown_outcome>(
+       [&] { return client.put(multi_target, source); },
+       [](const auto& error) {
+          require(frame_has(error, "upload_id", "fixture-upload") && frame_has(error, "cleanup_attempted", "true") &&
+                      frame_has(error, "cleanup_confirmed", "false"),
+                  "failed cleanup replaced the original multipart failure or its recovery evidence");
+       });
+   require(server->aborts == aborted_before + 2, "failed multipart cleanup was retried");
+   server->fail_abort = false;
    server->fail_part = false;
+   server->lose_completion_response = true;
+   co_await expect<s3::exceptions::unknown_outcome>(
+       [&] { return client.put(multi_target, source); },
+       [](const auto& error) {
+          require(frame_has(error, "upload_id", "fixture-upload") && frame_has(error, "cleanup_attempted", "false") &&
+                      frame_has(error, "completion_attempted", "true"),
+                  "unconfirmed completion lost its reconciliation evidence");
+       });
+   require(server->aborts == aborted_before + 2 && server->objects["/bucket/multipart"].size() == large_size,
+           "client aborted a multipart upload after possible completion");
+   server->lose_completion_response = false;
    const auto unknown_before = server->unknowns;
    co_await expect<s3::exceptions::unknown_outcome>([&] { return client.put({"bucket", "unknown", {}}, bytes); });
    require(server->unknowns == unknown_before + 1, "SDK retried an unknown mutation");
@@ -371,6 +510,7 @@ asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::co
 }
 
 int main() {
+   backend_failures();
    asio::io_context io;
    auto server = std::make_shared<endpoint>(io);
    forge::asio::compute::pool workers{{.worker_threads = 2, .max_pending_tasks = 4, .max_waiting_submissions = 0}};
