@@ -21,6 +21,7 @@ import forge.api.http.binding;
 import forge.net.http.assets;
 import forge.plugins.net.http.server.middleware;
 import forge.plugins.net.http.server.types;
+export import forge.plugins.net.http.server.routes;
 
 export namespace forge::plugins::net::http::server {
 
@@ -30,6 +31,7 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
 
    virtual boost::asio::awaitable<void> use(middleware_descriptor descriptor) = 0;
    virtual boost::asio::awaitable<void> mount_assets(forge::net::http::asset_mount value) = 0;
+   virtual boost::asio::awaitable<void> mount_routes(route_mount value);
    virtual boost::asio::awaitable<void> reload_tls() = 0;
 
    template <typename Interface> boost::asio::awaitable<void> publish(publish_options options = {}) {
@@ -58,4 +60,4 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
 
 } // namespace forge::plugins::net::http::server
 
-FORGE_EXPORT_API(::forge::plugins::net::http::server::api, FORGE_API_CONTRACT("forge.plugins.net.http.server", 2, 0))
+FORGE_EXPORT_API(::forge::plugins::net::http::server::api, FORGE_API_CONTRACT("forge.plugins.net.http.server", 2, 1))

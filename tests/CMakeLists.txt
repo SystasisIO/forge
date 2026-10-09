@@ -372,6 +372,7 @@ add_executable(
    test_forge_plugins_net_http_server
    unit/main.cpp
    http_server_auth/bearer_auth_tests.cpp
+   http_server_auth/routes_tests.cpp
 )
 target_link_libraries(
    test_forge_plugins_net_http_server

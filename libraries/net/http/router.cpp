@@ -353,11 +353,27 @@ void router::del_stream(std::string path, stream_route_handler handler) {
 }
 
 void router::websocket(std::string path, websocket_route_handler handler) {
+   if (std::ranges::any_of(websocket_guarded_routes_, [&](const auto& route) { return route.path == path; }) ||
+       std::ranges::any_of(websocket_routes_, [&](const auto& route) { return route.path == path; })) {
+      throw exceptions::conflict{"duplicate WebSocket route"};
+   }
    auto segments = split_route_path(path);
    websocket_routes_.push_back(websocket_route_entry{
        .path = std::move(path),
        .segments = segments,
        .parameterized = parameterized(segments),
+       .handler = std::move(handler),
+   });
+}
+
+void router::websocket_guarded(std::string path, websocket_upgrade_handler handler) {
+   if (!handler || std::ranges::any_of(websocket_guarded_routes_, [&](const auto& route) { return route.path == path; }) ||
+       std::ranges::any_of(websocket_routes_, [&](const auto& route) { return route.path == path; })) {
+      throw exceptions::conflict{"invalid or duplicate WebSocket route"};
+   }
+   auto segments = split_route_path(path);
+   websocket_guarded_routes_.push_back(websocket_guarded_route_entry{
+       .path = std::move(path), .segments = segments, .parameterized = parameterized(segments),
        .handler = std::move(handler),
    });
 }
@@ -568,6 +584,18 @@ std::optional<websocket_route_handler> router::match_websocket(route_context& co
 
    auto params = std::unordered_map<std::string, std::string>{};
    if (const auto* route = find_path_match(websocket_routes_, context.parsed_target, params); route != nullptr) {
+      context.route_params = std::move(params);
+      return route->handler;
+   }
+   return std::nullopt;
+}
+
+std::optional<websocket_upgrade_handler> router::match_websocket_guarded(route_context& context) const {
+   if (context.request.method() != method::get) {
+      return std::nullopt;
+   }
+   auto params = std::unordered_map<std::string, std::string>{};
+   if (const auto* route = find_path_match(websocket_guarded_routes_, context.parsed_target, params); route != nullptr) {
       context.route_params = std::move(params);
       return route->handler;
    }

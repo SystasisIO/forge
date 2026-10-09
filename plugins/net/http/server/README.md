@@ -29,7 +29,7 @@ Secrets API without exposing PEM material to application plugins.
 - Package component: `plugins_net_http_server`
 - Plugin id: `forge.plugins.net.http.server`
 - Main API id: `forge.plugins.net.http.server`
-- API contract: `2.0`
+- API contract: `2.1`
 - Config section: `plugins.net.http.server`
 - Public modules:
   - `forge.plugins.net.http.server.plugin`
@@ -37,6 +37,7 @@ Secrets API without exposing PEM material to application plugins.
   - `forge.plugins.net.http.server.api`
   - `forge.plugins.net.http.server.bearer_auth`
   - `forge.plugins.net.http.server.middleware`
+  - `forge.plugins.net.http.server.routes`
   - `forge.plugins.net.http.server.types`
   - `forge.plugins.net.http.server.exceptions`
 
@@ -49,14 +50,27 @@ Secrets API without exposing PEM material to application plugins.
 - Accepts plugin-owned middleware descriptors through
   `forge::plugins::net::http::server::middleware_descriptor`.
 - Accepts bounded browser asset mounts through `api::mount_assets(asset_mount)`.
+- Accepts up to 128 trusted application route mounts through `api::mount_routes(route_mount)`.
+  Each mount has a unique registration id, reserved asset path prefixes and a
+  callback that contributes ordinary, streaming or guarded WebSocket routes to
+  the same native router. Registration closes when startup takes its snapshot;
+  mounts cannot be modified after the listener starts.
 - Provides a reusable Bearer authentication middleware that compares SHA-256
   token hashes in constant time and never stores the clear token in its options.
 - Reloads a TLS server identity through `api::reload_tls()` after complete new
   secret material has been resolved and validated.
 
-It does not expose raw route verbs, raw `forge::net::http::router`,
-diagnostics/status endpoints, product authorization policy, CORS policy or
-product-specific behavior.
+`router::websocket_guarded` runs application admission before the WebSocket
+handshake. A verified application context may be captured in the accepted
+callback; rejection returns an ordinary HTTP response. Existing unguarded
+WebSocket routes keep their behavior. HTTP middleware does not authorize a
+WebSocket upgrade, so protected application sockets must use guarded admission.
+
+The API 2.1 route mount extension has a default implementation that reports typed
+`unsupported_route_mount`; existing API implementers remain source compatible.
+The concrete server plugin implements it. This plugin owns transport lifecycle;
+product authorization, storage policy, CORS and protocol vocabulary remain with
+the application mount.
 
 ## Dependencies
 

@@ -254,6 +254,12 @@ boost::asio::awaitable<void> plugin::startup() {
       router.reserve_path_prefix(base_path);
       binding.binding.mount(router, base_path);
    }
+   for (auto& mount : snapshot.route_mounts) {
+      for (auto& path : mount.reserved_paths) {
+         router.reserve_path_prefix(std::move(path));
+      }
+      mount.apply(router);
+   }
    for (auto& mount : snapshot.asset_mounts) {
       router.mount_assets(std::move(mount));
    }

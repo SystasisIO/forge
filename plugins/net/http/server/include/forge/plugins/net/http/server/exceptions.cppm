@@ -17,12 +17,14 @@ class exceptions {
       publication_closed = 2,
       startup_failed = 3,
       tls_reload_failed = 4,
+      unsupported_route_mount = 5,
    };
 
    using invalid_config = forge::exceptions::coded_exception<code, code::invalid_config>;
    using publication_closed = forge::exceptions::coded_exception<code, code::publication_closed>;
    using startup_failed = forge::exceptions::coded_exception<code, code::startup_failed>;
    using tls_reload_failed = forge::exceptions::coded_exception<code, code::tls_reload_failed>;
+   using unsupported_route_mount = forge::exceptions::coded_exception<code, code::unsupported_route_mount>;
 };
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(exceptions::code, "forge.plugins.net.http.server")

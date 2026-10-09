@@ -9739,6 +9739,49 @@ BOOST_AUTO_TEST_CASE(websocket_echo_shares_server_port) {
    server.stop();
 }
 
+BOOST_AUTO_TEST_CASE(websocket_guarded_admission_precedes_handshake_and_preserves_request_context) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto router = forge::net::http::router{};
+   auto admitted = std::atomic<unsigned>{0};
+   router.websocket_guarded("/private", [&admitted](route_context& context)
+       -> boost::asio::awaitable<websocket_upgrade_result> {
+      if (context.parsed_target.query != "clientId=approved") {
+         co_return websocket_upgrade_result{.rejection = make_text_response(context.request, status::forbidden, "denied")};
+      }
+      const auto client = std::string{context.parsed_target.query};
+      co_return websocket_upgrade_result{.handler = [&admitted, client](forge::net::websocket::connection::ptr connection) {
+         ++admitted;
+         connection->on_message([client](forge::net::websocket::connection& connection, std::string message)
+             -> boost::asio::awaitable<void> {
+            co_await connection.send(client + ":" + message);
+         });
+      }};
+   });
+   BOOST_CHECK_THROW(router.websocket("/private", [](auto) {}), exceptions::conflict);
+   auto server = forge::net::http::server{runtime, server_config{}, std::move(router)};
+   server.start();
+   const auto port = wait_for_port(server);
+   auto client = forge::net::websocket::client{runtime, parse_base_url("http://127.0.0.1:" + std::to_string(port))};
+   BOOST_CHECK_THROW(client.connect("/private?clientId=denied"), std::exception);
+   BOOST_TEST(admitted.load() == 0U);
+   auto connection = client.connect("/private?clientId=approved");
+   auto received_mutex = std::mutex{};
+   auto received_cv = std::condition_variable{};
+   auto received = std::string{};
+   connection->on_message([&](forge::net::websocket::connection&, std::string message) -> boost::asio::awaitable<void> {
+      { const auto lock = std::scoped_lock{received_mutex}; received = std::move(message); }
+      received_cv.notify_all();
+      co_return;
+   });
+   forge::asio::blocking::run(runtime, connection->send("hello"));
+   { auto lock = std::unique_lock{received_mutex};
+     BOOST_REQUIRE(received_cv.wait_for(lock, std::chrono::seconds{2}, [&] { return !received.empty(); })); }
+   BOOST_TEST(received == "clientId=approved:hello");
+   BOOST_TEST(admitted.load() == 1U);
+   forge::asio::blocking::run(runtime, connection->close());
+   server.stop();
+}
+
 BOOST_AUTO_TEST_CASE(websocket_close_drains_already_queued_writes) {
    constexpr auto write_count = std::size_t{16};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

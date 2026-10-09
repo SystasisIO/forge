@@ -1028,6 +1028,26 @@ class server_session final : public server_session_base, public std::enable_shar
       }
 
       auto handler = router_->match_websocket(context);
+      if (auto guard = router_->match_websocket_guarded(context)) {
+         auto result = websocket_upgrade_result{};
+         try {
+            result = co_await (*guard)(context);
+         } catch (...) {
+            result.rejection = make_text_response(context.request, status::service_unavailable,
+                                                   "WebSocket admission failed");
+         }
+         if (result.rejection || !result.handler) {
+            auto rejected = result.rejection ? std::move(*result.rejection)
+                                              : make_text_response(context.request, status::forbidden,
+                                                                   "WebSocket admission denied");
+            rejected.version(context.request.version());
+            rejected.keep_alive(false);
+            rejected.prepare_payload();
+            co_await write_response(rejected);
+            co_return true;
+         }
+         handler = std::move(result.handler);
+      }
       if (!handler.has_value()) {
          co_return false;
       }
