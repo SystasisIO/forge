@@ -3,10 +3,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <source_location>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 
 import forge.exceptions;
 
@@ -27,11 +29,29 @@ namespace test_product_exceptions {
 
 enum class code : std::uint8_t {
    chunk_not_found = 1,
+   busy = 2,
 };
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(code, "test.cache")
 
 using chunk_not_found = forge::exceptions::coded_exception<code, code::chunk_not_found>;
+
+struct retry_details {
+   std::chrono::milliseconds after;
+   std::unique_ptr<std::string> opaque;
+};
+
+class busy : public forge::exceptions::coded_exception<code, code::busy> {
+ public:
+   busy(retry_details data, std::string message, forge::exceptions::fields context,
+        std::source_location location)
+       : coded_exception(std::move(message), std::move(context), location), _data(std::move(data)) {}
+
+   const retry_details& data() const noexcept { return _data; }
+
+ private:
+   retry_details _data;
+};
 
 } // namespace test_product_exceptions
 
@@ -109,6 +129,41 @@ BOOST_AUTO_TEST_CASE(throw_code_throws_runtime_coded_exception_with_call_site_co
    }
 
    BOOST_FAIL("expected runtime coded exception");
+}
+
+BOOST_AUTO_TEST_CASE(typed_data_throw_preserves_move_only_data_and_call_site) {
+   unsigned expected_line = 0;
+   unsigned evaluations = 0;
+   auto data = [&] {
+      ++evaluations;
+      return test_product_exceptions::retry_details{
+         std::chrono::milliseconds{250}, std::make_unique<std::string>("private operation data")};
+   };
+
+   try {
+      try {
+         expected_line = __LINE__ + 2;
+         FORGE_THROW_EXCEPTION_WITH_DATA(test_product_exceptions::busy, data(), "service is busy",
+                                         forge::exceptions::secret("credential", "private diagnostic data"));
+      }
+      FORGE_CAPTURE_AND_RETHROW("service call", forge::exceptions::ctx("phase", "admission"))
+   } catch (const test_product_exceptions::busy& error) {
+      BOOST_CHECK_EQUAL(evaluations, 1u);
+      BOOST_CHECK_EQUAL(error.data().after.count(), 250);
+      BOOST_REQUIRE(error.data().opaque);
+      BOOST_CHECK_EQUAL(*error.data().opaque, "private operation data");
+      BOOST_CHECK_EQUAL(error.code().value(), 2);
+      BOOST_CHECK_EQUAL(std::string(error.code().category().name()), "test.cache");
+      BOOST_CHECK_EQUAL(error.location().line(), expected_line);
+      BOOST_CHECK_EQUAL(error.context_frames().size(), 1u);
+      const auto diagnostic = forge::exceptions::format_exception_chain(error);
+      BOOST_CHECK(diagnostic.find("private operation data") == std::string::npos);
+      BOOST_CHECK(diagnostic.find("private diagnostic data") == std::string::npos);
+      BOOST_CHECK(diagnostic.find("credential=<redacted>") != std::string::npos);
+      return;
+   }
+
+   BOOST_FAIL("expected original exception and typed operational data");
 }
 
 BOOST_AUTO_TEST_CASE(capture_and_rethrow_preserves_nested_exception) {

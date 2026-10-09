@@ -384,6 +384,12 @@ implementation-library namespaces. For plugin family/role decisions, follow
 - `FORGE_THROW_EXCEPTION(ExceptionType, ...)` is the canonical typed throw macro.
 - Use `FORGE_THROW_EXCEPTION(ExceptionType, ...)` when the concrete typed
   exception is known at the throw site.
+- For a concrete exception with typed operational data, use
+  `FORGE_THROW_EXCEPTION_WITH_DATA(ExceptionType, data, message, ...)` and a
+  constructor accepting `(data, message, fields, source_location)`. Keep retry
+  delays and other control-flow data typed; do not encode them in diagnostic
+  fields and parse them back. The exception owns its data; the macro introduces
+  no serialization or additional exception hierarchy.
 - Use `FORGE_THROW_CODE(code_value, ...)` only when the exception code is computed
   at runtime, for example after mapping an engine status or retry result.
 - `FORGE_DECLARE_EXCEPTION_CATEGORY` only declares `enum -> std::error_code`; it

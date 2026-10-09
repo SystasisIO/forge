@@ -168,7 +168,7 @@ add_executable(
    unit/main.cpp
    exceptions/exception_tests.cpp
 )
-target_link_libraries(test_forge_exceptions forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_exceptions forge_exceptions Boost::included_unit_test_framework)
 add_test(NAME test_forge_exceptions COMMAND test_forge_exceptions WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(

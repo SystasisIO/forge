@@ -65,6 +65,17 @@
                               std::source_location::current());                                                        \
    FORGE_MULTILINE_MACRO_END
 
+// Typed operational data belongs to the concrete exception, not diagnostic fields.
+// Its constructor accepts (data, message, fields, source_location).
+#define FORGE_THROW_EXCEPTION_WITH_DATA(ExceptionType, DATA, MESSAGE, ...)                                                \
+   FORGE_MULTILINE_MACRO_BEGIN                                                                                           \
+   static_assert(std::is_base_of_v<forge::exceptions::base, ExceptionType>,                                               \
+                 "FORGE_THROW_EXCEPTION_WITH_DATA expects a type derived from forge::exceptions::base");                 \
+   throw ExceptionType((DATA), std::string(MESSAGE),                                                                     \
+                       forge::exceptions::make_fields(__VA_ARGS__),                                                     \
+                       std::source_location::current());                                                               \
+   FORGE_MULTILINE_MACRO_END
+
 #define FORGE_ASSERT(TEST, ...)                                                                                          \
    FORGE_MULTILINE_MACRO_BEGIN                                                                                           \
    if (UNLIKELY(!(TEST))) {                                                                                            \
