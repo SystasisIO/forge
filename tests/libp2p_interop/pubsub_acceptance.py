@@ -1,4 +1,4 @@
-"""PR11 closed matrix and indexed process/output bindings.
+"""Shared PubSub process/output bindings and the PR11 closed matrix.
 
 The shared promotion checker owns exact-head, binary, donor and source hashes.
 This component loads only its verified evidence index, then checks causal RPCs.
@@ -23,23 +23,21 @@ def is_record(record):
     return isinstance(record, dict) and record.get("suite") == "pubsub-scoring"
 
 
-def _sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint):
-    expected = {"schema_version": 1, "suite": "pubsub-scoring", "scenario_id": spec.identifier,
-                "acceptance_scenario_id": spec.scenario, "runner_scenario_id": spec.runner_id,
-                "case": asdict(spec), "status": "observed", "errors": [], "cleanup_errors": [],
-                "roles": {role: role for role in ("offender", "replacement", "sink")}}
-    require(isinstance(record, dict) and all(record.get(key) == value for key, value in expected.items()),
-            "PubSub case differs from exact closed execution matrix")
-    require(set(record) == set(expected) | {"case_token", "raw", "processes", "attempts", "evidence", "shutdown_barrier"},
-            "PubSub case has missing fields or undeclared claims")
+def owned_actor_sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint,
+                        implementations, *, extensions=None):
+    """Shared indexed process authority; callers own matrix and wire semantics."""
     work = Path(root).resolve() / spec.identifier
     actors, processes = record["raw"], record["processes"]
     require(isinstance(actors, dict) and isinstance(processes, dict)
             and set(actors) == set(processes) == {"victim", "offender", "replacement", "sink"},
             "PubSub matrix has missing/extraneous process owners")
+    require(set(implementations) == set(actors)
+            and (extensions is None or set(extensions) == set(actors)), "PubSub actor configuration differs")
+    require(isinstance(record["attempts"], list) and all(isinstance(row, dict) for row in record["attempts"]),
+            "PubSub attempts are not native execution records")
     hydrated, used = deepcopy(record), set()
     for role, raw in actors.items():
-        implementation = spec.destination if role == "victim" else spec.source
+        implementation = implementations[role]
         owner = processes[role]
         require(isinstance(owner, dict) and set(owner) == OWNER_FIELDS | {"stop_budget", "returncode", "forced_termination"},
                 "invalid exact PubSub process owner")
@@ -52,6 +50,8 @@ def _sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint
                 and owner["forced_termination"] is False, "PubSub actor was not joined gracefully")
         options = {"--version": spec.version, "--transport": PROFILES[spec.profile],
                    "--actor": role, "--case-token": record["case_token"], "--store-dir": str(work / f"{role}.store")}
+        if extensions is not None:
+            options["--extension"] = extensions[role]
         options.update({f"--{name}-file": str(work / f"{role}.{name}")
                         for name in ("ready", "result", "stop", "control")})
         if spec.profile == "private_tcp_yamux":
@@ -65,6 +65,11 @@ def _sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint
                                work, binaries, load_json, used)
         require(_ready(loaded["ready"], loaded["result"], implementation, role, record["case_token"], terminal=True),
                 "native canonical readiness/result identity differs")
+        if extensions is not None:
+            require(all(document.get("extension") == extensions[role]
+                        and document.get("requests_partial") is (extensions[role] == "partial")
+                        for document in (loaded["ready"], loaded["result"])),
+                    "native canonical readiness/result extension differs")
         hydrated["raw"][role] = loaded["result"]
         matches = [attempt for attempt in record["attempts"] if attempt.get("pid") == owner["pid"]]
         require(len(matches) == 1, "PubSub owner has missing/duplicate native execution attempt")
@@ -78,7 +83,12 @@ def _sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint
                 and type(attempt.get("timeout_seconds")) in (int, float) and attempt["timeout_seconds"] == 60,
                 "PubSub execution attempt differs from indexed owner")
     require(len(record["attempts"]) == 4, "PubSub case has undeclared extra attempts")
-    evidence = validate_case(hydrated, expected_fingerprint=fingerprint if spec.profile == "private_tcp_yamux" else None)
+    return hydrated, used
+
+
+def prepared_sources(hydrated, spec, root, load_json, used):
+    """Bind each validated prepare acknowledgement to its immutable index file."""
+    work = Path(root).resolve() / spec.identifier
     for row in hydrated["shutdown_barrier"]["operations"][:4]:
         role = row["actor"]
         expected_path = work / f"{role}.prepare-result.json"
@@ -86,8 +96,25 @@ def _sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint
         path = _path(row["evidence_file"], work)
         require(path not in used, "actors reuse indexed prepare evidence")
         snapshot = load_json(row["evidence_file"])
-        prepared_snapshot(snapshot, row, hydrated["raw"][role], processes[role]["pid"])
+        prepared_snapshot(snapshot, row, hydrated["raw"][role], hydrated["processes"][role]["pid"])
         used.add(path)
+
+
+def _sources(record, spec, root, binaries, load_json, pnet_key_file, fingerprint):
+    expected = {"schema_version": 1, "suite": "pubsub-scoring", "scenario_id": spec.identifier,
+                "acceptance_scenario_id": spec.scenario, "runner_scenario_id": spec.runner_id,
+                "case": asdict(spec), "status": "observed", "errors": [], "cleanup_errors": [],
+                "roles": {role: role for role in ("offender", "replacement", "sink")}}
+    require(isinstance(record, dict) and all(record.get(key) == value for key, value in expected.items()),
+            "PubSub case differs from exact closed execution matrix")
+    require(set(record) == set(expected) | {"case_token", "raw", "processes", "attempts", "evidence", "shutdown_barrier"},
+            "PubSub case has missing fields or undeclared claims")
+    implementations = {role: spec.destination if role == "victim" else spec.source
+                       for role in ("victim", "offender", "replacement", "sink")}
+    hydrated, used = owned_actor_sources(record, spec, root, binaries, load_json, pnet_key_file,
+                                         fingerprint, implementations)
+    evidence = validate_case(hydrated, expected_fingerprint=fingerprint if spec.profile == "private_tcp_yamux" else None)
+    prepared_sources(hydrated, spec, root, load_json, used)
     require(record["evidence"] == evidence, "declared PubSub observations differ from native indexed result")
     return used
 

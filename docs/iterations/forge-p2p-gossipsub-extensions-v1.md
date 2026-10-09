@@ -85,6 +85,17 @@ fulfil IWANT promises or improve delivery scores.
 - Unsubscribe closes callback admission and requests cancellation. It does not
   promise a callback join; node shutdown owns that join. Local callback failure
   or overload must not automatically become a peer protocol penalty.
+- An opaque, non-owning `partial_topic` token binds local operations to the exact
+  node ownership identity, topic and subscription generation. Copy/destruction
+  does not unsubscribe. The partial subscribe overload returns this token and
+  callbacks carry it. Group mutation, peer snapshots, partial sends and scoped
+  unsubscribe require it; an old callback cannot mutate a replacement subscription.
+  Async operations own their token by value. The existing name-only unsubscribe
+  remains an explicit operation on the current subscription for its external owner.
+- A callback may await partial send or scoped unsubscribe, but must not await
+  shutdown of its own node: shutdown joins that callback. Cancellation before a
+  native write is distinct from cancellation after a frame has started; the latter
+  cannot promise no remote bytes and must not leave a corrupt stream reusable.
 
 Full-message forwarding is not suppressed merely because a topic supports
 partials. A working application partial path must own any such decision, and

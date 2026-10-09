@@ -6,8 +6,10 @@ module;
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -19,6 +21,8 @@ export module forge.net.p2p.pubsub;
 import forge.crypto.asymmetric;
 import forge.net.p2p.identity;
 import forge.net.p2p.protocol;
+
+export namespace forge::net::p2p::detail { struct partial_topic_access; }
 
 export namespace forge::net::p2p::pubsub {
 
@@ -228,6 +232,21 @@ struct limits {
    std::size_t max_idontwant_message_id_size = 256;
    std::size_t max_partial_group_id_size = 256;
    std::size_t max_partial_metadata_size = 64 * 1024;
+   std::size_t max_idontwant_rpcs_per_heartbeat = 1000;
+   std::size_t max_idontwant_ids_per_rpc = 10;
+   std::size_t idontwant_threshold = 1024;
+   std::size_t idontwant_ttl = 3; // Heartbeats, not wall-clock seconds.
+   std::size_t max_idontwant_entries_per_peer = 4096;
+   std::size_t max_idontwant_bytes_per_peer = 256 * 1024;
+   std::size_t max_idontwant_entries = 65536;
+   std::size_t max_idontwant_bytes = 4 * 1024 * 1024;
+   std::size_t max_partial_groups_per_topic = 256;
+   std::size_t max_partial_groups = 4096;
+   std::size_t max_partial_group_bytes = 1024 * 1024;
+   std::size_t partial_group_ttl = 3; // Heartbeats; only a local advertise refreshes it.
+   std::size_t max_partial_callbacks = 64;
+   std::size_t max_partial_callback_bytes = 4 * 1024 * 1024;
+   std::size_t max_partial_gossip_peers = 64;
 };
 
 struct options {
@@ -239,6 +258,7 @@ struct options {
    bool flood_publish = false;
    bool peer_exchange = false;
    pubsub::tracer tracer;
+   bool partial_messages = false; // Requires preferred v1.3; lower-version full messages remain supported.
 };
 
 // Validate enabled scoring once at configuration/admission, not on every wire encode/decode.
@@ -330,6 +350,41 @@ struct event {
 
 using handler = std::function<boost::asio::awaitable<validation_result>(event)>;
 
+// Copy/destruction does not subscribe or unsubscribe. Operations validate the exact node and generation.
+class partial_topic {
+ public:
+   partial_topic() = default;
+   [[nodiscard]] const topic& subject() const noexcept;
+
+ private:
+   friend struct detail::partial_topic_access;
+   std::weak_ptr<const void> _owner;
+   topic _subject;
+   std::uint64_t _generation = 0;
+};
+
+struct partial_event {
+   partial_topic registration;
+   peer_id source; // Authenticated transport peer, not proof of content authorship.
+   partial_message value;
+};
+
+struct partial_gossip_event {
+   partial_topic registration;
+   std::vector<std::vector<std::uint8_t>> groups;
+   std::vector<peer_id> peers; // Off-mesh snapshot, not lasting send permission.
+};
+
+using partial_handler = std::function<boost::asio::awaitable<void>(partial_event, std::stop_token)>;
+using partial_gossip_handler = std::function<boost::asio::awaitable<void>(partial_gossip_event, std::stop_token)>;
+
+struct partial_options {
+   bool requests_partial = false;
+   // Both callbacks are required. Registration implies support for sending parts, not a request for data.
+   partial_handler receive;
+   partial_gossip_handler gossip;
+};
+
 struct score {
    double value = 0.0;
    std::uint64_t invalid_messages = 0;
@@ -350,17 +405,28 @@ struct snapshot {
    std::uint64_t control_messages = 0;
    std::uint64_t trace_failures = 0;
    std::uint64_t application_score_failures = 0;
+   std::size_t idontwant_entries = 0;
+   std::size_t idontwant_bytes = 0;
+   std::uint64_t idontwant_ignored = 0;
+   std::size_t partial_groups = 0;
+   std::size_t partial_group_bytes = 0;
+   std::size_t partial_callbacks = 0;
+   std::size_t partial_callback_bytes = 0;
+   std::uint64_t partial_callback_failures = 0;
+   std::uint64_t partial_callback_rejections = 0;
 };
 
 struct codec {
    struct received_rpc {
       rpc value;
       std::vector<topic> invalid_messages; // Structurally valid messages rejected by receive policy.
+      std::size_t extension_advertisements = 0; // Wire occurrences before protobuf singular-message merging.
    };
    struct gossip_cursor {
       std::size_t have = 0;
       std::size_t want = 0;
       std::size_t id = 0;
+      std::size_t dont_want = 0;
    };
    struct gossip_chunk {
       rpc value;
@@ -371,7 +437,7 @@ struct codec {
    [[nodiscard]] static std::vector<std::uint8_t> encode(const rpc& value);
    [[nodiscard]] static std::vector<std::uint8_t> encode(const rpc& value, const options& opts);
    [[nodiscard]] static std::size_t control_payload_size(const control& value, const options& opts);
-   // One-shot packing; each chunk contains one IHAVE or one normalized IWANT.
+   // One-shot packing; each chunk contains one IHAVE, normalized IWANT or IDONTWANT.
    // Individually unencodable entries are skipped without suppressing later IDs.
    [[nodiscard]] static std::optional<gossip_chunk> next_gossip(const control& value, gossip_cursor& cursor,
                                                               const options& opts);
@@ -394,3 +460,12 @@ struct codec {
 };
 
 } // namespace forge::net::p2p::pubsub
+
+export namespace forge::net::p2p::detail {
+struct partial_topic_access {
+   [[nodiscard]] static pubsub::partial_topic make(const std::shared_ptr<const void>& owner, pubsub::topic subject,
+                                                   std::uint64_t generation);
+   [[nodiscard]] static bool matches(const pubsub::partial_topic& token, const std::shared_ptr<const void>& owner,
+                                     std::uint64_t generation) noexcept;
+};
+} // namespace forge::net::p2p::detail

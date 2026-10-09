@@ -18,8 +18,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "pubsub_scoring/extensions.rs"]
+mod extensions;
 #[path = "pubsub_scoring/observer.rs"]
 mod observer;
+#[path = "pubsub_scoring/partial.rs"]
+mod partial;
 #[path = "pubsub_scoring/transport.rs"]
 mod transport;
 use observer::{Evidence, hex};
@@ -64,10 +68,12 @@ pub(crate) struct Config {
 
 impl Config {
     fn protocol(&self) -> &'static str {
-        if self.version == "1.0" {
-            "/meshsub/1.0.0"
-        } else {
-            "/meshsub/1.1.0"
+        match self.version.as_str() {
+            "1.0" => "/meshsub/1.0.0",
+            "1.1" => "/meshsub/1.1.0",
+            "1.2" => "/meshsub/1.2.0",
+            "1.3" => "/meshsub/1.3.0",
+            _ => unreachable!("validated PubSub fixture version"),
         }
     }
 
@@ -76,7 +82,22 @@ impl Config {
     }
 }
 
-pub(crate) fn parse_args(argv: &[String]) -> io::Result<Option<Config>> {
+// Keep the frozen transport/observer Config and PR11 actor interfaces intact.
+#[derive(Clone, Debug)]
+pub(crate) struct ActorConfig {
+    config: Config,
+    extension: Option<extensions::Mode>,
+}
+
+impl std::ops::Deref for ActorConfig {
+    type Target = Config;
+
+    fn deref(&self) -> &Config {
+        &self.config
+    }
+}
+
+pub(crate) fn parse_args(argv: &[String]) -> io::Result<Option<ActorConfig>> {
     if argv.first().map(String::as_str) != Some("pubsub-live") {
         return Ok(None);
     }
@@ -99,7 +120,8 @@ pub(crate) fn parse_args(argv: &[String]) -> io::Result<Option<Config>> {
         let name = pair[0]
             .strip_prefix("--")
             .ok_or_else(|| invalid("expected named flag"))?;
-        if (!REQUIRED.contains(&name) && !matches!(name, "pnet-key-file" | "pnet-fingerprint"))
+        if (!REQUIRED.contains(&name)
+            && !matches!(name, "pnet-key-file" | "pnet-fingerprint" | "extension"))
             || args.insert(name.to_owned(), pair[1].clone()).is_some()
             || pair[1].is_empty()
             || pair[1].starts_with("--")
@@ -110,7 +132,7 @@ pub(crate) fn parse_args(argv: &[String]) -> io::Result<Option<Config>> {
     if REQUIRED.iter().any(|name| !args.contains_key(*name)) {
         return Err(invalid("missing required pubsub-live flag"));
     }
-    if !matches!(args["version"].as_str(), "1.0" | "1.1")
+    if !matches!(args["version"].as_str(), "1.0" | "1.1" | "1.2" | "1.3")
         || !matches!(
             args["transport"].as_str(),
             "quic" | "tcp" | "tcp-pnet-noise"
@@ -155,18 +177,25 @@ pub(crate) fn parse_args(argv: &[String]) -> io::Result<Option<Config>> {
     {
         return Err(invalid("actor files and store directory must be distinct"));
     }
-    Ok(Some(Config {
-        version: args["version"].clone(),
-        transport: args["transport"].clone(),
-        actor: args["actor"].clone(),
-        token: args["case-token"].clone(),
-        ready: args["ready-file"].clone().into(),
-        control: args["control-file"].clone().into(),
-        result: args["result-file"].clone().into(),
-        stop: args["stop-file"].clone().into(),
-        store: args["store-dir"].clone().into(),
-        key_file: args.get("pnet-key-file").map(PathBuf::from),
-        fingerprint: args.get("pnet-fingerprint").cloned(),
+    let extension = args
+        .get("extension")
+        .map(|mode| extensions::Mode::parse(mode, &args["version"]))
+        .transpose()?;
+    Ok(Some(ActorConfig {
+        extension,
+        config: Config {
+            version: args["version"].clone(),
+            transport: args["transport"].clone(),
+            actor: args["actor"].clone(),
+            token: args["case-token"].clone(),
+            ready: args["ready-file"].clone().into(),
+            control: args["control-file"].clone().into(),
+            result: args["result-file"].clone().into(),
+            stop: args["stop-file"].clone().into(),
+            store: args["store-dir"].clone().into(),
+            key_file: args.get("pnet-key-file").map(PathBuf::from),
+            fingerprint: args.get("pnet-fingerprint").cloned(),
+        },
     }))
 }
 
@@ -183,20 +212,39 @@ fn signed_message_id(message: &gossipsub::Message) -> gossipsub::MessageId {
 }
 
 fn router_config(config: &Config) -> io::Result<gossipsub::Config> {
-    gossipsub::ConfigBuilder::default()
-        .protocol_id(
+    router_config_with_mode(config, None)
+}
+
+fn router_config_with_mode(
+    config: &Config,
+    mode: Option<extensions::Mode>,
+) -> io::Result<gossipsub::Config> {
+    let mut builder = gossipsub::ConfigBuilder::default();
+    let idontwant = mode == Some(extensions::Mode::Idontwant);
+    if idontwant {
+        // 64 native heartbeats at 250ms cover the 10s hold plus margin.
+        // Keep history_gossip and every legacy/non-IDONTWANT default unchanged.
+        builder.history_length(64);
+    }
+    if matches!(config.version.as_str(), "1.0" | "1.1") {
+        builder.protocol_id(
             config.protocol(),
             if config.version == "1.0" {
                 gossipsub::Version::V1_0
             } else {
                 gossipsub::Version::V1_1
             },
-        )
+        );
+    }
+    // The donor's custom-ID Version enum cannot express v1.2/v1.3. Keep its
+    // real native kinds; the fixture counterpart caps the negotiated version.
+    builder
         .validation_mode(gossipsub::ValidationMode::Strict)
         .validate_messages()
         .message_id_fn(signed_message_id)
-        .mesh_n(2)
-        .mesh_n_low(1)
+        // IDONTWANT needs every edge of the degree-three fixture graph in mesh.
+        .mesh_n(if idontwant { 3 } else { 2 })
+        .mesh_n_low(if idontwant { 3 } else { 1 })
         .mesh_n_high(4)
         .retain_scores(1)
         .mesh_outbound_min(0)
@@ -235,9 +283,20 @@ fn score_params(topic: gossipsub::TopicHash) -> gossipsub::PeerScoreParams {
 }
 
 fn behaviour(key: &identity::Keypair, config: &Config) -> io::Result<gossipsub::Behaviour> {
+    behaviour_with_mode(key, config, None)
+}
+
+fn behaviour_with_mode(
+    key: &identity::Keypair,
+    config: &Config,
+    mode: Option<extensions::Mode>,
+) -> io::Result<gossipsub::Behaviour> {
     let mut router = gossipsub::Behaviour::new(
         gossipsub::MessageAuthenticity::Signed(key.clone()),
-        router_config(config)?,
+        match mode {
+            Some(extensions::Mode::Idontwant) => router_config_with_mode(config, mode)?,
+            _ => router_config(config)?,
+        },
     )
     .map_err(|e| invalid(e.to_string()))?;
     router
@@ -272,6 +331,10 @@ fn validation(config: &Config, payload: &[u8]) -> MessageAcceptance {
 
 #[derive(Debug)]
 enum Command {
+    Extension {
+        sequence: u64,
+        operation: extensions::Operation,
+    },
     Connect {
         sequence: u64,
         peer: PeerId,
@@ -297,6 +360,7 @@ impl Command {
     fn sequence(&self) -> u64 {
         match self {
             Self::Connect { sequence, .. }
+            | Self::Extension { sequence, .. }
             | Self::Publish { sequence, .. }
             | Self::Sample { sequence, .. }
             | Self::PrepareShutdown { sequence, .. } => *sequence,
@@ -388,7 +452,16 @@ impl Control {
                     },
                     &["sequence", "kind", "actor", "case_token", "local_peer_id"],
                 ),
-                _ => return Err(invalid("unknown control command")),
+                kind => {
+                    let (operation, fields) = extensions::Operation::parse(kind, &row)?;
+                    (
+                        Command::Extension {
+                            sequence,
+                            operation,
+                        },
+                        fields,
+                    )
+                }
             };
             if object.len() != fields.len()
                 || object.keys().any(|key| !fields.contains(&key.as_str()))
@@ -527,6 +600,9 @@ fn command(
     evidence.admit()?;
     let sequence = command.sequence();
     match command {
+        Command::Extension { .. } => {
+            return Err(invalid("extension command requires extension actor"));
+        }
         Command::Connect {
             peer, mut address, ..
         } => {
@@ -754,10 +830,11 @@ fn handle_event(
 }
 
 async fn serve(
-    config: &Config,
+    config: &ActorConfig,
     swarm: &mut Swarm<gossipsub::Behaviour>,
     evidence: &Evidence,
     upgrades: &crate::upgrade_observer::Observer,
+    extension: &mut extensions::Actor,
 ) -> Result<(), Box<dyn Error>> {
     let address: Multiaddr = if config.transport == "quic" {
         "/ip4/127.0.0.1/udp/0/quic-v1"
@@ -789,15 +866,14 @@ async fn serve(
     })
     .await
     .map_err(|_| invalid("native listener readiness deadline"))??;
-    replace_json(
-        &config.ready,
-        &json!({"schema_version": 1, "implementation": "rust", "actor": config.actor,
+    let mut ready = json!({"schema_version": 1, "implementation": "rust", "actor": config.actor,
         "case_token": config.token, "local_peer_id": swarm.local_peer_id().to_string(), "peer_id": swarm.local_peer_id().to_string(),
         "address": listening.to_string(), "listen_addr": listening.to_string(), "subscribed": true,
         "listen_addrs": [listening.to_string()],
         "ready": true, "subscription_created": true,
-        "topic": config.topic().hash().to_string(), "source": "rust.libp2p.native_listener_and_successful_Behaviour_subscription"}),
-    )?;
+        "topic": config.topic().hash().to_string(), "source": "rust.libp2p.native_listener_and_successful_Behaviour_subscription"});
+    extension.readiness(&mut ready);
+    replace_json(&config.ready, &ready)?;
     let mut control = Control::default();
     let mut tick = tokio::time::interval(Duration::from_millis(25));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -808,7 +884,16 @@ async fn serve(
     loop {
         tokio::select! {
             event = swarm.next() => {
-                handle_event(event.ok_or_else(|| invalid("native Swarm stream ended"))?, swarm, config, evidence, upgrades, &mut peers, &mut pending)?;
+                let event = event.ok_or_else(|| invalid("native Swarm stream ended"))?;
+                match event {
+                    SwarmEvent::Behaviour(event) if config.extension.is_some() => {
+                        if let Some(event) = extension.event(event, swarm.behaviour_mut(), config, evidence)? {
+                            handle_event(SwarmEvent::Behaviour(event), swarm, config, evidence, upgrades, &mut peers, &mut pending)?;
+                        }
+                    }
+                    event => { handle_event(event, swarm, config, evidence, upgrades, &mut peers, &mut pending)?; }
+                }
+                extension.drain(evidence)?;
             }
             _ = tick.tick() => {
                 let commands = control.poll(&config.control)?;
@@ -820,13 +905,30 @@ async fn serve(
                         if index + 1 != count || upgrades.snapshot()["overflow"] == true {
                             return Err(invalid("prepare_shutdown with queued commands or upgrade overflow").into());
                         }
+                        extension.prepare(evidence)?;
                     }
-                    command(next, swarm, config, evidence, &peers, &mut pending)?;
+                    match next {
+                        Command::Extension { sequence, operation } => {
+                            evidence.admit()?;
+                            let kind = operation.kind();
+                            let outcome = extension.command(operation, sequence, swarm.behaviour_mut(), config, evidence);
+                            command_done(evidence, sequence, kind, if outcome.is_ok() { "ok" } else { "error" },
+                                match &outcome { Ok(detail) => detail.clone(), Err(error) => json!({"error": error.to_string()}) });
+                            outcome?;
+                        }
+                        next => command(next, swarm, config, evidence, &peers, &mut pending)?,
+                    }
+                    extension.drain(evidence)?;
                 }
+                extension.expire(swarm.behaviour_mut(), config, evidence)?;
+                // Native metadata hooks may run while Swarm::poll stays Pending.
+                extension.drain(evidence)?;
                 if pending.values().any(|command| command.started.elapsed() > Duration::from_secs(15)) { return Err(invalid("native connect completion deadline").into()); }
                 if let Some(error) = evidence.lock().error.clone() { return Err(invalid(error).into()); }
                 if upgrades.snapshot()["overflow"] == true { return Err(invalid("native upgrade observer overflow").into()); }
-                replace_json(&config.result, &result(config, Some(*swarm.local_peer_id()), evidence, false, false, Value::Null, upgrades.snapshot()))?;
+                let mut active = result(config, Some(*swarm.local_peer_id()), evidence, false, false, Value::Null, upgrades.snapshot());
+                extension.describe(&mut active);
+                replace_json(&config.result, &active)?;
                 if config.stop.exists() {
                     control.finish()?;
                     if !evidence.lock().prepared { return Err(invalid("stop before prepare_shutdown acknowledgement").into()); }
@@ -932,26 +1034,51 @@ async fn close_native(
         .await
 }
 
-pub(crate) async fn run(config: Config) -> Result<(), Box<dyn Error>> {
+pub(crate) async fn run(config: ActorConfig) -> Result<(), Box<dyn Error>> {
     let tasks = crate::task_owner::Owner::default();
     let upgrades = crate::upgrade_observer::Observer::default();
     let evidence = Evidence::default();
+    let mut extension = extensions::Actor::new(config.extension, &config)?;
     let mut local = None;
     let primary: Result<(), Box<dyn Error>> = async {
         fs::create_dir_all(&config.store)?;
-        let mut swarm = new_swarm(&config, &evidence, &upgrades, &tasks)?;
+        let mut swarm = match config.extension {
+            Some(extensions::Mode::Idontwant) => transport::new_swarm_with_mode(
+                &config,
+                config.extension,
+                &evidence,
+                &upgrades,
+                &tasks,
+            )?,
+            _ => new_swarm(&config, &evidence, &upgrades, &tasks)?,
+        };
+        extension.subscribe(swarm.behaviour_mut(), &config)?;
         local = Some(*swarm.local_peer_id());
-        let primary = serve(&config, &mut swarm, &evidence, &upgrades).await;
+        let primary = serve(&config, &mut swarm, &evidence, &upgrades, &mut extension).await;
         if let Err(e) = &primary {
             evidence.lock().fail(e);
         }
-        let close = close_native(&mut swarm, &evidence).await;
+        let cancelled = extension.stop(swarm.behaviour_mut(), &config, &evidence);
+        if let Err(e) = &cancelled {
+            evidence.lock().fail(e);
+        }
+        let close = if config.extension.is_some() {
+            extension.close_native(&mut swarm, &evidence).await
+        } else {
+            close_native(&mut swarm, &evidence).await
+        };
         if let Err(e) = &close {
             evidence.lock().fail(e);
         }
         drop(swarm);
+        let drained = extension.drain(&evidence);
+        if let Err(e) = &drained {
+            evidence.lock().fail(e);
+        }
         primary?;
+        cancelled?;
         close?;
+        drained?;
         Ok(())
     }
     .await;
@@ -985,18 +1112,20 @@ pub(crate) async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         }
         joined
     };
-    replace_json(
-        &config.result,
-        &result(
-            &config,
-            local,
-            &evidence,
-            true,
-            joined,
-            task_join,
-            upgrades.finalized(joined),
-        ),
-    )?;
+    if let Err(error) = extension.drain(&evidence) {
+        evidence.lock().fail(error);
+    }
+    let mut final_result = result(
+        &config,
+        local,
+        &evidence,
+        true,
+        joined,
+        task_join,
+        upgrades.finalized(joined),
+    );
+    extension.describe(&mut final_result);
+    replace_json(&config.result, &final_result)?;
     if let Some(error) = evidence.lock().error.clone() {
         return Err(invalid(error).into());
     }

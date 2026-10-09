@@ -38,6 +38,18 @@ struct node_session_fixture {
    static void native_retired_announce();
    static void native_announce_capacity_retry();
    static void native_retired_rpc();
+   static void idontwant_bounds();
+   static void native_extension_versions(pubsub::version remote);
+   static void native_extension_first_rpc();
+   static void native_idontwant_suppression();
+   static void native_idontwant_before_validation();
+   static void partial_registry();
+   static void native_partial_exchange();
+   static void native_partial_queued_send();
+   static void native_partial_subscription_freshness();
+   static void native_partial_subscription_tracer();
+   static void native_partial_gossip();
+   static void native_partial_callback_stop();
 
  private:
    static void run(forge::asio::runtime& runtime, boost::asio::awaitable<void> operation);

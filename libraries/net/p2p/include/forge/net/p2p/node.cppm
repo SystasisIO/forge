@@ -8,6 +8,7 @@ module;
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -247,6 +248,18 @@ class node {
    async_rendezvous_discover(peer_id rendezvous_peer, rendezvous::discover_request request);
    boost::asio::awaitable<pubsub::subscription> async_subscribe(pubsub::topic subject, pubsub::handler handler);
    boost::asio::awaitable<void> async_unsubscribe(pubsub::topic subject);
+   boost::asio::awaitable<pubsub::partial_topic> async_subscribe(
+       pubsub::topic subject, pubsub::handler full_handler, pubsub::partial_options options);
+   // Closes callback admission and requests stop, but never joins the caller's callback.
+   boost::asio::awaitable<void> async_unsubscribe(pubsub::partial_topic registration);
+   boost::asio::awaitable<void> async_advertise_partial(pubsub::partial_topic registration,
+                                                       std::vector<std::uint8_t> group_id);
+   boost::asio::awaitable<void> async_forget_partial(pubsub::partial_topic registration,
+                                                    std::vector<std::uint8_t> group_id);
+   boost::asio::awaitable<std::vector<peer_id>> async_partial_peers(pubsub::partial_topic registration);
+   // Success means a native write, not delivery/reconstruction. Cancellation after write-start may send bytes.
+   boost::asio::awaitable<void> async_send_partial(pubsub::partial_topic registration, peer_id peer,
+                                                  pubsub::partial_message value, std::stop_token stop = {});
    boost::asio::awaitable<pubsub::message> async_publish(pubsub::topic subject, std::vector<std::uint8_t> data);
    boost::asio::awaitable<pubsub::message> async_publish(pubsub::topic subject, std::vector<std::uint8_t> data,
                                                          pubsub::publish_options options);

@@ -19,6 +19,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -132,6 +133,9 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_control(
       }
       const auto now = std::chrono::steady_clock::now();
       const auto& limits = options.limits.pubsub.limits;
+      if (protocol == builtins::meshsub_v12 || protocol == builtins::meshsub_v13) {
+         pubsub_value.idontwant.receive(peer, value.dont_want, limits, options.limits.max_sessions);
+      }
       const auto score = pubsub_score_locked(peer);
       const auto gossip_threshold = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->thresholds.gossip_threshold : 0.0;
       const auto px_threshold = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->thresholds.accept_px_threshold : 0.0;
@@ -221,7 +225,7 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_control(
                const auto stored = pubsub_value.cache.find(key);
                const auto validation = pubsub_value.validations.find(key);
                if (stored == pubsub_value.cache.end() || validation == pubsub_value.validations.end() ||
-                   !can_serve_pubsub_message_locked(key)) {
+                   !can_serve_pubsub_message_locked(key) || pubsub_value.idontwant.contains(peer, key)) {
                   continue;
                }
                const auto [delivery, inserted] = validation->second.retransmissions.try_emplace(peer, 0);
@@ -273,7 +277,11 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_control(
       response.messages.push_back(std::move(message));
       auto send_generation = std::optional<std::uint64_t>{};
       try {
-         if (!co_await send_pubsub_rpc(peer, std::move(response), send_generation, {}, true, session)) { co_return; }
+         if (!co_await send_pubsub_rpc(peer, std::move(response), send_generation, {}, true, session, {}, {}, {}, true)) {
+            const auto lock = std::scoped_lock{mutex};
+            if (!pubsub_session_live_locked(session)) { co_return; }
+            continue; // One suppressed cached ID must not hide other independent responses.
+         }
       } catch (const forge::exceptions::base& error) {
          record_pubsub_send_failure(peer, error, send_generation, session);
          co_return;

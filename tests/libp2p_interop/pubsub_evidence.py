@@ -6,6 +6,7 @@ import math
 import re
 
 from autorelay_wire import _fields, varint
+from pubsub_extension_events import validate_extension_event
 from pubsub_wire import PROTOCOLS, validate_rpc_receipt
 from rust_upgrade_evidence import _peer, _varint
 from upgrade_evidence import HEADER, wire_token
@@ -850,8 +851,9 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=F
                 "invalid native event clock")
         require(isinstance(event.get("source"), str) and event["source"].startswith(implementation + "."),
                 "event lacks attributable native source")
-        require(event.get("kind") in SOURCES[implementation]
-                and event["source"] in SOURCES[implementation][event["kind"]], "event has wrong native authority")
+        extension_event = validate_extension_event(raw, event)
+        require(extension_event or (event.get("kind") in SOURCES[implementation]
+                and event["source"] in SOURCES[implementation][event["kind"]]), "event has wrong native authority")
         if event.get("kind") == "rpc":
             require(event.get("direction") in {"read", "write"}, "native RPC has unknown direction")
             if implementation == "go":
@@ -2879,15 +2881,10 @@ def validate_active_case(artifact, snapshots, *, expected_fingerprint=None):
     return _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint)
 
 
-def _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint):
-    spec, token, roles = artifact["case"], artifact["case_token"], artifact["roles"]
-    offender, replacement, sink = (roles[key] for key in ("offender", "replacement", "sink"))
-    offender_peer = actors[offender]["local_peer_id"]
-    replacement_peer, sink_peer = actors[replacement]["local_peer_id"], actors[sink]["local_peer_id"]
-    protocol, transport, topic = "/meshsub/" + spec["version"] + ".0", PROFILES[spec["profile"]], "forge-pr11:" + token
-    victim = events["victim"]
-    allowed_graph = {"victim": {offender_peer, replacement_peer}, offender: {actors["victim"]["local_peer_id"]},
-                     replacement: {actors["victim"]["local_peer_id"], sink_peer}, sink: {replacement_peer}}
+def _validate_native_graph(artifact, actors, events, cleanup_framing, allowed_graph, protocol, transport,
+                           expected_fingerprint):
+    """Shared carrier/owner/terminal checks; independent of router behavior."""
+    token = artifact["case_token"]
     for name in events:
         if actors[name]["implementation"] == "go" and transport == "quic":
             require(any(event.get("kind") == "native_quic_connection" for event in events[name])
@@ -2936,6 +2933,19 @@ def _validate_traffic(artifact, actors, events, cleanup_framing, expected_finger
                 require(shutdown_ack(remote, remote["implementation"], remote_roles[0], token, remote["local_peer_id"],
                                      row["command_sequence"]) is not None,
                         "lower peer cancellation lacks actual other-actor Prepare prefix")
+
+
+def _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint):
+    spec, token, roles = artifact["case"], artifact["case_token"], artifact["roles"]
+    offender, replacement, sink = (roles[key] for key in ("offender", "replacement", "sink"))
+    offender_peer = actors[offender]["local_peer_id"]
+    replacement_peer, sink_peer = actors[replacement]["local_peer_id"], actors[sink]["local_peer_id"]
+    protocol, transport, topic = "/meshsub/" + spec["version"] + ".0", PROFILES[spec["profile"]], "forge-pr11:" + token
+    victim = events["victim"]
+    allowed_graph = {"victim": {offender_peer, replacement_peer}, offender: {actors["victim"]["local_peer_id"]},
+                     replacement: {actors["victim"]["local_peer_id"], sink_peer}, sink: {replacement_peer}}
+    _validate_native_graph(artifact, actors, events, cleanup_framing, allowed_graph, protocol, transport,
+                           expected_fingerprint)
     for name, expected in ((offender, [actors["victim"]["local_peer_id"]]),
                            (replacement, [sink_peer]), (sink, [replacement_peer])):
         require(_snapshot(events[name], "before")["mesh_peer_ids"] == expected,

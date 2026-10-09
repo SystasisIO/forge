@@ -9,6 +9,7 @@ module;
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,12 +39,22 @@ namespace {
 constexpr auto signing_prefix = std::string_view{"libp2p-pubsub:"};
 
 void validate_options(const options& opts) {
+   static_cast<void>(codec::protocol(opts.preferred));
+   if (opts.partial_messages && opts.preferred != version::v1_3) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "Partial Messages require preferred GossipSub v1.3");
+   }
    const auto& limits = opts.limits;
    if (limits.max_rpc_size == 0 || limits.max_message_size == 0 || limits.max_data_size == 0 ||
        limits.max_topic_size == 0 || limits.max_subscriptions == 0 || limits.max_messages == 0 ||
        limits.max_control_entries == 0 || limits.max_message_ids == 0 || limits.max_peers_per_topic == 0 ||
        limits.max_idontwant_message_id_size == 0 || limits.max_partial_group_id_size == 0 ||
        limits.max_partial_metadata_size == 0 ||
+       limits.max_idontwant_rpcs_per_heartbeat == 0 || limits.max_idontwant_ids_per_rpc == 0 ||
+       limits.idontwant_ttl == 0 || limits.max_idontwant_entries_per_peer == 0 ||
+       limits.max_idontwant_bytes_per_peer == 0 || limits.max_idontwant_entries == 0 || limits.max_idontwant_bytes == 0 ||
+       limits.max_partial_groups_per_topic == 0 || limits.max_partial_groups == 0 ||
+       limits.max_partial_group_bytes == 0 || limits.partial_group_ttl == 0 || limits.max_partial_callbacks == 0 ||
+       limits.max_partial_callback_bytes == 0 || limits.max_partial_gossip_peers == 0 ||
        limits.max_topics == 0 || limits.max_validation_queue == 0 || limits.max_outbound_queue_bytes == 0 ||
        limits.max_ihave_per_peer == 0 || limits.max_iwant_per_peer == 0 || limits.max_graft_per_peer == 0 ||
        limits.heartbeat_initial_delay.count() <= 0 || limits.heartbeat_interval.count() <= 0 ||
@@ -126,7 +137,7 @@ void append_bounded_bytes(std::vector<std::uint8_t>& out, std::uint32_t field,
 }
 
 [[nodiscard]] subscription decode_subscription_payload(std::span<const std::uint8_t> bytes, const options& opts) {
-   auto out = subscription{};
+   auto out = subscription{.subscribe = false}; // Proto2 wire default, not the public construction default.
    auto saw_topic = false;
    auto in = detail::reader{bytes};
    while (!in.done()) {
@@ -637,7 +648,7 @@ void decode_partial_payload(std::span<const std::uint8_t> bytes, const options& 
 }
 
 void decode_control_payload(std::span<const std::uint8_t> bytes, const options& opts, control& out,
-                            std::size_t& entries, std::size_t& ids) {
+                            std::size_t& entries, std::size_t& ids, std::size_t& advertisements) {
    auto in = detail::reader{bytes};
    while (!in.done()) {
       const auto [field, type] = in.key();
@@ -667,6 +678,7 @@ void decode_control_payload(std::span<const std::uint8_t> bytes, const options& 
          out.dont_want.push_back(decode_idontwant_payload(in.bytes(), opts, ids));
          break;
       case 6:
+         ++advertisements;
          if (!out.extensions) { out.extensions.emplace(); }
          decode_extensions_payload(in.bytes(), *out.extensions);
          break;
@@ -715,7 +727,8 @@ void decode_control_payload(std::span<const std::uint8_t> bytes, const options& 
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub control message must be bytes");
          }
          if (!out.value.control_value) { out.value.control_value.emplace(); }
-         decode_control_payload(in.bytes(), opts, *out.value.control_value, control_entries, idontwant_ids);
+         decode_control_payload(in.bytes(), opts, *out.value.control_value, control_entries, idontwant_ids,
+                                 out.extension_advertisements);
          break;
       case 10:
          if (type != detail::wire_type::length_delimited) {
@@ -868,8 +881,10 @@ protocol_id codec::protocol(version value) {
    case version::v1_3:
       return builtins::meshsub_v13;
    }
-   return builtins::meshsub_v11;
+   FORGE_THROW_EXCEPTION(exceptions::invalid_options, "unknown GossipSub preferred version");
 }
+
+const topic& partial_topic::subject() const noexcept { return _subject; }
 
 std::vector<std::uint8_t> codec::encode(const rpc& value) {
    return encode(value, options{});
@@ -917,12 +932,15 @@ namespace {
 
 std::optional<codec::gossip_chunk> next_gossip_chunk(const control& value, codec::gossip_cursor& cursor,
                                                    const options& opts, bool materialize) {
-   if (cursor.have > value.have.size() || cursor.want > value.want.size() ||
+   if (cursor.have > value.have.size() || cursor.want > value.want.size() || cursor.dont_want > value.dont_want.size() ||
        (cursor.have < value.have.size() &&
-           (cursor.want != 0 || cursor.id > value.have[cursor.have].message_ids.size())) ||
+           (cursor.want != 0 || cursor.dont_want != 0 || cursor.id > value.have[cursor.have].message_ids.size())) ||
        (cursor.have == value.have.size() && cursor.want < value.want.size() &&
-           cursor.id > value.want[cursor.want].message_ids.size()) ||
-       (cursor.have == value.have.size() && cursor.want == value.want.size() && cursor.id != 0)) {
+           (cursor.dont_want != 0 || cursor.id > value.want[cursor.want].message_ids.size())) ||
+       (cursor.have == value.have.size() && cursor.want == value.want.size() && cursor.dont_want < value.dont_want.size() &&
+           cursor.id > value.dont_want[cursor.dont_want].message_ids.size()) ||
+       (cursor.have == value.have.size() && cursor.want == value.want.size() &&
+           cursor.dont_want == value.dont_want.size() && cursor.id != 0)) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub gossip cursor exceeds its input");
    }
    const auto limit = opts.limits.max_rpc_size;
@@ -1004,8 +1022,34 @@ std::optional<codec::gossip_chunk> next_gossip_chunk(const control& value, codec
       ++cursor.want;
       cursor.id = 0;
    }
-   if (count == 0) { return std::nullopt; }
-   return wanted();
+   if (count != 0) { return wanted(); }
+   const auto unwanted = [&] {
+      auto out = rpc{};
+      if (materialize) {
+         out.control_value.emplace();
+         out.control_value->dont_want.push_back(control::idontwant{.message_ids = std::move(ids)});
+      }
+      return chunk(std::move(out), *payload_size(bytes));
+   };
+   while (cursor.dont_want < value.dont_want.size()) {
+      const auto& row = value.dont_want[cursor.dont_want];
+      while (cursor.id < row.message_ids.size()) {
+         const auto& id = row.message_ids[cursor.id];
+         const auto field = field_size(1, id.size());
+         if (id.empty() || id.size() > opts.limits.max_idontwant_message_id_size ||
+             !field || !payload_size(*field)) { ++cursor.id; continue; }
+         if (count == opts.limits.max_message_ids || count == opts.limits.max_idontwant_ids_per_rpc ||
+             *field > limit - bytes || !payload_size(bytes + *field)) { return unwanted(); }
+         bytes += *field;
+         ++count;
+         if (materialize) { ids.push_back(id); }
+         ++cursor.id;
+      }
+      ++cursor.dont_want;
+      cursor.id = 0;
+   }
+   if (count != 0) { return unwanted(); }
+   return std::nullopt;
 }
 
 } // namespace
@@ -1111,3 +1155,21 @@ bool codec::verify_message(const message& value, const options& opts) {
 }
 
 } // namespace forge::net::p2p::pubsub
+
+namespace forge::net::p2p::detail {
+
+pubsub::partial_topic partial_topic_access::make(const std::shared_ptr<const void>& owner, pubsub::topic subject,
+                                                std::uint64_t generation) {
+   auto out = pubsub::partial_topic{};
+   out._owner = owner;
+   out._subject = std::move(subject);
+   out._generation = generation;
+   return out;
+}
+
+bool partial_topic_access::matches(const pubsub::partial_topic& token, const std::shared_ptr<const void>& owner,
+                                   std::uint64_t generation) noexcept {
+   return generation != 0 && token._generation == generation && token._owner.lock() == owner;
+}
+
+} // namespace forge::net::p2p::detail

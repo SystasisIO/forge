@@ -26,6 +26,7 @@ PROMOTION_SCOPES = {
     "path": "focused DCUtR12 only, not full Stage 6 or production support",
     "coordinated": "focused coordinated TCP reuse8 only, not full Stage 6 or production support",
     "pubsub-scoring": "original GossipSub v1.0/v1.1 traffic24 plus four independent standard-error-source-patched Rust QUIC shutdown runs; original Rust QUIC shutdown NOT_PROVEN; not full Stage 6 or production support",
+    "pubsub-extensions": "focused PR12 original-native extensions36 plus six independent locally patched Rust QUIC traffic/shutdown runs; original Rust QUIC shutdown NOT_PROVEN; other30 require original terminal success; not full Stage 6 or production support",
 }
 
 

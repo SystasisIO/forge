@@ -1,6 +1,6 @@
 //! Real pinned public transports; observations begin only at successful output.
 use super::observer::{self, Evidence, NativeStack};
-use super::{Config, behaviour, invalid, lower_hex};
+use super::{Config, behaviour, behaviour_with_mode, extensions::Mode, invalid, lower_hex};
 use libp2p::{Swarm, Transport, gossipsub, identity, pnet::PreSharedKey};
 use sha2::{Digest, Sha256};
 use std::{
@@ -50,9 +50,22 @@ pub(super) fn new_swarm(
     upgrades: &crate::upgrade_observer::Observer,
     tasks: &crate::task_owner::Owner,
 ) -> Result<Swarm<gossipsub::Behaviour>, Box<dyn Error>> {
+    new_swarm_with_mode(config, None, evidence, upgrades, tasks)
+}
+
+pub(super) fn new_swarm_with_mode(
+    config: &Config,
+    mode: Option<Mode>,
+    evidence: &Evidence,
+    upgrades: &crate::upgrade_observer::Observer,
+    tasks: &crate::task_owner::Owner,
+) -> Result<Swarm<gossipsub::Behaviour>, Box<dyn Error>> {
     let key = identity::Keypair::generate_ed25519();
     let peer = key.public().to_peer_id();
-    let router = behaviour(&key, config)?;
+    let router = match mode {
+        Some(Mode::Idontwant) => behaviour_with_mode(&key, config, mode)?,
+        _ => behaviour(&key, config)?,
+    };
     // Facts are emitted only in the successful native output map, never from CLI.
     let (native, stack) = match config.transport.as_str() {
         "quic" => (

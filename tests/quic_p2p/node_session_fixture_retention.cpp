@@ -25,6 +25,7 @@ module;
 #include <random>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <stdexcept>
 #include <string>

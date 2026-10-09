@@ -789,9 +789,11 @@ std::vector<forge::net::p2p::endpoint> node::impl::local_endpoints_for_control_l
       append(builtins::rendezvous);
    }
    if (options.capabilities.has(capabilities::pubsub)) {
-      append(pubsub::codec::protocol(options.limits.pubsub.preferred));
-      if (options.limits.pubsub.preferred == pubsub::version::v1_1 && options.limits.pubsub.allow_v1_0_fallback) {
-         append(builtins::meshsub_v10);
+      for (const auto version : {pubsub::version::v1_3, pubsub::version::v1_2, pubsub::version::v1_1, pubsub::version::v1_0}) {
+         if (version > options.limits.pubsub.preferred ||
+             (version == pubsub::version::v1_0 && options.limits.pubsub.preferred != version &&
+              !options.limits.pubsub.allow_v1_0_fallback)) { continue; }
+         append(pubsub::codec::protocol(version));
       }
    }
    out.reserve(out.size() + handlers.size());

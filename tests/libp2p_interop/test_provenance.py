@@ -841,6 +841,7 @@ from coordinated_cases import run_suite as run_coordinated_suite
 '''
         source += '''
 from pubsub_cases import case_specs as pubsub_specs, run_case as run_pubsub_case
+from pubsub_extension_cases import case_specs as extension_specs, run_case as run_extension_case
 '''
         source += "\ndef main():\n    pass\n"
         if include_private:
@@ -861,6 +862,12 @@ from pubsub_cases import case_specs as pubsub_specs, run_case as run_pubsub_case
     for spec in pubsub_specs():
         artifact = run_pubsub_case(spec, binaries, root, key=pnet_key_file,
             fingerprint=pnet_fingerprint, command_attempt=command_attempt)
+        artifacts.append(artifact)
+'''
+        source += '''
+    for spec in extension_specs():
+        artifact = run_extension_case(spec, binaries, root, key=pnet_key_file,
+            fingerprint=fingerprint, command_attempt=command_attempt)
         artifacts.append(artifact)
 '''
         return source

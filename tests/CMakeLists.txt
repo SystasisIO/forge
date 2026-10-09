@@ -1226,6 +1226,8 @@ add_executable(
    quic_p2p/control/node_session_fixture.cpp
    quic_p2p/control/node_session_fixture_native.cpp
    quic_p2p/control/node_session_fixture_dispatch.cpp
+   quic_p2p/control/node_session_fixture_extensions.cpp
+   quic_p2p/control/node_session_fixture_partial.cpp
    quic_p2p/control/pubsub_control_allocation.hxx
    quic_p2p/control/pubsub_control_allocation.cpp
 )
@@ -1391,7 +1393,10 @@ add_executable(
    libp2p_interop/forge_coordinated_fixture.cpp
    libp2p_interop/forge_path_fixture.cpp
    libp2p_interop/forge_pubsub_fixture.cpp
+   libp2p_interop/forge_pubsub_fixture_extensions.cpp
+   libp2p_interop/forge_pubsub_fixture_partial.cpp
    libp2p_interop/forge_pubsub_fixture_tests.cpp
+   libp2p_interop/forge_pubsub_partial.cpp
    libp2p_interop/forge_private_profile_fixture.cpp
    libp2p_interop/forge_mdns_fixture.hxx
    libp2p_interop/forge_mdns_fixture.cpp
@@ -1616,6 +1621,15 @@ add_test(
 )
 set_tests_properties(test_forge_libp2p_pubsub_evidence PROPERTIES TIMEOUT 30)
 add_test(
+   NAME test_forge_libp2p_pubsub_extension_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_partial_fixture test_pubsub_extension_events test_pubsub_extension_evidence
+      test_pubsub_extension_validation test_pubsub_extension_cases test_pubsub_extension_acceptance
+      test_pubsub_extension_registration
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_pubsub_extension_evidence PROPERTIES TIMEOUT 30)
+add_test(
    NAME test_forge_libp2p_private_profile_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest
       test_private_profile_evidence test_private_profile_cases test_private_profile_acceptance
@@ -1694,6 +1708,24 @@ add_custom_target(
       --forge-fixture $<TARGET_FILE:forge_interop_fixture>
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
       --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/pubsub
+      --forge-root ${CMAKE_SOURCE_DIR}
+      --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
+      --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json
+      --expected-head ${_forge_p2p_stage6_expected_head}
+   DEPENDS forge_interop_fixture test_forge_p2p_inventory
+   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+   VERBATIM
+)
+
+add_custom_target(
+   test_forge_p2p_pubsub_extensions_acceptance
+   COMMAND ${Python3_EXECUTABLE}
+      ${FORGE_P2P_STAGE6_PROMOTION_WRAPPER}
+      --suite pubsub-extensions
+      --runner ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/runner.py
+      --forge-fixture $<TARGET_FILE:forge_interop_fixture>
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+      --build-dir ${FORGE_P2P_STAGE6_PROMOTION_DIRECTORY}/pubsub-extensions
       --forge-root ${CMAKE_SOURCE_DIR}
       --donors-root ${FORGE_LIBP2P_DONORS_ROOT}
       --acceptance-manifest ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop/p2p_donor_capabilities.json

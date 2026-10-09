@@ -231,6 +231,12 @@ add_library(
    details/pubsub_backoff.hxx
    pubsub_control_queue.cpp
    details/pubsub_control_queue.hxx
+   pubsub_idontwant.cpp
+   details/pubsub_idontwant.hxx
+   pubsub_partial.cpp
+   details/pubsub_partial.hxx
+   node_pubsub_partial.cpp
+   node_impl_pubsub_partial.cpp
    details/peer_failure.hxx
    relay_discovery.cpp
    details/relay_discovery.hxx

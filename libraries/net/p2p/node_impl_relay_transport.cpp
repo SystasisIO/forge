@@ -17,6 +17,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -233,7 +234,8 @@ boost::asio::awaitable<void> node::impl::handle_relayed_yamux_stream(std::shared
       co_await handle_dht(session, admitted.protocol, std::move(admitted.stream));
    } else if (admitted.protocol == builtins::rendezvous) {
       co_await handle_rendezvous(session, std::move(admitted.stream));
-   } else if (admitted.protocol == builtins::meshsub_v11 || admitted.protocol == builtins::meshsub_v10) {
+   } else if (admitted.protocol == builtins::meshsub_v13 || admitted.protocol == builtins::meshsub_v12 ||
+              admitted.protocol == builtins::meshsub_v11 || admitted.protocol == builtins::meshsub_v10) {
       co_await handle_pubsub(session, std::move(admitted.stream), admitted.protocol);
    } else {
       increment_protocol_rejected();

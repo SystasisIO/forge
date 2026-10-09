@@ -20,6 +20,7 @@ module;
 #include <random>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -893,7 +894,7 @@ void node_session_fixture::native_protocol_open_failure_generation(bool reconnec
           out->second.stream && out->second.stream->valid() && !out->second.snapshot_pending &&
           owner.impl_->pubsub_value.outbound_budget.total() == 0U &&
           in != owner.impl_->pubsub_value.inbound.end() && in->second.size() == 1U &&
-          in->second.begin()->second == session->id && topics != owner.impl_->pubsub_value.peer_topics.end() &&
+          in->second.begin()->second.session_id == session->id && topics != owner.impl_->pubsub_value.peer_topics.end() &&
           topics->second.contains(fixture.topic.value);
    };
    stage = "setup-pubsub-quiescence";

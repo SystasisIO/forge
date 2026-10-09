@@ -1,15 +1,27 @@
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/use_future.hpp>
 
 import forge.asio.runtime;
+import forge.asio.notification;
 import forge.codec.json;
+import forge.codec.hex;
 import forge.crypto.digest.sha256;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
@@ -19,11 +31,13 @@ import forge.variant.value;
 import forge.variant.containers;
 
 #include "forge_pubsub_fixture.hxx"
+#include "forge_pubsub_partial.hxx"
 
 namespace forge::test::libp2p_interop {
 
 // Synthetic fixture units: no host, transport, router decision or interop evidence is created.
 void forge_pubsub_fixture::self_test() {
+   forge_pubsub_partial::self_test();
    auto check = [](bool okay, std::string_view reason) {
       if (!okay) { throw std::runtime_error{"PubSub fixture unit: " + std::string{reason}}; }
    };
@@ -35,6 +49,23 @@ void forge_pubsub_fixture::self_test() {
       }
       check(false, "missing rejection: " + std::string{reason});
    };
+   namespace pubsub = forge::net::p2p::pubsub;
+   check(protocol_version("1.0") == pubsub::version::v1_0 &&
+         protocol_version("1.1") == pubsub::version::v1_1 &&
+         protocol_version("1.2") == pubsub::version::v1_2 &&
+         protocol_version("1.3") == pubsub::version::v1_3, "fixture mislabeled a native protocol version");
+   for (const auto version : {"", "1.4", "1.30", "v1.3"}) {
+      rejects([&] { static_cast<void>(protocol_version(version)); }, "protocol version");
+   }
+   for (const auto version : {pubsub::version::v1_0, pubsub::version::v1_1, pubsub::version::v1_2, pubsub::version::v1_3}) {
+      validate_extension({}, version);
+      for (const auto mode : {"idontwant", "partial", "advertisement", "unknown"}) {
+         const auto supported = (std::string_view{mode} == "idontwant" && version == pubsub::version::v1_2) ||
+             ((std::string_view{mode} == "partial" || std::string_view{mode} == "advertisement") && version == pubsub::version::v1_3);
+         if (supported) { validate_extension(mode, version); }
+         else { rejects([&] { validate_extension(mode, version); }, "extension mode/version"); }
+      }
+   }
    for (const auto transport : {"tcp", "tcp-pnet-noise", "quic"}) {
       auto options = forge::net::p2p::node::options{};
       options.stream_security = forge::net::p2p::node::stream_security::tls;
@@ -49,6 +80,279 @@ void forge_pubsub_fixture::self_test() {
        .type = forge::net::p2p::public_key::type::ed25519, .data = std::vector<std::uint8_t>(32, 2)});
    const auto prepare = forge::variant{forge::mutable_variant_object{}("sequence", 1u)("kind", "prepare_shutdown")
        ("actor", "victim")("case_token", std::string(32, 'a'))("local_peer_id", local_peer.to_string())};
+   // Synthetic application ownership only: no native node, stream or callback-join proof.
+   struct owned_operation {
+      boost::asio::io_context context;
+      std::future<void> completion;
+      std::function<void()> release;
+
+      explicit owned_operation(std::function<void()> cleanup) : release{std::move(cleanup)} {}
+      static void fail_closed() noexcept {
+         std::fputs("FATAL: synthetic PubSub extension operation did not join\n", stderr);
+         std::_Exit(86);
+      }
+      void join() {
+         if (!completion.valid()) { return; }
+         context.run_for(std::chrono::seconds{5});
+         if (completion.wait_for(std::chrono::seconds{0}) != std::future_status::ready) { fail_closed(); }
+      }
+      ~owned_operation() {
+         try {
+            release();
+            join();
+            if (completion.valid()) {
+               try { completion.get(); } catch (...) {}
+            }
+         } catch (...) { fail_closed(); }
+      }
+   };
+   {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      fixture._peer = local_peer.to_string();
+      fixture._extension = "partial";
+      auto work = std::optional<partial_work>{};
+      auto drain = owned_operation{[&] {
+         work.reset();
+         fixture._extension_stop.request_stop();
+      }};
+      {
+         const auto lock = std::scoped_lock{fixture._mutex};
+         check(fixture.admit_partial_locked(), "synthetic callback admission failed");
+         work.emplace(&fixture);
+      }
+      drain.completion = boost::asio::co_spawn(drain.context, fixture.prepare_extension(prepare), boost::asio::use_future);
+      drain.context.poll();
+      check(fixture._extension_admission_closed && fixture._extension_work == 1 &&
+          fixture._extension_inputs == 1 && !fixture._extension_drained && fixture._events.empty(),
+          "drain did not wait for admitted application work");
+      check(drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
+          "drain completed while admitted callback was still owned");
+      fixture.partial_failure("synthetic callback failure before guard release");
+      drain.context.poll();
+      check(fixture._extension_work == 1 && !fixture._extension_drained && !fixture._prepared &&
+          fixture._capture_error == "synthetic callback failure before guard release" && fixture._events.empty(),
+          "callback failure was not retained before work release");
+      check(drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
+          "failure publication alone released the callback ownership guard");
+      work.reset();
+      drain.join();
+      rejects([&] { drain.completion.get(); }, "extension drain observed capture failure");
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "prepare_shutdown");
+      check(fixture._extension_work == 0 && !fixture._extension_drained && !fixture._prepared &&
+          fixture._extension_drain_error == "extension drain observed capture failure" &&
+          fixture._capture_error == "synthetic callback failure before guard release" && fixture._events.empty(),
+          "failed callback produced a clean drain/Prepare acknowledgement");
+   }
+   {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      fixture._peer = local_peer.to_string();
+      fixture._extension = "partial";
+      auto callback = owned_operation{[&] { fixture._extension_stop.request_stop(); }};
+      callback.completion = boost::asio::co_spawn(callback.context,
+          fixture.gossip_partial(pubsub::partial_gossip_event{}, std::stop_token{}), boost::asio::use_future);
+      callback.join();
+      callback.completion.get();
+      check(fixture._extension_inputs == 1 && fixture._extension_work == 0 &&
+          fixture._capture_error == "gossip callback outside owned bounded partial group" && fixture._events.empty(),
+          "actual gossip callback rejection lost its failure or leaked admitted work");
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "prepare_shutdown");
+      check(!fixture._prepared && !fixture._extension_drained,
+          "failed gossip callback permitted a clean Prepare acknowledgement");
+      check(fixture.result(true, false, {})["error"].get_string() ==
+          "gossip callback outside owned bounded partial group", "gossip callback failure was not sticky");
+   }
+   {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      const auto legacy = fixture.pubsub_options();
+      check(!legacy.partial_messages && legacy.limits.history_length == 5 &&
+          legacy.limits.mesh_n == 2 && legacy.limits.mesh_n_low == 1 && legacy.limits.mesh_n_high == 4,
+          "legacy public cache/mesh options changed");
+      fixture._extension = "idontwant";
+      const auto held = fixture.pubsub_options();
+      check(!held.partial_messages && held.limits.history_length == 64 && held.limits.history_gossip == 3 &&
+          held.limits.mesh_n == 3 && held.limits.mesh_n_low == 3 && held.limits.mesh_n_high == 4 &&
+          held.limits.heartbeat_interval == std::chrono::milliseconds{250}, "IDW cache/mesh public option adapter");
+      for (const auto mode : {"partial", "advertisement"}) {
+         fixture._extension = mode;
+         fixture._version = "1.3";
+         const auto enabled = fixture.pubsub_options();
+         check(enabled.partial_messages && enabled.limits.history_length == 5 && enabled.limits.mesh_n == 2 &&
+             enabled.limits.mesh_n_low == 1 && enabled.limits.max_partial_groups == 1 &&
+             enabled.limits.max_partial_group_bytes == 20 && enabled.limits.max_partial_metadata_size == 7 &&
+             enabled.limits.max_partial_callbacks == 64 && enabled.limits.partial_group_ttl == 32,
+             "bounded partial public options");
+         const auto raw = fixture.result(false, false, {});
+         check(raw["version"].get_string() == "1.3" && raw["extension"].get_string() == mode &&
+             raw["requests_partial"].as_bool() == (std::string_view{mode} == "partial") &&
+             !raw["partial_registration_active"].as_bool(), "mode schema claimed a subscription before its native return");
+      }
+   }
+   {
+      using format = forge_pubsub_partial;
+      constexpr auto token = "00112233445566778899aabbccddeeff";
+      auto consumer = forge_pubsub_fixture{token, "victim"};
+      consumer._extension = "partial";
+      auto message = pubsub::partial_message{.subject = pubsub::topic{"forge-pr11:" + std::string{token}},
+          .group_id = format::group(token), .metadata = format::encode(format::metadata{1, 7, 0})};
+      check(!consumer._partial.initialized && !consumer._partial.owned, "consumer was proactively seeded");
+      check(!consumer.apply_partial_locked(other_peer, message, 1), "metadata manufactured a received part");
+      check(consumer._partial.initialized && !consumer._partial.owned && consumer._partial.local_have == 0 &&
+          consumer.received_have_locked() == 0 && consumer._partial.local == format::metadata{1, 0, 7},
+          "unknown metadata did not create empty application-only state");
+      auto request = consumer.plan_partial_locked(other_peer, 1, false);
+      check(request.size() == 1 && request.front().peer == other_peer && !request.front().value.data &&
+          request.front().value.metadata == format::encode(format::metadata{1, 0, 7}) &&
+          !request.front().gossip_metadata_only && !consumer._partial.owned,
+          "consumer did not request naturally from actual source metadata");
+      check(!consumer.apply_partial_locked(other_peer, message, 1) &&
+          consumer.plan_partial_locked(other_peer, 1, false).empty(), "equal metadata created a response loop");
+      message.metadata = format::encode(format::metadata{2, 2, 5});
+      consumer.apply_partial_locked(other_peer, message, 2);
+      check(consumer._partial.peers.at(other_peer.to_string()).remote == format::metadata{2, 2, 5},
+          "new metadata OR-accumulated remote availability");
+      message.metadata = format::encode(format::metadata{1, 7, 0});
+      message.data = format::encode(format::part{0, format::expected_part(token, 0)});
+      rejects([&] { consumer.apply_partial_locked(other_peer, message, 3); }, "older or conflicting");
+      message.metadata = format::encode(format::metadata{2, 1, 6});
+      rejects([&] { consumer.apply_partial_locked(other_peer, message, 3); }, "older or conflicting");
+      check(consumer.received_have_locked() == 0 &&
+          consumer._partial.peers.at(other_peer.to_string()).remote == format::metadata{2, 2, 5},
+          "rejected metadata changed actual receipt state");
+      consumer._extension_admission_closed = true;
+      const auto revision = consumer._partial.local.revision;
+      check(!consumer.apply_partial_locked(other_peer, message, 3) &&
+          consumer.plan_partial_locked(other_peer, 3, false).empty() && !consumer.admit_partial_locked() &&
+          consumer._partial.local.revision == revision && consumer._events.empty(), "closed retained callback changed application state");
+      consumer.record("synthetic_observer", "fixture_unit.only", forge::mutable_variant_object{});
+      check(consumer._events.size() == 1, "application admission also closed evidence capture");
+      auto empty = forge_pubsub_fixture{token, "victim"};
+      empty._extension = "partial";
+      message.data.reset();
+      message.metadata = format::encode(format::metadata{1, 0, 7});
+      empty.apply_partial_locked(other_peer, message, 1);
+      check(empty.plan_partial_locked(other_peer, 1, false).empty(), "requested metadata without useful remote availability");
+   }
+   {
+      using format = forge_pubsub_partial;
+      constexpr auto token = "00112233445566778899aabbccddeeff";
+      auto fixture = forge_pubsub_fixture{token, "victim"};
+      fixture._extension = "partial";
+      fixture.offer_partial_locked(1);
+      fixture.reconstruct_partial_locked();
+      check(fixture._partial.local_have == 1 && fixture.received_have_locked() == 0 &&
+          !fixture._partial.reconstructed, "local offer became an actual received part");
+      const auto part_hex = std::array<std::string_view, 3>{
+          "01000032666f7267652d707231323a30303131323233333434353536363737383839396161626263636464656566663a706172742d30",
+          "01010032666f7267652d707231323a30303131323233333434353536363737383839396161626263636464656566663a706172742d31",
+          "01020032666f7267652d707231323a30303131323233333434353536363737383839396161626263636464656566663a706172742d32"};
+      auto message = pubsub::partial_message{.subject = pubsub::topic{"forge-pr11:" + std::string{token}},
+          .group_id = format::group(token), .metadata = forge::codec::hex::decode("01000000010700")};
+      auto receive = [&](std::size_t index) {
+         message.data = forge::codec::hex::decode(part_hex[index]);
+         fixture.record("synthetic_input", "fixture_unit.only", forge::mutable_variant_object{}
+             ("body_hex", std::string{part_hex[index]}));
+         const auto reference = fixture._events.size();
+         check(fixture.apply_partial_locked(other_peer, message, reference), "first golden part not applied");
+         check(fixture._partial.received[index]->observation == reference &&
+             fixture._partial.received[index]->peer == other_peer, "part lost received-input provenance");
+         fixture.reconstruct_partial_locked();
+      };
+      receive(1);
+      receive(2);
+      check(fixture.received_have_locked() == 6 && !fixture._partial.reconstructed,
+          "offer-have1 plus received1/2 falsely reconstructed");
+      check(!fixture.apply_partial_locked(other_peer, message, fixture._events.size()),
+          "equal part duplicate falsely reported new data/corruption");
+      receive(0);
+      check(fixture.received_have_locked() == 7 && fixture._partial.reconstructed, "actual part0 did not complete reconstruction");
+      const auto& row = fixture._events.back();
+      const auto expected = std::string{"forge-pr12:00112233445566778899aabbccddeeff:part-0"}
+          + "forge-pr12:00112233445566778899aabbccddeeff:part-1"
+          + "forge-pr12:00112233445566778899aabbccddeeff:part-2";
+      const auto expected_bytes = std::vector<std::uint8_t>{expected.begin(), expected.end()};
+      check(row["kind"].get_string() == "partial_reconstructed" && row["payload_bytes"].as_uint64() == 150 &&
+          row["payload_hex"].get_string() == forge::codec::hex::encode(expected_bytes) &&
+          row["payload_sha256"].get_string() == "064ef1cce9797038115fb0a843103954c771ea76dccfb25d9200e891b6de1fe4",
+          "completion did not expose independently specified received bytes/hash");
+      for (auto index = 0u; index < 3; ++index) {
+         check(row["parts_hex"].get_array()[index].get_string() == part_hex[index] &&
+             row["part_incoming_sequences"].get_array()[index].as_uint64() == fixture._partial.received[index]->observation &&
+             row["part_peer_ids"].get_array()[index].get_string() == other_peer.to_string(), "reconstruction input mismatch");
+      }
+      const auto count = fixture._events.size();
+      fixture.reconstruct_partial_locked();
+      check(fixture._events.size() == count, "duplicate completion row");
+   }
+   {
+      using format = forge_pubsub_partial;
+      auto provider = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      provider._extension = "partial";
+      provider.offer_partial_locked(7);
+      check(provider.plan_partial_locked(other_peer, 1, true).size() == 1, "gossip failed to offer metadata");
+      check(provider.plan_partial_locked(other_peer, 1, true).empty(), "unchanged gossip looped metadata");
+      auto request = pubsub::partial_message{.subject = pubsub::topic{"forge-pr11:" + provider._token},
+          .group_id = format::group(provider._token), .metadata = format::encode(format::metadata{1, 0, 7})};
+      provider.apply_partial_locked(other_peer, request, 2);
+      const auto parts = provider.plan_partial_locked(other_peer, 2, false);
+      check(parts.size() == 3 && provider.received_have_locked() == 0, "provider generated parts became receipts");
+      for (const auto& action : parts) {
+         check(action.value.data && !action.gossip_metadata_only && action.observation == 2, "requested part action lost actual origin");
+      }
+      check(provider.plan_partial_locked(other_peer, 2, false).empty(), "same request repeated parts");
+      provider._partial.peers.clear();
+      for (auto index = std::uint8_t{1}; index <= 16; ++index) {
+         const auto peer = forge::net::p2p::make_peer_id({.type = forge::net::p2p::public_key::type::ed25519,
+             .data = std::vector<std::uint8_t>(32, index)});
+         provider.plan_partial_locked(peer, 2, true);
+      }
+      const auto extra = forge::net::p2p::make_peer_id({.type = forge::net::p2p::public_key::type::ed25519,
+          .data = std::vector<std::uint8_t>(32, 17)});
+      rejects([&] { provider.plan_partial_locked(extra, 2, true); }, "peer state bound");
+      check(provider._partial.peers.size() == 16, "peer limit mutated bounded state");
+      for (auto index = 0u; index < 64; ++index) {
+         check(provider.admit_partial_locked(), "bounded callback not admitted");
+         provider.finish_partial();
+      }
+      rejects([&] { provider.admit_partial_locked(); }, "input/work bound");
+      check(provider._extension_work == 0 && provider._extension_inputs == 64, "bounded callback leaked active work");
+      provider.partial_failure("later native send error");
+      check(provider._capture_error == "partial application input/work bound exceeded", "late error replaced original failure");
+      check(provider.result(true, false, "later main failure")["extension_capture_error"].get_string() ==
+          "partial application input/work bound exceeded", "final result masked prior capture error");
+   }
+   {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      fixture._peer = local_peer.to_string();
+      fixture._extension = "partial";
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "actual extension drain");
+      fixture._extension_drained = true; // Synthetic state, not proof of a native unsubscribe or callback join.
+      fixture._extension_work = 1;
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "actual extension drain");
+      fixture._extension_work = 0;
+      fixture._extension_drain_error = "actual drain operation failed";
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "prepare_shutdown");
+      check(!fixture._prepared && fixture.result(true, false, "earlier native error")["extension_drain_error"].get_string() ==
+          "actual drain operation failed", "final result masked actual drain error");
+   }
+   {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      fixture._extension = "idontwant";
+      fixture._peer = local_peer.to_string();
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto command = forge::mutable_variant_object{}("sequence", 1u)("kind", "validation_hold")("payload", "foreign");
+      rejects([&] { fixture.command(forge::variant{command}, 1, runtime); }, "validation hold");
+      command("payload", "accept:" + fixture._token + ":held");
+      fixture.command(forge::variant{command}, 1, runtime);
+      check(fixture._events.front()["payload_sha256"].get_string() ==
+          "d11365aea10487c693993d641516d041de95f1f9615b9bbf0e2135a1f048d6ac",
+          "held payload hash differs from actual raw bytes");
+      rejects([&] { fixture.command(forge::variant{command}, 1, runtime); }, "validation hold");
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "prepare_shutdown");
+      auto release = forge::variant{forge::mutable_variant_object{}("sequence", 2u)("kind", "validation_release")};
+      rejects([&] { fixture.command(release, 2, runtime); }, "without held observation");
+      check(fixture._hold_observation == 0 && !fixture._hold_released, "command manufactured a received held message");
+      runtime.stop();
+   }
    for (const auto state : {"active_error", "overflow", "foreign_actor", "foreign_token", "foreign_identity"}) {
       auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
       fixture._peer = local_peer.to_string();

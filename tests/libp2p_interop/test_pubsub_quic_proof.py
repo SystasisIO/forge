@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from pubsub_cases import Case
 from pubsub_evidence import validate_active_case, validate_case
-from pubsub_quic_proof import SCOPE, complete_case, needs_observer, validate_original, validate_split
+from pubsub_quic_proof import SCOPE, _split_evidence, complete_case, needs_observer, validate_original, validate_split
 from test_pubsub_acceptance import Index
 from test_pubsub_evidence import synthetic_case
 from provenance import sha256_file
@@ -294,6 +294,18 @@ class SplitProofBindingTests(unittest.TestCase):
     """Mock only native causal checks to exercise cross-execution binding itself."""
 
     spec = Case("rust", "forge", "1.1", "native_quic")
+
+    def test_suite_scopes_do_not_compare_pr12_run_local_receipts_or_change_pr11(self):
+        original = {"message_id": "original", "write_sequence": 7}
+        companion = {"message_id": "independent", "write_sequence": 12}
+        evidence = _split_evidence(original, companion, "pubsub-extensions")
+        self.assertIs(evidence["original_wire"], original)
+        self.assertIs(evidence["instrumented_shutdown"], companion)
+        self.assertEqual(evidence["original_shutdown"], "NOT_PROVEN")
+        with self.assertRaises(ValueError):
+            _split_evidence(original, companion, "pubsub-scoring")
+        with self.assertRaises(ValueError):
+            _split_evidence(original, original, "foreign-suite")
 
     def check(self, mode):
         facts = {"protocol": "/meshsub/1.1.0"}

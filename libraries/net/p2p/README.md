@@ -114,8 +114,8 @@ session/stream/dial admission and explicitly reserved outbound P2P write memory
 are on the normal node path. Managed topology now has one node-owned lifecycle for
 bounded DHT, configured Rendezvous and Forge Peer Exchange discovery, while
 `static_only` disables autonomous discovery and dialing. GossipSub has bounded
-connected-peer mechanics and live interop fixtures, but its overall support
-state remains `partial` until donor-consistent scoring is complete.
+connected-peer mechanics, scoring and live interop fixtures; these do not replace
+the later integration and production/hostile/soak gates.
 
 The following surfaces are not production claims yet:
 
@@ -163,10 +163,12 @@ The following surfaces are not production claims yet:
   chunks retain their explicit child memory reservations until transport drain,
   acknowledgement or reset. Full ingress, handshake, decoder and native queue
   memory accounting remains future Stage 6 work;
-- GossipSub v1.0/v1.1 scoring and autonomous mesh selection have a new native
-  implementation and registered acceptance suite, whose final exact-head
-  verdict remains pending. v1.2/v1.3 and opt-in Partial Messages remain PR12;
-  transport topology is owned by the managed topology service above.
+- GossipSub v1.0/v1.1 scoring and autonomous mesh selection have a native
+  implementation and registered acceptance suite. Original Rust QUIC shutdown
+  remains `NOT_PROVEN`; explicitly patched shutdown observations have a separate
+  scope. PR12 adds v1.2/v1.3 and opt-in Partial Messages, whose final-head live
+  acceptance is still pending. Transport topology belongs to the managed
+  topology service above.
 
 ### GossipSub Scoring (Preview)
 
@@ -205,12 +207,61 @@ Inbound GRAFT entries all pass the existing topic, score, backoff and mesh check
 subject to the RPC byte/count bounds. Callers that previously relied on this
 field as an inbound cap must use those receive/resource limits instead.
 
-The focused acceptance target is `test_forge_p2p_pubsub_acceptance`; codec,
+The scoring acceptance target is `test_forge_p2p_pubsub_acceptance`; codec,
 score-engine or synthetic checker tests alone do not establish interoperability.
 See the [donor traceability note](../../../docs/donors/forge-p2p-gossipsub-scoring-v1.md)
 for composition, Rust score-counter visibility and the unresolved typed QUIC
 shutdown-cause observation gate. Unavailable native causes are not promoted to
 successful shutdown using diagnostic strings, another stream's cause or retries.
+
+### GossipSub Extensions (Preview)
+
+`pubsub::options::preferred` can select v1.2 or v1.3, retaining the default v1.1.
+The standard protocol IDs are `/meshsub/1.2.0` and `/meshsub/1.3.0`; lower-version
+peers use the existing bounded protocol fallback. v1.2 IDONTWANT suppresses
+redundant sends with per-peer/node count, byte and heartbeat bounds. It is not a
+delivery acknowledgement, and a duplicate after IDONTWANT is not by itself a
+scoring offence.
+
+v1.3 advertises enabled extensions in the first RPC of each stream generation.
+Unknown extensions are ignored. A new stream must establish its own facts; it
+does not inherit an old stream's advertisement. Global extension support and
+per-topic partial-message flags are separate.
+
+Partial Messages requires `pubsub::options::partial_messages = true`, v1.3 and
+the partial `node::async_subscribe` overload. Its `partial_options` supplies both
+receive and gossip callbacks. `requests_partial` defaults to false: this allows
+metadata exchange and sending parts while still requesting ordinary full
+messages. Only peers requesting parts may receive a partial data body. An absent
+body differs from a present empty body on the wire.
+
+The returned `partial_topic` is a non-owning registration token. It binds
+`async_send_partial`, `async_partial_peers`, `async_advertise_partial`,
+`async_forget_partial` and scoped unsubscribe to the same node/topic generation.
+Copying or destroying it does not unsubscribe. Replacement invalidates the old
+token, preventing a delayed callback from changing the replacement's state.
+
+The application owns group IDs, part encoding, authenticity checks, metadata
+replacement and reconstruction. A group ID must be usable before the full
+message is known; blindly hashing the completed payload is not a suitable
+general group scheme. The transport authenticates the sending peer, not the
+truth of each part. Partials never become accepted full messages or earn full
+message delivery scores automatically. Ordinary signed full messages and cached
+IWANT responses retain their existing validation path.
+
+Callbacks receive owned payloads and a cancellation token outside node locks.
+They may send to eligible mesh or non-mesh peers without holding a write gate.
+Local group advertisements have explicit count/byte/heartbeat limits and must be
+refreshed by their owner; remote traffic cannot renew them. At most one gossip
+callback per topic runs at a time, including across registration replacement.
+Callback work and bytes stay accounted until the callback actually finishes.
+Unsubscribe closes admission and requests cancellation; node shutdown joins
+callbacks. A callback must therefore cooperate with cancellation and must not
+await its own node's shutdown.
+
+This is not file storage, automatic chunking or a Swarm implementation. See the
+[extension donor note](../../../docs/donors/forge-p2p-gossipsub-extensions-v1.md)
+for the pinned draft specification, ownership mapping and evidence boundaries.
 
 The native receive boundary enforces signature policies before cache admission
 and IWANT fulfillment. StrictNoSign requires all four authentication protobuf

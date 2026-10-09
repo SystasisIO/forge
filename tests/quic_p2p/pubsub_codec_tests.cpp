@@ -117,6 +117,43 @@ BOOST_AUTO_TEST_CASE(v13_advertisement_and_subscription_flags_preserve_presence)
    BOOST_CHECK(!ps::codec::decode(bytes{0}, ps::options{}).control_value);
 }
 
+BOOST_AUTO_TEST_CASE(subscription_absent_subscribe_defaults_to_false_without_rewriting_partial_flags) {
+   BOOST_CHECK(ps::subscription{}.subscribe); // Public construction remains convenient and compatible.
+   const auto golden = bytes{9, 0x0a, 7, 0x12, 1, 't', 0x18, 1, 0x20, 0};
+   for (const auto& rpc : {ps::codec::decode(golden), ps::codec::decode_received(golden, ps::options{}).value}) {
+      BOOST_REQUIRE_EQUAL(rpc.subscriptions.size(), 1U);
+      const auto& row = rpc.subscriptions.front();
+      BOOST_CHECK(!row.subscribe);
+      BOOST_CHECK_EQUAL(row.subject.value, "t");
+      BOOST_CHECK(row.requests_partial == std::optional<bool>{true});
+      BOOST_CHECK(row.supports_sending_partial == std::optional<bool>{false});
+      check_bytes(ps::codec::encode(rpc), {11, 0x0a, 9, 8, 0, 0x12, 1, 't', 0x18, 1, 0x20, 0});
+   }
+   const auto omitted = ps::codec::decode(bytes{5, 0x0a, 3, 0x12, 1, 't'});
+   BOOST_CHECK(!omitted.subscriptions.front().subscribe);
+   BOOST_CHECK(!omitted.subscriptions.front().requests_partial);
+   BOOST_CHECK(!omitted.subscriptions.front().supports_sending_partial);
+   for (const auto subscribe : {false, true}) {
+      const auto wire = framed(field(0x0a, {8, static_cast<std::uint8_t>(subscribe), 0x12, 1, 't'}));
+      BOOST_CHECK_EQUAL(ps::codec::decode(wire).subscriptions.front().subscribe, subscribe);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(requesting_partial_preserves_absent_false_and_true_support_flags) {
+   for (const auto supports : std::vector<std::optional<bool>>{std::nullopt, false, true}) {
+      auto sub = bytes{8, 1, 0x12, 1, 't', 0x18, 1};
+      if (supports) { sub.insert(sub.end(), {0x20, static_cast<std::uint8_t>(*supports)}); }
+      const auto wire = framed(field(0x0a, sub));
+      const auto rpc = ps::codec::decode(wire);
+      BOOST_REQUIRE_EQUAL(rpc.subscriptions.size(), 1U);
+      const auto& row = rpc.subscriptions.front();
+      BOOST_CHECK(row.subscribe);
+      BOOST_CHECK(row.requests_partial == std::optional<bool>{true});
+      BOOST_CHECK(row.supports_sending_partial == supports);
+      check_bytes(ps::codec::encode(rpc), wire); // Effective support belongs to the runtime, not the codec.
+   }
+}
+
 BOOST_AUTO_TEST_CASE(partial_field_ten_has_independent_optional_binary_fields) {
    const auto golden = bytes{0x0e, 0x52, 0x0c, 0x0a, 1, 't', 0x12, 2, 0, 0xff, 0x1a, 0, 0x22, 1, 0x80};
    const auto rpc = ps::codec::decode(golden, ps::options{});

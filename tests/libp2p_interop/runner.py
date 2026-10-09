@@ -25,6 +25,12 @@ from path_cases import run_suite as run_path_suite
 from coordinated_cases import run_suite as run_coordinated_suite
 from pubsub_cases import case_specs as pubsub_specs, run_case as run_pubsub_case
 from pubsub_quic_proof import needs_observer as needs_quic_observer, complete_case as complete_pubsub_case
+from pubsub_extension_cases import case_specs as pubsub_extension_specs, run_case as run_pubsub_extension_case
+from pubsub_extension_acceptance import (
+    complete_case as complete_pubsub_extension_case,
+    complete_split_case as complete_pubsub_extension_split,
+    needs_observer as extension_needs_quic_observer,
+)
 from mdns_cases import run_suite as run_mdns_suite
 from mdns_isolation_cases import run_suite as run_mdns_isolation_suite
 from mdns_churn_cases import run_suite as run_mdns_churn_suite
@@ -1714,7 +1720,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring", "pubsub-extensions"), default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
@@ -1840,8 +1846,9 @@ def main() -> int:
                 for implementation, binary in binaries.items()
             })
             observer_binary = None
-            if args.suite == "pubsub-scoring" or args.suite == "stage6" and manifest_registers_profiles(
-                    args.acceptance_manifest, {spec.scenario for spec in pubsub_specs()}):
+            if args.suite in {"pubsub-scoring", "pubsub-extensions"} or args.suite == "stage6" and (
+                    manifest_registers_profiles(args.acceptance_manifest, {spec.scenario for spec in pubsub_specs()})
+                    or manifest_registers_profiles(args.acceptance_manifest, {spec.scenario for spec in pubsub_extension_specs()})):
                 from rust_quic_observer import prepare_observer_copy
                 observer_root = build_dir / "quic-observer"
                 observer = prepare_observer_copy(fixture_deps, observer_root)
@@ -2073,6 +2080,21 @@ def main() -> int:
                         failures.append(f"{artifact['scenario_id']}: " +
                                         "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
                 pnet_fingerprint = private_pubsub_fingerprint
+            if args.suite == "pubsub-extensions" or args.suite == "stage6" and manifest_registers_profiles(
+                    args.acceptance_manifest, {spec.scenario for spec in pubsub_extension_specs()}):
+                for spec in pubsub_extension_specs():
+                    fingerprint = pnet_fingerprint if spec.profile == "private_tcp_yamux" else None
+                    artifact = run_pubsub_extension_case(spec, binaries, root, key=pnet_key_file,
+                        fingerprint=fingerprint, command_attempt=command_attempt)
+                    if extension_needs_quic_observer(spec):
+                        artifact = complete_pubsub_extension_split(artifact, spec, binaries, root, observer_binary,
+                                                                  command_attempt=command_attempt)
+                    else:
+                        artifact = complete_pubsub_extension_case(artifact, spec, fingerprint=fingerprint)
+                    artifacts.append(artifact)
+                    if artifact["status"] != "observed":
+                        failures.append(f"{artifact['scenario_id']}: " +
+                                        "; ".join(artifact["errors"] + artifact["cleanup_errors"]))
     except Exception as error:
         failures.append(f"preflight: {error}")
     finally:

@@ -12,7 +12,9 @@ contract makes no production-readiness or fresh-run acceptance claim.
 
 `pubsub-live` accepts unique flag/value pairs:
 
-- `--version`: `1.0` or `1.1`; exactly one standard protocol is offered.
+- `--version`: PR11 uses `1.0` or `1.1`. PR12 additionally accepts `1.2` and
+  `1.3`; see `pubsub_extensions_contract.md` for native selection and the Rust
+  default-list constraint. Accepting the flag is not extension evidence.
 - `--transport`: `quic`, `tcp`, or `tcp-pnet-noise`.
 - `--actor`: `victim`, `offender`, `replacement`, or `sink`.
 - `--case-token`: 32 lowercase hexadecimal digits.
