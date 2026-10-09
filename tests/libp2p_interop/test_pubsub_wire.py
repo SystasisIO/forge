@@ -20,6 +20,22 @@ def receipt(body, direction="read"):
 
 
 class PubSubWireTests(unittest.TestCase):
+    def test_empty_rpc_requires_an_actual_complete_zero_length_frame(self):
+        for minor in range(4):
+            protocol = f"/meshsub/1.{minor}.0"
+            for direction in ("read", "write"):
+                value = validate_rpc_receipt(receipt(b"", direction), protocol, direction)
+                self.assertEqual(value["subscriptions"], [])
+                self.assertEqual(value["messages"], [])
+                if minor == 3:
+                    self.assertIsNone(value["extensions"])
+                for wire in (b"", b"\x80", b"\x80\x00", b"\x00\x00", b"\x01"):
+                    bad = receipt(b"", direction)
+                    bad["framed_hex"] = wire.hex()
+                    bad[direction].update(framed_bytes=len(wire), framed_sha256=hashlib.sha256(wire).hexdigest())
+                    with self.assertRaises(ValueError):
+                        validate_rpc_receipt(bad, protocol, direction)
+
     def test_native_prune_topic_only_is_v10(self):
         body = field(3, field(4, field(1, b"topic")))
         value = validate_rpc_receipt(receipt(body), "/meshsub/1.0.0", "read")

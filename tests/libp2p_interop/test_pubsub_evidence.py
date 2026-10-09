@@ -112,9 +112,10 @@ def synthetic_non_pubsub_failure(*, protocol="/ipfs/id/1.0.0", prepared=False, a
     return raw
 
 
-def synthetic_case(*, lower_quic=True):
+def synthetic_case(*, lower_quic=True, version="1.1"):
     token = "a" * 32
     topic = "forge-pr11:" + token
+    protocol = "/meshsub/" + version + ".0"
     actors, processes = {}, {}
     names = ("victim", "offender", "replacement", "sink")
     peers = {name: peer_id(index) for index, name in enumerate(names, 1)}
@@ -153,12 +154,12 @@ def synthetic_case(*, lower_quic=True):
                   else "native_quic_TLS_InterceptSecured_and_RemotePublicKey", transport="quic",
                   security="/tls/1.0.0", muxer="quic")
             event(name, "protocol", peer_id=peers[remote], connection_id=remote,
-                  stream_id=remote, protocol="/meshsub/1.1.0")
+                  stream_id=remote, protocol=protocol)
 
     def rpc(left, right, body):
         for name, remote, direction in ((left, right, "write"), (right, left, "read")):
             event(name, "rpc", peer_id=peers[remote], connection_id=remote, stream_id=remote,
-                  protocol="/meshsub/1.1.0", direction=direction, receipt=receipt(body, direction))
+                  protocol=protocol, direction=direction, receipt=receipt(body, direction))
 
     def sample(name, label, mesh, score=0, invalid=0):
         scores = [{"peer_id": peers["offender"], "value": score, "invalid_deliveries": invalid}]
@@ -204,7 +205,8 @@ def synthetic_case(*, lower_quic=True):
     sample("victim", "ignored", ["offender"])
     message("offender", "victim", "offender", "reject:" + token + ":one", "reject", 3)
     sample("victim", "penalized", ["offender"], -100, 1)
-    rpc("victim", "offender", field(3, field(4, field(1, topic.encode()) + field(3, 1))))
+    rpc("victim", "offender", field(3, field(4, field(1, topic.encode())
+                                               + (field(3, 1) if version != "1.0" else b""))))
     rpc("victim", "replacement", field(3, field(3, field(1, topic.encode()))))
     sample("victim", "repaired", ["replacement"], -100, 1)
     sample("replacement", "repaired", ["victim", "sink"])
@@ -277,7 +279,7 @@ def synthetic_case(*, lower_quic=True):
     barrier["operations"].append({"sequence": len(barrier["operations"]) + 1, "kind": "stop_requested",
                                   "actor": "victim", "case_token": token, "local_peer_id": peers["victim"]})
     artifact = {"schema_version": 1, "suite": "pubsub-scoring", "case_token": token,
-            "case": {"source": "go", "destination": "forge", "version": "1.1", "profile": "native_quic"},
+            "case": {"source": "go", "destination": "forge", "version": version, "profile": "native_quic"},
             "roles": {role: role for role in names[1:]}, "raw": actors, "processes": processes,
             "errors": [], "cleanup_errors": [], "shutdown_barrier": barrier}
     if lower_quic:

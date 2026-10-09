@@ -59,7 +59,7 @@ def _bounded_hex(fields, number, limit, *, required=False):
 
 
 def decode_rpc(body, protocol):
-    if protocol not in PROTOCOLS or not isinstance(body, bytes) or not 0 < len(body) <= MAX_FRAME:
+    if protocol not in PROTOCOLS or not isinstance(body, bytes) or len(body) > MAX_FRAME:
         raise ValueError("unsupported or oversized PubSub RPC")
     fields = _fields(body)
     modern = protocol in {"/meshsub/1.2.0", "/meshsub/1.3.0"}
@@ -151,6 +151,6 @@ def validate_rpc_receipt(receipt, protocol, direction):
             or type(observed.get("frames")) is not int or observed["frames"] != 1:
         raise ValueError("PubSub actual I/O bytes/hash/completion mismatch")
     size, prefix = _varint(data, 0)
-    if not 0 < size <= MAX_FRAME or prefix > 3 or len(data) != prefix + size:
+    if size > MAX_FRAME or prefix > 3 or len(data) != prefix + size:
         raise ValueError("PubSub framed length mismatch")
     return decode_rpc(data[prefix:], protocol)

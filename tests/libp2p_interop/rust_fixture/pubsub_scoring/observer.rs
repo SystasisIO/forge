@@ -501,8 +501,15 @@ impl Frames {
             } else {
                 FRAME_LIMIT
             };
-            if length == 0 || length > length_limit {
+            if (negotiation && length == 0) || length > length_limit {
                 return Err(invalid("native frame size over limit"));
+            }
+            if length == 0 {
+                self.prefix.clear();
+                return Ok(Some(NativeFrame {
+                    body: Vec::new(),
+                    framed: std::mem::take(&mut self.framed),
+                }));
             }
             self.length = Some(length);
             self.prefix.clear();

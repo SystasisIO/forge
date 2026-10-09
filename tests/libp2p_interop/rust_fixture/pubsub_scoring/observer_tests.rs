@@ -1211,6 +1211,28 @@ fn native_frames_are_byte_exact_bounded_and_never_completed_by_config() {
 }
 
 #[test]
+fn empty_native_rpc_is_a_real_frame_but_empty_multistream_is_invalid() {
+    for minor in 0..=3 {
+        let (evidence, _, mut wire) = observed();
+        negotiate(&mut wire, &format!("/meshsub/1.{minor}.0"));
+        wire.feed(0, &[0]);
+        wire.feed(1, &[0]);
+        let capture = evidence.lock();
+        let events: Vec<_> = capture.events.iter().filter(|e| e["kind"] == "rpc").collect();
+        assert_eq!(events.len(), 2);
+        for (event, direction) in events.iter().zip(["read", "write"]) {
+            assert_eq!(event["receipt"]["framed_hex"], "00");
+            assert_eq!(event["receipt"][direction]["frames"], 1);
+            assert_eq!(event["receipt"][direction]["framed_bytes"], 1);
+        }
+        assert!(capture.error.is_none());
+        assert!(wire.frames.iter().all(|frame| !frame.partial()));
+    }
+    let mut frame = Frames::default();
+    assert!(frame.byte(0, true).is_err());
+}
+
+#[test]
 fn prune_presence_and_raw_rpc_receipts_do_not_synthesize_missing_extensions() {
     let no_extensions = [0x1a, 5, 0x22, 3, 0x0a, 1, b't'];
     let zero_backoff = [0x1a, 7, 0x22, 5, 0x0a, 1, b't', 0x18, 0];
