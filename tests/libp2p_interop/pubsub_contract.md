@@ -799,6 +799,30 @@ nor proof of remote Reset/ACK delivery, graceful close or router/process join.
 No Swarm/native stream-ID mapping, event-adjacency association or new native
 emitter is introduced. Original failed artifacts remain unchanged.
 
+### Outbound Cancellation Before Negotiation
+
+A native outbound stream opened after the actual Prepare ACK can be reset
+before it sends any negotiation bytes. This is separate from inbound
+remote-reset cleanup and from connection-level closure. The proof must bind
+the real Open BEGIN and registration to that ACK, a live creation context and
+the authenticated parent's live Prepare baseline; the stream itself must not
+appear in that earlier baseline.
+
+Every failing Read/Write retains n=0 and its direct outer/inner typed local
+StreamError0 on the same native stream. An independently observed successful
+full Reset RETURN must precede that operation's BEGIN in native counters.
+Read and send causes remain independent; a Read does not borrow the Write's
+send-context cause. All parser snapshots, successful prefixes, partial/lazy
+tails and frame lists must be empty, without selected protocol or RPC authority.
+
+Terminal acceptance additionally needs a successful full disposal after all
+I/O RETURNs, no later calls, the actual zero-active-call native join and joined
+host/fixture owners. Active prefixes describe pending diagnostics only and
+cannot borrow later disposal or join events. Sticky failures, unknown/wrapped/
+nonzero/remote errors, foreign owners, any bytes and missing disposal remain
+fatal. This evidence is cancellation before negotiation, never graceful Close,
+remote acknowledgement, delivery or permission to ignore another native error.
+
 ## Router Configuration
 
 Use topic `forge-pr11:<case-token>`, strict signed messages and real validators.

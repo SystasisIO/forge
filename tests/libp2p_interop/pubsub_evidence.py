@@ -1595,6 +1595,84 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=
     return captured, touched
 
 
+def _quic_outbound_cancelled_before_negotiation(raw, events, *, terminal, excluded_owners):
+    """Check empty local-reset diagnostics; active prefixes claim no cleanup/join."""
+    anchors = [value for value in events if value.get("kind") == "native_quic_negotiation_io_return"
+               and value.get("outcome") == "error" and (
+                   value.get("error_type") == "*network.StreamError" or value.get("transport_error_type") == "*quic.StreamError"
+                   or value.get("typed_cause") == "libp2p_quic_stream_error")]
+    diagnostics, owners = {}, set()
+    for anchor in anchors:
+        connection, stream = _go_quic_stream(events, anchor, diagnostic=True)
+        key = (stream["native_connection_id"], stream["native_stream_id"])
+        if stream["stream_direction"] != "Outbound" or key in excluded_owners or key in owners:
+            continue
+        require(raw.get("error") is None and raw.get("overflow") is False,
+                "outbound cancellation cannot clear a sticky failure or overflow")
+        ack = stream["prepare_ack_sequence"]
+        require(0 < ack == stream["native_call_begin_prepare_ack_sequence"] < stream["sequence"]
+                and connection["local_peer_id"] == raw["local_peer_id"],
+                "outbound cancellation lacks its real prepared Open BEGIN/registration")
+        _quic_context(stream["send_context_at_stream_return"], live=True)
+        rows = _quic_prepare_rows(raw, anchor, events, ack)
+        require(key not in rows and any(owner[0] == key[0] for owner in rows),
+                "outbound cancellation invented stream baseline or lacks live parent baseline")
+        owned = [value for value in events if value.get("native_connection_id") == key[0]
+                 and _same_json(value.get("native_stream_id"), key[1])]
+        calls = [value for value in owned if value is not stream]
+        io = [value for value in calls if value.get("kind") == "native_quic_negotiation_io_return"]
+        resets = [value for value in calls if value.get("kind") == "native_stream_operation"]
+        require(len(calls) == len(io) + len(resets) and 1 <= len(io) <= 2 and 1 <= len(resets) <= 3
+                and all(type(value.get("direction")) is str for value in io)
+                and len({value["direction"] for value in io}) == len(io)
+                and all(value["direction"] in {"read", "write"} for value in io)
+                and all(value.get("operation") == "stream_reset" for value in resets),
+                "outbound cancellation has extra/duplicate calls or protocol/application authority")
+        orders = set()
+        for value in calls:
+            require(_quic_same_owner(value, anchor) and value["protocol"] == "",
+                    "outbound cancellation borrowed another owner or selected protocol")
+            is_io = value.get("kind") == "native_quic_negotiation_io_return"
+            captured, touched = _go_quic_diagnostic(raw, events, value, empty_stream_error=is_io)
+            snapshot = value["negotiation_snapshot"]
+            require(captured == 0 and touched is False and snapshot["frame_sequences"] == []
+                    and snapshot["proposal"] == snapshot["reply"] == snapshot["selected_protocol"] == ""
+                    and snapshot["proposals"] == 0
+                    and value["prepare_ack_sequence"] == value["terminal_prepare_ack_sequence"]
+                    == value["prepare_snapshot_ack_sequence"] == ack
+                    and value["prepare_baseline_present"] is False and value["stream_prepare_baseline_present"] is False
+                    and value["connection_prepare_baseline_present"] is True,
+                    "outbound cancellation has negotiation bytes or changed actual Prepare baseline")
+            _quic_context(value["connection_context"], live=True)
+            _quic_context(value["connection_context_at_prepare"], live=True)
+            require(_quic_zero_context(value["send_context"], key[1])["remote"] is False
+                    and (not is_io or value["remote"] is False)
+                    and (value.get("direction") != "write" or value["same_send_context_cause"] is True),
+                    "outbound cancellation has remote/foreign send cause or unbound Write")
+            require(value["started_order"] not in orders and value["returned_order"] not in orders,
+                    "outbound cancellation has ambiguous native counters")
+            orders.update((value["started_order"], value["returned_order"]))
+        for value in io:
+            preceding = [reset for reset in resets if reset["started_order"] < value["started_order"]]
+            require(preceding and max(preceding, key=lambda reset: reset["started_order"])["returned_order"] < value["started_order"],
+                    "outbound native I/O lacks its latest successful full Reset before BEGIN")
+        lower = [value for value in events if value.get("source") in GO_QUIC_SOURCES.values()
+                 or value.get("source") in {"go.quic.native_stream.read", "go.quic.native_stream.write"}]
+        joined = _quic_native_join(lower) if terminal or any(value["kind"] == "native_quic_join" for value in lower) else None
+        if joined is not None:
+            require(all(value["sequence"] < joined["sequence"] for value in owned),
+                    "outbound cancellation has post-join observations")
+        if terminal:
+            require(raw.get("finalized") is True and raw.get("joined") is True
+                    and orders == set(range(1, 2 * len(calls) + 1))
+                    and max(value["returned_order"] for value in io) < max(reset["started_order"] for reset in resets),
+                    "outbound cancellation lacks all native returns and full Reset after final I/O")
+            _terminal_owners(raw)
+        diagnostics.update((value["sequence"], value) for value in calls)
+        owners.add(key)
+    return diagnostics, owners
+
+
 def _quic_empty_negotiation_cleanup(raw, events, *, terminal, excluded_owners):
     """Passive pending rows in active snapshots; exact disposal/join at terminal."""
     anchors = [value for value in events if (
@@ -2210,8 +2288,10 @@ def _go_quic_operations(raw, events, *, terminal):
             "native QUIC physical owner capture exceeds fixture bounds")
     abort_errors, abort_closes, abort_proofs, abort_owners = _quic_stream_aborts(raw, events, terminal=terminal)
     native_only_proofs, native_only_owners = _quic_late_selected_cleanup(raw, events, terminal=terminal)
+    outbound_diagnostics, outbound_owners = _quic_outbound_cancelled_before_negotiation(
+        raw, events, terminal=terminal, excluded_owners=abort_owners | native_only_owners)
     empty_native_diagnostics = _quic_empty_negotiation_cleanup(raw, events, terminal=terminal,
-                                                              excluded_owners=abort_owners | native_only_owners)
+                                                              excluded_owners=abort_owners | native_only_owners | outbound_owners)
     base = EVENT_FIELDS | QUIC_OWNER_FIELDS
     operations, pending, frames, finals, contexts, orders = {}, {}, {}, {}, {}, {}
     diagnostics, diagnostic_contexts, diagnostic_touched, captured_bytes = {}, {}, set(), 0
@@ -2236,6 +2316,9 @@ def _go_quic_operations(raw, events, *, terminal):
             require(event["local_peer_id"] == raw["local_peer_id"], "lower connection has foreign local actor identity")
             continue
         if kind == "native_quic_join":
+            continue
+        if event["sequence"] in outbound_diagnostics:
+            require(outbound_diagnostics[event["sequence"]] is event, "foreign outbound cancellation diagnostic dispatch")
             continue
         if event["sequence"] in empty_native_diagnostics:
             require(empty_native_diagnostics[event["sequence"]] is event, "foreign empty native diagnostic dispatch")

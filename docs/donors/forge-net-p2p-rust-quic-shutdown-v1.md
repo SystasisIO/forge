@@ -132,3 +132,22 @@ selects strict native-boundary test expectations, not error classification.
 Stage 8 remains responsible for long-duration and hostile-network proof.
 This follow-up does not implement PR12 GossipSub extensions or claim global
 libp2p production readiness.
+
+## First Source-Patch Canonical Run
+
+The clean `12a7c41cf8eaa39b9e534d58f237c32ca77f4ec2` run passed 199 Rust
+tests in each build and all four independent source-patched QUIC scenarios.
+The full promotion failed in `gossipsub_v1_1.go_to_forge`: the validator routed
+a zero-byte outbound stream into its inbound remote-reset diagnostic branch.
+The failed artifact is retained with SHA-256
+`6ea05ffe52a409c1daa654615657ef124e9db7524f32f2546e01087e37e3b590`;
+it is not converted into a successful receipt.
+
+The Go replacement actor recorded Prepare 187, outbound stream 194, successful
+full Reset 196, zero-byte local StreamError0 Read 211, Reset 218, zero-byte
+local StreamError0 Write 219 and full Reset 220 before native join 239.
+Native call counters, not publication order, place successful Reset RETURN
+before each I/O BEGIN. The stream never selected a protocol or transmitted
+negotiation/application bytes. This calls for a separate exact empty-outbound
+disposal check, not a change to Rust or Go transport behavior or an exception
+for unknown errors.
