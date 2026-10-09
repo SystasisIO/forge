@@ -1070,6 +1070,105 @@ fn prepared_normal_close_requires_quic_owner_and_never_clears_real_failure() {
 }
 
 #[test]
+fn meshsub_versions_capture_fragmented_lazy_rpc_only_after_exact_ack() {
+    for protocol in [
+        "/meshsub/1.0.0",
+        "/meshsub/1.1.0",
+        "/meshsub/1.2.0",
+        "/meshsub/1.3.0",
+    ] {
+        assert!(meshsub(protocol));
+        for outbound in [false, true] {
+            for lazy in [false, true] {
+                let (evidence, id, mut wire) = observed_role(outbound);
+                let proposal = wire.proposal_direction;
+                let response = 1 - proposal;
+                let header = framed(b"/multistream/1.0.0\n");
+                let token = framed(format!("{protocol}\n").as_bytes());
+                let selection = [header.clone(), token.clone()].concat();
+                // A complete subscription RPC, not a synthetic delivery/score claim.
+                let rpc = framed(&[0x0a, 5, 0x08, 1, 0x12, 1, b't']);
+                if lazy {
+                    wire.feed(proposal, &[selection.clone(), rpc.clone()].concat());
+                } else {
+                    for byte in &selection {
+                        wire.feed(proposal, &[*byte]);
+                    }
+                }
+                for byte in &selection[..selection.len() - 1] {
+                    wire.feed(response, &[*byte]);
+                }
+                assert!(wire.selected.is_none());
+                assert!(
+                    !evidence
+                        .lock()
+                        .events
+                        .iter()
+                        .any(|event| { event["kind"] == "protocol" || event["kind"] == "rpc" })
+                );
+                wire.feed(response, &selection[selection.len() - 1..]);
+                if !lazy {
+                    for byte in &rpc {
+                        wire.feed(proposal, &[*byte]);
+                    }
+                }
+                for byte in &rpc {
+                    wire.feed(response, &[*byte]);
+                }
+                let capture = evidence.lock();
+                assert!(capture.error.is_none(), "{protocol}/{outbound}/{lazy}");
+                let selected = capture
+                    .events
+                    .iter()
+                    .filter(|e| e["kind"] == "protocol")
+                    .collect::<Vec<_>>();
+                assert_eq!(selected.len(), 1);
+                assert_eq!(selected[0]["protocol"], protocol);
+                let frames = capture
+                    .events
+                    .iter()
+                    .filter(|e| e["kind"] == "native_multistream_frame")
+                    .collect::<Vec<_>>();
+                assert_eq!(frames.len(), 4);
+                for (event, expected) in frames.iter().zip([&header, &token, &header, &token]) {
+                    assert_eq!(event["receipt"]["framed_hex"], hex(expected));
+                    assert_eq!(event["connection_trace_id"], id + 1);
+                    assert_eq!(event["stream_id"], "1:1");
+                }
+                let receipts = capture
+                    .events
+                    .iter()
+                    .filter(|e| e["kind"] == "rpc")
+                    .collect::<Vec<_>>();
+                assert_eq!(receipts.len(), 2);
+                for (event, side) in receipts.iter().zip([proposal, response]) {
+                    let direction = if side == 0 { "read" } else { "write" };
+                    assert_eq!(event["protocol"], protocol);
+                    assert_eq!(event["direction"], direction);
+                    assert_eq!(event["connection_trace_id"], id + 1);
+                    assert_eq!(event["connection_id"], "7");
+                    assert_eq!(event["stream_id"], "1:1");
+                    assert_eq!(event["peer_id"], capture.connections[id].peer.to_string());
+                    assert_eq!(event["receipt"]["framed_hex"], hex(&rpc));
+                    assert_eq!(event["receipt"][direction]["framed_bytes"], rpc.len());
+                    assert_eq!(
+                        event["receipt"][direction]["framed_sha256"],
+                        format!("{:x}", Sha256::digest(&rpc))
+                    );
+                }
+                drop(capture);
+                drop(wire);
+                let capture = evidence.lock();
+                assert_eq!(capture.live_streams, 0);
+                assert_eq!(capture.events.last().unwrap()["kind"], "stream_dropped");
+                assert_eq!(capture.events.last().unwrap()["partial_frame"], false);
+                assert!(capture.error.is_none());
+            }
+        }
+    }
+}
+
+#[test]
 fn native_frames_are_byte_exact_bounded_and_never_completed_by_config() {
     let (evidence, _, mut wire) = observed();
     // Exact proto2 RPC.control.PRUNE(topic="t", backoff=0).
@@ -1239,8 +1338,18 @@ impl AsyncWrite for ScriptIo {
 
 #[test]
 fn passive_io_forwards_pending_partial_and_failed_operations_without_invented_bytes() {
+    for protocol in ["/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"] {
+        assert_passive_io_results(protocol);
+    }
+}
+
+fn assert_passive_io_results(protocol: &str) {
     let (evidence, id, wire) = observed();
-    let handshake = [framed(b"/multistream/1.0.0\n"), framed(b"/meshsub/1.1.0\n")].concat();
+    let handshake = [
+        framed(b"/multistream/1.0.0\n"),
+        framed(format!("{protocol}\n").as_bytes()),
+    ]
+    .concat();
     let mut io = ObservedIo {
         inner: ScriptIo {
             input: handshake.clone(),
@@ -1460,12 +1569,22 @@ fn rejected_negotiation_diagnostic_retains_the_exact_token_but_is_bounded() {
 #[test]
 fn identify_ping_push_rejection_can_continue_to_meshsub_on_either_native_stream_role() {
     for outbound in [false, true] {
-        for (other, protocol) in ["/ipfs/id/1.0.0", "/ipfs/ping/1.0.0", "/ipfs/id/push/1.0.0"]
-            .into_iter()
-            .flat_map(|other| {
-                ["/meshsub/1.0.0", "/meshsub/1.1.0"].map(|protocol| (other, protocol))
-            })
-        {
+        for (other, protocol) in [
+            "/ipfs/id/1.0.0",
+            "/ipfs/ping/1.0.0",
+            "/ipfs/id/push/1.0.0",
+            "/meshsub/1.4.0",
+        ]
+        .into_iter()
+        .flat_map(|other| {
+            [
+                "/meshsub/1.0.0",
+                "/meshsub/1.1.0",
+                "/meshsub/1.2.0",
+                "/meshsub/1.3.0",
+            ]
+            .map(|protocol| (other, protocol))
+        }) {
             let (evidence, _, mut wire) = observed_role(outbound);
             negotiation_headers(&mut wire);
             let proposal = wire.proposal_direction;
@@ -1522,9 +1641,11 @@ fn selected_other_protocol_excludes_opaque_body_without_losing_stream_lifetime()
             "/ipfs/id/1.0.0",
             "/ipfs/ping/1.0.0",
             "/ipfs/id/push/1.0.0",
-            "/meshsub/1.2.0",
+            "/meshsub/1.4.0",
             "/meshsub/1.1.0/extra",
+            "/meshsub/1.3.0/extra",
         ] {
+            assert!(!meshsub(protocol));
             let (evidence, _, mut wire) = observed_role(outbound);
             negotiation_headers(&mut wire);
             let proposal = wire.proposal_direction;
@@ -1721,35 +1842,50 @@ fn rejected_meshsub_attempt_cannot_contribute_rpc_to_a_later_matching_meshsub_ac
 
 #[test]
 fn wrong_or_missing_ack_and_wrong_native_role_cannot_prove_pubsub() {
-    for outbound in [false, true] {
-        for kind in ["wrong", "missing", "partial", "wrong_role"] {
-            let (evidence, _, mut wire) = observed_role(outbound);
-            negotiation_headers(&mut wire);
-            let proposal = wire.proposal_direction;
-            let response = 1 - proposal;
-            if kind == "wrong_role" {
-                wire.feed(response, &framed(b"/meshsub/1.1.0\n"));
-            } else {
-                wire.feed(proposal, &framed(b"/meshsub/1.1.0\n"));
-                if kind == "wrong" {
-                    wire.feed(response, &framed(b"/meshsub/1.0.0\n"));
-                } else if kind == "partial" {
-                    wire.feed(response, &[14, b'/']);
+    for protocol in [
+        "/meshsub/1.0.0",
+        "/meshsub/1.1.0",
+        "/meshsub/1.2.0",
+        "/meshsub/1.3.0",
+    ] {
+        for outbound in [false, true] {
+            for kind in ["wrong", "future", "missing", "partial", "wrong_role"] {
+                let (evidence, _, mut wire) = observed_role(outbound);
+                negotiation_headers(&mut wire);
+                let proposal = wire.proposal_direction;
+                let response = 1 - proposal;
+                let token = framed(format!("{protocol}\n").as_bytes());
+                if kind == "wrong_role" {
+                    wire.feed(response, &token);
+                } else {
+                    wire.feed(proposal, &token);
+                    if kind == "wrong" || kind == "future" {
+                        let ack = if kind == "future" {
+                            "/meshsub/1.4.0"
+                        } else if protocol == "/meshsub/1.0.0" {
+                            "/meshsub/1.1.0"
+                        } else {
+                            "/meshsub/1.0.0"
+                        };
+                        wire.feed(response, &framed(format!("{ack}\n").as_bytes()));
+                    } else if kind == "partial" {
+                        wire.feed(response, &token[..token.len() - 1]);
+                    }
                 }
+                drop(wire);
+                let capture = evidence.lock();
+                assert!(capture.error.is_some(), "{protocol}/{outbound}/{kind}");
+                if kind == "missing" {
+                    assert!(capture.error.as_ref().unwrap().contains(protocol));
+                }
+                assert!(
+                    !capture
+                        .events
+                        .iter()
+                        .any(|e| e["kind"] == "protocol" || e["kind"] == "rpc")
+                );
+                assert_eq!(capture.live_streams, 0);
             }
-            drop(wire);
-            let capture = evidence.lock();
-            assert!(capture.error.is_some());
-            if kind == "missing" {
-                assert!(capture.error.as_ref().unwrap().contains("/meshsub/1.1.0"));
-            }
-            assert!(
-                !capture
-                    .events
-                    .iter()
-                    .any(|e| e["kind"] == "protocol" || e["kind"] == "rpc")
-            );
-            assert_eq!(capture.live_streams, 0);
         }
     }
 }
@@ -1838,17 +1974,22 @@ fn framing_overflow_after_other_rejection_cannot_disable_negotiation_checks() {
 
 #[test]
 fn pubsub_partial_rpc_and_frame_overflow_fail_closed_in_both_io_directions() {
-    for outbound in [false, true] {
-        for side in 0..2 {
-            for bytes in [vec![3, 0x1a], vec![0x81, 0x80, 1], vec![0x80; 3]] {
-                let (evidence, _, mut wire) = observed_role(outbound);
-                negotiate(&mut wire, "/meshsub/1.1.0");
-                wire.feed(side, &bytes);
-                drop(wire);
-                let capture = evidence.lock();
-                assert!(capture.error.is_some(), "{outbound}/{side}/{bytes:?}");
-                assert_eq!(capture.live_streams, 0);
-                assert!(!capture.events.iter().any(|e| e["kind"] == "rpc"));
+    for protocol in ["/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"] {
+        for outbound in [false, true] {
+            for side in 0..2 {
+                for bytes in [vec![3, 0x1a], vec![0x81, 0x80, 1], vec![0x80; 3]] {
+                    let (evidence, _, mut wire) = observed_role(outbound);
+                    negotiate(&mut wire, protocol);
+                    wire.feed(side, &bytes);
+                    drop(wire);
+                    let capture = evidence.lock();
+                    assert!(
+                        capture.error.is_some(),
+                        "{protocol}/{outbound}/{side}/{bytes:?}"
+                    );
+                    assert_eq!(capture.live_streams, 0);
+                    assert!(!capture.events.iter().any(|e| e["kind"] == "rpc"));
+                }
             }
         }
     }

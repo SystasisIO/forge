@@ -1008,7 +1008,10 @@ impl WireStream {
 }
 
 fn meshsub(protocol: &str) -> bool {
-    matches!(protocol, "/meshsub/1.0.0" | "/meshsub/1.1.0")
+    matches!(
+        protocol,
+        "/meshsub/1.0.0" | "/meshsub/1.1.0" | "/meshsub/1.2.0" | "/meshsub/1.3.0"
+    )
 }
 
 fn protocol_token(bytes: &[u8]) -> io::Result<&str> {

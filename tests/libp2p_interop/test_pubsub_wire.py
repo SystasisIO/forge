@@ -75,7 +75,61 @@ class PubSubWireTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_rpc_receipt(valid, "/meshsub/1.1.0", "write")
         with self.assertRaises(ValueError):
-            validate_rpc_receipt(valid, "/meshsub/1.3.0", "read")
+            validate_rpc_receipt(valid, "/meshsub/1.4.0", "read")
+
+    def test_v12_idontwant_preserves_binary_ids_and_older_versions_ignore_it(self):
+        body = bytes.fromhex("1a0c2a0a0a0400ff01020a020003")
+        value = validate_rpc_receipt(receipt(body), "/meshsub/1.2.0", "read")
+        self.assertEqual(value["idontwant"], [{"ids_hex": ["00ff0102", "0003"]}])
+        self.assertNotIn("idontwant", decode_rpc(body, "/meshsub/1.1.0"))
+
+    def test_v13_advertisement_presence_is_not_inferred_from_partial_payload(self):
+        unknown = field(6492434, 1)
+        for wire, expected in ((b"", None), (field(10, 0), 0), (field(10, 1), 1), (unknown, None)):
+            value = decode_rpc(field(3, field(6, wire)), "/meshsub/1.3.0")
+            self.assertEqual(value["extensions"], {"partial_messages": expected})
+        partial = field(1, b"topic") + field(2, b"group") + field(4, b"\x01")
+        value = decode_rpc(field(10, partial), "/meshsub/1.3.0")
+        self.assertIsNone(value["extensions"])
+        self.assertIsNone(value["partial"]["data_hex"])
+        self.assertEqual(value["partial"]["metadata_hex"], "01")
+
+    def test_v13_partial_fixture_preserves_empty_bytes_and_subscription_flags(self):
+        # RPC SubOpts(true, "t", requestsPartial, supportsSendingPartial) and partial("t", ff, empty, 01).
+        body = bytes.fromhex("0a09080112017418012001520b0a01741201ff1a00220101")
+        result = validate_rpc_receipt(receipt(body), "/meshsub/1.3.0", "read")
+        self.assertEqual(result["subscriptions"], [{"topic": "t", "subscribe": True,
+                          "requests_partial": 1, "supports_partial": 1}])
+        self.assertEqual(result["partial"], {"topic": "t", "group_hex": "ff",
+                                           "data_hex": "", "metadata_hex": "01"})
+        older = decode_rpc(body, "/meshsub/1.2.0")
+        self.assertNotIn("partial", older)
+        self.assertNotIn("requests_partial", older["subscriptions"][0])
+
+    def test_extensions_do_not_replace_existing_receipt_integrity_checks(self):
+        body = field(3, field(6, field(10, 1)))
+        value = receipt(body)
+        value["framed_hex"] = receipt(field(3, field(6, field(10, 0))))["framed_hex"]
+        with self.assertRaises(ValueError):
+            validate_rpc_receipt(value, "/meshsub/1.3.0", "read")
+
+    def test_extension_duplicates_and_bounds_fail_closed(self):
+        prefix = field(1, b"topic") + field(2, b"group")
+        examples = [
+            field(3, field(6, field(10, 1) + field(10, 0))),
+            field(3, field(6, b"") * 2),
+            field(3, field(6, field(10, 2))),
+            field(3, field(5, field(1, b"x" * 257))),
+            field(3, field(5, field(1, b"x")) * 129),
+            field(10, prefix) * 2,
+            field(10, prefix + field(4, b"x" * 4097)),
+            field(10, prefix + field(3, b"a") + field(3, b"b")),
+            field(10, field(1, b"topic") + field(2, b"x" * 257)),
+            field(10, field(1, b"topic")),
+        ]
+        for body in examples:
+            with self.subTest(body=body[:20]), self.assertRaises(ValueError):
+                decode_rpc(body, "/meshsub/1.3.0")
 
     def test_malformed_duplicate_and_oversized_fields_fail_closed(self):
         examples = [b"\x00", b"\x1a\x80", b"\x1a\x02\x0a", field(3, b"") * 2,
