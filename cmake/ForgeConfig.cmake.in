@@ -98,6 +98,7 @@ set(
    auth_http
    app
    net_http
+   net_s3
    api_http
    net_websocket
    net_quic
@@ -512,6 +513,10 @@ macro(_forge_add_component component)
          _forge_add_component(schema)
          _forge_add_component(net_tls)
          _forge_add_component(net_websocket)
+      elseif("${component}" STREQUAL "net_s3")
+         _forge_add_component(asio)
+         _forge_add_component(exceptions)
+         _forge_add_component(crypto_core)
       elseif("${component}" STREQUAL "api_http")
          _forge_add_component(api_auth)
          _forge_add_component(net_http)
@@ -854,6 +859,10 @@ if("auth_oidc_agent" IN_LIST _FORGE_COMPONENTS)
    elseif(NOT TARGET OIDCAgent::client)
       add_library(OIDCAgent::client ALIAS PkgConfig::OIDC_AGENT)
    endif()
+endif()
+
+if("net_s3" IN_LIST _FORGE_COMPONENTS)
+   _forge_require_package(AWSSDK 1.11.900 EXACT CONFIG COMPONENTS s3)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ForgeTargets.cmake")

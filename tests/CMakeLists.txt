@@ -1,5 +1,9 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(FORGE_ENABLE_S3)
+   add_subdirectory(net_s3)
+endif()
+
 set(FORGE_VM_WASM_INTERPRET_DONOR_ROOT "" CACHE PATH "Pinned EOS VM checkout used to verify the native interpreter test port")
 add_subdirectory(vm_wasm)
 
