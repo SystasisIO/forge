@@ -1,11 +1,14 @@
 module;
 
+#include <boost/compat/move_only_function.hpp>
+
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +24,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,6 +74,8 @@ import forge.net.yamux.session;
 
 #include "details/certified_peer_record.hxx"
 #include "details/node_impl.hxx"
+#include "details/owner_cancellation.hxx"
+#include "details/cancellation_latch.hxx"
 #include "details/peer_failure.hxx"
 
 namespace forge::net::p2p {
@@ -190,8 +196,29 @@ node::impl::ensure_pubsub_direct_session(const peer_id& peer, std::shared_ptr<se
 boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pubsub::rpc rpc,
     std::optional<std::uint64_t>& send_generation,
     std::shared_ptr<const detail::pubsub_control_queue::batch> control, bool check_intents,
-    std::shared_ptr<session_state> origin) {
+    std::shared_ptr<session_state> origin, std::optional<pubsub::partial_topic> registration,
+    std::shared_ptr<detail::worker_stop_bridge> stop, boost::asio::cancellation_slot slot, bool requested_messages) {
    send_generation.reset();
+   auto clear_slot = [slot](void*) noexcept { detail::clear_owner_cancellation(slot); };
+   auto slot_owner = std::unique_ptr<void, decltype(clear_slot)>{stop ? this : nullptr, clear_slot};
+   const auto registration_current = [&] {
+      if (!registration) { return !rpc.partial.has_value(); }
+      const auto unsubscribing = !rpc.partial && !rpc.subscriptions.empty() &&
+          std::ranges::all_of(rpc.subscriptions, [](const auto& row) { return !row.subscribe; });
+      return unsubscribing ? !pubsub_value.handlers.contains(registration->subject().value)
+                          : pubsub_value.partial.current(*registration);
+   };
+   const auto check_partial = [&](const protocol_id& protocol, std::uint64_t session_id) {
+      if (stop && stop->stop_requested()) { FORGE_THROW_EXCEPTION(exceptions::canceled, "Partial send canceled"); }
+      if (rpc.partial && (protocol != builtins::meshsub_v13 || !registration || !registration_current() ||
+          !partial_peer_supported_locked(peer, registration->subject(), rpc.partial->data.has_value(), session_id))) {
+         FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "Partial send requires current v1.3 topic capability");
+      }
+   };
+   if (rpc.partial) {
+      const auto lock = std::scoped_lock{mutex};
+      check_partial(builtins::meshsub_v13, 0);
+   }
    if (control || origin) {
       const auto lock = std::scoped_lock{mutex};
       if (origin && (origin->info.remote_peer != peer || !pubsub_session_live_locked(origin))) { co_return false; }
@@ -229,21 +256,41 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
          prune.peers = records;
       }
    }
-   auto protocol = pubsub::codec::protocol(options.limits.pubsub.preferred);
-   if (options.limits.pubsub.preferred == pubsub::version::v1_1 && options.limits.pubsub.allow_v1_0_fallback) {
-      const auto record = store.find(peer);
-      const auto supports_v11 = record && std::ranges::any_of(record->protocols, [](const protocol_id& value) {
-                                   return value == builtins::meshsub_v11;
-                                });
-      const auto supports_v10 = record && std::ranges::any_of(record->protocols, [](const protocol_id& value) {
-                                   return value == builtins::meshsub_v10;
-                                });
-      if (supports_v10 && !supports_v11) {
-         protocol = builtins::meshsub_v10;
-      }
+   auto protocols = std::vector<protocol_id>{};
+   for (const auto version : {pubsub::version::v1_3, pubsub::version::v1_2, pubsub::version::v1_1, pubsub::version::v1_0}) {
+      if (version > options.limits.pubsub.preferred ||
+          (version == pubsub::version::v1_0 && options.limits.pubsub.preferred != version &&
+           !options.limits.pubsub.allow_v1_0_fallback)) { continue; }
+      protocols.push_back(pubsub::codec::protocol(version));
+   }
+   const auto record = store.find(peer);
+   if (record) {
+      const auto known = std::ranges::find_if(protocols, [&](const auto& protocol) {
+         return std::ranges::find(record->protocols, protocol) != record->protocols.end();
+      });
+      if (known != protocols.end()) { protocols.erase(protocols.begin(), known); }
+   }
+   auto protocol = protocols.front();
+   if (rpc.partial) { protocols = {builtins::meshsub_v13}; protocol = builtins::meshsub_v13; }
+   auto message_ids = std::vector<std::string>{};
+   message_ids.reserve(rpc.messages.size());
+   for (const auto& message : rpc.messages) {
+      const auto id = pubsub::codec::message_id(message, options.limits.pubsub);
+      message_ids.emplace_back(id.begin(), id.end());
+   }
+   if (rpc.control_value && rpc.control_value->extensions) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub advertisements belong to the first stream snapshot");
    }
    auto wire_options = options.limits.pubsub;
-   wire_options.preferred = protocol == builtins::meshsub_v10 ? pubsub::version::v1_0 : pubsub::version::v1_1;
+   const auto wire_version = [](const protocol_id& protocol) {
+      if (protocol == builtins::meshsub_v13) { return pubsub::version::v1_3; }
+      if (protocol == builtins::meshsub_v12) { return pubsub::version::v1_2; }
+      if (protocol == builtins::meshsub_v11) { return pubsub::version::v1_1; }
+      if (protocol == builtins::meshsub_v10) { return pubsub::version::v1_0; }
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "unknown negotiated GossipSub protocol");
+   };
+   wire_options.preferred = wire_version(protocol);
+   wire_options.partial_messages = false; // Wire version and local runtime enablement are independent inputs.
    auto encoded = pubsub::codec::encode(rpc, wire_options);
    auto reserved_bytes = encoded.size();
    auto rpc_reserved = encoded.size();
@@ -330,6 +377,8 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
                   protocol = current->second.protocol;
                }
             }
+            if (!registration_current()) { co_return false; }
+            check_partial(protocol, session_id);
          }
          if (replace_generation) {
             write_ticket.release();
@@ -337,6 +386,7 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
          }
 
          auto snapshot = std::vector<std::uint8_t>{};
+         auto snapshot_epoch = std::uint64_t{};
          auto snapshot_written = false;
          auto rpc_written = false;
          auto failure = std::exception_ptr{};
@@ -353,7 +403,7 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
          }
          // Prepare all encodings and byte admission before opening/publishing a native stream. Local pressure
          // or allocation failure must not invalidate a healthy generation or prune its mesh membership.
-         wire_options.preferred = protocol == builtins::meshsub_v10 ? pubsub::version::v1_0 : pubsub::version::v1_1;
+         wire_options.preferred = wire_version(protocol);
          encoded = pubsub::codec::encode(rpc, wire_options);
          if (encoded.size() > rpc_reserved) {
             const auto additional = encoded.size() - rpc_reserved;
@@ -362,15 +412,32 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
             rpc_reserved = encoded.size();
          }
          if (snapshot_pending) {
-            auto subscriptions = local_pubsub_subscriptions();
-            if (!subscriptions.empty()) {
-               snapshot = pubsub::codec::encode(pubsub::rpc{.subscriptions = std::move(subscriptions)}, wire_options);
+            auto subscriptions = local_pubsub_subscriptions(&snapshot_epoch);
+            if (!subscriptions.empty() || protocol == builtins::meshsub_v13) {
+               auto first = pubsub::rpc{.subscriptions = std::move(subscriptions)};
+               if (protocol == builtins::meshsub_v13 && options.limits.pubsub.partial_messages) {
+                  first.control_value = pubsub::control{.extensions = pubsub::extensions{.partial_messages = true}};
+               }
+               if (protocol != builtins::meshsub_v13) {
+                  for (auto& row : first.subscriptions) { row.requests_partial.reset(); row.supports_sending_partial.reset(); }
+               }
+               snapshot = pubsub::codec::encode(first, wire_options);
                reserve_pubsub_outbound_bytes(peer, snapshot.size());
                reserved_bytes += snapshot.size();
             }
          }
+         auto legacy_snapshot = std::vector<std::uint8_t>{};
+         if (!outbound && snapshot_pending && protocol == builtins::meshsub_v13 && protocols.size() > 1) {
+            auto subscriptions = local_pubsub_subscriptions();
+            for (auto& row : subscriptions) { row.requests_partial.reset(); row.supports_sending_partial.reset(); }
+            legacy_snapshot = pubsub::codec::encode(pubsub::rpc{.subscriptions = std::move(subscriptions)}, wire_options);
+            if (legacy_snapshot.size() > snapshot.size()) {
+               reserve_pubsub_outbound_bytes(peer, legacy_snapshot.size() - snapshot.size());
+               reserved_bytes += legacy_snapshot.size() - snapshot.size();
+            }
+         }
          auto fallback_encoded = std::vector<std::uint8_t>{};
-         if (!outbound && protocol == builtins::meshsub_v11 && options.limits.pubsub.allow_v1_0_fallback) {
+         if (!outbound && protocol != builtins::meshsub_v10 && protocols.back() == builtins::meshsub_v10) {
             auto fallback_options = wire_options;
             fallback_options.preferred = pubsub::version::v1_0;
             fallback_encoded = pubsub::codec::encode(rpc, fallback_options);
@@ -384,6 +451,7 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
          auto prepared_stream = outbound ? std::shared_ptr<forge::net::p2p::stream>{}
                                          : std::make_shared<forge::net::p2p::stream>();
          auto owned_snapshot = forge::net::transport::chunk{snapshot};
+         auto owned_legacy_snapshot = forge::net::transport::chunk{legacy_snapshot};
          // Retain encoded bytes only for the immutable enabled tracer's lazy write event.
          auto owned_rpc = forge::net::transport::chunk{options.limits.pubsub.tracer ? encoded : std::move(encoded)};
          auto owned_fallback = forge::net::transport::chunk{
@@ -391,6 +459,8 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
          auto open_phase = detail::stream_open_phase::admission;
          auto preparing_write = false;
          auto writing = false;
+         auto partial_rejection = false;
+         auto stream_cancellation = std::optional<detail::owner_stream_cancellation>{};
          const auto fail = [&](bool invalidate) {
             failure = std::current_exception();
             if (invalidate) {
@@ -409,28 +479,31 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
                                    "GossipSub protocol open direct attempt");
                const auto started = std::chrono::steady_clock::now();
                auto stream = forge::net::p2p::stream{};
-               auto fallback = false;
-               try {
-                  stream = co_await open_protocol_on_direct_session(peer, protocol, session, open_timeout, {}, &open_phase);
-               } catch (const forge::exceptions::base& error) {
-                  if (protocol != builtins::meshsub_v11 || !options.limits.pubsub.allow_v1_0_fallback ||
-                      p2p_code(error) != exceptions::code::unsupported_protocol) {
-                     throw;
-                  }
-                  fallback = true;
+               auto cancellation = stop ? std::make_shared<cancellation_latch>() : nullptr;
+               if (stop && slot.is_connected()) {
+                  slot.assign([cancellation](boost::asio::cancellation_type) noexcept { cancellation->request_stop(); });
+                  if (stop->stop_requested()) { cancellation->request_stop(); }
                }
-               if (fallback) {
+               for (auto attempt = std::size_t{}; attempt < protocols.size(); ++attempt) {
+                  protocol = protocols[attempt];
                   {
                      const auto lock = std::scoped_lock{mutex};
                      if (origin && (origin->info.remote_peer != peer || !pubsub_session_live_locked(origin))) {
                         co_return false;
                      }
                   }
-                  protocol = builtins::meshsub_v10;
-                  encoded = std::move(fallback_encoded);
-                  owned_rpc = std::move(owned_fallback);
-                  stream = co_await open_protocol_on_direct_session(peer, protocol, session,
-                     remaining_timeout(started, open_timeout, "GossipSub fallback negotiation"), {}, &open_phase);
+                  if (attempt != 0 && protocol == builtins::meshsub_v10) {
+                     encoded = std::move(fallback_encoded);
+                     owned_rpc = std::move(owned_fallback);
+                  }
+                  try {
+                     stream = co_await open_protocol_on_direct_session(peer, protocol, session,
+                         attempt == 0 ? open_timeout : remaining_timeout(started, open_timeout, "GossipSub fallback negotiation"),
+                         cancellation, &open_phase);
+                     break;
+                  } catch (const forge::exceptions::base& error) {
+                     if (p2p_code(error) != exceptions::code::unsupported_protocol || attempt + 1 == protocols.size()) { throw; }
+                  }
                }
                outbound = std::move(prepared_stream);
                *outbound = std::move(stream);
@@ -458,6 +531,21 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
                }
             }
 
+            if (protocol != builtins::meshsub_v13 && !legacy_snapshot.empty()) {
+               snapshot = std::move(legacy_snapshot);
+               owned_snapshot = std::move(owned_legacy_snapshot);
+            }
+            preparing_write = true;
+            if (stop) { stream_cancellation.emplace(slot, outbound); }
+            preparing_write = false;
+            {
+               const auto lock = std::scoped_lock{mutex};
+               if (!registration_current()) { co_return false; }
+               partial_rejection = true;
+               check_partial(protocol, session_id);
+               partial_rejection = false;
+            }
+
             if (snapshot_pending) {
                if (!snapshot.empty()) {
                   preparing_write = true;
@@ -468,6 +556,13 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
                      if (origin && (origin->info.remote_peer != peer || !pubsub_session_live_locked(origin))) {
                         co_return false;
                      }
+                     if (!registration_current()) { co_return false; }
+                     partial_rejection = true;
+                     if (snapshot_epoch != pubsub_value.subscription_epoch) {
+                        FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "GossipSub subscription snapshot changed during stream admission");
+                     }
+                     check_partial(protocol, session_id);
+                     partial_rejection = false;
                   }
                   writing = true;
                   co_await std::move(write);
@@ -483,38 +578,101 @@ boost::asio::awaitable<bool> node::impl::send_pubsub_rpc(const peer_id& peer, pu
                }
                current->second.snapshot_pending = false;
             }
-            preparing_write = true;
-            auto write = outbound->async_write(std::move(owned_rpc));
-            preparing_write = false;
-            auto current_control = true;
-            {
-               const auto lock = std::scoped_lock{mutex};
-               const auto current = pubsub_value.outbound.find(peer);
-               if (stopped || current == pubsub_value.outbound.end() || current->second.session_id != session_id ||
-                   current->second.generation != generation || current->second.write_gate != write_gate ||
-                   current->second.stream != outbound) {
-                  FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub peer stream replaced before native write");
+            const auto suppress_messages = [&] {
+               auto suppressed = false;
+               for (auto i = message_ids.size(); i != 0; --i) {
+                  const auto partial = !requested_messages && protocol == builtins::meshsub_v13 &&
+                      prefer_pubsub_partial_locked(peer, rpc.messages[i - 1].subject, session_id);
+                  if (!partial && !pubsub_value.idontwant.contains(peer, message_ids[i - 1])) { continue; }
+                  rpc.messages.erase(rpc.messages.begin() + static_cast<std::ptrdiff_t>(i - 1));
+                  message_ids.erase(message_ids.begin() + static_cast<std::ptrdiff_t>(i - 1));
+                  suppressed = true;
                }
-               // After stream-open AND subscription-snapshot awaits, with the peer write ticket held.
-               // No allocations or suspension between this admission and the lower control write.
-               current_control = !origin || (origin->info.remote_peer == peer && pubsub_session_live_locked(origin));
-               if (control) { current_control = validate_pubsub_control_locked(*control, check_intents) && current_control; }
-            }
-            if (current_control) {
-               writing = true;
-               co_await std::move(write);
-               writing = false;
-               rpc_written = true;
-               written = true;
-               if (control && check_intents) {
+               if (protocol == builtins::meshsub_v13 && rpc.control_value) {
+                  auto& have = rpc.control_value->have;
+                  const auto count = have.size();
+                  std::erase_if(have, [&](const auto& row) { return prefer_pubsub_partial_locked(peer, row.subject, session_id); });
+                  suppressed = have.size() != count || suppressed;
+               }
+               return suppressed;
+            };
+            auto filtered = false;
+            for (;;) {
+               preparing_write = true;
+               {
                   const auto lock = std::scoped_lock{mutex};
-                  pubsub_value.controls->acknowledge(control);
+                  filtered = suppress_messages() || filtered;
+                  filtered = refresh_pubsub_subscriptions_locked(rpc.subscriptions, protocol) || filtered;
                }
+               if (protocol != builtins::meshsub_v12 && protocol != builtins::meshsub_v13 && rpc.control_value &&
+                   !rpc.control_value->dont_want.empty()) {
+                  rpc.control_value->dont_want.clear();
+                  filtered = true;
+               }
+               if (filtered) {
+                  const auto& control = rpc.control_value;
+                  const auto has_control = control && (!control->have.empty() || !control->want.empty() ||
+                      !control->grafts.empty() || !control->prunes.empty() || !control->dont_want.empty() || control->extensions);
+                  if (rpc.messages.empty() && rpc.subscriptions.empty() && !has_control && !rpc.partial) {
+                     preparing_write = false;
+                     break;
+                  }
+                  wire_options.preferred = wire_version(protocol);
+                  partial_rejection = true;
+                  encoded = pubsub::codec::encode(rpc, wire_options);
+                  if (encoded.size() > rpc_reserved) {
+                     const auto additional = encoded.size() - rpc_reserved;
+                     reserve_pubsub_outbound_bytes(peer, additional);
+                     reserved_bytes += additional;
+                     rpc_reserved = encoded.size();
+                  }
+                  owned_rpc = forge::net::transport::chunk{options.limits.pubsub.tracer ? encoded : std::move(encoded)};
+                  partial_rejection = false;
+                  filtered = false;
+               }
+               auto write = outbound->async_write(std::move(owned_rpc));
+               preparing_write = false;
+               auto current_control = true;
+               auto newly_suppressed = false;
+               {
+                  const auto lock = std::scoped_lock{mutex};
+                  const auto current = pubsub_value.outbound.find(peer);
+                  if (stopped || current == pubsub_value.outbound.end() || current->second.session_id != session_id ||
+                      current->second.generation != generation || current->second.write_gate != write_gate ||
+                      current->second.stream != outbound) {
+                     FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub peer stream replaced before native write");
+                  }
+                  // No allocation or suspension between this admission and the lower write.
+                  current_control = !origin || (origin->info.remote_peer == peer && pubsub_session_live_locked(origin));
+                  current_control = registration_current() && current_control;
+                  partial_rejection = true;
+                  check_partial(protocol, session_id);
+                  partial_rejection = false;
+                  if (control) { current_control = validate_pubsub_control_locked(*control, check_intents) && current_control; }
+                  newly_suppressed = suppress_messages();
+                  newly_suppressed = refresh_pubsub_subscriptions_locked(rpc.subscriptions, protocol) || newly_suppressed;
+               }
+               // Encoding/awaitable allocation may race IDONTWANT or local subscription replacement.
+               // Retired intents stay retired; surviving topics get the current flags on the retry.
+               // The unstarted awaitable never runs a lower write.
+               if (newly_suppressed) { filtered = true; continue; }
+               if (current_control) {
+                  writing = true;
+                  co_await std::move(write);
+                  writing = false;
+                  rpc_written = true;
+                  written = true;
+                  if (control && check_intents) {
+                     const auto lock = std::scoped_lock{mutex};
+                     pubsub_value.controls->acknowledge(control);
+                  }
+               }
+               break;
             }
          } catch (const forge::exceptions::base& error) {
             // Only provenance from local admission is neutral. Downstream write failures,
             // negotiation and scoped binding can already have native effects.
-            const auto local_rejection =
+            const auto local_rejection = partial_rejection ||
                (!outbound && open_phase == detail::stream_open_phase::local_rejected &&
                   exceptions::is(error, exceptions::code::backpressure_rejected)) ||
                (!outbound && open_phase == detail::stream_open_phase::local_failed &&

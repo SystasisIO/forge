@@ -23,6 +23,8 @@
 #include "pubsub_backoff.hxx"
 #include "pubsub_control_queue.hxx"
 #include "pubsub_outbound_budget.hxx"
+#include "pubsub_idontwant.hxx"
+#include "pubsub_partial.hxx"
 #include "relay_discovery.hxx"
 #include "relay_transport.hxx"
 #include "resource_stream.hxx"
@@ -37,6 +39,7 @@
 #include <mutex>
 #include <optional>
 #include <vector>
+#include <boost/asio/cancellation_signal.hpp>
 
 #include "direct_attempt.hxx"
 
@@ -51,6 +54,7 @@ class dial_scheduler;
 class lifecycle_wakeup;
 class resource_stream;
 class worker_terminal_owner;
+class worker_stop_bridge;
 class reachability_manager;
 class observed_address_manager;
 class host_event_source;
@@ -179,6 +183,13 @@ struct node::impl : std::enable_shared_from_this<impl> {
    };
 
    struct pubsub_state {
+      struct inbound_generation {
+         std::uint64_t session_id = 0;
+         protocol_id protocol;
+         bool first_rpc = true;
+         bool partial_messages = false;
+         std::map<std::string, pubsub::subscription> partial_topics;
+      };
       struct request {
          peer_id peer;
          std::string id;
@@ -229,8 +240,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
       };
 
       std::map<std::string, pubsub::handler> handlers;
+      std::uint64_t subscription_epoch = 1;
       std::map<peer_id, std::set<std::string>> peer_topics;
-      std::map<peer_id, std::map<std::uint64_t, std::uint64_t>> inbound;
+      std::map<peer_id, std::map<std::uint64_t, inbound_generation>> inbound;
       std::map<std::string, std::set<peer_id>> mesh;
       std::map<std::string, pubsub::message> cache;
       std::deque<std::string> history;
@@ -262,6 +274,8 @@ struct node::impl : std::enable_shared_from_this<impl> {
       detail::connection_singleflight_registry connection_gates;
       detail::pubsub_outbound_budget outbound_budget;
       detail::pubsub_backoff backoffs;
+      detail::pubsub_idontwant idontwant;
+      detail::pubsub_partial partial;
       std::map<peer_id, std::size_t> active_validations_by_peer;
       std::size_t active_validations = 0;
       std::uint64_t next_validation_generation = 1;
@@ -744,7 +758,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<void> handle_pubsub_control(std::shared_ptr<session_state> session, const pubsub::control& value,
                                                     const protocol_id& protocol);
 
-   [[nodiscard]] std::vector<pubsub::subscription> local_pubsub_subscriptions() const;
+   [[nodiscard]] std::vector<pubsub::subscription> local_pubsub_subscriptions(std::uint64_t* epoch = nullptr) const;
+   [[nodiscard]] bool refresh_pubsub_subscriptions_locked(std::vector<pubsub::subscription>& subscriptions,
+                                                          const protocol_id& protocol) const;
 
    [[nodiscard]] std::vector<peer_id> pubsub_candidate_peers(const std::string& topic_value,
                                                              std::optional<peer_id> except = std::nullopt) const;
@@ -752,7 +768,22 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<bool> send_pubsub_rpc(const peer_id& peer, pubsub::rpc value,
       std::optional<std::uint64_t>& send_generation,
       std::shared_ptr<const detail::pubsub_control_queue::batch> control = {}, bool check_intents = true,
-      std::shared_ptr<session_state> origin = {});
+      std::shared_ptr<session_state> origin = {}, std::optional<pubsub::partial_topic> registration = {},
+      std::shared_ptr<detail::worker_stop_bridge> stop = {}, boost::asio::cancellation_slot slot = {},
+      bool requested_messages = false);
+   boost::asio::awaitable<std::pair<pubsub::subscription, pubsub::partial_topic>> subscribe_pubsub(
+       pubsub::topic subject, pubsub::handler handler, std::optional<pubsub::partial_options> partial = {});
+   boost::asio::awaitable<void> unsubscribe_pubsub(pubsub::topic subject,
+                                                 std::optional<pubsub::partial_topic> registration = {});
+   [[nodiscard]] bool partial_peer_supported_locked(const peer_id& peer, const pubsub::topic& subject,
+                                                    bool data, std::uint64_t session_id = 0) const;
+   [[nodiscard]] bool prefer_pubsub_partial_locked(const peer_id& peer, const pubsub::topic& subject,
+                                                   std::uint64_t session_id = 0) const;
+   [[nodiscard]] std::vector<peer_id> partial_peers_locked(const pubsub::partial_topic& registration, bool off_mesh,
+                                                         std::size_t* byte_charge = nullptr);
+   void receive_pubsub_partial(const std::shared_ptr<session_state>& session, const protocol_id& protocol,
+                               std::uint64_t generation, const pubsub::partial_message& value);
+   void gossip_pubsub_partial();
    void record_pubsub_send_failure(const peer_id& peer, const forge::exceptions::base& error,
       std::optional<std::uint64_t> expected_generation, std::shared_ptr<session_state> origin = {});
 

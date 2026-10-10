@@ -19,6 +19,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -83,16 +84,39 @@ import forge.net.yamux.session;
 namespace forge::net::p2p {
 
 boost::asio::awaitable<pubsub::subscription> node::async_subscribe(pubsub::topic subject, pubsub::handler handler) {
+   co_return (co_await impl_->subscribe_pubsub(std::move(subject), std::move(handler))).first;
+}
+
+boost::asio::awaitable<std::pair<pubsub::subscription, pubsub::partial_topic>> node::impl::subscribe_pubsub(
+    pubsub::topic subject, pubsub::handler handler, std::optional<pubsub::partial_options> partial) {
    if (subject.value.empty() || !handler) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub subscription requires topic and handler");
    }
-   auto self = impl_;
+   auto self = shared_from_this();
+   auto operation = lifecycle.track();
+   if (!operation.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub subscription owner closed"); }
    auto subscription = pubsub::subscription{.subscribe = true, .subject = std::move(subject)};
    if (subscription.subject.value.size() > self->options.limits.pubsub.limits.max_topic_size) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub topic exceeds configured byte limit");
    }
+   auto registration = std::shared_ptr<detail::pubsub_partial::registration>{};
+   auto retired = std::shared_ptr<detail::pubsub_partial::registration>{};
+   if (partial) {
+      if (!options.limits.pubsub.partial_messages || !partial->receive || !partial->gossip) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "Partial registration requires enabled extension, receive and gossip callbacks");
+      }
+      registration = pubsub_value.partial.prepare(subscription.subject, std::move(*partial));
+      subscription.requests_partial = registration->options.requests_partial;
+      subscription.supports_sending_partial = true;
+   }
    {
       auto lock = std::scoped_lock{self->mutex};
+      if (self->stopped || self->session_admission_closed) {
+         FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub subscription owner closed");
+      }
+      if (self->pubsub_value.subscription_epoch == (std::numeric_limits<std::uint64_t>::max)()) {
+         FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub subscription generation exhausted");
+      }
       const auto local_subscription_limit =
           std::min(self->options.limits.pubsub.limits.max_topics, self->options.limits.pubsub.limits.max_subscriptions);
       if (self->pubsub_value.handlers.size() >= local_subscription_limit &&
@@ -101,7 +125,15 @@ boost::asio::awaitable<pubsub::subscription> node::async_subscribe(pubsub::topic
       }
       const auto [mesh, inserted] = self->pubsub_value.mesh.try_emplace(subscription.subject.value);
       try {
-         self->pubsub_value.handlers.insert_or_assign(subscription.subject.value, std::move(handler));
+         const auto [row, new_handler] = self->pubsub_value.handlers.try_emplace(subscription.subject.value);
+         try {
+            retired = registration ? self->pubsub_value.partial.install(registration, self->options.limits.pubsub.limits)
+                                   : self->pubsub_value.partial.close(subscription.subject);
+         } catch (...) {
+            if (new_handler) { self->pubsub_value.handlers.erase(row); }
+            throw;
+         }
+         row->second = std::move(handler);
       } catch (...) {
          if (inserted) {
             self->pubsub_value.mesh.erase(mesh);
@@ -109,29 +141,40 @@ boost::asio::awaitable<pubsub::subscription> node::async_subscribe(pubsub::topic
          throw;
       }
       self->pubsub_value.fanout.erase(subscription.subject.value);
+      ++self->pubsub_value.subscription_epoch;
    }
+   if (retired) { retired->stop.request_stop(); }
    auto peers = self->pubsub_candidate_peers(subscription.subject.value);
    for (const auto& peer : peers) {
       auto send_generation = std::optional<std::uint64_t>{};
       try {
          co_await self->send_pubsub_rpc(peer,
                                         pubsub::rpc{.subscriptions = std::vector<pubsub::subscription>{subscription}},
-                                        send_generation);
+                                        send_generation, {}, true, {},
+                                        registration ? std::optional{registration->token} : std::nullopt);
       } catch (const forge::exceptions::base& error) {
          self->record_pubsub_send_failure(peer, error, send_generation);
       }
    }
-   co_return subscription;
+   co_return std::pair{std::move(subscription), registration ? registration->token : pubsub::partial_topic{}};
 }
 
 boost::asio::awaitable<void> node::async_unsubscribe(pubsub::topic subject) {
+   co_await impl_->unsubscribe_pubsub(std::move(subject));
+}
+
+boost::asio::awaitable<void> node::impl::unsubscribe_pubsub(pubsub::topic subject,
+                                                         std::optional<pubsub::partial_topic> registration) {
    if (subject.value.empty()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub unsubscribe requires topic");
    }
-   auto self = impl_;
+   auto self = shared_from_this();
+   auto operation = lifecycle.track();
+   if (!operation.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub unsubscribe owner closed"); }
    auto subscription = pubsub::subscription{.subscribe = false, .subject = std::move(subject)};
    if (!self->options.capabilities.has(capabilities::pubsub)) { co_return; }
    auto outbound = std::map<peer_id, pubsub::rpc>{};
+   auto retired = std::shared_ptr<detail::pubsub_partial::registration>{};
    try {
       const auto px = self->prepare_pubsub_prune_peers();
       const auto peers = self->pubsub_candidate_peers(subscription.subject.value);
@@ -141,6 +184,10 @@ boost::asio::awaitable<void> node::async_unsubscribe(pubsub::topic subject) {
       const auto lock = std::scoped_lock{self->mutex};
       if (self->stopped) {
          FORGE_THROW_EXCEPTION(exceptions::closed, "cannot unsubscribe GossipSub after shutdown");
+      }
+      if (registration) { static_cast<void>(self->pubsub_value.partial.require(*registration)); }
+      if (self->pubsub_value.subscription_epoch == (std::numeric_limits<std::uint64_t>::max)()) {
+         FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub subscription generation exhausted");
       }
       const auto now = std::chrono::steady_clock::now();
       auto commands = std::vector<detail::pubsub_control_queue::command>{};
@@ -161,17 +208,20 @@ boost::asio::awaitable<void> node::async_unsubscribe(pubsub::topic subject) {
       self->commit_pubsub_controls_locked(std::move(*change), now);
       self->pubsub_value.handlers.erase(subscription.subject.value);
       self->pubsub_value.mesh.erase(subscription.subject.value);
+      retired = self->pubsub_value.partial.close(subscription.subject);
+      ++self->pubsub_value.subscription_epoch;
    } catch (const std::bad_alloc&) {
       FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "GossipSub unsubscribe preparation allocation failed");
    } catch (const forge::exceptions::base& error) {
       if (!exceptions::is(error, exceptions::code::invalid_options)) { throw; }
       FORGE_THROW_EXCEPTION(exceptions::backpressure_rejected, "GossipSub unsubscribe control exceeds wire limit");
    }
+   if (retired) { retired->stop.request_stop(); }
    self->flush_pubsub_controls();
    for (auto& [peer, rpc] : outbound) {
       auto send_generation = std::optional<std::uint64_t>{};
       try {
-         co_await self->send_pubsub_rpc(peer, std::move(rpc), send_generation);
+         co_await self->send_pubsub_rpc(peer, std::move(rpc), send_generation, {}, true, {}, registration);
       } catch (const forge::exceptions::base& error) {
          self->record_pubsub_send_failure(peer, error, send_generation);
       }

@@ -20,6 +20,7 @@ module;
 #include <random>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -47,6 +48,7 @@ import forge.multiformats.multiaddr;
 import forge.multiformats.varint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.net.p2p.identify;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
@@ -70,6 +72,184 @@ namespace forge::net::p2p {
 using namespace std::chrono_literals;
 using forge::tests::p2p::pubsub_router_fixture;
 using forge::tests::p2p::gossipsub_test_shutdown;
+
+void node_session_fixture::native_pre_io_stream_quota() {
+   auto fixture = pubsub_router_fixture{};
+   // Keep the original router-test profile; only its setup observation moves
+   // into the existing friend owner so Identify and Push can actually settle.
+   auto common = pubsub::options{};
+   common.limits.mesh_n = 2;
+   common.limits.mesh_n_low = 1;
+   common.limits.mesh_n_high = 4;
+   common.limits.mesh_outbound_min = 0;
+   common.limits.mesh_score_min = 1;
+   common.limits.heartbeat_initial_delay = 40ms;
+   common.limits.heartbeat_interval = 80ms;
+   common.limits.prune_backoff = 1s;
+   common.limits.iwant_followup_time = 160ms;
+   common.scoring.emplace();
+   auto topic_params = pubsub::topic_score_params{};
+   topic_params.invalid_message_deliveries_weight = -100;
+   common.scoring->topics.emplace(fixture.topic, topic_params);
+   common.scoring->retain_score = 5s;
+   auto config = common;
+   config.limits.heartbeat_initial_delay = 30s;
+   auto& params = config.scoring->topics.at(fixture.topic);
+   params.mesh_failure_penalty_weight = -1;
+   params.mesh_message_deliveries_activation = 1s;
+   params.mesh_message_deliveries_threshold = 1;
+   auto resources = resource_manager::limits{};
+   resources.peer.max_outbound_streams = 1;
+   auto& owner = fixture.add("pubsub-quota-owner", std::move(config), resources);
+   auto& remote = fixture.add("pubsub-quota-peer", std::move(common));
+   const auto owner_peer = owner.local_peer();
+   const auto remote_peer = remote.local_peer();
+   auto held = stream{};
+   auto input = stream{};
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, remote, [&] {
+      held.request_cancel();
+      input.request_cancel();
+   }};
+   auto stage = "connect";
+   struct observation {
+      std::uint64_t session = 0;
+      bool open = false;
+      bool identified = false;
+      bool identify_completed = false;
+      bool push_supported = false;
+      bool push_running = false;
+      std::uint64_t attempted_generation = 0;
+      std::uint64_t generation = 0;
+      resource_manager::snapshot resources;
+   };
+   auto observed = std::array<observation, 2>{};
+   const auto observe_locked = [](node& value, const peer_id& peer) {
+      auto out = observation{};
+      const auto session = value.impl_->session_for_path_locked(peer, path::kind::direct, std::nullopt);
+      if (session) {
+         out.session = session->id;
+         out.open = !session->closed;
+         out.identified = session->info.identify_state == identify::state::identified;
+         out.identify_completed = session->identify_completed;
+         out.push_supported = session->identify_push_supported;
+         out.attempted_generation = session->identify_push_attempted_generation;
+      }
+      out.push_running = value.impl_->identify_push_value.coordinator_running;
+      out.generation = value.impl_->identify_push_value.generation;
+      out.resources = value.impl_->resources.current();
+      return out;
+   };
+   const auto settled = [](const observation& value) {
+      const auto no_streams = [](const resource_manager::scope_totals& totals) {
+         return totals.inbound_streams == 0U && totals.outbound_streams == 0U;
+      };
+      return value.open && value.identified && value.identify_completed && value.push_supported && !value.push_running &&
+          value.attempted_generation >= value.generation &&
+          no_streams(value.resources.system) && no_streams(value.resources.streams) &&
+          no_streams(value.resources.transient);
+   };
+   const auto observe_both = [&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex, remote.impl_->mutex};
+      observed = {observe_locked(owner, remote_peer), observe_locked(remote, owner_peer)};
+      return settled(observed[0]) && settled(observed[1]);
+   };
+   const auto diagnose = [&](const char* snapshot) {
+      for (auto index = std::size_t{}; index < observed.size(); ++index) {
+         const auto& value = observed[index];
+         const auto& peer = index == 0 ? remote_peer : owner_peer;
+         std::fprintf(stderr,
+             "pubsub-quota stage=%s snapshot=%s owner=%s peer=%s session=%llu open=%d identified=%d completed=%d "
+             "push-supported=%d push-running=%d attempted-generation=%llu current-generation=%llu "
+             "system-in=%zu system-out=%zu streams-in=%zu streams-out=%zu transient-in=%zu transient-out=%zu "
+             "denied-streams=%llu\n",
+             stage, snapshot, index == 0 ? "owner" : "remote", peer.to_string().c_str(),
+             static_cast<unsigned long long>(value.session), value.open, value.identified, value.identify_completed,
+             value.push_supported, value.push_running, static_cast<unsigned long long>(value.attempted_generation),
+             static_cast<unsigned long long>(value.generation), value.resources.system.inbound_streams,
+             value.resources.system.outbound_streams, value.resources.streams.inbound_streams,
+             value.resources.streams.outbound_streams, value.resources.transient.inbound_streams,
+             value.resources.transient.outbound_streams, static_cast<unsigned long long>(value.resources.denied_streams));
+      }
+      std::fflush(stderr);
+   };
+   const auto score_row = [&]() -> std::optional<pubsub::peer_score_snapshot> {
+      for (const auto& row : owner.pubsub_scores().peers) {
+         if (row.peer == remote_peer) { return row; }
+      }
+      return std::nullopt;
+   };
+   try {
+      fixture.connect(remote, owner);
+      stage = "both-native-identify-push-quiescent-before-held-open";
+      // Observe both native Identify/Push owners under their mutexes, including
+      // current stream reservations. No generation rewrite, quota injection,
+      // disabled Identify/Push, or failed-open retry.
+      BOOST_REQUIRE_MESSAGE(fixture.wait(observe_both), "both nodes did not settle native Identify/Push before quota setup");
+      stage = "held-native-open";
+      held = fixture.open(owner, remote);
+      stage = "inbound-native-open";
+      input = fixture.open(remote, owner);
+      stage = "subscriptions-and-native-graft";
+      fixture.subscribe(owner);
+      fixture.subscribe(remote);
+      fixture.send(input, pubsub::rpc{.subscriptions = {{.subscribe = true, .subject = fixture.topic}},
+          .control_value = pubsub::control{.grafts = {{.subject = fixture.topic}}}});
+      BOOST_REQUIRE(fixture.wait([&] {
+         const auto row = score_row();
+         return row && !row->topics.empty() && row->topics.front().in_mesh && row->topics.front().mesh_deliveries_active;
+      }));
+      BOOST_REQUIRE_EQUAL(owner.diagnostics().resources.system.outbound_streams, 1U);
+      stage = "three-native-pre-io-quota-rejections";
+      const auto baseline = owner.metrics().backpressure_rejections;
+      for (auto attempt = 0; attempt < 3; ++attempt) {
+         auto rejected = false;
+         try { static_cast<void>(fixture.publish(owner, "quota-pressure-" + std::to_string(attempt))); }
+         catch (const forge::exceptions::base& error) {
+            rejected = exceptions::is(error, exceptions::code::backpressure_rejected);
+            BOOST_CHECK(rejected);
+         }
+         BOOST_REQUIRE(rejected);
+         const auto row = score_row();
+         BOOST_REQUIRE(row);
+         BOOST_REQUIRE_EQUAL(row->topics.size(), 1U);
+         BOOST_TEST(row->topics.front().in_mesh);
+         BOOST_TEST(row->topics.front().mesh_message_deliveries == 0.0);
+         BOOST_TEST(row->topics.front().mesh_failure_penalty == 0.0);
+         BOOST_TEST(row->topics.front().invalid_message_deliveries == 0.0);
+         BOOST_TEST(row->behaviour_penalty == 0.0);
+      }
+      BOOST_TEST(owner.metrics().backpressure_rejections >= baseline + 3U);
+      BOOST_TEST(owner.pubsub_snapshot().invalid_messages == 0U);
+      BOOST_TEST(std::ranges::none_of(fixture.receipts(owner), [](const auto& event) {
+         return event.kind == pubsub::trace_kind::rpc_write;
+      })); // No outbound GossipSub stream was opened or written.
+      stage = "held-native-close";
+      run(fixture.runtime, held.async_close());
+      BOOST_REQUIRE(fixture.wait([&] { return owner.diagnostics().resources.system.outbound_streams == 0U; }));
+      stage = "native-publication-recovery";
+      static_cast<void>(fixture.publish(owner, "quota-recovered"));
+      BOOST_REQUIRE(fixture.wait([&] {
+         return std::ranges::any_of(fixture.receipts(remote), [](const auto& event) {
+            return event.kind == pubsub::trace_kind::delivery && std::ranges::equal(event.data, std::string_view{"quota-recovered"});
+         });
+      }));
+      const auto recovered = score_row();
+      BOOST_REQUIRE(recovered);
+      BOOST_REQUIRE_EQUAL(recovered->topics.size(), 1U);
+      BOOST_TEST(recovered->topics.front().in_mesh);
+      stage = "native-input-close";
+      run(fixture.runtime, input.async_close());
+      stage = "joined-cleanup";
+      shutdown.join();
+   } catch (...) {
+      // Retain the barrier snapshot and collect the actual current generation /
+      // reservations too, without calling diagnostics while holding node mutexes.
+      diagnose("last-setup-predicate");
+      static_cast<void>(observe_both());
+      diagnose("current");
+      throw;
+   }
+}
 
 void node_session_fixture::native_gate_supersession() {
    auto fixture = pubsub_router_fixture{};
@@ -893,7 +1073,7 @@ void node_session_fixture::native_protocol_open_failure_generation(bool reconnec
           out->second.stream && out->second.stream->valid() && !out->second.snapshot_pending &&
           owner.impl_->pubsub_value.outbound_budget.total() == 0U &&
           in != owner.impl_->pubsub_value.inbound.end() && in->second.size() == 1U &&
-          in->second.begin()->second == session->id && topics != owner.impl_->pubsub_value.peer_topics.end() &&
+          in->second.begin()->second.session_id == session->id && topics != owner.impl_->pubsub_value.peer_topics.end() &&
           topics->second.contains(fixture.topic.value);
    };
    stage = "setup-pubsub-quiescence";
@@ -1581,6 +1761,7 @@ BOOST_AUTO_TEST_CASE(control_native_direct_publish_old_failure_does_not_penalize
 BOOST_AUTO_TEST_CASE(control_native_direct_publish_current_failure_is_attributed_once) { forge::net::p2p::node_session_fixture::native_direct_publish_failure_generation(false); }
 BOOST_AUTO_TEST_CASE(control_native_protocol_open_old_failure_does_not_penalize_actual_reconnected_peer) { forge::net::p2p::node_session_fixture::native_protocol_open_failure_generation(true); }
 BOOST_AUTO_TEST_CASE(control_native_protocol_open_current_timeout_is_attributed_once) { forge::net::p2p::node_session_fixture::native_protocol_open_failure_generation(false); }
+BOOST_AUTO_TEST_CASE(control_native_pre_io_stream_quota_pressure_preserves_mesh_and_sticky_score_then_recovers) { forge::net::p2p::node_session_fixture::native_pre_io_stream_quota(); }
 BOOST_AUTO_TEST_CASE(control_native_late_inbound_retired_authenticated_owner_cannot_resurrect_peer) { forge::net::p2p::node_session_fixture::native_retired_inbound(); }
 BOOST_AUTO_TEST_CASE(control_native_late_announce_retired_owner_preserves_retention_without_route) { forge::net::p2p::node_session_fixture::native_retired_announce(); }
 BOOST_AUTO_TEST_CASE(control_native_live_announce_retries_admission_after_capacity_frees) { forge::net::p2p::node_session_fixture::native_announce_capacity_retry(); }

@@ -40,6 +40,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -243,6 +244,7 @@ void node::impl::initialize_lifecycle() {
 }
 
 void node::impl::request_lifecycle_stop() noexcept {
+   pubsub_value.partial.stop(); // Stop callbacks outside the node mutex; their actual tasks remain lifecycle-owned.
    cancel_coordinated_dials();
    if (paths) { paths->request_stop(); }
    stop_mdns();

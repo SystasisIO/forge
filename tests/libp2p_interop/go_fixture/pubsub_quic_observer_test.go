@@ -204,55 +204,99 @@ func pubsubQUICUnitPrepare(t *testing.T, o *pubsubScoringObserver) {
 }
 
 func TestPubsubQUICLowerFragmentedLazySelectionAndExactRPC(t *testing.T) {
-	for _, direction := range []network.Direction{network.DirInbound, network.DirOutbound} {
-		t.Run(direction.String(), func(t *testing.T) {
-			o, s, raw, _ := pubsubQUICUnit(t, direction)
-			selection := append(pubsubQUICUnitToken("/multistream/1.0.0\n"), pubsubQUICUnitToken("/meshsub/1.1.0\n")...)
-			rpc := pubsubScoringUnitFrame(t, nil)
-			if direction == network.DirOutbound {
-				if n, err := s.Write(append(append([]byte{}, selection...), rpc...)); n != len(selection)+len(rpc) || err != nil {
-					t.Fatal(n, err)
-				}
-				for _, b := range selection {
-					pubsubQUICUnitRead(t, s, raw, []byte{b})
-				}
-			} else {
-				pubsubQUICUnitRead(t, s, raw, append(append([]byte{}, selection...), rpc...))
-				for _, b := range selection {
-					if _, err := s.Write([]byte{b}); err != nil {
-						t.Fatal(err)
+	for _, protocol := range []string{"/meshsub/1.0.0", "/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"} {
+		for _, direction := range []network.Direction{network.DirInbound, network.DirOutbound} {
+			for _, mode := range []string{"fragmented", "lazy"} {
+				t.Run(protocol+"/"+direction.String()+"/"+mode, func(t *testing.T) {
+					o, s, raw, _ := pubsubQUICUnit(t, direction)
+					transfer := func(side int, data []byte) {
+						t.Helper()
+						if side == 0 {
+							pubsubQUICUnitRead(t, s, raw, data)
+						} else if n, err := s.Write(data); n != len(data) || err != nil {
+							t.Fatal("lower Write changed successful bytes/results", n, err)
+						}
 					}
-				}
+					proposer := 1
+					if direction == network.DirInbound {
+						proposer = 0
+					}
+					selection := append(pubsubQUICUnitToken("/multistream/1.0.0\n"), pubsubQUICUnitToken(protocol+"\n")...)
+					rpc := pubsubScoringUnitFrame(t, nil)
+					if mode == "lazy" {
+						transfer(proposer, append(append([]byte{}, selection...), rpc...))
+					} else {
+						for _, b := range selection {
+							transfer(proposer, []byte{b})
+						}
+					}
+					for _, b := range selection[:len(selection)-1] {
+						transfer(1-proposer, []byte{b})
+					}
+					if s.selected != "" || len(pubsubScoringUnitEvents(o, "protocol"))+len(pubsubScoringUnitEvents(o, "rpc")) != 0 {
+						t.Fatal("partial ACK or lazy body invented selection")
+					}
+					transfer(1-proposer, selection[len(selection)-1:])
+					if mode != "lazy" {
+						for _, b := range rpc {
+							transfer(proposer, []byte{b})
+						}
+					}
+					for _, b := range rpc {
+						transfer(1-proposer, []byte{b})
+					}
+					frames, protocols := pubsubScoringUnitEvents(o, "rpc"), pubsubScoringUnitEvents(o, "protocol")
+					if o.failure != nil || len(frames) != 2 || len(protocols) != 1 || protocols[0]["protocol"] != protocol {
+						t.Fatal("missing native selection/RPC", o.failure, frames, protocols)
+					}
+					for index, frame := range frames {
+						if _, invented := frame["stream_id"]; invented {
+							t.Fatal("invented Swarm stream mapping")
+						}
+						side := proposer
+						if index == 1 {
+							side = 1 - proposer
+						}
+						if frame["native_stream_id"] != int64(0) || frame["native_connection_id"] != "unit-native-connection" ||
+							frame["native_stream_receipt_sequence"] != s.receipt || frame["protocol"] != protocol ||
+							frame["direction"] != []string{"read", "write"}[side] ||
+							frame["receipt"].(map[string]any)["framed_hex"] != hex.EncodeToString(rpc) {
+							t.Fatal("RPC is not bound to the exact lower bytes/owner", frame)
+						}
+					}
+					if len(protocols[0]["negotiation_frame_sequences"].([]int)) != 4 {
+						t.Fatal("selection inferred without four actual frames")
+					}
+					if err := s.Reset(); err != nil || !s.finalize() || o.failure != nil {
+						t.Fatal("selected stream lost disposal/finalization", err, o.failure)
+					}
+					final := pubsubScoringUnitEvents(o, "native_quic_framing_finalized")
+					if len(final) != 1 || final[0]["protocol"] != protocol || final[0]["framing_clean"] != true ||
+						final[0]["native_owner_disposed"] != true || final[0]["io_joined"] != true || raw.resets != 1 || raw.closes != 0 {
+						t.Fatal("new version bypassed existing native ownership checks", final)
+					}
+				})
 			}
-			frames, protocols := pubsubScoringUnitEvents(o, "rpc"), pubsubScoringUnitEvents(o, "protocol")
-			if o.failure != nil || len(frames) != 1 || len(protocols) != 1 {
-				t.Fatal("missing native selection/RPC", o.failure, frames)
-			}
-			frame := frames[0]
-			if _, invented := frame["stream_id"]; invented {
-				t.Fatal("invented Swarm stream mapping")
-			}
-			if frame["native_stream_id"] != int64(0) || frame["native_connection_id"] != "unit-native-connection" ||
-				frame["native_stream_receipt_sequence"] != s.receipt || frame["protocol"] != "/meshsub/1.1.0" ||
-				frame["receipt"].(map[string]any)["framed_hex"] != hex.EncodeToString(rpc) {
-				t.Fatal("RPC is not bound to the exact lower bytes/owner", frame)
-			}
-			if len(protocols[0]["negotiation_frame_sequences"].([]int)) != 4 {
-				t.Fatal("selection inferred without four actual frames")
-			}
-		})
+		}
 	}
 }
 
 func TestPubsubQUICLowerNAThenProposalAndNonPubsubBody(t *testing.T) {
-	o, s, raw, _ := pubsubQUICUnit(t, network.DirOutbound)
-	header := pubsubQUICUnitToken("/multistream/1.0.0\n")
-	_, _ = s.Write(append(append([]byte{}, header...), pubsubQUICUnitToken("/not-supported/1.0.0\n")...))
-	pubsubQUICUnitRead(t, s, raw, append(append([]byte{}, header...), pubsubQUICUnitToken("na\n")...))
-	_, _ = s.Write(pubsubQUICUnitToken("/meshsub/1.0.0\n"))
-	pubsubQUICUnitRead(t, s, raw, pubsubQUICUnitToken("/meshsub/1.0.0\n"))
-	if o.failure != nil || s.selected != "/meshsub/1.0.0" || len(s.frames) != 6 {
-		t.Fatal("valid NA continuation rejected", o.failure)
+	for _, protocol := range []string{"/meshsub/1.0.0", "/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"} {
+		t.Run(protocol, func(t *testing.T) {
+			o, s, raw, _ := pubsubQUICUnit(t, network.DirOutbound)
+			header := pubsubQUICUnitToken("/multistream/1.0.0\n")
+			_, _ = s.Write(append(append([]byte{}, header...), pubsubQUICUnitToken("/meshsub/1.4.0\n")...))
+			pubsubQUICUnitRead(t, s, raw, append(append([]byte{}, header...), pubsubQUICUnitToken("na\n")...))
+			if s.selected != "" || len(pubsubScoringUnitEvents(o, "protocol"))+len(pubsubScoringUnitEvents(o, "rpc")) != 0 {
+				t.Fatal("unsupported version rejection invented selection")
+			}
+			_, _ = s.Write(pubsubQUICUnitToken(protocol + "\n"))
+			pubsubQUICUnitRead(t, s, raw, pubsubQUICUnitToken(protocol+"\n"))
+			if o.failure != nil || s.selected != protocol || len(s.frames) != 6 {
+				t.Fatal("valid NA continuation rejected", o.failure)
+			}
+		})
 	}
 	other, inbound, delegate, _ := pubsubQUICUnit(t, network.DirInbound)
 	pubsubQUICUnitSelect(t, inbound, delegate, "/ipfs/id/1.0.0")
@@ -265,28 +309,111 @@ func TestPubsubQUICLowerNAThenProposalAndNonPubsubBody(t *testing.T) {
 }
 
 func TestPubsubQUICLowerNegotiationMalformedAndMissingACK(t *testing.T) {
-	for _, mode := range []string{"wrong_ack", "noncanonical", "missing_ack", "rejected_tail"} {
-		t.Run(mode, func(t *testing.T) {
-			o, s, raw, _ := pubsubQUICUnit(t, network.DirOutbound)
-			header := pubsubQUICUnitToken("/multistream/1.0.0\n")
-			proposal := append(append([]byte{}, header...), pubsubQUICUnitToken("/meshsub/1.1.0\n")...)
-			if mode == "rejected_tail" {
-				proposal = append(proposal, pubsubScoringUnitFrame(t, nil)...)
+	for _, protocol := range []string{"/meshsub/1.0.0", "/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"} {
+		for _, mode := range []string{"wrong_ack", "future_ack", "noncanonical", "missing_ack", "partial_ack", "rejected_tail"} {
+			t.Run(protocol+"/"+mode, func(t *testing.T) {
+				o, s, raw, _ := pubsubQUICUnit(t, network.DirOutbound)
+				header := pubsubQUICUnitToken("/multistream/1.0.0\n")
+				proposal := append(append([]byte{}, header...), pubsubQUICUnitToken(protocol+"\n")...)
+				if mode == "rejected_tail" {
+					proposal = append(proposal, pubsubScoringUnitFrame(t, nil)...)
+				}
+				_, _ = s.Write(proposal)
+				switch mode {
+				case "wrong_ack", "future_ack":
+					ack := "/meshsub/1.0.0"
+					if protocol == ack {
+						ack = "/meshsub/1.1.0"
+					}
+					if mode == "future_ack" {
+						ack = "/meshsub/1.4.0"
+					}
+					pubsubQUICUnitRead(t, s, raw, append(header, pubsubQUICUnitToken(ack+"\n")...))
+				case "noncanonical":
+					pubsubQUICUnitRead(t, s, raw, []byte{0x93, 0x00})
+				case "partial_ack":
+					ack := pubsubQUICUnitToken(protocol + "\n")
+					pubsubQUICUnitRead(t, s, raw, append(header, ack[:len(ack)-1]...))
+				case "rejected_tail":
+					pubsubQUICUnitRead(t, s, raw, append(header, pubsubQUICUnitToken("na\n")...))
+				}
+				_ = s.Reset()
+				if !s.finalize() || o.failure == nil || len(pubsubScoringUnitEvents(o, "rpc"))+len(pubsubScoringUnitEvents(o, "protocol")) != 0 {
+					t.Fatal("unproven selection accepted", mode)
+				}
+			})
+		}
+	}
+}
+
+func TestPubsubQUICUnsupportedVersionNeverAcquiresPubsubAuthority(t *testing.T) {
+	for _, protocol := range []string{"/meshsub/1.4.0", "/meshsub/1.3.0/extra"} {
+		for _, direction := range []network.Direction{network.DirInbound, network.DirOutbound} {
+			t.Run(protocol+"/"+direction.String(), func(t *testing.T) {
+				o, s, raw, _ := pubsubQUICUnit(t, direction)
+				pubsubQUICUnitSelect(t, s, raw, protocol)
+				pubsubQUICUnitRead(t, s, raw, pubsubScoringUnitFrame(t, nil))
+				if n, err := s.Write([]byte{0xff, 0xff}); n != 2 || err != nil {
+					t.Fatal("excluded native body was not delegated", n, err)
+				}
+				raw.input, raw.readErr = nil, syscall.ECONNRESET
+				if n, err := s.Read(make([]byte, 1)); n != 0 || err != syscall.ECONNRESET {
+					t.Fatal("excluded native error was rewritten", n, err)
+				}
+				if pubsubQUICIsPubsub(protocol) || s.touchedPubsub || s.pubsub.Load() || len(pubsubScoringUnitEvents(o, "rpc")) != 0 {
+					t.Fatal("unknown version gained PubSub authority")
+				}
+				protocols := pubsubScoringUnitEvents(o, "protocol")
+				if len(protocols) != 1 || protocols[0]["protocol"] != protocol || len(s.frames) != 4 {
+					t.Fatal("actual non-PubSub selection was rewritten", protocols)
+				}
+				if err := s.Reset(); err != nil || !s.finalize() || o.failure != nil ||
+					len(pubsubScoringUnitEvents(o, "native_quic_framing_finalized")) != 0 || raw.resets != 1 {
+					t.Fatal("unknown version gained PubSub shutdown evidence", err, o.failure)
+				}
+			})
+		}
+	}
+}
+
+func TestPubsubQUICNewVersionsKeepNativeFailuresAndFramingBounds(t *testing.T) {
+	for _, protocol := range []string{"/meshsub/1.2.0", "/meshsub/1.3.0"} {
+		for _, direction := range []network.Direction{network.DirInbound, network.DirOutbound} {
+			for _, mode := range []string{"read_error", "write_error", "partial_rpc", "oversized_rpc"} {
+				t.Run(protocol+"/"+direction.String()+"/"+mode, func(t *testing.T) {
+					o, s, raw, _ := pubsubQUICUnit(t, direction)
+					pubsubQUICUnitSelect(t, s, raw, protocol)
+					switch mode {
+					case "read_error":
+						raw.input, raw.readErr = nil, syscall.ECONNRESET
+						if n, err := s.Read(make([]byte, 1)); n != 0 || err != raw.readErr || o.failure != raw.readErr {
+							t.Fatal("selected native read failure changed or ignored", n, err, o.failure)
+						}
+					case "write_error":
+						raw.writeN, raw.writeErr = 0, syscall.EPIPE
+						if n, err := s.Write(pubsubScoringUnitFrame(t, nil)); n != 0 || err != raw.writeErr || o.failure != raw.writeErr {
+							t.Fatal("selected native write failure changed or ignored", n, err, o.failure)
+						}
+					case "partial_rpc":
+						pubsubQUICUnitRead(t, s, raw, []byte{3, 0x1a})
+					case "oversized_rpc":
+						var prefix [binary.MaxVarintLen64]byte
+						n := binary.PutUvarint(prefix[:], pubsubScoringFrame+1)
+						pubsubQUICUnitRead(t, s, raw, prefix[:n])
+					}
+					first := o.failure
+					if err := s.Reset(); err != nil || !s.finalize() || o.failure == nil {
+						t.Fatal("native failure or incomplete framing lost at disposal", err, o.failure)
+					}
+					if first != nil && o.failure != first {
+						t.Fatal("disposal replaced the first native/parser failure")
+					}
+					if len(pubsubScoringUnitEvents(o, "rpc")) != 0 || raw.resets != 1 || raw.closes != 0 {
+						t.Fatal("failed I/O fabricated RPC or extra cleanup")
+					}
+				})
 			}
-			_, _ = s.Write(proposal)
-			switch mode {
-			case "wrong_ack":
-				pubsubQUICUnitRead(t, s, raw, append(header, pubsubQUICUnitToken("/meshsub/1.0.0\n")...))
-			case "noncanonical":
-				pubsubQUICUnitRead(t, s, raw, []byte{0x93, 0x00})
-			case "rejected_tail":
-				pubsubQUICUnitRead(t, s, raw, append(header, pubsubQUICUnitToken("na\n")...))
-			}
-			_ = s.Reset()
-			if !s.finalize() || o.failure == nil || len(pubsubScoringUnitEvents(o, "rpc")) != 0 {
-				t.Fatal("unproven selection accepted", mode)
-			}
-		})
+		}
 	}
 }
 

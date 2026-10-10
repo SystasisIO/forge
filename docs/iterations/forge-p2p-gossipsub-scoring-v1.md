@@ -119,11 +119,20 @@ The original pinned Rust QUIC transport cannot publicly expose every native
 shutdown cause. The maintainer approved separate original-wire and instrumented
 shutdown evidence on 2026-10-08. The four Rust QUIC cases retain original raw
 errors and independently prove traffic through active indexed snapshots; a
-separate accessor-only TEST COPY repeats the full scenario and proves shutdown.
+separate accessor-only TEST COPY repeated the full scenario and proved shutdown.
 Tokens, owners and causes are never borrowed between executions. Original
 shutdown remains `NOT_PROVEN`; combined acceptance is explicitly scoped to
-original-wire/instrumented-shutdown. Canonical acceptance and merge remain
-pending until both gates pass on the clean exact head.
+original-wire/instrumented-shutdown. PR11 merged after both scoped gates passed
+on the reviewed head; this did not prove original-donor shutdown.
+
+The post-merge [original Rust QUIC diagnosis](../donors/forge-net-p2p-rust-quic-shutdown-v1.md)
+isolates the opaque-error limitation with native and two-host reproductions.
+The maintainer subsequently approved using the standard error-source fix only
+in a local TEST COPY, without sending the proposal upstream now. Fresh receipts
+must bind that exact recipe, not relabel the old accessor runs. Canonical donor
+sources and the original shutdown classification stay unchanged. Passing the
+scoped original-wire/local-copy shutdown gate permits continuation to PR12;
+upstream acceptance is deferred, not a prerequisite for that continuation.
 
 ### Shutdown Evidence Repairs
 

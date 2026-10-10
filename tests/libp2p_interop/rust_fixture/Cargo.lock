@@ -665,6 +665,7 @@ dependencies = [
  "futures",
  "hickory-resolver",
  "libp2p",
+ "libp2p-gossipsub",
  "libp2p-stream",
  "multistream-select",
  "quick-protobuf",
@@ -1321,6 +1322,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "keccak"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
+dependencies = [
+ "cpufeatures 0.2.17",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1354,8 +1364,8 @@ dependencies = [
  "libp2p-mdns",
  "libp2p-metrics",
  "libp2p-noise",
- "libp2p-pnet",
  "libp2p-ping",
+ "libp2p-pnet",
  "libp2p-quic",
  "libp2p-relay",
  "libp2p-rendezvous",
@@ -1614,18 +1624,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libp2p-pnet"
-version = "0.27.0"
-dependencies = [
- "futures",
- "pin-project",
- "rand 0.8.7",
- "salsa20",
- "sha3",
- "tracing",
-]
-
-[[package]]
 name = "libp2p-ping"
 version = "0.48.0"
 dependencies = [
@@ -1637,6 +1635,18 @@ dependencies = [
  "rand 0.8.7",
  "tracing",
  "web-time",
+]
+
+[[package]]
+name = "libp2p-pnet"
+version = "0.27.0"
+dependencies = [
+ "futures",
+ "pin-project",
+ "rand 0.8.7",
+ "salsa20",
+ "sha3",
+ "tracing",
 ]
 
 [[package]]
@@ -2658,6 +2668,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "salsa20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2727,6 +2746,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest",
+]
+
+[[package]]
+name = "sha3"
+version = "0.10.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
+dependencies = [
+ "digest",
+ "keccak",
 ]
 
 [[package]]
@@ -3656,31 +3685,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "keccak"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
-dependencies = [
- "cpufeatures 0.2.17",
-]
-
-[[package]]
-name = "salsa20"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
-dependencies = [
- "cipher",
-]
-
-[[package]]
-name = "sha3"
-version = "0.10.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
-dependencies = [
- "digest",
- "keccak",
-]

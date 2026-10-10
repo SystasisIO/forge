@@ -28,7 +28,7 @@ fn argv() -> Vec<String> {
 }
 
 fn config(version: &str, actor: &str) -> Config {
-    let mut config = parse_args(&argv()).unwrap().unwrap();
+    let mut config = parse_args(&argv()).unwrap().unwrap().config;
     config.version = version.to_owned();
     config.actor = actor.to_owned();
     config
@@ -40,7 +40,7 @@ fn cli_dispatch_and_strict_ownership_flags() {
     assert!(parse_args(&["listen".into()]).unwrap().is_none());
     assert_eq!(parse_args(&argv()).unwrap().unwrap().actor, "victim");
     for (flag, bad) in [
-        ("--version", "1.2"),
+        ("--version", "1.4"),
         ("--transport", "tcp-tls"),
         ("--actor", "validator"),
         ("--case-token", "0123456789ABCDEF0123456789ABCDEF"),
@@ -75,6 +75,155 @@ fn cli_dispatch_and_strict_ownership_flags() {
 }
 
 #[test]
+fn extension_versions_preserve_native_protocol_kinds() {
+    use libp2p::core::upgrade::UpgradeInfo;
+    use libp2p::swarm::{ConnectionHandler, ConnectionId, NetworkBehaviour};
+
+    for version in ["1.0", "1.1", "1.2", "1.3"] {
+        let mut args = argv();
+        args[2] = version.into();
+        let cfg = parse_args(&args).unwrap().unwrap();
+        assert_eq!(cfg.protocol(), format!("/meshsub/{version}.0"));
+        let key = identity::Keypair::generate_ed25519();
+        let mut router = behaviour(&key, &cfg).unwrap();
+        let address: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+        let handler = router
+            .handle_established_inbound_connection(
+                ConnectionId::new_unchecked(1),
+                PeerId::random(),
+                &address,
+                &address,
+            )
+            .unwrap();
+        let upgrade = handler.listen_protocol();
+        let offered: Vec<_> = upgrade
+            .upgrade()
+            .protocol_info()
+            .map(|protocol| {
+                let protocol = protocol.left().expect("active native PubSub handler");
+                (protocol.as_ref().to_owned(), format!("{:?}", protocol.kind))
+            })
+            .collect();
+        let expected = match version {
+            "1.0" => vec![("/meshsub/1.0.0", "Gossipsub")],
+            "1.1" => vec![("/meshsub/1.1.0", "Gossipsubv1_1")],
+            _ => vec![
+                ("/meshsub/1.3.0", "Gossipsubv1_3"),
+                ("/meshsub/1.2.0", "Gossipsubv1_2"),
+                ("/meshsub/1.1.0", "Gossipsubv1_1"),
+                ("/meshsub/1.0.0", "Gossipsub"),
+            ],
+        };
+        assert_eq!(
+            offered,
+            expected
+                .into_iter()
+                .map(|(protocol, kind)| (protocol.to_owned(), kind.to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn extension_cli_modes_are_optional_and_version_exact() {
+    assert!(parse_args(&argv()).unwrap().unwrap().extension.is_none());
+    for version in ["1.0", "1.1", "1.2", "1.3"] {
+        for mode in ["idontwant", "partial", "advertisement", "unknown"] {
+            let mut args = argv();
+            args[2] = version.into();
+            args.extend(["--extension".into(), mode.into()]);
+            let expected = mode == "idontwant" && version == "1.2"
+                || matches!(mode, "partial" | "advertisement") && version == "1.3";
+            assert_eq!(parse_args(&args).is_ok(), expected, "{version}/{mode}");
+            if expected {
+                let cfg = parse_args(&args).unwrap().unwrap();
+                let actor = extensions::Actor::new(cfg.extension, &cfg).unwrap();
+                let mut ready = json!({"topic": cfg.topic().hash().to_string()});
+                actor.readiness(&mut ready);
+                assert_eq!(ready.as_object().unwrap().len(), 4);
+                assert_eq!(ready["version"], version);
+                assert_eq!(ready["extension"], mode);
+                assert_eq!(ready["requests_partial"], mode == "partial");
+                assert_eq!(ready["topic"], format!("forge-pr11:{}", cfg.token));
+            }
+        }
+    }
+    let mut duplicate = argv();
+    duplicate[2] = "1.3".into();
+    duplicate.extend([
+        "--extension".into(),
+        "partial".into(),
+        "--extension".into(),
+        "advertisement".into(),
+    ]);
+    assert!(parse_args(&duplicate).is_err());
+}
+
+#[test]
+fn extension_commands_have_exact_fields_and_byte_bounds() {
+    for row in [
+        json!({"sequence": 1, "kind": "publish_extension", "payload": "x"}),
+        json!({"sequence": 1, "kind": "publish_extension", "payload": "x".repeat(4096)}),
+        json!({"sequence": 1, "kind": "validation_hold", "payload": "accept:case:one"}),
+        json!({"sequence": 1, "kind": "validation_release"}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": 0}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": 7}),
+    ] {
+        assert_eq!(
+            Control::default()
+                .ingest(format!("{row}\n").as_bytes())
+                .unwrap()[0]
+                .sequence(),
+            1
+        );
+    }
+    for row in [
+        json!({"sequence": 1, "kind": "publish_extension", "payload": ""}),
+        json!({"sequence": 1, "kind": "publish_extension", "payload": "x".repeat(4097)}),
+        json!({"sequence": 1, "kind": "validation_hold", "payload": "x\u{0000}"}),
+        json!({"sequence": 1, "kind": "validation_release", "observation_sequence": 2}),
+        json!({"sequence": 1, "kind": "partial_offer"}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": -1}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": 1.5}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": 8}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": 1, "revision": 2}),
+        json!({"sequence": 1, "kind": "partial_offer", "have": 1, "group_sequence": 2}),
+        json!({"sequence": 1, "kind": "publish_large", "payload": "legacy"}),
+    ] {
+        assert!(
+            Control::default()
+                .ingest(format!("{row}\n").as_bytes())
+                .is_err(),
+            "{row}"
+        );
+    }
+}
+
+#[test]
+fn extension_admission_does_not_change_legacy_actor() {
+    let cfg = config("1.1", "victim");
+    let evidence = Evidence::default();
+    let mut actor = extensions::Actor::new(None, &cfg).unwrap();
+    let mut router = behaviour(&identity::Keypair::generate_ed25519(), &cfg).unwrap();
+    actor.subscribe(&mut router, &cfg).unwrap();
+    let mut ready = json!({});
+    actor.describe(&mut ready);
+    assert_eq!(ready, json!({}));
+    assert!(
+        actor
+            .command(
+                extensions::Operation::Publish("forbidden".into()),
+                1,
+                &mut router,
+                &cfg,
+                &evidence
+            )
+            .is_err()
+    );
+    assert!(evidence.lock().events.is_empty());
+}
+
+#[test]
 fn configured_signed_message_id_matches_raw_peer_and_big_endian_sequence_vector() {
     let mut peer_bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
     peer_bytes.extend(0u8..32);
@@ -94,6 +243,39 @@ fn configured_signed_message_id_matches_raw_peer_and_big_endian_sequence_vector(
         message.data = b"different payload, same author and sequence".to_vec();
         message.topic = gossipsub::IdentTopic::new("other-topic").hash();
         assert_eq!(router.message_id(&message), id);
+    }
+}
+
+#[test]
+fn idontwant_cache_and_mesh_are_mode_scoped_and_keep_the_gossip_window() {
+    for (version, mode, history) in [
+        ("1.0", None, 5),
+        ("1.1", None, 5),
+        ("1.2", None, 5),
+        ("1.3", None, 5),
+        ("1.2", Some(extensions::Mode::Idontwant), 64),
+        ("1.3", Some(extensions::Mode::Partial), 5),
+        ("1.3", Some(extensions::Mode::Advertisement), 5),
+    ] {
+        for role in ["victim", "offender", "replacement", "sink"] {
+            let config = config(version, role);
+            let router = router_config_with_mode(&config, mode).unwrap();
+            let mesh = if mode == Some(extensions::Mode::Idontwant) {
+                (3, 3, 4)
+            } else {
+                (2, 1, 4)
+            };
+            assert_eq!(
+                (router.mesh_n(), router.mesh_n_low(), router.mesh_n_high()),
+                mesh
+            );
+            assert_eq!(router.mesh_outbound_min(), 0);
+            assert_eq!(router.retain_scores(), 1);
+            assert_eq!(router.history_length(), history);
+            assert_eq!(router.history_gossip(), 3);
+            assert_eq!(router.heartbeat_interval(), Duration::from_millis(250));
+            assert!(router.validate_messages());
+        }
     }
 }
 
@@ -237,15 +419,26 @@ struct NativeActor {
     tasks: crate::task_owner::Owner,
     peers: BTreeSet<PeerId>,
     pending: BTreeMap<PeerId, PendingConnect>,
+    extension: Option<extensions::Actor>,
 }
 
 impl NativeActor {
     fn new(version: &str, role: &str) -> Self {
+        Self::new_with_mode(version, role, None)
+    }
+
+    fn new_with_mode(version: &str, role: &str, mode: Option<extensions::Mode>) -> Self {
         let config = config(version, role);
         let evidence = Evidence::default();
         let upgrades = crate::upgrade_observer::Observer::default();
         let tasks = crate::task_owner::Owner::default();
-        let swarm = new_swarm(&config, &evidence, &upgrades, &tasks).unwrap();
+        let swarm = match mode {
+            Some(extensions::Mode::Idontwant) => {
+                transport::new_swarm_with_mode(&config, mode, &evidence, &upgrades, &tasks)
+            }
+            _ => new_swarm(&config, &evidence, &upgrades, &tasks),
+        }
+        .unwrap();
         Self {
             swarm,
             config,
@@ -254,9 +447,27 @@ impl NativeActor {
             tasks,
             peers: BTreeSet::new(),
             pending: BTreeMap::new(),
+            extension: None,
         }
     }
     fn event(&mut self, event: SwarmEvent<gossipsub::Event>) -> io::Result<Option<Multiaddr>> {
+        let event = match event {
+            SwarmEvent::Behaviour(event) if self.extension.is_some() => {
+                let actor = self.extension.as_mut().unwrap();
+                let remaining = actor.event(
+                    event,
+                    self.swarm.behaviour_mut(),
+                    &self.config,
+                    &self.evidence,
+                )?;
+                actor.drain(&self.evidence)?;
+                match remaining {
+                    Some(event) => SwarmEvent::Behaviour(event),
+                    None => return Ok(None),
+                }
+            }
+            event => event,
+        };
         handle_event(
             event,
             &mut self.swarm,
@@ -265,6 +476,29 @@ impl NativeActor {
             &self.upgrades,
             &mut self.peers,
             &mut self.pending,
+        )
+    }
+
+    fn with_application(mut self, mode: extensions::Mode) -> Self {
+        let actor = extensions::Actor::new(Some(mode), &self.config).unwrap();
+        actor
+            .subscribe(self.swarm.behaviour_mut(), &self.config)
+            .unwrap();
+        self.extension = Some(actor);
+        self
+    }
+
+    fn extension_command(
+        &mut self,
+        operation: extensions::Operation,
+        sequence: u64,
+    ) -> io::Result<Value> {
+        self.extension.as_mut().unwrap().command(
+            operation,
+            sequence,
+            self.swarm.behaviour_mut(),
+            &self.config,
+            &self.evidence,
         )
     }
     fn has(&self, kind: &str, outcome: &str) -> bool {
@@ -302,6 +536,60 @@ impl NativeActor {
     }
 }
 
+async fn connect_native_pair(a: &mut NativeActor, b: &mut NativeActor) {
+    a.swarm
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let address = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = a.swarm.next().await.unwrap();
+            if let Some(address) = a.event(event).unwrap() {
+                break address;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    b.swarm
+        .dial(
+            DialOpts::peer_id(*a.swarm.local_peer_id())
+                .addresses(vec![address])
+                .build(),
+        )
+        .unwrap();
+    drive_until(a, b, "native pair mesh", |a, b| {
+        a.swarm
+            .behaviour()
+            .mesh_peers(&a.config.topic().hash())
+            .any(|peer| peer == b.swarm.local_peer_id())
+            && b.swarm
+                .behaviour()
+                .mesh_peers(&b.config.topic().hash())
+                .any(|peer| peer == a.swarm.local_peer_id())
+    })
+    .await;
+}
+
+async fn dispose_native_pair(mut a: NativeActor, mut b: NativeActor) {
+    let (a_close, b_close) = futures::join!(
+        close_native(&mut a.swarm, &a.evidence),
+        close_native(&mut b.swarm, &b.evidence)
+    );
+    a_close.unwrap();
+    b_close.unwrap();
+    drop(a.swarm);
+    drop(b.swarm);
+    for (tasks, evidence) in [(a.tasks, a.evidence), (b.tasks, b.evidence)] {
+        assert_eq!(
+            tasks.close_and_join().await.snapshot()["fixture_owned_tasks_joined"],
+            true
+        );
+        let capture = evidence.lock();
+        assert_eq!((capture.live_muxers, capture.live_streams), (0, 0));
+        assert!(!capture.overflow);
+    }
+}
+
 async fn drive_until(
     a: &mut NativeActor,
     b: &mut NativeActor,
@@ -313,6 +601,10 @@ async fn drive_until(
     let completed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             for actor in [&*a, &*b] {
+                if let Some(extension) = &actor.extension {
+                    // Metadata hooks can run while native Swarm::poll stays Pending.
+                    extension.drain(&actor.evidence).unwrap();
+                }
                 let failed = {
                     let capture = actor.evidence.lock();
                     capture.overflow || capture.error.is_some()
@@ -375,6 +667,254 @@ async fn unsuccessful_native_validation_report_cannot_emit_committed_validation_
         actor.tasks.close_and_join().await.snapshot()["fixture_owned_tasks_joined"],
         true
     );
+}
+
+#[tokio::test]
+async fn real_held_signed_message_after_legacy_cache_window_fails_fatally() {
+    // Intentionally use the unchanged five-slot legacy router, not IDONTWANT's override.
+    let mut receiver =
+        NativeActor::new("1.2", "victim").with_application(extensions::Mode::Idontwant);
+    let mut publisher = NativeActor::new("1.2", "offender");
+    connect_native_pair(&mut receiver, &mut publisher).await;
+    let payload = format!(
+        "accept:{}:real-held:{}",
+        receiver.config.token,
+        "x".repeat(1500)
+    );
+    receiver
+        .extension_command(extensions::Operation::Hold(payload.clone()), 1)
+        .unwrap();
+    let id = publisher
+        .swarm
+        .behaviour_mut()
+        .publish(publisher.config.topic(), payload.as_bytes())
+        .unwrap();
+    drive_until(
+        &mut receiver,
+        &mut publisher,
+        "actual signed hold",
+        |r, _| r.has("validation_held", ""),
+    )
+    .await;
+    let started = Instant::now();
+    drive_until(
+        &mut receiver,
+        &mut publisher,
+        "poll beyond five heartbeats",
+        |_, _| started.elapsed() >= Duration::from_secs(2),
+    )
+    .await;
+    assert!(!receiver.has("validation", "") && !receiver.has("delivery", ""));
+    let failure = receiver
+        .extension_command(extensions::Operation::Release, 2)
+        .unwrap_err();
+    assert!(failure.to_string().contains("returned false"));
+    {
+        let capture = receiver.evidence.lock();
+        assert!(capture.error.as_deref().unwrap().contains("returned false"));
+        let failed = capture
+            .events
+            .iter()
+            .find(|event| event["kind"] == "validation_not_committed")
+            .unwrap();
+        assert_eq!(failed["message_id"], hex(&id.0));
+        assert_eq!(
+            failed["author_peer"],
+            publisher.swarm.local_peer_id().to_string()
+        );
+        assert_eq!(
+            failed["propagation_peer"],
+            publisher.swarm.local_peer_id().to_string()
+        );
+        assert_eq!(failed["validation_commit"], false);
+    }
+    assert!(!receiver.has("validation", "") && !receiver.has("delivery", ""));
+    dispose_native_pair(receiver, publisher).await;
+}
+
+#[tokio::test]
+async fn real_held_signed_message_releases_after_the_old_cache_window_in_idontwant_mode() {
+    let mut receiver =
+        NativeActor::new_with_mode("1.2", "victim", Some(extensions::Mode::Idontwant))
+            .with_application(extensions::Mode::Idontwant);
+    let mut publisher = NativeActor::new("1.2", "offender");
+    connect_native_pair(&mut receiver, &mut publisher).await;
+    let payload = format!(
+        "accept:{}:real-held:{}",
+        receiver.config.token,
+        "x".repeat(1500)
+    );
+    receiver
+        .extension_command(extensions::Operation::Hold(payload.clone()), 1)
+        .unwrap();
+    let id = publisher
+        .swarm
+        .behaviour_mut()
+        .publish(publisher.config.topic(), payload.as_bytes())
+        .unwrap();
+    drive_until(
+        &mut receiver,
+        &mut publisher,
+        "actual signed IDONTWANT hold",
+        |r, _| r.has("validation_held", ""),
+    )
+    .await;
+    let started = Instant::now();
+    drive_until(
+        &mut receiver,
+        &mut publisher,
+        "IDONTWANT cache past five heartbeats",
+        |_, _| started.elapsed() >= Duration::from_secs(2),
+    )
+    .await;
+    assert!(!receiver.has("validation", "") && !receiver.has("delivery", ""));
+    let released = receiver
+        .extension_command(extensions::Operation::Release, 2)
+        .unwrap();
+    assert_eq!(released["validation_commit"], true);
+    assert_eq!(released["message_id"], hex(&id.0));
+    assert_eq!(released["error"], Value::Null);
+    assert!(receiver.has("validation", "accept") && receiver.has("delivery", "accept"));
+    assert!(!receiver.has("validation_not_committed", ""));
+    {
+        let capture = receiver.evidence.lock();
+        assert!(!capture.overflow && capture.error.is_none());
+        let held = capture
+            .events
+            .iter()
+            .find(|event| event["kind"] == "validation_held")
+            .unwrap();
+        let committed = capture
+            .events
+            .iter()
+            .find(|event| event["kind"] == "validation")
+            .unwrap();
+        assert_eq!(held["message_id"], committed["message_id"]);
+        assert_eq!(committed["message_id"], hex(&id.0));
+        assert_eq!(
+            committed["author_peer"],
+            publisher.swarm.local_peer_id().to_string()
+        );
+        assert_eq!(
+            committed["propagation_peer"],
+            publisher.swarm.local_peer_id().to_string()
+        );
+        assert_eq!(committed["seqno_hex"], held["seqno_hex"]);
+        assert_eq!(
+            committed["payload_sha256"],
+            format!("{:x}", Sha256::digest(payload.as_bytes()))
+        );
+        assert_eq!(committed["validation_commit"], true);
+        assert_eq!(committed["report_message_validation_result"], true);
+        assert_eq!(held["committed"], false);
+        assert!(committed["sequence"].as_u64().unwrap() > held["sequence"].as_u64().unwrap());
+        let requested = capture.events.iter().find(|event| event["kind"] == "validation_release_requested").unwrap();
+        assert_eq!(requested["message_id"], committed["message_id"]);
+        assert_eq!(requested["seqno_hex"], held["seqno_hex"]);
+        assert_eq!(requested["hold_command_sequence"], 1);
+        assert_eq!(requested["command_sequence"], 2);
+        assert_eq!(requested["validation_commit"], false);
+        assert!(held["sequence"].as_u64().unwrap() < requested["sequence"].as_u64().unwrap());
+        assert!(requested["sequence"].as_u64().unwrap() < committed["sequence"].as_u64().unwrap());
+    }
+    receiver
+        .extension
+        .as_mut()
+        .unwrap()
+        .prepare(&receiver.evidence)
+        .unwrap();
+    receiver
+        .extension
+        .as_mut()
+        .unwrap()
+        .stop(
+            receiver.swarm.behaviour_mut(),
+            &receiver.config,
+            &receiver.evidence,
+        )
+        .unwrap();
+    dispose_native_pair(receiver, publisher).await;
+}
+
+#[tokio::test]
+async fn closed_partial_application_does_not_disable_native_io_observations() {
+    for prepare in [true, false] {
+        let mut receiver =
+            NativeActor::new("1.3", "victim").with_application(extensions::Mode::Partial);
+        let mut publisher =
+            NativeActor::new("1.3", "offender").with_application(extensions::Mode::Partial);
+        connect_native_pair(&mut receiver, &mut publisher).await;
+        receiver
+            .extension_command(extensions::Operation::Offer(5), 1)
+            .unwrap();
+        publisher
+            .extension_command(extensions::Operation::Offer(2), 1)
+            .unwrap();
+        drive_until(
+            &mut receiver,
+            &mut publisher,
+            "actual retained partial hooks",
+            |r, _| r.has("partial_action_hook", ""),
+        )
+        .await;
+        {
+            let actor = receiver.extension.as_mut().unwrap();
+            if prepare {
+                actor.prepare(&receiver.evidence).unwrap();
+            } else {
+                actor
+                    .stop(
+                        receiver.swarm.behaviour_mut(),
+                        &receiver.config,
+                        &receiver.evidence,
+                    )
+                    .unwrap();
+            }
+        }
+        let mut before = json!({});
+        receiver.extension.as_ref().unwrap().describe(&mut before);
+        let io_before = receiver
+            .evidence
+            .lock()
+            .events
+            .iter()
+            .filter(|event| event["kind"] == "rpc" && event["direction"] == "read")
+            .count();
+        publisher
+            .extension_command(extensions::Operation::Offer(4), 2)
+            .unwrap();
+        drive_until(
+            &mut receiver,
+            &mut publisher,
+            "native I/O after application closure",
+            |r, _| {
+                r.evidence
+                    .lock()
+                    .events
+                    .iter()
+                    .filter(|event| event["kind"] == "rpc" && event["direction"] == "read")
+                    .count()
+                    > io_before
+            },
+        )
+        .await;
+        receiver
+            .extension
+            .as_ref()
+            .unwrap()
+            .drain(&receiver.evidence)
+            .unwrap();
+        let mut after = json!({});
+        receiver.extension.as_ref().unwrap().describe(&mut after);
+        assert_eq!(after["extension_state"]["admission_closed"], true);
+        assert_eq!(after["extension_state"]["pending_hooks"], 0);
+        assert_eq!(
+            after["extension_state"]["hook_observations"],
+            before["extension_state"]["hook_observations"]
+        );
+        assert_eq!(after["extension_state"]["error"], Value::Null);
+        dispose_native_pair(receiver, publisher).await;
+    }
 }
 
 #[tokio::test]

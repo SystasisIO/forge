@@ -24,6 +24,7 @@ module;
 #include <random>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -226,6 +227,60 @@ BOOST_AUTO_TEST_CASE(trace_guard_peer_copy_failure_preserves_preheld_exception_i
 
 BOOST_AUTO_TEST_CASE(disabled_trace_skips_builder_and_allocation) {
    forge::net::p2p::node_session_fixture::trace_guard_preserves_preheld_failure(false);
+}
+
+BOOST_AUTO_TEST_CASE(partial_rpc_budget_rejects_before_materializing_large_body) {
+   namespace ps = forge::net::p2p::pubsub;
+   constexpr auto body_size = std::size_t{256 * 1024};
+   auto rpc = ps::rpc{};
+   rpc.partial.emplace();
+   rpc.partial->data.emplace(body_size, 0x5a);
+   auto opts = ps::options{};
+   for (int prefix = 0; prefix != 4; ++prefix) {
+      rpc.subscriptions.clear();
+      rpc.control_value.reset();
+      if ((prefix & 1) != 0) { rpc.subscriptions.push_back({.subject = {.value = "t"}}); }
+      if ((prefix & 2) != 0) {
+         rpc.control_value.emplace();
+         rpc.control_value->grafts.push_back({.subject = {.value = "t"}});
+      }
+      // The data field and enclosing Partial each use a key and a three-byte length.
+      // A nonempty prefix consumes space even when the Partial alone would fit exactly.
+      opts.limits.max_rpc_size = prefix == 0 ? 64 : body_size + 8;
+      auto invalid = false;
+      auto unexpected = std::exception_ptr{};
+      auto rejected = fixture::allocator::none;
+      {
+         // Allow small protobuf prefixes and exception diagnostics, but fail any body-sized allocation.
+         const auto injection = fixture::allocation_scope{body_size / 2};
+         try { static_cast<void>(ps::codec::encode(rpc, opts)); }
+         catch (const forge::net::p2p::exceptions::invalid_options&) { invalid = true; }
+         catch (...) { unexpected = std::current_exception(); }
+         rejected = injection.rejected_by();
+      }
+      if (unexpected) { std::rethrow_exception(unexpected); }
+      BOOST_CHECK(invalid);
+      BOOST_CHECK(rejected == fixture::allocator::none);
+   }
+
+   // Positive injection control: an admitted Partial really reaches the same allocator.
+   rpc.subscriptions.clear();
+   rpc.control_value.reset();
+   opts.limits.max_rpc_size = body_size + 8;
+   auto allocation_failed = false;
+   auto rejected = fixture::allocator::none;
+   {
+      const auto injection = fixture::allocation_scope{body_size / 2};
+      try { static_cast<void>(ps::codec::encode(rpc, opts)); }
+      catch (const std::bad_alloc&) { allocation_failed = true; }
+      rejected = injection.rejected_by();
+   }
+   BOOST_CHECK(allocation_failed);
+   BOOST_CHECK(rejected == fixture::allocator::scalar_new);
+   const auto decoded = ps::codec::decode(ps::codec::encode(rpc, opts), opts);
+   BOOST_REQUIRE(decoded.partial && decoded.partial->data);
+   BOOST_CHECK_EQUAL(decoded.partial->data->size(), body_size);
+   BOOST_CHECK(std::ranges::equal(*decoded.partial->data, *rpc.partial->data));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

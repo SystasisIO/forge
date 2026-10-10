@@ -19,6 +19,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -102,7 +103,8 @@ boost::asio::awaitable<void> node::impl::handle_pubsub(std::shared_ptr<session_s
          generation = pubsub_value.next_inbound_generation++;
          const auto [row, inserted] = pubsub_value.inbound.try_emplace(session->info.remote_peer);
          try {
-            row->second.emplace(generation, session->id);
+            row->second.emplace(generation, pubsub_state::inbound_generation{.session_id = session->id,
+                                                                           .protocol = protocol});
          } catch (...) {
             if (inserted) {
                pubsub_value.inbound.erase(row);
@@ -128,7 +130,10 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
     forge::net::p2p::stream stream, protocol_id protocol, std::uint64_t generation) {
    const auto& peer = session->info.remote_peer;
    auto wire_options = options.limits.pubsub;
-   wire_options.preferred = protocol == builtins::meshsub_v10 ? pubsub::version::v1_0 : pubsub::version::v1_1;
+   wire_options.preferred = protocol == builtins::meshsub_v13 ? pubsub::version::v1_3 :
+       protocol == builtins::meshsub_v12 ? pubsub::version::v1_2 :
+       protocol == builtins::meshsub_v10 ? pubsub::version::v1_0 : pubsub::version::v1_1;
+   wire_options.partial_messages = false;
    auto buffer = std::vector<std::uint8_t>{};
    const auto reject = [&](const std::optional<pubsub::topic>& subject, bool protocol_rejected) {
       return increment_pubsub_invalid(session, subject, protocol_rejected);
@@ -171,15 +176,50 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
          co_return;
       }
       const auto& value = received.value;
+      auto invalid_extensions = false;
       {
          const auto lock = std::scoped_lock{mutex};
          if (!pubsub_session_live_locked(session)) { co_return; }
+         const auto streams = pubsub_value.inbound.find(peer);
+         if (streams == pubsub_value.inbound.end()) { co_return; }
+         const auto current = streams->second.find(generation);
+         if (current == streams->second.end() || current->second.session_id != session->id) { co_return; }
+         auto& state = current->second;
+         if (protocol == builtins::meshsub_v13) {
+            invalid_extensions = received.extension_advertisements > 1 ||
+                (!state.first_rpc && received.extension_advertisements != 0);
+            if (!invalid_extensions && state.first_rpc) {
+               state.partial_messages = value.control_value && value.control_value->extensions &&
+                   value.control_value->extensions->partial_messages.value_or(false);
+            }
+         }
+         state.first_rpc = false; // An absent advertisement fixes no support for this exact generation.
+      }
+      if (invalid_extensions) {
+         stream.cancel();
+         FORGE_THROW_EXCEPTION(exceptions::protocol_error, "invalid GossipSub extension advertisement");
+      }
+      {
+         const auto lock = std::scoped_lock{mutex};
+         if (!pubsub_session_live_locked(session)) { co_return; }
+         const auto streams = pubsub_value.inbound.find(peer);
+         if (streams == pubsub_value.inbound.end()) { co_return; }
+         const auto current = streams->second.find(generation);
+         if (current == streams->second.end()) { co_return; }
          for (const auto& subscription : value.subscriptions) {
             if (subscription.subscribe) {
                if (!record_pubsub_subscription_locked(peer, subscription.subject.value)) {
                   ++metrics_value.backpressure_rejections;
+                  continue;
+               }
+               if (protocol == builtins::meshsub_v13 && current->second.partial_messages &&
+                   options.limits.pubsub.partial_messages &&
+                   (current->second.partial_topics.contains(subscription.subject.value) ||
+                    current->second.partial_topics.size() < options.limits.pubsub.limits.max_remote_topics_per_peer)) {
+                  current->second.partial_topics.insert_or_assign(subscription.subject.value, subscription);
                }
             } else {
+               current->second.partial_topics.erase(subscription.subject.value);
                if (const auto topics = pubsub_value.peer_topics.find(peer); topics != pubsub_value.peer_topics.end()) {
                   pubsub_value.remote_topic_entries -= topics->second.erase(subscription.subject.value);
                   if (topics->second.empty()) {
@@ -203,6 +243,7 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
       if (value.control_value) {
          co_await handle_pubsub_control(session, *value.control_value, protocol);
       }
+      if (value.partial) { receive_pubsub_partial(session, protocol, generation, *value.partial); }
       for (const auto& subject : received.invalid_messages) {
          {
             const auto lock = std::scoped_lock{mutex};
@@ -260,11 +301,42 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
             continue;
          }
          auto finish = [this, &peer, &handler](void*) noexcept {
-            if (handler) {
-               finish_pubsub_validation(peer);
-            }
+            if (handler) { finish_pubsub_validation(peer); }
          };
          auto admission = std::unique_ptr<void, decltype(finish)>{this, finish};
+         // Prompt, one-shot control admission before application validation; no native-write await here.
+         if (published.data.size() >= wire_options.limits.idontwant_threshold &&
+             id.size() <= wire_options.limits.max_idontwant_message_id_size) {
+            try {
+               auto notifications = std::map<peer_id, pubsub::control>{};
+               {
+                  const auto lock = std::scoped_lock{mutex};
+                  if (!pubsub_session_live_locked(session)) { co_return; }
+                  const auto mesh = pubsub_value.mesh.find(published.subject.value);
+                  if (mesh != pubsub_value.mesh.end()) {
+                     for (const auto& recipient : mesh->second) {
+                        if (recipient == peer || !pubsub_peer_live_locked(recipient)) { continue; }
+                        const auto outbound = pubsub_value.outbound.find(recipient);
+                        auto capable = outbound != pubsub_value.outbound.end() && outbound->second.stream &&
+                            (outbound->second.protocol == builtins::meshsub_v12 ||
+                             outbound->second.protocol == builtins::meshsub_v13);
+                        const auto inbound = pubsub_value.inbound.find(recipient);
+                        if (inbound != pubsub_value.inbound.end()) {
+                           capable = capable || std::ranges::any_of(inbound->second, [](const auto& row) {
+                              return row.second.protocol == builtins::meshsub_v12 || row.second.protocol == builtins::meshsub_v13;
+                           });
+                        }
+                        if (capable) {
+                           notifications[recipient].dont_want.push_back(pubsub::control::idontwant{.message_ids = {id}});
+                        }
+                     }
+                  }
+               }
+               flush_pubsub_controls(std::nullopt, std::move(notifications));
+            } catch (const std::bad_alloc&) {
+               // Optional IDONTWANT emission never converts local allocation pressure into a peer failure.
+            }
+         }
          auto result = pubsub::validation_result::accept;
          if (handler) {
             try {

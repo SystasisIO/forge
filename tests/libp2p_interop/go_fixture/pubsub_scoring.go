@@ -59,7 +59,7 @@ func parsePubsubScoringArgs(argv []string) (map[string]string, error) {
 	}
 	for i := 0; i < len(argv); i += 2 {
 		name := strings.TrimPrefix(argv[i], "--")
-		if !strings.HasPrefix(argv[i], "--") || (!required[name] && name != "pnet-key-file" && name != "pnet-fingerprint") ||
+		if !strings.HasPrefix(argv[i], "--") || (!required[name] && name != "pnet-key-file" && name != "pnet-fingerprint" && name != "extension") ||
 			args[name] != "" || argv[i+1] == "" || strings.ContainsRune(argv[i+1], '\x00') {
 			return nil, fmt.Errorf("invalid/duplicate pubsub-live flag")
 		}
@@ -70,7 +70,13 @@ func parsePubsubScoringArgs(argv []string) (map[string]string, error) {
 			return nil, fmt.Errorf("missing pubsub-live flag %s", name)
 		}
 	}
-	if (args["version"] != "1.0" && args["version"] != "1.1") || !coordinatedHex(args["case-token"], 32) ||
+	if _, err := pubsubScoringProtocol(args["version"]); err != nil {
+		return nil, err
+	}
+	if err := validatePubsubExtension(args["extension"], args["version"]); err != nil {
+		return nil, err
+	}
+	if !coordinatedHex(args["case-token"], 32) ||
 		(args["actor"] != "victim" && args["actor"] != "offender" && args["actor"] != "replacement" && args["actor"] != "sink") {
 		return nil, fmt.Errorf("invalid pubsub-live version/actor/token")
 	}
@@ -100,6 +106,21 @@ func parsePubsubScoringArgs(argv []string) (map[string]string, error) {
 	return args, nil
 }
 
+func pubsubScoringProtocol(version string) (protocol.ID, error) {
+	switch version {
+	case "1.0":
+		return pubsub.GossipSubID_v10, nil
+	case "1.1":
+		return pubsub.GossipSubID_v11, nil
+	case "1.2":
+		return pubsub.GossipSubID_v12, nil
+	case "1.3":
+		return pubsub.GossipSubID_v13, nil
+	default:
+		return "", fmt.Errorf("unsupported pubsub-live version")
+	}
+}
+
 type pubsubScoringCommand struct {
 	Sequence int    `json:"sequence"`
 	Kind     string `json:"kind"`
@@ -111,10 +132,15 @@ type pubsubScoringCommand struct {
 	Token    string `json:"case_token,omitempty"`
 	Local    string `json:"local_peer_id,omitempty"`
 	Prepare  int    `json:"prepare_ack_sequence,omitempty"`
+	Have     byte   `json:"have,omitempty"`
 }
 
 // Decode fields once: encoding/json otherwise silently accepts duplicate keys.
 func decodePubsubScoringCommand(line []byte, next int) (pubsubScoringCommand, error) {
+	return decodePubsubScoringCommandMode(line, next, "")
+}
+
+func decodePubsubScoringCommandMode(line []byte, next int, mode string) (pubsubScoringCommand, error) {
 	var command pubsubScoringCommand
 	if len(line) == 0 || len(line) > pubsubScoringLine || !utf8.Valid(line) || next > pubsubScoringCommands {
 		return command, fmt.Errorf("pubsub control line exceeds bounds")
@@ -183,7 +209,13 @@ func decodePubsubScoringCommand(line []byte, next int) (pubsubScoringCommand, er
 			}
 		}
 	default:
-		return command, fmt.Errorf("unknown pubsub command")
+		allowed, err = pubsubExtensionCommandFields(command, mode)
+		if err != nil {
+			return command, err
+		}
+		if err = requirePubsubExtensionFields(fields, allowed); err != nil {
+			return command, err
+		}
 	}
 	for name, value := range fields {
 		if !allowed[name] || bytes.Equal(value, []byte("null")) {
@@ -194,9 +226,10 @@ func decodePubsubScoringCommand(line []byte, next int) (pubsubScoringCommand, er
 }
 
 type pubsubScoringControl struct {
-	seen   []byte
-	offset int
-	next   int
+	seen      []byte
+	offset    int
+	next      int
+	extension string
 }
 
 func (c *pubsubScoringControl) read(path string) ([]pubsubScoringCommand, error) {
@@ -228,7 +261,7 @@ func (c *pubsubScoringControl) read(path string) ([]pubsubScoringCommand, error)
 			}
 			return commands, nil
 		}
-		command, err := decodePubsubScoringCommand(data[c.offset:c.offset+end], c.next)
+		command, err := decodePubsubScoringCommandMode(data[c.offset:c.offset+end], c.next, c.extension)
 		if err != nil {
 			return nil, err
 		}
@@ -835,9 +868,12 @@ func pubsubScoringValidator(actor, token string, data []byte) pubsub.ValidationR
 	return pubsub.ValidationAccept
 }
 
-func pubsubScoringParameters(topic string) (pubsub.GossipSubParams, *pubsub.PeerScoreParams, *pubsub.PeerScoreThresholds) {
+func pubsubScoringParameters(topic, extension string) (pubsub.GossipSubParams, *pubsub.PeerScoreParams, *pubsub.PeerScoreThresholds) {
 	params := pubsub.DefaultGossipSubParams()
 	params.D, params.Dlo, params.Dhi, params.Dscore, params.Dout = 2, 1, 4, 1, 0
+	if extension == "idontwant" {
+		params.D, params.Dlo = 3, 3
+	}
 	params.HeartbeatInterval = 250 * time.Millisecond
 	params.PruneBackoff, params.UnsubscribeBackoff = time.Second, time.Second
 	score := &pubsub.PeerScoreParams{Topics: map[string]*pubsub.TopicScoreParams{topic: {
@@ -1913,6 +1949,9 @@ func (o *pubsubScoringObserver) result(finalized, joined bool, failure error, wo
 }
 
 func runPubsubScoringLive(args map[string]string) (failure error) {
+	if err := validatePubsubExtension(args["extension"], args["version"]); err != nil {
+		return err
+	}
 	o := newPubsubScoringObserver(args["actor"], args["case-token"])
 	ctx, stopController := context.WithTimeout(context.Background(), 120*time.Second)
 	defer stopController()
@@ -1920,6 +1959,7 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 	defer cancel()
 	subscriberCtx, stopSubscriber := context.WithCancel(pubsubCtx)
 	defer stopSubscriber()
+	extensions := newPubsubExtensions(pubsubCtx, args["extension"], o)
 	var h host.Host
 	var sub *pubsub.Subscription
 	var topic *pubsub.Topic
@@ -1936,6 +1976,10 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 		defer stopJoin()
 		joined := true
 		hostClosed := h == nil
+		if err := extensions.stop(joinCtx); err != nil {
+			joined = false
+			failure = errors.Join(failure, err)
+		}
 		if observed != nil {
 			if err := observed.drain.stop(joinCtx); err != nil {
 				joined = false
@@ -1996,6 +2040,7 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 				activeWorkers = 1
 			}
 		}
+		activeWorkers += extensions.workerCount()
 		activeStreams := 0
 		if observed != nil {
 			observed.drain.mu.Lock()
@@ -2006,6 +2051,7 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 			"joined": joined, "host_close_returned": hostClosed, "active_stream_handlers_and_io": activeStreams,
 			"active_fixture_workers": activeWorkers})
 		result := o.result(true, joined, failure, activeWorkers)
+		extensions.annotate(result)
 		result["host_close_returned"], result["active_stream_handlers_and_io"] = hostClosed, activeStreams
 		if err := pubsubScoringAtomic(args["result-file"], result); err != nil {
 			failure = errors.Join(failure, err)
@@ -2047,9 +2093,9 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 		return err
 	}
 	o.local = h.ID()
-	id := pubsub.GossipSubID_v11
-	if args["version"] == "1.0" {
-		id = pubsub.GossipSubID_v10
+	id, err := pubsubScoringProtocol(args["version"])
+	if err != nil {
+		return err
 	}
 	observed = &pubsubScoringHost{Host: h, observer: o, gater: gater, drain: newPubsubScoringDrain(), protocol: id,
 		fingerprint: args["pnet-fingerprint"]}
@@ -2065,14 +2111,19 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 		})
 	}}
 	h.Network().Notify(notifier)
-	params, score, thresholds := pubsubScoringParameters(o.topic)
-	ps, err := pubsub.NewGossipSub(pubsubCtx, observed, pubsub.WithGossipSubProtocols([]protocol.ID{id}, pubsub.GossipSubDefaultFeatures),
+	params, score, thresholds := pubsubScoringParameters(o.topic, args["extension"])
+	routerOptions := []pubsub.Option{pubsub.WithGossipSubProtocols([]protocol.ID{id}, pubsub.GossipSubDefaultFeatures),
 		pubsub.WithGossipSubParams(params), pubsub.WithFloodPublish(false), pubsub.WithPeerExchange(false),
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictSign), pubsub.WithMaxMessageSize(pubsubScoringFrame),
 		pubsub.WithMessageIdFn(pubsubScoringMessageID),
 		pubsub.WithPeerScore(score, thresholds), pubsub.WithRawTracer(o),
-		pubsub.WithPeerScoreInspect(pubsub.ExtendedPeerScoreInspectFn(o.inspect), 250*time.Millisecond))
+		pubsub.WithPeerScoreInspect(pubsub.ExtendedPeerScoreInspectFn(o.inspect), 250*time.Millisecond)}
+	routerOptions = append(routerOptions, extensions.options()...)
+	ps, err := pubsub.NewGossipSub(pubsubCtx, observed, routerOptions...)
 	if err != nil {
+		return err
+	}
+	if err = extensions.start(ps); err != nil {
 		return err
 	}
 	validator := pubsub.ValidatorEx(func(_ context.Context, p peer.ID, m *pubsub.Message) pubsub.ValidationResult {
@@ -2080,10 +2131,15 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 		o.validationDecision(p, m, result)
 		return result
 	})
-	if err = ps.RegisterTopicValidator(o.topic, validator, pubsub.WithValidatorInline(true)); err != nil {
+	validatorOptions := []pubsub.ValidatorOpt{pubsub.WithValidatorInline(true)}
+	if extensions != nil {
+		validator = extensions.validate
+		validatorOptions = []pubsub.ValidatorOpt{pubsub.WithValidatorInline(false), pubsub.WithValidatorConcurrency(8), pubsub.WithValidatorTimeout(pubsubExtensionHold + time.Second)}
+	}
+	if err = ps.RegisterTopicValidator(o.topic, validator, validatorOptions...); err != nil {
 		return err
 	}
-	topic, err = ps.Join(o.topic)
+	topic, err = ps.Join(o.topic, extensions.topicOptions()...)
 	if err != nil {
 		return err
 	}
@@ -2113,12 +2169,17 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 	if len(addresses) == 0 {
 		return fmt.Errorf("PubSub host has no actual listener")
 	}
-	if err = pubsubScoringAtomic(args["ready-file"], map[string]any{"schema_version": 1, "implementation": "go", "actor": o.actor,
+	ready := map[string]any{"schema_version": 1, "implementation": "go", "actor": o.actor,
 		"case_token": o.token, "local_peer_id": h.ID().String(), "peer_id": h.ID().String(), "listen_addrs": addresses,
-		"topic": o.topic, "ready": true, "subscription_created": true}); err != nil {
+		"topic": o.topic, "ready": true, "subscription_created": true}
+	if extensions != nil {
+		ready["extension"], ready["requests_partial"] = extensions.mode, extensions.mode == "partial"
+		ready["version"] = args["version"]
+	}
+	if err = pubsubScoringAtomic(args["ready-file"], ready); err != nil {
 		return err
 	}
-	control := pubsubScoringControl{}
+	control := pubsubScoringControl{extension: args["extension"]}
 	sampleLabels := map[string]bool{}
 	poll := time.NewTicker(10 * time.Millisecond)
 	defer poll.Stop()
@@ -2135,7 +2196,8 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 				workers = 0
 			default:
 			}
-			result := o.result(false, false, nil, workers)
+			result := o.result(false, false, nil, workers+extensions.workerCount())
+			extensions.annotate(result)
 			observed.drain.mu.Lock()
 			result["active_stream_handlers_and_io"] = observed.drain.active
 			observed.drain.mu.Unlock()
@@ -2217,12 +2279,17 @@ func runPubsubScoringLive(args map[string]string) (failure error) {
 						stopCommand()
 						return fmt.Errorf("prepare_shutdown with incomplete control command")
 					}
-					err = o.prepareShutdown(command, len(commands)-index-1)
+					err = extensions.stop(commandCtx)
+					if err == nil {
+						err = o.prepareShutdown(command, len(commands)-index-1)
+					}
 				case "quiesce_shutdown":
 					joinCtx, stopJoin := context.WithTimeout(ctx, 5*time.Second)
 					err = o.quiesceShutdown(command, observed.drain, pubsubCtx, subscriberCtx, joinCtx, workerDone, cancel, stopSubscriber)
 					stopJoin()
 					o.fail(err)
+				default:
+					err = extensions.command(commandCtx, command, topic)
 				}
 				stopCommand()
 				if err != nil {

@@ -501,7 +501,12 @@ type pubsubQUICStream struct {
 }
 
 func pubsubQUICIsPubsub(protocol string) bool {
-	return protocol == "/meshsub/1.0.0" || protocol == "/meshsub/1.1.0"
+	switch protocol {
+	case "/meshsub/1.0.0", "/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0":
+		return true
+	default:
+		return false
+	}
 }
 
 func pubsubQUICValidSendContext(sample pubsubQUICContext, stream quic.StreamID) bool {

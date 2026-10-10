@@ -6,7 +6,8 @@ import math
 import re
 
 from autorelay_wire import _fields, varint
-from pubsub_wire import validate_rpc_receipt
+from pubsub_extension_events import validate_extension_event
+from pubsub_wire import PROTOCOLS, validate_rpc_receipt
 from rust_upgrade_evidence import _peer, _varint
 from upgrade_evidence import HEADER, wire_token
 
@@ -273,7 +274,7 @@ def _go_pre_cancel_resets(raw, events, *, active):
         if event["kind"] == "pre_cancel_retained_reset_return":
             ref = event["protocol_receipt_sequence"]
             require(type(ref) is int and 0 < ref < event["sequence"] and all(_id(event[key]) for key in owner_fields - {"protocol_receipt_sequence"})
-                    and event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+                    and event["protocol"] in PROTOCOLS
                     and event["operation"] == "stream_reset" and event["outcome"] == "ok"
                     and event["error"] is None and event["error_type"] is None,
                     "failed/invalid pre-cancel retained full Reset RETURN")
@@ -354,7 +355,7 @@ def _framing_terminal(event, implementation):
                 and _id(event.get("connection_id")) and _id(event.get("stream_id"))
                 and _id(event.get("remote_peer_id"))
                 and isinstance(event.get("protocol"), str)
-                and event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+                and event["protocol"] in PROTOCOLS
                 and isinstance(event.get("error"), str) and 0 < len(event["error"]) <= 512,
                 "unbounded/unowned native stream terminal record")
         require(event.get("operation") == "stream_" + direction
@@ -443,7 +444,7 @@ def _go_native_operations(events):
                 or (not event["prepared"] and event["prepare_ack_sequence"] == 0),
                 "native operation lacks exact preparation-at-begin ACK")
         require(all(_id(event[key]) for key in ("connection_id", "stream_id", "remote_peer_id"))
-                and _id(event["protocol"]) and event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}, "unowned native operation")
+                and _id(event["protocol"]) and event["protocol"] in PROTOCOLS, "unowned native operation")
         owner = (event["connection_id"], event["stream_id"])
         connection, stream = connections.get(owner[0]), streams.get(owner)
         require(connection is not None and stream is not None and connection.get("authenticated") is True
@@ -850,8 +851,9 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=F
                 "invalid native event clock")
         require(isinstance(event.get("source"), str) and event["source"].startswith(implementation + "."),
                 "event lacks attributable native source")
-        require(event.get("kind") in SOURCES[implementation]
-                and event["source"] in SOURCES[implementation][event["kind"]], "event has wrong native authority")
+        extension_event = validate_extension_event(raw, event)
+        require(extension_event or (event.get("kind") in SOURCES[implementation]
+                and event["source"] in SOURCES[implementation][event["kind"]]), "event has wrong native authority")
         if event.get("kind") == "rpc":
             require(event.get("direction") in {"read", "write"}, "native RPC has unknown direction")
             if implementation == "go":
@@ -864,7 +866,7 @@ def _events(raw, implementation, token, actor, *, cleanup_framing=None, active=F
             require(set(event) == EVENT_FIELDS | {"connection_id", "stream_id", "peer_id", "protocol_at_disposal",
                     "operation", "started_order", "returned_order", "outcome", "error", "error_type"}
                     and _id(event.get("connection_id")) and _id(event.get("stream_id")) and _id(event.get("peer_id"))
-                    and event.get("protocol_at_disposal") in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+                    and event.get("protocol_at_disposal") in PROTOCOLS
                     and event.get("operation") == "stream_reset" and event.get("outcome") == "ok"
                     and event.get("error") is None and event.get("error_type") is None
                     and type(event.get("started_order")) is int and type(event.get("returned_order")) is int
@@ -1417,7 +1419,7 @@ def _quic_negotiation_snapshot(events, event, *, is_io):
         side, token = _quic_negotiation_frame(events, reference, event, event["sequence"])
         state = states[side]
         require(not selected and not state["paused"], "diagnostic negotiation continued after selection/pause")
-        touched |= token in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+        touched |= token in PROTOCOLS
         if not state["header_seen"]:
             require(token == HEADER, "diagnostic negotiation lacks actual header")
             state["header_seen"] = True
@@ -1595,6 +1597,92 @@ def _go_quic_diagnostic(raw, events, event, *, cleanup_error=False, empty_error=
     return captured, touched
 
 
+def _quic_outbound_cancelled_before_negotiation(raw, events, *, terminal, excluded_owners):
+    """Check empty local-reset diagnostics; active prefixes claim no cleanup/join."""
+    anchors = [value for value in events if value.get("kind") == "native_quic_negotiation_io_return"
+               and value.get("outcome") == "error" and (
+                   value.get("error_type") == "*network.StreamError" or value.get("transport_error_type") == "*quic.StreamError"
+                   or value.get("typed_cause") == "libp2p_quic_stream_error")]
+    diagnostics, owners = {}, set()
+    for anchor in anchors:
+        connection, stream = _go_quic_stream(events, anchor, diagnostic=True)
+        key = (stream["native_connection_id"], stream["native_stream_id"])
+        if stream["stream_direction"] != "Outbound" or key in excluded_owners or key in owners:
+            continue
+        require(raw.get("error") is None and raw.get("overflow") is False,
+                "outbound cancellation cannot clear a sticky failure or overflow")
+        ack = stream["prepare_ack_sequence"]
+        require(0 < ack == stream["native_call_begin_prepare_ack_sequence"] < stream["sequence"]
+                and connection["local_peer_id"] == raw["local_peer_id"],
+                "outbound cancellation lacks its real prepared Open BEGIN/registration")
+        _quic_context(stream["send_context_at_stream_return"], live=True)
+        rows = _quic_prepare_rows(raw, anchor, events, ack)
+        require(key not in rows and any(owner[0] == key[0] for owner in rows),
+                "outbound cancellation invented stream baseline or lacks live parent baseline")
+        owned = [value for value in events if value.get("native_connection_id") == key[0]
+                 and _same_json(value.get("native_stream_id"), key[1])]
+        calls = [value for value in owned if value is not stream]
+        io = [value for value in calls if value.get("kind") == "native_quic_negotiation_io_return"]
+        resets = [value for value in calls if value.get("kind") == "native_stream_operation"]
+        require(len(calls) == len(io) + len(resets) and 1 <= len(io) <= 2 and len(resets) <= 3
+                and (not terminal or len(resets) > 0)
+                and all(type(value.get("direction")) is str for value in io)
+                and len({value["direction"] for value in io}) == len(io)
+                and all(value["direction"] in {"read", "write"} for value in io)
+                and all(value.get("operation") == "stream_reset" for value in resets),
+                "outbound cancellation has extra/duplicate calls or protocol/application authority")
+        orders = set()
+        for value in calls:
+            require(_quic_same_owner(value, anchor) and value["protocol"] == "",
+                    "outbound cancellation borrowed another owner or selected protocol")
+            is_io = value.get("kind") == "native_quic_negotiation_io_return"
+            captured, touched = _go_quic_diagnostic(raw, events, value, empty_stream_error=is_io)
+            snapshot = value["negotiation_snapshot"]
+            require(captured == 0 and touched is False and snapshot["frame_sequences"] == []
+                    and snapshot["proposal"] == snapshot["reply"] == snapshot["selected_protocol"] == ""
+                    and snapshot["proposals"] == 0
+                    and value["prepare_ack_sequence"] == value["terminal_prepare_ack_sequence"]
+                    == value["prepare_snapshot_ack_sequence"] == ack
+                    and value["prepare_baseline_present"] is False and value["stream_prepare_baseline_present"] is False
+                    and value["connection_prepare_baseline_present"] is True,
+                    "outbound cancellation has negotiation bytes or changed actual Prepare baseline")
+            _quic_context(value["connection_context"], live=True)
+            _quic_context(value["connection_context_at_prepare"], live=True)
+            require(_quic_zero_context(value["send_context"], key[1])["remote"] is False
+                    and (not is_io or value["remote"] is False)
+                    and (value.get("direction") != "write" or value["same_send_context_cause"] is True),
+                    "outbound cancellation has remote/foreign send cause or unbound Write")
+            require(value["started_order"] not in orders and value["returned_order"] not in orders,
+                    "outbound cancellation has ambiguous native counters")
+            orders.update((value["started_order"], value["returned_order"]))
+        for value in io:
+            preceding = [reset for reset in resets if reset["started_order"] < value["started_order"]]
+            latest = max(preceding, key=lambda reset: reset["started_order"]) if preceding else None
+            lower_bound = latest["started_order"] if latest else 0
+            missing = value["started_order"] - lower_bound - 1 - sum(
+                lower_bound < order < value["started_order"] for order in orders)
+            # An active publication prefix may omit a sealed Reset BEGIN/RETURN pair.
+            # This exports pending diagnostics only; terminal validation never borrows it.
+            require(latest is not None and latest["returned_order"] < value["started_order"]
+                    or not terminal and missing >= 2,
+                    "outbound native I/O lacks its latest successful full Reset before BEGIN")
+        lower = [value for value in events if value.get("source") in GO_QUIC_SOURCES.values()
+                 or value.get("source") in {"go.quic.native_stream.read", "go.quic.native_stream.write"}]
+        joined = _quic_native_join(lower) if terminal or any(value["kind"] == "native_quic_join" for value in lower) else None
+        if joined is not None:
+            require(all(value["sequence"] < joined["sequence"] for value in owned),
+                    "outbound cancellation has post-join observations")
+        if terminal:
+            require(raw.get("finalized") is True and raw.get("joined") is True
+                    and orders == set(range(1, 2 * len(calls) + 1))
+                    and max(value["returned_order"] for value in io) < max(reset["started_order"] for reset in resets),
+                    "outbound cancellation lacks all native returns and full Reset after final I/O")
+            _terminal_owners(raw)
+        diagnostics.update((value["sequence"], value) for value in calls)
+        owners.add(key)
+    return diagnostics, owners
+
+
 def _quic_empty_negotiation_cleanup(raw, events, *, terminal, excluded_owners):
     """Passive pending rows in active snapshots; exact disposal/join at terminal."""
     anchors = [value for value in events if (
@@ -1714,7 +1802,7 @@ def _quic_cleanup_shape(events, event, *, finalized=False):
     require(set(event) == EVENT_FIELDS | QUIC_OWNER_FIELDS | extra
             and event["source"] == "go.quic.native_stream.negotiation_cleanup"
             and event["protocol"] == "" and event["stream_direction"] == "Outbound"
-            and isinstance(event["candidate_protocol"], str) and event["candidate_protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}
+            and isinstance(event["candidate_protocol"], str) and event["candidate_protocol"] in PROTOCOLS
             and event["candidate_bytes_complete"] is True and event["selected_rpc_authority"] is False
             and event["negotiation_complete"] is False and event["framing_clean"] is False
             and event["same_native_connection_context_cause"] is True
@@ -1938,7 +2026,7 @@ def _quic_stream_aborts(raw, events, *, terminal):
                 require(observed[direction] == framed + partial + tail, "abort native prefix disagrees with exact parser bytes")
         snapshot = original["negotiation_snapshot"]
         proposer = "write" if outbound else "read"
-        require(snapshot["proposal"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"} and snapshot["proposals"] == 1
+        require(snapshot["proposal"] in PROTOCOLS and snapshot["proposals"] == 1
                 and snapshot["reply"] == snapshot["selected_protocol"] == ""
                 and all(_quic_captured_bytes(snapshot[side]["partial_frame"], 266) == b"" for side in observed),
                 "abort acquired ACK/selection or partial negotiation bytes")
@@ -2096,14 +2184,14 @@ def _quic_late_selected_cleanup(raw, events, *, terminal):
     proofs, owners = {}, set()
     for selected in events:
         if selected["kind"] != "protocol" or selected["source"] != GO_QUIC_SOURCES["protocol"] \
-                or selected.get("protocol") not in {"/meshsub/1.0.0", "/meshsub/1.1.0"}:
+                or selected.get("protocol") not in PROTOCOLS:
             continue
         _, stream = _go_quic_stream(events, selected, diagnostic=True)
         ack = stream["prepare_ack_sequence"]
         if not ack:
             continue
         _, _, selected = _go_quic_owner(events, selected, selected["remote_peer_id"], selected["protocol"], "quic", diagnostic=True)
-        require(selected["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}, "late native selection is not the supported PubSub protocol")
+        require(selected["protocol"] in PROTOCOLS, "late native selection is not the supported PubSub protocol")
         rows = _quic_prepare_rows(raw, selected, events, ack)
         parent = [row for key, row in rows.items() if key[0] == selected["native_connection_id"]]
         require(parent and (selected["native_connection_id"], selected["native_stream_id"]) not in rows,
@@ -2210,8 +2298,10 @@ def _go_quic_operations(raw, events, *, terminal):
             "native QUIC physical owner capture exceeds fixture bounds")
     abort_errors, abort_closes, abort_proofs, abort_owners = _quic_stream_aborts(raw, events, terminal=terminal)
     native_only_proofs, native_only_owners = _quic_late_selected_cleanup(raw, events, terminal=terminal)
+    outbound_diagnostics, outbound_owners = _quic_outbound_cancelled_before_negotiation(
+        raw, events, terminal=terminal, excluded_owners=abort_owners | native_only_owners)
     empty_native_diagnostics = _quic_empty_negotiation_cleanup(raw, events, terminal=terminal,
-                                                              excluded_owners=abort_owners | native_only_owners)
+                                                              excluded_owners=abort_owners | native_only_owners | outbound_owners)
     base = EVENT_FIELDS | QUIC_OWNER_FIELDS
     operations, pending, frames, finals, contexts, orders = {}, {}, {}, {}, {}, {}
     diagnostics, diagnostic_contexts, diagnostic_touched, captured_bytes = {}, {}, set(), 0
@@ -2236,6 +2326,9 @@ def _go_quic_operations(raw, events, *, terminal):
             require(event["local_peer_id"] == raw["local_peer_id"], "lower connection has foreign local actor identity")
             continue
         if kind == "native_quic_join":
+            continue
+        if event["sequence"] in outbound_diagnostics:
+            require(outbound_diagnostics[event["sequence"]] is event, "foreign outbound cancellation diagnostic dispatch")
             continue
         if event["sequence"] in empty_native_diagnostics:
             require(empty_native_diagnostics[event["sequence"]] is event, "foreign empty native diagnostic dispatch")
@@ -2301,7 +2394,7 @@ def _go_quic_operations(raw, events, *, terminal):
         if kind == "multistream_frame":
             _go_quic_stream(events, event, diagnostic=True)
             _quic_negotiation_frame(events, event["sequence"], event, event["sequence"] + 1)
-            if event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}:
+            if event["protocol"] in PROTOCOLS:
                 diagnostic_touched.add((event["native_connection_id"], event["native_stream_id"]))
             continue
         if kind == "native_quic_framing_finalized" and "negotiation_cleanup_pending_receipt_sequence" in event:
@@ -2338,7 +2431,7 @@ def _go_quic_operations(raw, events, *, terminal):
             continue
         require(kind != "native_quic_negotiation_io_return", "diagnostic I/O lacks exact unselected native-return phase")
         _go_quic_owner(events, event, event.get("remote_peer_id"), event.get("protocol"), "quic",
-                       diagnostic=kind == "protocol" and event.get("protocol") not in {"/meshsub/1.0.0", "/meshsub/1.1.0"})
+                       diagnostic=kind == "protocol" and event.get("protocol") not in PROTOCOLS)
         if kind == "rpc":
             captured_bytes += len(event["receipt"]["framed_hex"]) // 2
             require(captured_bytes <= 4 * 1024 * 1024, "aggregate native diagnostic/RPC wire capture overflow")
@@ -2601,7 +2694,7 @@ def _go_quic_operations(raw, events, *, terminal):
                 and validated_repeat_closes[close_ref]["owned_terminal_receipt_sequence"] == reset_ref,
                 "Read terminal lacks independently finalized RepeatClose on its exact owned Reset")
     selected_keys = {(event["native_connection_id"], event["native_stream_id"]) for event in lower
-                     if event["kind"] == "protocol" and event["protocol"] in {"/meshsub/1.0.0", "/meshsub/1.1.0"}}
+                     if event["kind"] == "protocol" and event["protocol"] in PROTOCOLS}
     require(set(frames) | native_only_owners == selected_keys, "missing actual lower QUIC framing/disposal join")
     require(diagnostic_touched <= selected_keys | set(cleanup_finals) | abort_owners,
             "unselected PubSub proposal/tail lacks actual ACK and joined framing")
@@ -2788,15 +2881,10 @@ def validate_active_case(artifact, snapshots, *, expected_fingerprint=None):
     return _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint)
 
 
-def _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint):
-    spec, token, roles = artifact["case"], artifact["case_token"], artifact["roles"]
-    offender, replacement, sink = (roles[key] for key in ("offender", "replacement", "sink"))
-    offender_peer = actors[offender]["local_peer_id"]
-    replacement_peer, sink_peer = actors[replacement]["local_peer_id"], actors[sink]["local_peer_id"]
-    protocol, transport, topic = "/meshsub/" + spec["version"] + ".0", PROFILES[spec["profile"]], "forge-pr11:" + token
-    victim = events["victim"]
-    allowed_graph = {"victim": {offender_peer, replacement_peer}, offender: {actors["victim"]["local_peer_id"]},
-                     replacement: {actors["victim"]["local_peer_id"], sink_peer}, sink: {replacement_peer}}
+def _validate_native_graph(artifact, actors, events, cleanup_framing, allowed_graph, protocol, transport,
+                           expected_fingerprint):
+    """Shared carrier/owner/terminal checks; independent of router behavior."""
+    token = artifact["case_token"]
     for name in events:
         if actors[name]["implementation"] == "go" and transport == "quic":
             require(any(event.get("kind") == "native_quic_connection" for event in events[name])
@@ -2845,6 +2933,19 @@ def _validate_traffic(artifact, actors, events, cleanup_framing, expected_finger
                 require(shutdown_ack(remote, remote["implementation"], remote_roles[0], token, remote["local_peer_id"],
                                      row["command_sequence"]) is not None,
                         "lower peer cancellation lacks actual other-actor Prepare prefix")
+
+
+def _validate_traffic(artifact, actors, events, cleanup_framing, expected_fingerprint):
+    spec, token, roles = artifact["case"], artifact["case_token"], artifact["roles"]
+    offender, replacement, sink = (roles[key] for key in ("offender", "replacement", "sink"))
+    offender_peer = actors[offender]["local_peer_id"]
+    replacement_peer, sink_peer = actors[replacement]["local_peer_id"], actors[sink]["local_peer_id"]
+    protocol, transport, topic = "/meshsub/" + spec["version"] + ".0", PROFILES[spec["profile"]], "forge-pr11:" + token
+    victim = events["victim"]
+    allowed_graph = {"victim": {offender_peer, replacement_peer}, offender: {actors["victim"]["local_peer_id"]},
+                     replacement: {actors["victim"]["local_peer_id"], sink_peer}, sink: {replacement_peer}}
+    _validate_native_graph(artifact, actors, events, cleanup_framing, allowed_graph, protocol, transport,
+                           expected_fingerprint)
     for name, expected in ((offender, [actors["victim"]["local_peer_id"]]),
                            (replacement, [sink_peer]), (sink, [replacement_peer])):
         require(_snapshot(events[name], "before")["mesh_peer_ids"] == expected,

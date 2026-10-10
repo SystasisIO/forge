@@ -8,6 +8,7 @@ enum class wire_type : std::uint8_t {
    varint = 0,
    fixed64 = 1,
    length_delimited = 2,
+   fixed32 = 5,
 };
 
 inline void append_varint(std::vector<std::uint8_t>& out, std::uint64_t value) {
@@ -58,11 +59,16 @@ class reader {
 
    [[nodiscard]] std::pair<std::uint32_t, wire_type> key() {
       const auto decoded = read_varint();
+      const auto field = decoded >> 3U;
+      if (field == 0 || field > 0x1fffffffU) {
+         FORGE_THROW_EXCEPTION(exceptions::codec_error, "invalid libp2p protobuf field number");
+      }
       const auto type = static_cast<wire_type>(decoded & 0x07U);
-      if (type != wire_type::varint && type != wire_type::fixed64 && type != wire_type::length_delimited) {
+      if (type != wire_type::varint && type != wire_type::fixed64 &&
+          type != wire_type::length_delimited && type != wire_type::fixed32) {
          FORGE_THROW_EXCEPTION(exceptions::codec_error, "unsupported libp2p protobuf wire type");
       }
-      return {static_cast<std::uint32_t>(decoded >> 3U), type};
+      return {static_cast<std::uint32_t>(field), type};
    }
 
    [[nodiscard]] std::uint64_t read_varint() {
@@ -108,8 +114,17 @@ class reader {
       case wire_type::fixed64:
          (void)fixed64();
          return;
-      case wire_type::length_delimited:
-         (void)bytes();
+      case wire_type::length_delimited: {
+         const auto size = read_varint();
+         if (size > bytes_.size() - offset_) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "truncated libp2p protobuf bytes field");
+         }
+         offset_ += static_cast<std::size_t>(size);
+         return;
+      }
+      case wire_type::fixed32:
+         require(4);
+         offset_ += 4;
          return;
       }
    }

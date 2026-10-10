@@ -423,68 +423,6 @@ BOOST_AUTO_TEST_CASE(native_pending_validation_attributes_duplicate_reject_and_n
    state.stop();
 }
 
-BOOST_AUTO_TEST_CASE(native_pre_io_stream_quota_pressure_preserves_mesh_and_sticky_score_then_recovers) {
-   auto state = fixture{};
-   auto config = options(state.topic);
-   config.limits.heartbeat_initial_delay = 30s;
-   auto& params = config.scoring->topics.at(state.topic);
-   params.mesh_failure_penalty_weight = -1;
-   params.mesh_message_deliveries_activation = 1s;
-   params.mesh_message_deliveries_threshold = 1;
-   auto resources = p2p::resource_manager::limits{};
-   resources.peer.max_outbound_streams = 1;
-   auto& owner = state.add("pubsub-quota-owner", std::move(config), resources);
-   auto& remote = state.add("pubsub-quota-peer", options(state.topic));
-   state.connect(remote, owner);
-   BOOST_REQUIRE(state.wait([&] {
-      const auto snapshot = owner.diagnostics();
-      return snapshot.resources.system.outbound_streams == 0U &&
-         std::ranges::any_of(snapshot.sessions, [&](const auto& session) {
-            return session.remote_peer == remote.local_peer() && session.identify_state == p2p::identify::state::identified;
-         });
-   }));
-   auto held = state.open(owner, remote); // Actual native stream consumes the only outbound peer quota.
-   auto input = state.open(remote, owner);
-   state.subscribe(owner);
-   state.subscribe(remote);
-   state.send(input, ps::rpc{.subscriptions = {{.subscribe = true, .subject = state.topic}},
-      .control_value = ps::control{.grafts = {{.subject = state.topic}}}});
-   BOOST_REQUIRE(state.wait([&] {
-      const auto row = peer_score(owner, remote.local_peer());
-      return row && !row->topics.empty() && row->topics.front().in_mesh && row->topics.front().mesh_deliveries_active;
-   }));
-   BOOST_REQUIRE_EQUAL(owner.diagnostics().resources.system.outbound_streams, 1U);
-   const auto baseline = owner.metrics().backpressure_rejections;
-   for (auto attempt = 0; attempt < 3; ++attempt) {
-      auto rejected = false;
-      try { static_cast<void>(state.publish(owner, "quota-pressure-" + std::to_string(attempt))); }
-      catch (const forge::exceptions::base& error) {
-         rejected = p2p::exceptions::is(error, p2p::exceptions::code::backpressure_rejected);
-         BOOST_CHECK(rejected);
-      }
-      BOOST_REQUIRE(rejected);
-      const auto row = peer_score(owner, remote.local_peer());
-      BOOST_REQUIRE(row);
-      BOOST_TEST(row->topics.front().in_mesh);
-      BOOST_TEST(row->topics.front().mesh_message_deliveries == 0.0);
-      BOOST_TEST(row->topics.front().mesh_failure_penalty == 0.0);
-      BOOST_TEST(row->topics.front().invalid_message_deliveries == 0.0);
-      BOOST_TEST(row->behaviour_penalty == 0.0);
-   }
-   BOOST_TEST(owner.metrics().backpressure_rejections >= baseline + 3U);
-   BOOST_TEST(owner.pubsub_snapshot().invalid_messages == 0U);
-   BOOST_TEST(std::ranges::none_of(state.receipts(owner), [](const auto& event) {
-      return event.kind == ps::trace_kind::rpc_write;
-   })); // No outbound GossipSub stream was opened or written.
-   forge::asio::blocking::run(state.runtime, held.async_close());
-   BOOST_REQUIRE(state.wait([&] { return owner.diagnostics().resources.system.outbound_streams == 0U; }));
-   static_cast<void>(state.publish(owner, "quota-recovered"));
-   BOOST_REQUIRE(state.wait([&] { return delivered(state, remote, "quota-recovered"); }));
-   BOOST_TEST(in_mesh(owner, remote.local_peer()));
-   forge::asio::blocking::run(state.runtime, input.async_close());
-   state.stop();
-}
-
 BOOST_AUTO_TEST_CASE(native_cached_stream_memory_pressure_keeps_generation_mesh_and_scores_then_recovers) {
    auto state = fixture{};
    auto config = options(state.topic);

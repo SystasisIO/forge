@@ -47,6 +47,8 @@ mod autonat_fixture;
 mod autorelay;
 mod relay_readiness;
 mod pubsub_scoring;
+#[cfg(test)]
+mod quic_shutdown_tests;
 
 const KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 const PUBSUB_TOPIC: &str = "forge.pubsub.interop";

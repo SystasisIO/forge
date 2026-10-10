@@ -57,6 +57,12 @@ from pubsub_acceptance import (
     is_record as is_pubsub_record,
     validate_suite as validate_pubsub_suite,
 )
+from pubsub_extension_acceptance import (
+    SCENARIOS as PUBSUB_EXTENSION_SCENARIOS,
+    EVIDENCE_CONTRACTS as PUBSUB_EXTENSION_EVIDENCE_CONTRACTS,
+    is_record as is_pubsub_extension_record,
+    validate_suite as validate_pubsub_extension_suite,
+)
 
 from provenance import (
     FIXTURE_DONOR_DIRECTORIES,
@@ -111,7 +117,7 @@ ARTIFACT_SCHEMA = {
 }
 
 CANONICAL_RUNNER = Path("tests/libp2p_interop/runner.py")
-ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring")
+ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring", "pubsub-extensions")
 FOCUSED_SCENARIOS = {
     "autonat": AUTONAT_SCENARIOS, "mdns": MDNS_SCENARIOS, "autorelay": AUTORELAY_SCENARIOS,
     "private-profile": PRIVATE_OWNERS,
@@ -119,6 +125,7 @@ FOCUSED_SCENARIOS = {
     "path": {PATH_SCENARIO_ID: PATH_OWNER_ID},
     "coordinated": {value[0]: COORDINATED_OWNER_ID for value in COORDINATED_PROFILES.values()},
     "pubsub-scoring": PUBSUB_SCENARIOS,
+    "pubsub-extensions": PUBSUB_EXTENSION_SCENARIOS,
 }
 DIRECTIONS = {"forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"}
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -323,6 +330,7 @@ def required_scenarios(
                     set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
                     | AUTORELAY_EVIDENCE_CONTRACTS | {PATH_EVIDENCE_CONTRACT} | COORDINATED_EVIDENCE_CONTRACTS
                     | {evidence_contract_for(name) for name in PUBSUB_SCENARIOS}
+                    | PUBSUB_EXTENSION_EVIDENCE_CONTRACTS
                 ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
@@ -848,9 +856,9 @@ def validate_all_result_evidence(artifacts: list[object], indexed_evidence: dict
     for index, record in enumerate(artifacts):
         if not isinstance(record, dict):
             continue
-        if is_autorelay_record(record) or is_pubsub_record(record):
-            # PR9 echoes wrap snapshots rather than flattening result_file
-            # payloads. Its suite validator binds every final owned output.
+        if is_autorelay_record(record) or is_pubsub_record(record) or is_pubsub_extension_record(record):
+            # These suite validators bind their wrapped final owned outputs;
+            # they are not flattened result_file payloads.
             continue
         for result in raw_result_payloads(record):
             result_path = path_within(result["result_file"], artifact_root)
@@ -2316,7 +2324,7 @@ def validate(
     )
     errors.extend(input_errors)
     errors.extend(validate_donor_provenance(root, artifact.get("fixture_provenance"), inputs))
-    if suite == "pubsub-scoring" or isinstance(artifact.get("fixture_provenance"), dict) \
+    if suite in {"pubsub-scoring", "pubsub-extensions"} or isinstance(artifact.get("fixture_provenance"), dict) \
             and "rust_quic_observer" in artifact["fixture_provenance"]:
         errors.extend(validate_quic_observer_provenance(artifact.get("fixture_provenance"), inputs, binary_paths))
     errors.extend(validate_runner_argv(
@@ -2336,8 +2344,10 @@ def validate(
     path_records = [record for record in artifacts if is_path_record(record)]
     coordinated_records = [record for record in artifacts if is_coordinated_record(record)]
     pubsub_records = [record for record in artifacts if is_pubsub_record(record)]
+    pubsub_extension_records = [record for record in artifacts if is_pubsub_extension_record(record)]
     base_records = [record for record in artifacts if not is_autorelay_record(record) and not is_path_record(record)
                     and not is_coordinated_record(record) and not is_pubsub_record(record)
+                    and not is_pubsub_extension_record(record)
                     and (not isinstance(record, dict) or record.get("suite") not in ("autonat", "mdns"))]
     autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
     mdns_required = {key: value for key, value in required.items() if key[1] in MDNS_SCENARIOS}
@@ -2346,9 +2356,11 @@ def validate(
     coordinated_required = {key: value for key, value in required.items()
                             if key[1] in FOCUSED_SCENARIOS["coordinated"]}
     pubsub_required = {key: value for key, value in required.items() if key[1] in PUBSUB_SCENARIOS}
+    pubsub_extension_required = {key: value for key, value in required.items() if key[1] in PUBSUB_EXTENSION_SCENARIOS}
     base_required = {key: value for key, value in required.items()
                      if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_SCENARIOS)
-                                       | {PATH_SCENARIO_ID} | set(FOCUSED_SCENARIOS["coordinated"]) | set(PUBSUB_SCENARIOS))}
+                                       | {PATH_SCENARIO_ID} | set(FOCUSED_SCENARIOS["coordinated"]) | set(PUBSUB_SCENARIOS)
+                                       | set(PUBSUB_EXTENSION_SCENARIOS))}
     indexed_evidence, evidence_errors = validate_evidence_index(
         artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
@@ -2356,19 +2368,18 @@ def validate(
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
     used_evidence: set[Path] = set()
-    if suite == "pubsub-scoring" or pubsub_required or pubsub_records:
-        def load_pubsub_json(value):
-            path = path_within(value, artifact_root)
-            if path is None or path not in indexed_evidence or path.stat().st_size > 16 * 1024 * 1024:
-                raise ValueError("PubSub output absent from verified bounded evidence index")
-            # Original terminal errors are retained as diagnostics. The scoped
-            # validators require error-free active snapshots or successful full
-            # shutdown respectively; generic text rejection cannot combine them.
-            payload = load_json(path)
-            if not isinstance(payload, dict):
-                raise ValueError("PubSub raw output must be a JSON object")
-            return payload
+    def load_pubsub_json(value):
+        path = path_within(value, artifact_root)
+        if path is None or path not in indexed_evidence or path.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError("PubSub output absent from verified bounded evidence index")
+        # The suite owns the exact permitted original/companion scope. Hashes
+        # and immutable JSON binding apply equally to diagnostic originals.
+        payload = load_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError("PubSub raw output must be a JSON object")
+        return payload
 
+    if suite == "pubsub-scoring" or pubsub_required or pubsub_records:
         for record in pubsub_records:
             paths = {path.resolve() for path in raw_evidence_paths(record)}
             if paths & used_evidence:
@@ -2380,11 +2391,28 @@ def validate(
         errors.extend(validate_pubsub_suite(pubsub_records, pubsub_required, artifact_root, binary_paths,
             load_pubsub_json, pnet_key_file=key_path, pnet_fingerprint=fingerprint))
     if suite == "pubsub-scoring":
-        if base_records or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records:
+        if base_records or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records or pubsub_extension_records:
             errors.append("focused PubSub suite contains unrelated records")
         return errors, True
     if pubsub_records and suite != "stage6":
         errors.append("unrelated focused suite contains PubSub records")
+    if suite == "pubsub-extensions" or pubsub_extension_required or pubsub_extension_records:
+        for record in pubsub_extension_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("extension cases reuse raw process evidence")
+            used_evidence.update(paths)
+        key_path = (root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key").resolve()
+        fingerprint, fingerprint_errors = pnet_fingerprint_for_launcher_key(str(key_path), artifact_root)
+        errors.extend(fingerprint_errors)
+        errors.extend(validate_pubsub_extension_suite(pubsub_extension_records, pubsub_extension_required,
+            artifact_root, binary_paths, load_pubsub_json, pnet_key_file=key_path, pnet_fingerprint=fingerprint))
+    if suite == "pubsub-extensions":
+        if base_records or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records or pubsub_records:
+            errors.append("focused extensions suite contains unrelated records")
+        return errors, True
+    if pubsub_extension_records and suite != "stage6":
+        errors.append("unrelated focused suite contains extension records")
     if suite == "coordinated" or coordinated_required or coordinated_records:
         def load_coordinated_json(value):
             path = path_within(value, artifact_root)
@@ -2569,7 +2597,7 @@ def validate(
         errors.append(f"focused {suite} suite must cover every record exactly once without unrelated records")
     return errors, any(
         status == ARTIFACT_SCHEMA["limited_status"] for _, status, _, _, _, _, _ in required.values()
-    )
+    ) or bool(pubsub_extension_records)
 
 
 CURRENT_FIXTURES = {

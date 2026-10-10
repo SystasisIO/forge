@@ -20,6 +20,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -118,6 +119,7 @@ void node::impl::forget_pubsub_peer_locked(const peer_id& peer) {
 }
 
 void node::impl::disconnect_pubsub_peer_locked(const peer_id& peer, std::chrono::steady_clock::time_point now) {
+   pubsub_value.idontwant.forget(peer);
    if (pubsub_value.controls) { pubsub_value.controls->forget(peer); }
    const auto row = pubsub_value.peers.find(peer);
    if (row == pubsub_value.peers.end()) {
@@ -179,6 +181,7 @@ void node::impl::finish_pubsub_inbound(const peer_id& peer, std::uint64_t genera
 }
 
 void node::impl::clear_pubsub_outbound_locked() {
+   pubsub_value.idontwant.clear();
    if (pubsub_value.router) { pubsub_value.router->clear(); }
    if (pubsub_value.controls) { pubsub_value.controls->clear(); }
    for (const auto& [_, generation] : pubsub_value.outbound) {
@@ -305,7 +308,7 @@ pubsub::snapshot node::impl::pubsub_snapshot() const {
    for (const auto& [_, peers] : pubsub_value.mesh) {
       mesh_edges += peers.size();
    }
-   return pubsub::snapshot{
+   auto out = pubsub::snapshot{
        .topics = pubsub_value.handlers.size(),
        .peers = pubsub_value.peer_topics.size(),
        .mesh_edges = mesh_edges,
@@ -318,17 +321,49 @@ pubsub::snapshot node::impl::pubsub_snapshot() const {
        .control_messages = metrics_value.pubsub_control_messages,
        .trace_failures = pubsub_value.trace_failures.load(std::memory_order_relaxed),
        .application_score_failures = pubsub_value.application_score_failures.load(std::memory_order_relaxed),
+       .idontwant_entries = pubsub_value.idontwant.size(),
+       .idontwant_bytes = pubsub_value.idontwant.bytes(),
+       .idontwant_ignored = pubsub_value.idontwant.ignored(),
    };
+   pubsub_value.partial.snapshot(out);
+   return out;
 }
 
-std::vector<pubsub::subscription> node::impl::local_pubsub_subscriptions() const {
+std::vector<pubsub::subscription> node::impl::local_pubsub_subscriptions(std::uint64_t* epoch) const {
    auto lock = std::scoped_lock{mutex};
+   if (epoch) { *epoch = pubsub_value.subscription_epoch; }
    auto out = std::vector<pubsub::subscription>{};
    out.reserve(pubsub_value.handlers.size());
    for (const auto& [topic_value, _] : pubsub_value.handlers) {
       out.push_back(pubsub::subscription{.subscribe = true, .subject = pubsub::topic{.value = topic_value}});
    }
+   static_cast<void>(refresh_pubsub_subscriptions_locked(out, builtins::meshsub_v13));
    return out;
+}
+
+bool node::impl::refresh_pubsub_subscriptions_locked(std::vector<pubsub::subscription>& subscriptions,
+                                                     const protocol_id& protocol) const {
+   auto changed = false;
+   for (auto row = subscriptions.begin(); row != subscriptions.end();) {
+      if (row->subscribe != pubsub_value.handlers.contains(row->subject.value)) {
+         row = subscriptions.erase(row); // Retire only this topic's stale intent, never unrelated controls/topics.
+         changed = true;
+         continue;
+      }
+      auto requests = std::optional<bool>{};
+      auto supports = std::optional<bool>{};
+      if (row->subscribe && protocol == builtins::meshsub_v13) {
+         if (const auto registration = pubsub_value.partial.find(row->subject)) {
+            requests = registration->options.requests_partial;
+            supports = true;
+         }
+      }
+      changed = row->requests_partial != requests || row->supports_sending_partial != supports || changed;
+      row->requests_partial = requests;
+      row->supports_sending_partial = supports;
+      ++row;
+   }
+   return changed;
 }
 
 std::vector<peer_id> node::impl::pubsub_candidate_peers(const std::string& topic_value,
@@ -359,7 +394,8 @@ std::vector<peer_id> node::impl::pubsub_candidate_peers(const std::string& topic
    for (const auto& record : store.candidates(capabilities::pubsub, options.peer_state.max_peers)) {
       const auto supports_pubsub = record.capabilities.has(capabilities::pubsub) ||
                                    std::ranges::any_of(record.protocols, [](const protocol_id& protocol) {
-                                      return protocol == builtins::meshsub_v11 || protocol == builtins::meshsub_v10;
+                                      return protocol == builtins::meshsub_v13 || protocol == builtins::meshsub_v12 ||
+                                          protocol == builtins::meshsub_v11 || protocol == builtins::meshsub_v10;
                                    });
       if (supports_pubsub && (!except || record.peer != *except) && std::ranges::find(out, record.peer) == out.end()) {
          out.push_back(record.peer);

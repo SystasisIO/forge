@@ -141,7 +141,9 @@ def _subscription_received(value, remote, protocol, topic, transport, *, impleme
         if source in {"go.quic.native_stream.read", "go.quic.native_stream.write"}:
             require(owner[0]["local_peer_id"] == local_peer, "subscription lower owner belongs to another local actor")
         rpc = validate_rpc_receipt(event.get("receipt"), protocol, direction)
-        if actual_peer == remote and direction == "read" and {"topic": topic, "subscribe": True} in rpc["subscriptions"]:
+        if actual_peer == remote and direction == "read" and any(
+                subscription.get("topic") == topic and subscription.get("subscribe") is True
+                for subscription in rpc["subscriptions"]):
             received = True
     return received
 

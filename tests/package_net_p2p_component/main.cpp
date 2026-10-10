@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -92,8 +93,40 @@ static_assert(requires(const p2p::node& node) {
 static_assert(requires(std::span<const std::uint8_t> bytes, const p2p::pubsub::options& options) {
    { p2p::pubsub::codec::decode_received(bytes, options) } -> std::same_as<p2p::pubsub::codec::received_rpc>;
 });
+static_assert(std::is_copy_constructible_v<p2p::pubsub::partial_topic>);
+static_assert(requires(p2p::node& node, p2p::pubsub::topic topic, p2p::pubsub::handler full,
+                      p2p::pubsub::partial_options partial, p2p::pubsub::partial_topic registration,
+                      p2p::peer_id peer, p2p::pubsub::partial_message value, std::stop_token stop,
+                      std::vector<std::uint8_t> group) {
+   { node.async_subscribe(topic, full, partial) } -> std::same_as<boost::asio::awaitable<p2p::pubsub::partial_topic>>;
+   { node.async_unsubscribe(registration) } -> std::same_as<boost::asio::awaitable<void>>;
+   { node.async_advertise_partial(registration, group) } -> std::same_as<boost::asio::awaitable<void>>;
+   { node.async_forget_partial(registration, group) } -> std::same_as<boost::asio::awaitable<void>>;
+   { node.async_partial_peers(registration) } -> std::same_as<boost::asio::awaitable<std::vector<p2p::peer_id>>>;
+   { node.async_send_partial(registration, peer, value, stop) } -> std::same_as<boost::asio::awaitable<void>>;
+});
 
 int main() {
+   auto extension_options = p2p::pubsub::options{};
+   extension_options.preferred = p2p::pubsub::version::v1_3;
+   extension_options.partial_messages = true;
+   p2p::pubsub::validate(extension_options);
+   const auto extension = p2p::pubsub::rpc{
+       .control_value = p2p::pubsub::control{
+           .dont_want = {p2p::pubsub::control::idontwant{.message_ids = {{1, 2, 3}}}},
+           .extensions = p2p::pubsub::extensions{.partial_messages = true}},
+       .partial = p2p::pubsub::partial_message{.subject = p2p::pubsub::topic{"package-partial"},
+           .group_id = std::vector<std::uint8_t>{1}, .metadata = std::vector<std::uint8_t>{}}};
+   const auto extension_frame = p2p::pubsub::codec::encode(extension, extension_options);
+   const auto extension_received = p2p::pubsub::codec::decode_received(extension_frame, extension_options);
+   if (extension_received.extension_advertisements != 1 || !extension_received.value.control_value ||
+       !extension_received.value.control_value->extensions ||
+       extension_received.value.control_value->extensions->partial_messages != true ||
+       !extension_received.value.partial || extension_received.value.partial->data ||
+       !extension_received.value.partial->metadata || !extension_received.value.partial->metadata->empty() ||
+       extension_received.value.partial->group_id != extension.partial->group_id) {
+      return 1;
+   }
    auto unsigned_options = p2p::pubsub::options{};
    unsigned_options.signatures = p2p::pubsub::signature_policy::strict_no_sign;
    const auto unsigned_message = p2p::pubsub::message{.data = {'p'}, .subject = {"package-unsigned"}};

@@ -282,7 +282,7 @@ fn normal_read_error() -> io::Error {
 }
 
 #[tokio::test]
-async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
+async fn actual_quic_standard_source_is_visible_only_in_diagnostic_copy() {
     use futures::future::{Either, join, poll_fn, select};
     use libp2p::{
         Transport,
@@ -374,6 +374,30 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
             ),
         ] {
             assert!(matches!(error, libp2p::quic::Error::Connection(_)));
+            let libp2p::quic::Error::Connection(wrapper) = &error else {
+                unreachable!()
+            };
+            let wrapper_source = wrapper
+                .source()
+                .and_then(|source| source.downcast_ref::<quinn::ConnectionError>());
+            let outer_source = error
+                .source()
+                .and_then(|source| source.downcast_ref::<quinn::ConnectionError>());
+            if QUIC_CAUSE_OBSERVER_ENABLED {
+                let source = wrapper_source.expect("copy must expose the actual standard source");
+                assert!(std::ptr::eq(
+                    source,
+                    outer_source.expect("outer standard source")
+                ));
+                assert_eq!(connection_cause(source), (cause, true));
+                assert_eq!(error.to_string(), source.to_string());
+                assert_eq!(format!("{error:>80}"), format!("{source:>80}"));
+                assert_eq!(format!("{error:.3}"), format!("{source:.3}"));
+                assert_eq!(format!("{error:#}"), format!("{source:#}"));
+            } else {
+                assert!(wrapper_source.is_none());
+                assert!(outer_source.is_none());
+            }
             let error = io::Error::other(error);
             let expected = (error.kind(), error.raw_os_error(), error.to_string());
             assert_eq!(
@@ -384,7 +408,7 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                     ("quic_connection_cause_unavailable", false)
                 }
             );
-            for prepared in [false, true] {
+            for (prepared, prior_failure) in [(false, false), (true, false), (true, true)] {
                 let evidence = Evidence::default();
                 let id = evidence
                     .connection(peer, point.clone(), NativeStack::Quic)
@@ -395,12 +419,18 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                 if prepared {
                     prepare(&evidence);
                 }
+                if prior_failure {
+                    evidence.lock().fail("earlier native failure");
+                }
                 evidence
                     .lock()
                     .native_error(Some(id), None, "muxer_inbound", &error);
                 let capture = evidence.lock();
                 let accepted = prepared && QUIC_CAUSE_OBSERVER_ENABLED;
-                assert_eq!(capture.error.is_none(), accepted);
+                assert_eq!(capture.error.is_none(), accepted && !prior_failure);
+                if prior_failure {
+                    assert_eq!(capture.error.as_deref(), Some("earlier native failure"));
+                }
                 let record = capture.events.last().unwrap();
                 assert_eq!(
                     record["kind"],
@@ -421,6 +451,11 @@ async fn actual_private_quic_wrapper_is_visible_only_in_instrumented_copy() {
                     expected
                 );
             }
+            let mut deep = error;
+            for _ in 0..8 {
+                deep = io::Error::other(deep);
+            }
+            assert_eq!(native_cause(&deep), ("source_chain_limit", false));
         }
         poll_fn(|cx| Pin::new(&mut dialer_connection).poll_close(cx))
             .await
@@ -526,6 +561,11 @@ fn public_quinn_and_native_transparent_source_chains_are_bounded_and_typed() {
             reason: Vec::new().into(),
         }),
     ] {
+        let standard_source = io::Error::other(libp2p::quic::Error::Io(io::Error::other(
+            quinn::ReadError::ConnectionLost(error.clone()),
+        )));
+        assert_eq!(native_cause(&standard_source), connection_cause(&error));
+        assert!(!native_cause(&standard_source).1);
         assert!(
             !native_cause(&io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -1030,6 +1070,105 @@ fn prepared_normal_close_requires_quic_owner_and_never_clears_real_failure() {
 }
 
 #[test]
+fn meshsub_versions_capture_fragmented_lazy_rpc_only_after_exact_ack() {
+    for protocol in [
+        "/meshsub/1.0.0",
+        "/meshsub/1.1.0",
+        "/meshsub/1.2.0",
+        "/meshsub/1.3.0",
+    ] {
+        assert!(meshsub(protocol));
+        for outbound in [false, true] {
+            for lazy in [false, true] {
+                let (evidence, id, mut wire) = observed_role(outbound);
+                let proposal = wire.proposal_direction;
+                let response = 1 - proposal;
+                let header = framed(b"/multistream/1.0.0\n");
+                let token = framed(format!("{protocol}\n").as_bytes());
+                let selection = [header.clone(), token.clone()].concat();
+                // A complete subscription RPC, not a synthetic delivery/score claim.
+                let rpc = framed(&[0x0a, 5, 0x08, 1, 0x12, 1, b't']);
+                if lazy {
+                    wire.feed(proposal, &[selection.clone(), rpc.clone()].concat());
+                } else {
+                    for byte in &selection {
+                        wire.feed(proposal, &[*byte]);
+                    }
+                }
+                for byte in &selection[..selection.len() - 1] {
+                    wire.feed(response, &[*byte]);
+                }
+                assert!(wire.selected.is_none());
+                assert!(
+                    !evidence
+                        .lock()
+                        .events
+                        .iter()
+                        .any(|event| { event["kind"] == "protocol" || event["kind"] == "rpc" })
+                );
+                wire.feed(response, &selection[selection.len() - 1..]);
+                if !lazy {
+                    for byte in &rpc {
+                        wire.feed(proposal, &[*byte]);
+                    }
+                }
+                for byte in &rpc {
+                    wire.feed(response, &[*byte]);
+                }
+                let capture = evidence.lock();
+                assert!(capture.error.is_none(), "{protocol}/{outbound}/{lazy}");
+                let selected = capture
+                    .events
+                    .iter()
+                    .filter(|e| e["kind"] == "protocol")
+                    .collect::<Vec<_>>();
+                assert_eq!(selected.len(), 1);
+                assert_eq!(selected[0]["protocol"], protocol);
+                let frames = capture
+                    .events
+                    .iter()
+                    .filter(|e| e["kind"] == "native_multistream_frame")
+                    .collect::<Vec<_>>();
+                assert_eq!(frames.len(), 4);
+                for (event, expected) in frames.iter().zip([&header, &token, &header, &token]) {
+                    assert_eq!(event["receipt"]["framed_hex"], hex(expected));
+                    assert_eq!(event["connection_trace_id"], id + 1);
+                    assert_eq!(event["stream_id"], "1:1");
+                }
+                let receipts = capture
+                    .events
+                    .iter()
+                    .filter(|e| e["kind"] == "rpc")
+                    .collect::<Vec<_>>();
+                assert_eq!(receipts.len(), 2);
+                for (event, side) in receipts.iter().zip([proposal, response]) {
+                    let direction = if side == 0 { "read" } else { "write" };
+                    assert_eq!(event["protocol"], protocol);
+                    assert_eq!(event["direction"], direction);
+                    assert_eq!(event["connection_trace_id"], id + 1);
+                    assert_eq!(event["connection_id"], "7");
+                    assert_eq!(event["stream_id"], "1:1");
+                    assert_eq!(event["peer_id"], capture.connections[id].peer.to_string());
+                    assert_eq!(event["receipt"]["framed_hex"], hex(&rpc));
+                    assert_eq!(event["receipt"][direction]["framed_bytes"], rpc.len());
+                    assert_eq!(
+                        event["receipt"][direction]["framed_sha256"],
+                        format!("{:x}", Sha256::digest(&rpc))
+                    );
+                }
+                drop(capture);
+                drop(wire);
+                let capture = evidence.lock();
+                assert_eq!(capture.live_streams, 0);
+                assert_eq!(capture.events.last().unwrap()["kind"], "stream_dropped");
+                assert_eq!(capture.events.last().unwrap()["partial_frame"], false);
+                assert!(capture.error.is_none());
+            }
+        }
+    }
+}
+
+#[test]
 fn native_frames_are_byte_exact_bounded_and_never_completed_by_config() {
     let (evidence, _, mut wire) = observed();
     // Exact proto2 RPC.control.PRUNE(topic="t", backoff=0).
@@ -1069,6 +1208,28 @@ fn native_frames_are_byte_exact_bounded_and_never_completed_by_config() {
     assert_eq!(prune["backoff"], 0);
     assert!(prune.get("px").is_none());
     assert!(capture.error.is_none());
+}
+
+#[test]
+fn empty_native_rpc_is_a_real_frame_but_empty_multistream_is_invalid() {
+    for minor in 0..=3 {
+        let (evidence, _, mut wire) = observed();
+        negotiate(&mut wire, &format!("/meshsub/1.{minor}.0"));
+        wire.feed(0, &[0]);
+        wire.feed(1, &[0]);
+        let capture = evidence.lock();
+        let events: Vec<_> = capture.events.iter().filter(|e| e["kind"] == "rpc").collect();
+        assert_eq!(events.len(), 2);
+        for (event, direction) in events.iter().zip(["read", "write"]) {
+            assert_eq!(event["receipt"]["framed_hex"], "00");
+            assert_eq!(event["receipt"][direction]["frames"], 1);
+            assert_eq!(event["receipt"][direction]["framed_bytes"], 1);
+        }
+        assert!(capture.error.is_none());
+        assert!(wire.frames.iter().all(|frame| !frame.partial()));
+    }
+    let mut frame = Frames::default();
+    assert!(frame.byte(0, true).is_err());
 }
 
 #[test]
@@ -1199,8 +1360,18 @@ impl AsyncWrite for ScriptIo {
 
 #[test]
 fn passive_io_forwards_pending_partial_and_failed_operations_without_invented_bytes() {
+    for protocol in ["/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"] {
+        assert_passive_io_results(protocol);
+    }
+}
+
+fn assert_passive_io_results(protocol: &str) {
     let (evidence, id, wire) = observed();
-    let handshake = [framed(b"/multistream/1.0.0\n"), framed(b"/meshsub/1.1.0\n")].concat();
+    let handshake = [
+        framed(b"/multistream/1.0.0\n"),
+        framed(format!("{protocol}\n").as_bytes()),
+    ]
+    .concat();
     let mut io = ObservedIo {
         inner: ScriptIo {
             input: handshake.clone(),
@@ -1420,12 +1591,22 @@ fn rejected_negotiation_diagnostic_retains_the_exact_token_but_is_bounded() {
 #[test]
 fn identify_ping_push_rejection_can_continue_to_meshsub_on_either_native_stream_role() {
     for outbound in [false, true] {
-        for (other, protocol) in ["/ipfs/id/1.0.0", "/ipfs/ping/1.0.0", "/ipfs/id/push/1.0.0"]
-            .into_iter()
-            .flat_map(|other| {
-                ["/meshsub/1.0.0", "/meshsub/1.1.0"].map(|protocol| (other, protocol))
-            })
-        {
+        for (other, protocol) in [
+            "/ipfs/id/1.0.0",
+            "/ipfs/ping/1.0.0",
+            "/ipfs/id/push/1.0.0",
+            "/meshsub/1.4.0",
+        ]
+        .into_iter()
+        .flat_map(|other| {
+            [
+                "/meshsub/1.0.0",
+                "/meshsub/1.1.0",
+                "/meshsub/1.2.0",
+                "/meshsub/1.3.0",
+            ]
+            .map(|protocol| (other, protocol))
+        }) {
             let (evidence, _, mut wire) = observed_role(outbound);
             negotiation_headers(&mut wire);
             let proposal = wire.proposal_direction;
@@ -1482,9 +1663,11 @@ fn selected_other_protocol_excludes_opaque_body_without_losing_stream_lifetime()
             "/ipfs/id/1.0.0",
             "/ipfs/ping/1.0.0",
             "/ipfs/id/push/1.0.0",
-            "/meshsub/1.2.0",
+            "/meshsub/1.4.0",
             "/meshsub/1.1.0/extra",
+            "/meshsub/1.3.0/extra",
         ] {
+            assert!(!meshsub(protocol));
             let (evidence, _, mut wire) = observed_role(outbound);
             negotiation_headers(&mut wire);
             let proposal = wire.proposal_direction;
@@ -1681,35 +1864,50 @@ fn rejected_meshsub_attempt_cannot_contribute_rpc_to_a_later_matching_meshsub_ac
 
 #[test]
 fn wrong_or_missing_ack_and_wrong_native_role_cannot_prove_pubsub() {
-    for outbound in [false, true] {
-        for kind in ["wrong", "missing", "partial", "wrong_role"] {
-            let (evidence, _, mut wire) = observed_role(outbound);
-            negotiation_headers(&mut wire);
-            let proposal = wire.proposal_direction;
-            let response = 1 - proposal;
-            if kind == "wrong_role" {
-                wire.feed(response, &framed(b"/meshsub/1.1.0\n"));
-            } else {
-                wire.feed(proposal, &framed(b"/meshsub/1.1.0\n"));
-                if kind == "wrong" {
-                    wire.feed(response, &framed(b"/meshsub/1.0.0\n"));
-                } else if kind == "partial" {
-                    wire.feed(response, &[14, b'/']);
+    for protocol in [
+        "/meshsub/1.0.0",
+        "/meshsub/1.1.0",
+        "/meshsub/1.2.0",
+        "/meshsub/1.3.0",
+    ] {
+        for outbound in [false, true] {
+            for kind in ["wrong", "future", "missing", "partial", "wrong_role"] {
+                let (evidence, _, mut wire) = observed_role(outbound);
+                negotiation_headers(&mut wire);
+                let proposal = wire.proposal_direction;
+                let response = 1 - proposal;
+                let token = framed(format!("{protocol}\n").as_bytes());
+                if kind == "wrong_role" {
+                    wire.feed(response, &token);
+                } else {
+                    wire.feed(proposal, &token);
+                    if kind == "wrong" || kind == "future" {
+                        let ack = if kind == "future" {
+                            "/meshsub/1.4.0"
+                        } else if protocol == "/meshsub/1.0.0" {
+                            "/meshsub/1.1.0"
+                        } else {
+                            "/meshsub/1.0.0"
+                        };
+                        wire.feed(response, &framed(format!("{ack}\n").as_bytes()));
+                    } else if kind == "partial" {
+                        wire.feed(response, &token[..token.len() - 1]);
+                    }
                 }
+                drop(wire);
+                let capture = evidence.lock();
+                assert!(capture.error.is_some(), "{protocol}/{outbound}/{kind}");
+                if kind == "missing" {
+                    assert!(capture.error.as_ref().unwrap().contains(protocol));
+                }
+                assert!(
+                    !capture
+                        .events
+                        .iter()
+                        .any(|e| e["kind"] == "protocol" || e["kind"] == "rpc")
+                );
+                assert_eq!(capture.live_streams, 0);
             }
-            drop(wire);
-            let capture = evidence.lock();
-            assert!(capture.error.is_some());
-            if kind == "missing" {
-                assert!(capture.error.as_ref().unwrap().contains("/meshsub/1.1.0"));
-            }
-            assert!(
-                !capture
-                    .events
-                    .iter()
-                    .any(|e| e["kind"] == "protocol" || e["kind"] == "rpc")
-            );
-            assert_eq!(capture.live_streams, 0);
         }
     }
 }
@@ -1798,17 +1996,22 @@ fn framing_overflow_after_other_rejection_cannot_disable_negotiation_checks() {
 
 #[test]
 fn pubsub_partial_rpc_and_frame_overflow_fail_closed_in_both_io_directions() {
-    for outbound in [false, true] {
-        for side in 0..2 {
-            for bytes in [vec![3, 0x1a], vec![0x81, 0x80, 1], vec![0x80; 3]] {
-                let (evidence, _, mut wire) = observed_role(outbound);
-                negotiate(&mut wire, "/meshsub/1.1.0");
-                wire.feed(side, &bytes);
-                drop(wire);
-                let capture = evidence.lock();
-                assert!(capture.error.is_some(), "{outbound}/{side}/{bytes:?}");
-                assert_eq!(capture.live_streams, 0);
-                assert!(!capture.events.iter().any(|e| e["kind"] == "rpc"));
+    for protocol in ["/meshsub/1.1.0", "/meshsub/1.2.0", "/meshsub/1.3.0"] {
+        for outbound in [false, true] {
+            for side in 0..2 {
+                for bytes in [vec![3, 0x1a], vec![0x81, 0x80, 1], vec![0x80; 3]] {
+                    let (evidence, _, mut wire) = observed_role(outbound);
+                    negotiate(&mut wire, protocol);
+                    wire.feed(side, &bytes);
+                    drop(wire);
+                    let capture = evidence.lock();
+                    assert!(
+                        capture.error.is_some(),
+                        "{protocol}/{outbound}/{side}/{bytes:?}"
+                    );
+                    assert_eq!(capture.live_streams, 0);
+                    assert!(!capture.events.iter().any(|e| e["kind"] == "rpc"));
+                }
             }
         }
     }

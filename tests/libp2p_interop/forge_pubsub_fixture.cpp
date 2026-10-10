@@ -2,8 +2,11 @@
 #include <array>
 #include <chrono>
 #include <coroutine>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -14,8 +17,11 @@
 #include <tuple>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_future.hpp>
 
 import forge.asio.blocking;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.codec.hex;
 import forge.codec.json;
@@ -383,6 +389,10 @@ pubsub::options forge_pubsub_fixture::pubsub_options() const {
    options.limits.max_rpc_size = 16 * 1024;
    options.limits.max_data_size = 1024;
    options.limits.max_message_size = 2048;
+   if (!_extension.empty()) {
+      options.limits.max_data_size = 4096;
+      options.limits.max_message_size = 8192;
+   }
    options.limits.max_peers_per_topic = 16;
    options.limits.max_topics = 1;
    options.limits.mesh_n = 2;
@@ -392,6 +402,23 @@ pubsub::options forge_pubsub_fixture::pubsub_options() const {
    options.limits.mesh_outbound_min = 0;
    options.limits.heartbeat_interval = 250ms;
    options.limits.prune_backoff = 1s;
+   if (_extension == "idontwant") {
+      options.limits.history_length = 64;
+      options.limits.mesh_n = 3;
+      options.limits.mesh_n_low = 3;
+   }
+   if (_extension == "partial" || _extension == "advertisement") {
+      options.partial_messages = true;
+      options.limits.max_partial_group_id_size = 20;
+      options.limits.max_partial_metadata_size = 7;
+      options.limits.max_partial_groups_per_topic = 1;
+      options.limits.max_partial_groups = 1;
+      options.limits.max_partial_group_bytes = 20;
+      options.limits.partial_group_ttl = 32;
+      options.limits.max_partial_callbacks = 64;
+      options.limits.max_partial_callback_bytes = 64 * 1024;
+      options.limits.max_partial_gossip_peers = 16;
+   }
    return options;
 }
 
@@ -417,10 +444,35 @@ void forge_pubsub_fixture::sample(std::string_view label) {
 forge::variant forge_pubsub_fixture::result(bool finalized, bool joined, std::string_view error) const {
    const auto lock = std::scoped_lock{_mutex};
    const auto failure = bounded_error(!error.empty() ? error : std::string_view{_capture_error});
-   return forge::variant{forge::mutable_variant_object{}("schema_version", 1u)("implementation", "forge")
+   auto output = forge::mutable_variant_object{}("schema_version", 1u)("implementation", "forge")
        ("actor", _actor)("case_token", _token)("local_peer_id", _peer)("finalized", finalized)
        ("joined", joined)("overflow", _overflow)("error", failure.empty() ? forge::variant{} : forge::variant{failure})
-       ("events", _events)};
+       ("events", _events);
+   if (!_extension.empty()) {
+      output("version", _version)("extension", _extension)("requests_partial", _extension == "partial")
+          ("active_extension_validators", _extension_validators)("active_extension_work", _extension_work)
+          ("extension_inputs", _extension_inputs)("extension_admission_closed", _extension_admission_closed)
+          ("extension_drained", _extension_drained)("partial_registration_active", _partial_registration.has_value())
+          ("partial_group_initialized", _partial.initialized)("partial_group_owned", _partial.owned)
+          ("partial_peer_states", _partial.peers.size())("partial_received_have", received_have_locked())
+          ("extension_capture_error", _capture_error.empty() ? forge::variant{} : forge::variant{bounded_error(_capture_error)})
+          ("extension_drain_error", _extension_drain_error.empty() ? forge::variant{} : forge::variant{_extension_drain_error});
+   }
+   return forge::variant{std::move(output)};
+}
+
+void forge_pubsub_fixture::run_extension_prepare(forge::asio::runtime& runtime,
+    boost::asio::awaitable<void> operation, std::chrono::steady_clock::time_point deadline) {
+   auto completion = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (completion.wait_until(deadline) != std::future_status::ready) {
+      // Failed test actor only: do not unwind coroutine owners that have not
+      // joined, and do not return to the command path that can acknowledge Prepare.
+      std::fputs("FATAL: PubSub Prepare exceeded actor process deadline; native joins incomplete; "
+                 "no Prepare ACK; exiting 86 without unwinding live owners\n", stderr);
+      std::fflush(stderr);
+      std::_Exit(86);
+   }
+   completion.get();
 }
 
 void forge_pubsub_fixture::command(const forge::variant& input, std::uint64_t sequence,
@@ -436,6 +488,11 @@ void forge_pubsub_fixture::command(const forge::variant& input, std::uint64_t se
        !object["kind"].is_string()) { throw std::runtime_error{"PubSub command sequence/kind mismatch"}; }
    const auto& kind = object["kind"].get_string();
    if (kind == "prepare_shutdown") {
+      if (!_extension.empty()) {
+         const auto started = std::chrono::steady_clock::now();
+         _prepare_process_deadline = started + 8s;
+         run_extension_prepare(runtime, prepare_extension(input, started + 5s), *_prepare_process_deadline);
+      }
       prepare_shutdown(input, sequence);
    } else if (kind == "connect" && object.size() == 4 && object["peer_id"].is_string() && object["address"].is_string()) {
       auto address = p2p::parse_endpoint(object["address"].get_string());
@@ -457,16 +514,17 @@ void forge_pubsub_fixture::command(const forge::variant& input, std::uint64_t se
       const auto& label = object["label"].get_string();
       if (label.empty() || label.size() > 64) { throw std::runtime_error{"invalid PubSub sample label"}; }
       sample(label);
-   } else {
+   } else if (!extension_command(input, sequence, runtime)) {
       throw std::runtime_error{"unsupported/ambiguous PubSub command"};
    }
    record("command_done", "forge.fixture.native_operation", forge::mutable_variant_object{}
        ("command_sequence", sequence)("command_kind", kind)("status", "ok"));
+   if (kind == "prepare_shutdown") { _prepare_process_deadline.reset(); }
 }
 
-void forge_pubsub_fixture::prepare_shutdown(const forge::variant& input, std::uint64_t sequence) {
-   const auto lock = std::scoped_lock{_mutex};
-   if (_prepared || _overflow || !_capture_error.empty()) {
+void forge_pubsub_fixture::check_prepare_locked(const forge::variant& input) const {
+   if (_prepared || _overflow || !_capture_error.empty() || !_extension_drain_error.empty() ||
+       (!_held_payload.empty() && !_hold_released)) {
       throw std::runtime_error{"prepare_shutdown requires open admission and no capture errors"};
    }
    const auto& object = input.get_object();
@@ -474,6 +532,15 @@ void forge_pubsub_fixture::prepare_shutdown(const forge::variant& input, std::ui
        !object["case_token"].is_string() || object["case_token"].get_string() != _token ||
        !object["local_peer_id"].is_string() || object["local_peer_id"].get_string() != _peer || _peer.empty()) {
       throw std::runtime_error{"prepare_shutdown actor/token/identity mismatch"};
+   }
+}
+
+void forge_pubsub_fixture::prepare_shutdown(const forge::variant& input, std::uint64_t sequence) {
+   const auto lock = std::scoped_lock{_mutex};
+   check_prepare_locked(input);
+   if (_extension_validators || _extension_work ||
+       (!_extension.empty() && (!_extension_drained || _partial_registration))) {
+      throw std::runtime_error{"prepare_shutdown requires actual extension drain"};
    }
    _prepared = true;
    record_locked("shutdown_prepared", "forge.fixture.prepare_shutdown", forge::mutable_variant_object{}
@@ -488,6 +555,14 @@ void forge_pubsub_fixture::configure_stream_security(p2p::node::options& options
    }
 }
 
+pubsub::version forge_pubsub_fixture::protocol_version(std::string_view value) {
+   if (value == "1.0") { return pubsub::version::v1_0; }
+   if (value == "1.1") { return pubsub::version::v1_1; }
+   if (value == "1.2") { return pubsub::version::v1_2; }
+   if (value == "1.3") { return pubsub::version::v1_3; }
+   throw std::runtime_error{"unsupported PubSub fixture protocol version"};
+}
+
 int forge_pubsub_fixture::run(const arguments& input, const support& composition) {
    auto args = input;
    const auto required = std::set<std::string>{"command", "version", "transport", "actor", "case-token",
@@ -498,17 +573,23 @@ int forge_pubsub_fixture::run(const arguments& input, const support& composition
       throw std::runtime_error{"missing/empty PubSub actor options"};
    }
    const auto transport = args.at("transport");
+   const auto version = protocol_version(args.at("version"));
+   const auto extension = args.contains("extension") ? args.at("extension") : std::string{};
+   validate_extension(extension, version);
    const auto private_profile = transport == "tcp-pnet-noise";
    auto allowed = required;
+   if (args.contains("extension")) { allowed.insert("extension"); }
    if (private_profile) { allowed.insert("pnet-key-file"); allowed.insert("pnet-fingerprint"); }
    if ((transport != "quic" && transport != "tcp" && !private_profile) ||
-       (args.at("version") != "1.0" && args.at("version") != "1.1") || args.size() != allowed.size() ||
+       args.size() != allowed.size() ||
        std::ranges::any_of(args, [&](const auto& option) {
           return !allowed.contains(option.first) || option.second.empty() || option.second.starts_with("--");
        })) {
       throw std::runtime_error{"invalid PubSub actor options"};
    }
    auto fixture = forge_pubsub_fixture{args.at("case-token"), args.at("actor")};
+   fixture._extension = extension;
+   fixture._version = args.at("version");
    canonical_paths(args, private_profile);
    auto control = control_reader{args.at("control-file")};
    auto options = composition.make_options(args);
@@ -524,7 +605,7 @@ int forge_pubsub_fixture::run(const arguments& input, const support& composition
       }
    }
    options.limits.pubsub = fixture.pubsub_options();
-   options.limits.pubsub.preferred = args.at("version") == "1.0" ? pubsub::version::v1_0 : pubsub::version::v1_1;
+   options.limits.pubsub.preferred = version;
    options.limits.pubsub.allow_v1_0_fallback = false;
    options.limits.pubsub.tracer = [&](const auto& event) { fixture.trace(event); };
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
@@ -541,25 +622,27 @@ int forge_pubsub_fixture::run(const arguments& input, const support& composition
           "/ip4/127.0.0.1/udp/0/quic-v1" : "/ip4/127.0.0.1/tcp/0");
       forge::asio::blocking::run(runtime, node.async_listen(endpoint));
       forge::asio::blocking::run(runtime, node.async_start());
-      forge::asio::blocking::run(runtime, node.async_subscribe({"forge-pr11:" + fixture._token},
-          [&](pubsub::event event) -> boost::asio::awaitable<pubsub::validation_result> {
-             const auto text = std::string_view{reinterpret_cast<const char*>(event.value.data.data()), event.value.data.size()};
-             if (fixture._actor == "victim" && text.starts_with("reject:" + fixture._token + ':')) {
-                co_return pubsub::validation_result::reject;
-             }
-             if (fixture._actor == "victim" && text.starts_with("ignore:" + fixture._token + ':')) {
-                co_return pubsub::validation_result::ignore;
-             }
-             co_return pubsub::validation_result::accept;
-          }));
+      if (fixture._extension == "partial") {
+         forge::asio::blocking::run(runtime, fixture.subscribe_partial());
+      } else {
+         forge::asio::blocking::run(runtime, node.async_subscribe({"forge-pr11:" + fixture._token},
+             [&](pubsub::event event) -> boost::asio::awaitable<pubsub::validation_result> {
+                co_return co_await fixture.validate_message(std::move(event));
+             }));
+      }
       const auto listener = node.local_endpoint();
       if (!listener) { throw std::runtime_error{"PubSub fixture listener not published"}; }
       const auto address = ready_address(*listener, node.local_peer());
-      write_atomic(args.at("ready-file"), forge::variant{forge::mutable_variant_object{}("schema_version", 1u)
+      auto ready = forge::mutable_variant_object{}("schema_version", 1u)
           ("implementation", "forge")("actor", fixture._actor)("case_token", fixture._token)
           ("local_peer_id", fixture._peer)("peer_id", fixture._peer)
           ("listen_addrs", forge::variants{forge::variant{address}})("topic", "forge-pr11:" + fixture._token)
-          ("ready", true)("subscription_created", true)});
+          ("ready", true)("subscription_created", true);
+      if (!fixture._extension.empty()) {
+         ready("version", fixture._version)("extension", fixture._extension)
+             ("requests_partial", fixture._extension == "partial");
+      }
+      write_atomic(args.at("ready-file"), forge::variant{std::move(ready)});
       auto next_snapshot = std::chrono::steady_clock::now();
       const auto deadline = next_snapshot + 70s;
       while (true) {
@@ -580,12 +663,44 @@ int forge_pubsub_fixture::run(const arguments& input, const support& composition
          std::this_thread::sleep_for(25ms);
       }
    } catch (const std::exception& failure) { error = bounded_error(failure.what()); }
+   catch (...) {
+      if (!fixture._prepare_process_deadline) { throw; }
+      error = "non-standard extension Prepare failure";
+   }
+   if (fixture._prepare_process_deadline) {
+      std::fprintf(stderr, "ERROR: PubSub Prepare failed; final native stop retains original process deadline: %s\n",
+                   error.c_str());
+      std::fflush(stderr);
+   }
+   if (!fixture._extension.empty()) {
+      const auto lock = std::scoped_lock{fixture._mutex};
+      fixture._extension_admission_closed = true;
+   }
+   fixture._extension_stop.request_stop();
    try {
-      forge::asio::blocking::run(runtime, node.async_stop());
+      if (fixture._prepare_process_deadline) {
+         run_extension_prepare(runtime, node.async_stop(), *fixture._prepare_process_deadline);
+      } else {
+         forge::asio::blocking::run(runtime, node.async_stop());
+      }
       runtime.stop();
       joined = true;
    } catch (const std::exception& failure) {
+      if (fixture._prepare_process_deadline) {
+         std::fprintf(stderr, "FATAL: PubSub failed Prepare cleanup returned an error; no joined/ACK claim; "
+                              "exiting 86 without unwinding owners: %.512s\n", failure.what());
+         std::fflush(stderr);
+         std::_Exit(86);
+      }
       if (error.empty()) { error = bounded_error(failure.what()); }
+   } catch (...) {
+      if (fixture._prepare_process_deadline) {
+         std::fputs("FATAL: PubSub failed Prepare cleanup returned a non-standard error; no joined/ACK claim; "
+                    "exiting 86 without unwinding owners\n", stderr);
+         std::fflush(stderr);
+         std::_Exit(86);
+      }
+      throw;
    }
    if (error.empty()) {
       try { control.poll(args.at("control-file"), apply, true); }

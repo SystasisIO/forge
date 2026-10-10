@@ -12,7 +12,9 @@ contract makes no production-readiness or fresh-run acceptance claim.
 
 `pubsub-live` accepts unique flag/value pairs:
 
-- `--version`: `1.0` or `1.1`; exactly one standard protocol is offered.
+- `--version`: PR11 uses `1.0` or `1.1`. PR12 additionally accepts `1.2` and
+  `1.3`; see `pubsub_extensions_contract.md` for native selection and the Rust
+  default-list constraint. Accepting the flag is not extension evidence.
 - `--transport`: `quic`, `tcp`, or `tcp-pnet-noise`.
 - `--actor`: `victim`, `offender`, `replacement`, or `sink`.
 - `--case-token`: 32 lowercase hexadecimal digits.
@@ -169,8 +171,11 @@ joins remain independent requirements. Previous failed artifacts are unchanged.
 
 The maintainer-approved 2026-10-08 observation contract separates the four
 Rust QUIC cases into original-wire and instrumented-shutdown gates. An isolated
-copy of pinned Rust adds only a read-only `ConnectionError::inner()` accessor;
-the fixture enables `quic-cause-observer` only for its separate binary. Complete
+copy of pinned Rust exposes the current Quinn error through standard
+`ConnectionError::source()`, with an unchanged forwarding `Display`.
+This locally approved replacement for the earlier accessor recipe is not an
+upstream release. The fixture enables `quic-cause-observer` only for its separate
+binary as a provenance marker; both binaries traverse the same public error chain. Complete
 original/observed Git trees, the exact patch and all source/binary hashes must
 validate. No native result, polling, close or router behavior changes.
 
@@ -795,6 +800,30 @@ contract, not a claim that a handler was rejected or why it was not called,
 nor proof of remote Reset/ACK delivery, graceful close or router/process join.
 No Swarm/native stream-ID mapping, event-adjacency association or new native
 emitter is introduced. Original failed artifacts remain unchanged.
+
+### Outbound Cancellation Before Negotiation
+
+A native outbound stream opened after the actual Prepare ACK can be reset
+before it sends any negotiation bytes. This is separate from inbound
+remote-reset cleanup and from connection-level closure. The proof must bind
+the real Open BEGIN and registration to that ACK, a live creation context and
+the authenticated parent's live Prepare baseline; the stream itself must not
+appear in that earlier baseline.
+
+Every failing Read/Write retains n=0 and its direct outer/inner typed local
+StreamError0 on the same native stream. An independently observed successful
+full Reset RETURN must precede that operation's BEGIN in native counters.
+Read and send causes remain independent; a Read does not borrow the Write's
+send-context cause. All parser snapshots, successful prefixes, partial/lazy
+tails and frame lists must be empty, without selected protocol or RPC authority.
+
+Terminal acceptance additionally needs a successful full disposal after all
+I/O RETURNs, no later calls, the actual zero-active-call native join and joined
+host/fixture owners. Active prefixes describe pending diagnostics only and
+cannot borrow later disposal or join events. Sticky failures, unknown/wrapped/
+nonzero/remote errors, foreign owners, any bytes and missing disposal remain
+fatal. This evidence is cancellation before negotiation, never graceful Close,
+remote acknowledgement, delivery or permission to ignore another native error.
 
 ## Router Configuration
 

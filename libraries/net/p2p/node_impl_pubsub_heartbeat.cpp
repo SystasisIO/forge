@@ -21,6 +21,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -217,6 +218,7 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
          const auto count = std::min(peers.size(), std::max(limits.gossip_lazy,
             static_cast<std::size_t>(std::ceil(limits.gossip_factor * static_cast<double>(peers.size())))));
          for (auto index = std::size_t{}; index < count; ++index) {
+            if (prefer_pubsub_partial_locked(peers[index], pubsub::topic{topic})) { continue; }
             gossip[peers[index]].push_back(pubsub::control::ihave{.subject = pubsub::topic{topic}, .message_ids = ids});
          }
       };
@@ -364,11 +366,14 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
       // Capture gossip before advancing the insertion bin; new publications enter the next bin.
       // Donor enqueue/shift semantics permit one-shot IHAVE to finish after cache expiry.
       ++pubsub_value.epoch;
+      pubsub_value.idontwant.heartbeat();
    }
    auto controls = std::map<peer_id, pubsub::control>{};
    for (auto& [peer, items] : gossip) { controls[peer].have = std::move(items); }
    for (auto& [peer, ids] : retries) { controls[peer].want.push_back(pubsub::control::iwant{.message_ids = std::move(ids)}); }
    flush_pubsub_controls(std::nullopt, std::move(controls));
+   gossip_pubsub_partial();
+   pubsub_value.partial.heartbeat();
    {
       const auto lock = std::scoped_lock{mutex};
       prune_pubsub_cache_locked();

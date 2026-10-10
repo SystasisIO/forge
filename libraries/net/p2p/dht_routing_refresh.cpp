@@ -13,6 +13,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>

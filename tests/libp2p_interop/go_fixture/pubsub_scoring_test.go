@@ -117,7 +117,24 @@ func TestPubsubScoringStrictFlags(t *testing.T) {
 	if _, err := parsePubsubScoringArgs(pubsubScoringUnitArgs()); err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string]string{"--version": "1.2", "--transport": "tcp-tls", "--actor": "mesh", "--case-token": strings.Repeat("A", 32)} {
+	for _, version := range []string{"1.0", "1.1", "1.2", "1.3"} {
+		args := pubsubScoringUnitArgs()
+		args[1] = version
+		if _, err := parsePubsubScoringArgs(args); err != nil {
+			t.Fatal(err)
+		}
+		id, err := pubsubScoringProtocol(version)
+		if err != nil || string(id) != "/meshsub/"+version+".0" {
+			t.Fatalf("wrong native protocol for %s: %s %v", version, id, err)
+		}
+		if pubsub.GossipSubDefaultFeatures(pubsub.GossipSubFeatureIdontwant, id) != (version == "1.2" || version == "1.3") {
+			t.Fatalf("wrong native IDONTWANT behavior for %s", version)
+		}
+		if pubsub.GossipSubDefaultFeatures(pubsub.GossipSubFeatureExtensions, id) != (version == "1.3") {
+			t.Fatalf("wrong native extensions behavior for %s", version)
+		}
+	}
+	for name, value := range map[string]string{"--version": "1.4", "--transport": "tcp-tls", "--actor": "mesh", "--case-token": strings.Repeat("A", 32)} {
 		args := pubsubScoringUnitArgs()
 		for i := 0; i < len(args); i += 2 {
 			if args[i] == name {
@@ -153,6 +170,66 @@ func TestPubsubScoringPrivateFlags(t *testing.T) {
 	args[len(args)-1] = strings.Repeat("B", 64)
 	if _, err := parsePubsubScoringArgs(args); err == nil {
 		t.Fatal("accepted noncanonical fingerprint")
+	}
+}
+
+func TestPubsubScoringExtensionModesAndCommands(t *testing.T) {
+	for _, mode := range []string{"idontwant", "partial", "advertisement", "unknown"} {
+		for _, version := range []string{"1.0", "1.1", "1.2", "1.3"} {
+			args := pubsubScoringUnitArgs()
+			args[1] = version
+			_, err := parsePubsubScoringArgs(append(args, "--extension", mode))
+			valid := mode == "idontwant" && version == "1.2" || (mode == "partial" || mode == "advertisement") && version == "1.3"
+			if (err == nil) != valid {
+				t.Fatalf("mode/version: %s %s %v", mode, version, err)
+			}
+		}
+	}
+	for _, mode := range []string{"idontwant", "partial", "advertisement"} {
+		for _, size := range []int{1, 1024, 4096} {
+			line := []byte(`{"sequence":1,"kind":"publish_extension","payload":"` + strings.Repeat("a", size) + `"}`)
+			if _, err := decodePubsubScoringCommandMode(line, 1, mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodePubsubScoringCommand(line, 1); err == nil {
+				t.Fatal("PR11 accepted extension command")
+			}
+		}
+	}
+	for _, have := range []int{0, 1, 7} {
+		line := []byte(fmt.Sprintf(`{"sequence":1,"kind":"partial_offer","have":%d}`, have))
+		if c, err := decodePubsubScoringCommandMode(line, 1, "partial"); err != nil || int(c.Have) != have {
+			t.Fatal(c, err)
+		}
+	}
+	if _, err := decodePubsubScoringCommandMode([]byte(`{"sequence":1,"kind":"validation_release"}`), 1, "idontwant"); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{
+		`{"sequence":1,"kind":"partial_offer"}`, `{"sequence":1,"kind":"partial_offer","have":null}`,
+		`{"sequence":1,"kind":"partial_offer","have":true}`, `{"sequence":1,"kind":"partial_offer","have":8}`,
+		`{"sequence":1,"kind":"partial_offer","have":-1}`, `{"sequence":1,"kind":"partial_offer","have":1.0}`,
+		`{"sequence":1,"kind":"partial_offer","have":0,"group_sequence":1}`,
+		`{"sequence":1,"kind":"partial_offer","have":0,"have":7}`,
+		`{"sequence":1,"kind":"partial_reply","peer_id":"foreign"}`,
+		`{"sequence":1,"kind":"publish_extension","payload":""}`,
+		`{"sequence":1,"kind":"publish_extension","payload":"` + strings.Repeat("a", 4097) + `"}`,
+		`{"sequence":1,"kind":"publish_extension","payload":"a\u0000b"}`,
+		`{"sequence":1,"kind":"validation_release","observation_sequence":1}`,
+	} {
+		for _, mode := range []string{"", "partial", "idontwant", "advertisement"} {
+			if _, err := decodePubsubScoringCommandMode([]byte(line), 1, mode); err == nil {
+				t.Fatalf("accepted invalid extension command %s (%s)", line, mode)
+			}
+		}
+	}
+	for _, mode := range []string{"partial", "advertisement", ""} {
+		if _, err := decodePubsubScoringCommandMode([]byte(`{"sequence":1,"kind":"validation_hold","payload":"accept:a"}`), 1, mode); err == nil {
+			t.Fatal("hold allowed outside IDONTWANT")
+		}
+	}
+	if _, err := decodePubsubScoringCommandMode([]byte(`{"sequence":1,"kind":"partial_offer","have":0}`), 1, "advertisement"); err == nil {
+		t.Fatal("full-only advertisement actor admitted partial publication")
 	}
 }
 
@@ -248,7 +325,7 @@ func TestPubsubScoringContractParametersAcceptedByNativeRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	params, score, thresholds := pubsubScoringParameters("unit-topic")
+	params, score, thresholds := pubsubScoringParameters("unit-topic", "")
 	if params.D != 2 || params.Dlo != 1 || params.Dhi != 4 || params.Dscore != 1 || params.Dout != 0 ||
 		params.HeartbeatInterval != 250*time.Millisecond || params.PruneBackoff != time.Second {
 		t.Fatal("router profile drift")
@@ -264,6 +341,23 @@ func TestPubsubScoringContractParametersAcceptedByNativeRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancel()
+}
+
+func TestPubsubScoringIDontWantMeshParametersOnly(t *testing.T) {
+	for _, mode := range []string{"", "partial", "advertisement", "idontwant"} {
+		t.Run(mode, func(t *testing.T) {
+			params, _, _ := pubsubScoringParameters("unit-topic", mode)
+			degree, low := 2, 1
+			if mode == "idontwant" {
+				degree, low = 3, 3
+			}
+			if params.D != degree || params.Dlo != low || params.Dhi != 4 || params.Dscore != 1 || params.Dout != 0 ||
+				params.HeartbeatInterval != 250*time.Millisecond || params.PruneBackoff != time.Second ||
+				params.UnsubscribeBackoff != time.Second {
+				t.Fatalf("unexpected %q mesh configuration: %+v", mode, params)
+			}
+		})
+	}
 }
 
 func pubsubScoringUnitFrame(t *testing.T, backoff *uint64) []byte {
@@ -307,7 +401,7 @@ func TestPubsubScoringWireCapturesFragmentedAndCoalescedNativePrefixes(t *testin
 func TestPubsubScoringWireRejectsNoncanonicalOversizedAndMalformedFrames(t *testing.T) {
 	var header [binary.MaxVarintLen64]byte
 	n := binary.PutUvarint(header[:], pubsubScoringFrame+1)
-	for _, raw := range [][]byte{{0x81, 0x00, 0x00}, append([]byte{}, header[:n]...), {0x01, 0xff}} {
+	for _, raw := range [][]byte{{0x80, 0x00}, {0x81, 0x00, 0x00}, append([]byte{}, header[:n]...), {0x01, 0xff}} {
 		decoder := pubsubScoringDecoder{}
 		failures, frames := 0, 0
 		decoder.feed(raw, func([]byte, *pubsubpb.RPC) { frames++ }, func(error) { failures++ })
@@ -315,6 +409,82 @@ func TestPubsubScoringWireRejectsNoncanonicalOversizedAndMalformedFrames(t *test
 		if !decoder.failed || failures != 1 || frames != 0 {
 			t.Fatal("malformed capture recovered/claimed a frame")
 		}
+	}
+}
+
+func TestPubsubScoringWireEmptyRPCRequiresActualZeroPrefix(t *testing.T) {
+	decoder := pubsubScoringDecoder{}
+	var frames [][]byte
+	record := func(raw []byte, rpc *pubsubpb.RPC) {
+		if !bytes.Equal(raw, []byte{0}) || rpc.Size() != 0 {
+			t.Fatal("empty RPC was rewritten", raw, rpc)
+		}
+		frames = append(frames, raw)
+	}
+	decoder.feed(nil, record, func(err error) { t.Fatal(err) })
+	if len(frames) != 0 {
+		t.Fatal("missing native bytes fabricated an empty RPC")
+	}
+	decoder.feed([]byte{0, 0}, record, func(err error) { t.Fatal(err) })
+	if len(frames) != 2 || len(decoder.buffer) != 0 || decoder.failed {
+		t.Fatal("actual coalesced zero prefixes were not two complete RPCs")
+	}
+
+	o := newPubsubScoringObserver("victim", strings.Repeat("a", 32))
+	delegate := &pubsubScoringUnitStream{conn: pubsubScoringUnitConnection(t), protocol: pubsub.GossipSubID_v13,
+		input: bytes.NewReader([]byte{0}), writeN: -1}
+	o.local = delegate.Conn().LocalPeer()
+	h := &pubsubScoringHost{observer: o, drain: newPubsubScoringDrain(), protocol: pubsub.GossipSubID_v13}
+	s, err := h.wrap(delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Reset() })
+	if n, err := s.Read(nil); n != 0 || err != nil || len(pubsubScoringUnitEvents(o, "rpc")) != 0 {
+		t.Fatal("zero-byte native result fabricated a frame", n, err)
+	}
+	buf := []byte{0xff}
+	if n, err := s.Read(buf); n != 1 || err != nil || buf[0] != 0 {
+		t.Fatal("actual empty RPC prefix changed", n, err)
+	}
+	if n, err := s.Write([]byte{0}); n != 1 || err != nil || !bytes.Equal(delegate.output.Bytes(), []byte{0}) {
+		t.Fatal("actual empty RPC write changed", n, err)
+	}
+	events := pubsubScoringUnitEvents(o, "rpc")
+	if len(events) != 2 || o.failure != nil {
+		t.Fatal("empty RPC receipt count/failure", events, o.failure)
+	}
+	digest := sha256.Sum256([]byte{0})
+	for i, direction := range []string{"read", "write"} {
+		receipt := events[i]["receipt"].(map[string]any)
+		actual := receipt[direction].(map[string]any)
+		if events[i]["direction"] != direction || receipt["framed_hex"] != "00" || actual["framed_bytes"] != 1 ||
+			actual["framed_sha256"] != hex.EncodeToString(digest[:]) || actual["frames"] != 1 ||
+			actual["complete_frames"] != true || actual["invalid_or_over_limit"] != false {
+			t.Fatal("receipt not bound to one actual zero prefix", events[i])
+		}
+	}
+}
+
+func TestPubsubScoringEmptyRPCDoesNotAllowEmptyQUICNegotiation(t *testing.T) {
+	for _, selected := range []bool{false, true} {
+		t.Run(fmt.Sprint(selected), func(t *testing.T) {
+			o, stream, raw, _ := pubsubQUICUnit(t, network.DirOutbound)
+			if selected {
+				pubsubQUICUnitSelect(t, stream, raw, "/meshsub/1.3.0")
+			}
+			if n, err := stream.Write([]byte{0}); n != 1 || err != nil {
+				t.Fatal("observer altered delegate return", n, err)
+			}
+			events := pubsubScoringUnitEvents(o, "rpc")
+			if !selected {
+				if o.failure == nil || len(events) != 0 || stream.selected != "" {
+					t.Fatal("empty multistream token became RPC authority")
+				}
+			} else if o.failure != nil || len(events) != 1 || events[0]["receipt"].(map[string]any)["framed_hex"] != "00" {
+				t.Fatal("selected QUIC empty RPC did not retain actual zero prefix", events, o.failure)
+			}
+		})
 	}
 }
 

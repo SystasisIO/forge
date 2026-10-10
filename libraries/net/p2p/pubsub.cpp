@@ -9,6 +9,7 @@ module;
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,10 +39,22 @@ namespace {
 constexpr auto signing_prefix = std::string_view{"libp2p-pubsub:"};
 
 void validate_options(const options& opts) {
+   static_cast<void>(codec::protocol(opts.preferred));
+   if (opts.partial_messages && opts.preferred != version::v1_3) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "Partial Messages require preferred GossipSub v1.3");
+   }
    const auto& limits = opts.limits;
    if (limits.max_rpc_size == 0 || limits.max_message_size == 0 || limits.max_data_size == 0 ||
        limits.max_topic_size == 0 || limits.max_subscriptions == 0 || limits.max_messages == 0 ||
        limits.max_control_entries == 0 || limits.max_message_ids == 0 || limits.max_peers_per_topic == 0 ||
+       limits.max_idontwant_message_id_size == 0 || limits.max_partial_group_id_size == 0 ||
+       limits.max_partial_metadata_size == 0 ||
+       limits.max_idontwant_rpcs_per_heartbeat == 0 || limits.max_idontwant_ids_per_rpc == 0 ||
+       limits.idontwant_ttl == 0 || limits.max_idontwant_entries_per_peer == 0 ||
+       limits.max_idontwant_bytes_per_peer == 0 || limits.max_idontwant_entries == 0 || limits.max_idontwant_bytes == 0 ||
+       limits.max_partial_groups_per_topic == 0 || limits.max_partial_groups == 0 ||
+       limits.max_partial_group_bytes == 0 || limits.partial_group_ttl == 0 || limits.max_partial_callbacks == 0 ||
+       limits.max_partial_callback_bytes == 0 || limits.max_partial_gossip_peers == 0 ||
        limits.max_topics == 0 || limits.max_validation_queue == 0 || limits.max_outbound_queue_bytes == 0 ||
        limits.max_ihave_per_peer == 0 || limits.max_iwant_per_peer == 0 || limits.max_graft_per_peer == 0 ||
        limits.heartbeat_initial_delay.count() <= 0 || limits.heartbeat_interval.count() <= 0 ||
@@ -91,16 +104,40 @@ void append_bool(std::vector<std::uint8_t>& out, std::uint32_t field, bool value
    detail::append_uint64(out, field, value ? 1U : 0U);
 }
 
+void validate_bytes_size(std::uint32_t field, std::size_t size, std::size_t used, std::size_t limit) {
+   const auto header = forge::multiformats::varint_encoded_size((std::uint64_t{field} << 3U) | 2U) +
+       forge::multiformats::varint_encoded_size(size);
+   if (header > limit || used > limit - header || size > limit - header - used) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub payload exceeds max size");
+   }
+}
+
+void append_bounded_bytes(std::vector<std::uint8_t>& out, std::uint32_t field,
+                          std::span<const std::uint8_t> bytes, std::size_t limit) {
+   validate_bytes_size(field, bytes.size(), out.size(), limit);
+   detail::append_bytes(out, field, bytes);
+}
+
+[[nodiscard]] std::vector<std::uint8_t> bounded_bytes(detail::reader& in, std::size_t limit) {
+   auto prefix = in;
+   if (prefix.read_varint() > limit) {
+      FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub bytes field exceeds max size");
+   }
+   return in.bytes();
+}
+
 [[nodiscard]] std::vector<std::uint8_t> encode_subscription_payload(const subscription& value, const options& opts) {
    validate_topic(value.subject, opts);
    auto out = std::vector<std::uint8_t>{};
    append_bool(out, 1, value.subscribe);
    detail::append_string(out, 2, value.subject.value);
+   if (value.requests_partial) { append_bool(out, 3, *value.requests_partial); }
+   if (value.supports_sending_partial) { append_bool(out, 4, *value.supports_sending_partial); }
    return out;
 }
 
 [[nodiscard]] subscription decode_subscription_payload(std::span<const std::uint8_t> bytes, const options& opts) {
-   auto out = subscription{};
+   auto out = subscription{.subscribe = false}; // Proto2 wire default, not the public construction default.
    auto saw_topic = false;
    auto in = detail::reader{bytes};
    while (!in.done()) {
@@ -118,6 +155,13 @@ void append_bool(std::vector<std::uint8_t>& out, std::uint32_t field, bool value
          }
          out.subject.value = in.string();
          saw_topic = true;
+         break;
+      case 3:
+      case 4:
+         if (type != detail::wire_type::varint) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub partial subscription flag must be varint");
+         }
+         (field == 3 ? out.requests_partial : out.supports_sending_partial) = in.read_varint() != 0;
          break;
       default:
          in.skip(type);
@@ -400,7 +444,7 @@ void append_message_ids(std::vector<std::uint8_t>& out, std::uint32_t field,
    }
    auto out = std::vector<std::uint8_t>{};
    detail::append_string(out, 1, value.subject.value);
-   if (opts.preferred == version::v1_1) {
+   if (opts.preferred != version::v1_0) {
       for (const auto& peer : value.peers) {
          detail::append_bytes(out, 2, encode_peer_payload(peer));
       }
@@ -452,34 +496,170 @@ void append_message_ids(std::vector<std::uint8_t>& out, std::uint32_t field,
    return out;
 }
 
-[[nodiscard]] std::vector<std::uint8_t> encode_control_payload(const control& value, const options& opts) {
-   const auto total = value.have.size() + value.want.size() + value.grafts.size() + value.prunes.size();
-   if (total > opts.limits.max_control_entries) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub control message has too many entries");
+[[nodiscard]] std::vector<std::uint8_t> encode_idontwant_payload(const control::idontwant& value,
+                                                               const options& opts, std::size_t& ids) {
+   if (value.message_ids.size() > opts.limits.max_message_ids - ids) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub IDONTWANT has too many message ids");
    }
+   ids += value.message_ids.size();
    auto out = std::vector<std::uint8_t>{};
-   for (const auto& item : value.have) {
-      detail::append_bytes(out, 1, encode_ihave_payload(item, opts));
-   }
-   for (const auto& item : value.want) {
-      detail::append_bytes(out, 2, encode_iwant_payload(item, opts));
-   }
-   for (const auto& item : value.grafts) {
-      detail::append_bytes(out, 3, encode_graft_payload(item, opts));
-   }
-   for (const auto& item : value.prunes) {
-      detail::append_bytes(out, 4, encode_prune_payload(item, opts));
+   for (const auto& id : value.message_ids) {
+      if (id.size() > opts.limits.max_idontwant_message_id_size) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub IDONTWANT message id exceeds max size");
+      }
+      append_bounded_bytes(out, 1, id, opts.limits.max_rpc_size);
    }
    return out;
 }
 
-[[nodiscard]] control decode_control_payload(std::span<const std::uint8_t> bytes, const options& opts) {
-   auto out = control{};
+[[nodiscard]] control::idontwant decode_idontwant_payload(std::span<const std::uint8_t> bytes,
+                                                        const options& opts, std::size_t& ids) {
+   auto out = control::idontwant{};
    auto in = detail::reader{bytes};
    while (!in.done()) {
       const auto [field, type] = in.key();
+      if (field != 1) {
+         in.skip(type);
+         continue;
+      }
       if (type != detail::wire_type::length_delimited) {
-         FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub control entry must be bytes");
+         FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub IDONTWANT message id must be bytes");
+      }
+      if (ids == opts.limits.max_message_ids) {
+         FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub IDONTWANT has too many message ids");
+      }
+      ++ids;
+      out.message_ids.push_back(bounded_bytes(in, opts.limits.max_idontwant_message_id_size));
+   }
+   return out;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> encode_extensions_payload(const extensions& value) {
+   auto out = std::vector<std::uint8_t>{};
+   if (value.partial_messages) { append_bool(out, 10, *value.partial_messages); }
+   return out;
+}
+
+void decode_extensions_payload(std::span<const std::uint8_t> bytes, extensions& out) {
+   auto in = detail::reader{bytes};
+   while (!in.done()) {
+      const auto [field, type] = in.key();
+      if (field != 10) {
+         in.skip(type);
+         continue;
+      }
+      if (type != detail::wire_type::varint) {
+         FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub Partial Messages extension must be varint");
+      }
+      out.partial_messages = in.read_varint() != 0;
+   }
+}
+
+[[nodiscard]] std::optional<std::size_t> partial_payload_size(const partial_message& value, const limits& bounds) {
+   auto remaining = bounds.max_message_size;
+   const auto field_fits = [&remaining](std::size_t size, std::size_t limit) {
+      // All four Partial keys occupy one byte. Subtract before adding to avoid overflow.
+      const auto header = 1 + forge::multiformats::varint_encoded_size(size);
+      if (size > limit || header > remaining || size > remaining - header) { return false; }
+      remaining -= header + size;
+      return true;
+   };
+   if ((value.subject && !field_fits(value.subject->value.size(), bounds.max_topic_size)) ||
+       (value.group_id && !field_fits(value.group_id->size(), bounds.max_partial_group_id_size)) ||
+       (value.data && !field_fits(value.data->size(), bounds.max_data_size)) ||
+       (value.metadata && !field_fits(value.metadata->size(), bounds.max_partial_metadata_size))) {
+      return std::nullopt;
+   }
+   return bounds.max_message_size - remaining;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> encode_partial_payload(const partial_message& value, std::size_t size) {
+   auto out = std::vector<std::uint8_t>{};
+   out.reserve(size);
+   if (value.subject) { detail::append_string(out, 1, value.subject->value); }
+   if (value.group_id) { detail::append_bytes(out, 2, *value.group_id); }
+   if (value.data) { detail::append_bytes(out, 3, *value.data); }
+   if (value.metadata) { detail::append_bytes(out, 4, *value.metadata); }
+   return out;
+}
+
+void decode_partial_payload(std::span<const std::uint8_t> bytes, const options& opts, partial_message& out) {
+   auto in = detail::reader{bytes};
+   while (!in.done()) {
+      const auto [field, type] = in.key();
+      if (field >= 1 && field <= 4 && type != detail::wire_type::length_delimited) {
+         FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub Partial field must be bytes");
+      }
+      switch (field) {
+      case 1: {
+         const auto value = bounded_bytes(in, opts.limits.max_topic_size);
+         out.subject = topic{.value = std::string{value.begin(), value.end()}};
+         break;
+      }
+      case 2:
+         out.group_id = bounded_bytes(in, opts.limits.max_partial_group_id_size);
+         break;
+      case 3:
+         out.data = bounded_bytes(in, opts.limits.max_data_size);
+         break;
+      case 4:
+         out.metadata = bounded_bytes(in, opts.limits.max_partial_metadata_size);
+         break;
+      default:
+         in.skip(type);
+         break;
+      }
+   }
+   if (!partial_payload_size(out, opts.limits)) {
+      FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub Partial exceeds field or message limits");
+   }
+}
+
+[[nodiscard]] std::vector<std::uint8_t> encode_control_payload(const control& value, const options& opts) {
+   auto remaining = opts.limits.max_control_entries;
+   for (const auto size : {value.have.size(), value.want.size(), value.grafts.size(), value.prunes.size(),
+                           value.dont_want.size(), std::size_t{value.extensions.has_value()}}) {
+      if (size > remaining) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub control message has too many entries");
+      }
+      remaining -= size;
+   }
+   auto out = std::vector<std::uint8_t>{};
+   for (const auto& item : value.have) {
+      append_bounded_bytes(out, 1, encode_ihave_payload(item, opts), opts.limits.max_rpc_size);
+   }
+   for (const auto& item : value.want) {
+      append_bounded_bytes(out, 2, encode_iwant_payload(item, opts), opts.limits.max_rpc_size);
+   }
+   for (const auto& item : value.grafts) {
+      append_bounded_bytes(out, 3, encode_graft_payload(item, opts), opts.limits.max_rpc_size);
+   }
+   for (const auto& item : value.prunes) {
+      append_bounded_bytes(out, 4, encode_prune_payload(item, opts), opts.limits.max_rpc_size);
+   }
+   auto ids = std::size_t{};
+   for (const auto& item : value.dont_want) {
+      append_bounded_bytes(out, 5, encode_idontwant_payload(item, opts, ids), opts.limits.max_rpc_size);
+   }
+   if (value.extensions) {
+      append_bounded_bytes(out, 6, encode_extensions_payload(*value.extensions), opts.limits.max_rpc_size);
+   }
+   return out;
+}
+
+void decode_control_payload(std::span<const std::uint8_t> bytes, const options& opts, control& out,
+                            std::size_t& entries, std::size_t& ids, std::size_t& advertisements) {
+   auto in = detail::reader{bytes};
+   while (!in.done()) {
+      const auto [field, type] = in.key();
+      if (field >= 1 && field <= 6) {
+         if (type != detail::wire_type::length_delimited) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub control entry must be bytes");
+         }
+         if (entries == opts.limits.max_control_entries) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub control message has too many entries");
+         }
+         ++entries;
       }
       switch (field) {
       case 1:
@@ -494,16 +674,19 @@ void append_message_ids(std::vector<std::uint8_t>& out, std::uint32_t field,
       case 4:
          out.prunes.push_back(decode_prune_payload(in.bytes(), opts));
          break;
+      case 5:
+         out.dont_want.push_back(decode_idontwant_payload(in.bytes(), opts, ids));
+         break;
+      case 6:
+         ++advertisements;
+         if (!out.extensions) { out.extensions.emplace(); }
+         decode_extensions_payload(in.bytes(), *out.extensions);
+         break;
       default:
          in.skip(type);
          break;
       }
    }
-   const auto total = out.have.size() + out.want.size() + out.grafts.size() + out.prunes.size();
-   if (total > opts.limits.max_control_entries) {
-      FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub control message has too many entries");
-   }
-   return out;
 }
 
 [[nodiscard]] codec::received_rpc decode_rpc_payload(std::span<const std::uint8_t> bytes, const options& opts,
@@ -512,6 +695,8 @@ void append_message_ids(std::vector<std::uint8_t>& out, std::uint32_t field,
    const auto payload = detail::unwrap_message(bytes, opts.limits.max_rpc_size);
    auto out = codec::received_rpc{};
    auto messages = std::size_t{};
+   auto control_entries = std::size_t{};
+   auto idontwant_ids = std::size_t{};
    auto in = detail::reader{payload};
    while (!in.done()) {
       const auto [field, type] = in.key();
@@ -541,7 +726,16 @@ void append_message_ids(std::vector<std::uint8_t>& out, std::uint32_t field,
          if (type != detail::wire_type::length_delimited) {
             FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub control message must be bytes");
          }
-         out.value.control_value = decode_control_payload(in.bytes(), opts);
+         if (!out.value.control_value) { out.value.control_value.emplace(); }
+         decode_control_payload(in.bytes(), opts, *out.value.control_value, control_entries, idontwant_ids,
+                                 out.extension_advertisements);
+         break;
+      case 10:
+         if (type != detail::wire_type::length_delimited) {
+            FORGE_THROW_EXCEPTION(exceptions::codec_error, "GossipSub Partial must be bytes");
+         }
+         if (!out.value.partial) { out.value.partial.emplace(); }
+         decode_partial_payload(bounded_bytes(in, opts.limits.max_message_size), opts, *out.value.partial);
          break;
       default:
          in.skip(type);
@@ -682,9 +876,15 @@ protocol_id codec::protocol(version value) {
       return builtins::meshsub_v10;
    case version::v1_1:
       return builtins::meshsub_v11;
+   case version::v1_2:
+      return builtins::meshsub_v12;
+   case version::v1_3:
+      return builtins::meshsub_v13;
    }
-   return builtins::meshsub_v11;
+   FORGE_THROW_EXCEPTION(exceptions::invalid_options, "unknown GossipSub preferred version");
 }
+
+const topic& partial_topic::subject() const noexcept { return _subject; }
 
 std::vector<std::uint8_t> codec::encode(const rpc& value) {
    return encode(value, options{});
@@ -700,13 +900,22 @@ std::vector<std::uint8_t> codec::encode(const rpc& value, const options& opts) {
    }
    auto out = std::vector<std::uint8_t>{};
    for (const auto& item : value.subscriptions) {
-      detail::append_bytes(out, 1, encode_subscription_payload(item, opts));
+      append_bounded_bytes(out, 1, encode_subscription_payload(item, opts), opts.limits.max_rpc_size);
    }
    for (const auto& item : value.messages) {
-      detail::append_bytes(out, 2, encode_message_payload(item, opts, true));
+      append_bounded_bytes(out, 2, encode_message_payload(item, opts, true), opts.limits.max_rpc_size);
    }
    if (value.control_value) {
-      detail::append_bytes(out, 3, encode_control_payload(*value.control_value, opts));
+      append_bounded_bytes(out, 3, encode_control_payload(*value.control_value, opts), opts.limits.max_rpc_size);
+   }
+   if (value.partial) {
+      const auto size = partial_payload_size(*value.partial, opts.limits);
+      if (!size) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub Partial exceeds field or message limits");
+      }
+      // Include field 10 and its length prefix before materializing the Partial body.
+      validate_bytes_size(10, *size, out.size(), opts.limits.max_rpc_size);
+      detail::append_bytes(out, 10, encode_partial_payload(*value.partial, *size));
    }
    if (out.size() > opts.limits.max_rpc_size) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub RPC exceeds max size");
@@ -723,12 +932,15 @@ namespace {
 
 std::optional<codec::gossip_chunk> next_gossip_chunk(const control& value, codec::gossip_cursor& cursor,
                                                    const options& opts, bool materialize) {
-   if (cursor.have > value.have.size() || cursor.want > value.want.size() ||
+   if (cursor.have > value.have.size() || cursor.want > value.want.size() || cursor.dont_want > value.dont_want.size() ||
        (cursor.have < value.have.size() &&
-           (cursor.want != 0 || cursor.id > value.have[cursor.have].message_ids.size())) ||
+           (cursor.want != 0 || cursor.dont_want != 0 || cursor.id > value.have[cursor.have].message_ids.size())) ||
        (cursor.have == value.have.size() && cursor.want < value.want.size() &&
-           cursor.id > value.want[cursor.want].message_ids.size()) ||
-       (cursor.have == value.have.size() && cursor.want == value.want.size() && cursor.id != 0)) {
+           (cursor.dont_want != 0 || cursor.id > value.want[cursor.want].message_ids.size())) ||
+       (cursor.have == value.have.size() && cursor.want == value.want.size() && cursor.dont_want < value.dont_want.size() &&
+           cursor.id > value.dont_want[cursor.dont_want].message_ids.size()) ||
+       (cursor.have == value.have.size() && cursor.want == value.want.size() &&
+           cursor.dont_want == value.dont_want.size() && cursor.id != 0)) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "GossipSub gossip cursor exceeds its input");
    }
    const auto limit = opts.limits.max_rpc_size;
@@ -810,8 +1022,34 @@ std::optional<codec::gossip_chunk> next_gossip_chunk(const control& value, codec
       ++cursor.want;
       cursor.id = 0;
    }
-   if (count == 0) { return std::nullopt; }
-   return wanted();
+   if (count != 0) { return wanted(); }
+   const auto unwanted = [&] {
+      auto out = rpc{};
+      if (materialize) {
+         out.control_value.emplace();
+         out.control_value->dont_want.push_back(control::idontwant{.message_ids = std::move(ids)});
+      }
+      return chunk(std::move(out), *payload_size(bytes));
+   };
+   while (cursor.dont_want < value.dont_want.size()) {
+      const auto& row = value.dont_want[cursor.dont_want];
+      while (cursor.id < row.message_ids.size()) {
+         const auto& id = row.message_ids[cursor.id];
+         const auto field = field_size(1, id.size());
+         if (id.empty() || id.size() > opts.limits.max_idontwant_message_id_size ||
+             !field || !payload_size(*field)) { ++cursor.id; continue; }
+         if (count == opts.limits.max_message_ids || count == opts.limits.max_idontwant_ids_per_rpc ||
+             *field > limit - bytes || !payload_size(bytes + *field)) { return unwanted(); }
+         bytes += *field;
+         ++count;
+         if (materialize) { ids.push_back(id); }
+         ++cursor.id;
+      }
+      ++cursor.dont_want;
+      cursor.id = 0;
+   }
+   if (count != 0) { return unwanted(); }
+   return std::nullopt;
 }
 
 } // namespace
@@ -917,3 +1155,21 @@ bool codec::verify_message(const message& value, const options& opts) {
 }
 
 } // namespace forge::net::p2p::pubsub
+
+namespace forge::net::p2p::detail {
+
+pubsub::partial_topic partial_topic_access::make(const std::shared_ptr<const void>& owner, pubsub::topic subject,
+                                                std::uint64_t generation) {
+   auto out = pubsub::partial_topic{};
+   out._owner = owner;
+   out._subject = std::move(subject);
+   out._generation = generation;
+   return out;
+}
+
+bool partial_topic_access::matches(const pubsub::partial_topic& token, const std::shared_ptr<const void>& owner,
+                                   std::uint64_t generation) noexcept {
+   return generation != 0 && token._generation == generation && token._owner.lock() == owner;
+}
+
+} // namespace forge::net::p2p::detail
