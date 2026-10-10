@@ -25,6 +25,7 @@ struct node_session_fixture {
    static void native_blocked_ihave_expiry();
    static void native_direct_publish_failure_generation(bool reconnect);
    static void native_protocol_open_failure_generation(bool reconnect);
+   static void native_pre_io_stream_quota();
    static void gossip_payload_bounds();
    static void gossip_cursor_bounds();
    static void native_gossip_chunks(bool legacy);

@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
@@ -355,15 +356,30 @@ void forge_pubsub_fixture::self_test() {
          finish_unsubscribe.notify();
          finish_stop.notify();
       }};
-      drain.completion = boost::asio::co_spawn(drain.context, run(), boost::asio::use_future);
-      drain.context.poll();
+      drain.completion = boost::asio::co_spawn(drain.context, run(),
+          boost::asio::bind_executor(drain.context.get_executor(), boost::asio::use_future));
+      // A nonblocking poll is not a barrier for the expired timer, notification
+      // delivery and coroutine continuations. Drive only this owned context to
+      // actual body checkpoints; neither held completion gate is released here.
+      const auto advance_until = [&](const auto& reached, std::string_view phase) {
+         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+         while (!reached()) {
+            check(!result && drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
+                  "expired drain completed before " + std::string{phase});
+            check(std::chrono::steady_clock::now() < deadline && drain.context.run_one_until(deadline) != 0,
+                  "expired drain did not reach " + std::string{phase} + " within its bounded context wait");
+         }
+      };
+      advance_until([&] { return unsubscribe_entered && unsubscribe_unblocked && stop_entered; },
+                    "both held coroutine checkpoints");
       check(unsubscribe_entered && unsubscribe_unblocked && stop_entered &&
           !unsubscribe_returned && !stop_returned && !result &&
           drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
           "expired drain returned before its actual unsubscribe/stop coroutine joins");
       if (unsubscribe_first) { finish_unsubscribe.notify(); }
       else { finish_stop.notify(); }
-      drain.context.poll();
+      advance_until([&] { return unsubscribe_first ? unsubscribe_returned : stop_returned; },
+                    "the first released coroutine return");
       check(unsubscribe_returned == unsubscribe_first && stop_returned != unsubscribe_first && !result &&
           drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
           "one completed branch released the other still-owned operation");
