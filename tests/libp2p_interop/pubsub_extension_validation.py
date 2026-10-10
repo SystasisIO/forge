@@ -26,7 +26,8 @@ def _extension_closed(raw, *, active=False):
     if raw["implementation"] == "rust":
         state = raw.get("extension_state")
         require(isinstance(state, dict) and state.get("admission_closed") is True
-                and state.get("application_stopped") is (not active) and state.get("error") is None
+                and state.get("application_stopped") is (not active)
+                and "error" in state and state["error"] is None
                 and state.get("validation_hold_pending") is False
                 and type(state.get("pending_hooks")) is int and state["pending_hooks"] == 0,
                 "Rust extension application did not drain")

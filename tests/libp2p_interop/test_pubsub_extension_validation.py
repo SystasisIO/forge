@@ -136,11 +136,12 @@ class OriginalExtensionScopeTests(unittest.TestCase):
                 raw["extension_state"][field] = value
                 with self.subTest(active=active, field=field, value=value), self.assertRaises(ValueError):
                     self.check(artifact, snapshots)
-            artifact, snapshots = original_lifecycle()
-            raw = snapshots["replacement"]["result"] if active else artifact["raw"]["replacement"]
-            del raw["extension_state"]["application_stopped"]
-            with self.subTest(active=active, missing=True), self.assertRaises(ValueError):
-                self.check(artifact, snapshots)
+            for field in ("application_stopped", "error"):
+                artifact, snapshots = original_lifecycle()
+                raw = snapshots["replacement"]["result"] if active else artifact["raw"]["replacement"]
+                del raw["extension_state"][field]
+                with self.subTest(active=active, missing=field), self.assertRaises(ValueError):
+                    self.check(artifact, snapshots)
 
     def test_no_pre_ack_failure_prefix_substitution_or_missing_prepare(self):
         for mutation in (
