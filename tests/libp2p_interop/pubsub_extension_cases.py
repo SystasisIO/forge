@@ -178,21 +178,32 @@ class Actors:
             self.control(role, "sample", label="extension_before")
         payload = "accept:" + self.token + ":idontwant:" + "x" * 1200
         digest = hashlib.sha256(payload.encode()).hexdigest()
-        self.control("victim", "validation_hold", payload=payload)
+        for role in ("victim", "replacement"):
+            self.control(role, "validation_hold", payload=payload)
         self.control("offender", "publish_extension", payload=payload)
-        self.wait("victim", lambda value: _has(value, "validation_held", payload_sha256=digest))
+        for role in ("victim", "replacement"):
+            self.wait(role, lambda value: _has(value, "validation_held", payload_sha256=digest,
+                                              propagation_peer=self.peer("offender"), author_peer=self.peer("offender")))
 
-        def suppression_received(value):
-            views = native_rpcs(value["events"], self.spec.implementation("victim"), "/meshsub/1.2.0",
+        def suppression_frames(value, role, remote, direction):
+            views = native_rpcs(value["events"], self.spec.implementation(role), "/meshsub/1.2.0",
                                 PROFILES[self.spec.profile], self.fingerprint)
             messages = [message for rpc in views if rpc.stream[-1] == "read" and rpc.peer == self.peer("offender")
                         for message in rpc.value["messages"] if message["payload_sha256"] == digest]
             ids = {message["author_hex"] + message["seqno_hex"] for message in messages}
-            return any(set(item["ids_hex"]) & ids for rpc in views
-                       if rpc.stream[-1] == "read" and rpc.peer == self.peer("replacement")
-                       for item in rpc.value["idontwant"])
+            return {rpc.frame for rpc in views if rpc.stream[-1] == direction and rpc.peer == self.peer(remote)
+                    if any(set(item["ids_hex"]) & ids for item in rpc.value["idontwant"])}
 
-        self.wait("victim", suppression_received)
+        for source, target in (("replacement", "victim"), ("victim", "replacement")):
+            observed = self.wait(source, lambda value: suppression_frames(value, source, target, "write"))
+            sent = suppression_frames(observed, source, target, "write")
+            self.wait(target, lambda value: sent & suppression_frames(value, target, source, "read"))
+        self.control("replacement", "validation_release")
+        committed = {"go": {"committed": True, "phase": "post_decision"},
+                     "rust": {"validation_commit": True, "report_message_validation_result": True}}
+        self.wait("replacement", lambda value: _has(value, "delivery", payload_sha256=digest,
+                  propagation_peer=self.peer("offender"), author_peer=self.peer("offender"),
+                  **committed.get(self.spec.implementation("replacement"), {})))
         self.control("victim", "validation_release")
         self.wait("sink", lambda value: _has(value, "delivery", payload_sha256=digest, propagation_peer=self.peer("victim")))
 

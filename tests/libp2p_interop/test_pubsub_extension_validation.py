@@ -1,7 +1,7 @@
 """Negative and pure-property tests; these are not live evidence."""
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import unittest
 from unittest.mock import patch
@@ -10,12 +10,15 @@ import pubsub_extension_validation as validation
 from pubsub_evidence import SOURCES
 
 from partial_fixture import encode_part, group_id, part_bytes
-from pubsub_extension_cases import Case
+from pubsub_extension_cases import Actors, Case
+from pubsub_extension_evidence import _rpc
 from pubsub_extension_validation import (
     _before_release, _delivered, _extension_closed, _held_chain, _partial_permissions, _reconstruction, _topic_flags, validate_capture,
 )
 from test_pubsub_extension_evidence import TOKEN, TOPIC, rpc
-from test_pubsub_wire import field
+from test_pubsub_evidence import peer_id
+from test_pubsub_wire import field, receipt
+from rust_upgrade_evidence import _peer
 
 
 def original_lifecycle():
@@ -39,7 +42,7 @@ def original_lifecycle():
             raw["events"].append(result)
             return result
         if implementation == "rust":
-            raw["extension_state"] = {"admission_closed": True, "application_stopped": True, "error": None,
+            raw["extension_state"] = {"admission_closed": True, "application_stopped": False, "error": None,
                                       "validation_hold_pending": False, "pending_hooks": 0}
             stack = {"transport": "quic", "security": "/tls/1.0.0", "muxer": "quic",
                      "authentication_basis": "native_QUIC_authenticated_transport_output"}
@@ -66,6 +69,7 @@ def original_lifecycle():
         artifact["processes"][role] = {"pid": 100 + index, "returncode": 0, "forced_termination": False,
                                        "log_file": "/unit/" + role + ".log"}
         if implementation == "rust":
+            raw["extension_state"]["application_stopped"] = True
             event("native_io_error", **owner, operation="muxer_inbound", prepared=True, io_kind="Other",
                   raw_os_error=None, typed_cause="quic_connection_cause_unavailable", message="unit opaque cause")
             event("shutdown_requested", listeners=1)
@@ -115,6 +119,27 @@ class OriginalExtensionScopeTests(unittest.TestCase):
             artifact, snapshots = original_lifecycle()
             artifact["raw"]["replacement"]["events"][3][field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                self.check(artifact, snapshots)
+
+    def test_prepare_and_terminal_extension_states_are_distinct(self):
+        artifact, snapshots = original_lifecycle()
+        self.assertIs(snapshots["replacement"]["result"]["extension_state"]["application_stopped"], False)
+        self.assertIs(artifact["raw"]["replacement"]["extension_state"]["application_stopped"], True)
+        self.check(artifact, snapshots)
+        for active in (False, True):
+            for field, value in (("application_stopped", active), ("application_stopped", None),
+                                 ("application_stopped", int(not active)), ("admission_closed", False),
+                                 ("pending_hooks", 1), ("pending_hooks", True),
+                                 ("validation_hold_pending", True), ("error", "failure")):
+                artifact, snapshots = original_lifecycle()
+                raw = snapshots["replacement"]["result"] if active else artifact["raw"]["replacement"]
+                raw["extension_state"][field] = value
+                with self.subTest(active=active, field=field, value=value), self.assertRaises(ValueError):
+                    self.check(artifact, snapshots)
+            artifact, snapshots = original_lifecycle()
+            raw = snapshots["replacement"]["result"] if active else artifact["raw"]["replacement"]
+            del raw["extension_state"]["application_stopped"]
+            with self.subTest(active=active, missing=True), self.assertRaises(ValueError):
                 self.check(artifact, snapshots)
 
     def test_no_pre_ack_failure_prefix_substitution_or_missing_prepare(self):
@@ -347,6 +372,182 @@ class ExtensionValidationTests(unittest.TestCase):
                          {"schema_version": 1, "suite": "pubsub-extensions", "status": "captured"}):
             with self.assertRaises(ValueError):
                 validate_capture(document)
+
+
+class IdontwantBarrierTests(unittest.TestCase):
+    """Synthetic causal/wire models; authentication and signature verification are not live proof."""
+
+    def model(self, victim="forge", replacement="go"):
+        roles = ("victim", "offender", "replacement", "sink")
+        peers = {role: peer_id(index) for index, role in enumerate(roles, 1)}
+        actors = {role: {"local_peer_id": peers[role], "case_token": TOKEN,
+                         "implementation": {"victim": victim, "replacement": replacement}.get(role, "forge")}
+                  for role in roles}
+        events, views = {role: [] for role in roles}, {role: [] for role in roles}
+        graph = {"victim": ("offender", "replacement", "sink"), "offender": ("victim", "replacement"),
+                 "replacement": ("victim", "offender"), "sink": ("victim",)}
+        payload = "accept:" + TOKEN + ":idontwant:" + "x" * 1200
+        seqno = bytes.fromhex("0000000000000001")
+        identity = {"propagation_peer": peers["offender"], "author_peer": peers["offender"], "topic": TOPIC,
+                    "message_id": (_peer(peers["offender"]) + seqno).hex(), "seqno_hex": seqno.hex(),
+                    "payload_sha256": hashlib.sha256(payload.encode()).hexdigest()}
+        body = field(2, field(1, _peer(peers["offender"])) + field(2, payload.encode())
+                     + field(3, seqno) + field(4, TOPIC.encode()) + field(5, b"unit-only-signature"))
+
+        def emit(role, kind, **fields):
+            event = {"kind": kind, "sequence": len(events[role]) + 1,
+                     "source": actors[role]["implementation"] + ".unit", **fields}
+            events[role].append(event)
+            return event
+
+        def wire(source, target, value):
+            for role, remote, direction in ((source, target, "write"), (target, source, "read")):
+                encoded = receipt(value, direction)
+                event = emit(role, "rpc", receipt=encoded)
+                views[role].append(_rpc(event["sequence"], encoded, "/meshsub/1.2.0", direction, peers[remote],
+                                        ("unit-connection", "unit-stream", direction)))
+
+        def commit(role, source):
+            fields = {**identity, "propagation_peer": peers[source], "outcome": "accept"}
+            if actors[role]["implementation"] == "go":
+                emit(role, "delivery", **fields, committed=True, phase="post_decision")
+            else:
+                emit(role, "validation", **fields)
+                emit(role, "delivery", **fields, validation_commit=True, report_message_validation_result=True)
+
+        for role in roles:
+            emit(role, "snapshot", label="extension_before", mesh_peer_ids=[peers[other] for other in graph[role]],
+                 peer_scores=[])
+        for role in ("victim", "replacement"):
+            emit(role, "validation_hold_armed", command_sequence=1, payload_sha256=identity["payload_sha256"])
+            wire("offender", role, body)
+            emit(role, "validation_held", **identity, command_sequence=1, committed=False)
+        control = field(3, field(5, field(1, bytes.fromhex(identity["message_id"]))))
+        wire("replacement", "victim", control)
+        wire("victim", "replacement", control)
+        for role in ("replacement", "victim"):
+            held = validation._single(events[role], "validation_held")
+            if actors[role]["implementation"] == "rust":
+                emit(role, "validation_release_requested", **identity, hold_command_sequence=1, command_sequence=2,
+                     validation_commit=False, cancellation=None)
+                commit(role, "offender")
+                emit(role, "validation_released", **identity, hold_command_sequence=1, command_sequence=2,
+                     validation_commit=True, cancellation=None, error=None)
+            else:
+                emit(role, "validation_release", command_sequence=2, held_observation_sequence=held["sequence"])
+                emit(role, "validation_resumed", **identity, held_observation_sequence=held["sequence"],
+                     released=True, committed=False)
+                commit(role, "offender")
+        wire("victim", "sink", body)
+        commit("sink", "victim")
+        return actors, events, views
+
+    def check(self, actors, events, views):
+        # Substitute only the native-owner boundary. The real frame decoder,
+        # message pairing, identity, hold, release and delivery checks run below.
+        def rpcs(rows, peer, protocol, transport, direction, fingerprint):
+            role = next(role for role in events if rows is events[role])
+            return [(rows[rpc.sequence - 1], rpc.value) for rpc in views[role]
+                    if rpc.peer == peer and rpc.stream[-1] == direction]
+        with patch("pubsub_evidence._rpcs", side_effect=rpcs):
+            return validation._idontwant(actors, events, views, TOKEN, "/meshsub/1.2.0", "tcp", None)
+
+    def test_dual_holds_pair_real_control_bytes_for_all_actor_implementations(self):
+        for victim, replacement in (("forge", "go"), ("go", "forge"), ("forge", "rust"), ("rust", "forge")):
+            with self.subTest(victim=victim, replacement=replacement):
+                result = self.check(*self.model(victim, replacement))
+                self.assertGreater(result["idontwant_read"], result["held_sequence"])
+                self.assertGreater(result["reverse_idontwant_read"], result["replacement_held_sequence"])
+                self.assertEqual(result["informed"]["message_id"], result["sink"]["message_id"])
+
+    def test_both_holds_require_original_sender_and_successful_release(self):
+        for role in ("victim", "replacement"):
+            for kind, field_name, value in (
+                ("validation_hold_armed", "kind", "unit_missing_hold"),
+                ("validation_held", "propagation_peer", "foreign"),
+                ("validation_held", "author_peer", "foreign"),
+                ("validation_held", "message_id", "00"),
+                ("validation_resumed", "released", False),
+                ("validation_resumed", "error", "validation hold expired"),
+                ("delivery", "propagation_peer", "foreign"),
+                ("delivery", "committed", False),
+            ):
+                actors, events, views = self.model("go", "go")
+                validation._single(events[role], kind)[field_name] = value
+                with self.subTest(role=role, kind=kind, field=field_name), self.assertRaises(ValueError):
+                    self.check(actors, events, views)
+
+    def test_each_direction_requires_matching_control_before_both_releases(self):
+        for role in ("victim", "replacement"):
+            for direction in ("read", "write"):
+                for mutation in ("missing", "late", "before_input", "foreign_peer", "wrong_id", "different_frame"):
+                    actors, events, views = self.model()
+                    index = next(index for index, rpc in enumerate(views[role])
+                                 if rpc.stream[-1] == direction and rpc.value["idontwant"])
+                    old = views[role][index]
+                    if mutation == "missing":
+                        views[role].pop(index)
+                    elif mutation in {"late", "before_input", "foreign_peer"}:
+                        fields = {"peer": peer_id(9)} if mutation == "foreign_peer" else {"sequence": (
+                            validation._single(events[role], "validation_release")["sequence"] if mutation == "late" else 2)}
+                        views[role][index] = replace(old, **fields)
+                    else:
+                        identity = validation._single(events[role], "validation_held")["message_id"]
+                        ids = field(1, b"foreign") if mutation == "wrong_id" else (
+                            field(1, bytes.fromhex(identity)) + field(1, b"extra"))
+                        views[role][index] = _rpc(old.sequence, receipt(field(3, field(5, ids)), direction),
+                                                  "/meshsub/1.2.0", direction, old.peer, old.stream)
+                    with self.subTest(role=role, direction=direction, mutation=mutation), self.assertRaises(ValueError):
+                        self.check(actors, events, views)
+
+    def test_full_message_on_either_cross_edge_cannot_masquerade_as_suppression(self):
+        for role, remote in (("victim", "replacement"), ("replacement", "victim")):
+            for direction in ("read", "write"):
+                actors, events, views = self.model()
+                message = next(rpc for rpc in views[role] if rpc.value["messages"])
+                views[role].append(replace(message, peer=actors[remote]["local_peer_id"],
+                                           stream=(*message.stream[:-1], direction)))
+                with self.subTest(role=role, direction=direction), self.assertRaises(ValueError):
+                    self.check(actors, events, views)
+
+    def test_runner_arms_both_before_publish_and_waits_for_committed_replacement(self):
+        for implementation in ("go", "rust"):
+            actors, events, views = self.model("forge", implementation)
+            case = Actors(Case(implementation, "forge", "idontwant", "native_tcp_yamux"), {}, "/not-created", None, None, None)
+            case.token, case.actors = TOKEN, dict.fromkeys(actors)
+            steps = []
+
+            def control(role, kind, **fields):
+                steps.append(("control", role, kind))
+
+            def wait(role, predicate):
+                raw = {**actors[role], "events": events[role]}
+                if steps[-1:] == [("control", "replacement", "validation_release")]:
+                    uncommitted = deepcopy(raw)
+                    delivery = validation._single(uncommitted["events"], "delivery")
+                    delivery.update(committed=False, phase="decision", validation_commit=False,
+                                    report_message_validation_result=False)
+                    self.assertFalse(predicate(uncommitted))
+                self.assertTrue(predicate(raw))
+                steps.append(("wait", role, len(events[role])))
+                return raw
+
+            def native(rows, *args):
+                return views[next(role for role in events if rows is events[role])]
+
+            with patch.object(case, "connect"), patch.object(case, "peer", side_effect=lambda role: actors[role]["local_peer_id"]), \
+                    patch.object(case, "control", side_effect=control), patch.object(case, "wait", side_effect=wait), \
+                    patch("pubsub_extension_cases.native_rpcs", side_effect=native):
+                case.idontwant()
+            publish = steps.index(("control", "offender", "publish_extension"))
+            release = steps.index(("control", "replacement", "validation_release"))
+            self.assertEqual(steps[publish - 2:publish], [("control", "victim", "validation_hold"),
+                                                        ("control", "replacement", "validation_hold")])
+            self.assertEqual([step[1] for step in steps[publish + 1:release]],
+                             ["victim", "replacement", "replacement", "victim", "victim", "replacement"])
+            self.assertEqual(steps[release + 1][0:2], ("wait", "replacement"))
+            self.assertEqual(steps[release + 2], ("control", "victim", "validation_release"))
+            self.assertEqual(steps[-1][0:2], ("wait", "sink"))
 
 
 if __name__ == "__main__":

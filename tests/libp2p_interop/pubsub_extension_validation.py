@@ -22,11 +22,11 @@ from pubsub_extension_evidence import advertisements, native_rpcs, partial_excha
 from pubsub_wire import validate_rpc_receipt
 
 
-def _extension_closed(raw):
+def _extension_closed(raw, *, active=False):
     if raw["implementation"] == "rust":
         state = raw.get("extension_state")
         require(isinstance(state, dict) and state.get("admission_closed") is True
-                and state.get("application_stopped") is True and state.get("error") is None
+                and state.get("application_stopped") is (not active) and state.get("error") is None
                 and state.get("validation_hold_pending") is False
                 and type(state.get("pending_hooks")) is int and state["pending_hooks"] == 0,
                 "Rust extension application did not drain")
@@ -135,29 +135,44 @@ def _idontwant(actors, events, views, token, protocol, transport, fingerprint):
                 "IDONTWANT case lacks actual required native mesh edges")
     payload = "accept:" + token + ":idontwant:" + "x" * 1200
     digest = hashlib.sha256(payload.encode()).hexdigest()
-    forward = _validation(events["victim"], payload, actors["offender"]["local_peer_id"],
-                          actors["offender"]["local_peer_id"], "forge-pr11:" + token, "accept", protocol, transport, fingerprint)
-    _, incoming = _message_pair(actors, events, "offender", "victim", forward, protocol, transport, fingerprint)
-    armed, held, release = _held_chain(events["victim"], forward, incoming["sequence"], actors["victim"]["implementation"])
-    received = [rpc for rpc in views["victim"] if rpc.peer == actors["replacement"]["local_peer_id"]
-                and rpc.stream[-1] == "read" and _before_release(rpc.sequence, armed, release)
+    forwards, incoming, holds = {}, {}, {}
+    for role in ("victim", "replacement"):
+        forwards[role] = _validation(events[role], payload, actors["offender"]["local_peer_id"],
+                                     actors["offender"]["local_peer_id"], "forge-pr11:" + token, "accept",
+                                     protocol, transport, fingerprint)
+        _, incoming[role] = _message_pair(actors, events, "offender", role, forwards[role], protocol, transport, fingerprint)
+        holds[role] = _held_chain(events[role], forwards[role], incoming[role]["sequence"], actors[role]["implementation"])
+        _delivered(events[role], forwards[role], actors[role]["implementation"])
+    forward = forwards["victim"]
+    require(forwards["replacement"]["message_id"] == forward["message_id"], "held actors validated different messages")
+    paired = {}
+    for source, target in (("replacement", "victim"), ("victim", "replacement")):
+        source_armed, _, source_release = holds[source]
+        target_armed, _, target_release = holds[target]
+        sent = [rpc for rpc in views[source] if rpc.peer == actors[target]["local_peer_id"]
+                and rpc.stream[-1] == "write" and _before_release(rpc.sequence, source_armed, source_release)
+                and incoming[source]["sequence"] < rpc.sequence
                 and any(forward["message_id"] in item["ids_hex"] for item in rpc.value["idontwant"])]
-    sent = [rpc for rpc in views["replacement"] if rpc.peer == actors["victim"]["local_peer_id"]
-            and rpc.stream[-1] == "write"]
-    pairs = [(left, right) for left in sent for right in received if left.frame == right.frame]
-    require(bool(pairs), "IDONTWANT lacks matched native emission/reception before validation release")
-    require(not any(message["payload_sha256"] == digest for rpc in views["victim"]
-                    if rpc.peer == actors["replacement"]["local_peer_id"] and rpc.stream[-1] == "write"
-                    for message in rpc.value["messages"]), "forwarder transmitted the suppressed full message")
+        received = [rpc for rpc in views[target] if rpc.peer == actors[source]["local_peer_id"]
+                    and rpc.stream[-1] == "read" and _before_release(rpc.sequence, target_armed, target_release)
+                    and any(forward["message_id"] in item["ids_hex"] for item in rpc.value["idontwant"])]
+        pairs = [(left, right) for left in sent for right in received if left.frame == right.frame]
+        require(bool(pairs), f"IDONTWANT {source}->{target} lacks matched native emission/reception before release")
+        paired[source] = pairs[0]
+        # Also reject a receiver-only duplicate: Rust excludes its originating peers independently of IDONTWANT.
+        require(not any(message["payload_sha256"] == digest for rpc in views[source]
+                        if rpc.peer == actors[target]["local_peer_id"] for message in rpc.value["messages"]),
+                f"full message crossed the suppressed {source}/{target} edge")
     informed = _full(actors, events, "offender", "replacement", payload, protocol, transport, fingerprint)
-    pairs = [(sent, received) for sent, received in pairs if informed["read_sequence"] < sent.sequence]
-    require(bool(pairs), "IDONTWANT emission did not follow the same signed message at the informed peer")
     delivered = _full(actors, events, "victim", "sink", payload, protocol, transport, fingerprint,
-                      author="offender", after=pairs[0][1].sequence)
+                      author="offender", after=forward["sequence"])
     require(informed["message_id"] == delivered["message_id"] == forward["message_id"],
             "suppression/delivery evidence combines different signed messages")
-    return {"held_sequence": held["sequence"], "idontwant_write": pairs[0][0].sequence,
-            "idontwant_read": pairs[0][1].sequence, "informed": informed, "sink": delivered}
+    return {"held_sequence": holds["victim"][1]["sequence"],
+            "replacement_held_sequence": holds["replacement"][1]["sequence"],
+            "idontwant_write": paired["replacement"][0].sequence, "idontwant_read": paired["replacement"][1].sequence,
+            "reverse_idontwant_write": paired["victim"][0].sequence, "reverse_idontwant_read": paired["victim"][1].sequence,
+            "informed": informed, "sink": delivered}
 
 
 def _reconstruction(events, exchange, peer, topic):
@@ -465,7 +480,7 @@ def validate_active_capture(artifact, snapshots):
                 and raw.get("requests_partial") is (spec.mode(role) == "partial"), "original actor/capture mode differs")
         actors[role], framing[role] = captured, {}
         events[role] = _events(captured, implementation, token, role, cleanup_framing=framing[role], active=True)
-        _extension_closed(captured)
+        _extension_closed(captured, active=True)
         _extension_closed(raw)
         _terminal_owners(raw)
         if raw.get("error") is not None:
