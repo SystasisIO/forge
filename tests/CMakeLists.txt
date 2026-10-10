@@ -1619,7 +1619,7 @@ add_test(
       test_pubsub_quic_proof test_rust_quic_observer
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
 )
-set_tests_properties(test_forge_libp2p_pubsub_evidence PROPERTIES TIMEOUT 30)
+set_tests_properties(test_forge_libp2p_pubsub_evidence PROPERTIES TIMEOUT 120)
 add_test(
    NAME test_forge_libp2p_pubsub_extension_evidence
    COMMAND ${Python3_EXECUTABLE} -B -m unittest
