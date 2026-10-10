@@ -682,6 +682,9 @@ void node_session_fixture::native_partial_callback_stop() {
    run(fixture.runtime, owner.async_send_partial(local, remote.local_peer(),
        pubsub::partial_message{.group_id = std::vector<std::uint8_t>{1}, .metadata = std::vector<std::uint8_t>{1}}));
    BOOST_REQUIRE(fixture.wait([&] { return unsubscribed.load() && remote.pubsub_snapshot().partial_callbacks == 0; }));
+   // Local unsubscribe has written its frame, not joined the remote decoder.
+   // Observe that withdrawal before waiting for replacement capabilities.
+   BOOST_REQUIRE(fixture.wait([&] { return !supported(); }));
    retired = target;
    run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
       target = co_await remote.async_subscribe(fixture.topic, full, pubsub::partial_options{.receive = receive, .gossip = gossip});

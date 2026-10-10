@@ -169,7 +169,7 @@
   },
   "regression_sources": {
     "../quic_p2p/control/node_session_fixture_extensions.cpp": "241871e9b4132ccf93b651d4dd604e36a9357bbd2dfe9bc54bb7cbc153604686",
-    "../quic_p2p/control/node_session_fixture_partial.cpp": "be23d6eeabf54153148d149a94d136f3a30715e436ed07489049bf2b4caad908",
+    "../quic_p2p/control/node_session_fixture_partial.cpp": "6dd8229e9f273d37c4786b00ef121e6900dd26f0b743d7a3e0b9eba5d79ece2b",
     "../quic_p2p/node_session_fixture_validation.cpp": "00ed396ee2273459ca990bd4e271bfb179c7f42254509ba06fc7985a993f07bc",
     "reproduce_quic_shutdown.py": "10143efb0e6b0c8933667daa4c0d4f17fef1e89a3f70b7e5c64016e85b17dfdd",
     "rust_quic_source_proposal.patch": "abc55235479a2067a549974ccf3f5c395533959113da528edbc41c82be52e834",
