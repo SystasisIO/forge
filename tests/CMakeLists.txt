@@ -1084,6 +1084,10 @@ add_executable(test_forge_http_error_renderer unit/main.cpp api/http_error_rende
 target_link_libraries(test_forge_http_error_renderer forge_api_http Boost::included_unit_test_framework)
 add_test(NAME test_forge_http_error_renderer COMMAND test_forge_http_error_renderer WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_executable(test_forge_http_parameters unit/main.cpp api/http_parameters_tests.cpp)
+target_link_libraries(test_forge_http_parameters forge_api_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_parameters COMMAND test_forge_http_parameters WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
 add_executable(
    test_forge_http_websocket
    unit/main.cpp

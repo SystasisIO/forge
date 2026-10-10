@@ -1429,7 +1429,8 @@ class binding_builder {
             require_request_content_type(context.request, options.request_body_codec);
             bind_body_value(request, context.request.body(), options.request_body_codec);
          }
-      } else if constexpr (!detail::request_needs_stream_v<Request>) {
+      } else if constexpr (!detail::request_needs_stream_v<Request> &&
+                           !detail::request_has_http_parameter_v<Request>) {
          if (has_body) {
             require_request_content_type(context.request, options.request_body_codec);
             request = decode_request_body<Request>(context.request.body(), options.request_body_codec);
@@ -1471,12 +1472,14 @@ class binding_builder {
                require_request_content_type(stream.context.request, options.request_body_codec);
                bind_body_value(request, text, options.request_body_codec);
             }
-         } else if (uses_request_body(stream.context.request.method())) {
-            auto text = co_await stream.body.async_read_all();
-            if (!text.empty()) {
-               require_request_content_type(stream.context.request, options.request_body_codec);
-               request = decode_request_body<Request>(text, options.request_body_codec);
-               bind_route_query_headers(request, stream.context, options, true);
+         } else if constexpr (!detail::request_has_http_parameter_v<Request>) {
+            if (uses_request_body(stream.context.request.method())) {
+               auto text = co_await stream.body.async_read_all();
+               if (!text.empty()) {
+                  require_request_content_type(stream.context.request, options.request_body_codec);
+                  request = decode_request_body<Request>(text, options.request_body_codec);
+                  bind_route_query_headers(request, stream.context, options, true);
+               }
             }
          }
       }

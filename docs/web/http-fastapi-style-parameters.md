@@ -170,8 +170,10 @@ DTO binding is deterministic and fail closed:
    explicit alias is provided.
 5. Bind `body<T>`, `body_bytes`, `body_stream`, `form<T>`, `form_field<T>` and
    `upload_file` by field type.
-6. If no explicit body field exists, preserve legacy whole-request body DTO
-   behavior using the route-selected codec. JSON remains the default.
+6. If no explicit body field or HTTP parameter wrapper exists, preserve legacy
+   whole-request body DTO behavior using the route-selected codec. JSON remains
+   the default. A DTO with `query`, `header` or `cookie` wrappers uses an explicit
+   `body<T>` field when it also needs a structured body.
 7. Run final `forge_schema` validation after all HTTP sources are assembled.
 8. Reject ambiguous mappings at compile time when the type information is
    enough, otherwise at mount time before the server starts.
