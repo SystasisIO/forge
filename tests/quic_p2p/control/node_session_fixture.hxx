@@ -52,6 +52,11 @@ struct node_session_fixture {
    static void native_partial_subscription_tracer();
    static void native_partial_gossip();
    static void native_partial_callback_stop();
+   static void native_partial_downgrade();
+   static void native_partial_downgrade_queued();
+   static void native_partial_downgrade_cancellation();
+   static void native_partial_downgrade_peer_failure();
+   static void native_partial_downgrade_native_write(bool stop_node);
 
  private:
    static void run(forge::asio::runtime& runtime, boost::asio::awaitable<void> operation);

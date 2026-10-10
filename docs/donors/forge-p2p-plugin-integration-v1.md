@@ -65,6 +65,20 @@ where cleanup must suppress cancellation. They must not leak into the caller's
 next operation. The focused tests include caller cancellation after self-leave,
 mutating join failure, native stop races and callback-capture destruction.
 
+The native exact-token Partial downgrade preserves the full topic and sends
+an ordinary subscribed update with no Partial flags. It introduces no wire
+extension or extra maintenance loop. A failing recipient does not prevent
+independent recipients from receiving the update; the first peer-local error
+remains observable after the attempts. Owner cancellation uses the existing
+stream cancellation bridge and joins actual writes. Local retirement is not
+rolled back after a write error, and this operation does not claim a remote
+acknowledgement or completion of already admitted application callbacks.
+
+Focused native regressions cover preservation of full-message delivery, mesh,
+cache and callback accounting, a reset at the first of two recipients, and
+caller/node cancellation while Yamux send credit blocks a write. These local
+tests do not replace the Stage 7 configured-path donor checks.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

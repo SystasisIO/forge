@@ -775,6 +775,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
        pubsub::topic subject, pubsub::handler handler, std::optional<pubsub::partial_options> partial = {});
    boost::asio::awaitable<void> unsubscribe_pubsub(pubsub::topic subject,
                                                  std::optional<pubsub::partial_topic> registration = {});
+   static boost::asio::awaitable<void> disable_partial_owned(std::shared_ptr<impl> self,
+                                                            pubsub::partial_topic registration);
+   boost::asio::awaitable<void> disable_pubsub_partial(pubsub::partial_topic registration);
    [[nodiscard]] bool partial_peer_supported_locked(const peer_id& peer, const pubsub::topic& subject,
                                                     bool data, std::uint64_t session_id = 0) const;
    [[nodiscard]] bool prefer_pubsub_partial_locked(const peer_id& peer, const pubsub::topic& subject,

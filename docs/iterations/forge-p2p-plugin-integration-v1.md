@@ -293,6 +293,20 @@ gates pass, describe this as test integration with an evolving stack.
   this does not substitute for final-head package or donor acceptance.
 - Partial-topic facade operations, protocol ownership, policy contributions
   and the remaining configuration mapping are still pending.
+- The native prerequisite for Partial facade ownership now supports exact-token
+  downgrade to a full-only topic without deleting the full handler, mesh,
+  scoring or cache. Token equality preserves owner identity after expiry but
+  does not imply admission. Review caught and corrected early broadcast exit
+  on a peer-local failure and missing cancellation of an actual native write.
+- The native Partial suite passed 17 cases (493 assertions), including a reset
+  at the first recipient followed by full delivery from the healthy recipient,
+  and caller/node stop during a credit-blocked Yamux write. A full-suite run
+  exposed a one-sided subscription barrier in the new mesh fixture; it now
+  waits for both directions before its single manual heartbeat. The corrected
+  case passed 20 consecutive runs and the complete suites passed again:
+  70 control-queue cases and 129 plugin cases. Initial failure evidence is
+  retained. This is native adapter groundwork, not a completed plugin facade
+  or a new live donor result.
 - The complete Stage 7 runtime, package and donor gates remain pending; the
   DHT-slice result is not a whole-PR or production-readiness verdict.
 - Product migration remains out of scope.

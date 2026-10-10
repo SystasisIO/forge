@@ -886,6 +886,11 @@ protocol_id codec::protocol(version value) {
 
 const topic& partial_topic::subject() const noexcept { return _subject; }
 
+bool partial_topic::operator==(const partial_topic& other) const noexcept {
+   return !_owner.owner_before(other._owner) && !other._owner.owner_before(_owner) &&
+       _generation == other._generation && _subject == other._subject;
+}
+
 std::vector<std::uint8_t> codec::encode(const rpc& value) {
    return encode(value, options{});
 }

@@ -355,6 +355,8 @@ class partial_topic {
  public:
    partial_topic() = default;
    [[nodiscard]] const topic& subject() const noexcept;
+   // Token identity only, including expired owners; equality does not imply a live registration.
+   [[nodiscard]] bool operator==(const partial_topic& other) const noexcept;
 
  private:
    friend struct detail::partial_topic_access;

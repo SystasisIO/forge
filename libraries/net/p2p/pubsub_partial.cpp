@@ -88,6 +88,20 @@ std::shared_ptr<pubsub_partial::registration> pubsub_partial::close(const pubsub
    return value;
 }
 
+std::shared_ptr<pubsub_partial::registration> pubsub_partial::close(const pubsub::partial_topic& token) {
+   const auto lock = std::scoped_lock{_state->mutex};
+   const auto row = _state->topics.find(token.subject().value);
+   if (_state->closed || row == _state->topics.end() ||
+       !partial_topic_access::matches(token, _state, row->second.value->generation)) {
+      FORGE_THROW_EXCEPTION(exceptions::closed, "Partial token is stale or belongs to another node");
+   }
+   auto value = row->second.value;
+   _state->groups -= row->second.groups.size();
+   _state->group_bytes -= row->second.bytes;
+   _state->topics.erase(row);
+   return value;
+}
+
 void pubsub_partial::stop() noexcept {
    auto retired = std::map<std::string, state::entry>{};
    {
