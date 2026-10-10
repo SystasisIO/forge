@@ -90,3 +90,28 @@ in Spine by
 The pinned donor has no endpoint-specific `send_transaction2` test or fixture
 identified by this audit. Its manifest entry therefore records explicit donor
 evidence absence while retaining the registration, DTO, and behavior sources.
+
+## Nested ABI container modifiers
+
+The same pinned Spring revision was inspected at
+`libraries/chain/abi_serializer.cpp` (`fundamental_type`, `_is_type`,
+`_variant_to_binary`, `_binary_to_variant`) and `unittests/abi_tests.cpp`
+(`optional_vector`, `optional_std_array`,
+`abi_deserialize_detailed_error_messages`). Spring rejects direct optional
+arrays in ABI validation. It already preserves array-of-optional Raw bytes
+through aliases and disallows omitted binary extensions inside array elements.
+
+Forge deliberately extends the validator to accept recursively composed
+optional, variable-array and fixed-array modifiers emitted by its Abigen.
+This is a compatible Forge extension, not a claim that Spring accepts those
+ABI declarations. Existing Raw presence flags, array lengths and element bytes
+remain the oracle; recursion/deadline limits, cumulative element bounds and
+binary-extension restrictions remain enforced.
+Adjacent optional layers are rejected after alias resolution because JSON null
+cannot distinguish their separate presence states. Arrays between optional
+layers retain that distinction and remain supported.
+
+`tests/chain_api/abi_tests.cpp` covers absent/empty/nonempty record arrays,
+Raw golden bytes for mixed modifiers, enum metadata and exact scalar policy,
+invalid types and values, truncated bytes, nested resource limits and binary
+extensions. Execution results must be recorded by the actual validation run.

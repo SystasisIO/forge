@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1154,4 +1155,212 @@ BOOST_AUTO_TEST_CASE(chain_abi_total_element_budget_accepts_empty_arrays_and_lea
                                                   chain_api::abi_json_scalar_policy::exact);
    BOOST_TEST(binary == protocol::bytes({0}));
    BOOST_TEST(chain_api::abi_bin_to_json(metadata_abi, metadata, "shape", binary, zero).get_string() == "circle");
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_optional_record_arrays_preserve_presence_and_raw_bytes) {
+   auto abi = empty_abi();
+   abi.types = {{"nullable_items", "item[]?"}};
+   abi.structs = {{"item", "", {{"value", "uint16"}}}, {"response", "", {{"items", "item[]?"}}}};
+   const auto values = array(object({{"value", 7}}), object({{"value", 9}}));
+   for (const auto& [input, bytes] :
+        {std::pair{forge::variant{}, protocol::bytes{0}}, std::pair{array(), protocol::bytes{1, 0}},
+         std::pair{values, protocol::bytes{1, 2, 7, 0, 9, 0}}}) {
+      const auto native = input.is_null()             ? std::optional<std::vector<std::uint16_t>>{}
+                          : input.get_array().empty() ? std::optional{std::vector<std::uint16_t>{}}
+                                                      : std::optional{std::vector<std::uint16_t>{7, 9}};
+      BOOST_TEST(forge::raw::pack(native) == bytes);
+      BOOST_TEST(chain_api::abi_json_to_bin(abi, "nullable_items", input) == bytes);
+      BOOST_CHECK(chain_api::abi_bin_to_json(abi, "nullable_items", bytes) == input);
+      const auto response = object({{"items", input}});
+      BOOST_TEST(chain_api::abi_json_to_bin(abi, "response", response) == bytes);
+      BOOST_CHECK(chain_api::abi_bin_to_json(abi, "response", bytes) == response);
+   }
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "response", object({})) == protocol::bytes({0}));
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, "response", protocol::bytes{0}) ==
+               object({{"items", forge::variant{}}}));
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_fixed_dynamic_optional_modifiers_round_trip) {
+   auto abi = empty_abi();
+   abi.types = {{"matrix", "uint8?[][2]?"}};
+   const auto value = array(array(forge::variant{}, 7), array());
+   const auto bytes = protocol::bytes{1, 2, 0, 1, 7, 0};
+   const auto native = std::optional{std::array{std::vector<std::optional<std::uint8_t>>{std::nullopt, std::uint8_t{7}},
+                                                std::vector<std::optional<std::uint8_t>>{}}};
+   BOOST_TEST(forge::raw::pack(native) == bytes);
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "matrix", value) == bytes);
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, "matrix", bytes) == value);
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "matrix", forge::variant{}) == protocol::bytes({0}));
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, "matrix", protocol::bytes{0}).is_null());
+   BOOST_TEST(chain_api::abi_json_to_bin(empty_abi(), "uint8[2]?", array(7, 9)) == protocol::bytes({1, 7, 9}));
+   BOOST_CHECK(chain_api::abi_bin_to_json(empty_abi(), "uint8[2]?", protocol::bytes{1, 7, 9}) == array(7, 9));
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_modifiers_keep_enum_metadata_and_exact_scalar_policy) {
+   auto abi = enum_abi();
+   abi.types.push_back({"nullable_shapes", "shape_alias[]?"});
+   const auto metadata = enum_metadata();
+   const auto exact = chain_api::abi_json_scalar_policy::exact;
+   const auto input = array("circle", "tall");
+   const auto bytes = protocol::bytes{1, 2, 0, 2};
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, metadata, "nullable_shapes", input, {}, exact) == bytes);
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, metadata, "nullable_shapes", bytes) == input);
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(abi, metadata, "nullable_shapes", array("circle", 2), {}, exact)),
+       chain_api::abi_serialization_error, [](const auto& error) {
+          return error.diagnostic().code == chain_api::abi_error_code::invalid_json &&
+                 error.diagnostic().path == "nullable_shapes[1]";
+       });
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), "uint8[]?", array(1, "2"), {}, exact)),
+       chain_api::abi_serialization_error, [](const auto& error) {
+          return error.diagnostic().code == chain_api::abi_error_code::invalid_json &&
+                 error.diagnostic().path == "uint8[]?[1]";
+       });
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_modifiers_reject_invalid_types_json_and_truncated_binary) {
+   for (const auto& type : {"missing[]?", "uint8[bad][]?", "uint8$[]?", "uint8[]$?", "[]?"}) {
+      const auto check = [](const auto& error) {
+         return error.diagnostic().code == chain_api::abi_error_code::unknown_type;
+      };
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, forge::variant{})),
+                            chain_api::abi_serialization_error, check);
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), type, protocol::bytes{0})),
+                            chain_api::abi_serialization_error, check);
+      auto abi = empty_abi();
+      abi.structs = {{"response", "", {{"items", type}}}};
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(abi, "response", object({}))),
+                            chain_api::abi_serialization_error, check);
+   }
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), "uint8?[]$", array())),
+                         chain_api::abi_serialization_error, [](const auto& error) {
+                            return error.diagnostic().code == chain_api::abi_error_code::unknown_type;
+                         });
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), "uint8[]?", forge::variant{7})),
+                         chain_api::abi_serialization_error, [](const auto& error) {
+                            return error.diagnostic().code == chain_api::abi_error_code::invalid_json;
+                         });
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), "uint8[2]?", array())),
+                         chain_api::abi_serialization_error, [](const auto& error) {
+                            return error.diagnostic().code == chain_api::abi_error_code::invalid_json;
+                         });
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), "uint8[]?", protocol::bytes{1, 2, 7})),
+       chain_api::abi_serialization_error, [](const auto& error) {
+          return error.diagnostic().code == chain_api::abi_error_code::invalid_binary &&
+                 error.diagnostic().path == "uint8[]?[1]";
+       });
+   for (const auto& [bytes, path] :
+        {std::pair{protocol::bytes{2}, "uint8?[]?"}, std::pair{protocol::bytes{1, 1, 2}, "uint8?[]?[0]"}}) {
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), "uint8?[]?", bytes)),
+                            chain_api::abi_serialization_error, [&path](const auto& error) {
+                               return error.diagnostic().code == chain_api::abi_error_code::invalid_binary &&
+                                      error.diagnostic().path == path;
+                            });
+   }
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_modifiers_enforce_type_depth_and_container_budgets) {
+   const auto type = std::string_view{"uint8[][]?"};
+   const auto value = array(array(1, 2), array(3));
+   const auto bytes = protocol::bytes{1, 2, 2, 1, 2, 1, 3};
+   const auto enough = chain_api::abi_serialization_limits{.max_total_container_elements = 5};
+   BOOST_TEST(chain_api::abi_json_to_bin(empty_abi(), type, value, enough) == bytes);
+   BOOST_CHECK(chain_api::abi_bin_to_json(empty_abi(), type, bytes, enough) == value);
+   const auto small = chain_api::abi_serialization_limits{.max_total_container_elements = 4};
+   const auto total_limit = [](const auto& error) {
+      return error.diagnostic().code == chain_api::abi_error_code::size_limit &&
+             error.diagnostic().path == "uint8[][]?[1]";
+   };
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, value, small)),
+                         chain_api::abi_serialization_error, total_limit);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), type, bytes, small)),
+                         chain_api::abi_serialization_error, total_limit);
+   const auto array_limit = chain_api::abi_serialization_limits{.max_container_elements = 2};
+   const auto inner_limit = [](const auto& error) {
+      return error.diagnostic().code == chain_api::abi_error_code::size_limit &&
+             error.diagnostic().path == "uint8[][]?[0]";
+   };
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, array(array(1, 2, 3)), array_limit)),
+       chain_api::abi_serialization_error, inner_limit);
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), type, protocol::bytes{1, 1, 3}, array_limit)),
+       chain_api::abi_serialization_error, inner_limit);
+   const auto resource_limit = [](const auto& error) {
+      return error.diagnostic().code == chain_api::abi_error_code::size_limit;
+   };
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), "uint8[3][]?", forge::variant{}, array_limit)),
+       chain_api::abi_serialization_error, resource_limit);
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), "uint8[3][]?", protocol::bytes{0}, array_limit)),
+       chain_api::abi_serialization_error, resource_limit);
+   const auto byte_limit = chain_api::abi_serialization_limits{.max_binary_bytes = 3};
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, value, byte_limit)),
+                         chain_api::abi_serialization_error, resource_limit);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), type, bytes, byte_limit)),
+                         chain_api::abi_serialization_error, resource_limit);
+   const auto depth_limit = chain_api::abi_serialization_limits{.max_recursion_depth = 3};
+   const auto depth_error = [](const auto& error) {
+      return error.diagnostic().code == chain_api::abi_error_code::recursion_limit;
+   };
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, forge::variant{}, depth_limit)),
+       chain_api::abi_serialization_error, depth_error);
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), type, protocol::bytes{0}, depth_limit)),
+       chain_api::abi_serialization_error, depth_error);
+   const auto deadline_limit =
+       chain_api::abi_serialization_limits{.max_serialization_time = std::chrono::microseconds{0}};
+   BOOST_CHECK_EXCEPTION(
+       static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, forge::variant{}, deadline_limit)),
+       chain_api::abi_serialization_error,
+       [](const auto& error) { return error.diagnostic().code == chain_api::abi_error_code::deadline_exceeded; });
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_modifiers_reject_adjacent_optionals_after_alias_resolution) {
+   const auto check = [](const auto& error) {
+      return error.diagnostic().code == chain_api::abi_error_code::unknown_type;
+   };
+   for (const auto& type : {"uint8??", "uint8[]??", "uint8??[]"}) {
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(empty_abi(), type, forge::variant{})),
+                            chain_api::abi_serialization_error, check);
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(empty_abi(), type, protocol::bytes{1, 0})),
+                            chain_api::abi_serialization_error, check);
+   }
+   auto abi = empty_abi();
+   abi.types = {{"maybe", "uint8?"}};
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(abi, "maybe?", forge::variant{})),
+                         chain_api::abi_serialization_error, check);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(abi, "maybe?", protocol::bytes{1, 0})),
+                         chain_api::abi_serialization_error, check);
+   abi.types.push_back({"nested", "maybe?"});
+   BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(abi, "uint8", forge::variant{0})),
+                         chain_api::abi_serialization_error, check);
+}
+
+BOOST_AUTO_TEST_CASE(chain_abi_nested_modifiers_preserve_binary_extension_array_restrictions) {
+   auto abi = empty_abi();
+   abi.structs = {{"item", "", {{"value", "uint8"}, {"tail", "uint8$"}}}, {"response", "", {{"items", "item[]?$"}}}};
+   BOOST_TEST(chain_api::abi_json_to_bin(abi, "response", object({})).empty());
+   BOOST_CHECK(chain_api::abi_bin_to_json(abi, "response", protocol::bytes{}) == object({}));
+   const auto complete = array(object({{"value", 7}, {"tail", 9}}));
+   for (const auto& [type, bytes, truncated] :
+        {std::tuple{"item[]?", protocol::bytes{1, 1, 7, 9}, protocol::bytes{1, 1, 7}},
+         std::tuple{"item[1]?", protocol::bytes{1, 7, 9}, protocol::bytes{1, 7}}}) {
+      BOOST_TEST(chain_api::abi_json_to_bin(abi, type, complete) == bytes);
+      BOOST_CHECK(chain_api::abi_bin_to_json(abi, type, bytes) == complete);
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_json_to_bin(abi, type, array(object({{"value", 7}})))),
+                            chain_api::abi_serialization_error, [](const auto& error) {
+                               return error.diagnostic().code == chain_api::abi_error_code::missing_field &&
+                                      error.diagnostic().path.ends_with("[0].tail");
+                            });
+      BOOST_CHECK_EXCEPTION(static_cast<void>(chain_api::abi_bin_to_json(abi, type, truncated)),
+                            chain_api::abi_serialization_error, [](const auto& error) {
+                               return error.diagnostic().code == chain_api::abi_error_code::invalid_binary &&
+                                      error.diagnostic().path.ends_with("[0].tail");
+                            });
+   }
 }

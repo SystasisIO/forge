@@ -357,10 +357,12 @@ class serializer {
    }
 
    void encode(std::string_view type, const forge::variant& value, binary_writer& writer) const {
+      validate_type(type, type, 1U);
       encode_value(type, value, writer, std::string{type}, 1U, true);
    }
 
    forge::variant decode(std::string_view type, binary_reader& reader) const {
+      validate_type(type, type, 1U);
       return decode_value(type, reader, std::string{type}, 1U, true);
    }
 
@@ -637,8 +639,13 @@ class serializer {
       const auto resolved = resolve_alias(type, path, depth);
       const auto parsed = parse_type(resolved);
       if (parsed.form != type_form::scalar) {
-         if (parsed.element.empty() || has_type_modifier(parsed.element)) {
-            fail(abi_error_code::unknown_type, "Nested ABI type modifiers are not supported", resolved, path, 0U);
+         if (parsed.element.empty()) {
+            fail(abi_error_code::unknown_type, "ABI container element type is empty", resolved, path, 0U);
+         }
+         if (parsed.form == type_form::optional &&
+             parse_type(resolve_alias(parsed.element, path, depth + 1U)).form == type_form::optional) {
+            fail(abi_error_code::unknown_type, "Adjacent ABI optionals cannot preserve JSON presence", resolved, path,
+                 0U);
          }
          if (parsed.form == type_form::fixed_array && parsed.fixed_size > context_.limits().max_container_elements) {
             fail(abi_error_code::size_limit, "ABI fixed array exceeds the element limit", resolved, path, 0U);
