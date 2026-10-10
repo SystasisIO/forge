@@ -17,6 +17,7 @@ module;
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -74,6 +75,10 @@ import forge.net.p2p.negotiation;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.dht_api;
+import forge.net.p2p.ipns;
+import forge.net.p2p.provider_registration;
+import forge.chrono.timestamp;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.types;
 import forge.plugins.crypto.secrets.api;
@@ -81,6 +86,7 @@ import forge.plugins.db.store.api;
 
 #include "details/config.hxx"
 #include "details/api_impl.hxx"
+#include "details/dht_api_impl.hxx"
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
 #include "details/p2p_state_schema.hxx"
@@ -130,6 +136,7 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
 
 boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
+   provider.install<dht_api>(std::make_shared<dht_api_impl>(impl_));
    provider.install<diagnostics_source>(std::make_shared<diagnostics_source_adapter>(impl_));
    provider.install<pubsub_source>(std::make_shared<pubsub_source_adapter>(impl_));
    co_return;

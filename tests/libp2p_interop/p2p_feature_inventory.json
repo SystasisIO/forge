@@ -222,21 +222,23 @@
     },
     "plugin.p2p.node": {
       "owner": "plugin.p2p.node",
-      "module_count": 5,
+      "module_count": 6,
       "modules": [
         "forge.plugins.net.p2p.node.api", "forge.plugins.net.p2p.node.descriptor",
+        "forge.plugins.net.p2p.node.dht_api",
         "forge.plugins.net.p2p.node.exceptions", "forge.plugins.net.p2p.node.plugin", "forge.plugins.net.p2p.node.types"
       ],
       "headers": [],
       "module_features": {
         "forge.plugins.net.p2p.node.api": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.descriptor": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.dht_api": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.exceptions": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.plugin": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.types": [ "plugin.node" ]
       },
       "header_features": {},
-      "sha256": "b17be31bdd8aca7ce798de8cd9a6c4234ce877d998ef2adb5d4e1bd4228bf443",
+      "sha256": "8d70a3e505b743c4cd7fce2ff9b93ae4109207eb9de531b292eb7c0296a2929e",
       "feature_ids": [ "plugin.node" ]
     },
     "plugin.p2p.resolver": {
@@ -1194,11 +1196,13 @@
         "source_paths": [
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/api.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/descriptor.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/dht_api.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/exceptions.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/plugin.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/types.cppm",
           "plugins/net/p2p/node/plugin.cpp", "plugins/net/p2p/node/plugin_impl.cpp",
-          "plugins/net/p2p/node/api_impl.cpp", "plugins/net/p2p/node/api_publication_generation.cpp",
+          "plugins/net/p2p/node/api_impl.cpp", "plugins/net/p2p/node/dht_api_impl.cpp",
+          "plugins/net/p2p/node/api_publication_generation.cpp",
           "plugins/net/p2p/node/api_publication_slot.cpp", "plugins/net/p2p/node/api_publication_registry.cpp"
         ],
         "tests": [ "test_forge_plugins", "test_forge_package_chain_api_component" ],

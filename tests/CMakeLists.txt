@@ -1758,6 +1758,7 @@ add_executable(
    unit/main.cpp
    quic_p2p/libp2p_identity_fixture.cpp
    plugins/plugins_tests.cpp
+   plugins/p2p_dht_api_tests.cpp
    plugins/http_server_tests.cpp
    plugins/net_identity_tests.cpp
    plugins/config_assertions.cpp

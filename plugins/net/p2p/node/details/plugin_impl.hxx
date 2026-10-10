@@ -54,6 +54,7 @@ struct plugin::impl {
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> ensure_node(const std::vector<route>& startup_routes);
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> node_snapshot() const noexcept;
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> require_node() const;
+   [[nodiscard]] std::shared_ptr<forge::net::p2p::node> require_running_node() const;
    void add_route(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler);
    void enable_pubsub(forge::net::p2p::pubsub::options options);
    [[nodiscard]] forge::net::p2p::node::open_options open_options_for(remote_options value) const;

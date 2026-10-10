@@ -47,6 +47,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Plugin version: `6.0.0`
 - Main API contract: `2.0`
 - Extra API ids:
+  - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
   - `forge.plugins.net.p2p.node.pubsub_source`
 - Config section: `plugins.net.p2p.node`
@@ -54,6 +55,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
   - `forge.plugins.net.p2p.node.plugin`
   - `forge.plugins.net.p2p.node.descriptor`
   - `forge.plugins.net.p2p.node.api`
+  - `forge.plugins.net.p2p.node.dht_api`
   - `forge.plugins.net.p2p.node.types`
   - `forge.plugins.net.p2p.node.exceptions`
 
@@ -73,7 +75,28 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Lets application plugins publish typed APIs over a P2P protocol id and retain
   an owned publication handle for explicit close/drain.
 - Opens typed remote API handles to peers through `remote<Interface>()`.
+- Delegates profile-aware peer/provider discovery, owned provider publication,
+  validated value operations and typed IPNS creation through `dht_api`.
 - Provides internal source APIs used by focused diagnostics and pubsub plugins.
+
+### DHT Consumer Contract
+
+`forge.plugins.net.p2p.node.dht_api` is a local application contract, not a new
+remote protocol. Its `find_peer`, `provide`, `find_providers`, `put_value` and
+`get_value` operations take the configured native `protocol_id` and native
+query options. Unknown profiles, disabled profile capabilities, limits and
+record validation retain the node's typed errors. No records or routing state
+are duplicated in the adapter.
+
+`provide` returns the native move-only `provider_registration`. Keep it alive
+while serving the content. Its `async_withdraw()` releases local ownership;
+previously announced remote records retain their independent TTL. IPNS creation
+uses the configured host identity without exposing its private key.
+
+An operation captures adapter ownership when its awaitable is created and
+checks admission when execution starts. Calls before startup are rejected;
+new calls after `request_stop()` are canceled. The node is retained throughout
+an admitted operation, including its native cancellation and cleanup.
 
 `request_stop()` synchronously closes managed-topology, Forge Peer Exchange and
 new-session admission, then requests cancellation of bootstrap and maintenance

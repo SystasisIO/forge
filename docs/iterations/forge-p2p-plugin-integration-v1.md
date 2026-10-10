@@ -58,13 +58,30 @@ parallel plugin DTO or network runtime.
 | `node::dht_api` | Profile-aware find peer/providers, provide, put/get value, typed IPNS record creation | Return the existing provider registration; never expose identity private material |
 | `node::protocol_api` | Owned custom protocol registration and stream opening | Protect built-ins/API routes and replacement generations; unregister closes admission, not unrelated existing streams |
 | `pubsub::api` | Ordinary/typed publishing and subscriptions, validation, partial-topic registration, advertisement, discovery and send | Preserve immutable registration tokens and distinguish requested cancellation from completed callbacks |
-| `diagnostics::api` | Bounded node/resource/peer/DHT/relay/PubSub snapshots and existing typed host events | Read-only; reuse the library event subscription and resynchronization semantics |
+| `diagnostics::api`, additive `diagnostics::events_api` | Bounded node/resource/peer/DHT/relay/PubSub snapshots and existing typed host events | Read-only; reuse the library event subscription and resynchronization semantics |
 | `resolver::api`, `resolver::managed_api` | Existing peer API catalog, contract resolution and managed connection | API discovery at known peers, not a second DHT or peer-discovery implementation |
 
 New independently versioned local contracts start at 1.0. Audit existing
 contract changes for source/API compatibility and document mechanical migration
 and plugin version changes where required. Do not change the Forge release-train
 version in this feature PR.
+
+Custom protocol registration uses a move-only `protocol_registration` with
+`active()` and idempotent `close() noexcept`. It has no `async_close()` guarantee
+for already admitted raw streams. Duplicate registration fails; replacement
+requires the active owner token, so a stale or foreign token cannot replace or
+remove a newer generation. Reserved built-in protocols and configured DHT
+profiles are protected even when a corresponding service is disabled. Check
+raw/API route conflicts in both publication paths under consistent ownership.
+Remove the old unowned `publish_protocol()` entry point with an explicit node
+contract migration rather than retaining a bypass.
+
+Host events use a new local `node::host_event_source` delegated to
+`diagnostics::events_api`, both initially 1.0. Preserve the existing diagnostics
+source contract instead of adding pure virtual methods to it invisibly. Copy
+shared sources under synchronization, invoke outside the lock, and do not add a
+second event queue. Preserve native initial snapshots, resynchronization flags,
+single-reader admission, cancellation and end-of-stream on shutdown.
 
 ## Configuration And Contributions
 
@@ -74,10 +91,12 @@ version in this feature PR.
 - PubSub owns its configuration of versions, scoring, quotas and extensions;
   apply it to the shared node before startup. Resolver and diagnostics retain
   only their own settings.
-- Product-specific DHT validators/selectors and connection policy callbacks
+- Product-specific DHT validation/selection/expiry and connection policy callbacks
   are supplied as typed C++ contributions during composition/initialization.
   Freeze global contributions before node startup, reject duplicates or missing
-  required custom validators, and preserve pure validator/selector semantics.
+  required custom policies, and preserve pure validator/selector semantics.
+  Reuse the complete `dht::value_policy`, including expiry; never permit a
+  product contribution to replace Amino validation.
 - Topic callbacks and Partial Messages encoding/reconstruction belong to the
   consumer registration. Forge does not automatically split arbitrary bytes.
 - Secrets remain secret-provider references. Private-network incompatible
@@ -179,5 +198,19 @@ gates pass, describe this as test integration with an evolving stack.
 ## Progress
 
 - Plan approved; implementation and acceptance are in progress.
-- No Stage 7 runtime PASS or production readiness is claimed yet.
+- The first source slice adds local `node::dht_api` 1.0 with profile-aware
+  operations and native provider registration/IPNS types. Adapter coroutines
+  capture shared ownership before suspension and reject new operations after
+  stop. Five focused native-macOS DHT tests passed (97 assertions), including
+  a separate reader's network GET_VALUE/GET_PROVIDERS and deferred calls after
+  host/API destruction. The package-consumer update is not executed yet.
+- Native P2P, MDBX and RocksDB foundation targets built in the coordinator's
+  single macOS `build/stage7` tree with `-j4`. This is build evidence, not a
+  Stage 7 runtime or donor-compatibility verdict.
+- Review identified existing PubSub adapter races in join completion,
+  last-unsubscribe versus a new join, shutdown admission and source lifetime.
+  Their fixes and deterministic regressions are required before extending the
+  adapter with partial-topic operations.
+- The complete Stage 7 runtime, package and donor gates remain pending; the
+  DHT-slice result is not a whole-PR or production-readiness verdict.
 - Product migration remains out of scope.
