@@ -120,6 +120,39 @@ Never construct a temporary permissive or values-disabled profile to bypass
 missing validation. Global gater callbacks must be nonblocking and thread-safe;
 callbacks must retain their own state rather than a raw consumer pointer.
 
+The remaining configuration work is grouped by the existing native owners:
+
+| Plugin owner | Configuration groups to map and test |
+| --- | --- |
+| Node | Transport/security selection, transport buffers, private-network secret and egress policy |
+| Node | Resource scopes, connection admission/pruning, Identify and peer-store bounds |
+| Node | DNS resolver/expansion, dial staggering and black-hole detection, path policy |
+| Node | AutoNAT v1/v2 client/service, observed addresses, Ping and host-event bounds |
+| Node | mDNS families/interfaces/TTL and packet/peer bounds |
+| Node | AutoRelay candidates/reservations/renewal and Circuit Relay v2 service quotas |
+| Node | Per-profile DHT record/provider policy, bootstrap retries, topology and Rendezvous bounds |
+| PubSub | Version preference/fallback, signature policy, flood publish, scoring, IDONTWANT and Partial Messages bounds |
+
+Reuse described native resource-limit types where possible. Other configuration
+records express checked units and policy only; they must not duplicate native
+runtime state. Do not silently overwrite explicit resource budgets with derived
+session limits. Reject unknown policy fields rather than accepting a misspelled
+security setting as a warning. Keep application-shell-owned config keys outside
+that validation boundary.
+
+Private-network configuration stores only a secret reference. Read it through
+the existing Secrets `get_bytes` API with a dedicated purpose, require exactly
+32 bytes for the native PSK, and erase temporary buffers on success and failure.
+Do not add a file/env secret loader or expose raw secret material in diagnostics.
+
+Peer protection and score contributions use move-only owner tokens with unique
+internal native keys. Closing a token removes only its own contribution, never
+bootstrap protection or another consumer's tags. Admission is bounded; score
+accounting must remain representable for every token-release order, including
+mixed positive/negative values. Stop closes new admission and late tokens are
+safe after shutdown. This reuses native keyed protection/tagging rather than
+creating another connection manager.
+
 UPnP, P2P WebSocket, WebTransport and WebRTC are not additions to this Stage 7 PR.
 Swarm keeps its typed Forge API binding; raw streams are not a Swarm bypass.
 
@@ -237,6 +270,10 @@ gates pass, describe this as test integration with an evolving stack.
   active cases), as did `test_forge_plugins` (109 cases). Structure and source
   inventory checks passed. This is the DHT/events checkpoint, not final-head
   acceptance for the remaining Stage 7 implementation.
+- The same macOS checkpoint also passed `test_forge_p2p_managed_remote`
+  (10 cases) and `test_forge_plugins_db_store` (68 cases). The latter was built
+  with both `FORGE_HAS_MDBX=1` and `FORGE_HAS_ROCKSDB=1`, including the durable
+  P2P cache fixtures for both backends. This does not claim Linux execution.
 - Review identified existing PubSub adapter races in join completion,
   last-unsubscribe versus a new join, shutdown admission and source lifetime.
   Their fixes and deterministic regressions are required before extending the
