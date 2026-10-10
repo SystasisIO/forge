@@ -2,6 +2,7 @@ module;
 
 #include <boost/test/unit_test.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <forge/api/core/macros.hpp>
 #include <forge/exceptions/macros.hpp>
 
@@ -18,6 +19,7 @@ module;
 #include <exception>
 #include <future>
 #include <initializer_list>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -4943,21 +4945,43 @@ BOOST_AUTO_TEST_CASE(p2p_direct_tcp_nodes_prefer_tls_yamux_and_echo_frames) {
 BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_retains_source_root_for_public_and_private_tcp) {
    for (const auto private_profile : {false, true}) {
       BOOST_TEST_CONTEXT("private profile=" << private_profile) {
+         auto dns_server = forge::tests::dns::local_dns_server{hidden_dns_response};
+         auto dns_cleanup = boost::scope::scope_exit{[&] {
+            try { dns_server.close(); }
+            catch (const std::exception& error) { BOOST_ERROR("source-root DNS cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("source-root DNS cleanup failed with a non-standard exception"); }
+         }};
          auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
          const auto server_identity = make_test_identity();
          const auto client_identity = make_test_identity();
          auto server_options = private_profile ? private_network_options_for(server_identity) : options_for(server_identity);
          auto client_options = private_profile ? private_network_options_for(client_identity) : options_for(client_identity);
+         server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+         client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
          auto gater = std::make_shared<recording_connection_gater>();
          client_options.connection_gater = gater;
          client_options.limits.resources.max_dial_attempts = 1;
          client_options.limits.resources.max_dial_attempts_per_peer = 1;
          auto server = node{runtime, std::move(server_options)};
          auto client = node{runtime, std::move(client_options)};
+         auto cleanup = boost::scope::scope_exit{[&] {
+            for (auto* owner : {&client, &server}) {
+               try {
+                  auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+                  if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                     std::cerr << "source-root node cleanup did not join\n";
+                     std::terminate();
+                  }
+                  stopped.get();
+               }
+               catch (const std::exception& error) { BOOST_ERROR("source-root node cleanup failed: " << error.what()); }
+               catch (...) { BOOST_ERROR("source-root node cleanup failed with a non-standard exception"); }
+            }
+         }};
          register_echo(server);
          const auto listening = listen_tcp(server, runtime);
          const auto root = forge::multiformats::multiaddr::parse(
-             "/dns4/localhost/tcp/" + std::to_string(listening.transport.port) + "/p2p/" + server.local_peer().to_string());
+             "/dns4/hidden.test/tcp/" + std::to_string(listening.transport.port) + "/p2p/" + server.local_peer().to_string());
          // Identify also advertises the source root, so no numeric address is
          // independently learned from the remote node during this assertion.
          server.set_advertised_endpoints({parse_endpoint(root.to_string())});
@@ -4997,27 +5021,117 @@ BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_retains_source_root_for_public_and_pri
          BOOST_TEST(client.diagnostics().resources.active_dials == 0U);
          BOOST_TEST(client.diagnostics().resources.system.file_descriptors == 0U);
          forge::asio::blocking::run(runtime, server.async_stop());
+         cleanup.set_active(false);
       }
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_holds_one_logical_permit_and_stop_releases_it) {
+   auto dns_server = forge::tests::dns::local_dns_server{hidden_dns_response};
+   auto dns_cleanup = boost::scope::scope_exit{[&] {
+      try { dns_server.close(); }
+      catch (const std::exception& error) { BOOST_ERROR("dial-permit DNS cleanup failed: " << error.what()); }
+      catch (...) { BOOST_ERROR("dial-permit DNS cleanup failed with a non-standard exception"); }
+   }};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto options = options_for(make_test_identity());
+   options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
    options.limits.resources.max_dial_attempts = 1;
    options.limits.resources.max_dial_attempts_per_peer = 1;
    auto client = node{runtime, std::move(options)};
    auto accepted = std::make_shared<std::promise<void>>();
    auto accepted_future = accepted->get_future();
-   const auto stalled = start_stalling_tcp_peer(runtime, std::chrono::seconds{5}, accepted);
+   // Own the stalled peer through completion, including setup failures before accept.
+   const auto strand = boost::asio::make_strand(runtime.context());
+   auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(
+       strand, boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 0});
+   const auto stalled = make_tcp_endpoint(acceptor->local_endpoint().port());
+   auto cancellation = boost::asio::cancellation_signal{};
+   const auto serve = [acceptor, accepted]() -> boost::asio::awaitable<void> {
+      auto close_acceptor = boost::scope::scope_exit{[&] {
+         auto ignored = boost::system::error_code{};
+         acceptor->close(ignored);
+      }};
+      auto socket = boost::asio::ip::tcp::socket{co_await boost::asio::this_coro::executor};
+      co_await acceptor->async_accept(socket, boost::asio::use_awaitable);
+      accepted->set_value();
+      auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+      timer.expires_after(std::chrono::seconds{5});
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   };
+   auto stalled_done = boost::asio::co_spawn(
+       strand, serve(), boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   auto pending = std::future<node::session_info>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try {
+         auto stopped = boost::asio::co_spawn(runtime.context(), client.async_stop(), boost::asio::use_future);
+         if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+            std::cerr << "dial-permit client cleanup did not join\n";
+            std::terminate();
+         }
+         stopped.get();
+      }
+      catch (const std::exception& error) { BOOST_ERROR("dial-permit client cleanup failed: " << error.what()); }
+      catch (...) { BOOST_ERROR("dial-permit client cleanup failed with a non-standard exception"); }
+      if (pending.valid()) {
+         if (pending.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+            std::cerr << "dial-permit connect did not join after node stop\n";
+            std::terminate();
+         }
+         try {
+            (void)pending.get();
+            BOOST_ERROR("dial-permit connect unexpectedly succeeded during failed-case cleanup");
+         } catch (const std::exception& error) {
+            std::cerr << "dial-permit pending connect during cleanup: " << error.what() << '\n';
+         } catch (...) {
+            BOOST_ERROR("dial-permit pending connect failed with a non-standard exception");
+         }
+      }
+      auto cancel_posted = std::promise<void>{};
+      auto cancel_done = cancel_posted.get_future();
+      boost::asio::post(strand, [&] {
+         cancellation.emit(boost::asio::cancellation_type::all);
+         cancel_posted.set_value();
+      });
+      if (cancel_done.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+         std::cerr << "dial-permit stalled TCP cancellation callback did not join\n";
+         std::terminate();
+      }
+      cancel_done.get();
+      if (stalled_done.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+         std::cerr << "dial-permit stalled TCP peer did not join after cancellation\n";
+         std::terminate();
+      }
+      try { stalled_done.get(); }
+      catch (const boost::system::system_error& error) {
+         BOOST_CHECK_MESSAGE(error.code() == boost::asio::error::operation_aborted,
+                             "stalled TCP peer failed: " << error.what());
+      } catch (const std::exception& error) {
+         BOOST_ERROR("stalled TCP peer failed: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("stalled TCP peer failed with a non-standard exception");
+      }
+   }};
    const auto root = forge::multiformats::multiaddr::parse(
-       "/dns4/localhost/tcp/" + std::to_string(stalled.transport.port) + "/p2p/" + peer(248).to_string());
+       "/dns4/hidden.test/tcp/" + std::to_string(stalled.transport.port) + "/p2p/" + peer(248).to_string());
    const auto connect_options = node::connect_options{
        .allow_relay = false, .timeout = std::chrono::seconds{10},
        .direct_attempt_timeout = std::chrono::seconds{5}, .max_direct_endpoints = 1};
-   auto pending = boost::asio::co_spawn(runtime.context(), client.async_connect(root, connect_options),
-                                      boost::asio::use_future);
-   BOOST_REQUIRE(accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   pending = boost::asio::co_spawn(runtime.context(), client.async_connect(root, connect_options),
+                                   boost::asio::use_future);
+   const auto accepted_in_time = accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+   if (!accepted_in_time && pending.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+      try {
+         (void)pending.get();
+         BOOST_ERROR("DNS connect succeeded without the fixture TCP accept");
+      } catch (const std::exception& error) {
+         BOOST_ERROR("DNS connect failed before fixture TCP accept: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("DNS connect failed before fixture TCP accept with a non-standard exception");
+      }
+   }
+   BOOST_REQUIRE_MESSAGE(accepted_in_time, "fixture TCP accept did not complete within two seconds");
+   accepted_future.get();
    BOOST_TEST(client.diagnostics().resources.active_dials == 1U);
    BOOST_TEST(client.diagnostics().resources.system.outbound_connections == 1U);
    BOOST_CHECK_EXCEPTION(
