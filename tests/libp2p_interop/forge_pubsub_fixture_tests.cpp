@@ -1,3 +1,5 @@
+#include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -6,17 +8,25 @@
 #include <fstream>
 #include <functional>
 #include <future>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 import forge.asio.runtime;
 import forge.asio.notification;
@@ -80,6 +90,142 @@ void forge_pubsub_fixture::self_test() {
        .type = forge::net::p2p::public_key::type::ed25519, .data = std::vector<std::uint8_t>(32, 2)});
    const auto prepare = forge::variant{forge::mutable_variant_object{}("sequence", 1u)("kind", "prepare_shutdown")
        ("actor", "victim")("case_token", std::string(32, 'a'))("local_peer_id", local_peer.to_string())};
+#if defined(__unix__) || defined(__APPLE__)
+   // Fork before creating any runtime workers in this single-threaded self-test.
+   // These are process-boundary models, not native network/stop acceptance.
+   struct child_owner {
+      pid_t pid = -1;
+      int status = 0;
+
+      bool reap() {
+         const auto result = ::waitpid(pid, &status, WNOHANG);
+         if (result == pid) { pid = -1; return true; }
+         if (result < 0 && errno != EINTR) {
+            const auto error = errno;
+            if (error == ECHILD) { pid = -1; }
+            throw std::system_error{error, std::generic_category(), "reap PubSub Prepare child"};
+         }
+         return false;
+      }
+      ~child_owner() {
+         if (pid <= 0) { return; }
+         static_cast<void>(::kill(pid, SIGKILL));
+         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+         do {
+            try { if (reap() || pid <= 0) { return; } } catch (...) {}
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+         } while (std::chrono::steady_clock::now() < deadline);
+         std::fputs("FATAL: PubSub Prepare regression child did not reap\n", stderr);
+         std::fflush(stderr);
+         std::_Exit(86);
+      }
+   };
+   for (const auto mode : {std::string_view{"fast"}, std::string_view{"stop_throws"},
+                           std::string_view{"blocked_stop_join"}, std::string_view{"blocked_unsubscribe_join"}}) {
+      auto log = std::unique_ptr<std::FILE, decltype(&std::fclose)>{std::tmpfile(), &std::fclose};
+      check(static_cast<bool>(log), "cannot open subprocess diagnostic file");
+      auto child = child_owner{};
+      child.pid = ::fork();
+      check(child.pid >= 0, "cannot fork Prepare process-boundary regression");
+      if (child.pid == 0) {
+         if (::dup2(::fileno(log.get()), STDERR_FILENO) < 0) { std::_Exit(90); }
+         try {
+            {
+               auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+               fixture._extension = "partial";
+               fixture._peer = local_peer.to_string();
+               auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+               auto release_unsubscribe = forge::asio::notification{};
+               auto release_stop = forge::asio::notification{};
+               const auto unsubscribe_epoch = release_unsubscribe.epoch();
+               const auto stop_epoch = release_stop.epoch();
+               const auto unsubscribe = [&]() -> boost::asio::awaitable<void> {
+                  std::fputs("synthetic unsubscribe entered\n", stderr);
+                  co_await release_unsubscribe.async_wait(unsubscribe_epoch);
+                  std::fputs("synthetic unsubscribe returned\n", stderr);
+               };
+               const auto stop = [&]() -> boost::asio::awaitable<void> {
+                  std::fputs("synthetic stop entered\n", stderr);
+                  if (mode == "stop_throws") {
+                     throw std::runtime_error{"synthetic stop failed before releasing unsubscribe"};
+                  }
+                  if (mode == "blocked_stop_join") {
+                     release_unsubscribe.notify();
+                     co_await release_stop.async_wait(stop_epoch);
+                  }
+                  std::fputs("synthetic stop returned\n", stderr);
+               };
+               const auto draining = [&]() -> boost::asio::awaitable<void> {
+                  const auto result = co_await fixture.drain_unsubscribe(unsubscribe(), stop(),
+                      std::chrono::steady_clock::now() - std::chrono::milliseconds{1});
+                  // The faulty-stop models must remain owned until the process
+                  // boundary exits, never reach a normal returned future.
+                  static_cast<void>(result);
+                  throw std::runtime_error{"synthetic blocked drain unexpectedly returned"};
+               };
+               const auto started = std::chrono::steady_clock::now();
+               if (mode == "fast") {
+                  run_extension_prepare(runtime, fixture.prepare_extension(prepare, started + std::chrono::seconds{1}),
+                                        started + std::chrono::seconds{1});
+               } else {
+                  run_extension_prepare(runtime, draining(), started + std::chrono::seconds{1});
+               }
+               fixture.prepare_shutdown(prepare, 1);
+               const auto output = forge::codec::json::write_value(fixture.result(false, false, {}), {.max_bytes = 8191});
+               check(output.ok(), "cannot encode synthetic child result");
+               std::fprintf(stderr, "%s\n", output.text.c_str());
+               runtime.stop();
+            }
+            std::fputs("synthetic Prepare future and runtime joined\n", stderr);
+            std::fflush(stderr);
+            std::_Exit(0);
+         } catch (const std::exception& error) {
+            std::fprintf(stderr, "unexpected Prepare child error: %.512s\n", error.what());
+            std::fflush(stderr);
+            std::_Exit(91);
+         } catch (...) { std::_Exit(92); }
+      }
+      auto reaped = false;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+      do {
+         if (child.reap()) { reaped = true; break; }
+         std::this_thread::sleep_for(std::chrono::milliseconds{5});
+      } while (std::chrono::steady_clock::now() < deadline);
+      check(reaped, "Prepare child exceeded its independent bounded parent wait");
+      check(std::fseek(log.get(), 0, SEEK_SET) == 0, "cannot rewind subprocess diagnostics");
+      auto bytes = std::array<char, 8192>{};
+      const auto count = std::fread(bytes.data(), 1, bytes.size(), log.get());
+      check(count < bytes.size() && !std::ferror(log.get()), "subprocess diagnostics invalid or unbounded");
+      const auto output = std::string_view{bytes.data(), count};
+      check(WIFEXITED(child.status), "Prepare child did not exit normally through process boundary");
+      if (mode == "fast") {
+         check(WEXITSTATUS(child.status) == 0 && output.find("shutdown_prepared") != std::string_view::npos &&
+             output.find("synthetic Prepare future and runtime joined") != std::string_view::npos &&
+             output.find("FATAL:") == std::string_view::npos, "fast Prepare failed to join before actual fixture ACK");
+      } else {
+         check(WEXITSTATUS(child.status) == 86 &&
+             output.find("FATAL: PubSub Prepare exceeded actor process deadline") != std::string_view::npos &&
+             output.find("shutdown_prepared") == std::string_view::npos &&
+             output.find("synthetic Prepare future and runtime joined") == std::string_view::npos &&
+             output.find("synthetic unsubscribe entered") != std::string_view::npos &&
+             output.find("synthetic stop entered") != std::string_view::npos,
+             "blocked Prepare did not terminate nonzero with original diagnostics and no ACK/join claim");
+         if (mode == "stop_throws") {
+            check(output.find("synthetic stop failed before releasing unsubscribe") != std::string_view::npos &&
+                output.find("synthetic unsubscribe returned") == std::string_view::npos,
+                "failed-stop subprocess lost its cause or invented an unsubscribe join");
+         } else if (mode == "blocked_stop_join") {
+            check(output.find("synthetic unsubscribe returned") != std::string_view::npos &&
+                output.find("synthetic stop returned") == std::string_view::npos,
+                "blocked-stop subprocess did not preserve its actual unfinished branch");
+         } else {
+            check(output.find("synthetic stop returned") != std::string_view::npos &&
+                output.find("synthetic unsubscribe returned") == std::string_view::npos,
+                "blocked-unsubscribe subprocess did not preserve its actual unfinished branch");
+         }
+      }
+   }
+#endif
    // Synthetic application ownership only: no native node, stream or callback-join proof.
    struct owned_operation {
       boost::asio::io_context context;
@@ -106,6 +252,163 @@ void forge_pubsub_fixture::self_test() {
          } catch (...) { fail_closed(); }
       }
    };
+   for (const auto mode : {"idontwant", "advertisement"}) {
+      for (const auto expired : {false, true}) {
+         auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+         fixture._peer = local_peer.to_string();
+         fixture._extension = mode;
+         check(fixture._extension_work == 0 && fixture._extension_validators == 0 &&
+             !fixture._partial_registration, "empty drain model unexpectedly owns work/registration");
+         const auto now = std::chrono::steady_clock::now();
+         const auto deadline = expired ? now - std::chrono::milliseconds{1} : now + std::chrono::minutes{1};
+         auto drain = owned_operation{[&] { fixture._extension_stop.request_stop(); }};
+         drain.completion = boost::asio::co_spawn(drain.context, fixture.prepare_extension(prepare, deadline),
+                                                 boost::asio::use_future);
+         drain.join();
+         if (expired) {
+            rejects([&] { drain.completion.get(); }, "extension admitted work drain deadline exceeded");
+            rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "prepare_shutdown");
+            check(fixture._extension_admission_closed && !fixture._extension_drained && !fixture._prepared &&
+                fixture._events.empty() &&
+                fixture._extension_drain_error == "extension admitted work drain deadline exceeded",
+                "expired zero-work/no-registration drain emitted completion or Prepare ACK");
+         } else {
+            drain.completion.get();
+            check(fixture._extension_drained && fixture._extension_drain_error.empty(),
+                "normal empty drain spuriously exceeded its deadline");
+            fixture.prepare_shutdown(prepare, 1);
+            check(fixture._prepared, "normal empty drain did not permit Prepare ACK");
+         }
+      }
+   }
+   // Exercise the same owned drain composition with bounded coroutine models.
+   // These do not claim a native blocked socket/write or router shutdown proof.
+   for (const auto operation_fails : {false, true}) {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      auto unsubscribe_returned = false;
+      auto stop_entered = false;
+      auto result = std::optional<unsubscribe_result>{};
+      const auto unsubscribe = [&]() -> boost::asio::awaitable<void> {
+         unsubscribe_returned = true;
+         if (operation_fails) { throw std::runtime_error{"synthetic unsubscribe failure"}; }
+         co_return;
+      };
+      const auto stop = [&]() -> boost::asio::awaitable<void> {
+         stop_entered = true;
+         co_return;
+      };
+      const auto run = [&]() -> boost::asio::awaitable<void> {
+         result = co_await fixture.drain_unsubscribe(unsubscribe(), stop(),
+             std::chrono::steady_clock::now() + std::chrono::minutes{1});
+      };
+      auto drain = owned_operation{[&] { fixture._extension_stop.request_stop(); }};
+      drain.completion = boost::asio::co_spawn(drain.context, run(), boost::asio::use_future);
+      drain.join();
+      drain.completion.get();
+      check(result && unsubscribe_returned && !stop_entered && !result->interrupted &&
+          !result->watchdog_error && !result->stop_error && fixture._extension_drain_error.empty(),
+          "fast unsubscribe lost its notification or spuriously stopped the owner");
+      if (operation_fails) {
+         check(static_cast<bool>(result->operation_error), "actual unsubscribe error was discarded");
+         rejects([&] { std::rethrow_exception(result->operation_error); }, "synthetic unsubscribe failure");
+      } else {
+         check(!result->operation_error, "successful unsubscribe became a synthetic failure");
+      }
+   }
+   for (const auto unsubscribe_first : {false, true}) {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      fixture._extension = "partial";
+      fixture._peer = local_peer.to_string();
+      auto cancel_io = forge::asio::notification{};
+      auto finish_unsubscribe = forge::asio::notification{};
+      auto finish_stop = forge::asio::notification{};
+      const auto cancel_epoch = cancel_io.epoch();
+      const auto unsubscribe_epoch = finish_unsubscribe.epoch();
+      const auto stop_epoch = finish_stop.epoch();
+      auto unsubscribe_entered = false;
+      auto unsubscribe_unblocked = false;
+      auto unsubscribe_returned = false;
+      auto stop_entered = false;
+      auto stop_returned = false;
+      auto result = std::optional<unsubscribe_result>{};
+      const auto unsubscribe = [&]() -> boost::asio::awaitable<void> {
+         unsubscribe_entered = true;
+         co_await cancel_io.async_wait(cancel_epoch);
+         unsubscribe_unblocked = true;
+         co_await finish_unsubscribe.async_wait(unsubscribe_epoch);
+         unsubscribe_returned = true;
+      };
+      const auto stop = [&]() -> boost::asio::awaitable<void> {
+         check(!fixture._extension_drain_error.empty(), "stop preceded sticky timeout publication");
+         stop_entered = true;
+         cancel_io.notify();
+         co_await finish_stop.async_wait(stop_epoch);
+         stop_returned = true;
+      };
+      const auto run = [&]() -> boost::asio::awaitable<void> {
+         result = co_await fixture.drain_unsubscribe(unsubscribe(), stop(),
+             std::chrono::steady_clock::now() - std::chrono::milliseconds{1});
+      };
+      auto drain = owned_operation{[&] {
+         fixture._extension_stop.request_stop();
+         cancel_io.notify();
+         finish_unsubscribe.notify();
+         finish_stop.notify();
+      }};
+      drain.completion = boost::asio::co_spawn(drain.context, run(), boost::asio::use_future);
+      drain.context.poll();
+      check(unsubscribe_entered && unsubscribe_unblocked && stop_entered &&
+          !unsubscribe_returned && !stop_returned && !result &&
+          drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
+          "expired drain returned before its actual unsubscribe/stop coroutine joins");
+      if (unsubscribe_first) { finish_unsubscribe.notify(); }
+      else { finish_stop.notify(); }
+      drain.context.poll();
+      check(unsubscribe_returned == unsubscribe_first && stop_returned != unsubscribe_first && !result &&
+          drain.completion.wait_for(std::chrono::seconds{0}) == std::future_status::timeout,
+          "one completed branch released the other still-owned operation");
+      if (unsubscribe_first) { finish_stop.notify(); }
+      else { finish_unsubscribe.notify(); }
+      drain.join();
+      drain.completion.get();
+      check(result && result->interrupted && !result->operation_error && !result->watchdog_error &&
+          !result->stop_error && unsubscribe_returned && stop_returned &&
+          fixture._extension_drain_error == "partial unsubscribe drain deadline exceeded" &&
+          !fixture._extension_drained && !fixture._prepared && fixture._events.empty(),
+          "stop-unblocked successful unsubscribe was mistaken for successful Prepare");
+      rejects([&] { fixture.prepare_shutdown(prepare, 1); }, "prepare_shutdown");
+   }
+   {
+      auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
+      auto release = forge::asio::notification{};
+      const auto epoch = release.epoch();
+      auto unsubscribe_returned = false;
+      auto stop_returned = false;
+      auto result = std::optional<unsubscribe_result>{};
+      const auto unsubscribe = [&]() -> boost::asio::awaitable<void> {
+         co_await release.async_wait(epoch);
+         unsubscribe_returned = true;
+         throw std::runtime_error{"synthetic native unsubscribe error after stop"};
+      };
+      const auto stop = [&]() -> boost::asio::awaitable<void> {
+         release.notify();
+         stop_returned = true;
+         throw std::runtime_error{"synthetic node stop error"};
+         co_return;
+      };
+      const auto run = [&]() -> boost::asio::awaitable<void> {
+         result = co_await fixture.drain_unsubscribe(unsubscribe(), stop(), std::chrono::steady_clock::now());
+      };
+      auto drain = owned_operation{[&] { release.notify(); fixture._extension_stop.request_stop(); }};
+      drain.completion = boost::asio::co_spawn(drain.context, run(), boost::asio::use_future);
+      drain.join();
+      drain.completion.get();
+      check(result && result->interrupted && unsubscribe_returned && stop_returned &&
+          result->operation_error && result->stop_error && !fixture._extension_drain_error.empty(),
+          "drain did not preserve both real operation failures through joined completion");
+      rejects([&] { std::rethrow_exception(result->operation_error); }, "unsubscribe error after stop");
+      rejects([&] { std::rethrow_exception(result->stop_error); }, "node stop error");
+   }
    {
       auto fixture = forge_pubsub_fixture{std::string(32, 'a'), "victim"};
       fixture._peer = local_peer.to_string();
@@ -120,7 +423,9 @@ void forge_pubsub_fixture::self_test() {
          check(fixture.admit_partial_locked(), "synthetic callback admission failed");
          work.emplace(&fixture);
       }
-      drain.completion = boost::asio::co_spawn(drain.context, fixture.prepare_extension(prepare), boost::asio::use_future);
+      drain.completion = boost::asio::co_spawn(drain.context,
+          fixture.prepare_extension(prepare, std::chrono::steady_clock::now() + std::chrono::seconds{5}),
+          boost::asio::use_future);
       drain.context.poll();
       check(fixture._extension_admission_closed && fixture._extension_work == 1 &&
           fixture._extension_inputs == 1 && !fixture._extension_drained && fixture._events.empty(),

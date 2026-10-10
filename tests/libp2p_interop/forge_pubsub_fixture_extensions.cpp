@@ -1,6 +1,9 @@
+#include <array>
 #include <chrono>
 #include <coroutine>
+#include <cstdio>
 #include <cstdint>
+#include <exception>
 #include <mutex>
 #include <span>
 #include <stdexcept>
@@ -9,6 +12,7 @@
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 
 import forge.asio.blocking;
 import forge.asio.notification;
@@ -95,7 +99,95 @@ boost::asio::awaitable<pubsub::validation_result> forge_pubsub_fixture::validate
    co_return result;
 }
 
-boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge::variant& input) {
+boost::asio::awaitable<void> forge_pubsub_fixture::stop_extension_node() {
+   _node->request_stop();
+   co_await _node->async_stop();
+}
+
+boost::asio::awaitable<forge_pubsub_fixture::unsubscribe_result>
+forge_pubsub_fixture::drain_unsubscribe(boost::asio::awaitable<void> operation,
+    boost::asio::awaitable<void> stop, std::chrono::steady_clock::time_point deadline) {
+   using namespace boost::asio::experimental::awaitable_operators;
+   struct state {
+      std::mutex mutex;
+      forge::asio::notification completed;
+      bool done = false;
+      std::chrono::steady_clock::time_point returned_at;
+      unsubscribe_result result;
+   } shared;
+   const auto epoch = shared.completed.epoch();
+   // These closures and shared state outlive both branches. Capture operation
+   // failures rather than asking operator&& to cancel the other owned join.
+   const auto unsubscribe = [&]() -> boost::asio::awaitable<void> {
+      auto failure = std::exception_ptr{};
+      try { co_await std::move(operation); }
+      catch (...) { failure = std::current_exception(); }
+      {
+         const auto lock = std::scoped_lock{shared.mutex};
+         shared.result.operation_error = failure;
+         shared.returned_at = std::chrono::steady_clock::now();
+         shared.done = true;
+      }
+      shared.completed.notify();
+   };
+   const auto watchdog = [&]() -> boost::asio::awaitable<void> {
+      auto failure = std::exception_ptr{};
+      auto done = false;
+      {
+         const auto lock = std::scoped_lock{shared.mutex};
+         done = shared.done;
+      }
+      try {
+         if (!done) { co_await shared.completed.async_wait_until(epoch, deadline, _extension_stop.get_token()); }
+      } catch (...) { failure = std::current_exception(); }
+      const auto cancelled = _extension_stop.stop_requested();
+      {
+         const auto lock = std::scoped_lock{shared.mutex};
+         if (!failure && !cancelled && shared.done && shared.returned_at <= deadline) { co_return; }
+         shared.result.interrupted = true;
+         shared.result.watchdog_error = failure;
+      }
+      try {
+         const auto lock = std::scoped_lock{_mutex};
+         if (_extension_drain_error.empty()) {
+            _extension_drain_error = cancelled ? "partial unsubscribe drain cancelled" :
+                failure ? "partial unsubscribe watchdog failed" : "partial unsubscribe drain deadline exceeded";
+         }
+      } catch (...) {
+         const auto lock = std::scoped_lock{shared.mutex};
+         if (!shared.result.watchdog_error) { shared.result.watchdog_error = std::current_exception(); }
+      }
+      _extension_stop.request_stop();
+      try { co_await std::move(stop); }
+      catch (...) {
+         const auto stop_error = std::current_exception();
+         {
+            const auto lock = std::scoped_lock{shared.mutex};
+            shared.result.stop_error = stop_error;
+         }
+         // This error must remain visible even if unsubscribe never unblocks
+         // and the main-thread process boundary has to terminate the actor.
+         auto detail = std::array<char, 513>{};
+         try { std::rethrow_exception(stop_error); }
+         catch (const std::exception& error) {
+            const auto* text = error.what();
+            for (auto index = std::size_t{}; index + 1 < detail.size() && text[index]; ++index) {
+               const auto byte = static_cast<unsigned char>(text[index]);
+               detail[index] = byte >= 32 && byte <= 126 ? static_cast<char>(byte) : '?';
+            }
+         } catch (...) {
+            std::fputs("ERROR: PubSub Prepare stop failed with non-standard exception\n", stderr);
+         }
+         std::fprintf(stderr, "ERROR: PubSub Prepare stop failed; unsubscribe join still required: %s\n", detail.data());
+         std::fflush(stderr);
+      }
+   };
+   co_await (unsubscribe() && watchdog());
+   co_return shared.result;
+}
+
+boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge::variant& input,
+    std::chrono::steady_clock::time_point deadline) {
    {
       const auto lock = std::scoped_lock{_mutex};
       check_prepare_locked(input);
@@ -103,13 +195,15 @@ boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge
       _extension_admission_closed = true;
    }
    try {
-      const auto deadline = std::chrono::steady_clock::now() + 5s;
       auto registration = std::optional<pubsub::partial_topic>{};
       while (true) {
          auto epoch = forge::asio::notification::epoch_type{};
          {
             const auto lock = std::scoped_lock{_mutex};
             if (_overflow || !_capture_error.empty()) { throw std::runtime_error{"extension drain observed capture failure"}; }
+            if (std::chrono::steady_clock::now() >= deadline) {
+               throw std::runtime_error{"extension admitted work drain deadline exceeded"};
+            }
             if (_extension_work == 0 && _extension_validators == 0) {
                registration = _partial_registration;
                break;
@@ -119,8 +213,10 @@ boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge
          co_await _extension_drain_notification.async_wait_until(epoch, deadline, _extension_stop.get_token());
       }
       if (registration) {
+         const auto completion = co_await drain_unsubscribe(_node->async_unsubscribe(*registration),
+                                                           stop_extension_node(), deadline);
          auto failure = std::string{};
-         try { co_await _node->async_unsubscribe(*registration); }
+         try { if (completion.operation_error) { std::rethrow_exception(completion.operation_error); } }
          catch (const std::exception& error) {
             failure = std::string{error.what()}.substr(0, 512);
             for (auto& byte : failure) {
@@ -128,6 +224,7 @@ boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge
             }
             if (failure.empty()) { failure = "partial unsubscribe failed"; }
          }
+         catch (...) { failure = "partial unsubscribe failed with non-standard exception"; }
          {
             const auto lock = std::scoped_lock{_mutex};
             record_locked("partial_unsubscribe_return", "forge.node.async_unsubscribe.partial_topic",
@@ -139,7 +236,10 @@ boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge
                _partial.owned = false;
             }
          }
-         if (!failure.empty()) { throw std::runtime_error{failure}; }
+         if (completion.stop_error) { std::rethrow_exception(completion.stop_error); }
+         if (completion.watchdog_error) { std::rethrow_exception(completion.watchdog_error); }
+         if (completion.interrupted) { throw std::runtime_error{"partial unsubscribe drain interrupted"}; }
+         if (completion.operation_error) { std::rethrow_exception(completion.operation_error); }
       }
       {
          const auto lock = std::scoped_lock{_mutex};
@@ -163,6 +263,10 @@ boost::asio::awaitable<void> forge_pubsub_fixture::prepare_extension(const forge
          }
          if (_extension_drain_error.empty()) { _extension_drain_error = "extension drain failed"; }
       }
+      throw;
+   } catch (...) {
+      const auto lock = std::scoped_lock{_mutex};
+      if (_extension_drain_error.empty()) { _extension_drain_error = "extension drain failed with non-standard exception"; }
       throw;
    }
 }

@@ -2,8 +2,11 @@
 #include <array>
 #include <chrono>
 #include <coroutine>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -14,6 +17,8 @@
 #include <tuple>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_future.hpp>
 
 import forge.asio.blocking;
 import forge.asio.notification;
@@ -456,6 +461,20 @@ forge::variant forge_pubsub_fixture::result(bool finalized, bool joined, std::st
    return forge::variant{std::move(output)};
 }
 
+void forge_pubsub_fixture::run_extension_prepare(forge::asio::runtime& runtime,
+    boost::asio::awaitable<void> operation, std::chrono::steady_clock::time_point deadline) {
+   auto completion = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (completion.wait_until(deadline) != std::future_status::ready) {
+      // Failed test actor only: do not unwind coroutine owners that have not
+      // joined, and do not return to the command path that can acknowledge Prepare.
+      std::fputs("FATAL: PubSub Prepare exceeded actor process deadline; native joins incomplete; "
+                 "no Prepare ACK; exiting 86 without unwinding live owners\n", stderr);
+      std::fflush(stderr);
+      std::_Exit(86);
+   }
+   completion.get();
+}
+
 void forge_pubsub_fixture::command(const forge::variant& input, std::uint64_t sequence,
                                    forge::asio::runtime& runtime) {
    {
@@ -469,7 +488,11 @@ void forge_pubsub_fixture::command(const forge::variant& input, std::uint64_t se
        !object["kind"].is_string()) { throw std::runtime_error{"PubSub command sequence/kind mismatch"}; }
    const auto& kind = object["kind"].get_string();
    if (kind == "prepare_shutdown") {
-      if (!_extension.empty()) { forge::asio::blocking::run(runtime, prepare_extension(input)); }
+      if (!_extension.empty()) {
+         const auto started = std::chrono::steady_clock::now();
+         _prepare_process_deadline = started + 8s;
+         run_extension_prepare(runtime, prepare_extension(input, started + 5s), *_prepare_process_deadline);
+      }
       prepare_shutdown(input, sequence);
    } else if (kind == "connect" && object.size() == 4 && object["peer_id"].is_string() && object["address"].is_string()) {
       auto address = p2p::parse_endpoint(object["address"].get_string());
@@ -496,6 +519,7 @@ void forge_pubsub_fixture::command(const forge::variant& input, std::uint64_t se
    }
    record("command_done", "forge.fixture.native_operation", forge::mutable_variant_object{}
        ("command_sequence", sequence)("command_kind", kind)("status", "ok"));
+   if (kind == "prepare_shutdown") { _prepare_process_deadline.reset(); }
 }
 
 void forge_pubsub_fixture::check_prepare_locked(const forge::variant& input) const {
@@ -639,17 +663,44 @@ int forge_pubsub_fixture::run(const arguments& input, const support& composition
          std::this_thread::sleep_for(25ms);
       }
    } catch (const std::exception& failure) { error = bounded_error(failure.what()); }
+   catch (...) {
+      if (!fixture._prepare_process_deadline) { throw; }
+      error = "non-standard extension Prepare failure";
+   }
+   if (fixture._prepare_process_deadline) {
+      std::fprintf(stderr, "ERROR: PubSub Prepare failed; final native stop retains original process deadline: %s\n",
+                   error.c_str());
+      std::fflush(stderr);
+   }
    if (!fixture._extension.empty()) {
       const auto lock = std::scoped_lock{fixture._mutex};
       fixture._extension_admission_closed = true;
    }
    fixture._extension_stop.request_stop();
    try {
-      forge::asio::blocking::run(runtime, node.async_stop());
+      if (fixture._prepare_process_deadline) {
+         run_extension_prepare(runtime, node.async_stop(), *fixture._prepare_process_deadline);
+      } else {
+         forge::asio::blocking::run(runtime, node.async_stop());
+      }
       runtime.stop();
       joined = true;
    } catch (const std::exception& failure) {
+      if (fixture._prepare_process_deadline) {
+         std::fprintf(stderr, "FATAL: PubSub failed Prepare cleanup returned an error; no joined/ACK claim; "
+                              "exiting 86 without unwinding owners: %.512s\n", failure.what());
+         std::fflush(stderr);
+         std::_Exit(86);
+      }
       if (error.empty()) { error = bounded_error(failure.what()); }
+   } catch (...) {
+      if (fixture._prepare_process_deadline) {
+         std::fputs("FATAL: PubSub failed Prepare cleanup returned a non-standard error; no joined/ACK claim; "
+                    "exiting 86 without unwinding owners\n", stderr);
+         std::fflush(stderr);
+         std::_Exit(86);
+      }
+      throw;
    }
    if (error.empty()) {
       try { control.poll(args.at("control-file"), apply, true); }

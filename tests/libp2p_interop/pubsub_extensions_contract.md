@@ -83,6 +83,16 @@ arbitrary off-mesh sending if a donor's public API requires prior group state.
 
 ## Matrix And Completion
 
+Forge preparation owns a five-second cooperative drain deadline. Timeout is a
+sticky failure: it requests node stop and awaits both unsubscribe and stop; a
+successful unsubscribe caused by that stop cannot produce Prepare ACK. The
+synchronous fixture command boundary also has a hard eight-second process
+budget, including cleanup grace. If either operation is still owned at that
+boundary, the actor emits a failure diagnostic and exits nonzero without
+unwinding live coroutine owners or claiming `joined=true`. This is an explicit
+failed test process, never accepted shutdown evidence. Model/subprocess tests of
+this boundary do not claim a stalled native-network exchange.
+
 Each capability has four donor directions over native QUIC, native TCP/Yamux and
 private TCP/Noise/Yamux. Match transport/security/protocol ownership to each actual
 stream. Add mixed-version and negative tests without presenting synthetic raw

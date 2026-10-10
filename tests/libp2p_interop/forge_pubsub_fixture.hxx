@@ -1,7 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -89,6 +91,12 @@ class forge_pubsub_fixture {
       partial_work& operator=(const partial_work&) = delete;
       explicit partial_work(forge_pubsub_fixture* fixture) : owner{fixture} {}
    };
+   struct unsubscribe_result {
+      std::exception_ptr operation_error;
+      std::exception_ptr watchdog_error;
+      std::exception_ptr stop_error;
+      bool interrupted = false;
+   };
 
    void record(std::string_view kind, std::string_view source, forge::mutable_variant_object fields);
    void record_locked(std::string_view kind, std::string_view source, forge::mutable_variant_object fields);
@@ -104,7 +112,12 @@ class forge_pubsub_fixture {
    void command(const forge::variant&, std::uint64_t sequence, forge::asio::runtime&);
    void prepare_shutdown(const forge::variant&, std::uint64_t sequence);
    void check_prepare_locked(const forge::variant&) const;
-   boost::asio::awaitable<void> prepare_extension(const forge::variant&);
+   static void run_extension_prepare(forge::asio::runtime&, boost::asio::awaitable<void>,
+                                     std::chrono::steady_clock::time_point);
+   boost::asio::awaitable<void> prepare_extension(const forge::variant&, std::chrono::steady_clock::time_point);
+   boost::asio::awaitable<unsubscribe_result> drain_unsubscribe(boost::asio::awaitable<void>,
+       boost::asio::awaitable<void>, std::chrono::steady_clock::time_point);
+   boost::asio::awaitable<void> stop_extension_node();
    [[nodiscard]] forge::variant result(bool finalized, bool joined, std::string_view error) const;
    [[nodiscard]] forge::net::p2p::pubsub::options pubsub_options() const;
    boost::asio::awaitable<forge::net::p2p::pubsub::validation_result>
@@ -134,6 +147,8 @@ class forge_pubsub_fixture {
    std::string _extension;
    std::string _version;
    std::string _held_payload;
+   // Control-thread only; retained after failed Prepare for its final stop join.
+   std::optional<std::chrono::steady_clock::time_point> _prepare_process_deadline;
    std::uint64_t _hold_command = 0;
    std::uint64_t _hold_observation = 0;
    bool _hold_released = false;
