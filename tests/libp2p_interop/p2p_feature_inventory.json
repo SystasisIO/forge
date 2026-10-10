@@ -222,11 +222,12 @@
     },
     "plugin.p2p.node": {
       "owner": "plugin.p2p.node",
-      "module_count": 6,
+      "module_count": 7,
       "modules": [
         "forge.plugins.net.p2p.node.api", "forge.plugins.net.p2p.node.descriptor",
         "forge.plugins.net.p2p.node.dht_api",
-        "forge.plugins.net.p2p.node.exceptions", "forge.plugins.net.p2p.node.plugin", "forge.plugins.net.p2p.node.types"
+        "forge.plugins.net.p2p.node.exceptions", "forge.plugins.net.p2p.node.host_event_source",
+        "forge.plugins.net.p2p.node.plugin", "forge.plugins.net.p2p.node.types"
       ],
       "headers": [],
       "module_features": {
@@ -234,11 +235,12 @@
         "forge.plugins.net.p2p.node.descriptor": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.dht_api": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.exceptions": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.host_event_source": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.plugin": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.types": [ "plugin.node" ]
       },
       "header_features": {},
-      "sha256": "8d70a3e505b743c4cd7fce2ff9b93ae4109207eb9de531b292eb7c0296a2929e",
+      "sha256": "ce52e00849e5377615ab57dbe66c1589e7b90c63aa77869e68ab314e8e06757a",
       "feature_ids": [ "plugin.node" ]
     },
     "plugin.p2p.resolver": {
@@ -284,20 +286,22 @@
     },
     "plugin.p2p.diagnostics": {
       "owner": "plugin.p2p.diagnostics",
-      "module_count": 4,
+      "module_count": 5,
       "modules": [
-        "forge.plugins.net.p2p.diagnostics.api", "forge.plugins.net.p2p.diagnostics.exceptions",
+        "forge.plugins.net.p2p.diagnostics.api", "forge.plugins.net.p2p.diagnostics.events_api",
+        "forge.plugins.net.p2p.diagnostics.exceptions",
         "forge.plugins.net.p2p.diagnostics.plugin", "forge.plugins.net.p2p.diagnostics.types"
       ],
       "headers": [],
       "module_features": {
         "forge.plugins.net.p2p.diagnostics.api": [ "plugin.diagnostics" ],
+        "forge.plugins.net.p2p.diagnostics.events_api": [ "plugin.diagnostics" ],
         "forge.plugins.net.p2p.diagnostics.exceptions": [ "plugin.diagnostics" ],
         "forge.plugins.net.p2p.diagnostics.plugin": [ "plugin.diagnostics" ],
         "forge.plugins.net.p2p.diagnostics.types": [ "plugin.diagnostics" ]
       },
       "header_features": {},
-      "sha256": "895cfc0f6b0fdeab9d2db5a3eacbcdac2cd4947b0775e829efdf9c53427cc6ed",
+      "sha256": "90a3bc06cd3dadb5c27eb63fa54f98d1cdfea2f6d1b13463cf903e39265799b0",
       "feature_ids": [ "plugin.diagnostics" ]
     }
   },
@@ -1197,6 +1201,7 @@
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/api.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/descriptor.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/dht_api.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/host_event_source.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/exceptions.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/plugin.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/types.cppm",
@@ -1220,7 +1225,7 @@
       "persistence": "none",
       "maintenance": "explicit publication replaces generations safely; retirement closes and drains exact generations, while shutdown waits for inflight publication and retirement before deterministic fallback close; resolver does not discover peers",
       "diagnostics": "local API catalog snapshots and typed duplicate, stopping and retirement failures; no additional resolver wire diagnostic",
-      "intended_disposition": "preserve explicit application API metadata publication/resolution after the inspected net-plugin identity migration; resolver is not peer discovery or the missing Stage 7 DHT/provider consumer API",
+      "intended_disposition": "preserve explicit application API metadata publication/resolution after the inspected net-plugin identity migration; resolver is not peer discovery and does not replace the separate node.dht local consumer API",
       "builtin_protocols": [],
       "capabilities": [],
       "negotiated_protocol_ids": [ "/forge/api/resolver/2" ],
@@ -1278,14 +1283,15 @@
       "resource_ownership": "read-only bounded snapshot projection",
       "persistence": "none",
       "maintenance": "none",
-      "diagnostics": "existing snapshot omits several inactive lifecycle and degradation causes",
-      "intended_disposition": "preserve bounded read-only snapshots after the inspected net-plugin identity migration and expand effective-state coverage; snapshots do not supply the missing Stage 7 host-event consumer API or mutable node access",
+      "diagnostics": "bounded native snapshots and additive local events API delegate the existing host-state subscription without an extra queue; whole-plugin configuration parity remains pending",
+      "intended_disposition": "preserve bounded read-only snapshots and native host-event lifetime; complete Stage 7 effective-state/configuration coverage without mutable node access or a whole-stack production claim",
       "builtin_protocols": [],
       "capabilities": [],
       "evidence": {
         "layers": [ "state_machine", "official_plugin" ],
         "source_paths": [
           "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/api.cppm",
+          "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/events_api.cppm",
           "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/exceptions.cppm",
           "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/plugin.cppm",
           "plugins/net/p2p/diagnostics/include/forge/plugins/net/p2p/diagnostics/types.cppm",

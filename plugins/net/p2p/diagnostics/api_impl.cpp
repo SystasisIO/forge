@@ -3,6 +3,8 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -13,6 +15,7 @@ import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.resource_manager;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.host_event_source;
 import forge.plugins.net.p2p.diagnostics.api;
 import forge.plugins.net.p2p.diagnostics.exceptions;
 import forge.plugins.net.p2p.diagnostics.types;
@@ -30,7 +33,7 @@ forge::net::p2p::diagnostics::snapshot plugin::api_impl::snapshot() const {
 }
 
 forge::net::p2p::diagnostics::snapshot plugin::api_impl::snapshot(forge::net::p2p::diagnostics::options options) const {
-   return impl_->require_source().snapshot(options);
+   return impl_->snapshot(options);
 }
 
 forge::net::p2p::diagnostics::network_state plugin::api_impl::network() const {

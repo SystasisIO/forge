@@ -45,6 +45,7 @@ class plugin final : public forge::app::plugin {
  private:
    struct impl;
    class api_impl;
+   class events_api_impl;
    std::shared_ptr<impl> impl_;
 };
 

@@ -76,6 +76,9 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
+import forge.plugins.net.p2p.node.host_event_source;
+import forge.net.p2p.host_event;
+import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.ipns;
 import forge.net.p2p.provider_registration;
 import forge.chrono.timestamp;
@@ -91,6 +94,7 @@ import forge.plugins.db.store.api;
 #include "details/object_peer_state_adapter.hxx"
 #include "details/p2p_state_schema.hxx"
 #include "details/plugin_diagnostics_source_adapter.hxx"
+#include "details/plugin_host_event_source_adapter.hxx"
 #include "details/plugin_impl.hxx"
 #include "details/plugin_pubsub_source_adapter.hxx"
 
@@ -138,6 +142,7 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
    provider.install<api>(std::make_shared<api_impl>(impl_));
    provider.install<dht_api>(std::make_shared<dht_api_impl>(impl_));
    provider.install<diagnostics_source>(std::make_shared<diagnostics_source_adapter>(impl_));
+   provider.install<host_event_source>(std::make_shared<host_event_source_adapter>(impl_));
    provider.install<pubsub_source>(std::make_shared<pubsub_source_adapter>(impl_));
    co_return;
 }

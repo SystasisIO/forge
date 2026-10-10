@@ -56,6 +56,7 @@ parallel plugin DTO or network runtime.
 | --- | --- | --- |
 | `node::api` | Local identity/addresses, connection to a peer, API publication and API connections | No shared-node stop, listener or identity mutation |
 | `node::dht_api` | Profile-aware find peer/providers, provide, put/get value, typed IPNS record creation | Return the existing provider registration; never expose identity private material |
+| `node::configuration_api` | Pre-start connection gater and custom DHT value-policy contributions | Local composition only; reject duplicate/unknown policies and freeze before node startup work |
 | `node::protocol_api` | Owned custom protocol registration and stream opening | Protect built-ins/API routes and replacement generations; unregister closes admission, not unrelated existing streams |
 | `pubsub::api` | Ordinary/typed publishing and subscriptions, validation, partial-topic registration, advertisement, discovery and send | Preserve immutable registration tokens and distinguish requested cancellation from completed callbacks |
 | `diagnostics::api`, additive `diagnostics::events_api` | Bounded node/resource/peer/DHT/relay/PubSub snapshots and existing typed host events | Read-only; reuse the library event subscription and resynchronization semantics |
@@ -106,6 +107,18 @@ Do not serialize arbitrary callbacks into YAML or copy library operational DTOs
 into a second plugin model. Secrets use the existing secrets dependency and must
 not appear in errors or diagnostics. Incompatible private-network transport
 combinations must retain the raw node's fail-fast validation.
+
+`configuration_api` accepts one connection gater and one complete native value
+policy set per configured custom values-enabled profile. Validate all three
+callbacks (`validate`, `select`, `expiry`) and namespace prefixes with the
+existing native validator. Configuration keeps profile declarations until
+consumer initialization can install the required policies. `begin_startup()`
+atomically validates/completes the native profiles and freezes contributions
+before its first await, identity reads and P2P persistence opens. This does not
+claim to precede the shared DB Store driver's earlier `after_initialize()` open.
+Never construct a temporary permissive or values-disabled profile to bypass
+missing validation. Global gater callbacks must be nonblocking and thread-safe;
+callbacks must retain their own state rather than a raw consumer pointer.
 
 UPnP, P2P WebSocket, WebTransport and WebRTC are not additions to this Stage 7 PR.
 Swarm keeps its typed Forge API binding; raw streams are not a Swarm bypass.
@@ -207,6 +220,23 @@ gates pass, describe this as test integration with an evolving stack.
 - Native P2P, MDBX and RocksDB foundation targets built in the coordinator's
   single macOS `build/stage7` tree with `-j4`. This is build evidence, not a
   Stage 7 runtime or donor-compatibility verdict.
+- Additive host-event source/diagnostics contracts are implemented without an
+  extra queue. Eight focused tests passed (97 assertions), including native
+  initial state, canceled reads, stop admission and source/handle lifetime.
+  Both independent source reviews found no new issues in this adapter slice.
+- The first full native run exposed three system-DNS-dependent fixtures and a
+  nonportable closed-port assumption. DNS tests now use the existing local
+  authoritative fixture; TCP refusal requires exact native errno/category and
+  joined cleanup, not an arbitrary `peer_not_found` error. Initial failed logs
+  are retained separately from the corrected run.
+- The new event tests exposed a real raw-node startup defect: the published
+  host snapshot could retain `bootstrapping` after entering `maintenance`.
+  Startup now publishes the transition before returning. A deterministic raw
+  regression prevents background callbacks from masking a missing publication.
+- After these fixes, the full macOS `test_forge_quic_p2p` suite passed (1,214
+  active cases), as did `test_forge_plugins` (109 cases). Structure and source
+  inventory checks passed. This is the DHT/events checkpoint, not final-head
+  acceptance for the remaining Stage 7 implementation.
 - Review identified existing PubSub adapter races in join completion,
   last-unsubscribe versus a new join, shutdown admission and source lifetime.
   Their fixes and deterministic regressions are required before extending the

@@ -2,8 +2,10 @@ add_library(
    forge_plugins_net_p2p_diagnostics STATIC
       plugin.cpp
       api_impl.cpp
+      events_api_impl.cpp
       config.cpp
       plugin_impl.cpp
+      details/events_api_impl.hxx
 )
 forge_target_modules_at(forge_plugins_net_p2p_diagnostics plugins/net/p2p/diagnostics)
 

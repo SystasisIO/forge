@@ -49,6 +49,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Extra API ids:
   - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
+  - `forge.plugins.net.p2p.node.host_event_source` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.pubsub_source`
 - Config section: `plugins.net.p2p.node`
 - Public modules:
@@ -56,6 +57,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
   - `forge.plugins.net.p2p.node.descriptor`
   - `forge.plugins.net.p2p.node.api`
   - `forge.plugins.net.p2p.node.dht_api`
+  - `forge.plugins.net.p2p.node.host_event_source`
   - `forge.plugins.net.p2p.node.types`
   - `forge.plugins.net.p2p.node.exceptions`
 
@@ -78,6 +80,8 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Delegates profile-aware peer/provider discovery, owned provider publication,
   validated value operations and typed IPNS creation through `dht_api`.
 - Provides internal source APIs used by focused diagnostics and pubsub plugins.
+- Delegates native host-state snapshots and subscriptions through
+  `host_event_source`; the diagnostics plugin exposes the consumer events API.
 
 ### DHT Consumer Contract
 
