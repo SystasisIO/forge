@@ -3,9 +3,10 @@ add_library(
       descriptor.cpp
       plugin.cpp
       config.cpp
-      join_waiter.cpp
       project_message.cpp
       plugin_impl.cpp
+      plugin_impl_lifecycle.cpp
+      api_impl_topics.cpp
       api_impl.cpp
 )
 forge_target_modules_at(forge_plugins_net_p2p_pubsub plugins/net/p2p/pubsub)
@@ -28,5 +29,6 @@ target_link_libraries(
       forge_schema
       forge_raw
       forge_exceptions
+      forge_asio
       Boost::asio
 )

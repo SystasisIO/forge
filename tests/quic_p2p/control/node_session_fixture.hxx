@@ -18,6 +18,7 @@ struct node_session_fixture {
    static void native_heartbeat_allocation_recovery();
    static void native_retry(bool rejected, bool legacy = false);
    static void native_unsubscribe_rollback();
+   static void native_unsubscribe_after_stop();
    static void native_gate_supersession();
    static void native_snapshot_supersession();
    static void native_dispatch_request(bool stop);

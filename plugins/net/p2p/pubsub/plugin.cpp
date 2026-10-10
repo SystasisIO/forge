@@ -5,6 +5,7 @@ module;
 #include <boost/asio/steady_timer.hpp>
 
 #include <map>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -20,6 +21,8 @@ import forge.app.plugin_context;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.exceptions;
+import forge.asio.gate;
+import forge.asio.notification;
 import forge.net.p2p.pubsub;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.pubsub.api;
@@ -49,57 +52,34 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
 boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
    auto config = decode_config(view);
    validate_config(config);
-   impl_->settings = std::move(config);
-   co_return;
+   impl_->configure(std::move(config));
+   return impl::ready_owned(impl_);
 }
 
 boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
-   co_return;
+   return impl::ready_owned(impl_);
 }
 
 boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
-   impl_->source = context.apis()
+   auto source = context.apis()
                       .get<forge::plugins::net::p2p::node::pubsub_source>(
                          {.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 1, .min_revision = 0})
                       .shared();
-   impl_->source->enable(core_options_for(impl_->settings));
-   impl_->initialized = true;
-   impl_->stopping = false;
-   co_return;
+   impl_->initialize(std::move(source));
+   return impl::ready_owned(impl_);
 }
 
 boost::asio::awaitable<void> plugin::startup() {
-   co_return;
+   return impl::ready_owned(impl_);
 }
 
 void plugin::request_stop() noexcept {
-   impl_->stopping = true;
+   impl_->request_stop();
 }
 
 boost::asio::awaitable<void> plugin::shutdown() {
-   request_stop();
-   std::vector<forge::net::p2p::pubsub::topic> topics;
-   {
-      auto lock = std::scoped_lock{impl_->mutex};
-      topics.reserve(impl_->topics.size());
-      for (const auto& [topic, _] : impl_->topics) {
-         topics.push_back(forge::net::p2p::pubsub::topic{.value = topic});
-      }
-      impl_->topics.clear();
-   }
-   if (impl_->source) {
-      for (auto& topic : topics) {
-         try {
-            co_await impl_->source->async_leave_topic(std::move(topic));
-         } catch (...) {
-            forge::exceptions::capture_and_log("P2P PubSub unsubscribe during shutdown failed");
-         }
-      }
-   }
-   impl_->initialized = false;
-   impl_->source = nullptr;
-   co_return;
+   return impl::shutdown_owned(impl_);
 }
 
 forge::app::plugin_descriptor descriptor() {

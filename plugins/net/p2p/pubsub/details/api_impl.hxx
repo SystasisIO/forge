@@ -15,6 +15,14 @@ class plugin::api_impl final : public api {
    [[nodiscard]] ::forge::plugins::net::p2p::pubsub::snapshot snapshot() const override;
 
  private:
+   static boost::asio::awaitable<message> publish_owned(std::shared_ptr<plugin::impl> self,
+       forge::net::p2p::pubsub::topic subject, std::vector<std::uint8_t> data, publish_options options);
+   static boost::asio::awaitable<subscription> subscribe_owned(std::shared_ptr<plugin::impl> self,
+       forge::net::p2p::pubsub::topic subject, handler callback, subscribe_options options);
+   static boost::asio::awaitable<void> unsubscribe_owned(std::shared_ptr<plugin::impl> self, subscription value);
+   static boost::asio::awaitable<subscription> subscribe_transition(std::shared_ptr<plugin::impl> self,
+       forge::net::p2p::pubsub::topic subject, handler callback, subscribe_options options);
+   static boost::asio::awaitable<void> unsubscribe_transition(std::shared_ptr<plugin::impl> self, subscription value);
    std::shared_ptr<plugin::impl> impl_;
 };
 

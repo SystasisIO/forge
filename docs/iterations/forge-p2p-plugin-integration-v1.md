@@ -276,8 +276,23 @@ gates pass, describe this as test integration with an evolving stack.
   P2P cache fixtures for both backends. This does not claim Linux execution.
 - Review identified existing PubSub adapter races in join completion,
   last-unsubscribe versus a new join, shutdown admission and source lifetime.
-  Their fixes and deterministic regressions are required before extending the
-  adapter with partial-topic operations.
+  These are now fixed using the existing gate and notification primitives,
+  bounded pending reservations and joined cancellation-isolated operations.
+  Twenty focused regressions passed (119 assertions), including late native
+  cleanup, self-unsubscribe and capture destruction before shutdown completion.
+- Full-topic native unsubscribe now permits idempotent local cleanup after
+  stop, without network writes or a false claim of joined callbacks. Its native
+  two-node regression passed; token-scoped partial unsubscribe remains closed
+  after stop. Independent source reviews found no remaining issues in this
+  bounded foundation slice.
+- The full native control-queue suite initially exposed a pre-existing test
+  race: its RESET barrier observed reserved bytes before protocol-open had
+  published the stream. The corrected barrier requires the real stream while
+  preserving exact failure-count assertions. Both full suites then passed:
+  62 control-queue cases and 129 plugin cases. Initial failures are retained;
+  this does not substitute for final-head package or donor acceptance.
+- Partial-topic facade operations, protocol ownership, policy contributions
+  and the remaining configuration mapping are still pending.
 - The complete Stage 7 runtime, package and donor gates remain pending; the
   DHT-slice result is not a whole-PR or production-readiness verdict.
 - Product migration remains out of scope.

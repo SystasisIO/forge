@@ -1760,6 +1760,7 @@ add_executable(
    plugins/plugins_tests.cpp
    plugins/p2p_dht_api_tests.cpp
    plugins/p2p_host_event_api_tests.cpp
+   plugins/p2p_pubsub_lifecycle_tests.cpp
    plugins/http_server_tests.cpp
    plugins/net_identity_tests.cpp
    plugins/config_assertions.cpp

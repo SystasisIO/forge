@@ -111,6 +111,29 @@ registry.register_plugin(forge::plugins::net::p2p::pubsub::descriptor());
 - Signing publish messages is transport/pubsub integrity support, not business
   trust policy.
 
+## Lifecycle And Concurrency
+
+Async facade calls retain their implementation at call time. Typed publish
+serializes its argument immediately; the caller's value need not survive until
+the returned awaitable is started. Source calls use an owned snapshot outside
+the plugin mutex.
+
+Each topic serializes its native join/leave transitions independently. Pending
+subscriptions reserve both topic and handler capacity before waiting. A failed
+last leave retains its subscription token and cleanup state: retry unsubscribe
+with that token before joining the topic again.
+
+`request_stop()` closes admission, including queued transitions. Shutdown joins
+admitted operations and handlers, compensates potentially mutating joins, and
+leaves native topics before releasing the source. Concurrent shutdown calls
+observe one completion/error. Cleanup failures are retained and rethrown, not
+reported as successful disposal. A handler may unsubscribe itself; unsubscribe
+does not wait for that handler to return.
+
+Handler deadlines are cooperative: cancellation does not detach a handler that
+ignores it. Do not wait for plugin shutdown from inside one of its own handlers.
+There is no hard shutdown deadline or background cleanup worker.
+
 ## Common Mistakes
 
 - Treating pubsub delivery as durable or exactly-once.

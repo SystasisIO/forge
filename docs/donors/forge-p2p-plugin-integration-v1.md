@@ -46,6 +46,25 @@ sessions. API publications have separately established application ownership.
 Do not serialize validators, connection gates or callbacks into YAML; contribute
 typed code before startup and reuse node-side validation.
 
+## PubSub Adapter Ownership
+
+The adapter multiplexes consumer callbacks over one native topic registration.
+Its per-topic transition gate and sticky completion notification reuse
+`forge_asio`; they are not a second GossipSub runtime. Pending subscriptions
+count toward limits, failed mutating joins are compensated, and shutdown joins
+admitted operations and callbacks before releasing their captures.
+
+Full-topic unsubscribe after node admission closes performs local cleanup only.
+It does not send PRUNE or promise completion of already admitted callbacks;
+the native lifecycle still owns that join. Partial registration tokens remain
+generation-scoped and fail closed after owner shutdown. This local adapter
+cleanup contract does not change libp2p subscription frames or donor behavior.
+
+Cancellation filters are isolated inside necessarily awaited child operations
+where cleanup must suppress cancellation. They must not leak into the caller's
+next operation. The focused tests include caller cancellation after self-leave,
+mutating join failure, native stop races and callback-capture destruction.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

@@ -281,7 +281,7 @@
         "forge.plugins.net.p2p.pubsub.types": [ "plugin.pubsub" ]
       },
       "header_features": {},
-      "sha256": "1824f2bce4d13cfa41fe370b057f6012e5f727755a858d4ca277fb3d2d963227",
+      "sha256": "f18a8aa88190dfb73686700d5f67eb5b0a33d9c8ba295e72d7c614cef7617883",
       "feature_ids": [ "plugin.pubsub" ]
     },
     "plugin.p2p.diagnostics": {

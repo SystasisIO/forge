@@ -241,6 +241,13 @@ The returned `partial_topic` is a non-owning registration token. It binds
 Copying or destroying it does not unsubscribe. Replacement invalidates the old
 token, preventing a delayed callback from changing the replacement's state.
 
+Full-topic `async_unsubscribe(topic)` remains idempotent after node admission
+closes: it removes local handlers and partial registrations without sending
+network updates. Token-scoped partial unsubscribe still rejects a stopped
+owner. Unsubscribe does not join callbacks already admitted; `async_stop()`
+owns that join. Release callback captures and invoke stop callbacks outside
+node locks.
+
 The application owns group IDs, part encoding, authenticity checks, metadata
 replacement and reconstruction. A group ID must be usable before the full
 message is known; blindly hashing the completed payload is not a suitable

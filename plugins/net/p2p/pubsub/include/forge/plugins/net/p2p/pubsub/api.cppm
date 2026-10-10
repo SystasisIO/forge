@@ -49,7 +49,7 @@ class api : public forge::api::core::contract<api> {
                                            publish_options options = {}) {
       auto packed = forge::raw::pack(value);
       auto bytes = std::vector<std::uint8_t>{packed.begin(), packed.end()};
-      co_return co_await publish(std::move(subject), std::move(bytes), options);
+      return publish(std::move(subject), std::move(bytes), options);
    }
 
    template <typename T>
@@ -66,7 +66,7 @@ class api : public forge::api::core::contract<api> {
          };
          co_return co_await callback(std::move(typed));
       };
-      co_return co_await subscribe(std::move(subject), std::move(wrapper), options);
+      return subscribe(std::move(subject), std::move(wrapper), options);
    }
 };
 
