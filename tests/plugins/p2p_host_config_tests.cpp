@@ -203,7 +203,7 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_all_fields_reject_bad_numbers_and_native_ze
    for (const auto& field : fields) {
       BOOST_TEST_CONTEXT(field.path) {
          const auto path = std::string{section} + "." + field.path;
-         for (const auto invalid : {value{std::int64_t{-1}}, value{1.5}, value{"18446744073709551616"}}) {
+         for (const auto& invalid : {value{std::int64_t{-1}}, value{1.5}, value{"18446744073709551616"}}) {
             auto document = valid;
             document.set(path, invalid);
             BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
@@ -222,7 +222,8 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_all_fields_reject_bad_numbers_and_native_ze
 BOOST_AUTO_TEST_CASE(p2p_host_config_checked_duration_and_native_count_conversion_boundaries) {
    const auto maximum_ms = (std::numeric_limits<std::chrono::milliseconds::rep>::max)();
    BOOST_TEST(np::to_ms(static_cast<std::uint64_t>(maximum_ms)).count() == maximum_ms);
-   BOOST_CHECK_THROW(np::to_ms((std::numeric_limits<std::uint64_t>::max)()), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(static_cast<void>(np::to_ms((std::numeric_limits<std::uint64_t>::max)())),
+                     np::exceptions::invalid_config);
    const auto largest_size = static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)());
    auto config = np::config{};
    config.peer_state.max_peers = largest_size;
