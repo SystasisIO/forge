@@ -13,7 +13,6 @@ find_package(
       plugins_db_store
       plugins_net_http_server
       plugins_net_p2p_node
-      plugins_net_p2p_pubsub
       plugins_net_p2p_resolver
 )
 
@@ -25,6 +24,5 @@ target_link_libraries(
       Forge::forge_plugins_db_store
       Forge::forge_plugins_net_http_server
       Forge::forge_plugins_net_p2p_node
-      Forge::forge_plugins_net_p2p_pubsub
       Forge::forge_plugins_net_p2p_resolver
 )

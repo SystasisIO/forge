@@ -8,6 +8,7 @@ module;
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <list>
 #include <memory>
@@ -35,6 +36,7 @@ import forge.api.transport.options;
 import forge.api.p2p.binding;
 import forge.api.p2p.publication;
 import forge.asio.notification;
+import forge.asio.gate;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.exceptions;
@@ -52,11 +54,13 @@ import forge.net.p2p.scoring;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.pubsub_api;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 
 #include "details/plugin_impl.hxx"
+#include "details/pubsub_service.hxx"
 #include "details/config.hxx"
 #include "details/protocol_registry.hxx"
 
@@ -64,7 +68,8 @@ namespace forge::plugins::net::p2p::node {
 plugin::impl::impl()
     : configuration{std::make_shared<const detail::configuration_snapshot>()},
       protocols{detail::make_protocol_registry(configuration->options.limits.max_protocol_handlers)},
-      contributions{std::make_shared<detail::peer_contributions>()} {}
+      contributions{std::make_shared<detail::peer_contributions>()},
+      pubsub{std::make_shared<detail::pubsub_service>()} {}
 plugin::impl::~impl() = default;
 
 void plugin::impl::request_stop() noexcept {
@@ -74,6 +79,7 @@ void plugin::impl::request_stop() noexcept {
       phase.store(lifecycle_phase::stopping, std::memory_order_release);
    }
    contributions->close();
+   pubsub->request_stop();
    detail::request_close_protocol_registry(protocols);
    if (auto current = node_snapshot()) {
       try {
@@ -141,6 +147,7 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::require_node() const {
 }
 
 std::shared_ptr<forge::net::p2p::node> plugin::impl::require_running_node() const {
+   const auto lock = std::scoped_lock{configuration_mutex};
    const auto started = is_started();
    if (stop_requested.load(std::memory_order_acquire)) {
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P node plugin admission is closed");

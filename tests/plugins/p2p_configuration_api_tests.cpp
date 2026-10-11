@@ -53,8 +53,11 @@ import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.configuration_api;
+import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
+import forge.plugins.net.p2p.node.pubsub_api;
+import forge.plugins.net.p2p.node.pubsub_types;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 
@@ -143,13 +146,13 @@ struct fixture {
    np::plugin node;
    std::shared_ptr<identity_source> identity = std::make_shared<identity_source>();
    std::shared_ptr<np::configuration_api> configuration;
-   std::shared_ptr<np::pubsub_source> pubsub;
    std::shared_ptr<np::protocol_api> raw;
    forge::config::core::document document;
 
    explicit fixture(bool with_secrets = true) {
       document.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
       document.set("plugins.net.p2p.node.topology.mode", "static-only");
+      document.set("plugins.net.p2p.node.pubsub.enabled", true);
       if (with_secrets) {
          document.set("plugins.net.p2p.node.identity.certificate-secret", "configuration/cert");
          document.set("plugins.net.p2p.node.identity.private-key-secret", "configuration/key");
@@ -161,7 +164,6 @@ struct fixture {
       auto installer = forge::api::core::installer{apis};
       run(node.provide(installer));
       configuration = apis.get<np::configuration_api>(np::configuration_api::ref()).shared();
-      pubsub = apis.get<np::pubsub_source>(np::pubsub_source::ref()).shared();
       raw = apis.get<np::protocol_api>(np::protocol_api::ref()).shared();
    }
    ~fixture() {
@@ -209,7 +211,7 @@ struct traced_copy {
 void install_copy_probe(fixture& f, const std::shared_ptr<copy_control>& control) {
    auto options = p2p::pubsub::options{};
    options.tracer = traced_copy{control};
-   f.pubsub->enable(std::move(options));
+   f.configuration->set_pubsub_options(std::move(options));
 }
 struct retirement_result {
    std::atomic_bool completed{false};
@@ -225,6 +227,21 @@ struct retired_capture {
    }
 };
 } // namespace
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_disabled_pubsub_keeps_consumer_admission_closed) {
+   fixture f{false};
+   f.document.set("plugins.net.p2p.node.pubsub.enabled", false);
+   f.configure();
+   BOOST_CHECK_THROW(f.configuration->set_pubsub_options({}), np::exceptions::invalid_config);
+   f.initialize();
+   f.run(f.node.startup());
+   const auto pubsub = f.apis.get<np::pubsub_api>(np::pubsub_api::ref());
+   BOOST_CHECK_THROW(f.run(pubsub->publish({"disabled"}, {1})), p2p::exceptions::unsupported_protocol);
+   BOOST_CHECK_THROW(f.run(pubsub->subscribe({"disabled"},
+       [](np::message) -> boost::asio::awaitable<p2p::pubsub::validation_result> {
+          co_return p2p::pubsub::validation_result::accept;
+       })), p2p::exceptions::unsupported_protocol);
+}
 
 BOOST_AUTO_TEST_CASE(p2p_configuration_contract_gater_and_late_handle) {
    std::shared_ptr<np::configuration_api> late;
@@ -265,7 +282,7 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_gater_denies_native_peer_dial_and_allow_c
    denied.configuration->set_connection_gater(deny);
    denied.initialize(); denied.run(denied.node.startup());
    const auto denied_api = denied.apis.get<np::api>(np::api::ref()).shared();
-   const auto denied_diagnostics = denied.apis.get<np::diagnostics_source>(np::diagnostics_source::ref()).shared();
+   const auto denied_diagnostics = denied.apis.get<np::diagnostics_api>(np::diagnostics_api::ref()).shared();
    BOOST_CHECK_EXCEPTION(denied.run(denied_api->connect(*endpoint, options)), forge::exceptions::base,
                          [](const auto& error) {
       return p2p::exceptions::is(error, p2p::exceptions::code::connection_rejected);
@@ -410,14 +427,14 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_retired_callback_destructor_reenters_befo
       // ownership before measuring release by the configuration API.
       auto options = p2p::pubsub::options{};
       options.tracer = [capture](const p2p::pubsub::trace_event&) {};
-      f.pubsub->enable(std::move(options));
+      f.configuration->set_pubsub_options(std::move(options));
    }
    const auto retired = std::weak_ptr{capture};
    capture.reset();
    BOOST_REQUIRE_EQUAL(retired.use_count(), 1);
    auto completed_at_return = false;
    bounded([&] {
-      f.pubsub->enable({});
+      f.configuration->set_pubsub_options({});
       completed_at_return = result->completed.load(std::memory_order_acquire);
    });
    BOOST_REQUIRE(completed_at_return);

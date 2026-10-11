@@ -107,14 +107,12 @@ import forge.api.p2p.binding;
 import forge.api.p2p.publication;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.crypto.secrets.api;
-import forge.plugins.net.p2p.diagnostics.types;
-import forge.plugins.net.p2p.diagnostics.exceptions;
-import forge.plugins.net.p2p.diagnostics.api;
-import forge.plugins.net.p2p.diagnostics.plugin;
-import forge.plugins.net.p2p.pubsub.types;
-import forge.plugins.net.p2p.pubsub.exceptions;
-import forge.plugins.net.p2p.pubsub.api;
-import forge.plugins.net.p2p.pubsub.plugin;
+import forge.plugins.net.p2p.node.diagnostics_types;
+import forge.plugins.net.p2p.node.diagnostics_exceptions;
+import forge.plugins.net.p2p.node.diagnostics_api;
+import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.pubsub_exceptions;
+import forge.plugins.net.p2p.node.pubsub_api;
 import forge.plugins.net.p2p.resolver.types;
 import forge.plugins.net.p2p.resolver.exceptions;
 import forge.plugins.net.p2p.resolver.api;
@@ -532,13 +530,13 @@ class receipt_test_api_impl final : public receipt_test_api {
 
 struct received_pubsub_messages {
    mutable std::mutex mutex;
-   std::vector<forge::plugins::net::p2p::pubsub::message> raw;
-   std::vector<forge::plugins::net::p2p::pubsub::typed_message<pubsub_payload>> typed;
+   std::vector<forge::plugins::net::p2p::node::message> raw;
+   std::vector<forge::plugins::net::p2p::node::typed_message<pubsub_payload>> typed;
    std::size_t accepted = 0;
    std::size_t rejected = 0;
    std::size_t ignored = 0;
 
-   void push(forge::plugins::net::p2p::pubsub::message value, forge::net::p2p::pubsub::validation_result result) {
+   void push(forge::plugins::net::p2p::node::message value, forge::net::p2p::pubsub::validation_result result) {
       auto lock = std::scoped_lock{mutex};
       raw.push_back(std::move(value));
       switch (result) {
@@ -556,7 +554,7 @@ struct received_pubsub_messages {
       }
    }
 
-   void push(forge::plugins::net::p2p::pubsub::typed_message<pubsub_payload> value) {
+   void push(forge::plugins::net::p2p::node::typed_message<pubsub_payload> value) {
       auto lock = std::scoped_lock{mutex};
       typed.push_back(std::move(value));
    }
@@ -585,7 +583,7 @@ bool wait_for_count(const received_pubsub_messages& messages, std::size_t raw, s
 }
 
 template <typename Predicate>
-bool wait_for_pubsub_snapshot(const forge::plugins::net::p2p::pubsub::api& pubsub, Predicate predicate,
+bool wait_for_pubsub_snapshot(const forge::plugins::net::p2p::node::pubsub_api& pubsub, Predicate predicate,
                               std::chrono::milliseconds timeout) {
    const auto deadline = std::chrono::steady_clock::now() + timeout;
    while (std::chrono::steady_clock::now() < deadline) {
@@ -597,9 +595,9 @@ bool wait_for_pubsub_snapshot(const forge::plugins::net::p2p::pubsub::api& pubsu
    return predicate(pubsub.snapshot());
 }
 
-bool wait_for_pubsub_peer(const forge::plugins::net::p2p::pubsub::api& pubsub, std::chrono::milliseconds timeout) {
+bool wait_for_pubsub_peer(const forge::plugins::net::p2p::node::pubsub_api& pubsub, std::chrono::milliseconds timeout) {
    return wait_for_pubsub_snapshot(
-       pubsub, [](const forge::plugins::net::p2p::pubsub::snapshot& snapshot) { return snapshot.core.peers > 0; }, timeout);
+       pubsub, [](const forge::plugins::net::p2p::node::pubsub_snapshot& snapshot) { return snapshot.core.peers > 0; }, timeout);
 }
 
 template <typename Predicate>
@@ -616,177 +614,6 @@ boost::asio::awaitable<bool> async_wait_for_condition(Predicate predicate, std::
    co_return predicate();
 }
 
-struct fake_pubsub_source_state {
-   mutable std::mutex mutex;
-   bool release_join = false;
-   bool fail_join = false;
-   std::size_t enable_calls = 0;
-   std::size_t join_attempts = 0;
-   std::size_t leave_attempts = 0;
-   std::size_t joined_handlers = 0;
-
-   [[nodiscard]] std::size_t joins() const {
-      auto lock = std::scoped_lock{mutex};
-      return join_attempts;
-   }
-
-   [[nodiscard]] bool released() const {
-      auto lock = std::scoped_lock{mutex};
-      return release_join;
-   }
-
-   void release(bool fail) {
-      auto lock = std::scoped_lock{mutex};
-      fail_join = fail;
-      release_join = true;
-   }
-};
-
-struct subscribe_task_result {
-   mutable std::mutex mutex;
-   bool done = false;
-   std::exception_ptr error;
-   std::optional<forge::plugins::net::p2p::pubsub::subscription> value;
-
-   void complete(forge::plugins::net::p2p::pubsub::subscription subscription) {
-      auto lock = std::scoped_lock{mutex};
-      value = std::move(subscription);
-      done = true;
-   }
-
-   void fail(std::exception_ptr exception) {
-      auto lock = std::scoped_lock{mutex};
-      error = std::move(exception);
-      done = true;
-   }
-
-   [[nodiscard]] bool finished() const {
-      auto lock = std::scoped_lock{mutex};
-      return done;
-   }
-
-   [[nodiscard]] bool failed() const {
-      auto lock = std::scoped_lock{mutex};
-      return error != nullptr;
-   }
-};
-
-class fake_pubsub_source final : public forge::plugins::net::p2p::node::pubsub_source {
- public:
-   boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler callback, forge::net::p2p::pubsub::partial_options options) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return forge::net::p2p::pubsub::partial_topic{};
-   }
-   boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> async_partial_peers(forge::net::p2p::pubsub::partial_topic token) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return std::vector<forge::net::p2p::peer_id>{};
-   }
-   boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token, forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   explicit fake_pubsub_source(std::shared_ptr<fake_pubsub_source_state> state) : state_{std::move(state)} {}
-
-   void enable(forge::net::p2p::pubsub::options) override {
-      auto lock = std::scoped_lock{state_->mutex};
-      ++state_->enable_calls;
-   }
-
-   [[nodiscard]] forge::net::p2p::peer_id local_peer() const override {
-      return forge::net::p2p::peer_id{.value = "fake-pubsub-peer"};
-   }
-
-   boost::asio::awaitable<forge::net::p2p::pubsub::message>
-   async_publish_message(forge::net::p2p::pubsub::topic subject, std::vector<std::uint8_t> data,
-                         forge::net::p2p::pubsub::publish_options) override {
-      co_return forge::net::p2p::pubsub::message{
-          .from = local_peer(),
-          .data = std::move(data),
-          .seqno = {1},
-          .subject = std::move(subject),
-      };
-   }
-
-   boost::asio::awaitable<forge::net::p2p::pubsub::subscription>
-   async_join_topic(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler) override {
-      auto executor = co_await boost::asio::this_coro::executor;
-      {
-         auto lock = std::scoped_lock{state_->mutex};
-         ++state_->join_attempts;
-      }
-      while (!state_->released()) {
-         auto timer = boost::asio::steady_timer{executor, std::chrono::milliseconds{10}};
-         co_await timer.async_wait(boost::asio::use_awaitable);
-      }
-      {
-         auto lock = std::scoped_lock{state_->mutex};
-         if (state_->fail_join) {
-            FORGE_THROW_EXCEPTION(forge::plugins::net::p2p::pubsub::exceptions::handler_limit,
-                                  "fake PubSub source join failed");
-         }
-         ++state_->joined_handlers;
-      }
-      co_return forge::net::p2p::pubsub::subscription{.subscribe = true, .subject = std::move(subject)};
-   }
-
-   boost::asio::awaitable<void> async_leave_topic(forge::net::p2p::pubsub::topic) override {
-      auto lock = std::scoped_lock{state_->mutex};
-      ++state_->leave_attempts;
-      co_return;
-   }
-
-   forge::net::p2p::pubsub::snapshot snapshot() const override {
-      return forge::net::p2p::pubsub::snapshot{};
-   }
-
- private:
-   std::shared_ptr<fake_pubsub_source_state> state_;
-};
-
-class fake_p2p_node_plugin final : public forge::app::plugin {
- public:
-   explicit fake_p2p_node_plugin(std::shared_ptr<fake_pubsub_source_state> state) : state_{std::move(state)} {}
-
-   [[nodiscard]] forge::app::plugin_id id() const override {
-      return forge::app::plugin_id{.value = "forge.plugins.net.p2p.node"};
-   }
-
-   [[nodiscard]] std::string version() const override {
-      return "test";
-   }
-
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override {
-      provider.install<forge::plugins::net::p2p::node::pubsub_source>(std::make_shared<fake_pubsub_source>(state_));
-      co_return;
-   }
-
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
-      co_return;
-   }
-
-   boost::asio::awaitable<void> startup() override {
-      co_return;
-   }
-
-   boost::asio::awaitable<void> shutdown() override {
-      co_return;
-   }
-
- private:
-   std::shared_ptr<fake_pubsub_source_state> state_;
-};
 
 struct scripted_resolver_state {
    std::vector<forge::plugins::net::p2p::resolver::response> responses;
@@ -1171,7 +998,6 @@ class diagnostics_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::diagnostics::descriptor());
    }
 };
 
@@ -1183,29 +1009,12 @@ class pubsub_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry, identity_);
-      registry.register_plugin(forge::plugins::net::p2p::pubsub::descriptor());
    }
 
  private:
    std::shared_ptr<const forge::tests::p2p::identity_fixture> identity_;
 };
 
-class fake_pubsub_application final : public forge::app::application_shell {
- public:
-   explicit fake_pubsub_application(std::shared_ptr<fake_pubsub_source_state> state) : state_{std::move(state)} {}
-
- protected:
-   void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(forge::app::plugin_descriptor{
-          .id = forge::app::plugin_id{.value = "forge.plugins.net.p2p.node"},
-          .factory = [state = state_] { return std::make_unique<fake_p2p_node_plugin>(state); },
-      });
-      registry.register_plugin(forge::plugins::net::p2p::pubsub::descriptor());
-   }
-
- private:
-   std::shared_ptr<fake_pubsub_source_state> state_;
-};
 
 class resolver_plugin_application final : public forge::app::application_shell {
  public:
@@ -1373,13 +1182,13 @@ concept has_peers = requires(T& value) { value.peers(); };
 template <typename T>
 concept has_pubsub_publish = requires(T& value) {
    value.publish(forge::net::p2p::pubsub::topic{.value = "topic"}, std::vector<std::uint8_t>{},
-                 forge::plugins::net::p2p::pubsub::publish_options{});
+                 forge::plugins::net::p2p::node::publish_options{});
 };
 
 template <typename T>
-concept has_pubsub_subscribe = requires(T& value, forge::plugins::net::p2p::pubsub::handler handler) {
+concept has_pubsub_subscribe = requires(T& value, forge::plugins::net::p2p::node::handler handler) {
    value.subscribe(forge::net::p2p::pubsub::topic{.value = "topic"}, std::move(handler),
-                   forge::plugins::net::p2p::pubsub::subscribe_options{});
+                   forge::plugins::net::p2p::node::subscribe_options{});
 };
 
 static_assert(!has_metrics<forge::plugins::net::p2p::node::api>);
@@ -2396,8 +2205,8 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_static_topology_starts_without_autonomous_d
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
 
-   const auto diagnostics = app.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0});
+   const auto diagnostics = app.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
    const auto snapshot = diagnostics->snapshot();
    BOOST_TEST(snapshot.topology.mode == "static-only");
    BOOST_TEST(snapshot.topology.phase == "idle");
@@ -2415,8 +2224,8 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_normalizes_managed_topology_to_hard_session
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
 
-   const auto diagnostics = app.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0});
+   const auto diagnostics = app.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
    const auto snapshot = diagnostics->snapshot();
    const auto topology = snapshot.topology;
    const auto& system = snapshot.effective_limits.system;
@@ -2437,8 +2246,8 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_reserves_a_directional_provisional_session_
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
 
-   const auto diagnostics = app.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0});
+   const auto diagnostics = app.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
    const auto& system = diagnostics->snapshot().effective_limits.system;
    BOOST_TEST(system.max_connections == 1025U);
    BOOST_TEST(system.max_inbound_connections == 1025U);
@@ -2456,11 +2265,14 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_config_preserves_legacy_positional_prefix) 
 }
 
 BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_config_is_described_from_public_schema) {
-   auto plugin = forge::plugins::net::p2p::diagnostics::plugin{};
-   BOOST_TEST(plugin.version() == "3.0.0");
-   const auto descriptor = plugin.describe_config();
-   BOOST_REQUIRE(descriptor.has_value());
-   BOOST_TEST(descriptor->section == "plugins.net.p2p.diagnostics");
+   auto plugin = forge::plugins::net::p2p::node::plugin{};
+   BOOST_TEST(plugin.version() == "8.0.0");
+   const auto root = plugin.describe_config();
+   BOOST_REQUIRE(root.has_value());
+   BOOST_TEST(root->section == "plugins.net.p2p.node");
+   BOOST_TEST(require_field(*root, "diagnostics").has_default);
+   const auto descriptor = std::optional{forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::diagnostics_config>("plugins.net.p2p.node.diagnostics")};
 
    const auto& max_peers = require_field(*descriptor, "max-peers");
    BOOST_TEST(max_peers.has_default);
@@ -2470,31 +2282,31 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_config_is_described_from_public_sche
    BOOST_TEST(max_sessions.has_default);
    BOOST_TEST(std::get<std::uint64_t>(max_sessions.default_value.storage) > 0U);
 
-   const auto api_descriptor = forge::plugins::net::p2p::diagnostics::api::describe();
-   BOOST_TEST(api_descriptor.id.value == "forge.plugins.net.p2p.diagnostics");
-   BOOST_TEST(api_descriptor.version.major == 3U);
+   const auto api_descriptor = forge::plugins::net::p2p::node::diagnostics_api::describe();
+   BOOST_TEST(api_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics");
+   BOOST_TEST(api_descriptor.version.major == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_diagnostics_api_rejects_facade_calls_before_initialize) {
    auto runtime = forge::asio::runtime{};
-   auto plugin = forge::plugins::net::p2p::diagnostics::plugin{};
+   auto plugin = forge::plugins::net::p2p::node::plugin{};
    auto apis = forge::api::core::registry{};
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
 
-   auto diagnostics = apis.get<forge::plugins::net::p2p::diagnostics::api>(
-       {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
+   auto diagnostics = apis.get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
 
    BOOST_CHECK_THROW((void)diagnostics->snapshot(),
-                     forge::plugins::net::p2p::diagnostics::exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)diagnostics->network(),
-                     forge::plugins::net::p2p::diagnostics::exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)diagnostics->resources(),
-                     forge::plugins::net::p2p::diagnostics::exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)diagnostics->pubsub(), forge::plugins::net::p2p::diagnostics::exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)diagnostics->peers(), forge::plugins::net::p2p::diagnostics::exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)diagnostics->pubsub(), forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)diagnostics->peers(), forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)diagnostics->peer(test_peer(90)),
-                     forge::plugins::net::p2p::diagnostics::exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_reports_live_p2p_node_state) {
@@ -2524,8 +2336,8 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_reports_live_p2p_node_state) {
 
    auto client_p2p = client.apis().get<forge::plugins::net::p2p::node::api>(
        {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
-   auto diagnostics = client.apis().get<forge::plugins::net::p2p::diagnostics::api>(
-       {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
+   auto diagnostics = client.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
 
    auto remote = forge::asio::blocking::run(
        client.runtime(),
@@ -2551,7 +2363,7 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_reports_live_p2p_node_state) {
 
    const auto server_record = diagnostics->peer(server_peer);
    BOOST_TEST(server_record.peer.to_string() == server_peer.to_string());
-   BOOST_CHECK_THROW((void)diagnostics->peer(test_peer(93)), forge::plugins::net::p2p::diagnostics::exceptions::not_found);
+   BOOST_CHECK_THROW((void)diagnostics->peer(test_peer(93)), forge::plugins::net::p2p::node::diagnostics_exceptions::not_found);
 
    forge::asio::blocking::run(client.runtime(), client.shutdown());
    forge::asio::blocking::run(server.runtime(), server.shutdown());
@@ -2585,8 +2397,8 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_maintains_bootstrap_session_after_peer_rest
    auto client = diagnostics_application{};
    client.configure(client_config);
    forge::asio::blocking::run(client.runtime(), client.startup());
-   auto client_diagnostics = client.apis().get<forge::plugins::net::p2p::diagnostics::api>(
-       {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
+   auto client_diagnostics = client.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
 
    const auto connected = forge::asio::blocking::run(
        client.runtime(),
@@ -2623,8 +2435,8 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_maintains_bootstrap_session_after_peer_rest
    auto replacement = diagnostics_application{};
    replacement.configure(replacement_config);
    forge::asio::blocking::run(replacement.runtime(), replacement.startup());
-   auto replacement_diagnostics = replacement.apis().get<forge::plugins::net::p2p::diagnostics::api>(
-       {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
+   auto replacement_diagnostics = replacement.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
 
    const auto reconnected = forge::asio::blocking::run(
        client.runtime(),
@@ -2786,10 +2598,10 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_cancels_bootstrap_sleep_from_an_external_th
    client.configure(client_config);
    forge::asio::blocking::run(client.runtime(), client.startup());
 
-   auto server_diagnostics = server.apis().get<forge::plugins::net::p2p::diagnostics::api>(
-       {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
-   auto client_diagnostics = client.apis().get<forge::plugins::net::p2p::diagnostics::api>(
-       {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
+   auto server_diagnostics = server.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
+   auto client_diagnostics = client.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
    BOOST_REQUIRE(forge::asio::blocking::run(
        server.runtime(),
        async_wait_for_condition([&] { return server_diagnostics->snapshot().metrics.active_sessions == 1U; },
@@ -2895,10 +2707,14 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rolls_back_strict_bootstrap_failure) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_config_is_described_from_public_schema) {
-   auto plugin = forge::plugins::net::p2p::pubsub::plugin{};
-   const auto descriptor = plugin.describe_config();
-   BOOST_REQUIRE(descriptor.has_value());
-   BOOST_TEST(descriptor->section == "plugins.net.p2p.pubsub");
+   auto plugin = forge::plugins::net::p2p::node::plugin{};
+   const auto root = plugin.describe_config();
+   BOOST_REQUIRE(root.has_value());
+   BOOST_TEST(root->section == "plugins.net.p2p.node");
+   BOOST_TEST(require_field(*root, "pubsub").has_default);
+   const auto descriptor = std::optional{forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::pubsub_config>("plugins.net.p2p.node.pubsub")};
+   BOOST_TEST(!std::get<bool>(require_field(*descriptor, "enabled").default_value.storage));
 
    BOOST_TEST(require_field(*descriptor, "max-topics").has_default);
    BOOST_TEST(require_field(*descriptor, "max-handlers-per-topic").has_default);
@@ -2912,34 +2728,34 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_config_is_described_from_public_schema) {
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_api_rejects_facade_calls_before_initialize) {
    auto runtime = forge::asio::runtime{};
-   auto plugin = forge::plugins::net::p2p::pubsub::plugin{};
+   auto plugin = forge::plugins::net::p2p::node::plugin{};
    auto apis = forge::api::core::registry{};
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
 
    auto pubsub =
-       apis.get<forge::plugins::net::p2p::pubsub::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
+       apis.get<forge::plugins::net::p2p::node::pubsub_api>({.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
 
-   BOOST_CHECK_THROW((void)pubsub->snapshot(), forge::plugins::net::p2p::pubsub::exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)pubsub->subscriptions(), forge::plugins::net::p2p::pubsub::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)pubsub->snapshot(), forge::plugins::net::p2p::node::pubsub_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)pubsub->subscriptions(), forge::plugins::net::p2p::node::pubsub_exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(
            runtime, pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.before-init"}, {1, 2, 3})),
-       forge::plugins::net::p2p::pubsub::exceptions::plugin_not_initialized);
+       forge::plugins::net::p2p::node::pubsub_exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_rejects_invalid_typed_config_before_startup) {
    {
       auto config = test_p2p_config();
-      config.set("plugins.net.p2p.pubsub.max-topics", std::uint64_t{0});
+      config.set("plugins.net.p2p.node.pubsub.max-topics", std::uint64_t{0});
       auto app = pubsub_application{};
-      BOOST_CHECK_THROW(app.configure(config), forge::plugins::net::p2p::pubsub::exceptions::invalid_config);
+      BOOST_CHECK_THROW(app.configure(config), forge::plugins::net::p2p::node::exceptions::invalid_config);
    }
    {
       auto config = test_p2p_config();
-      config.set("plugins.net.p2p.pubsub.handler-deadline-ms", std::uint64_t{0});
+      config.set("plugins.net.p2p.node.pubsub.handler-deadline-ms", std::uint64_t{0});
       auto app = pubsub_application{};
-      BOOST_CHECK_THROW(app.configure(config), forge::plugins::net::p2p::pubsub::exceptions::invalid_config);
+      BOOST_CHECK_THROW(app.configure(config), forge::plugins::net::p2p::node::exceptions::invalid_config);
    }
 }
 
@@ -2947,17 +2763,18 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_requests_core_pubsub_capability_before_st
    auto config = test_p2p_config(test_peer(94));
    config.set("plugins.net.p2p.node.listen",
               forge::config::core::value::array_type{forge::config::core::value{"/ip4/127.0.0.1/udp/0/quic-v1"}});
-   config.set("plugins.net.p2p.pubsub.sign-publishes", false);
+   config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
+   config.set("plugins.net.p2p.node.pubsub.enabled", true);
 
    auto app = pubsub_application{};
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
 
-   auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
+   auto pubsub = app.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+       {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
    auto subscription = forge::asio::blocking::run(
        app.runtime(), pubsub->subscribe(forge::net::p2p::pubsub::topic{.value = "forge.local"},
-                                        [](forge::plugins::net::p2p::pubsub::message)
+                                        [](forge::plugins::net::p2p::node::message)
                                             -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                            co_return forge::net::p2p::pubsub::validation_result::accept;
                                         }));
@@ -2969,139 +2786,6 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_requests_core_pubsub_capability_before_st
    forge::asio::blocking::run(app.runtime(), app.shutdown());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_omits_unverified_author_from_unsigned_messages) {
-   auto source_state = std::make_shared<fake_pubsub_source_state>();
-   auto app = fake_pubsub_application{source_state};
-   forge::asio::blocking::run(app.runtime(), app.startup());
-
-   auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
-   const auto published = forge::asio::blocking::run(
-       app.runtime(), pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.fake.unsigned"}, {1, 2, 3},
-                                      forge::plugins::net::p2p::pubsub::publish_options{.sign = false}));
-
-   BOOST_TEST(published.source.to_string() == "fake-pubsub-peer");
-   BOOST_TEST(!published.author.has_value());
-   BOOST_TEST(published.data == (std::vector<std::uint8_t>{1, 2, 3}), boost::test_tools::per_element());
-
-   forge::asio::blocking::run(app.runtime(), app.shutdown());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_serializes_first_join_per_topic) {
-   auto source_state = std::make_shared<fake_pubsub_source_state>();
-   auto app = fake_pubsub_application{source_state};
-   forge::asio::blocking::run(app.runtime(), app.startup());
-
-   auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
-   const auto topic = forge::net::p2p::pubsub::topic{.value = "forge.fake.pending"};
-   auto first = std::make_shared<subscribe_task_result>();
-   auto second = std::make_shared<subscribe_task_result>();
-   auto handler =
-       [](forge::plugins::net::p2p::pubsub::message) -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
-      co_return forge::net::p2p::pubsub::validation_result::accept;
-   };
-
-   forge::asio::blocking::run(app.runtime(), [&]() -> boost::asio::awaitable<void> {
-      auto executor = co_await boost::asio::this_coro::executor;
-      boost::asio::co_spawn(
-          executor,
-          [pubsub, topic, first, handler]() mutable -> boost::asio::awaitable<void> {
-             try {
-                first->complete(co_await pubsub->subscribe(topic, handler));
-             } catch (...) {
-                first->fail(std::current_exception());
-             }
-          },
-          boost::asio::detached);
-      boost::asio::co_spawn(
-          executor,
-          [pubsub, topic, second, handler]() mutable -> boost::asio::awaitable<void> {
-             try {
-                second->complete(co_await pubsub->subscribe(topic, handler));
-             } catch (...) {
-                second->fail(std::current_exception());
-             }
-          },
-          boost::asio::detached);
-
-      BOOST_REQUIRE(
-          co_await async_wait_for_condition([&] { return source_state->joins() == 1U; }, std::chrono::seconds{1}));
-      auto settle_timer = boost::asio::steady_timer{executor, std::chrono::milliseconds{50}};
-      co_await settle_timer.async_wait(boost::asio::use_awaitable);
-      BOOST_TEST(!first->finished());
-      BOOST_TEST(!second->finished());
-      source_state->release(false);
-      BOOST_REQUIRE(co_await async_wait_for_condition([&] { return first->finished() && second->finished(); },
-                                                      std::chrono::seconds{1}));
-   }());
-
-   BOOST_TEST(!first->failed());
-   BOOST_TEST(!second->failed());
-   BOOST_TEST(source_state->joins() == 1U);
-   BOOST_TEST(pubsub->snapshot().topics == 1U);
-   BOOST_TEST(pubsub->subscriptions().size() == 2U);
-
-   forge::asio::blocking::run(app.runtime(), app.shutdown());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_failed_first_join_clears_pending_topic) {
-   auto source_state = std::make_shared<fake_pubsub_source_state>();
-   auto app = fake_pubsub_application{source_state};
-   forge::asio::blocking::run(app.runtime(), app.startup());
-
-   auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
-   const auto topic = forge::net::p2p::pubsub::topic{.value = "forge.fake.failed"};
-   auto first = std::make_shared<subscribe_task_result>();
-   auto second = std::make_shared<subscribe_task_result>();
-   auto handler =
-       [](forge::plugins::net::p2p::pubsub::message) -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
-      co_return forge::net::p2p::pubsub::validation_result::accept;
-   };
-
-   forge::asio::blocking::run(app.runtime(), [&]() -> boost::asio::awaitable<void> {
-      auto executor = co_await boost::asio::this_coro::executor;
-      boost::asio::co_spawn(
-          executor,
-          [pubsub, topic, first, handler]() mutable -> boost::asio::awaitable<void> {
-             try {
-                first->complete(co_await pubsub->subscribe(topic, handler));
-             } catch (...) {
-                first->fail(std::current_exception());
-             }
-          },
-          boost::asio::detached);
-      boost::asio::co_spawn(
-          executor,
-          [pubsub, topic, second, handler]() mutable -> boost::asio::awaitable<void> {
-             try {
-                second->complete(co_await pubsub->subscribe(topic, handler));
-             } catch (...) {
-                second->fail(std::current_exception());
-             }
-          },
-          boost::asio::detached);
-
-      BOOST_REQUIRE(
-          co_await async_wait_for_condition([&] { return source_state->joins() == 1U; }, std::chrono::seconds{1}));
-      source_state->release(true);
-      BOOST_REQUIRE(co_await async_wait_for_condition([&] { return first->finished() && second->finished(); },
-                                                      std::chrono::seconds{1}));
-   }());
-
-   BOOST_TEST(first->failed());
-   BOOST_TEST(second->failed());
-   BOOST_TEST(pubsub->snapshot().topics == 0U);
-   BOOST_TEST(pubsub->subscriptions().empty());
-
-   source_state->release(false);
-   const auto retry = forge::asio::blocking::run(app.runtime(), pubsub->subscribe(topic, handler));
-   BOOST_TEST(retry.subject.value == topic.value);
-   BOOST_TEST(source_state->joins() == 2U);
-
-   forge::asio::blocking::run(app.runtime(), app.shutdown());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_messages) {
    const auto subscriber_identity = std::make_shared<const forge::tests::p2p::identity_fixture>(
@@ -3111,7 +2795,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
    auto subscriber_config = test_p2p_config();
    subscriber_config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
                                                         forge::config::core::value{"/ip4/127.0.0.1/tcp/0"}});
-   subscriber_config.set("plugins.net.p2p.pubsub.sign-publishes", false);
+   subscriber_config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
+   subscriber_config.set("plugins.net.p2p.node.pubsub.enabled", true);
 
    auto subscriber = pubsub_application{subscriber_identity};
    subscriber.configure(subscriber_config);
@@ -3128,7 +2813,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
    auto publisher_config = test_p2p_config();
    publisher_config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{forge::config::core::value{
                                                           subscriber_endpoint->to_string()}});
-   publisher_config.set("plugins.net.p2p.pubsub.sign-publishes", false);
+   publisher_config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
+   publisher_config.set("plugins.net.p2p.node.pubsub.enabled", true);
 
    auto publisher = pubsub_application{publisher_identity};
    publisher.configure(publisher_config);
@@ -3140,17 +2826,17 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
    BOOST_CHECK(publisher_peer != subscriber_peer);
 
    auto received = std::make_shared<received_pubsub_messages>();
-   auto subscriber_pubsub = subscriber.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
-   auto publisher_pubsub = publisher.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
+   auto subscriber_pubsub = subscriber.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+       {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
+   auto publisher_pubsub = publisher.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+       {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
 
    const auto raw_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.raw"};
    const auto typed_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.typed"};
    auto first = forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(raw_topic,
-                                    [received](forge::plugins::net::p2p::pubsub::message message) mutable
+                                    [received](forge::plugins::net::p2p::node::message message) mutable
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        received->push(std::move(message),
                                                       forge::net::p2p::pubsub::validation_result::accept);
@@ -3159,7 +2845,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
    auto second = forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(raw_topic,
-                                    [received](forge::plugins::net::p2p::pubsub::message message) mutable
+                                    [received](forge::plugins::net::p2p::node::message message) mutable
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        received->push(std::move(message),
                                                       forge::net::p2p::pubsub::validation_result::accept);
@@ -3168,7 +2854,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
    (void)forge::asio::blocking::run(
        subscriber.runtime(), subscriber_pubsub->subscribe<pubsub_payload>(
                                  typed_topic,
-                                 [received](forge::plugins::net::p2p::pubsub::typed_message<pubsub_payload> message) mutable
+                                 [received](forge::plugins::net::p2p::node::typed_message<pubsub_payload> message) mutable
                                      -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                     received->push(std::move(message));
                                     co_return forge::net::p2p::pubsub::validation_result::accept;
@@ -3178,10 +2864,10 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
    BOOST_TEST(second.id != first.id);
    BOOST_REQUIRE_MESSAGE(wait_for_pubsub_peer(*publisher_pubsub.shared(), std::chrono::seconds{5}),
                          "publisher did not learn a remote PubSub topic subscription");
-   const auto publisher_diagnostics = publisher.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0})->snapshot();
-   const auto subscriber_diagnostics = subscriber.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0})->snapshot();
+   const auto publisher_diagnostics = publisher.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0})->snapshot();
+   const auto subscriber_diagnostics = subscriber.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0})->snapshot();
    BOOST_CHECK(std::ranges::any_of(publisher_diagnostics.sessions, [&](const auto& session) {
       return session.remote_peer == subscriber_peer && !session.closed &&
           session.authentication == forge::net::p2p::peer_authentication::libp2p_tls && session.muxer.value == "/yamux/1.0.0";
@@ -3239,7 +2925,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    auto subscriber_config = test_p2p_config();
    subscriber_config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
                                                         forge::config::core::value{"/ip4/127.0.0.1/tcp/0"}});
-   subscriber_config.set("plugins.net.p2p.pubsub.sign-publishes", false);
+   subscriber_config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
+   subscriber_config.set("plugins.net.p2p.node.pubsub.enabled", true);
 
    auto subscriber = pubsub_application{subscriber_identity};
    subscriber.configure(subscriber_config);
@@ -3256,7 +2943,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    auto publisher_config = test_p2p_config();
    publisher_config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{forge::config::core::value{
                                                           subscriber_endpoint->to_string()}});
-   publisher_config.set("plugins.net.p2p.pubsub.sign-publishes", false);
+   publisher_config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
+   publisher_config.set("plugins.net.p2p.node.pubsub.enabled", true);
 
    auto publisher = pubsub_application{publisher_identity};
    publisher.configure(publisher_config);
@@ -3268,10 +2956,10 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    BOOST_CHECK(publisher_peer != subscriber_peer);
 
    auto received = std::make_shared<received_pubsub_messages>();
-   auto subscriber_pubsub = subscriber.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
-   auto publisher_pubsub = publisher.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
+   auto subscriber_pubsub = subscriber.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+       {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
+   auto publisher_pubsub = publisher.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+       {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
 
    const auto aggregate_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.aggregate"};
    const auto timeout_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.timeout"};
@@ -3279,7 +2967,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    (void)forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(aggregate_topic,
-                                    [received](forge::plugins::net::p2p::pubsub::message message) mutable
+                                    [received](forge::plugins::net::p2p::node::message message) mutable
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        received->push(std::move(message),
                                                       forge::net::p2p::pubsub::validation_result::ignore);
@@ -3288,15 +2976,15 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    (void)forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(aggregate_topic,
-                                    [](forge::plugins::net::p2p::pubsub::message)
+                                    [](forge::plugins::net::p2p::node::message)
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
-                                       throw forge::plugins::net::p2p::pubsub::exceptions::handler_limit{
+                                       throw forge::plugins::net::p2p::node::pubsub_exceptions::handler_limit{
                                            "test handler failure"};
                                     }));
    (void)forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(aggregate_topic,
-                                    [received](forge::plugins::net::p2p::pubsub::message message) mutable
+                                    [received](forge::plugins::net::p2p::node::message message) mutable
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        received->push(std::move(message),
                                                       forge::net::p2p::pubsub::validation_result::accept);
@@ -3305,7 +2993,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    (void)forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(aggregate_topic,
-                                    [received](forge::plugins::net::p2p::pubsub::message message) mutable
+                                    [received](forge::plugins::net::p2p::node::message message) mutable
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        received->push(std::move(message),
                                                       forge::net::p2p::pubsub::validation_result::reject);
@@ -3316,7 +3004,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
        subscriber.runtime(),
        subscriber_pubsub->subscribe(
            timeout_topic,
-           [timeout_attempts](forge::plugins::net::p2p::pubsub::message)
+           [timeout_attempts](forge::plugins::net::p2p::node::message)
                -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
               if (timeout_attempts->fetch_add(1, std::memory_order_relaxed) == 0) {
                  auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
@@ -3325,12 +3013,12 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
               }
               co_return forge::net::p2p::pubsub::validation_result::accept;
            },
-           forge::plugins::net::p2p::pubsub::subscribe_options{.handler_deadline = std::chrono::milliseconds{10}}));
+           forge::plugins::net::p2p::node::subscribe_options{.handler_deadline = std::chrono::milliseconds{10}}));
    auto mixed_retry_attempts = std::make_shared<std::atomic_uint64_t>(0);
    (void)forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(mixed_retry_topic,
-                                    [mixed_retry_attempts](forge::plugins::net::p2p::pubsub::message)
+                                    [mixed_retry_attempts](forge::plugins::net::p2p::node::message)
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        if (mixed_retry_attempts->fetch_add(1, std::memory_order_relaxed) == 0) {
                                           co_return forge::net::p2p::pubsub::validation_result::retry;
@@ -3340,17 +3028,17 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
    (void)forge::asio::blocking::run(
        subscriber.runtime(),
        subscriber_pubsub->subscribe(mixed_retry_topic,
-                                    [](forge::plugins::net::p2p::pubsub::message)
+                                    [](forge::plugins::net::p2p::node::message)
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
                                        co_return forge::net::p2p::pubsub::validation_result::accept;
                                     }));
 
    BOOST_REQUIRE_MESSAGE(wait_for_pubsub_peer(*publisher_pubsub.shared(), std::chrono::seconds{5}),
                          "publisher did not learn a remote PubSub topic subscription");
-   const auto publisher_diagnostics = publisher.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0})->snapshot();
-   const auto subscriber_diagnostics = subscriber.apis().get<forge::plugins::net::p2p::node::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0})->snapshot();
+   const auto publisher_diagnostics = publisher.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0})->snapshot();
+   const auto subscriber_diagnostics = subscriber.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0})->snapshot();
    BOOST_CHECK(std::ranges::any_of(publisher_diagnostics.sessions, [&](const auto& session) {
       return session.remote_peer == subscriber_peer && !session.closed &&
           session.authentication == forge::net::p2p::peer_authentication::libp2p_tls && session.muxer.value == "/yamux/1.0.0";
@@ -3364,7 +3052,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
                                     publisher_pubsub->publish(aggregate_topic, std::vector<std::uint8_t>{9}));
    BOOST_REQUIRE_MESSAGE(wait_for_pubsub_snapshot(
                              *subscriber_pubsub.shared(),
-                             [](const forge::plugins::net::p2p::pubsub::snapshot& snapshot) {
+                             [](const forge::plugins::net::p2p::node::pubsub_snapshot& snapshot) {
                                 return snapshot.messages_rejected >= 1 && snapshot.handler_failures >= 1;
                              },
                              std::chrono::seconds{5}),
@@ -3380,7 +3068,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
                                     publisher_pubsub->publish(timeout_topic, std::vector<std::uint8_t>{10}));
    BOOST_REQUIRE_MESSAGE(wait_for_pubsub_snapshot(
                              *subscriber_pubsub.shared(),
-                             [](const forge::plugins::net::p2p::pubsub::snapshot& snapshot) {
+                             [](const forge::plugins::net::p2p::node::pubsub_snapshot& snapshot) {
                                 return snapshot.messages_retried >= 1 && snapshot.messages_accepted >= 1 &&
                                        snapshot.handler_failures >= 2;
                              },
@@ -3393,7 +3081,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
                                     publisher_pubsub->publish(mixed_retry_topic, std::vector<std::uint8_t>{11}));
    BOOST_REQUIRE_MESSAGE(wait_for_pubsub_snapshot(
                              *subscriber_pubsub.shared(),
-                             [](const forge::plugins::net::p2p::pubsub::snapshot& snapshot) {
+                             [](const forge::plugins::net::p2p::node::pubsub_snapshot& snapshot) {
                                 return snapshot.messages_retried >= 2 && snapshot.messages_accepted >= 2;
                              },
                              std::chrono::seconds{5}),
@@ -3406,22 +3094,23 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_enforces_topic_policy_and_handler_bounds) {
    auto config = test_p2p_config(test_peer(97));
-   config.set("plugins.net.p2p.pubsub.sign-publishes", false);
-   config.set("plugins.net.p2p.pubsub.max-handlers-per-topic", std::uint64_t{1});
-   config.set("plugins.net.p2p.pubsub.max-message-size", std::uint64_t{4});
-   config.set("plugins.net.p2p.pubsub.allowed-topics",
+   config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
+   config.set("plugins.net.p2p.node.pubsub.enabled", true);
+   config.set("plugins.net.p2p.node.pubsub.max-handlers-per-topic", std::uint64_t{1});
+   config.set("plugins.net.p2p.node.pubsub.max-message-size", std::uint64_t{4});
+   config.set("plugins.net.p2p.node.pubsub.allowed-topics",
               forge::config::core::value::array_type{forge::config::core::value{"forge.allowed"}});
-   config.set("plugins.net.p2p.pubsub.denied-topics",
+   config.set("plugins.net.p2p.node.pubsub.denied-topics",
               forge::config::core::value::array_type{forge::config::core::value{"forge.denied"}});
 
    auto app = pubsub_application{};
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
 
-   auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
+   auto pubsub = app.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+       {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
    auto handler =
-       [](forge::plugins::net::p2p::pubsub::message) -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
+       [](forge::plugins::net::p2p::node::message) -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
       co_return forge::net::p2p::pubsub::validation_result::ignore;
    };
 
@@ -3431,14 +3120,14 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_enforces_topic_policy_and_handler_bounds)
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(app.runtime(),
                                   pubsub->subscribe(forge::net::p2p::pubsub::topic{.value = "forge.allowed"}, handler)),
-       forge::plugins::net::p2p::pubsub::exceptions::handler_limit);
+       forge::plugins::net::p2p::node::pubsub_exceptions::handler_limit);
    BOOST_CHECK_THROW(forge::asio::blocking::run(
                          app.runtime(), pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.denied"}, {1})),
-                     forge::plugins::net::p2p::pubsub::exceptions::topic_not_allowed);
+                     forge::plugins::net::p2p::node::pubsub_exceptions::topic_not_allowed);
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(
            app.runtime(), pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.allowed"}, {1, 2, 3, 4, 5})),
-       forge::plugins::net::p2p::pubsub::exceptions::message_too_large);
+       forge::plugins::net::p2p::node::pubsub_exceptions::message_too_large);
 
    forge::asio::blocking::run(app.runtime(), app.shutdown());
 }

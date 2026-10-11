@@ -44,6 +44,7 @@ import forge.net.p2p.stream;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.plugin;
@@ -92,7 +93,7 @@ struct fixture {
    forge::app::plugin_context context{scheduler, apis, signals, events};
    np::plugin node;
    std::shared_ptr<np::api> api;
-   std::shared_ptr<np::diagnostics_source> diagnostics;
+   std::shared_ptr<np::diagnostics_api> diagnostics;
 
    explicit fixture(std::optional<p2p::endpoint> bootstrap = {}) {
       forge::config::core::document config;
@@ -113,8 +114,8 @@ struct fixture {
       run(node.initialize(context));
       run(node.after_initialize());
       api = apis.get<np::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3}).shared();
-      diagnostics = apis.get<np::diagnostics_source>(
-          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3}).shared();
+      diagnostics = apis.get<np::diagnostics_api>(
+          {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1}).shared();
    }
    ~fixture() {
       node.request_stop();

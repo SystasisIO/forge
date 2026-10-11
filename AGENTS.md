@@ -475,9 +475,13 @@ implementation-library namespaces. For plugin family/role decisions, follow
 ## Plugins
 
 - Network plugins live in the nested families `net.http` and `net.p2p`:
-  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver,diagnostics,pubsub}`.
+  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver}`.
   The `net`, `net.http` and `net.p2p` grouping namespaces contain no types or
   aggregate modules/targets; each leaf keeps its own dependencies and lifecycle.
+- The P2P node owns consumer PubSub, diagnostics and host events through separate
+  `pubsub_api`, `diagnostics_api` and `events_api` modules. Standalone PubSub and
+  diagnostics plugins and public `*_source` mediators must not be restored.
+  Resolver remains the optional application API catalog and connection service.
 - This approved clean rename changes plugin/module/namespace/target/component
   identities and configuration paths together, without compatibility aliases.
   Library families `forge.net.*` and API bindings `forge.api.*`, protocol routes,

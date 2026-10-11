@@ -12,6 +12,9 @@ module;
 
 export module forge.plugins.net.p2p.node.types;
 
+export import forge.plugins.net.p2p.node.pubsub_types;
+export import forge.plugins.net.p2p.node.diagnostics_types;
+
 import forge.api.transport.options;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
@@ -72,11 +75,13 @@ struct dht_profile_config {
    bool peers = true;
    bool providers = true;
    bool values = true;
+   bool operator==(const dht_profile_config&) const = default;
 };
 
 struct rendezvous_point_config {
    std::string endpoint;
    std::vector<std::string> namespaces;
+   bool operator==(const rendezvous_point_config&) const = default;
 };
 
 BOOST_DESCRIBE_ENUM(path_policy, direct_only, direct_preferred, relay_only)
@@ -135,6 +140,9 @@ struct config {
    std::uint64_t rendezvous_max_points = 4;
    bool peer_exchange_enabled = true;
    std::uint64_t peer_exchange_max_peers = 4;
+   pubsub_config pubsub;
+   diagnostics_config diagnostics;
+   bool operator==(const config&) const = default;
 };
 
 struct info {
@@ -161,7 +169,7 @@ BOOST_DESCRIBE_STRUCT(config, (),
                        topology_mode, topology_low, topology_target, topology_high, topology_refresh_interval_ms,
                        topology_query_timeout_ms, topology_max_candidates, topology_max_parallel_queries,
                        topology_max_parallel_dials, topology_retry_jitter, rendezvous_role, rendezvous_points,
-                       rendezvous_max_points, peer_exchange_enabled, peer_exchange_max_peers))
+                       rendezvous_max_points, peer_exchange_enabled, peer_exchange_max_peers, pubsub, diagnostics))
 
 } // namespace forge::plugins::net::p2p::node
 
@@ -194,6 +202,10 @@ export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::r
 export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::config> {
    [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::config> define() {
       auto schema = forge::schema::object<forge::plugins::net::p2p::node::config>();
+      schema.field<&forge::plugins::net::p2p::node::config::pubsub>("pubsub")
+          .default_value(forge::plugins::net::p2p::node::pubsub_config{});
+      schema.field<&forge::plugins::net::p2p::node::config::diagnostics>("diagnostics")
+          .default_value(forge::plugins::net::p2p::node::diagnostics_config{});
       schema.field<&forge::plugins::net::p2p::node::config::listen>("listen")
           .default_value(std::vector<std::string>{})
           .description("Listen endpoints, for example /ip4/0.0.0.0/udp/9443/quic-v1 or /ip4/0.0.0.0/tcp/4001");

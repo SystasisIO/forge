@@ -15,15 +15,18 @@ class NetPluginTests(unittest.TestCase):
       self.addCleanup(self.directory.cleanup)
       self.root = Path(self.directory.name)
       for family, children in (("net", ("http", "p2p")), ("net/http", ("server",)),
-                               ("net/p2p", ("node", "resolver", "diagnostics", "pubsub"))):
+                               ("net/p2p", ("node", "resolver"))):
          self.write(f"plugins/{family}/CMakeLists.txt",
                     "".join(f"add_subdirectory({child})\n" for child in children))
-      for leaf in ("http/server", "p2p/node", "p2p/resolver", "p2p/diagnostics", "p2p/pubsub"):
+      for leaf in ("http/server", "p2p/node", "p2p/resolver"):
          identity = "forge.plugins.net." + leaf.replace("/", ".")
          self.write(f"plugins/net/{leaf}/CMakeLists.txt",
                     f"add_library({identity.replace('.', '_')} STATIC plugin.cpp)\n")
          self.write(f"plugins/net/{leaf}/include/forge/plugins/net/{leaf}/plugin.cppm",
                     f"export module {identity}.plugin;\n")
+      for role in ("pubsub_api", "diagnostics_api", "events_api"):
+         self.write(f"plugins/net/p2p/node/include/forge/plugins/net/p2p/node/{role}.cppm",
+                    f"export module forge.plugins.net.p2p.node.{role};\nclass {role};\n")
 
    def write(self, path, content):
       destination = self.root / path
@@ -50,6 +53,23 @@ class NetPluginTests(unittest.TestCase):
    def test_group_target_fails(self):
       self.write("plugins/net/CMakeLists.txt", "add_library(forge_plugins_net INTERFACE)\n")
       self.assertTrue(any("grouping may only" in error for error in self.errors()))
+
+   def test_retired_pubsub_and_diagnostics_packages_fail(self):
+      for leaf in ("pubsub", "diagnostics"):
+         (self.root / "plugins/net/p2p" / leaf).mkdir()
+      self.assertEqual(sum("retired network plugin family" in error for error in self.errors()), 2)
+
+   def test_retired_mediator_and_component_fail(self):
+      self.write("tests/probe.cpp", "import forge.plugins.net.p2p.node.host_event_source;\n")
+      self.write("CMakeLists.txt", "find_package(Forge COMPONENTS plugins_net_p2p_pubsub)\n")
+      self.assertEqual(sum("retired network plugin identity" in error for error in self.errors()), 2)
+
+   def test_missing_focused_contract_and_monolithic_api_fail(self):
+      (self.root / "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/events_api.cppm").unlink()
+      self.write("plugins/net/p2p/node/include/forge/plugins/net/p2p/node/api.cppm",
+                 "class api {};\nclass events_api {};\n")
+      self.assertTrue(any("missing focused node consumer contract" in error for error in self.errors()))
+      self.assertTrue(any("may only own the main api contract" in error for error in self.errors()))
 
 
 if __name__ == "__main__":

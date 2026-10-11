@@ -1,7 +1,8 @@
 # P2P Node Plugin
 
 `forge::plugins::net::p2p::node` owns one shared `forge_net_p2p` node and exposes typed
-contribution APIs for protocol handlers and API-over-P2P publication.
+contribution APIs for protocol handlers and API-over-P2P publication, consumer
+PubSub, bounded read-only diagnostics and native host events.
 
 ## Current Support State
 
@@ -16,6 +17,15 @@ watermarks and explicit Rendezvous/Forge Peer Exchange source configuration;
 all timers, queries, dials and pruning remain owned by the low-level node. The
 plugin does not contain a second network maintenance loop.
 
+The approved Stage 7 consolidation moves the former standalone PubSub and
+diagnostics plugins into node-owned roles. Consumer registrations and callback
+dispatch live in one private PubSub component; diagnostics and events delegate
+to the same native node. This source slice is not completion of Stage 7 or an
+acceptance result. Compilation, migrated ownership/failure tests and the remaining
+Stage 7 gates are tracked in
+[`forge-p2p-plugin-integration-v1.md`](../../../../docs/iterations/forge-p2p-plugin-integration-v1.md).
+No production or live donor interoperability claim is made by this README.
+
 Insecure memory mode remains an explicit local-test path only. Current support
 classifications live
 in
@@ -27,8 +37,10 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - A Forge application needs one shared P2P node managed by `forge_app`.
 - Product plugins need to publish protocol handlers or typed APIs over the same
   peer/session substrate.
-- Diagnostics, resolver and pubsub plugins should compose over one node instead
-  of creating parallel network stacks.
+- Application plugins need topic publish/subscribe with async validation and
+  bounded per-consumer callbacks over that shared node.
+- Operators need bounded diagnostics or host-state subscriptions without private
+  network internals. The separate resolver still composes over the same node.
 
 ## When Not To Use
 
@@ -37,6 +49,10 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Do not instantiate raw `forge::net::p2p::node` separately inside application
   plugins.
 - Do not enable insecure test mode outside local tests.
+- Do not treat PubSub as a durable queue, replay log, product event store or an
+  exactly-once delivery mechanism.
+- Do not use diagnostics as a health-policy engine, alert router or readiness
+  verdict, or expose unbounded state to remote callers.
 
 ## Identity
 
@@ -44,14 +60,15 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Package component: `plugins_net_p2p_node`
 - Plugin id: `forge.plugins.net.p2p.node`
 - Main API id: `forge.plugins.net.p2p.node`
-- Plugin version: `7.0.0`
+- Plugin version: `8.0.0`
 - Main API contract: `3.0`
 - Extra API ids:
   - `forge.plugins.net.p2p.node.configuration` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
-  - `forge.plugins.net.p2p.node.diagnostics_source` (contract `3.0`)
-  - `forge.plugins.net.p2p.node.host_event_source` (contract `1.0`, local only)
-  - `forge.plugins.net.p2p.node.pubsub_source`
+  - `forge.plugins.net.p2p.node.protocol` (contract `1.0`, local only)
+  - `forge.plugins.net.p2p.node.pubsub` (contract `1.0`, local only)
+  - `forge.plugins.net.p2p.node.diagnostics` (contract `1.0`, local only)
+  - `forge.plugins.net.p2p.node.events` (contract `1.0`, local only)
 - Config section: `plugins.net.p2p.node`
 - Public modules:
   - `forge.plugins.net.p2p.node.plugin`
@@ -59,7 +76,15 @@ isolated codec and interop fixtures do not promote this plugin to production.
   - `forge.plugins.net.p2p.node.api`
   - `forge.plugins.net.p2p.node.dht_api`
   - `forge.plugins.net.p2p.node.configuration_api`
-  - `forge.plugins.net.p2p.node.host_event_source`
+  - `forge.plugins.net.p2p.node.protocol_api`
+  - `forge.plugins.net.p2p.node.protocol_registration`
+  - `forge.plugins.net.p2p.node.pubsub_api`
+  - `forge.plugins.net.p2p.node.pubsub_types`
+  - `forge.plugins.net.p2p.node.pubsub_exceptions`
+  - `forge.plugins.net.p2p.node.diagnostics_api`
+  - `forge.plugins.net.p2p.node.diagnostics_types`
+  - `forge.plugins.net.p2p.node.diagnostics_exceptions`
+  - `forge.plugins.net.p2p.node.events_api`
   - `forge.plugins.net.p2p.node.peer_contribution`
   - `forge.plugins.net.p2p.node.types`
   - `forge.plugins.net.p2p.node.exceptions`
@@ -84,9 +109,12 @@ isolated codec and interop fixtures do not promote this plugin to production.
   cancellation, and owns bounded protection/score contributions per consumer.
 - Delegates profile-aware peer/provider discovery, owned provider publication,
   validated value operations and typed IPNS creation through `dht_api`.
-- Provides internal source APIs used by focused diagnostics and pubsub plugins.
-- Delegates native host-state snapshots and subscriptions through
-  `host_event_source`; the diagnostics plugin exposes the consumer events API.
+- Publishes raw bytes and serializable typed values, with per-consumer Full and
+  Partial subscriptions, validation, quotas and owned callback cleanup.
+- Exposes bounded native network/resource/PubSub snapshots, peer filtering and
+  lookup, per-profile DHT routing status and native PubSub peer scores.
+- Delegates native host-state snapshots and subscriptions through `events_api`.
+  No public source contract, node accessor or second API-provider hop is involved.
 
 ### Pre-Startup Contributions
 
@@ -98,6 +126,21 @@ values-enabled DHT profile. Supply application-owned `validate`, `select` and
 values-disabled profiles and Amino overrides are rejected; duplicate
 contributions and changes after startup or stop are typed conflicts.
 
+`set_pubsub_options(forge::net::p2p::pubsub::options)` supplies typed native
+PubSub policy, including application scoring and tracer callbacks. It requires
+explicit `pubsub.enabled: true`; it does not turn on native support implicitly.
+Options use the same immutable candidate preparation, validation and commit/freeze
+path. Pre-start YAML updates retain a supplied native contribution; they cannot
+disable PubSub and silently discard its callbacks. Consumer topic policies and
+quotas remain declarative, while supplied native options replace the native
+defaults derived from that declaration. Native bounds and capability errors remain
+authoritative: for example, Partial needs both declarative `partial-messages`
+admission and appropriate native Partial/version options. This is not a live
+native-options setter. Gater and DHT duplicate rejection is unchanged.
+Repeated pre-start `set_pubsub_options` replaces the previous native contribution
+through the same snapshot compare-and-swap commit; retired callback captures are
+destroyed outside the configuration mutex.
+
 Configuration is an immutable policy snapshot, not a native node or a resource
 store. A custom profile declaration may await its C++ contribution, but cannot
 be passed incomplete to the runtime. Startup completes and validates all native
@@ -105,6 +148,13 @@ options before its first await, Secrets reads or P2P persistence transactions.
 Native `validate_declaration(profile)` checks declaration policy only;
 `validate(profile)` still requires every value callback. Neither executes
 application callbacks. No permissive placeholder policies are installed.
+
+After startup, only diagnostics bounds may change through the existing
+`plugin::configure` lifecycle entry point. The complete configuration must still
+decode and validate, and its frozen node/PubSub declarative portion must be
+structurally unchanged. A mixed or invalid update fails atomically; it cannot
+rebuild the node, overwrite typed contributions or change network policy.
+Configuration after stop is rejected. The read-only diagnostics API has no setter.
 
 Candidate preparation, callback copies and destruction occur outside the
 configuration mutex. Commit compares the previous snapshot and admission again;
@@ -125,6 +175,12 @@ No PEM or opened persistence handle is stored in the policy snapshot.
 `shutdown()` joins admitted startup and Store setup before releasing providers
 or adapters, including an outstanding Secrets read. This does not add a second
 runtime or claim that the earlier shared DB driver setup was resource-free.
+
+For consumer PubSub, stop closes admission and signals owned Partial operations.
+Awaited shutdown joins admitted operations, callbacks and callback-capture
+destruction, then performs local native topic cleanup before native `async_stop()`
+and persistence/provider release. Native full-topic unsubscribe remains usable
+after `request_stop()`; cleanup does not require running-node admission.
 
 ### DHT Consumer Contract
 
@@ -153,14 +209,130 @@ Rendezvous unregister, then tears down sessions and flushes/closes peer state
 before releasing DB and Secrets handles. Application lifecycle code calls
 `request_stop()` to initiate shutdown and awaits `shutdown()` for cleanup.
 If peer-state close fails, the stopped node and its persistence ownership are
-retained so a subsequent `shutdown()` can retry deterministic close; the plugin
-never drops a persistence backend that still reports pending close work.
+retained; the plugin never drops a persistence backend that still reports pending
+close work. A subsequent `shutdown()` retries unfinished native/persistence or
+protocol-registry cleanup. Concurrent callers share one attempt and its result;
+a later retry cannot replace the result observed by its earlier waiters.
+PubSub registration-component cleanup errors remain sticky and must not be
+reported as successful disposal, but do not prevent the remaining cleanup.
 An empty active session set is not treated as proof that STCP/Yamux cleanup has
 completed.
 
 The plugin does not implement product routing policy or durable application
 queues. Core libp2p-style mechanics belong to `forge_net_p2p`; this plugin composes
 that substrate for applications.
+
+### PubSub Consumer Contract
+
+Import `forge.plugins.net.p2p.node.pubsub_api` and request the local contract
+`forge.plugins.net.p2p.node.pubsub` major 1. The role supports raw-byte and typed
+`publish`, async validation `subscribe`, `unsubscribe`, per-consumer
+`subscriptions()` and a `pubsub_snapshot` containing consumer counters and the
+native core snapshot. `publish_options::sign` overrides the configured publish
+default; a positive `subscribe_options::handler_deadline` overrides the configured
+handler deadline. Typed publish serializes immediately, so its argument need not
+survive until the returned awaitable starts.
+
+`pubsub.enabled` defaults to false. Providing the role does not request native
+PubSub support. With no explicit opt-in, operations reject with native
+`unsupported`; before consumer initialization they reject with
+`pubsub_exceptions::plugin_not_initialized`. Stop closes new admission with native
+`canceled`. Topic policy, missing registrations, capacity and message-size errors
+remain typed: `topic_not_allowed`, `subscription_not_found`, `handler_limit` and
+`message_too_large` live in `pubsub_exceptions`.
+
+Each topic serializes its native join/leave transitions independently. Pending
+subscriptions reserve topic and handler capacity before waiting. A failed last
+leave retains its subscription token and cleanup state: retry unsubscribe with
+that token before joining again. Handler results aggregate terminal `accept`,
+`reject` and `ignore`, or transient `retry`. Deadlines, handler failure and local
+active-handler backpressure produce bounded retries, not product authorization.
+Deadlines are cooperative: cancellation never detaches a handler that ignores it.
+
+`message.source` is the immediate peer at the current gossip hop. `message.author`
+is present only for a verified signed message; unsigned wire `from` values are not
+exposed as verified authors. Use the immediate source for peer quotas and a
+present author for signed-origin attribution. Signing is integrity support, not
+business trust or an exactly-once delivery guarantee.
+
+Async calls retain the registration component at call time and hold the same
+native node throughout an admitted operation. Native calls and destruction of
+consumer captures happen outside the component mutex. A handler may unsubscribe
+itself; unsubscribe does not wait for that handler to return. Do not await plugin
+shutdown from inside one of its own handlers. There is no hard shutdown deadline,
+detached user code or background cleanup worker.
+
+### Partial Registrations
+
+`enable_partial(topic, full_fallback, partial_options, subscribe_options)` requires
+receive and gossip callbacks and returns the native `partial_topic`. One Partial
+owner is allowed per topic. The required Full fallback participates in ordinary
+validation aggregation and reserves a handler slot while enable is pending; it
+is neither returned by `subscriptions()` nor removable with an ordinary token.
+
+`advertise_partial`, `forget_partial`, `partial_peers` and `send_partial` retain
+native registration identity and bounds. A peer snapshot is not lasting send
+permission: native send rechecks capability. Applications own group encoding,
+reconstruction and revision rules. An admitted send does not hold the topic
+transition gate during native I/O; caller, registration and plugin stop are
+composed before sending, so downgrade can cancel it without waiting behind it.
+Awaited shutdown still joins that send.
+
+`disable_partial(token)` preserves ordinary handlers, and unsubscribing the last
+ordinary handler preserves a current Partial owner. Failed native enable may
+already have mutated state: compensation restores the Full-handler mux when
+ordinary owners remain instead of removing their topic. Errors after a possibly
+committed downgrade never reopen callback admission. The same token can retry
+retained cleanup; a completed disable makes it stale.
+
+Partial callbacks receive a scoped stop token composed from native, registration
+and plugin stop. Stop reaches active retired callbacks before waiting for them.
+Disable requests stop but does not wait for its own callback; shutdown joins
+admitted callbacks and capture destruction. Keep stop callbacks nonblocking.
+Native wrappers hold weak references to consumer state, not a second queue or
+network loop. Concurrent component shutdowns observe one completion/error;
+cleanup failures remain retained and rethrown.
+
+Receive-side donor mapping: pinned Go pubsub `0ed6f6fd`,
+`pubsub.go:1390-1430`, replaces per-topic state on each subscribed update and
+decodes absent flags as false. Rust `22fb4c78`, `behaviour.rs:2134` and
+`extensions/partial_messages.rs:158`, updates the Partial subscription before
+duplicate subscription filtering. A Full-only resubscription therefore needs no
+PRUNE. These are source mappings, not live plugin/donor interoperability results.
+
+### Diagnostics And Events
+
+Import `forge.plugins.net.p2p.node.diagnostics_api` and request
+`forge.plugins.net.p2p.node.diagnostics` major 1. `snapshot()` uses configured
+diagnostics bounds; `snapshot(native_options)` uses the explicit options without
+replacing the configured defaults. `network()`, `resources()`, `pubsub()` and
+`peers(peer_filter)` use bounded snapshots. `peer(id)` throws
+`diagnostics_exceptions::not_found` when the bounded snapshot has no matching
+peer. `only_connected`, `only_protected` and `limit` are local peer filters.
+
+`routing_status(profile)` and `pubsub_scores()` return native `dht::routing_status`
+and `pubsub::score_snapshot` values. Unknown DHT profiles retain native
+`unsupported_protocol`. Reads before native construction or after detach reject
+with `diagnostics_exceptions::plugin_not_initialized`; reads remain admitted after
+`request_stop()` until detach. A read copies the native owner and, for a default
+snapshot, its configured options before releasing the configuration mutex and
+delegating. A concurrent diagnostics-only update cannot alter that read's bounds.
+Returned value snapshots remain usable after plugin shutdown. There is no
+adapter-owned routing/score cache, event queue, HTTP endpoint or logging sink.
+
+Import `forge.plugins.net.p2p.node.events_api` and request
+`forge.plugins.net.p2p.node.events` major 1 for `reachability_status()` and
+`host_events()`. New event operations require a running node and are rejected
+after stop. Issued native subscriptions outlive the API handle but end when the
+node stops. The initial value is a complete native snapshot; later changes may
+coalesce. Preserve `generation` and `resync_required` rather than treating values
+as an unbounded event log. Each subscription allows one pending reader; canceling
+a read does not close it, and `close()` closes that subscription only.
+
+Diagnostics are local-only reads. Remote publication and authorization are a
+product decision. Bounds limit peer/session/endpoint/protocol/relay snapshots;
+snapshots must not reveal private key material or raw secrets, and they are not
+an authoritative product-readiness verdict.
 
 ## Config
 
@@ -190,6 +362,23 @@ plugins:
            max-sessions: 1024
            max-protocol-handlers: 1024
            allow-insecure-test-mode: false
+           pubsub:
+              enabled: false
+              max-topics: 1024
+              max-handlers-per-topic: 64
+              max-active-handlers: 4096
+              max-message-size: 1048576
+              handler-deadline-ms: 5000
+              allowed-topics: []
+              denied-topics: []
+              sign-publishes: true
+              partial-messages: false
+           diagnostics:
+              max-peers: 1024
+              max-sessions: 1024
+              max-endpoints-per-peer: 64
+              max-protocols-per-peer: 128
+              max-relay-reservations-per-peer: 64
            topology:
               mode: managed
               peers:
@@ -228,6 +417,14 @@ dimension (total, inbound, and outbound), so a completed handshake can be evalua
 and can replace an eligible session at the watermark. For limits above one, the
 derived prune watermark is one below `max-sessions`; the active-session count never
 exceeds `max-sessions`.
+
+Set `pubsub.enabled: true` explicitly before startup to use the PubSub role.
+`partial-messages: true` selects native preferred GossipSub v1.3 and enables its
+global Partial extension when native options are derived from the declaration.
+False preserves the v1.1/disabled defaults. A typed native-options contribution
+controls its own native version/Partial/scoring policy, while declarative
+consumer admission and quotas still apply. Diagnostics fields default as shown;
+each configured bound is positive and limited to 1,000,000.
 
 Including `/p2p/<peer-id>` in each bootstrap endpoint pins the expected
 authenticated peer and is recommended for production. Existing peer-less
@@ -274,13 +471,46 @@ generation behind one stable node handler; an older handle cannot unregister
 the replacement. The historical unowned raw `publish_protocol(...)` entry point
 is removed by the Stage 7 migration below.
 
-Plugin 7.0 upgrades the local `forge.plugins.net.p2p.node.pubsub_source` to 2.0
-with exact native Partial registration operations. Source consumers must request
-major 2 and custom implementations must implement the added pure virtual methods.
-Async source calls retain their implementation before first suspension and hold
-the same native node during execution; full-topic leave retains stopped local
-cleanup. The owned-protocol Stage 7 slice upgrades the main node API to 3.0
-without another plugin version change.
+The unreleased Plugin 7.0 added native Partial registration operations through
+the former PubSub source and upgraded the main node API to 3.0 for owned raw
+protocols. Plugin 8.0 consolidates those consumers as described below; the old
+source contracts are not a supported composition path.
+
+### Plugin 8.0 Consolidation Migration
+
+The maintainer approved this pre-stabilization source/package/configuration break.
+It does not make stable APIs experimental or imply a wire/storage-format change.
+Native protocol negotiation, validation, deadlines and persisted-cache formats
+are unchanged by role consolidation. No compatibility aliases are provided.
+
+- Register only the node descriptor for these roles; remove standalone PubSub
+  and diagnostics descriptors, plugin IDs and package components.
+- Replace `forge.plugins.net.p2p.pubsub.api` / `pubsub::api` with
+  `forge.plugins.net.p2p.node.pubsub_api` / `node::pubsub_api`, requesting
+  `forge.plugins.net.p2p.node.pubsub` contract 1.0.
+- Replace diagnostics and events module imports with `node.diagnostics_api` and
+  `node.events_api`, requesting the corresponding `forge.plugins.net.p2p.node`
+  role IDs at 1.0. Diagnostics records/exceptions move to `diagnostics_types` and
+  `diagnostics_exceptions`; PubSub records/exceptions move to `pubsub_types` and
+  `pubsub_exceptions`. The consumer snapshot is named `node::pubsub_snapshot`.
+- Move config from `plugins.net.p2p.pubsub` and `plugins.net.p2p.diagnostics`
+  underneath `plugins.net.p2p.node.pubsub` and `.diagnostics`, and explicitly
+  enable PubSub when needed. Old standalone sections, including `enabled: false`,
+  and their `plugins.p2p.*` predecessors are rejected rather than ignored.
+- Remove requests for `pubsub_source`, `diagnostics_source` and
+  `host_event_source`. Application native PubSub policy contributions use
+  pre-start `configuration_api::set_pubsub_options`, not a source adapter or a
+  node accessor. The main node contract stays 3.0; configuration, DHT and raw
+  protocol contracts stay 1.0. Resolver identities are unchanged.
+
+Private `pubsub_service` owns actual registrations, callback dispatch and
+per-topic transitions. Its immutable `pubsub_operations` dependency delegates
+native mutation calls in production; deterministic component tests can replace
+those calls with explicit barriers and before/after-mutation faults. The same
+private `interface()` factory constructs the production role implementation.
+There is no exported source substitute, test hook or second provider registry.
+This component evidence checks local ownership/repair, not wire behavior;
+authenticated native-network and installed-consumer gates remain separate.
 
 ### Owned Raw Protocols
 
@@ -373,13 +603,10 @@ silence controls. Token activity is not evidence that pruning was exercised.
 Plugin 6.0 upgraded `forge.plugins.net.p2p.node.diagnostics_source` to contract
 `2.0`: diagnostics endpoint records now carry raw `multiaddr` values in their
 `address` field so DNS address carriers survive. No v1 alias is provided.
-Stage 7 extends the unreleased node plugin 7.0 with diagnostics source contract
-`3.0`: consumers must request major `3` and implement `routing_status(profile)`
-and `pubsub_scores()` alongside `snapshot(options)`. These methods return native
-`dht::routing_status` and `pubsub::score_snapshot` values and delegate to the
-shared node, without exposing a node accessor or duplicating routing/scoring
-state. Unknown profiles retain native `unsupported_protocol` errors; calls
-before node construction or after shutdown retain `plugin_not_initialized`.
+The earlier Stage 7 diagnostics-source revision added `routing_status(profile)`
+and `pubsub_scores()` alongside `snapshot(options)`. Plugin 8.0 removes that
+source contract and the standalone facade; use the node-owned diagnostics role
+described above. Native return types and typed unknown-profile errors remain.
 The private ObjectDB P2P cache marker is v3;
 v2 caches must use the existing recoverable `schema-policy: reset` path rather
 than being hydrated.
@@ -392,6 +619,7 @@ than being hydrated.
 - `forge_api_transport`
 - `forge_config_core`
 - `forge_schema`
+- `forge_raw` (public dependency for typed PubSub helpers)
 - `forge_plugins_db_store`
 - `forge_plugins_crypto_secrets`
 
@@ -432,6 +660,53 @@ registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
 registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
 ```
 
+### Subscribe And Publish
+
+Enable `plugins.net.p2p.node.pubsub.enabled` before startup. No separate PubSub
+descriptor or source API is required.
+
+```cpp
+import forge.plugins.net.p2p.node.pubsub_api;
+import forge.plugins.net.p2p.node.pubsub_types;
+import forge.net.p2p.pubsub;
+
+auto pubsub = context.apis().get<forge::plugins::net::p2p::node::pubsub_api>(
+   {.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1});
+
+auto subscription = co_await pubsub->subscribe(
+   forge::net::p2p::pubsub::topic{.value = "catalog.updates"},
+   [](forge::plugins::net::p2p::node::message value)
+      -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
+      consume(value.data);
+      co_return forge::net::p2p::pubsub::validation_result::accept;
+   });
+co_await pubsub->publish({.value = "catalog.updates"}, std::vector<std::uint8_t>{1, 2, 3});
+co_await pubsub->unsubscribe(std::move(subscription));
+```
+
+### Read Diagnostics And Host State
+
+```cpp
+import forge.plugins.net.p2p.node.diagnostics_api;
+import forge.plugins.net.p2p.node.events_api;
+
+auto diagnostics = context.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+   {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1});
+auto network = diagnostics->network();
+auto resources = diagnostics->resources();
+auto peers = diagnostics->peers({.only_connected = true, .limit = 100});
+auto routing = diagnostics->routing_status({.value = "/ipfs/kad/1.0.0"});
+auto scores = diagnostics->pubsub_scores();
+
+auto events = context.apis().get<forge::plugins::net::p2p::node::events_api>(
+   {.id = {"forge.plugins.net.p2p.node.events"}, .major = 1});
+auto subscription = events->host_events();
+while (auto state = co_await subscription.async_read()) {
+   // Complete native snapshots may coalesce; this is not a delta event log.
+   consume_host_state(*state);
+}
+```
+
 ## Security And Boundaries
 
 - The plugin owns network lifecycle and contribution mounting, not product
@@ -449,6 +724,10 @@ registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
   node API.
 - Treating P2P reachability as authorization.
 - Publishing unbounded handlers without deadline/frame limits.
+- Treating PubSub delivery as durable or encoding product authority in topic
+  names alone.
+- Treating diagnostics snapshots or source-only/component tests as production
+  readiness or live donor interoperability acceptance.
 
 ## Tests
 

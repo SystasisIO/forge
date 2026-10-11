@@ -56,6 +56,7 @@ import forge.plugins.db.store.api;
 #include "details/config.hxx"
 #include "details/plugin_impl.hxx"
 #include "details/protocol_registry.hxx"
+#include "details/pubsub_policy.hxx"
 
 namespace forge::plugins::net::p2p::node {
 namespace {
@@ -195,6 +196,13 @@ std::chrono::milliseconds to_ms(std::uint64_t value) {
 }
 
 config decode_config(const forge::config::core::component_view& view) {
+   for (const auto* retired : {"plugins.net.p2p.pubsub", "plugins.net.p2p.diagnostics",
+                              "plugins.p2p.pubsub", "plugins.p2p.diagnostics"}) {
+      if (view.source().try_get(retired)) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "retired standalone P2P plugin configuration",
+                               forge::exceptions::ctx("section", retired));
+      }
+   }
    if (view.source().try_get("plugins.p2p.node")) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config,
                             "retired plugin configuration: plugins.p2p.node; use plugins.net.p2p.node");
@@ -235,8 +243,14 @@ std::vector<forge::net::p2p::endpoint> parse_endpoint_list(const std::vector<std
 }
 
 void apply_config(plugin::impl& state, const config& config) {
-   const auto previous = state.configuration_candidate_base();
+   const auto previous = state.configuration_snapshot();
+   detail::validate_pubsub_config(config.pubsub);
+   if (state.phase.load(std::memory_order_acquire) != lifecycle_phase::idle) {
+      state.commit_diagnostics_configuration(previous, config);
+      return;
+   }
    auto candidate = std::make_shared<detail::configuration_snapshot>(*previous);
+   candidate->declarative = config;
    auto policy = parse_policy(config);
    auto options = forge::net::p2p::node::options{};
    auto api_options = forge::api::transport::options{
@@ -356,10 +370,18 @@ void apply_config(plugin::impl& state, const config& config) {
                             "P2P certificate and private key secret references must be provided together");
    }
    options.connection_gater = previous->options.connection_gater;
-   if (previous->pubsub_requested) {
-      options.capabilities.add(forge::net::p2p::capabilities::pubsub);
+   options.limits.pubsub = detail::pubsub_options_for(config.pubsub);
+   if (previous->pubsub_contributed) {
+      if (!config.pubsub.enabled) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "configuration cannot discard a PubSub contribution");
+      }
       options.limits.pubsub = previous->options.limits.pubsub;
    }
+   if (config.pubsub.enabled) {
+      options.capabilities.add(forge::net::p2p::capabilities::pubsub);
+   }
+   candidate->pubsub = config.pubsub;
+   candidate->diagnostics = config.diagnostics;
    candidate->options = std::move(options);
    candidate->api_options = std::move(api_options);
    candidate->policy = std::move(policy);

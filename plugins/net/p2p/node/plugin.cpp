@@ -17,6 +17,7 @@ module;
 #include <coroutine>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <list>
 #include <memory>
 #include <map>
@@ -50,6 +51,7 @@ import forge.api.transport.server;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.asio.notification;
+import forge.asio.gate;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
@@ -88,7 +90,9 @@ import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
-import forge.plugins.net.p2p.node.host_event_source;
+import forge.plugins.net.p2p.node.pubsub_api;
+import forge.plugins.net.p2p.node.diagnostics_api;
+import forge.plugins.net.p2p.node.events_api;
 import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.ipns;
@@ -108,10 +112,10 @@ import forge.plugins.db.store.api;
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
 #include "details/p2p_state_schema.hxx"
-#include "details/plugin_diagnostics_source_adapter.hxx"
-#include "details/plugin_host_event_source_adapter.hxx"
+#include "details/plugin_diagnostics_api_impl.hxx"
+#include "details/plugin_events_api_impl.hxx"
 #include "details/plugin_impl.hxx"
-#include "details/plugin_pubsub_source_adapter.hxx"
+#include "details/pubsub_service.hxx"
 #include "details/protocol_registry.hxx"
 
 namespace forge::plugins::net::p2p::node {
@@ -141,7 +145,7 @@ forge::app::plugin_id plugin::id() const {
 }
 
 std::string plugin::version() const {
-   return "7.0.0";
+   return "8.0.0";
 }
 
 std::optional<forge::config::core::component_descriptor> plugin::describe_config() const {
@@ -159,9 +163,9 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
    provider.install<dht_api>(std::make_shared<dht_api_impl>(impl_));
    provider.install<configuration_api>(std::make_shared<configuration_api_impl>(impl_));
    provider.install<protocol_api>(std::make_shared<protocol_api_impl>(impl_));
-   provider.install<diagnostics_source>(std::make_shared<diagnostics_source_adapter>(impl_));
-   provider.install<host_event_source>(std::make_shared<host_event_source_adapter>(impl_));
-   provider.install<pubsub_source>(std::make_shared<pubsub_source_adapter>(impl_));
+   provider.install<diagnostics_api>(std::make_shared<diagnostics_api_impl>(impl_));
+   provider.install<events_api>(std::make_shared<events_api_impl>(impl_));
+   provider.install<pubsub_api>(impl_->pubsub->interface());
    co_return;
 }
 
@@ -332,6 +336,7 @@ boost::asio::awaitable<void> plugin::startup() {
       co_await node->async_stop();
       co_return;
    }
+   state->pubsub->initialize(frozen->pubsub, node);
    state->mark_started();
 }
 
@@ -347,75 +352,122 @@ boost::asio::awaitable<void> plugin::shutdown() {
        [](std::shared_ptr<impl> state) -> boost::asio::awaitable<void> {
           co_await boost::asio::this_coro::throw_if_cancelled(false);
           co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-          state->request_stop();
-          // Setup owns every opened adapter until this joined barrier. Capture epoch
-          // before the predicate so completion cannot be lost before wait registration.
-          for (;;) {
-             const auto epoch = state->setup_changed.epoch();
-             {
-                const auto lock = std::scoped_lock{state->configuration_mutex};
-                if (state->setup_operations == 0) {
-                   break;
-                }
+          auto candidate = std::make_shared<detail::shutdown_attempt>();
+          auto attempt = std::shared_ptr<detail::shutdown_attempt>{};
+          auto leader = false;
+          {
+             const auto lock = std::scoped_lock{state->configuration_mutex};
+             if (!state->shutdown || (state->shutdown->done && !state->shutdown->terminal)) {
+                state->shutdown.swap(candidate);
+                leader = true;
              }
-             co_await state->setup_changed.async_wait(epoch);
+             attempt = state->shutdown;
+          }
+          // Retire the previous attempt (including any exception captures) unlocked.
+          candidate.reset();
+          if (!leader) {
+             for (;;) {
+                const auto epoch = attempt->completed.epoch();
+                auto done = false;
+                auto error = std::exception_ptr{};
+                {
+                   const auto lock = std::scoped_lock{state->configuration_mutex};
+                   done = attempt->done;
+                   error = attempt->error;
+                }
+                if (done) {
+                   if (error) { std::rethrow_exception(error); }
+                   co_return;
+                }
+                co_await attempt->completed.async_wait(epoch);
+             }
           }
           auto failure = std::exception_ptr{};
+          auto registry_closed = false;
+          auto peer_state_closed = false;
           try {
-             co_await detail::async_close_protocol_registry(state->protocols);
-          } catch (...) {
-             failure = std::current_exception();
-          }
-          auto node = state->node_snapshot();
-          auto peer_state_closed = !node && !state->peer_state && state->dht_state.empty();
-          if (node) {
+             state->request_stop();
+             // Setup owns every opened adapter until this joined barrier. Capture epoch
+             // before the predicate so completion cannot be lost before wait registration.
+             for (;;) {
+                const auto epoch = state->setup_changed.epoch();
+                {
+                   const auto lock = std::scoped_lock{state->configuration_mutex};
+                   if (state->setup_operations == 0) {
+                      break;
+                   }
+                }
+                co_await state->setup_changed.async_wait(epoch);
+             }
              try {
-                co_await node->async_stop();
-                peer_state_closed = true;
+                co_await detail::pubsub_service::shutdown_owned(state->pubsub);
              } catch (...) {
-                if (!failure) {
-                   failure = std::current_exception();
-                }
+                failure = std::current_exception();
              }
-          } else {
-             peer_state_closed = true;
-             for (auto& [_, persistence] : state->dht_state) {
+             try {
+                co_await detail::async_close_protocol_registry(state->protocols);
+                registry_closed = true;
+             } catch (...) {
+                if (!failure) { failure = std::current_exception(); }
+             }
+             auto node = state->node_snapshot();
+             peer_state_closed = !node && !state->peer_state && state->dht_state.empty();
+             if (node) {
                 try {
-                   co_await persistence->async_close();
+                   co_await node->async_stop();
+                   peer_state_closed = true;
                 } catch (...) {
-                   peer_state_closed = false;
                    if (!failure) {
                       failure = std::current_exception();
                    }
                 }
-             }
-             if (state->peer_state) {
-                try {
-                   co_await state->peer_state->async_close();
-                } catch (...) {
-                   peer_state_closed = false;
-                   if (!failure) {
-                      failure = std::current_exception();
+             } else {
+                peer_state_closed = true;
+                for (auto& [_, persistence] : state->dht_state) {
+                   try {
+                      co_await persistence->async_close();
+                   } catch (...) {
+                      peer_state_closed = false;
+                      if (!failure) {
+                         failure = std::current_exception();
+                      }
+                   }
+                }
+                if (state->peer_state) {
+                   try {
+                      co_await state->peer_state->async_close();
+                   } catch (...) {
+                      peer_state_closed = false;
+                      if (!failure) {
+                         failure = std::current_exception();
+                      }
                    }
                 }
              }
+             if (registry_closed && peer_state_closed) {
+                auto empty = std::shared_ptr<forge::net::p2p::node>{};
+                std::atomic_compare_exchange_strong_explicit(&state->node, &node, empty, std::memory_order_acq_rel,
+                                                             std::memory_order_acquire);
+                state->peer_state.reset();
+                state->dht_state.clear();
+                state->peer_state_store.reset();
+                state->stores = nullptr;
+                state->secrets = nullptr;
+             }
+             if (registry_closed && peer_state_closed) {
+                state->mark_stopped();
+             }
+          } catch (...) {
+             if (!failure) { failure = std::current_exception(); }
           }
-          if (peer_state_closed) {
-             auto empty = std::shared_ptr<forge::net::p2p::node>{};
-             std::atomic_compare_exchange_strong_explicit(&state->node, &node, empty, std::memory_order_acq_rel,
-                                                          std::memory_order_acquire);
-             state->peer_state.reset();
-             state->dht_state.clear();
-             state->peer_state_store.reset();
-             state->stores = nullptr;
-             state->secrets = nullptr;
+          {
+             const auto lock = std::scoped_lock{state->configuration_mutex};
+             attempt->error = failure;
+             attempt->terminal = registry_closed && peer_state_closed;
+             attempt->done = true;
           }
-          if (peer_state_closed) {
-             state->mark_stopped();
-          }
-          if (failure) {
-             std::rethrow_exception(failure);
-          }
+          attempt->completed.notify();
+          if (failure) { std::rethrow_exception(failure); }
        }(impl_),
        boost::asio::use_awaitable);
 }

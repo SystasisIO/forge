@@ -81,6 +81,18 @@ void plugin::configuration_api_impl::set_connection_gater(std::shared_ptr<forge:
    state_->commit_configuration(previous, std::move(candidate));
 }
 
+void plugin::configuration_api_impl::set_pubsub_options(forge::net::p2p::pubsub::options options) {
+   const auto previous = state_->configuration_candidate_base();
+   if (!previous->pubsub.enabled) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P PubSub contribution requires pubsub.enabled");
+   }
+   // Native callback copies, validation and retired-owner destruction occur outside the config lock.
+   auto candidate = std::make_shared<detail::configuration_snapshot>(*previous);
+   candidate->options.limits.pubsub = std::move(options);
+   candidate->pubsub_contributed = true;
+   state_->commit_configuration(previous, std::move(candidate));
+}
+
 void plugin::configuration_api_impl::set_dht_value_policies(forge::net::p2p::protocol_id profile,
     std::vector<forge::net::p2p::dht::value_policy> policies) {
    const auto previous = state_->configuration_candidate_base();

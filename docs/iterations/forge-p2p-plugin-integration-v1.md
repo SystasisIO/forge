@@ -75,6 +75,13 @@ and explicit per-call bounds, peer filtering, typed not-found/profile errors and
 owned return values. Events retain native initial snapshot, overflow/resync,
 cancellation and shutdown behavior, without another queue.
 
+Diagnostics bounds may be updated through validated node configuration after
+startup only when every frozen node/PubSub setting remains structurally equal.
+Reject mixed or invalid changes atomically, retain typed contributions, and do
+not rebuild the native node. An admitted read keeps its captured bounds; a later
+read observes the new defaults. Explicit per-call bounds remain independent.
+Stopped configuration cannot reopen admission. Read-only APIs gain no setters.
+
 Stop closes PubSub admission and cancels its owned operations. Awaited shutdown
 joins callbacks and native operations, disposes callback captures outside locks
 and releases the node/persistence only afterwards. Concurrent or delayed API
@@ -87,7 +94,16 @@ modules; static/package gates reject the removed components/contracts. Update
 active catalogs, inventory owners and documentation without rewriting historical
 release notes. Wire formats, libp2p negotiation and persisted schema do not change.
 
-## Current Starting Point
+The private registration component may receive immutable native operation
+dependencies, with production defaults delegating to the retained native node.
+This is not an installed API, registry provider or alternate networking runtime.
+Its tests keep failures after native mutation, joined cancellation, independent
+waiters, callback retirement and Partial downgrade recovery reproducible.
+Real authenticated transport tests still use the official configured node.
+Tests of the retired source-adapter callback hop are replaced with direct native
+read/lifetime tests; no external snapshot callback remains in that path.
+
+## Pre-Stage-7 Starting Point
 
 The node plugin currently exports `api`, `diagnostics_source` and
 `pubsub_source` from `forge.plugins.net.p2p.node.api`. It already supplies API
@@ -110,7 +126,7 @@ parallel plugin DTO or network runtime.
 | --- | --- | --- |
 | `node::api` | Local identity/addresses, connection to a peer, API publication and API connections | No shared-node stop, listener or identity mutation |
 | `node::dht_api` | Profile-aware find peer/providers, provide, put/get value, typed IPNS record creation | Return the existing provider registration; never expose identity private material |
-| `node::configuration_api` | Pre-start connection gater and custom DHT value-policy contributions | Local composition only; reject duplicate/unknown policies and freeze before node startup work |
+| `node::configuration_api` | Pre-start connection gater, custom DHT value policies and native PubSub options/callbacks | Local composition only; validate before publication, reject duplicate/unknown policies and freeze before node startup work |
 | `node::protocol_api` | Owned custom protocol registration and stream opening | Protect built-ins/API routes and replacement generations; unregister closes admission, not unrelated existing streams |
 | `node::pubsub_api` | Ordinary/typed publishing and subscriptions, validation, partial-topic registration, advertisement, discovery and send | Preserve immutable registration tokens and distinguish requested cancellation from completed callbacks |
 | `node::diagnostics_api`, `node::events_api` | Bounded node/resource/peer/DHT/relay/PubSub snapshots and existing typed host events | Read-only; reuse the library event subscription and resynchronization semantics |
@@ -531,3 +547,37 @@ gates pass, describe this as test integration with an evolving stack.
 - Node policy mapping, complete PubSub policy/hooks and configured-path donor
   acceptance remain open. No source inventory classification is promoted by
   these local adapter tests.
+- The approved consolidation now lives in node: `pubsub_api`,
+  `diagnostics_api` and `events_api` replace the standalone plugins and public
+  source mediators. Resolver remains separate. Node plugin version is 8.0.0;
+  the main contract remains 3.0 and the Forge project version is unchanged.
+- Review found and fixed a whole-plugin shutdown regression: a failed native
+  close was cached permanently instead of allowing a later external retry.
+  Immutable per-attempt results now preserve concurrent waiters, keep failed
+  registry/persistence owners, and permit a later cleanup attempt. PubSub
+  disposal errors remain sticky without preventing other cleanup.
+- The consolidation checkpoint passed all seven suites: plugins (196 cases),
+  managed remote, DB Store with local MDBX and RocksDB, descriptor surfaces,
+  native PubSub control queue, structure and inventory. Installed node,
+  resolver and descriptor consumers also built and ran; node was relinked and
+  rerun after the final production changes. Removed package components are
+  explicitly rejected by the installed node consumer.
+- The new official-plugin regression requires an actual TLS/Identify/Yamux
+  session and PubSub delivery before checking shutdown. Independent barriers
+  prove it waits for both the active callback and its capture destructor. This
+  unsigned-message, memory-persistence fixture is not configured production
+  persistence or external Go/Rust evidence. The durable-cleanup regression
+  separately uses real ObjectDB transactions with one failed flush and proves
+  shared failure, retained ownership and successful external retry.
+- Initial failed runs are retained: an unauthenticated diagnostics seed did
+  not create peer records, old exception/no-op-config expectations no longer
+  matched the new contracts, and a new TCP fixture lacked private identity
+  material. Corrections use authenticated peer records, precise new contract
+  assertions and real Secrets-supplied TLS identities, not production bypasses.
+  Both independent scoped source reviews reported no remaining findings.
+- Completed task-owned package consumer builds were removed after checking
+  for active processes; the shared Stage 7 build remains for subsequent work.
+  The next slice maps native resource scopes with sparse optional overrides,
+  preserving unspecified defaults and explicit zero-denial budgets. Full
+  policy mapping, configured donor parity and whole-PR acceptance remain open;
+  this checkpoint is not merge approval or a production-readiness claim.

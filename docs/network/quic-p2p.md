@@ -455,18 +455,22 @@ READMEs may link here, but must not define a second block order.
   metadata above P2P instead of expanding core Identify semantics. Its network
   metadata protocol `/forge/api/resolver/2` is FORGE-specific and does not extend
   Go/Rust libp2p support claims.
-- G.4 implemented checkpoint: `forge::plugins::net::p2p::diagnostics` is a read-only in-process
-  plugin for peer/path/session/relay/DHT/Rendezvous/pubsub/connection-manager
+- G.4 is now owned by `forge::plugins::net::p2p::node::diagnostics_api` and
+  `node::events_api`, read-only in-process contracts for
+  peer/path/session/relay/DHT/Rendezvous/pubsub/connection-manager
   health. `forge_net_p2p` owns immutable diagnostics snapshots; the plugin exposes
   capped operator/test projections through `forge_app`. It does not add a network
   diagnostics protocol, product authorization, remediation, routing policy or
   retry decisions.
-- G.5 implemented checkpoint: `forge::plugins::net::p2p::pubsub` is an in-process plugin facade over
+- G.5 is now owned by `forge::plugins::net::p2p::node::pubsub_api`, an in-process facade over
   core GossipSub. It offers raw and typed topic publish/subscribe, bounded
   local handlers, handler deadlines, topic allow/deny policy, deterministic
   subscriptions and capped plugin snapshots for application plugins. It is not a
   durable queue, delivery system, authorization layer or replacement for
   `forge_net_p2p` GossipSub mesh/scoring/heartbeat mechanics.
+  The Stage 7 consolidation removes the standalone diagnostics and PubSub
+  plugins and their public source intermediaries. It keeps these responsibilities
+  as focused components of the node plugin; resolver remains separate.
 - G.6a implemented checkpoint: observability starts as a reusable FORGE OTLP logs
   exporter. OTLP is OpenTelemetry Protocol. `forge_otlp` exports `forge_log` records
   to an operator-configured OpenTelemetry Collector through OTLP/HTTP JSON over

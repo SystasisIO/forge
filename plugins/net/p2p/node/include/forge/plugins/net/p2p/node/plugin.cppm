@@ -33,6 +33,10 @@ import forge.net.p2p.connection_gater;
 import forge.net.p2p.protocol;
 import forge.plugins.net.p2p.node.types;
 
+namespace forge::plugins::net::p2p::node::detail {
+struct pubsub_service;
+}
+
 export namespace forge::plugins::net::p2p::node {
 
 class plugin final : public forge::app::plugin {
@@ -60,11 +64,12 @@ class plugin final : public forge::app::plugin {
    class dht_api_impl;
    class configuration_api_impl;
    class protocol_api_impl;
-   class diagnostics_source_adapter;
-   class host_event_source_adapter;
-   class pubsub_source_adapter;
+   class diagnostics_api_impl;
+   class events_api_impl;
+   class pubsub_api_impl;
 
    friend void apply_config(impl&, const config&);
+   friend struct detail::pubsub_service;
 
    std::shared_ptr<impl> impl_;
 };

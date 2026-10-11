@@ -20,11 +20,18 @@ acceptance is pending and is tracked in
   `subscribe_partial`, `unsubscribe`, `peer_score` and `publish`.
   Topic operations enter the existing behavior, its message bounds and mesh
   state; the consumer does not implement a second GossipSub maintenance loop.
+- Go libp2p PubSub `0ed6f6fdad7eb820486892336bed3081f8fa7f25`:
+  `subscription.go` and `topic.go` (`Subscribe`, `Close`).
+  Multiple consumer subscriptions share one topic; the last cancellation
+  removes the network subscription. Cancellation enters the existing PubSub
+  owner instead of starting an independent network worker.
 - Forge Stage 6 merge `94714f0ff465435ef317ec1891d44b1e9380c01e`:
   `libraries/net/p2p/include/forge/net/p2p/node.cppm`,
   `provider_registration.cppm`, `host_event_subscription.cppm`, and the current
-  `plugins/net/p2p/{node,resolver,pubsub,diagnostics}` contracts.
-  These existing types and ownership rules are the adapter baseline.
+  `plugins/net/p2p/{node,resolver,pubsub,diagnostics}` contracts at that commit.
+  That four-plugin layout is the historical adapter baseline, not the new
+  package surface: PubSub and diagnostics now belong to node; resolver stays
+  separate.
 
 ## Accepted And Rejected Patterns
 
@@ -32,7 +39,7 @@ acceptance is pending and is tracked in
 | --- | --- | --- |
 | One host supplies authenticated connectivity and protocol routing | Node plugin owns one node; local role-specific contracts delegate to it | Raw/plugin parity and no plugin network workers |
 | Protocol registration and stream creation are distinct from host shutdown | Owned custom protocol admission, generation isolation and existing node streams | Replacement, built-in collisions, pre-start close and existing-stream survival |
-| Host events are emitted by the host | Diagnostics forwards the existing typed subscription | Initial snapshot, overflow/resync, close and node shutdown |
+| Host events are emitted by the host | Node events API forwards the existing typed subscription | Initial snapshot, overflow/resync, close and node shutdown |
 | GossipSub behavior owns mesh, bounds and validation interaction | PubSub adapts full/partial operations to existing library callbacks and tokens | Full/partial lifecycle, topic policy, stale-token and cancellation tests |
 | A facade may select capabilities without redefining protocols | DHT API delegates by profile and returns native provider registrations | Profile isolation, value/provider operations, persistence and shutdown |
 
@@ -48,7 +55,9 @@ typed code before startup and reuse node-side validation.
 
 ## PubSub Adapter Ownership
 
-The adapter multiplexes consumer callbacks over one native topic registration.
+The node-owned private PubSub service multiplexes consumer callbacks over one
+native topic registration. The standalone PubSub plugin and public source
+mediator are removed; the public entry point is node's `pubsub_api`.
 Its per-topic transition gate and sticky completion notification reuse
 `forge_asio`; they are not a second GossipSub runtime. Pending subscriptions
 count toward limits, failed mutating joins are compensated, and shutdown joins
@@ -87,28 +96,33 @@ the transition gate must not prevent the last ordinary owner from leaving.
 The deterministic regression checks native leave count, native topic count and
 plugin quota reuse, and was also verified to fail with the former predicate.
 
-Full downgrade, blocked send cancellation, stale tokens, deferred awaitable
-lifetime, shutdown capture destruction and real TCP full delivery are covered
-by the plugin tests. Package tests separately check the installed public
-contract without importing a private node-plugin dependency into the PubSub
-consumer. None of these checks claims a new Go/Rust wire implementation.
+The private immutable operation table delegates to that same native node.
+Deterministic tests substitute fallible operations to prove compensation and
+joined cleanup after mutation; this is not a public provider API or another
+network runtime. Real configured-plugin fixtures separately exercise network
+delivery. Package tests import the installed node PubSub contract directly,
+not a private implementation or removed plugin component. Consolidation
+validation is pending; earlier adapter results are not evidence for the
+changed ownership. None of these checks claims a new Go/Rust wire implementation.
 
 ## Native Diagnostics Delegation
 
 The existing native routing table and GossipSub score engine remain the only
-owners of these states. Diagnostics source/API 3.0 expose their native
+owners of these states. Node `diagnostics_api` 1.0 exposes their native
 `dht::routing_status` and `pubsub::score_snapshot` values without a second cache,
 score calculation or maintenance loop. This follows the existing host/behavior
 inspection boundary, not a new libp2p protocol.
 
-The facade captures the shared source under its lifecycle mutex and calls it
-after unlocking. Admitted callbacks may finish after facade shutdown; shutdown
-does not promise to join external synchronous callbacks. New reads then fail
-with the existing initialization error. Returned values own their data.
+Reads retain the native node and configured diagnostic bounds under the
+configuration mutex, then delegate outside it. No external source callback
+remains. Admitted synchronous reads may finish while shutdown proceeds;
+returned values own their data. After node retirement, new reads fail with
+the initialization error.
 
-Focused regressions compare source/facade routing counts after a real DHT query,
-read a nonzero native application-weighted score, retain values across shutdown,
-and hold every source read behind an explicit barrier while shutdown completes.
+The updated regression plan checks routing counts after a real DHT query,
+a nonzero native application-weighted score, retained values across shutdown,
+and concurrent native reads. Obsolete source-callback barriers cannot establish
+this new direct ownership and are replaced rather than kept as fake evidence.
 The TCP fixture authenticates certificate identities but uses test-only memory
 persistence and dependency doubles. It is not configured production persistence
 or donor-network evidence, and publishing for score sampling does not prove
@@ -177,7 +191,8 @@ normalization, callback presence without invocation, and QUIC limit boundaries.
 
 ## Configuration Ownership
 
-Local composition installs native gater and DHT value-policy objects. The
+Local composition installs native gater, DHT value-policy and PubSub callback
+objects. The
 plugin owns an immutable candidate snapshot and freezes complete policy before
 startup I/O, rather than introducing network policy in its adapter. Native DHT
 declaration validation is shared with full validation; only the latter accepts
@@ -190,6 +205,12 @@ callbacks can synchronously cancel the caller. No new scheduler, task tracker
 or wire-level cancellation scheme is introduced. Configuration callback copies
 and destruction occur outside the configuration mutex, and stale candidates
 cannot replace concurrent contributions.
+
+Diagnostic bounds are the only post-start mutable configuration. Updating them
+requires structural equality of all other declarative fields; mixed policy
+updates fail atomically. Typed contributions remain retained. Serializing
+configuration to compare it would invoke unrelated conversion policy and is
+not used.
 
 Focused tests exercise real gater delegation and real Secrets/ObjectDB startup
 preflight. Insecure gater control fixtures do not prove identity, and source
@@ -227,6 +248,15 @@ and scheduler close wait for a held DNS callback, without launching siblings.
 They do not weaken existing limits or skip an accepted acceptance gate.
 
 ## Evidence Boundaries
+
+The consolidated node checkpoint preserves the donor ownership pattern rather
+than adding a protocol loop. A real TLS/Identify/Yamux two-plugin PubSub test
+holds the delivered callback and then its capture destructor independently;
+awaited node shutdown must wait for both. A separate ObjectDB fixture injects
+one durable flush failure and proves shared per-attempt shutdown results and a
+successful external retry without dropping persistence ownership. These are
+local adapter/lifecycle regressions, not external donor or production storage
+acceptance. Failed fixture runs remain recorded rather than counted as PASS.
 
 No new donor compatibility claim follows from compiling a plugin adapter. The
 affected configured paths must be exercised through the plugin and the existing

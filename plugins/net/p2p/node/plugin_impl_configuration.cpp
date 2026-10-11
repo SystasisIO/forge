@@ -101,6 +101,29 @@ void plugin::impl::commit_configuration(std::shared_ptr<const detail::configurat
    }
 }
 
+void plugin::impl::commit_diagnostics_configuration(
+    std::shared_ptr<const detail::configuration_snapshot> previous, config value) {
+   auto frozen_part = value;
+   frozen_part.diagnostics = previous->declarative.diagnostics;
+   if (frozen_part != previous->declarative) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "Only diagnostics bounds may change after startup");
+   }
+   auto candidate = std::make_shared<detail::configuration_snapshot>(*previous);
+   candidate->diagnostics = value.diagnostics;
+   candidate->declarative = std::move(value);
+   candidate->validate_candidate();
+   auto published = std::shared_ptr<const detail::configuration_snapshot>{std::move(candidate)};
+   {
+      const auto lock = std::scoped_lock{configuration_mutex};
+      if (configuration != previous || stop_requested.load(std::memory_order_acquire) ||
+          phase.load(std::memory_order_relaxed) != lifecycle_phase::started) {
+         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P diagnostics configuration changed or is frozen");
+      }
+      // Retain the original native options and all typed callback contributions.
+      configuration.swap(published);
+   }
+}
+
 bool plugin::impl::begin_startup(forge::net::p2p::node::options& prepared,
                                 std::shared_ptr<const detail::configuration_snapshot>& frozen) {
    auto previous = std::shared_ptr<const detail::configuration_snapshot>{};
@@ -143,14 +166,6 @@ void plugin::impl::finish_setup() noexcept {
    setup_changed.notify();
 }
 
-void plugin::impl::enable_pubsub(forge::net::p2p::pubsub::options options_value) {
-   const auto previous = configuration_candidate_base();
-   auto candidate = std::make_shared<detail::configuration_snapshot>(*previous);
-   candidate->options.limits.pubsub = std::move(options_value);
-   candidate->options.capabilities.add(forge::net::p2p::capabilities::pubsub);
-   candidate->pubsub_requested = true;
-   commit_configuration(previous, std::move(candidate));
-}
 
 } // namespace forge::plugins::net::p2p::node
 

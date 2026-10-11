@@ -108,8 +108,6 @@ set(
    plugins_crypto_wallet
    plugins_net_p2p_node
    plugins_net_p2p_resolver
-   plugins_net_p2p_diagnostics
-   plugins_net_p2p_pubsub
    plugins_net_http_server
    plugins_log_otlp
    plugins_db_store
@@ -599,6 +597,7 @@ macro(_forge_add_component component)
          _forge_add_component(raw)
          _forge_add_component(plugins_net_http_server)
       elseif("${component}" STREQUAL "plugins_net_p2p_node")
+         _forge_add_component(raw)
          _forge_add_component(plugins_db_store)
          _forge_add_component(plugins_crypto_secrets)
          _forge_add_component(app)
@@ -610,15 +609,6 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "plugins_net_p2p_resolver")
          _forge_add_component(plugins_net_p2p_node)
          _forge_add_component(api_transport)
-         _forge_add_component(schema)
-         _forge_add_component(net_p2p)
-      elseif("${component}" STREQUAL "plugins_net_p2p_diagnostics")
-         _forge_add_component(plugins_net_p2p_node)
-         _forge_add_component(schema)
-         _forge_add_component(net_p2p)
-      elseif("${component}" STREQUAL "plugins_net_p2p_pubsub")
-         _forge_add_component(plugins_net_p2p_node)
-         _forge_add_component(raw)
          _forge_add_component(schema)
          _forge_add_component(net_p2p)
       elseif("${component}" STREQUAL "plugins_net_http_server")
@@ -659,8 +649,6 @@ macro(_forge_add_component component)
          _forge_add_component(plugins_net_p2p_node)
          _forge_add_component(plugins_crypto_wallet)
          _forge_add_component(plugins_net_p2p_resolver)
-         _forge_add_component(plugins_net_p2p_diagnostics)
-         _forge_add_component(plugins_net_p2p_pubsub)
          _forge_add_component(plugins_net_http_server)
          _forge_add_component(plugins_log_otlp)
          _forge_add_component(plugins_db_store)

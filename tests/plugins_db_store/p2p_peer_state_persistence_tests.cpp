@@ -60,6 +60,7 @@ import forge.plugins.crypto.secrets.plugin;
 import forge.plugins.db.store.api;
 import forge.plugins.db.store.plugin;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.diagnostics_api;
 
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
@@ -1020,7 +1021,7 @@ void check_plugin_authenticated_peer_api(std::string driver, const std::filesyst
       }
    }};
    std::array<std::shared_ptr<p2p_node::api>, 3> apis;
-   std::array<std::shared_ptr<p2p_node::diagnostics_source>, 3> diagnostics;
+   std::array<std::shared_ptr<p2p_node::diagnostics_api>, 3> diagnostics;
    for (std::size_t i = 0; i < apps.size(); ++i) {
       const auto identity = forge::tests::p2p::make_identity_fixture("peer-api-authenticated");
       auto document = p2p_document_for(driver, path / std::to_string(i), identity);
@@ -1032,8 +1033,8 @@ void check_plugin_authenticated_peer_api(std::string driver, const std::filesyst
       run(*apps[i], apps[i]->startup());
       apis[i] = apps[i]->apis().get<p2p_node::api>(
           {.id = {"forge.plugins.net.p2p.node"}, .major = 3}).shared();
-      diagnostics[i] = apps[i]->apis().get<p2p_node::diagnostics_source>(
-          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3}).shared();
+      diagnostics[i] = apps[i]->apis().get<p2p_node::diagnostics_api>(
+          {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1}).shared();
    }
    const auto& server = apis[0];
    const auto& client = apis[1];

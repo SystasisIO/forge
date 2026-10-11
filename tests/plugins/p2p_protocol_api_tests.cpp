@@ -46,6 +46,8 @@ import forge.net.p2p.stream;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.diagnostics_api;
+import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.protocol_api;
@@ -343,8 +345,8 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_rejected_dht_collision_preserves_configuration
    unreserved.close();
 
    server.run(server.node.startup());
-   const auto snapshot = server.apis.get<np::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3})->snapshot();
+   const auto snapshot = server.apis.get<np::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1})->snapshot();
    BOOST_REQUIRE_EQUAL(snapshot.dht_profiles.size(), 1U);
    BOOST_TEST(snapshot.dht_profiles.front().protocol.value == original_dht.value);
    BOOST_TEST(snapshot.dht_profiles.front().kind == "custom");
@@ -399,12 +401,17 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_invalid_config_after_dht_candidate_preserves_r
    second.close();
 
    f.run(f.node.startup());
-   const auto snapshot = f.apis.get<np::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3})->snapshot();
+   const auto snapshot = f.apis.get<np::diagnostics_api>(
+       {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1})->snapshot();
    BOOST_REQUIRE_EQUAL(snapshot.dht_profiles.size(), 1U);
    BOOST_TEST(snapshot.dht_profiles.front().protocol.value == original_dht.value);
    BOOST_TEST(raw.active());
+   // Live diagnostics updates allow an unchanged frozen node policy, not a
+   // new protocol quota or another native configuration change.
+   BOOST_CHECK_NO_THROW(f.run(f.node.configure({good, "plugins.net.p2p.node"})));
+   good.set("plugins.net.p2p.node.max-protocol-handlers", std::uint64_t{4});
    BOOST_CHECK_THROW(f.run(f.node.configure({good, "plugins.net.p2p.node"})), np::exceptions::route_conflict);
+   BOOST_TEST(raw.active());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_protocol_capture_retirement_reenters_outside_registry_and_configuration_locks) {
@@ -423,11 +430,12 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_capture_retirement_reenters_outside_registry_a
 
 BOOST_AUTO_TEST_CASE(p2p_protocol_native_attach_failure_retires_captures_outside_configuration_lock) {
    fixture f;
-   auto source = f.apis.get<np::pubsub_source>({.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2});
+   auto configuration = f.apis.get<np::configuration_api>(np::configuration_api::ref());
    std::atomic_bool retired{false};
    auto sentinel = std::make_shared<capture>();
    sentinel->retired = [&] {
-      try { source->enable({}); } catch (const np::exceptions::route_conflict&) { retired = true; }
+      try { configuration->set_connection_gater({}); }
+      catch (const np::exceptions::route_conflict&) { retired = true; }
    };
    auto owner = f.raw->register_protocol({"/" + std::string(4096, 'x')},
        [sentinel](p2p::node::incoming_protocol_stream) -> boost::asio::awaitable<void> { co_return; });

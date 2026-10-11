@@ -9,6 +9,7 @@
 namespace forge::plugins::net::p2p::node::detail {
 
 struct configuration_snapshot {
+   config declarative{};
    forge::net::p2p::node::options options{};
    forge::api::transport::options api_options{
        .codec = forge::api::core::codec_id{.value = "forge.raw"}, .max_inflight = 64};
@@ -19,7 +20,9 @@ struct configuration_snapshot {
    std::string peer_store_name;
    std::string certificate_secret;
    std::string private_key_secret;
-   bool pubsub_requested = false;
+   pubsub_config pubsub{};
+   diagnostics_config diagnostics{};
+   bool pubsub_contributed = false;
    bool reset_incompatible_peer_state = true;
 
    void validate_candidate() const;

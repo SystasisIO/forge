@@ -84,6 +84,7 @@ import forge.plugins.db.store.exceptions;
 import forge.plugins.db.store.plugin;
 import forge.plugins.db.store.types;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
@@ -774,7 +775,7 @@ void check_p2p_identity_secret_purposes(forge::app::application_shell& app) {
 }
 
 void check_p2p_peer_visible(forge::app::application_shell& app, const forge::net::p2p::peer_id& expected) {
-   auto diagnostics = app.apis().get<p2p_node::diagnostics_source>(p2p_node::diagnostics_source::ref());
+   auto diagnostics = app.apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref());
    const auto snapshot = diagnostics->snapshot();
    BOOST_TEST(std::ranges::any_of(snapshot.peers, [&](const auto& peer) { return peer.peer == expected; }));
 }
@@ -826,7 +827,7 @@ void configure_static_topology(forge::config::core::document& document) {
 }
 
 void check_static_topology_snapshot(forge::app::application_shell& app) {
-   auto diagnostics = app.apis().get<p2p_node::diagnostics_source>(p2p_node::diagnostics_source::ref());
+   auto diagnostics = app.apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref());
    const auto snapshot = diagnostics->snapshot();
    BOOST_TEST(snapshot.topology.mode == "static-only");
    BOOST_TEST(snapshot.topology.phase == "idle");
@@ -912,15 +913,15 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_an
 
    const auto plugin = descriptor.factory();
    BOOST_REQUIRE(plugin != nullptr);
-   BOOST_TEST(plugin->version() == "7.0.0");
+   BOOST_TEST(plugin->version() == "8.0.0");
 
    const auto api_descriptor = p2p_node::api::describe();
    BOOST_TEST(api_descriptor.id.value == "forge.plugins.net.p2p.node");
    BOOST_TEST(api_descriptor.version.major == 3U);
 
-   const auto diagnostics_source_descriptor = p2p_node::diagnostics_source::describe();
-   BOOST_TEST(diagnostics_source_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics_source");
-   BOOST_TEST(diagnostics_source_descriptor.version.major == 3U);
+   const auto diagnostics_api_descriptor = p2p_node::diagnostics_api::describe();
+   BOOST_TEST(diagnostics_api_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics");
+   BOOST_TEST(diagnostics_api_descriptor.version.major == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_production_lifecycle_reopens_persisted_peer_state) {

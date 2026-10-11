@@ -389,7 +389,6 @@ target_link_libraries(
       forge_plugins_db_store
       forge_plugins_net_http_server
       forge_plugins_net_p2p_node
-      forge_plugins_net_p2p_pubsub
       forge_plugins_net_p2p_resolver
 )
 add_test(
@@ -1768,7 +1767,11 @@ add_executable(
    plugins/protocol_registry_fixture.cpp
    plugins/details/protocol_registry_fixture.hxx
    plugins/p2p_host_event_api_tests.cpp
+   plugins/p2p_shutdown_tests.cpp
+   plugins/p2p_pubsub_shutdown_tests.cpp
    plugins/p2p_pubsub_lifecycle_tests.cpp
+   plugins/pubsub_service_fixture.cpp
+   plugins/details/pubsub_service_fixture.hxx
    plugins/p2p_pubsub_partial_tests.cpp
    plugins/http_server_tests.cpp
    plugins/net_identity_tests.cpp
@@ -1790,9 +1793,7 @@ target_link_libraries(
    forge_plugins_crypto_secrets
    forge_plugins_net_http_server
    forge_plugins_log_otlp
-   forge_plugins_net_p2p_diagnostics
    forge_plugins_net_p2p_node
-   forge_plugins_net_p2p_pubsub
    forge_plugins_net_p2p_resolver
    Boost::included_unit_test_framework
 )
@@ -2785,17 +2786,6 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
-   test_forge_package_plugins_net_p2p_diagnostics
-   COMMAND ${CMAKE_CTEST_COMMAND}
-      --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_diagnostics
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-diagnostics
-      --build-generator ${CMAKE_GENERATOR}
-      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_net_p2p_diagnostics
-   DEPENDS test_forge_package_install
-)
-add_custom_target(
    test_forge_package_plugins_net_p2p_resolver
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -2804,17 +2794,6 @@ add_custom_target(
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
       --test-command forge_package_plugins_net_p2p_resolver
-   DEPENDS test_forge_package_install
-)
-add_custom_target(
-   test_forge_package_plugins_net_p2p_pubsub
-   COMMAND ${CMAKE_CTEST_COMMAND}
-      --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_pubsub
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-pubsub
-      --build-generator ${CMAKE_GENERATOR}
-      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_net_p2p_pubsub
    DEPENDS test_forge_package_install
 )
 add_custom_target(
@@ -3893,28 +3872,6 @@ add_test(
       --test-command forge_package_plugins_net_p2p_node
 )
 set_tests_properties(test_forge_package_plugins_net_p2p_node PROPERTIES DEPENDS test_forge_package_install)
-add_test(
-   NAME test_forge_package_plugins_net_p2p_diagnostics
-   COMMAND ${CMAKE_CTEST_COMMAND}
-      --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_diagnostics
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-diagnostics
-      --build-generator ${CMAKE_GENERATOR}
-      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_net_p2p_diagnostics
-)
-set_tests_properties(test_forge_package_plugins_net_p2p_diagnostics PROPERTIES DEPENDS test_forge_package_install)
-add_test(
-   NAME test_forge_package_plugins_net_p2p_pubsub
-   COMMAND ${CMAKE_CTEST_COMMAND}
-      --build-and-test
-      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_pubsub
-      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-pubsub
-      --build-generator ${CMAKE_GENERATOR}
-      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
-      --test-command forge_package_plugins_net_p2p_pubsub
-)
-set_tests_properties(test_forge_package_plugins_net_p2p_pubsub PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_plugins_net_p2p_resolver
    COMMAND ${CMAKE_CTEST_COMMAND}

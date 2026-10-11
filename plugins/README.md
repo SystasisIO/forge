@@ -66,11 +66,9 @@ target_link_libraries(app PRIVATE
 
 | Plugin | Target | Config section | Purpose |
 | --- | --- | --- | --- |
-| [`forge::plugins::net::http::server`](http/server/README.md) | `forge_plugins_net_http_server` | `plugins.net.http.server` | Runs one HTTP server, composes TLS from scoped Secrets material and accepts typed HTTP API and middleware contributions. |
-| [`forge::plugins::net::p2p::node`](p2p/node/README.md) | `forge_plugins_net_p2p_node` | `plugins.net.p2p.node` | Runs one P2P node and lets plugins publish protocols and typed remote APIs. |
-| [`forge::plugins::net::p2p::resolver`](p2p/resolver/README.md) | `forge_plugins_net_p2p_resolver` | `plugins.net.p2p.resolver` | Publishes and resolves peer API metadata over the P2P node. |
-| [`forge::plugins::net::p2p::diagnostics`](p2p/diagnostics/README.md) | `forge_plugins_net_p2p_diagnostics` | `plugins.net.p2p.diagnostics` | Exposes read-only P2P network/resource/pubsub diagnostics. |
-| [`forge::plugins::net::p2p::pubsub`](p2p/pubsub/README.md) | `forge_plugins_net_p2p_pubsub` | `plugins.net.p2p.pubsub` | Exposes topic publish/subscribe over the shared P2P node. |
+| [`forge::plugins::net::http::server`](net/http/server/README.md) | `forge_plugins_net_http_server` | `plugins.net.http.server` | Runs one HTTP server, composes TLS from scoped Secrets material and accepts typed HTTP API and middleware contributions. |
+| [`forge::plugins::net::p2p::node`](net/p2p/node/README.md) | `forge_plugins_net_p2p_node` | `plugins.net.p2p.node` | Owns one P2P node with focused connectivity, DHT, PubSub, diagnostics and host-event APIs. |
+| [`forge::plugins::net::p2p::resolver`](net/p2p/resolver/README.md) | `forge_plugins_net_p2p_resolver` | `plugins.net.p2p.resolver` | Publishes and resolves peer API metadata over the P2P node. |
 | [`forge::plugins::chain::signer`](chain/signer/README.md) | `forge_plugins_chain_signer` | `plugins.chain.signer` | Composes named transaction and finality providers behind typed Chain signer APIs and exact caller/action policy. |
 | [`forge::plugins::crypto::secrets`](crypto/secrets/README.md) | `forge_plugins_crypto_secrets` | `plugins.crypto.secrets` | Provides bounded secret retrieval, derivation and symmetric encryption operations. |
 | [`forge::plugins::log::otlp`](log/otlp/README.md) | `forge_plugins_log_otlp` | `plugins.log.otlp` | Exports configured FORGE logger routes to OTLP/HTTP JSON. |

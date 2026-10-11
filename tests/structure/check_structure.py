@@ -1437,8 +1437,8 @@ def check_contract_tooling_boundaries(root: Path, files: list[Path], errors: lis
 
 
 def check_net_plugin_families(root: Path, errors: list[str]) -> None:
-   leaves = ("http/server", "p2p/node", "p2p/resolver", "p2p/diagnostics", "p2p/pubsub")
-   for retired in ("http", "p2p"):
+   leaves = ("http/server", "p2p/node", "p2p/resolver")
+   for retired in ("http", "p2p", "net/p2p/diagnostics", "net/p2p/pubsub"):
       if (root / "plugins" / retired).exists():
          errors.append(f"plugins/{retired}: retired network plugin family")
    for leaf in leaves:
@@ -1457,8 +1457,24 @@ def check_net_plugin_families(root: Path, errors: list[str]) -> None:
          errors.append(f"plugins/{family}: grouping may only add leaf subdirectories")
    retired_identity = re.compile(
       r"forge[.]plugins[.](?:http|p2p)[.]|forge::plugins::(?:http|p2p)::|"
-      r"forge_plugins_(?:http|p2p)_|forge/plugins/(?:http|p2p)/"
+      r"forge_plugins_(?:http|p2p)_|forge/plugins/(?:http|p2p)/|"
+      r"forge[.]plugins[.]net[.]p2p[.](?:pubsub|diagnostics)[.]|"
+      r"forge::plugins::net::p2p::(?:pubsub|diagnostics)::|"
+      r"\b(?:forge_)?plugins_net_p2p_(?:pubsub|diagnostics)\b|"
+      r"forge/plugins/net/p2p/(?:pubsub|diagnostics)/|"
+      r"forge[.]plugins[.]net[.]p2p[.]node[.](?:pubsub_source|diagnostics_source|host_event_source)\b"
    )
+   node_include = root / "plugins/net/p2p/node/include/forge/plugins/net/p2p/node"
+   for role in ("pubsub_api", "diagnostics_api", "events_api"):
+      interface = node_include / f"{role}.cppm"
+      if not interface.is_file() or not re.search(rf"\bclass\s+{role}\b", interface.read_text()):
+         errors.append(f"{interface.relative_to(root)}: missing focused node consumer contract")
+   main_api = node_include / "api.cppm"
+   if main_api.is_file() and re.search(
+      r"\bclass\s+(?:pubsub_api|diagnostics_api|events_api|pubsub_source|diagnostics_source|host_event_source)\b",
+      main_api.read_text(),
+   ):
+      errors.append(f"{main_api.relative_to(root)}: node api.cppm may only own the main api contract")
    candidates = source_files(root, SCAN_ROOTS)
    candidates += [root / "CMakeLists.txt", root / "cmake/ForgeConfig.cmake.in"]
    candidates += sorted((root / "plugins").rglob("CMakeLists.txt"))

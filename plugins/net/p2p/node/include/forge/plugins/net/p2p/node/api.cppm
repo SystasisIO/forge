@@ -85,48 +85,6 @@ class api : public forge::api::core::contract<api> {
    }
 };
 
-class diagnostics_source : public forge::api::core::contract<diagnostics_source> {
- public:
-   virtual ~diagnostics_source() = default;
-
-   [[nodiscard]] virtual forge::net::p2p::diagnostics::snapshot
-   snapshot(forge::net::p2p::diagnostics::options options = {}) const = 0;
-   [[nodiscard]] virtual forge::net::p2p::dht::routing_status
-   routing_status(const forge::net::p2p::protocol_id& profile) const = 0;
-   [[nodiscard]] virtual forge::net::p2p::pubsub::score_snapshot pubsub_scores() const = 0;
-};
-
-class pubsub_source : public forge::api::core::contract<pubsub_source> {
- public:
-   virtual ~pubsub_source() = default;
-
-   virtual void enable(forge::net::p2p::pubsub::options options) = 0;
-   [[nodiscard]] virtual forge::net::p2p::peer_id local_peer() const = 0;
-   virtual boost::asio::awaitable<forge::net::p2p::pubsub::message>
-   async_publish_message(forge::net::p2p::pubsub::topic subject, std::vector<std::uint8_t> data,
-                         forge::net::p2p::pubsub::publish_options options) = 0;
-   virtual boost::asio::awaitable<forge::net::p2p::pubsub::subscription>
-   async_join_topic(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler handler) = 0;
-   virtual boost::asio::awaitable<void> async_leave_topic(forge::net::p2p::pubsub::topic subject) = 0;
-   virtual boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic>
-   async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler full_fallback,
-                        forge::net::p2p::pubsub::partial_options options) = 0;
-   virtual boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) = 0;
-   virtual boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token,
-                                                               std::vector<std::uint8_t> group) = 0;
-   virtual boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token,
-                                                            std::vector<std::uint8_t> group) = 0;
-   virtual boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>>
-   async_partial_peers(forge::net::p2p::pubsub::partial_topic token) = 0;
-   virtual boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token,
-       forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop = {}) = 0;
-   [[nodiscard]] virtual forge::net::p2p::pubsub::snapshot snapshot() const = 0;
-};
-
 } // namespace forge::plugins::net::p2p::node
 
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.node", 3, 0))
-FORGE_EXPORT_API(::forge::plugins::net::p2p::node::diagnostics_source,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.diagnostics_source", 3, 0))
-FORGE_EXPORT_API(::forge::plugins::net::p2p::node::pubsub_source,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.pubsub_source", 2, 0))

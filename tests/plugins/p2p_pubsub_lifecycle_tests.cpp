@@ -1,3 +1,5 @@
+module;
+
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -25,32 +27,38 @@
 #include <vector>
 #include <stop_token>
 
+module forge.plugins.net.p2p.node.plugin;
+
 import forge.api.core.handle;
 import forge.api.core.registry;
 import forge.app.events;
 import forge.app.plugin_context;
 import forge.app.signals;
 import forge.asio.notification;
+import forge.asio.gate;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.document;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.net.p2p.node;
+import forge.net.p2p.lifecycle;
 import forge.net.p2p.pubsub;
 import forge.plugins.net.p2p.node.api;
-import forge.plugins.net.p2p.node.plugin;
-import forge.plugins.net.p2p.pubsub.api;
-import forge.plugins.net.p2p.pubsub.exceptions;
-import forge.plugins.net.p2p.pubsub.plugin;
-import forge.plugins.net.p2p.pubsub.types;
+import forge.plugins.net.p2p.node.pubsub_api;
+import forge.plugins.net.p2p.node.pubsub_exceptions;
+import forge.plugins.net.p2p.node.pubsub_types;
 import forge.raw.raw;
+
+#include "../../../plugins/net/p2p/node/details/pubsub_operations.hxx"
+#include "details/pubsub_service_fixture.hxx"
 
 namespace {
 
 namespace p2p = forge::net::p2p;
 namespace core = forge::net::p2p::pubsub;
-namespace facade = forge::plugins::net::p2p::pubsub;
+namespace facade = forge::plugins::net::p2p::node;
 namespace node_plugin = forge::plugins::net::p2p::node;
 using namespace std::chrono_literals;
 
@@ -77,7 +85,7 @@ facade::handler accepting() {
    };
 }
 
-// These barriers exercise the public source contract, not a simulated native wire verdict.
+// These barriers exercise the private mutation boundary, not a simulated native wire verdict.
 struct barrier {
    forge::asio::notification changed;
    std::mutex mutex;
@@ -122,31 +130,18 @@ struct barrier {
    }
 };
 
-class controlled_source final : public node_plugin::pubsub_source {
+class controlled_source final {
  public:
-   boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler callback, forge::net::p2p::pubsub::partial_options options) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return forge::net::p2p::pubsub::partial_topic{};
-   }
-   boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
-   }
-   boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> async_partial_peers(forge::net::p2p::pubsub::partial_topic token) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return std::vector<forge::net::p2p::peer_id>{};
-   }
-   boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token, forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop) override {
-      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
-      co_return;
+   node_plugin::detail::pubsub_operations operations() {
+      auto out = node_plugin::detail::pubsub_operations{};
+      out.publish = [this](auto, auto subject, auto bytes, auto options) {
+         return async_publish_message(std::move(subject), std::move(bytes), options);
+      };
+      out.subscribe = [this](auto, auto subject, auto callback) {
+         return async_join_topic(std::move(subject), std::move(callback));
+      };
+      out.unsubscribe = [this](auto, auto subject) { return async_leave_topic(std::move(subject)); };
+      return out;
    }
    mutable std::mutex mutex;
    std::map<std::string, std::shared_ptr<core::handler>> handlers;
@@ -155,15 +150,13 @@ class controlled_source final : public node_plugin::pubsub_source {
    std::map<std::string, unsigned> join_calls;
    std::map<std::string, unsigned> leave_calls;
    std::shared_ptr<barrier> publishing;
-   std::function<void()> snapshot_hook;
    std::vector<std::string> order;
    std::atomic_uint active{0};
 
-   void enable(core::options) override {}
-   p2p::peer_id local_peer() const override { return {.value = "fixture-pubsub-owner"}; }
+   p2p::peer_id local_peer() const { return {.value = "fixture-pubsub-owner"}; }
 
    boost::asio::awaitable<core::message> async_publish_message(
-       core::topic topic, std::vector<std::uint8_t> bytes, core::publish_options) override {
+       core::topic topic, std::vector<std::uint8_t> bytes, core::publish_options) {
       ++active;
       auto completed = boost::scope::scope_exit{[&] { --active; }};
       auto hold = std::shared_ptr<barrier>{};
@@ -172,10 +165,10 @@ class controlled_source final : public node_plugin::pubsub_source {
          hold = publishing;
       }
       if (hold) { co_await hold->wait(); }
-      co_return core::message{.data = std::move(bytes), .subject = std::move(topic)};
+      co_return core::message{.from = local_peer(), .data = std::move(bytes), .subject = std::move(topic)};
    }
 
-   boost::asio::awaitable<core::subscription> async_join_topic(core::topic topic, core::handler callback) override {
+   boost::asio::awaitable<core::subscription> async_join_topic(core::topic topic, core::handler callback) {
       ++active;
       auto completed = boost::scope::scope_exit{[&] { --active; }};
       auto hold = std::shared_ptr<barrier>{};
@@ -192,7 +185,7 @@ class controlled_source final : public node_plugin::pubsub_source {
       co_return core::subscription{.subject = std::move(topic)};
    }
 
-   boost::asio::awaitable<void> async_leave_topic(core::topic topic) override {
+   boost::asio::awaitable<void> async_leave_topic(core::topic topic) {
       ++active;
       auto completed = boost::scope::scope_exit{[&] { --active; }};
       auto hold = std::shared_ptr<barrier>{};
@@ -213,15 +206,12 @@ class controlled_source final : public node_plugin::pubsub_source {
       }
    }
 
-   core::snapshot snapshot() const override {
+   core::snapshot snapshot() const {
       auto result = core::snapshot{};
-      auto hook = std::function<void()>{};
       {
          const auto lock = std::scoped_lock{mutex};
          result.topics = handlers.size();
-         hook = snapshot_hook;
       }
-      if (hook) { hook(); }
       return result;
    }
 
@@ -252,22 +242,19 @@ struct fixture {
    forge::app::event_bus events{};
    forge::app::plugin_context context{scheduler, apis, signals, events};
    std::shared_ptr<controlled_source> source = std::make_shared<controlled_source>();
-   std::unique_ptr<facade::plugin> owner = std::make_unique<facade::plugin>();
-   std::shared_ptr<facade::api> api;
+   std::unique_ptr<node_plugin::test::pubsub_service_fixture> owner;
+   std::shared_ptr<facade::pubsub_api> api;
    std::vector<std::shared_ptr<barrier>> barriers;
    bool expected_shutdown_error = false;
 
    explicit fixture(unsigned max_topics = 16, unsigned max_handlers = 8) {
-      auto config = forge::config::core::document{};
-      config.set("plugins.net.p2p.pubsub.max-topics", max_topics);
-      config.set("plugins.net.p2p.pubsub.max-handlers-per-topic", max_handlers);
-      run(owner->configure({config, "plugins.net.p2p.pubsub"}));
-      apis.install<node_plugin::pubsub_source>(source);
-      auto provider = forge::api::core::installer{apis};
-      run(owner->provide(provider));
-      run(owner->initialize(context));
-      run(owner->startup());
-      api = apis.get<facade::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2}).shared();
+      auto config = facade::pubsub_config{};
+      config.enabled = true;
+      config.max_topics = max_topics;
+      config.max_handlers_per_topic = max_handlers;
+      owner = std::make_unique<node_plugin::test::pubsub_service_fixture>(runtime, source->operations(), config);
+      run(owner->native()->async_start());
+      api = owner->interface();
    }
 
    ~fixture() {
@@ -284,6 +271,7 @@ struct fixture {
       BOOST_TEST(source->active.load() == 0U);
       api.reset();
       apis.clear();
+      run(owner->native()->async_stop());
       owner.reset();
       run(scheduler.shutdown());
    }
@@ -345,85 +333,50 @@ struct retiring_capture {
    ~retiring_capture() { barrier->wait(); }
 };
 
-// Only the return from the real source's join is held, after its native mutation.
-class held_native_source final : public node_plugin::pubsub_source {
+// Only the return from the real node's join is held, after its native mutation.
+class held_native_source final {
  public:
-   boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler callback, forge::net::p2p::pubsub::partial_options options) override {
-      return native->async_enable_partial(std::move(subject), std::move(callback), std::move(options));
+   node_plugin::detail::pubsub_operations operations() {
+      auto out = node_plugin::detail::pubsub_operations{};
+      out.subscribe = [this](auto, auto subject, auto callback) {
+         return async_join_topic(std::move(subject), std::move(callback));
+      };
+      out.unsubscribe = [this](auto, auto subject) { return async_leave_topic(std::move(subject)); };
+      return out;
    }
-   boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) override {
-      return native->async_disable_partial(std::move(token));
-   }
-   boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
-      return native->async_advertise_partial(std::move(token), std::move(group));
-   }
-   boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
-      return native->async_forget_partial(std::move(token), std::move(group));
-   }
-   boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> async_partial_peers(forge::net::p2p::pubsub::partial_topic token) override {
-      return native->async_partial_peers(std::move(token));
-   }
-   boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token, forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop) override {
-      return native->async_send_partial(std::move(token), std::move(peer), std::move(value), stop);
-   }
-   std::shared_ptr<node_plugin::pubsub_source> native;
+   std::shared_ptr<p2p::node> native;
    std::shared_ptr<barrier> joined_topic;
    std::shared_ptr<barrier> leaving_topic;
-   explicit held_native_source(std::shared_ptr<node_plugin::pubsub_source> value) : native{std::move(value)} {}
-   void enable(core::options value) override { native->enable(std::move(value)); }
-   p2p::peer_id local_peer() const override { return native->local_peer(); }
-   core::snapshot snapshot() const override { return native->snapshot(); }
+   held_native_source() = default;
+   p2p::peer_id local_peer() const { return native->local_peer(); }
+   core::snapshot snapshot() const { return native->pubsub_snapshot(); }
    boost::asio::awaitable<core::message> async_publish_message(
-       core::topic subject, std::vector<std::uint8_t> bytes, core::publish_options options) override {
-      co_return co_await native->async_publish_message(std::move(subject), std::move(bytes), options);
+       core::topic subject, std::vector<std::uint8_t> bytes, core::publish_options options) {
+      co_return co_await native->async_publish(std::move(subject), std::move(bytes), options);
    }
-   boost::asio::awaitable<core::subscription> async_join_topic(core::topic subject, core::handler callback) override {
-      auto value = co_await native->async_join_topic(std::move(subject), std::move(callback));
+   boost::asio::awaitable<core::subscription> async_join_topic(core::topic subject, core::handler callback) {
+      auto value = co_await native->async_subscribe(std::move(subject), std::move(callback));
       if (joined_topic) { co_await joined_topic->wait(); }
       co_return value;
    }
-   boost::asio::awaitable<void> async_leave_topic(core::topic subject) override {
+   boost::asio::awaitable<void> async_leave_topic(core::topic subject) {
       if (leaving_topic) { co_await leaving_topic->wait(); }
-      co_await native->async_leave_topic(std::move(subject));
+      co_await native->async_unsubscribe(std::move(subject));
    }
 };
 
 struct native_source_fixture {
    forge::asio::runtime runtime{forge::asio::runtime_options{.worker_threads = 3}};
    forge::asio::task::scheduler scheduler{runtime};
-   forge::api::core::registry native_apis;
-   forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
-   node_plugin::plugin node;
-   facade::plugin pubsub;
-   std::shared_ptr<held_native_source> source;
-   std::shared_ptr<facade::api> api;
+   std::shared_ptr<held_native_source> source = std::make_shared<held_native_source>();
+   node_plugin::test::pubsub_service_fixture pubsub{runtime, source->operations(), {.enabled = true}};
+   p2p::node& node = *pubsub.native();
+   std::shared_ptr<facade::pubsub_api> api;
 
    native_source_fixture() {
-      auto config = forge::config::core::document{};
-      const auto peer = p2p::make_peer_id({.type = p2p::public_key::type::ed25519,
-                                           .data = std::vector<std::uint8_t>(32, 74)});
-      // Real local node and official source, no sockets or authentication claim.
-      config.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
-      config.set("plugins.net.p2p.node.peer-id", peer.value);
-      config.set("plugins.net.p2p.node.topology.mode", "static-only");
-      run(node.configure({config, "plugins.net.p2p.node"}));
-      run(pubsub.configure({config, "plugins.net.p2p.pubsub"}));
-      auto native_provider = forge::api::core::installer{native_apis};
-      auto provider = forge::api::core::installer{apis};
-      run(node.provide(native_provider));
-      source = std::make_shared<held_native_source>(native_apis.get<node_plugin::pubsub_source>(
-          {.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2}).shared());
-      apis.install<node_plugin::pubsub_source>(source);
-      run(pubsub.provide(provider));
-      run(node.initialize(context));
-      run(pubsub.initialize(context));
-      run(node.after_initialize());
-      run(node.startup());
-      run(pubsub.startup());
-      api = apis.get<facade::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2}).shared();
+      source->native = pubsub.native();
+      run(node.async_start());
+      api = pubsub.interface();
    }
 
    ~native_source_fixture() {
@@ -432,7 +385,7 @@ struct native_source_fixture {
       node.request_stop();
       pubsub.request_stop();
       run(pubsub.shutdown());
-      run(node.shutdown());
+      run(node.async_stop());
       run(scheduler.shutdown());
    }
 
@@ -476,8 +429,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_pending_reservations_enforce_both_limi
    hold->await_call();
    auto second = f.start(f.api->subscribe({"one"}, accepting()));
    f.settle();
-   BOOST_CHECK_THROW(f.run(f.api->subscribe({"one"}, accepting())), facade::exceptions::handler_limit);
-   BOOST_CHECK_THROW(f.run(f.api->subscribe({"two"}, accepting())), facade::exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->subscribe({"one"}, accepting())), facade::pubsub_exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->subscribe({"two"}, accepting())), facade::pubsub_exceptions::handler_limit);
    hold->release();
    (void)joined(first);
    (void)joined(second);
@@ -540,7 +493,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_last_leave_serializes_new_join_and_rej
    hold->await_call();
    auto replacement = f.start(f.api->subscribe({"one"}, accepting()));
    f.settle();
-   BOOST_CHECK_THROW(f.run(f.api->unsubscribe(token)), facade::exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->unsubscribe(token)), facade::pubsub_exceptions::subscription_not_found);
    BOOST_TEST(f.source->count(true, "one") == 1U);
    BOOST_CHECK(replacement.wait_for(0ms) != std::future_status::ready);
    hold->release();
@@ -622,6 +575,14 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_typed_arguments_are_owned_at_call_time
    f.run(f.api->unsubscribe(token));
 }
 
+BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_unsigned_result_omits_unverified_author) {
+   auto f = fixture{};
+   const auto result = f.run(f.api->publish({"unsigned"}, {1, 2, 3}, {.sign = false}));
+   BOOST_CHECK(result.source == f.owner->native()->local_peer());
+   BOOST_TEST(!result.author.has_value());
+   BOOST_TEST(result.data == (std::vector<std::uint8_t>{1, 2, 3}), boost::test_tools::per_element());
+}
+
 BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_canceled_waiter_releases_only_its_reservation) {
    auto f = fixture{1, 2};
    const auto hold = f.hold(true, "one");
@@ -701,28 +662,16 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_cancel_granted_join_keeps_pending_wait
    BOOST_TEST(f.api->subscriptions().empty());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_source_snapshot_can_reenter_facade_outside_mutex) {
-   auto f = fixture{};
+BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_snapshot_reads_registration_and_native_state) {
+   auto f = native_source_fixture{};
    (void)f.run(f.api->subscribe({"one"}, accepting()));
-   const auto weak = std::weak_ptr<facade::api>{f.api};
-   auto observed = std::atomic_size_t{0};
-   {
-      const auto lock = std::scoped_lock{f.source->mutex};
-      f.source->snapshot_hook = [weak, &observed] {
-         const auto api = weak.lock();
-         observed = api->subscriptions().size();
-      };
-   }
-   auto cleanup = boost::scope::scope_exit{[&] {
-      const auto lock = std::scoped_lock{f.source->mutex};
-      f.source->snapshot_hook = {};
-   }};
-   auto inspect = [api = f.api]() -> boost::asio::awaitable<facade::snapshot> {
+   auto inspect = [api = f.api]() -> boost::asio::awaitable<facade::pubsub_snapshot> {
       co_return api->snapshot();
    };
    const auto snapshot = f.run(inspect());
    BOOST_TEST(snapshot.core.topics == 1U);
-   BOOST_TEST(observed.load() == 1U);
+   BOOST_TEST(snapshot.topics == 1U);
+   BOOST_TEST(snapshot.subscriptions == f.api->subscriptions().size());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_saved_awaitables_outlive_facade_and_plugin) {

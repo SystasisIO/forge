@@ -12,10 +12,6 @@ import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.resolver.plugin;
 import forge.plugins.net.p2p.resolver.exceptions;
-import forge.plugins.net.p2p.diagnostics.plugin;
-import forge.plugins.net.p2p.diagnostics.exceptions;
-import forge.plugins.net.p2p.pubsub.plugin;
-import forge.plugins.net.p2p.pubsub.exceptions;
 
 namespace {
 
@@ -47,6 +43,19 @@ BOOST_AUTO_TEST_CASE(network_plugin_identities_and_retired_config_are_explicit) 
    check_identity<net::http::server::plugin, net::http::server::exceptions::invalid_config>("http.server");
    check_identity<net::p2p::node::plugin, net::p2p::node::exceptions::invalid_config>("p2p.node");
    check_identity<net::p2p::resolver::plugin, net::p2p::resolver::exceptions::invalid_config>("p2p.resolver");
-   check_identity<net::p2p::diagnostics::plugin, net::p2p::diagnostics::exceptions::invalid_config>("p2p.diagnostics");
-   check_identity<net::p2p::pubsub::plugin, net::p2p::pubsub::exceptions::invalid_config>("p2p.pubsub");
+}
+
+BOOST_AUTO_TEST_CASE(p2p_node_rejects_retired_standalone_pubsub_and_diagnostics_sections) {
+   namespace node = forge::plugins::net::p2p::node;
+   auto runtime = forge::asio::runtime{{.worker_threads = 2}};
+   for (const auto family : {"plugins.p2p.", "plugins.net.p2p."}) {
+      for (const auto role : {"pubsub", "diagnostics"}) {
+         auto plugin = node::plugin{};
+         forge::config::core::document settings;
+         settings.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
+         settings.set(std::string{family} + role + ".enabled", false);
+         BOOST_CHECK_THROW(forge::asio::blocking::run(runtime,
+             plugin.configure({settings, "plugins.net.p2p.node"})), node::exceptions::invalid_config);
+      }
+   }
 }
