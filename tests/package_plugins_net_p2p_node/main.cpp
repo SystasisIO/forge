@@ -64,6 +64,11 @@ static_assert(std::same_as<decltype(std::declval<configuration_api&>().set_conne
 static_assert(std::same_as<decltype(std::declval<configuration_api&>().set_dht_value_policies(
     p2p::protocol_id{}, std::vector<p2p::dht::value_policy>{})), void>);
 using host_event_source = forge::plugins::net::p2p::node::host_event_source;
+using diagnostics_source = forge::plugins::net::p2p::node::diagnostics_source;
+static_assert(std::same_as<decltype(std::declval<const diagnostics_source&>().routing_status(
+    std::declval<const p2p::protocol_id&>())), p2p::dht::routing_status>);
+static_assert(std::same_as<decltype(std::declval<const diagnostics_source&>().pubsub_scores()),
+                          p2p::pubsub::score_snapshot>);
 using pubsub_source = forge::plugins::net::p2p::node::pubsub_source;
 using protocol_api = forge::plugins::net::p2p::node::protocol_api;
 using protocol_registration = forge::plugins::net::p2p::node::protocol_registration;
@@ -107,6 +112,7 @@ int main() {
    const auto dht = dht_api::describe();
    const auto configuration = configuration_api::describe();
    const auto events = host_event_source::describe();
+   const auto diagnostics = diagnostics_source::describe();
    const auto pubsub = pubsub_source::describe();
    const auto protocol = protocol_api::describe();
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
@@ -120,6 +126,9 @@ int main() {
                   events.id.value == "forge.plugins.net.p2p.node.host_event_source" &&
                   events.version.major == 1 && events.version.revision == 0 &&
                   events.supported_surfaces == forge::api::core::surface::local && events.methods.empty() &&
+                  diagnostics.id.value == "forge.plugins.net.p2p.node.diagnostics_source" &&
+                  diagnostics.version.major == 3 && diagnostics.version.revision == 0 &&
+                  diagnostics.supported_surfaces == forge::api::core::surface::local && diagnostics.methods.empty() &&
                   pubsub.id.value == "forge.plugins.net.p2p.node.pubsub_source" &&
                   pubsub.version.major == 2 && pubsub.version.revision == 0 &&
                   pubsub.supported_surfaces == forge::api::core::surface::local && pubsub.methods.empty() &&

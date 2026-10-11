@@ -20,6 +20,14 @@ import forge.plugins.net.p2p.diagnostics.types;
 
 namespace forge::plugins::net::p2p::diagnostics {
 
+std::shared_ptr<forge::plugins::net::p2p::node::diagnostics_source> plugin::impl::require_source() const {
+   const auto lock = std::scoped_lock{mutex};
+   if (!initialized || !source) {
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P diagnostics plugin is not initialized");
+   }
+   return source;
+}
+
 std::shared_ptr<forge::plugins::net::p2p::node::host_event_source> plugin::impl::require_events_source() const {
    const auto lock = std::scoped_lock{mutex};
    if (stopping) {

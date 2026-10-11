@@ -1033,7 +1033,7 @@ void check_plugin_authenticated_peer_api(std::string driver, const std::filesyst
       apis[i] = apps[i]->apis().get<p2p_node::api>(
           {.id = {"forge.plugins.net.p2p.node"}, .major = 3}).shared();
       diagnostics[i] = apps[i]->apis().get<p2p_node::diagnostics_source>(
-          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2}).shared();
+          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3}).shared();
    }
    const auto& server = apis[0];
    const auto& client = apis[1];

@@ -49,7 +49,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Extra API ids:
   - `forge.plugins.net.p2p.node.configuration` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
-  - `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
+  - `forge.plugins.net.p2p.node.diagnostics_source` (contract `3.0`)
   - `forge.plugins.net.p2p.node.host_event_source` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.pubsub_source`
 - Config section: `plugins.net.p2p.node`
@@ -372,8 +372,15 @@ silence controls. Token activity is not evidence that pruning was exercised.
 
 Plugin 6.0 upgraded `forge.plugins.net.p2p.node.diagnostics_source` to contract
 `2.0`: diagnostics endpoint records now carry raw `multiaddr` values in their
-`address` field so DNS address carriers survive. Consumers must request major
-`2`; no v1 alias is provided. The private ObjectDB P2P cache marker is v3;
+`address` field so DNS address carriers survive. No v1 alias is provided.
+Stage 7 extends the unreleased node plugin 7.0 with diagnostics source contract
+`3.0`: consumers must request major `3` and implement `routing_status(profile)`
+and `pubsub_scores()` alongside `snapshot(options)`. These methods return native
+`dht::routing_status` and `pubsub::score_snapshot` values and delegate to the
+shared node, without exposing a node accessor or duplicating routing/scoring
+state. Unknown profiles retain native `unsupported_protocol` errors; calls
+before node construction or after shutdown retain `plugin_not_initialized`.
+The private ObjectDB P2P cache marker is v3;
 v2 caches must use the existing recoverable `schema-policy: reset` path rather
 than being hydrated.
 

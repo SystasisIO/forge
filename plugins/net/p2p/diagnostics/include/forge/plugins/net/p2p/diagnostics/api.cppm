@@ -17,6 +17,8 @@ import forge.api.core.binding;
 import forge.api.core.dispatcher;
 import forge.net.p2p.identity;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
+import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.resource_manager;
 import forge.plugins.net.p2p.diagnostics.types;
@@ -33,6 +35,9 @@ class api : public forge::api::core::contract<api> {
    [[nodiscard]] virtual forge::net::p2p::diagnostics::network_state network() const = 0;
    [[nodiscard]] virtual forge::net::p2p::resource_manager::snapshot resources() const = 0;
    [[nodiscard]] virtual forge::net::p2p::pubsub::snapshot pubsub() const = 0;
+   [[nodiscard]] virtual forge::net::p2p::dht::routing_status
+   routing_status(const forge::net::p2p::protocol_id& profile) const = 0;
+   [[nodiscard]] virtual forge::net::p2p::pubsub::score_snapshot pubsub_scores() const = 0;
    [[nodiscard]] virtual std::vector<forge::net::p2p::diagnostics::peer> peers(filter value = {}) const = 0;
    [[nodiscard]] virtual forge::net::p2p::diagnostics::peer peer(forge::net::p2p::peer_id value) const = 0;
 };
@@ -40,4 +45,4 @@ class api : public forge::api::core::contract<api> {
 } // namespace forge::plugins::net::p2p::diagnostics
 
 FORGE_EXPORT_API(::forge::plugins::net::p2p::diagnostics::api,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.diagnostics", 2, 0))
+                 FORGE_API_CONTRACT("forge.plugins.net.p2p.diagnostics", 3, 0))

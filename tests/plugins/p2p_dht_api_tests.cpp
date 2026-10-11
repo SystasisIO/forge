@@ -39,10 +39,14 @@ import forge.net.p2p.identity;
 import forge.net.p2p.identify;
 import forge.net.p2p.ipns;
 import forge.net.p2p.protocol;
+import forge.net.p2p.pubsub;
 import forge.net.p2p.provider_registration;
 import forge.net.p2p.stream;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
+import forge.plugins.net.p2p.diagnostics.api;
+import forge.plugins.net.p2p.diagnostics.exceptions;
+import forge.plugins.net.p2p.diagnostics.plugin;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.exceptions;
@@ -52,6 +56,7 @@ namespace {
 
 namespace p2p = forge::net::p2p;
 namespace node_plugin = forge::plugins::net::p2p::node;
+namespace diagnostics_plugin = forge::plugins::net::p2p::diagnostics;
 namespace secrets = forge::plugins::crypto::secrets;
 
 const auto amino = p2p::protocol_id{.value = "/ipfs/kad/1.0.0"};
@@ -132,6 +137,7 @@ class dht_application final : public forge::app::application_shell {
           },
       });
       registry.register_plugin(node_plugin::descriptor());
+      registry.register_plugin(diagnostics_plugin::descriptor());
    }
 
  private:
@@ -218,7 +224,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_contract_is_local_and_rejects_before_startup) {
    auto dht = apis.get<node_plugin::dht_api>(
        {.id = {"forge.plugins.net.p2p.node.dht"}, .major = 1, .min_revision = 0});
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0}) != nullptr);
-   BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2,
+   BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3,
                               .min_revision = 0}) != nullptr);
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2,
                               .min_revision = 0}) != nullptr);
@@ -361,7 +367,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
    const auto local_peer = client_node->local_peer();
    BOOST_CHECK(local_peer != server_node->local_peer());
    const auto diagnostics = client.apis().get<node_plugin::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0});
    BOOST_REQUIRE_MESSAGE(forge::asio::blocking::run(
                              client.runtime(), wait_for_dht_server(diagnostics.shared(), server_node->local_peer())),
                          "bootstrap did not authenticate and identify the configured DHT server");
@@ -370,6 +376,24 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
    BOOST_CHECK(std::ranges::any_of(found.closest_peers, [&](const auto& peer) {
       return peer.id == server_node->local_peer();
    }));
+
+   const auto facade = client.apis().get<diagnostics_plugin::api>(diagnostics_plugin::api::ref());
+   const auto native_routing = diagnostics->routing_status(providers);
+   const auto routing = facade->routing_status(providers);
+   BOOST_TEST(native_routing.active == 1U);
+   BOOST_TEST(routing.active == native_routing.active);
+   BOOST_TEST(routing.replacements == native_routing.replacements);
+   BOOST_TEST(routing.candidates == native_routing.candidates);
+   BOOST_TEST(routing.nonempty_buckets == native_routing.nonempty_buckets);
+   const auto unknown = p2p::protocol_id{.value = "/forge/not-configured/1"};
+   BOOST_CHECK_EXCEPTION((void)diagnostics->routing_status(unknown), p2p::exceptions::unsupported_protocol,
+                         [](const auto& error) {
+                            return p2p::exceptions::code_of(error) == p2p::exceptions::code::unsupported_protocol;
+                         });
+   BOOST_CHECK_EXCEPTION((void)facade->routing_status(unknown), p2p::exceptions::unsupported_protocol,
+                         [](const auto& error) {
+                            return p2p::exceptions::code_of(error) == p2p::exceptions::code::unsupported_protocol;
+                         });
 
    const auto key = p2p::make_dht_key(forge::multiformats::multihash::sha2_256(
        std::vector<std::uint8_t>{'p', 'r', 'o', 'v', 'i', 'd', 'e'}).encode());
@@ -424,7 +448,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
       forge::asio::blocking::run(reader.runtime(), reader.shutdown());
    }};
    const auto reader_diagnostics = reader.apis().get<node_plugin::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3, .min_revision = 0});
    BOOST_REQUIRE(forge::asio::blocking::run(reader.runtime(),
        wait_for_dht_server(reader_diagnostics.shared(), server_node->local_peer(), amino)));
    const auto discovered_providers = forge::asio::blocking::run(
@@ -453,9 +477,78 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
    forge::asio::blocking::run(client.runtime(), client.shutdown());
    client_cleanup.set_active(false);
    BOOST_TEST(!retained.active());
+   BOOST_TEST(routing.active == 1U);
+   BOOST_TEST(routing.nonempty_buckets == 1U);
+   BOOST_CHECK_THROW((void)facade->routing_status(providers), diagnostics_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)diagnostics->routing_status(providers), node_plugin::exceptions::plugin_not_initialized);
    // Both other hosts are stopped: this result must come from the server's stored advertisement.
    const auto stored_provider = forge::asio::blocking::run(
        server.runtime(), server_dht->find_providers(providers, key, {.requested_count = 1}));
    BOOST_REQUIRE_EQUAL(stored_provider.size(), 1U);
    BOOST_CHECK(stored_provider.front().id == local_peer);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_diagnostics_api_reports_native_pubsub_scores_over_authenticated_tcp) {
+   auto server = dht_application{"diagnostics-score-server"};
+   server.configure(configuration());
+   forge::asio::blocking::run(server.runtime(), server.initialize());
+   server.apis().get<node_plugin::pubsub_source>(node_plugin::pubsub_source::ref())->enable({});
+   auto server_cleanup = boost::scope::scope_exit{[&] {
+      forge::asio::blocking::run(server.runtime(), server.shutdown());
+   }};
+   forge::asio::blocking::run(server.runtime(), server.startup());
+   const auto server_peer = node_handle(server)->local_peer();
+   const auto address = node_handle(server)->local_endpoint();
+   BOOST_REQUIRE(address.has_value());
+   BOOST_CHECK(address->is_direct_tcp());
+
+   auto client = dht_application{"diagnostics-score-client"};
+   auto config = configuration();
+   config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{
+                                                   forge::config::core::value{address->to_string()}});
+   config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+   client.configure(config);
+   forge::asio::blocking::run(client.runtime(), client.initialize());
+   auto client_cleanup = boost::scope::scope_exit{[&] {
+      forge::asio::blocking::run(client.runtime(), client.shutdown());
+   }};
+   const auto pubsub = client.apis().get<node_plugin::pubsub_source>(node_plugin::pubsub_source::ref());
+   auto options = p2p::pubsub::options{};
+   options.scoring = p2p::pubsub::scoring_params{};
+   options.scoring->app_specific_score = [](const p2p::peer_id&) { return 3.0; };
+   options.scoring->app_specific_weight = 2.0;
+   pubsub->enable(std::move(options));
+   forge::asio::blocking::run(client.runtime(), client.startup());
+   const auto source = client.apis().get<node_plugin::diagnostics_source>(node_plugin::diagnostics_source::ref());
+   const auto facade = client.apis().get<diagnostics_plugin::api>(diagnostics_plugin::api::ref());
+   BOOST_REQUIRE(forge::asio::blocking::run(client.runtime(), wait_for_dht_server(source.shared(), server_peer)));
+   // Publishing samples the native application score without waiting for a heartbeat.
+   static_cast<void>(forge::asio::blocking::run(client.runtime(),
+       pubsub->async_publish_message({.value = "diagnostics-scores"}, {1, 2, 3}, {.sign = true})));
+   const auto native_scores = source->pubsub_scores();
+   const auto scores = facade->pubsub_scores();
+   BOOST_TEST(native_scores.connected_peers == 1U);
+   BOOST_TEST(scores.connected_peers == native_scores.connected_peers);
+   BOOST_REQUIRE_EQUAL(scores.peers.size(), 1U);
+   BOOST_REQUIRE_EQUAL(native_scores.peers.size(), 1U);
+   BOOST_CHECK(scores.peers.front().peer == server_peer);
+   BOOST_TEST(scores.peers.front().connected);
+   BOOST_TEST(scores.peers.front().app_specific_sample == 3.0);
+   BOOST_TEST(scores.peers.front().app_specific_score == 6.0);
+   BOOST_TEST(scores.peers.front().value == native_scores.peers.front().value);
+   BOOST_TEST(scores.peers.front().value == 6.0);
+   const auto snapshot = facade->pubsub();
+   BOOST_TEST(snapshot.messages_published == 1U);
+   BOOST_TEST(snapshot.cached_messages >= 1U);
+   BOOST_TEST(snapshot.messages_published == pubsub->snapshot().messages_published);
+
+   client.request_stop();
+   BOOST_CHECK_NO_THROW((void)facade->pubsub_scores());
+   forge::asio::blocking::run(client.runtime(), client.shutdown());
+   client_cleanup.set_active(false);
+   BOOST_CHECK_THROW((void)facade->pubsub_scores(), diagnostics_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)source->pubsub_scores(), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK(scores.peers.front().peer == server_peer);
+   BOOST_TEST(scores.peers.front().app_specific_score == 6.0);
+   BOOST_TEST(snapshot.messages_published == 1U);
 }

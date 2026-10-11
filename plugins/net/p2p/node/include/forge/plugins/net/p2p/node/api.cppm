@@ -30,6 +30,7 @@ import forge.api.transport.server;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.protocol;
 import forge.net.p2p.node;
@@ -90,6 +91,9 @@ class diagnostics_source : public forge::api::core::contract<diagnostics_source>
 
    [[nodiscard]] virtual forge::net::p2p::diagnostics::snapshot
    snapshot(forge::net::p2p::diagnostics::options options = {}) const = 0;
+   [[nodiscard]] virtual forge::net::p2p::dht::routing_status
+   routing_status(const forge::net::p2p::protocol_id& profile) const = 0;
+   [[nodiscard]] virtual forge::net::p2p::pubsub::score_snapshot pubsub_scores() const = 0;
 };
 
 class pubsub_source : public forge::api::core::contract<pubsub_source> {
@@ -123,6 +127,6 @@ class pubsub_source : public forge::api::core::contract<pubsub_source> {
 
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.node", 3, 0))
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::diagnostics_source,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.diagnostics_source", 2, 0))
+                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.diagnostics_source", 3, 0))
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::pubsub_source,
                  FORGE_API_CONTRACT("forge.plugins.net.p2p.node.pubsub_source", 2, 0))

@@ -18,6 +18,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 import forge.api.core.descriptor;
@@ -32,11 +33,14 @@ import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.document;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.identity;
 import forge.net.p2p.lifecycle;
+import forge.net.p2p.protocol;
+import forge.net.p2p.pubsub;
 import forge.plugins.net.p2p.diagnostics.api;
 import forge.plugins.net.p2p.diagnostics.events_api;
 import forge.plugins.net.p2p.diagnostics.exceptions;
@@ -127,7 +131,7 @@ struct host_fixture {
 
    auto snapshots() {
       return environment.apis.get<diagnostics_plugin::api>(
-          {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 2, .min_revision = 0});
+          {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3, .min_revision = 0});
    }
 };
 
@@ -158,16 +162,38 @@ class blocked_snapshot_source final : public node_plugin::diagnostics_source {
    explicit blocked_snapshot_source(std::shared_ptr<snapshot_barrier> barrier) : barrier_{std::move(barrier)} {}
 
    p2p::diagnostics::snapshot snapshot(p2p::diagnostics::options options) const override {
-      barrier_->entered.set_value(options);
-      if (barrier_->released.wait_for(5s) != std::future_status::ready) {
-         throw std::runtime_error{"snapshot callback was not released"};
-      }
+      wait(options);
       auto result = p2p::diagnostics::snapshot{};
       result.network.stopped = true;
       return result;
    }
 
+   p2p::dht::routing_status routing_status(const p2p::protocol_id& profile) const override {
+      if (profile.value != "/forge/blocked-routing/1") {
+         throw std::runtime_error{"routing profile was not forwarded"};
+      }
+      wait({.max_peers = 0});
+      return {.active = 7, .nonempty_buckets = 2};
+   }
+
+   p2p::pubsub::score_snapshot pubsub_scores() const override {
+      wait({.max_peers = 0});
+      auto result = p2p::pubsub::score_snapshot{};
+      result.peers.push_back({.peer = p2p::make_peer_id({.type = p2p::public_key::type::ed25519,
+                                                         .data = std::vector<std::uint8_t>(32, 74)}),
+                              .connected = true, .value = 6.0});
+      result.connected_peers = 1;
+      return result;
+   }
+
  private:
+   void wait(p2p::diagnostics::options options) const {
+      barrier_->entered.set_value(options);
+      if (barrier_->released.wait_for(5s) != std::future_status::ready) {
+         throw std::runtime_error{"diagnostics source callback was not released"};
+      }
+   }
+
    std::shared_ptr<snapshot_barrier> barrier_;
 };
 
@@ -211,7 +237,7 @@ void check_inflight_event_call() {
    fixture.start();
    const auto native = fixture.source().shared();
    const auto snapshots = fixture.environment.apis.get<node_plugin::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2}).shared();
+       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3}).shared();
    auto barrier = std::make_shared<event_barrier>();
    auto source = std::make_shared<blocked_host_event_source>(native, barrier);
    const auto weak_source = std::weak_ptr<blocked_host_event_source>{source};
@@ -300,8 +326,17 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_contracts_are_additive_local_and_reject_
       BOOST_TEST(descriptor.methods.empty());
       BOOST_CHECK(descriptor.supported_surfaces == forge::api::core::surface::local);
    }
-   BOOST_CHECK(environment.apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2}) != nullptr);
-   BOOST_CHECK(environment.apis.describe({.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 2}) != nullptr);
+   BOOST_CHECK(environment.apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3}) != nullptr);
+   BOOST_CHECK(environment.apis.describe({.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3}) != nullptr);
+   BOOST_CHECK(environment.apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2}) == nullptr);
+   BOOST_CHECK(environment.apis.describe({.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 2}) == nullptr);
+   const auto reads = environment.apis.get<diagnostics_plugin::api>(diagnostics_plugin::api::ref());
+   const auto native_reads = environment.apis.get<node_plugin::diagnostics_source>(node_plugin::diagnostics_source::ref());
+   const auto profile = p2p::protocol_id{.value = "/forge/blocked-routing/1"};
+   BOOST_CHECK_THROW((void)reads->routing_status(profile), diagnostics_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->pubsub_scores(), diagnostics_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)native_reads->routing_status(profile), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)native_reads->pubsub_scores(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)source->reachability_status(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)source->host_events(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)facade->reachability_status(), diagnostics_plugin::exceptions::plugin_not_initialized);
@@ -403,8 +438,11 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_canceled_read_keeps_the_issued_subscript
 }
 
 BOOST_AUTO_TEST_CASE(p2p_host_event_api_snapshot_retains_source_outside_lifecycle_lock) {
-   // Exercise both old snapshot overloads against shutdown while the callback is in flight.
-   for (const auto explicit_options : {false, true}) {
+   enum class read { configured_snapshot, explicit_snapshot, routing, scores };
+   using result_type = std::variant<p2p::diagnostics::snapshot, p2p::dht::routing_status, p2p::pubsub::score_snapshot>;
+   // All four reads must preserve admitted source ownership across shutdown.
+   for (const auto operation : {read::configured_snapshot, read::explicit_snapshot, read::routing, read::scores}) {
+      BOOST_TEST_CONTEXT("diagnostics read=" << static_cast<int>(operation)) {
       auto environment = plugin_environment{};
       auto node = node_plugin::plugin{};
       auto diagnostics = diagnostics_plugin::plugin{};
@@ -424,16 +462,24 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_snapshot_retains_source_outside_lifecycl
       environment.run(diagnostics.provide(provider));
       environment.run(diagnostics.initialize(environment.context));
       const auto facade = environment.apis.get<diagnostics_plugin::api>(
-          {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 2});
+          {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3});
       environment.apis.clear();
       source.reset();
 
       auto entered = barrier->entered.get_future();
-      auto task = std::packaged_task<p2p::diagnostics::snapshot()>{[facade, explicit_options] {
-         return explicit_options ? facade->snapshot({.max_peers = 3}) : facade->snapshot();
+      auto task = std::packaged_task<result_type()>{[facade, operation]() -> result_type {
+         switch (operation) {
+            case read::configured_snapshot: return facade->snapshot();
+            case read::explicit_snapshot: return facade->snapshot({.max_peers = 3});
+            case read::routing: return facade->routing_status({.value = "/forge/blocked-routing/1"});
+            case read::scores: return facade->pubsub_scores();
+         }
+         throw std::logic_error{"unknown diagnostics read"};
       }};
       auto result = task.get_future();
       auto worker = std::thread{std::move(task)};
+      auto lifecycle_worker = std::thread{};
+      auto lifecycle_result = std::future<void>{};
       auto released = false;
       auto release = [&] {
          if (!std::exchange(released, true)) {
@@ -449,23 +495,54 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_snapshot_retains_source_outside_lifecycl
          if (worker.joinable()) {
             worker.join();
          }
+         if (lifecycle_result.valid() && lifecycle_result.wait_for(5s) != std::future_status::ready) {
+            std::cerr << "P2P diagnostics lifecycle did not join\n";
+            std::terminate();
+         }
+         if (lifecycle_worker.joinable()) {
+            lifecycle_worker.join();
+         }
       }};
       const auto observed_options = joined(entered);
-      BOOST_TEST(observed_options.max_peers == (explicit_options ? 3U : 7U));
+      const auto expected_limit = operation == read::configured_snapshot ? 7U
+                                  : operation == read::explicit_snapshot ? 3U : 0U;
+      BOOST_TEST(observed_options.max_peers == expected_limit);
       // Reconfiguration and shutdown must not wait for the source callback.
-      config.set("plugins.net.p2p.diagnostics.max-peers", 9U);
-      environment.run(diagnostics.configure({config, "plugins.net.p2p.diagnostics"}));
-      diagnostics.request_stop();
-      environment.run(diagnostics.shutdown());
+      auto lifecycle = std::packaged_task<void()>{[&] {
+         config.set("plugins.net.p2p.diagnostics.max-peers", 9U);
+         environment.run(diagnostics.configure({config, "plugins.net.p2p.diagnostics"}));
+         diagnostics.request_stop();
+         environment.run(diagnostics.shutdown());
+      }};
+      lifecycle_result = lifecycle.get_future();
+      lifecycle_worker = std::thread{std::move(lifecycle)};
+      BOOST_REQUIRE(lifecycle_result.wait_for(1s) == std::future_status::ready);
+      lifecycle_result.get();
+      lifecycle_worker.join();
       BOOST_CHECK(result.wait_for(0ms) != std::future_status::ready);
       BOOST_TEST(!weak_source.expired());
       BOOST_CHECK_THROW((void)facade->snapshot(), diagnostics_plugin::exceptions::plugin_not_initialized);
+      BOOST_CHECK_THROW((void)facade->routing_status({.value = "/forge/blocked-routing/1"}),
+                        diagnostics_plugin::exceptions::plugin_not_initialized);
+      BOOST_CHECK_THROW((void)facade->pubsub_scores(), diagnostics_plugin::exceptions::plugin_not_initialized);
       release();
       const auto captured = joined(result);
       worker.join();
       release_and_join.set_active(false);
-      BOOST_TEST(captured.network.stopped);
       BOOST_TEST(weak_source.expired());
+      if (operation == read::routing) {
+         BOOST_TEST(std::get<p2p::dht::routing_status>(captured).active == 7U);
+         BOOST_TEST(std::get<p2p::dht::routing_status>(captured).nonempty_buckets == 2U);
+      } else if (operation == read::scores) {
+         const auto& scores = std::get<p2p::pubsub::score_snapshot>(captured);
+         BOOST_REQUIRE_EQUAL(scores.peers.size(), 1U);
+         BOOST_TEST(scores.connected_peers == 1U);
+         BOOST_TEST(scores.peers.front().value == 6.0);
+         BOOST_TEST(!scores.peers.front().peer.value.empty());
+      } else {
+         BOOST_TEST(std::get<p2p::diagnostics::snapshot>(captured).network.stopped);
+      }
+      }
    }
 }
 

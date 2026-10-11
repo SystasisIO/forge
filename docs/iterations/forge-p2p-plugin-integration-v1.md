@@ -456,3 +456,22 @@ gates pass, describe this as test integration with an evolving stack.
   known DNS-delay limitation, with explicit batch/deduplication and joined
   cancellation regressions. Full-suite validation is still required; this
   checkpoint is not a new transport or production-readiness claim.
+- The corrected DNS checkpoint subsequently passed the full native QUIC/P2P,
+  structure and inventory suites. The explicit batch-resolution regressions
+  passed both root orders and joined cancellation (58 assertions). No production
+  resolver behavior changed.
+- Diagnostics source/API 3.0 now delegate per-profile routing counts and native
+  PubSub scores. Diagnostics plugin is 3.0.0; events contracts remain 1.0 and
+  the unreleased node plugin remains 7.0.0. Returned snapshots own their data,
+  source callbacks run outside the lifecycle mutex, and admitted synchronous
+  reads may complete after diagnostics shutdown without extending admission.
+- Fifteen focused cases passed (267 assertions), including actual routing,
+  nonzero native score sampling, typed profile errors, retained values and
+  barrier-controlled shutdown. The fixture uses authenticated TCP with test
+  memory persistence; it is not the configured production donor fixture.
+  All six plugin, managed-remote, DB Store, PubSub control-queue, structure and
+  inventory suites passed. Both independent reviews reported source-clean for
+  this frozen diagnostics slice, not the whole PR.
+- Node policy mapping, complete PubSub policy/hooks and configured-path donor
+  acceptance remain open. No source inventory classification is promoted by
+  these local adapter tests.

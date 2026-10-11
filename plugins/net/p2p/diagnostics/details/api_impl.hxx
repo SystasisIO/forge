@@ -11,6 +11,8 @@ class plugin::api_impl final : public api {
    forge::net::p2p::diagnostics::network_state network() const override;
    forge::net::p2p::resource_manager::snapshot resources() const override;
    forge::net::p2p::pubsub::snapshot pubsub() const override;
+   forge::net::p2p::dht::routing_status routing_status(const forge::net::p2p::protocol_id& profile) const override;
+   forge::net::p2p::pubsub::score_snapshot pubsub_scores() const override;
    std::vector<forge::net::p2p::diagnostics::peer> peers(filter value) const override;
    forge::net::p2p::diagnostics::peer peer(forge::net::p2p::peer_id value) const override;
 

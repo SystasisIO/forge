@@ -748,7 +748,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_native_tcp_full_delivery_survives_downgr
    auto sender = fixture{true, 4, "plugin-partial-sender", address};
    const auto token = sender.enable();
    const auto diagnostics = sender.native_apis.get<np::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2});
+       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3});
    BOOST_REQUIRE(sender.run(sender.await_state([&] {
       const auto value = diagnostics->snapshot();
       return std::ranges::any_of(value.sessions, [&](const auto& session) {

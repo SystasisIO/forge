@@ -26,6 +26,7 @@ import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
@@ -53,6 +54,15 @@ plugin::diagnostics_source_adapter::diagnostics_source_adapter(std::shared_ptr<p
 forge::net::p2p::diagnostics::snapshot
 plugin::diagnostics_source_adapter::snapshot(forge::net::p2p::diagnostics::options options) const {
    return impl_->require_node()->diagnostics(options);
+}
+
+forge::net::p2p::dht::routing_status
+plugin::diagnostics_source_adapter::routing_status(const forge::net::p2p::protocol_id& profile) const {
+   return impl_->require_node()->routing_status(profile);
+}
+
+forge::net::p2p::pubsub::score_snapshot plugin::diagnostics_source_adapter::pubsub_scores() const {
+   return impl_->require_node()->pubsub_scores();
 }
 
 } // namespace forge::plugins::net::p2p::node

@@ -920,7 +920,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_an
 
    const auto diagnostics_source_descriptor = p2p_node::diagnostics_source::describe();
    BOOST_TEST(diagnostics_source_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics_source");
-   BOOST_TEST(diagnostics_source_descriptor.version.major == 2U);
+   BOOST_TEST(diagnostics_source_descriptor.version.major == 3U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_production_lifecycle_reopens_persisted_peer_state) {

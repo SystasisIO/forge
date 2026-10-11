@@ -93,6 +93,27 @@ by the plugin tests. Package tests separately check the installed public
 contract without importing a private node-plugin dependency into the PubSub
 consumer. None of these checks claims a new Go/Rust wire implementation.
 
+## Native Diagnostics Delegation
+
+The existing native routing table and GossipSub score engine remain the only
+owners of these states. Diagnostics source/API 3.0 expose their native
+`dht::routing_status` and `pubsub::score_snapshot` values without a second cache,
+score calculation or maintenance loop. This follows the existing host/behavior
+inspection boundary, not a new libp2p protocol.
+
+The facade captures the shared source under its lifecycle mutex and calls it
+after unlocking. Admitted callbacks may finish after facade shutdown; shutdown
+does not promise to join external synchronous callbacks. New reads then fail
+with the existing initialization error. Returned values own their data.
+
+Focused regressions compare source/facade routing counts after a real DHT query,
+read a nonzero native application-weighted score, retain values across shutdown,
+and hold every source read behind an explicit barrier while shutdown completes.
+The TCP fixture authenticates certificate identities but uses test-only memory
+persistence and dependency doubles. It is not configured production persistence
+or donor-network evidence, and publishing for score sampling does not prove
+delivery to a remote subscriber.
+
 ## Custom Protocol Ownership
 
 The local `node::protocol_api` separates a move-only raw registration from API

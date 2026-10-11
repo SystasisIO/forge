@@ -11,7 +11,9 @@ module;
 module forge.plugins.net.p2p.diagnostics.plugin;
 
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.identity;
+import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.resource_manager;
 import forge.plugins.net.p2p.node.api;
@@ -46,6 +48,17 @@ forge::net::p2p::resource_manager::snapshot plugin::api_impl::resources() const 
 
 forge::net::p2p::pubsub::snapshot plugin::api_impl::pubsub() const {
    return impl_->snapshot().pubsub;
+}
+
+forge::net::p2p::dht::routing_status
+plugin::api_impl::routing_status(const forge::net::p2p::protocol_id& profile) const {
+   const auto source = impl_->require_source();
+   return source->routing_status(profile);
+}
+
+forge::net::p2p::pubsub::score_snapshot plugin::api_impl::pubsub_scores() const {
+   const auto source = impl_->require_source();
+   return source->pubsub_scores();
 }
 
 std::vector<forge::net::p2p::diagnostics::peer> plugin::api_impl::peers(filter value) const {

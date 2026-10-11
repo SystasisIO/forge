@@ -23,10 +23,10 @@ bounded snapshots of network state without depending on private node internals.
 - Package component: `plugins_net_p2p_diagnostics`
 - Plugin id: `forge.plugins.net.p2p.diagnostics`
 - Main API id: `forge.plugins.net.p2p.diagnostics`
-- Plugin version: `2.0.0`
-- Main API contract: `2.0`
+- Plugin version: `3.0.0`
+- Main API contract: `3.0`
 - Events API: `forge.plugins.net.p2p.diagnostics.events` (contract `1.0`, local only)
-- Node diagnostics source dependency: `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
+- Node diagnostics source dependency: `forge.plugins.net.p2p.node.diagnostics_source` (contract `3.0`)
 - Node events source dependency: `forge.plugins.net.p2p.node.host_event_source` (contract `1.0`)
 - Config section: `plugins.net.p2p.diagnostics`
 - Depends on plugin id: `forge.plugins.net.p2p.node`
@@ -42,6 +42,8 @@ bounded snapshots of network state without depending on private node internals.
 - Network snapshot and network-state reads.
 - Resource-manager snapshot reads.
 - Pubsub snapshot reads when pubsub is enabled.
+- Native per-profile DHT routing counts through `routing_status(profile)`.
+- Native PubSub peer score details through `pubsub_scores()`.
 - Peer listing and single-peer lookup with bounded limits.
 - Native host-state reads and subscriptions, including reachability and confirmed addresses.
 
@@ -79,11 +81,13 @@ import forge.plugins.net.p2p.diagnostics.api;
 import forge.plugins.net.p2p.diagnostics.plugin;
 
 auto diagnostics = context.apis().get<forge::plugins::net::p2p::diagnostics::api>(
-   {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 2});
+   {.id = {"forge.plugins.net.p2p.diagnostics"}, .major = 3});
 
 auto network = diagnostics->network();
 auto resources = diagnostics->resources();
 auto peers = diagnostics->peers({.only_connected = true, .limit = 100});
+auto routing = diagnostics->routing_status({.value = "/ipfs/kad/1.0.0"});
+auto scores = diagnostics->pubsub_scores();
 ```
 
 ```cpp
@@ -114,15 +118,31 @@ New event operations are rejected after diagnostics `request_stop()`. Issued
 subscriptions retain their native lifetime independently of the API handle or
 diagnostics plugin, and end when the shared node stops. Diagnostics does not add
 a queue or promise to drain a previously admitted source callback at shutdown.
-Existing snapshot API 2.0 remains readable until diagnostics shutdown releases
-its source. All source calls execute outside the diagnostics mutex.
+Snapshot and routing/score reads remain readable until diagnostics shutdown
+releases its source. All source calls execute outside the diagnostics mutex,
+retaining the shared source for their duration. An admitted callback may finish
+after shutdown; shutdown does not wait for it. Returned native value snapshots
+remain usable independently of the source and plugin lifetime.
+
+The original snapshot overloads retain configured limits and explicit-option
+behavior. The new methods return `dht::routing_status` and
+`pubsub::score_snapshot` directly, with no adapter-owned routing/score cache or
+event queue. Unknown DHT profiles preserve the native `unsupported_protocol`
+error. Before initialization and after diagnostics shutdown these reads throw
+`plugin_not_initialized`, as `snapshot()` does.
 
 ## Migration From 1.x
 
 Diagnostics peer endpoint records now expose raw `multiaddr` through `.address`
-instead of a concrete transport endpoint. Request diagnostics API major `2` and
-provide node diagnostics source major `2`; there is no compatibility alias for
+instead of a concrete transport endpoint. There is no compatibility alias for
 the v1 record shape.
+
+## Migration From 2.x
+
+Request diagnostics API major `3` and provide node diagnostics source major `3`.
+Implementations of either contract must add `routing_status(profile) const` and
+`pubsub_scores() const`, using the native return types. The events API and node
+host-event source stay at major `1`; the unreleased node plugin stays at `7.0.0`.
 
 ## Security And Boundaries
 

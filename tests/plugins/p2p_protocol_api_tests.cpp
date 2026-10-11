@@ -344,7 +344,7 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_rejected_dht_collision_preserves_configuration
 
    server.run(server.node.startup());
    const auto snapshot = server.apis.get<np::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2})->snapshot();
+       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3})->snapshot();
    BOOST_REQUIRE_EQUAL(snapshot.dht_profiles.size(), 1U);
    BOOST_TEST(snapshot.dht_profiles.front().protocol.value == original_dht.value);
    BOOST_TEST(snapshot.dht_profiles.front().kind == "custom");
@@ -400,7 +400,7 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_invalid_config_after_dht_candidate_preserves_r
 
    f.run(f.node.startup());
    const auto snapshot = f.apis.get<np::diagnostics_source>(
-       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2})->snapshot();
+       {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3})->snapshot();
    BOOST_REQUIRE_EQUAL(snapshot.dht_profiles.size(), 1U);
    BOOST_TEST(snapshot.dht_profiles.front().protocol.value == original_dht.value);
    BOOST_TEST(raw.active());

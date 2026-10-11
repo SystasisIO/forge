@@ -114,7 +114,7 @@ struct fixture {
       run(node.after_initialize());
       api = apis.get<np::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3}).shared();
       diagnostics = apis.get<np::diagnostics_source>(
-          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2}).shared();
+          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 3}).shared();
    }
    ~fixture() {
       node.request_stop();
