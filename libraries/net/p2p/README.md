@@ -609,6 +609,32 @@ create unbounded work or a second cache.
 
 ## Examples
 
+### Validate Configuration Before Provisioning Resources
+
+`validate_policy(const node::options&)` checks policy without provisioning an
+identity, a private-network protector or persistence. It validates legacy
+discovery against a temporary topology copy; it neither changes the supplied
+options nor copies or invokes application callbacks. DHT callback presence,
+protocol uniqueness and persistence-key membership are checked, but absent
+backends are permitted at this stage. Zero resource-scope budgets are valid
+admission-denial policies, not malformed configuration.
+
+When `private_network` is absent, the direct transport registry installs QUIC
+regardless of the `direct_quic` capability bit. Policy validation follows that
+same availability rule: the native client/server QUIC validator checks all six
+positive bounds and the `UINT32_MAX` frame-size ceiling before listen/connect.
+Clearing the capability bit does not bypass these checks. The private-network
+profile does not install QUIC, so these QUIC-specific constraints are skipped.
+
+`validate(const node::options&)` additionally checks identity presence, explicit
+peer/certificate agreement and required protector/peer/DHT persistence. Private
+key parsing and key/certificate matching remain constructor-owned. A successful
+policy check is not a successful resource or startup check: default options pass `validate_policy`
+but not `validate`. The constructor still normalizes legacy discovery, performs
+full validation, then clamps topology capacity before creating node state.
+Standalone `peer_store` retains its memory fallback; production node validation
+continues to require an explicitly supplied persistence backend.
+
 ### Start A Node
 
 ```cpp

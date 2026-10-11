@@ -153,6 +153,7 @@ add_library(
    libp2p_tls.cpp
    details/libp2p_tls.hxx
    node.cpp
+   node_validation.cpp
    node_dht.cpp
    node_relay.cpp
    node_pubsub.cpp

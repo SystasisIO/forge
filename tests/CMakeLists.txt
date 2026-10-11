@@ -1146,6 +1146,7 @@ add_executable(
    quic_p2p/dial_scheduler_tests.cpp
    quic_p2p/session_teardown_tests.cpp
    quic_p2p/node_session_tests.cpp
+   quic_p2p/node_policy_tests.cpp
    quic_p2p/node_addressing_tests.cpp
    quic_p2p/node_bootstrap_addressing_tests.cpp
    quic_p2p/topology_tests.cpp

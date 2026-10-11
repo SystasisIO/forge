@@ -85,9 +85,8 @@ void validate_bootstrap(const std::vector<bootstrap_peer>& peers, bool require_n
 attempt_timeout(std::chrono::milliseconds remaining, std::chrono::milliseconds configured, std::string_view operation);
 [[noreturn]] void throw_operation_timeout(std::string_view operation);
 [[nodiscard]] resource_manager::limits resource_limits_for(const node::limits& limits);
-void normalize_legacy_discovery(node::options& options);
+void normalize_legacy_discovery(const discovery::policy& legacy, topology::policy& topology_policy);
 void normalize_topology_capacity(node::options& options) noexcept;
-void validate(const node::options& options);
 
 struct node::impl : std::enable_shared_from_this<impl> {
    struct admitted_stream {

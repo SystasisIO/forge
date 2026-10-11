@@ -139,6 +139,21 @@ Token lifetime and native connection-manager tests are not evidence that the
 configured plugin actually prunes the expected peer. That integration case
 remains an explicit policy-mapping acceptance gate.
 
+## Policy Preflight
+
+The plugin must validate native policy before reading identity secrets or opening
+its P2P persistence adapters. The new native `validate_policy(node::options)`
+separates policy checks from resource presence, without synthetic certificates,
+keys, persistence or permissive callbacks. Full native validation retains
+production resource requirements and node construction owns key parsing.
+
+QUIC bounds reuse its existing client/server validator through the existing P2P
+QUIC profile mapping. Availability follows the actual direct registry: public
+nodes register QUIC independently of the capability bit; private nodes do not.
+No transport negotiation or libp2p wire behavior changes in this refactoring.
+Tests distinguish absent resources, zero-denial resource scopes, legacy
+normalization, callback presence without invocation, and QUIC limit boundaries.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

@@ -207,6 +207,10 @@ namespace {
 
 } // namespace
 
+void quic_profile::validate_policy(const forge::net::transport::limits& limits) {
+   forge::net::quic::validate(quic_limits(limits));
+}
+
 quic_profile::quic_profile(forge::asio::runtime& runtime_value, const node::options& options_value,
                            resource_manager resources_value,
                            std::shared_ptr<forge::net::p2p::detail::connection_gate> gate)

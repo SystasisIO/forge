@@ -185,7 +185,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "2698841216246bc2ba00e7d0d5f164ae67d5b0498dff6a61921b09ffe1e0fd50",
+      "sha256": "b60a9b0597ec2e5284bd02b48a51fddae6fb2a411f808bfe8111a047334410e8",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -538,7 +538,9 @@
           "libraries/net/p2p/stream_upgrade.cpp",
           "libraries/net/p2p/libp2p_tls.cpp",
           "libraries/net/p2p/node.cpp",
+          "libraries/net/p2p/node_validation.cpp",
           "libraries/net/p2p/include/forge/net/p2p/node.cppm",
+          "tests/quic_p2p/node_policy_tests.cpp",
           "tests/p2p_inline_muxer_tests.cpp",
           "tests/quic_p2p/path_session_tests.cpp",
           "tests/libp2p_interop/private_profile_evidence.py",
@@ -594,6 +596,7 @@
           "libraries/net/p2p/include/forge/net/p2p/private_network.cppm",
           "libraries/net/p2p/private_network.cpp",
           "libraries/net/p2p/node.cpp",
+          "libraries/net/p2p/node_validation.cpp",
           "libraries/net/p2p/node_impl.cpp",
           "libraries/net/p2p/node_impl_reachability.cpp",
           "libraries/net/pnet/include/forge/net/pnet/protector.cppm",

@@ -140,6 +140,31 @@ session limits. Reject unknown policy fields rather than accepting a misspelled
 security setting as a warning. Keep application-shell-owned config keys outside
 that validation boundary.
 
+Sparse resource configuration must preserve the native baseline for every
+unspecified budget. The current generic nested decoder constructs a new member,
+so directly decoding a partial native scope would replace its finite parent
+defaults with unlimited scope defaults. Use explicit optional budget patches
+for this boundary instead of changing generic schema semantics in Stage 7.
+Apply native defaults, existing derived session defaults, then explicit patches.
+An explicit zero is a denial policy, not an absent value. Test empty scopes,
+cross-scope isolation, nested misspellings and rejection without mutation.
+
+Prepare immutable configuration candidates outside the configuration mutex.
+Capture the previous snapshot under synchronization and recheck its identity,
+lifecycle phase and stop admission before a nonthrowing commit. A concurrent
+change must cause a typed conflict, not overwrite newer contributions. Copies
+and destruction of application callbacks, native construction and registry
+shutdown must occur outside that mutex. Startup and stop share the same
+admission transition; freeze does not close live protocol or peer tokens.
+
+Dependency binding is narrower than policy freeze. After `initialize()`, a new
+configuration cannot require a Secrets or Store provider that was not bound.
+Secret references may still change or be cleared before startup when the
+Secrets provider is already available. At entry to `after_initialize()`, before
+its first await, bind the exact peer-store name, including an empty name.
+Reject a different name thereafter; keep accepting valid pre-start policy
+changes. Binding rejection must preserve both configuration and route claims.
+
 Private-network configuration stores only a secret reference. Read it through
 the existing Secrets `get_bytes` API with a dedicated purpose, require exactly
 32 bytes for the native PSK, and erase temporary buffers on success and failure.
@@ -378,4 +403,16 @@ gates pass, describe this as test integration with an evolving stack.
   explicit `cmake --build ... -j4`. Subsequent consumers use that explicit
   workflow. Inactive chain/node consumer builds (about 8.4 GB) were removed;
   no neighboring worktree or active build was cleaned.
+- Native policy preflight now validates limits, profile callbacks and protocol
+  names without supplying identity, protector or persistence. It reuses native
+  peer-store, private-network, DNS, PubSub and QUIC validation. Full validation
+  still requires real production resources; key parsing remains node-owned.
+- Review caught two QUIC preflight gaps: limits were validated only when opening
+  the transport, and the initial fix used a capability bit that does not gate
+  actual transport registration. The corrected predicate matches the existing
+  public/private transport registry. Fourteen focused cases (147 assertions)
+  and all seven checkpoint suites passed: native QUIC/P2P, plugins, managed
+  remote, DB Store, PubSub control queue, structure and inventory. Both reviewers
+  reported source-clean for this corrected slice. This is not configured-path
+  interop or whole-Stage-7 acceptance.
 - Product migration remains out of scope.

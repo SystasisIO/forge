@@ -296,6 +296,11 @@ class node {
    std::shared_ptr<impl> impl_;
 };
 
+// Checks policy without requiring identity, a pnet protector or persistence.
+// Does not copy or invoke application callbacks, mutate options or create resources.
+void validate_policy(const node::options& options);
+// Also checks identity presence, explicit peer/certificate agreement and required resources.
+// The constructor retains ownership of private-key parsing and key/certificate matching.
 void validate(const node::options& options);
 
 } // namespace forge::net::p2p

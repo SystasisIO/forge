@@ -505,7 +505,7 @@ node::impl::exchange_rendezvous(const peer_id& peer, rendezvous::message request
 }
 
 node::node(forge::asio::runtime& runtime, node::options options) {
-   normalize_legacy_discovery(options);
+   normalize_legacy_discovery(options.limits.discovery, options.limits.topology);
    validate(options);
    // Relay roles are policy-owned; advertised capability bits are derived facts.
    constexpr auto relay_service_bits = capabilities::relay | capabilities::relay_reservation;
