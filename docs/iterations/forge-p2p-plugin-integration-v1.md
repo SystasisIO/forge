@@ -353,4 +353,29 @@ gates pass, describe this as test integration with an evolving stack.
   reported source-clean for this frozen slice, not for the complete PR.
 - The complete Stage 7 runtime, package and donor gates remain pending; the
   DHT-slice result is not a whole-PR or production-readiness verdict.
+- Ordinary connect/ping now retain adapter ownership before suspension and
+  delegate native authentication, cancellation and deadlines. Move-only peer
+  contributions own individual protection/tag keys, bounded by native topology
+  limits; closing one owner does not remove another owner's contribution.
+  Plugin destruction closes admission but does not replace awaited shutdown.
+- The peer checkpoint passed 11 focused plugin cases (99 assertions), native
+  connection-manager coverage (15 cases, 113 assertions), and secure plugin
+  expected-peer rejection through both MDBX and RocksDB (10 assertions each).
+  The secure fixtures use Secrets, ObjectDB and ordinary TLS/Yamux, not insecure
+  test mode. Initial insecure-fixture and overly specific exception-type
+  failures are retained; neither was counted as authentication evidence.
+- All six corrected checkpoint suites passed: plugins (173 cases), managed
+  remote (10), DB Store (70), native PubSub control-queue (70), structure
+  (2,387 sources) and inventory. A cold Partial awaitable now expects exact
+  cancellation after facade destruction closes admission, not an uninitialized
+  facade. Both independent reviewers confirmed this semantic correction and
+  the peer slice. Configured score-aware pruning still requires its own real
+  regression after policy mapping; active tokens alone do not prove pruning.
+- The installed node consumer passed after explicit configure/build/run.
+  The chain consumer also passed with the new node contract. CMake 3.31.6
+  CTest build-and-test does not propagate the intended build parallelism to
+  nested Ninja: an over-parallel consumer build was stopped and resumed with
+  explicit `cmake --build ... -j4`. Subsequent consumers use that explicit
+  workflow. Inactive chain/node consumer builds (about 8.4 GB) were removed;
+  no neighboring worktree or active build was cleaned.
 - Product migration remains out of scope.

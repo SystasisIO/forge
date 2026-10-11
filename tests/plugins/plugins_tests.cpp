@@ -100,6 +100,8 @@ import forge.net.p2p.stream;
 import forge.net.p2p.negotiation;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
+import forge.multiformats.multiaddr;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.api.p2p.authenticated_peer;
 import forge.api.p2p.binding;
 import forge.api.p2p.publication;

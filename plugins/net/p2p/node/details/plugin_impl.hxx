@@ -12,6 +12,7 @@
 #include "lifecycle_phase.hxx"
 #include "object_dht_record_store_adapter.hxx"
 #include "protocol_registry.hxx"
+#include "peer_contributions.hxx"
 
 namespace forge::plugins::net::p2p::node {
 
@@ -37,6 +38,7 @@ struct plugin::impl {
    std::vector<std::pair<forge::net::p2p::protocol_id, std::shared_ptr<object_dht_record_store_adapter>>> dht_state;
    forge::net::p2p::pubsub::options pubsub_options{};
    std::shared_ptr<detail::protocol_registry> protocols;
+   std::shared_ptr<detail::peer_contributions> contributions;
    std::shared_ptr<forge::net::p2p::node> node;
    forge::asio::runtime* runtime = nullptr;
    std::atomic_bool stop_requested = false;

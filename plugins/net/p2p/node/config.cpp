@@ -10,6 +10,7 @@ module;
 #include <limits>
 #include <list>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -48,6 +49,7 @@ import forge.net.p2p.topology;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 

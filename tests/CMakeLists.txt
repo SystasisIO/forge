@@ -1760,6 +1760,8 @@ add_executable(
    plugins/plugins_tests.cpp
    plugins/p2p_dht_api_tests.cpp
    plugins/p2p_protocol_api_tests.cpp
+   plugins/p2p_peer_api_tests.cpp
+   plugins/p2p_peer_contribution_tests.cpp
    plugins/p2p_protocol_registry_tests.cpp
    plugins/protocol_registry_fixture.cpp
    plugins/details/protocol_registry_fixture.hxx

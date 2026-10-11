@@ -58,6 +58,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
   - `forge.plugins.net.p2p.node.api`
   - `forge.plugins.net.p2p.node.dht_api`
   - `forge.plugins.net.p2p.node.host_event_source`
+  - `forge.plugins.net.p2p.node.peer_contribution`
   - `forge.plugins.net.p2p.node.types`
   - `forge.plugins.net.p2p.node.exceptions`
 
@@ -77,6 +78,8 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Lets application plugins publish typed APIs over a P2P protocol id and retain
   an owned publication handle for explicit close/drain.
 - Opens typed remote API handles to peers through `remote<Interface>()`.
+- Delegates ordinary connect and Ping to the same node, with native options and
+  cancellation, and owns bounded protection/score contributions per consumer.
 - Delegates profile-aware peer/provider discovery, owned provider publication,
   validated value operations and typed IPNS creation through `dht_api`.
 - Provides internal source APIs used by focused diagnostics and pubsub plugins.
@@ -285,7 +288,47 @@ cleanup ownership; separate native TCP tests check admission and retained stream
 The fault tests do not claim to provoke an actual Identify Push allocation failure.
 
 Consumers of the main node contract must request major 3; custom implementations
-remove the old raw publication method. Resolver contract identities are unchanged.
+remove the old raw publication method and implement connect, ping and the peer
+contribution methods below. Resolver contract identities are unchanged.
+
+### Connect, Ping And Peer Contributions
+
+`api::connect(endpoint, node::connect_options)`, its raw `multiaddr` overload,
+and `api::ping(peer, node::open_options)` use the existing native executor,
+identity checks, deadlines and cancellation. Awaitables retain the implementation
+when created and retain the same node during execution. Admission is checked on
+execution: before startup it fails with `plugin_not_initialized`; after
+`request_stop()` it fails with native `canceled`. These methods do not add a
+second network runtime, fallback policy or protocol.
+
+`protect_peer(peer)` and `tag_peer(peer, value)` return a move-only
+`peer_contribution`. Keep each token for the desired ownership duration;
+`close() noexcept`, destruction and plugin stop remove only that contribution.
+`is_peer_protected(peer)` queries actual native protection, including other
+owners. Consumers cannot select global native keys, remove bootstrap/relay
+protection, or replace another consumer's score. Closing protection does not
+close the connection and makes no remote acknowledgement or drain promise.
+
+Both kinds share bounded per-peer and tracked-peer capacity from the native
+connection-manager topology limits (currently 16 and 1024 respectively, with a
+128-byte native key bound). Native tag capacity also remains authoritative.
+Positive and negative score subtotals are checked separately, including
+`INT64_MIN`, so removing these contributions in any order cannot overflow.
+Allocation and reservation precede native mutation; typed native rejection
+rolls the reservation back. Cleanup moves preowned peer/key arguments and
+performs allocation-free keyed native removal before releasing quota.
+
+Stop closes admission and explicitly removes owned keys: native connection
+manager reset intentionally retains tags/protection. Late handles cannot admit
+new work; outstanding tokens become inactive. Facade destruction requests stop
+but does not replace the required awaited application shutdown.
+
+Focused component tests use the real native tag/protection registry to check
+delegation, rollback, mixed-sign extremes and preservation of other owners.
+Plugin TCP tests check authenticated sessions, Ping and bounded canceled dials.
+Actual plugin-configured pruning remains a later configuration acceptance gate:
+the current facade does not map the native 60-second grace / 10-second prune
+silence controls. Token activity is not evidence that pruning was exercised.
 
 Plugin 6.0 upgraded `forge.plugins.net.p2p.node.diagnostics_source` to contract
 `2.0`: diagnostics endpoint records now carry raw `multiaddr` values in their

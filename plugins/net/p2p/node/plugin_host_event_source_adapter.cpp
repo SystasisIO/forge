@@ -10,6 +10,7 @@ module;
 #include <exception>
 #include <list>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -30,6 +31,7 @@ import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
+import forge.net.p2p.topology;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
@@ -39,6 +41,7 @@ import forge.plugins.db.store.api;
 import forge.plugins.net.p2p.node.host_event_source;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.peer_contribution;
 
 #include "details/plugin_impl.hxx"
 #include "details/plugin_host_event_source_adapter.hxx"

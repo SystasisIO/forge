@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -51,6 +52,15 @@ class resolver_publication_race_node final : public forge::plugins::net::p2p::no
    [[nodiscard]] std::optional<forge::net::p2p::endpoint> local_endpoint() const override;
    [[nodiscard]] std::vector<forge::net::p2p::endpoint> local_endpoints() const override;
    [[nodiscard]] forge::plugins::net::p2p::node::info network_info() const override;
+   boost::asio::awaitable<forge::net::p2p::node::session_info>
+   connect(forge::net::p2p::endpoint, forge::net::p2p::node::connect_options) override;
+   boost::asio::awaitable<forge::net::p2p::node::session_info>
+   connect(forge::multiformats::multiaddr, forge::net::p2p::node::connect_options) override;
+   boost::asio::awaitable<std::chrono::milliseconds>
+   ping(forge::net::p2p::peer_id, forge::net::p2p::node::open_options) override;
+   [[nodiscard]] bool is_peer_protected(const forge::net::p2p::peer_id&) const override;
+   [[nodiscard]] forge::plugins::net::p2p::node::peer_contribution protect_peer(forge::net::p2p::peer_id) override;
+   [[nodiscard]] forge::plugins::net::p2p::node::peer_contribution tag_peer(forge::net::p2p::peer_id, std::int64_t) override;
    [[nodiscard]] forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol) override;
    [[nodiscard]] forge::api::p2p::publication

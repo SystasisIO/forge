@@ -12,6 +12,8 @@ import forge.api.core.descriptor;
 import forge.api.core.types;
 import forge.api.p2p.publication;
 import forge.chrono.timestamp;
+import forge.multiformats.multiaddr;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.dht;
 import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
@@ -23,6 +25,7 @@ import forge.net.p2p.pubsub;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.host_event_source;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
@@ -36,6 +39,21 @@ static_assert(std::same_as<
               forge::api::p2p::publication>);
 
 namespace p2p = forge::net::p2p;
+using node_api = forge::plugins::net::p2p::node::api;
+using peer_contribution = forge::plugins::net::p2p::node::peer_contribution;
+static_assert(!std::copy_constructible<peer_contribution>);
+static_assert(std::movable<peer_contribution>);
+static_assert(noexcept(std::declval<peer_contribution&>().close()));
+static_assert(std::same_as<decltype(std::declval<node_api&>().connect(
+    p2p::endpoint{}, p2p::node::connect_options{})), boost::asio::awaitable<p2p::node::session_info>>);
+static_assert(std::same_as<decltype(std::declval<node_api&>().connect(
+    std::declval<forge::multiformats::multiaddr>(), p2p::node::connect_options{})),
+    boost::asio::awaitable<p2p::node::session_info>>);
+static_assert(std::same_as<decltype(std::declval<node_api&>().ping(
+    p2p::peer_id{}, p2p::node::open_options{})), boost::asio::awaitable<std::chrono::milliseconds>>);
+static_assert(std::same_as<decltype(std::declval<const node_api&>().is_peer_protected(p2p::peer_id{})), bool>);
+static_assert(std::same_as<decltype(std::declval<node_api&>().protect_peer(p2p::peer_id{})), peer_contribution>);
+static_assert(std::same_as<decltype(std::declval<node_api&>().tag_peer(p2p::peer_id{}, std::int64_t{})), peer_contribution>);
 using dht_api = forge::plugins::net::p2p::node::dht_api;
 using host_event_source = forge::plugins::net::p2p::node::host_event_source;
 using pubsub_source = forge::plugins::net::p2p::node::pubsub_source;

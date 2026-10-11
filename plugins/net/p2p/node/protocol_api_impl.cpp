@@ -3,11 +3,13 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <forge/exceptions/macros.hpp>
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <exception>
 #include <functional>
 #include <list>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -23,6 +25,7 @@ import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.net.p2p.node;
+import forge.net.p2p.topology;
 import forge.net.p2p.protocol;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
@@ -35,6 +38,7 @@ import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 

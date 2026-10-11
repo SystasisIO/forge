@@ -1,15 +1,22 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <forge/db/object/macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
+#include <future>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -24,6 +31,7 @@ module;
 
 module forge.plugins.net.p2p.node.plugin;
 
+import forge.api.core.registry;
 import forge.app.application_builder;
 import forge.app.application_shell;
 import forge.asio.blocking;
@@ -39,15 +47,19 @@ import forge.db.object.transaction;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
+import forge.net.p2p.diagnostics;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.rendezvous;
+import forge.net.p2p.stream;
 import forge.plugins.crypto.secrets.plugin;
 import forge.plugins.db.store.api;
 import forge.plugins.db.store.plugin;
+import forge.plugins.net.p2p.node.api;
 
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
@@ -981,11 +993,89 @@ void check_plugin_startup_rolls_back_open_peer_state(std::string driver, const s
    forge::asio::blocking::run(reopened->runtime(), reopened->shutdown());
 }
 
+void check_plugin_authenticated_peer_api(std::string driver, const std::filesystem::path& path) {
+   using namespace std::chrono_literals;
+   auto run = []<class T>(forge::app::application_shell& app, boost::asio::awaitable<T> operation) -> T {
+      auto result = boost::asio::co_spawn(app.runtime().context(), std::move(operation), boost::asio::use_future);
+      if (result.wait_for(10s) != std::future_status::ready) {
+         std::cerr << "authenticated peer API fixture did not join its native operation\n";
+         std::terminate();
+      }
+      return result.get();
+   };
+   std::array<std::unique_ptr<forge::app::application_shell>, 3> apps;
+   auto cleanup = boost::scope::scope_exit{[&] {
+      for (auto& app : apps) {
+         if (app) { app->request_stop(); }
+      }
+      for (auto it = apps.rbegin(); it != apps.rend(); ++it) {
+         if (!*it) { continue; }
+         try {
+            run(**it, (*it)->shutdown());
+         } catch (const std::exception& error) {
+            std::cerr << "authenticated peer API shutdown failed: " << error.what() << '\n';
+            std::terminate();
+         }
+         it->reset();
+      }
+   }};
+   std::array<std::shared_ptr<p2p_node::api>, 3> apis;
+   std::array<std::shared_ptr<p2p_node::diagnostics_source>, 3> diagnostics;
+   for (std::size_t i = 0; i < apps.size(); ++i) {
+      const auto identity = forge::tests::p2p::make_identity_fixture("peer-api-authenticated");
+      auto document = p2p_document_for(driver, path / std::to_string(i), identity);
+      document.set("plugins.net.p2p.node.allow-insecure-test-mode", false);
+      document.set("plugins.net.p2p.node.topology.mode", "static-only");
+      document.set("plugins.net.p2p.node.listen",
+                   forge::config::core::value::array_type{"/ip4/127.0.0.1/tcp/0"});
+      apps[i] = build_p2p_app(std::move(document));
+      run(*apps[i], apps[i]->startup());
+      apis[i] = apps[i]->apis().get<p2p_node::api>(
+          {.id = {"forge.plugins.net.p2p.node"}, .major = 3}).shared();
+      diagnostics[i] = apps[i]->apis().get<p2p_node::diagnostics_source>(
+          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2}).shared();
+   }
+   const auto& server = apis[0];
+   const auto& client = apis[1];
+   const auto& mismatch = apis[2];
+   BOOST_REQUIRE(server->local_endpoint());
+   const auto endpoint = *server->local_endpoint();
+   const auto peer = server->local_peer();
+   BOOST_REQUIRE(client->local_peer() != peer);
+   BOOST_REQUIRE(mismatch->local_peer() != peer);
+   BOOST_REQUIRE(mismatch->local_peer() != client->local_peer());
+   const auto connected = run(*apps[1], client->connect(endpoint,
+       {.expected_peer = peer, .allow_relay = false, .timeout = 5s}));
+   BOOST_CHECK(connected.remote_peer == peer);
+   const auto again = run(*apps[1], client->connect(endpoint.to_multiaddr(),
+       {.expected_peer = peer, .allow_relay = false, .timeout = 5s}));
+   BOOST_CHECK(again.remote_peer == peer);
+   BOOST_TEST(run(*apps[1], client->ping(peer, {.allow_relay = false, .timeout = 5s})).count() >= 0);
+   const auto state = diagnostics[1]->snapshot();
+   BOOST_CHECK(std::ranges::any_of(state.sessions, [&](const auto& session) {
+      return session.id == connected.id && session.remote_peer == peer && !session.closed &&
+             session.authentication == p2p::peer_authentication::libp2p_tls && session.muxer.value == "/yamux/1.0.0";
+   }));
+   auto unbound = endpoint;
+   unbound.peer.reset();
+   BOOST_CHECK_EXCEPTION(run(*apps[2], mismatch->connect(unbound,
+       {.expected_peer = client->local_peer(), .allow_relay = false, .timeout = 5s})),
+       forge::exceptions::base, [](const auto& error) {
+          return p2p::exceptions::is(error, p2p::exceptions::code::peer_verification_failed);
+       });
+   BOOST_TEST(diagnostics[2]->snapshot().connections.active_sessions == 0U);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(p2p_peer_state_persistence_test_suite)
 
 #if FORGE_HAS_MDBX
+BOOST_AUTO_TEST_CASE(p2p_plugin_mdbx_authenticated_peer_api_rejects_wrong_identity) {
+   auto root = root_guard{};
+   check_plugin_authenticated_peer_api("mdbx", root.root / "mdbx-peer-api");
+}
+
 BOOST_AUTO_TEST_CASE(p2p_peer_state_mdbx_preserves_eviction_and_sequence_state) {
    auto root = root_guard{};
    const auto path = root.root / "mdbx";
@@ -1044,6 +1134,11 @@ BOOST_AUTO_TEST_CASE(p2p_state_mdbx_rejects_or_resets_v1_v2_and_missing_markers)
 #endif
 
 #if FORGE_HAS_ROCKSDB
+BOOST_AUTO_TEST_CASE(p2p_plugin_rocksdb_authenticated_peer_api_rejects_wrong_identity) {
+   auto root = root_guard{};
+   check_plugin_authenticated_peer_api("rocksdb", root.root / "rocksdb-peer-api");
+}
+
 BOOST_AUTO_TEST_CASE(p2p_peer_state_rocksdb_preserves_eviction_and_sequence_state) {
    auto root = root_guard{};
    const auto path = root.root / "rocksdb";

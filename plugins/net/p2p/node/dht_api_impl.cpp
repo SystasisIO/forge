@@ -10,6 +10,7 @@ module;
 #include <exception>
 #include <list>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -32,6 +33,7 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
 import forge.net.p2p.ipns;
 import forge.net.p2p.node;
+import forge.net.p2p.topology;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.provider_registration;
@@ -42,6 +44,7 @@ import forge.plugins.db.store.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.peer_contribution;
 
 #include "details/plugin_impl.hxx"
 #include "details/dht_api_impl.hxx"

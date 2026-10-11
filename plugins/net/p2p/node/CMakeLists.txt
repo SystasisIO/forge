@@ -3,6 +3,9 @@ add_library(
       descriptor.cpp
       plugin.cpp
       api_impl.cpp
+      api_impl_peers.cpp
+      peer_contribution.cpp
+      peer_contributions.cpp
       dht_api_impl.cpp
       api_publication_generation.cpp
       protocol_registration.cpp
@@ -32,6 +35,7 @@ add_library(
       details/protocol_slot.hxx
       details/protocol_operations.hxx
       details/protocol_registry.hxx
+      details/peer_contributions.hxx
 )
 forge_target_modules_at(forge_plugins_net_p2p_node plugins/net/p2p/node)
 

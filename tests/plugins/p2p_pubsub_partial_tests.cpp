@@ -804,5 +804,6 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_official_source_cold_awaitable_owns_impl
       source.reset(); apis.clear();
    }
    auto result = boost::asio::co_spawn(runtime.context(), std::move(*pending), boost::asio::use_future);
-   BOOST_CHECK_THROW(joined(result), np::exceptions::plugin_not_initialized);
+   // The awaitable owns its state, but destruction of the facade closes admission.
+   BOOST_CHECK_THROW(joined(result), forge::net::p2p::exceptions::canceled);
 }

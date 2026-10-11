@@ -4,6 +4,8 @@ module;
 #include <forge/api/core/macros.hpp>
 
 #include <optional>
+#include <chrono>
+#include <cstdint>
 #include <utility>
 #include <vector>
 #include <stop_token>
@@ -31,6 +33,8 @@ import forge.net.p2p.diagnostics;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.protocol;
 import forge.net.p2p.node;
+import forge.multiformats.multiaddr;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.types;
 
 export namespace forge::plugins::net::p2p::node {
@@ -43,6 +47,18 @@ class api : public forge::api::core::contract<api> {
    [[nodiscard]] virtual std::optional<forge::net::p2p::endpoint> local_endpoint() const = 0;
    [[nodiscard]] virtual std::vector<forge::net::p2p::endpoint> local_endpoints() const = 0;
    [[nodiscard]] virtual info network_info() const = 0;
+
+   virtual boost::asio::awaitable<forge::net::p2p::node::session_info>
+   connect(forge::net::p2p::endpoint endpoint, forge::net::p2p::node::connect_options options = {}) = 0;
+   virtual boost::asio::awaitable<forge::net::p2p::node::session_info>
+   connect(forge::multiformats::multiaddr address, forge::net::p2p::node::connect_options options = {}) = 0;
+   virtual boost::asio::awaitable<std::chrono::milliseconds>
+   ping(forge::net::p2p::peer_id peer, forge::net::p2p::node::open_options options = {}) = 0;
+   [[nodiscard]] virtual bool is_peer_protected(const forge::net::p2p::peer_id& peer) const = 0;
+   // Each token removes only its own nonempty native key, including after stop.
+   // Both signs are bounded separately so every token close order is safe.
+   [[nodiscard]] virtual peer_contribution protect_peer(forge::net::p2p::peer_id peer) = 0;
+   [[nodiscard]] virtual peer_contribution tag_peer(forge::net::p2p::peer_id peer, std::int64_t value) = 0;
 
    [[nodiscard]] virtual forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol) = 0;

@@ -16,6 +16,7 @@ module;
 #include <exception>
 #include <list>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -77,6 +78,8 @@ import forge.net.p2p.stream;
 import forge.net.p2p.negotiation;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
+import forge.net.p2p.topology;
+import forge.multiformats.multiaddr;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.protocol_api;
@@ -89,6 +92,7 @@ import forge.net.p2p.provider_registration;
 import forge.chrono.timestamp;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 
@@ -125,7 +129,7 @@ void clear_text(std::string& value) noexcept {
 } // namespace
 
 plugin::plugin() : impl_{std::make_shared<impl>()} {}
-plugin::~plugin() = default;
+plugin::~plugin() { request_stop(); }
 
 forge::app::plugin_id plugin::id() const {
    return forge::app::plugin_id{.value = "forge.plugins.net.p2p.node"};
@@ -291,6 +295,7 @@ boost::asio::awaitable<void> plugin::startup() {
 void plugin::request_stop() noexcept {
    impl_->stop_requested.store(true, std::memory_order_release);
    impl_->phase.store(lifecycle_phase::stopping, std::memory_order_release);
+   impl_->contributions->close();
    detail::request_close_protocol_registry(impl_->protocols);
    if (auto node = impl_->node_snapshot()) {
       try {

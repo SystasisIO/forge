@@ -4,12 +4,14 @@ module;
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <cstddef>
 #include <exception>
 #include <limits>
 #include <list>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -42,6 +44,7 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
+import forge.net.p2p.topology;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
@@ -49,6 +52,7 @@ import forge.net.p2p.scoring;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 
@@ -57,7 +61,9 @@ import forge.plugins.db.store.api;
 #include "details/protocol_registry.hxx"
 
 namespace forge::plugins::net::p2p::node {
-plugin::impl::impl() : protocols{detail::make_protocol_registry(options.limits.max_protocol_handlers)} {}
+plugin::impl::impl()
+    : protocols{detail::make_protocol_registry(options.limits.max_protocol_handlers)},
+      contributions{std::make_shared<detail::peer_contributions>()} {}
 plugin::impl::~impl() = default;
 
 bool plugin::impl::begin_startup() {
@@ -106,6 +112,7 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::ensure_node() {
       auto candidate = std::make_shared<forge::net::p2p::node>(*runtime, options);
       try {
          detail::attach_protocol_registry(protocols, candidate);
+         contributions->attach(candidate, options.limits.topology);
       } catch (...) {
          candidate->stop();
          throw;

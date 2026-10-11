@@ -119,6 +119,26 @@ claims of reproducing a native Identify Push allocator failure. Separate real
 TCP/TLS/Yamux tests cover authenticated stream creation, generation replacement,
 rejected new opens, admitted-stream survival and startup after rejected config.
 
+## Peer Operations And Contributions
+
+Connect and Ping delegate to the existing native node, including expected-peer
+authentication and operation cancellation. The plugin does not introduce a
+transport, probe loop or identity check. Ordinary secure plugin fixtures use
+TLS/Yamux with Secrets and ObjectDB through both supported macOS backends;
+insecure memory fixtures are not accepted as authentication evidence.
+
+Peer protection remains distinct from numeric pruning preference, as in Go's
+connection-manager ownership model. The plugin supplies bounded unique keys
+and move-only tokens instead of exposing global keyed removal to consumers.
+Native tag aggregation and pruning remain authoritative. Separate positive and
+negative subtotals prevent overflow under any token release order. Native
+removal precedes quota release, and shutdown retires only plugin-owned keys.
+This changes no libp2p wire semantics or background maintenance.
+
+Token lifetime and native connection-manager tests are not evidence that the
+configured plugin actually prunes the expected peer. That integration case
+remains an explicit policy-mapping acceptance gate.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The
