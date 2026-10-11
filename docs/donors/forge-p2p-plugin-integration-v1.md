@@ -48,6 +48,32 @@ The Forge local API boundary is intentionally narrower than Go's complete
 method to close the shared node. This is a local ownership decision, not a
 claim that an in-process C++ interface is a security sandbox.
 
+## Connection And Identify Configuration
+
+The next declarative slice reuses existing Forge node policies. At the pinned
+Go baseline, `p2p/net/connmgr/options.go` owns grace/silence configuration:
+zero grace is allowed, whereas silence must be positive. The pruning selection
+and protected-peer exclusion belong to `p2p/net/connmgr/connmgr.go`, not to the
+host's configuration adapter. Forge likewise maps session bounds and backoff
+into its existing connection manager; no plugin pruning worker is introduced.
+
+Go `p2p/protocol/identify/opts.go` owns protocol/user-agent strings and interaction
+timeout. `id.go` sets the 5-second timeout, 4-KiB own-message target and 10-part
+receive bound. Rust `protocols/identify/src/behaviour.rs` owns its protocol and
+agent version strings and automatically exchanges them through its behavior.
+Forge maps versions and all existing Identify limits into its native service.
+These settings do not replace authenticated peer identity or signed-record
+validation. A configurable bound is not a claim that every value interoperates
+with every donor's fixed receive limit.
+
+Peer-state bounds configure Forge's existing bounded operational store and its
+queue/hydration/pruning limits. Persistence remains plugin-owned and the private
+cache schema does not change. Raw node validation remains authoritative for all
+three groups. Required configured-path evidence includes actual pruning with
+protected/tagged peers, remote receipt of version facts, invalid/oversized
+Identify isolation and bounded retained peer records. Source mapping alone does
+not satisfy those tests or the final Go/Rust acceptance gate.
+
 Do not equate removing a raw protocol handler with cancelling API-publication
 sessions. API publications have separately established application ownership.
 Do not serialize validators, connection gates or callbacks into YAML; contribute

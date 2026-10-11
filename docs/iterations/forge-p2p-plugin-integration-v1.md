@@ -8,6 +8,14 @@ Stage 7 implementation is tracked in PR 172 on `forge-p2p-plugin-integration-v1`
 Approval is for the plan below, not a statement that the implementation or
 acceptance is complete. This PR does not promote the stack to production.
 
+The maintainer also approved one static `plugin::descriptor(...)` factory for
+each official plugin. Import the owning `...plugin` module. The former free
+`descriptor(...)`, `default_descriptor()` and descriptor-only modules are removed
+without aliases. Signer and wallet construction options remain parameters of
+that same factory; default construction uses their default arguments. Plugin
+identity, dependencies, enablement and factory behavior are unchanged. This is
+a source/module migration, not a plugin runtime, wire or persistence change.
+
 The [implementation roadmap](forge-p2p-production-implementation-v1.md) and
 [production criteria](forge-p2p-production-hardening-v1.md) remain authoritative.
 Apply `create-library` and `create-plugin` before implementation. Keep the
@@ -211,6 +219,22 @@ The remaining configuration work is grouped by the existing native owners:
 | Node | Per-profile DHT record/provider policy, bootstrap retries, topology and Rendezvous bounds |
 | Node PubSub configuration | Version preference/fallback, signature policy, flood publish, scoring, IDONTWANT and Partial Messages bounds |
 
+Deliver these groups as bounded checkpoints within this PR, not additional
+public config modules. Transport/security precedes private-network provisioning;
+PSK provisioning must include dependency binding and secret cleanup, not only
+schema fields. DNS/dial/path, reachability, mDNS, relay, DHT/lifecycle and PubSub
+then follow their existing native owners. Native mDNS currently provides an
+interface-count bound, not an interface-selection API: do not advertise a
+selector that the node cannot implement.
+
+The DHT checkpoint must also reconcile record-store capacities: current native
+profile construction passes persistence and derives only per-key provider and
+record-size limits. Adding unused YAML capacity fields would not satisfy Stage 7.
+Pass each supported bound to both operational store and persistence adapter and
+test enforcement, or explicitly record a remaining acceptance gap. PubSub's
+typed `set_pubsub_options()` is a complete native snapshot contribution; adding
+declarative settings must not silently redefine it as callbacks-only.
+
 Reuse described native resource-limit types where possible. Other configuration
 records express checked units and policy only; they must not duplicate native
 runtime state. Do not silently overwrite explicit resource budgets with derived
@@ -223,6 +247,19 @@ unspecified budget. The current generic nested decoder constructs a new member,
 so directly decoding a partial native scope would replace its finite parent
 defaults with unlimited scope defaults. Use explicit optional budget patches
 for this boundary instead of changing generic schema semantics in Stage 7.
+
+Connection, Identify and peer-state settings follow the same sparse boundary in
+the canonical `node.config` module. `connections` patches session pruning and
+dial backoff after the existing `max-sessions`-derived low watermark; `identify`
+patches the native message/timeout limits and advertised version strings;
+`peer-state` patches bounded operational storage without exposing persistence.
+Omitted fields preserve native defaults. Explicit values use checked native-size
+and duration conversions and the existing node/peer-store validators, not a
+second plugin policy validator. A zero grace period is meaningful, whereas zero
+Identify and peer-state bounds remain invalid. Tests must establish actual
+configured pruning/protection, received Identify facts and retained peer-state
+bounds in addition to schema mapping. These settings freeze at startup together
+with the rest of the native policy; rejected updates preserve the full snapshot.
 Apply native defaults, existing derived session defaults, then explicit patches.
 An explicit zero is a denial policy, not an absent value. Test empty scopes,
 cross-scope isolation, nested misspellings and rejection without mutation.
@@ -634,3 +671,46 @@ gates pass, describe this as test integration with an evolving stack.
   whole-PR acceptance remain open. No donor support-state promotion, project
   version change or merge approval follows from this checkpoint. Task-owned
   package consumer builds were removed; the active Stage 7 build is retained.
+
+### Host Policy And Descriptor Checkpoint
+
+- Sparse connection, Identify and peer-state settings now map 29 numeric
+  fields and two version strings to existing native policies. Native validation
+  remains authoritative; persistence ownership and unspecified defaults survive.
+  Millisecond conversion is checked, clock representability is validated and
+  deadline addition saturates without introducing another time type.
+- Nine focused configured-path cases passed 2,149 assertions: all-field mapping,
+  rejection, rollback, startup freeze, actual TLS/Identify version exchange,
+  oversized remote facts, peer-state capacity and protected-peer pruning.
+  These fixtures explicitly use memory persistence, not production storage or
+  external Go/Rust processes.
+- Three native clock/backoff cases passed 35 assertions. A broader filtered
+  native run executed 95 cases with 1,956 assertions; other tests were skipped,
+  so this is not a full native suite result.
+- Six affected suites passed: plugins (213 cases), descriptor surfaces,
+  chain signer, crypto wallet, managed remote and DB Store (MDBX/RocksDB).
+  Structure, network-plugin structure and inventory passed; the structure
+  checker has 23 focused positive/negative regressions.
+- All eight official plugin classes now own one static
+  `[[nodiscard]] plugin::descriptor(...)` factory. Seven free factories and
+  six descriptor-only module/source pairs were removed; wallet was already
+  static. Construction options, dependencies and defaults remain unchanged.
+  The installed descriptor consumer checks every factory and independent
+  instances. Stage 7's public node/resolver module counts are now 13 and five.
+- Installed descriptor and node consumers both built and ran successfully
+  from a fresh dev-component install. The node consumer exercises the new
+  config types and schema definitions; no retired descriptor modules remain
+  in the install. Completed consumer build trees were removed after their
+  processes exited. The active Stage 7 build and validation logs are retained.
+- Project rules and skills require declarations before the final reflection,
+  serialization and schema metadata block. The structure gate handles schema
+  specializations in either qualified or owning-namespace form and rejects
+  reintroduced descriptor wrappers.
+- Scoped donor/native and ownership/layout reviews found no remaining source
+  issues after fixes. Compiler checks also caught missing explicit imports and
+  an incorrect test helper name; the endpoint deadline test was made portable
+  across differing system/steady clock ranges. No assertion was bypassed.
+- Remaining work is the other native policy groups, followed by configured
+  Go/Rust acceptance and whole-PR review. The next slice must distinguish TCP
+  security from the currently QUIC-applied transport limits; do not advertise
+  those limits as already controlling Yamux or private-network transport.

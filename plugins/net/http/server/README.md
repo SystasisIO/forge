@@ -32,8 +32,7 @@ Secrets API without exposing PEM material to application plugins.
 - API contract: `2.0`
 - Config section: `plugins.net.http.server`
 - Public modules:
-  - `forge.plugins.net.http.server.plugin`
-  - `forge.plugins.net.http.server.descriptor`
+  - `forge.plugins.net.http.server.plugin` owns `plugin::descriptor()` and the canonical factory.
   - `forge.plugins.net.http.server.api`
   - `forge.plugins.net.http.server.bearer_auth`
   - `forge.plugins.net.http.server.middleware`
@@ -259,7 +258,7 @@ class object_http_plugin final : public forge::app::plugin {
 Register the infrastructure plugin once:
 
 ```cpp
-registry.register_plugin(forge::plugins::net::http::server::descriptor());
+registry.register_plugin(forge::plugins::net::http::server::plugin::descriptor());
 ```
 
 ## Security And Boundaries

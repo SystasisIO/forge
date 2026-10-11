@@ -37,12 +37,12 @@ application plugins need to contribute behavior to it.
    their owned resources and expose the composed runtime behavior.
 
 ```cpp
-registry.register_plugin(forge::plugins::net::http::server::descriptor());
-registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
-registry.register_plugin(forge::plugins::chain::signer::descriptor());
-registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
-registry.register_plugin(forge::plugins::log::otlp::descriptor());
-registry.register_plugin(forge::plugins::db::store::descriptor());
+registry.register_plugin(forge::plugins::net::http::server::plugin::descriptor());
+registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
+registry.register_plugin(forge::plugins::chain::signer::plugin::descriptor());
+registry.register_plugin(forge::plugins::crypto::secrets::plugin::descriptor());
+registry.register_plugin(forge::plugins::log::otlp::plugin::descriptor());
+registry.register_plugin(forge::plugins::db::store::plugin::descriptor());
 ```
 
 ```cpp
@@ -88,7 +88,12 @@ target_link_libraries(app PRIVATE Forge::forge_plugins_net_http_server)
 
 Each official plugin follows the same public module layout:
 
-- `forge.plugins.<family>.<name>.plugin` provides `plugin` and `descriptor()`.
+- `forge.plugins.<family>.<name>.plugin` provides `plugin` and its
+  `[[nodiscard]] static plugin::descriptor(...)` factory.
+  The former `...descriptor` modules, free `descriptor(...)` functions and
+  `default_descriptor()` wrappers are removed without aliases. Import
+  `...plugin` and call `plugin::descriptor(...)`; configurable factories
+  retain their construction parameters and behavior.
 - Plugin contracts may be owned by a domain library when they are consumed
   outside the plugin; Chain signer implements `forge.chain.api` contracts.
 - `forge.plugins.<family>.<name>.types` provides config and DTO types.

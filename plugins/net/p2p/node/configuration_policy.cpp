@@ -52,6 +52,8 @@ import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.types;
 import forge.schema.diagnostic;
+import forge.schema.exceptions;
+import forge.schema.scalar;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
@@ -196,7 +198,11 @@ parse_rendezvous_points(const std::vector<rendezvous_point_config>& configured) 
 } // namespace
 
 std::chrono::milliseconds to_ms(std::uint64_t value) {
-   return std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(value)};
+   try {
+      return std::chrono::milliseconds{forge::schema::checked_integral_cast<std::chrono::milliseconds::rep>(value)};
+   } catch (const forge::schema::exceptions::invalid_value&) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P milliseconds exceed the native duration range");
+   }
 }
 
 config decode_config(const forge::config::core::component_view& view) {
@@ -372,6 +378,9 @@ void apply_config(plugin::impl& state, const config& config) {
    session_limits.max_inbound_connections = admission_limit;
    session_limits.max_outbound_connections = admission_limit;
    detail::apply_resource_config(options.limits.resources, config.resources);
+   apply_connections(options.limits, config.connections);
+   apply_identify(options, config.identify);
+   apply_peer_state(options.peer_state, config.peer_state);
    options.limits.max_protocol_handlers = static_cast<std::size_t>(config.max_protocol_handlers);
    options.allow_insecure_test_mode = config.allow_insecure_test_mode;
    const auto has_identity = !certificate_secret.empty() && !private_key_secret.empty();

@@ -473,7 +473,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
        boost::asio::use_awaitable);
 }
 
-forge::app::plugin_descriptor descriptor() {
+forge::app::plugin_descriptor plugin::descriptor() {
    return forge::app::plugin_descriptor{
        .id = forge::app::plugin_id{.value = "forge.plugins.net.p2p.node"},
        .dependencies =

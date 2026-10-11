@@ -142,7 +142,10 @@ boost::asio::awaitable<identify::document> exchange_identify(auto self, auto ses
    auto cancellation = std::make_shared<boost::asio::cancellation_signal>();
    auto timed_out = std::make_shared<std::atomic_bool>(false);
    auto timer = std::make_shared<boost::asio::steady_timer>(strand);
-   timer->expires_after(self->options.identify.timeout);
+   const auto now = std::chrono::steady_clock::now();
+   const auto delay = std::chrono::duration_cast<std::chrono::steady_clock::duration>(self->options.identify.timeout);
+   const auto maximum = std::chrono::steady_clock::time_point::max();
+   timer->expires_at(now >= maximum - delay ? maximum : now + delay);
    timer->async_wait([cancellation, timed_out](const boost::system::error_code& error) {
       if (error) {
          return;

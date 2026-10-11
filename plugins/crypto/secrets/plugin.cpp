@@ -30,7 +30,7 @@ plugin::plugin() : impl_{std::make_shared<impl>()} {}
 
 plugin::~plugin() = default;
 
-forge::app::plugin_descriptor descriptor() {
+forge::app::plugin_descriptor plugin::descriptor() {
    return forge::app::plugin_descriptor{
       .id = {.value = "forge.plugins.crypto.secrets"},
       .factory = [] { return std::make_unique<plugin>(); },

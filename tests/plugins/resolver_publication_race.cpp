@@ -240,7 +240,7 @@ void resolver_publication_race_application::on_register_plugins(forge::app::plug
        .id = {.value = "forge.plugins.net.p2p.node"},
        .factory = [barrier = barrier_] { return std::make_unique<resolver_publication_race_node_plugin>(barrier); },
    });
-   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
 }
 
 } // namespace forge::tests::plugins

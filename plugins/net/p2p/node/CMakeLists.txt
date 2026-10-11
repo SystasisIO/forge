@@ -1,6 +1,5 @@
 add_library(
    forge_plugins_net_p2p_node STATIC
-      descriptor.cpp
       plugin.cpp
       api_impl.cpp
       api_impl_peers.cpp
@@ -31,6 +30,7 @@ add_library(
       resource_policy.cpp
       config.cpp
       configuration_policy.cpp
+      configuration_policy_host.cpp
       plugin_impl.cpp
       plugin_impl_configuration.cpp
       object_dht_record_store_adapter.cpp

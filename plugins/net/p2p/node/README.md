@@ -72,7 +72,6 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Config section: `plugins.net.p2p.node`
 - Public modules:
   - `forge.plugins.net.p2p.node.plugin`
-  - `forge.plugins.net.p2p.node.descriptor`
   - `forge.plugins.net.p2p.node.api`
   - `forge.plugins.net.p2p.node.dht_api`
   - `forge.plugins.net.p2p.node.configuration_api`
@@ -515,6 +514,59 @@ before mutation. Only the exact application-shell-owned `enabled` selector is
 excluded from node's unknown-field check. Limits freeze with native policy at
 startup; rejected mixed updates do not partially change diagnostics bounds.
 
+### Connections, Identify And Peer State
+
+These groups are sparse patches in the same `node.config` module. Missing or
+null individual settings preserve native defaults; empty groups are allowed,
+but null groups and unknown fields are rejected. Counts and durations are
+converted with range checks before publishing a new configuration snapshot.
+
+`connections` configures `session-low-watermark`, `session-grace-period-ms`,
+`session-prune-silence-ms`, and `dial-backoff-base-ms`, `dial-backoff-step-ms`,
+`dial-backoff-max-ms`. The low watermark defaults to the existing plugin rule:
+one for `max-sessions: 1`, otherwise `max-sessions - 1`. An explicit watermark
+must be positive and no larger than `max-sessions`. Grace may be zero; silence
+and backoff durations must be positive, with base no larger than maximum.
+Resource admission budgets remain independent; protected sessions may prevent
+pruning and cause a new connection to be rejected rather than evicting an owner.
+
+`identify` configures `timeout-ms`, `max-message-size`, `max-total-message-size`,
+`max-own-message-size`, `max-message-parts`, `max-protocols`,
+`max-listen-endpoints`, `max-protocol-size`, `max-version-size`,
+`max-public-key-size`, `max-signed-peer-record-size` and `max-push-operations`.
+All must be positive and satisfy the native aggregate/message relationships.
+Optional `protocol-version` and `agent-version` change advertised strings, not
+authenticated identity. They do not relax peer-ID or signed-record checks.
+
+`peer-state` configures `max-peers`, `max-rendezvous`, `max-pending`,
+`max-endpoints-per-peer`, `max-protocols-per-peer`,
+`max-relay-reservations-per-peer`, `max-relay-endpoints-per-reservation`,
+`max-peer-record-bytes`, `hydration-page-limit`, `prune-page-limit` and
+`max-persistence-waiters`. All are positive. These bound native operational
+state and persistence work; they do not expose the peer store or change its
+private persisted schema. `peer-store.store` still selects the dedicated DB
+Store dependency.
+
+```yaml
+plugins:
+  net:
+    p2p:
+      node:
+        connections:
+          session-grace-period-ms: 30000
+          dial-backoff-max-ms: 120000
+        identify:
+          timeout-ms: 5000
+          agent-version: "example-node/1.0"
+        peer-state:
+          max-peers: 2048
+          hydration-page-limit: 128
+```
+
+All three groups freeze at startup. Failed validation or a mixed post-start
+update preserves the old native and diagnostics settings atomically. Connection
+maintenance, Identify exchange and peer persistence still run only in the node.
+
 ### Plugin 8.0 Consolidation Migration
 
 The maintainer approved this pre-stabilization source/package/configuration break.
@@ -643,9 +695,11 @@ but does not replace the required awaited application shutdown.
 Focused component tests use the real native tag/protection registry to check
 delegation, rollback, mixed-sign extremes and preservation of other owners.
 Plugin TCP tests check authenticated sessions, Ping and bounded canceled dials.
-Actual plugin-configured pruning remains a later configuration acceptance gate:
-the current facade does not map the native 60-second grace / 10-second prune
-silence controls. Token activity is not evidence that pruning was exercised.
+Configured pruning is covered by a real TLS/Identify plugin regression: with
+zero grace and a low watermark of one, admitting another peer prunes two
+unprotected sessions while preserving the protected peer. The fixture checks
+session identities and the native pruning counter, not just token activity.
+It uses explicit memory persistence and is not configured Go/Rust evidence.
 
 Plugin 6.0 upgraded `forge.plugins.net.p2p.node.diagnostics_source` to contract
 `2.0`: diagnostics endpoint records now carry raw `multiaddr` values in their
@@ -702,9 +756,9 @@ class catalog_p2p_plugin final : public forge::app::plugin {
 ```
 
 ```cpp
-registry.register_plugin(forge::plugins::db::store::descriptor());
-registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
-registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
+registry.register_plugin(forge::plugins::db::store::plugin::descriptor());
+registry.register_plugin(forge::plugins::crypto::secrets::plugin::descriptor());
+registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
 ```
 
 ### Subscribe And Publish

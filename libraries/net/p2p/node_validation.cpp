@@ -146,6 +146,18 @@ void validate_policy(const node::options& options) {
       }
    }
    const auto relay_duration = std::chrono::duration_cast<std::chrono::seconds>(options.limits.relay.max_duration);
+   // Milliseconds can fit their own representation but overflow the clocks at use.
+   constexpr auto maximum_clock_delay = std::min(
+       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()),
+       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::duration::max()));
+   for (const auto delay : {options.limits.session_grace_period, options.limits.session_prune_silence,
+                            options.limits.dial_backoff_base, options.limits.dial_backoff_step,
+                            options.limits.dial_backoff_max, options.identify.timeout}) {
+      if (delay > maximum_clock_delay) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
+                               "P2P connection or Identify duration exceeds the native clock range");
+      }
+   }
    validate(topology_policy);
    for (const auto& point : topology_policy.rendezvous_points) {
       for (const auto& namespace_name : point.namespaces) {
@@ -253,7 +265,8 @@ void validate_policy(const node::options& options) {
        identify.max_protocols == 0 || identify.max_listen_endpoints == 0 || identify.max_protocol_size == 0 ||
        identify.max_version_size == 0 || identify.max_public_key_size == 0 ||
        identify.max_signed_peer_record_size == 0 || identify.max_signed_peer_record_size > identify.max_message_size ||
-       identify.max_push_operations == 0) {
+       identify.max_push_operations == 0 || options.protocol_version.size() > identify.max_version_size ||
+       options.agent_version.size() > identify.max_version_size) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid P2P Identify limits");
    }
 }

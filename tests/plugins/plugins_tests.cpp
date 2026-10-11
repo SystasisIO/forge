@@ -422,7 +422,7 @@ void register_p2p_stack(forge::app::plugin_registry& registry,
        .id = forge::app::plugin_id{.value = "forge.plugins.crypto.secrets"},
        .factory = [identity = std::move(identity)] { return std::make_unique<p2p_test_secrets_plugin>(identity); },
    });
-   registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
 }
 
 class node_test_api_impl final : public node_test_api {
@@ -1022,7 +1022,7 @@ class resolver_plugin_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "resolver-route-publisher"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.resolver"}},
@@ -1045,7 +1045,7 @@ class resolver_only_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
    }
 };
 
@@ -1053,7 +1053,7 @@ class resolver_publication_application final : public forge::app::application_sh
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
    }
 
    boost::asio::awaitable<void> on_provide(forge::app::application_context& context) override {
@@ -1068,7 +1068,7 @@ class duplicate_resolver_plugin_application final : public forge::app::applicati
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "duplicate-resolver-route"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.resolver"}},
@@ -1088,7 +1088,7 @@ class resolver_custom_transport_application final : public forge::app::applicati
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "resolver-custom-transport-route"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.resolver"}},
@@ -1111,7 +1111,7 @@ class receipt_resolver_application final : public forge::app::application_shell 
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
       register_p2p_stack(registry);
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "receipt-route-publisher"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.resolver"}},
@@ -1138,7 +1138,7 @@ class resolver_protocol_conflict_application final : public forge::app::applicat
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.node"}},
           .factory = [] { return std::make_unique<resolver_protocol_conflict_plugin>(); },
       });
-      registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+      registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
    }
 };
 

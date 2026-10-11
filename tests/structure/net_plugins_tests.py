@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_structure import check_net_plugin_families
+from check_structure import check_net_plugin_families, check_plugin_descriptor_ownership
 
 
 class NetPluginTests(unittest.TestCase):
@@ -41,10 +41,44 @@ class NetPluginTests(unittest.TestCase):
    def errors(self):
       errors = []
       check_net_plugin_families(self.root, errors)
+      check_plugin_descriptor_ownership(self.root, errors)
       return errors
 
    def test_nested_families_pass(self):
       self.assertEqual(self.errors(), [])
+
+   def test_descriptor_only_units_fail(self):
+      for path in ("plugins/db/store/descriptor.cpp",
+                   "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/descriptor.cppm"):
+         self.write(path, "// Removed wrapper must not return.\n")
+      self.assertEqual(sum("descriptor-only units" in error for error in self.errors()), 2)
+
+   def test_descriptor_is_static_plugin_member(self):
+      path = "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/plugin.cppm"
+      prefix = "export module forge.plugins.net.p2p.node.plugin;\n"
+      self.write(path, prefix + "class plugin {\n public:\n"
+                 "   [[nodiscard]] static forge::app::plugin_descriptor descriptor();\n};\n")
+      self.assertEqual(self.errors(), [])
+      self.write(path, prefix + "[[nodiscard]] forge::app::plugin_descriptor descriptor();\n")
+      self.assertTrue(any("static plugin member" in error for error in self.errors()))
+
+   def test_configurable_static_descriptor_passes(self):
+      self.write("plugins/chain/signer/include/forge/plugins/chain/signer/plugin.cppm",
+                 "class plugin {\n public:\n"
+                 "   [[nodiscard]] static forge::app::plugin_descriptor\n"
+                 "   descriptor(plugin_options options = {});\n};\n")
+      self.assertEqual(self.errors(), [])
+
+   def test_exported_free_descriptor_fails(self):
+      self.write("plugins/db/store/include/forge/plugins/db/store/plugin.cppm",
+                 "export [[nodiscard]] forge::app::plugin_descriptor descriptor();\n")
+      self.assertTrue(any("static plugin member" in error for error in self.errors()))
+
+   def test_default_descriptor_wrapper_fails(self):
+      self.write("plugins/db/store/include/forge/plugins/db/store/plugin.cppm",
+                 "class plugin {\n public:\n"
+                 "   [[nodiscard]] static forge::app::plugin_descriptor default_descriptor();\n};\n")
+      self.assertTrue(any("default_descriptor is forbidden" in error for error in self.errors()))
 
    def test_retired_directory_fails(self):
       (self.root / "plugins/p2p").mkdir()
@@ -112,6 +146,55 @@ class NetPluginTests(unittest.TestCase):
       self.write("plugins/net/p2p/node/include/forge/plugins/net/p2p/node/types.cppm",
                  "export module forge.plugins.net.p2p.node.types;\nstruct pubsub_config {};\n")
       self.assertTrue(any("settings belong to config.cppm" in error for error in self.errors()))
+
+   def test_metadata_follows_all_type_declarations(self):
+      self.write("plugins/net/p2p/node/include/forge/plugins/net/p2p/node/config.cppm",
+                 "export module forge.plugins.net.p2p.node.config;\n"
+                 "struct first {};\nclass second {};\nenum class mode { one };\n"
+                 "BOOST_DESCRIBE_STRUCT(first, (), ())\nBOOST_DESCRIBE_ENUM(mode, one)\n"
+                 "export template <> struct forge::schema::rules<first> {};\n")
+      self.assertEqual(self.errors(), [])
+
+   def test_interleaved_metadata_fails(self):
+      for metadata in ("BOOST_DESCRIBE_STRUCT(first, (), ())",
+                       "BOOST_DESCRIBE_ENUM(mode, one)",
+                       "FORGE_EXPORT_API(first, contract)",
+                       "export template <> struct forge::schema::rules<first> {};"):
+         for declaration in ("struct later {};", "class later;", "enum class later { one };",
+                             "template <typename T> struct later {};"):
+            with self.subTest(metadata=metadata, declaration=declaration):
+               self.write("plugins/net/p2p/node/include/forge/plugins/net/p2p/node/config.cppm",
+                          "export module forge.plugins.net.p2p.node.config;\nstruct first {};\n" +
+                          metadata + "\n   " + declaration + "\n")
+               self.assertTrue(any("final metadata block" in error for error in self.errors()))
+
+   def test_schema_metadata_in_owning_namespace(self):
+      for begin, end in (("namespace forge::schema {", "}"),
+                         ("namespace forge { namespace schema {", "}}")):
+         for described in ("", "BOOST_DESCRIBE_STRUCT(first, (), ())\n"):
+            with self.subTest(begin=begin, described=described):
+               path = "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/config.cppm"
+               source = ("export module forge.plugins.net.p2p.node.config;\nstruct first {};\n" +
+                         described + begin + "\ntemplate <> struct rules<first> {};\n" + end + "\n")
+               self.write(path, source)
+               self.assertEqual(self.errors(), [])
+               self.write(path, source + "struct later {};\n")
+               self.assertTrue(any("final metadata block" in error for error in self.errors()))
+
+   def test_unrelated_rules_are_not_schema_metadata(self):
+      self.write("plugins/net/p2p/node/include/forge/plugins/net/p2p/node/config.cppm",
+                 "export module forge.plugins.net.p2p.node.config;\nnamespace product {\n"
+                 "template <> struct rules<int> {};\nstruct ordinary {};\n}\n")
+      self.assertEqual(self.errors(), [])
+
+   def test_metadata_examples_in_comments_or_strings_are_not_declarations(self):
+      self.write("plugins/net/p2p/node/include/forge/plugins/net/p2p/node/config.cppm",
+                 "export module forge.plugins.net.p2p.node.config;\n"
+                 "// BOOST_DESCRIBE_STRUCT(example, (), ())\n"
+                 'constexpr auto example = "BOOST_DESCRIBE_STRUCT(example, (), ())";\n'
+                 "struct first {};\nBOOST_DESCRIBE_STRUCT(first, (), ())\n"
+                 "/* struct later {}; */\n")
+      self.assertEqual(self.errors(), [])
 
 
 if __name__ == "__main__":

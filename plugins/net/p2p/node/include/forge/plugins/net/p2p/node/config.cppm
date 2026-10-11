@@ -40,6 +40,49 @@ struct diagnostics_config {
    bool operator==(const diagnostics_config&) const = default;
 };
 
+struct connection_config {
+   std::optional<std::uint64_t> session_low_watermark;
+   std::optional<std::uint64_t> session_grace_period_ms;
+   std::optional<std::uint64_t> session_prune_silence_ms;
+   std::optional<std::uint64_t> dial_backoff_base_ms;
+   std::optional<std::uint64_t> dial_backoff_step_ms;
+   std::optional<std::uint64_t> dial_backoff_max_ms;
+   bool operator==(const connection_config&) const = default;
+};
+
+struct identify_config {
+   std::optional<std::uint64_t> timeout_ms;
+   std::optional<std::uint64_t> max_message_size;
+   std::optional<std::uint64_t> max_total_message_size;
+   std::optional<std::uint64_t> max_own_message_size;
+   std::optional<std::uint64_t> max_message_parts;
+   std::optional<std::uint64_t> max_protocols;
+   std::optional<std::uint64_t> max_listen_endpoints;
+   std::optional<std::uint64_t> max_protocol_size;
+   std::optional<std::uint64_t> max_version_size;
+   std::optional<std::uint64_t> max_public_key_size;
+   std::optional<std::uint64_t> max_signed_peer_record_size;
+   std::optional<std::uint64_t> max_push_operations;
+   std::optional<std::string> protocol_version;
+   std::optional<std::string> agent_version;
+   bool operator==(const identify_config&) const = default;
+};
+
+struct peer_state_config {
+   std::optional<std::uint64_t> max_peers;
+   std::optional<std::uint64_t> max_rendezvous;
+   std::optional<std::uint64_t> max_pending;
+   std::optional<std::uint64_t> max_endpoints_per_peer;
+   std::optional<std::uint64_t> max_protocols_per_peer;
+   std::optional<std::uint64_t> max_relay_reservations_per_peer;
+   std::optional<std::uint64_t> max_relay_endpoints_per_reservation;
+   std::optional<std::uint64_t> max_peer_record_bytes;
+   std::optional<std::uint64_t> hydration_page_limit;
+   std::optional<std::uint64_t> prune_page_limit;
+   std::optional<std::uint64_t> max_persistence_waiters;
+   bool operator==(const peer_state_config&) const = default;
+};
+
 struct resource_config {
    // Missing budgets preserve the owning native scope's defaults; zero denies.
    struct scope_patch {
@@ -69,20 +112,6 @@ struct resource_config {
    std::optional<std::uint64_t> max_malformed_messages_per_peer;
    bool operator==(const resource_config&) const = default;
 };
-
-BOOST_DESCRIBE_STRUCT(resource_config::scope_patch, (),
-                      (max_memory, max_file_descriptors, max_inbound_connections, max_outbound_connections,
-                       max_connections, max_inbound_streams, max_outbound_streams, max_streams))
-BOOST_DESCRIBE_STRUCT(resource_config, (),
-                      (system, transient, peer, protocol, service, protocol_peer, service_peer, connection, stream,
-                       max_dial_attempts, max_dial_attempts_per_peer, max_relay_reservations, max_malformed_messages_per_peer))
-
-BOOST_DESCRIBE_STRUCT(pubsub_config, (),
-                      (enabled, max_topics, max_handlers_per_topic, max_active_handlers, max_message_size, handler_deadline_ms,
-                       allowed_topics, denied_topics, sign_publishes, partial_messages))
-BOOST_DESCRIBE_STRUCT(diagnostics_config, (),
-                      (max_peers, max_sessions, max_endpoints_per_peer, max_protocols_per_peer,
-                       max_relay_reservations_per_peer))
 
 enum class path_policy : std::uint8_t {
    direct_only = 1,
@@ -143,17 +172,6 @@ struct rendezvous_point_config {
    bool operator==(const rendezvous_point_config&) const = default;
 };
 
-BOOST_DESCRIBE_ENUM(path_policy, direct_only, direct_preferred, relay_only)
-BOOST_DESCRIBE_ENUM(relay_trust_policy, known_only, public_allowed)
-BOOST_DESCRIBE_ENUM(bootstrap_requirement, allow_disconnected, require_connection)
-BOOST_DESCRIBE_ENUM(dht_profile_kind, amino_v1, custom)
-BOOST_DESCRIBE_ENUM(dht_mode, client, server)
-BOOST_DESCRIBE_ENUM(cache_schema_policy, reject, reset)
-BOOST_DESCRIBE_ENUM(topology_mode, managed, static_only)
-BOOST_DESCRIBE_ENUM(rendezvous_role, disabled, client, server, client_and_server)
-BOOST_DESCRIBE_STRUCT(dht_profile_config, (), (kind, mode, protocol, peers, providers, values))
-BOOST_DESCRIBE_STRUCT(rendezvous_point_config, (), (endpoint, namespaces))
-
 struct config {
    std::vector<std::string> listen;
    std::vector<std::string> bootstrap;
@@ -202,9 +220,47 @@ struct config {
    pubsub_config pubsub;
    diagnostics_config diagnostics;
    resource_config resources;
+   connection_config connections;
+   identify_config identify;
+   peer_state_config peer_state;
    bool operator==(const config&) const = default;
 };
 
+BOOST_DESCRIBE_ENUM(path_policy, direct_only, direct_preferred, relay_only)
+BOOST_DESCRIBE_ENUM(relay_trust_policy, known_only, public_allowed)
+BOOST_DESCRIBE_ENUM(bootstrap_requirement, allow_disconnected, require_connection)
+BOOST_DESCRIBE_ENUM(dht_profile_kind, amino_v1, custom)
+BOOST_DESCRIBE_ENUM(dht_mode, client, server)
+BOOST_DESCRIBE_ENUM(cache_schema_policy, reject, reset)
+BOOST_DESCRIBE_ENUM(topology_mode, managed, static_only)
+BOOST_DESCRIBE_ENUM(rendezvous_role, disabled, client, server, client_and_server)
+BOOST_DESCRIBE_STRUCT(dht_profile_config, (), (kind, mode, protocol, peers, providers, values))
+BOOST_DESCRIBE_STRUCT(rendezvous_point_config, (), (endpoint, namespaces))
+BOOST_DESCRIBE_STRUCT(pubsub_config, (),
+                      (enabled, max_topics, max_handlers_per_topic, max_active_handlers, max_message_size,
+                       handler_deadline_ms, allowed_topics, denied_topics, sign_publishes, partial_messages))
+BOOST_DESCRIBE_STRUCT(diagnostics_config, (),
+                      (max_peers, max_sessions, max_endpoints_per_peer, max_protocols_per_peer,
+                       max_relay_reservations_per_peer))
+BOOST_DESCRIBE_STRUCT(resource_config::scope_patch, (),
+                      (max_memory, max_file_descriptors, max_inbound_connections, max_outbound_connections,
+                       max_connections, max_inbound_streams, max_outbound_streams, max_streams))
+BOOST_DESCRIBE_STRUCT(resource_config, (),
+                      (system, transient, peer, protocol, service, protocol_peer, service_peer, connection, stream,
+                       max_dial_attempts, max_dial_attempts_per_peer, max_relay_reservations,
+                       max_malformed_messages_per_peer))
+BOOST_DESCRIBE_STRUCT(connection_config, (),
+                      (session_low_watermark, session_grace_period_ms, session_prune_silence_ms,
+                       dial_backoff_base_ms, dial_backoff_step_ms, dial_backoff_max_ms))
+BOOST_DESCRIBE_STRUCT(identify_config, (),
+                      (timeout_ms, max_message_size, max_total_message_size, max_own_message_size,
+                       max_message_parts, max_protocols, max_listen_endpoints, max_protocol_size, max_version_size,
+                       max_public_key_size, max_signed_peer_record_size, max_push_operations,
+                       protocol_version, agent_version))
+BOOST_DESCRIBE_STRUCT(peer_state_config, (),
+                      (max_peers, max_rendezvous, max_pending, max_endpoints_per_peer, max_protocols_per_peer,
+                       max_relay_reservations_per_peer, max_relay_endpoints_per_reservation, max_peer_record_bytes,
+                       hydration_page_limit, prune_page_limit, max_persistence_waiters))
 BOOST_DESCRIBE_STRUCT(config, (),
                       (listen, bootstrap, advertised_endpoints, peer_id, peer_store, certificate_secret,
                        private_key_secret, api_codec, api_deadline_ms, api_max_frame_size, max_inflight_per_peer,
@@ -216,7 +272,7 @@ BOOST_DESCRIBE_STRUCT(config, (),
                        topology_query_timeout_ms, topology_max_candidates, topology_max_parallel_queries,
                        topology_max_parallel_dials, topology_retry_jitter, rendezvous_role, rendezvous_points,
                        rendezvous_max_points, peer_exchange_enabled, peer_exchange_max_peers, pubsub, diagnostics,
-                       resources))
+                       resources, connections, identify, peer_state))
 
 } // namespace forge::plugins::net::p2p::node
 
@@ -246,4 +302,16 @@ export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::r
 
 export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::resource_config> {
    [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::resource_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::connection_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::connection_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::identify_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::identify_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::peer_state_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::peer_state_config> define();
 };

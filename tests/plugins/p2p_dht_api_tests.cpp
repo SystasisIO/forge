@@ -135,7 +135,7 @@ class dht_application final : public forge::app::application_shell {
              return std::make_unique<dependency_plugin>("forge.plugins.crypto.secrets", identity);
           },
       });
-      registry.register_plugin(node_plugin::descriptor());
+      registry.register_plugin(node_plugin::plugin::descriptor());
    }
 
  private:

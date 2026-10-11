@@ -1,6 +1,5 @@
 add_library(
    forge_plugins_crypto_secrets STATIC
-      descriptor.cpp
       plugin.cpp
       api_impl.cpp
       config.cpp

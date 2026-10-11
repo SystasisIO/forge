@@ -11,7 +11,6 @@ module;
 export module forge.plugins.net.p2p.node.plugin;
 
 import forge.plugins.net.p2p.node.config;
-export import forge.plugins.net.p2p.node.descriptor;
 
 import forge.api.core.exceptions;
 import forge.api.core.types;
@@ -42,6 +41,8 @@ export namespace forge::plugins::net::p2p::node {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -74,7 +75,5 @@ class plugin final : public forge::app::plugin {
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::net::p2p::node

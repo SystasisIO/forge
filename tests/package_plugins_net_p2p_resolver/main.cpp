@@ -15,7 +15,7 @@ static_assert(std::same_as<
 
 int main() {
    const auto descriptor = forge::plugins::net::p2p::resolver::managed_api::describe();
-   const auto plugin = forge::plugins::net::p2p::resolver::descriptor();
+   const auto plugin = forge::plugins::net::p2p::resolver::plugin::descriptor();
    return descriptor.id.value == "forge.plugins.net.p2p.resolver.managed" && plugin.id.value == "forge.plugins.net.p2p.resolver"
               ? 0
               : 1;

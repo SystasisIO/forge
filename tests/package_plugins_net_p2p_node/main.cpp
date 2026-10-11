@@ -49,6 +49,18 @@ static_assert(std::same_as<
 static_assert(std::same_as<
               decltype(forge::plugins::net::p2p::node::resource_config::max_dial_attempts),
               std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::connection_config::session_grace_period_ms),
+              std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::identify_config::timeout_ms),
+              std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::identify_config::agent_version),
+              std::optional<std::string>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::peer_state_config::max_peers),
+              std::optional<std::uint64_t>>);
 
 static_assert(std::same_as<
               decltype(std::declval<forge::plugins::net::p2p::node::api&>().publish_api(
@@ -145,7 +157,7 @@ boost::asio::awaitable<void> typed_pubsub_consumer(pubsub_api& api) {
 }
 
 int main() {
-   const auto descriptor = forge::plugins::net::p2p::node::descriptor();
+   const auto descriptor = forge::plugins::net::p2p::node::plugin::descriptor();
    const auto config = forge::plugins::net::p2p::node::config{};
    const auto dht = dht_api::describe();
    const auto configuration = configuration_api::describe();
@@ -159,10 +171,26 @@ int main() {
    auto resources = node_plugin::resource_config{};
    forge::schema::rules<node_plugin::resource_config>::define().apply_defaults(resources);
    resources.system.max_connections = 0;
+   auto connections = node_plugin::connection_config{};
+   auto identify = node_plugin::identify_config{};
+   auto peer_state = node_plugin::peer_state_config{};
+   forge::schema::rules<node_plugin::connection_config>::define().apply_defaults(connections);
+   forge::schema::rules<node_plugin::identify_config>::define().apply_defaults(identify);
+   forge::schema::rules<node_plugin::peer_state_config>::define().apply_defaults(peer_state);
+   connections.session_grace_period_ms = 0;
+   identify.protocol_version = "/package/1";
+   peer_state.max_peers = 7;
    const auto invalid = node_plugin::exceptions::invalid_config{"package category probe"};
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
                   resources.system.max_connections.has_value() && *resources.system.max_connections == 0 &&
                   !resources.system.max_memory && !resources.max_dial_attempts &&
+                  connections.session_grace_period_ms && *connections.session_grace_period_ms == 0 &&
+                  !connections.session_low_watermark && !connections.dial_backoff_max_ms &&
+                  identify.protocol_version && *identify.protocol_version == "/package/1" &&
+                  !identify.timeout_ms && !identify.agent_version && !identify.max_push_operations &&
+                  peer_state.max_peers && *peer_state.max_peers == 7 && !peer_state.max_persistence_waiters &&
+                  !config.connections.session_low_watermark && !config.identify.timeout_ms &&
+                  !config.peer_state.max_peers &&
                   invalid.code().value() == 3 &&
                   std::string{invalid.code().category().name()} == "forge.plugins.net.p2p.node" &&
                   config.topology_mode == forge::plugins::net::p2p::node::topology_mode::managed &&

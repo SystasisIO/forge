@@ -324,6 +324,39 @@ node::options fixture_options(std::string_view name) {
 // The friendship permits this test TU to reach existing admission and session
 // state. No production option, runtime callback or alternate admission is added.
 struct node_session_fixture {
+   static void endpoint_backoff_bounds_native_clock_addition() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = fixture_options("bounded-endpoint-backoff");
+      const auto largest = std::min(
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()),
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::duration::max()));
+      options.limits.dial_backoff_base = largest;
+      options.limits.dial_backoff_max = largest;
+      auto owner = node{runtime, std::move(options)};
+      const auto cleanup = boost::scope::scope_exit{[&] { bounded_result(runtime, owner.async_stop()); }};
+      const auto address = parse_endpoint("/ip4/127.0.0.1/tcp/4001");
+      const auto peer = owner.local_peer();
+      auto record = peer_store::record{.peer = peer};
+      record.endpoints.push_back({.address = address.to_multiaddr(),
+                                  .failures = (std::numeric_limits<std::uint64_t>::max)()});
+      owner.impl_->store.upsert(std::move(record));
+      const auto before = std::chrono::system_clock::now();
+      const auto until = owner.impl_->endpoint_backoff_until(peer, address, path::kind::direct);
+      const auto after = std::chrono::system_clock::now();
+      // The real clock may have a wider range than steady_clock; saturation is
+      // not implied by the largest delay permitted by both clocks.
+      BOOST_CHECK(until >= detail::saturating_topology_expiry(before, largest));
+      BOOST_CHECK(until <= detail::saturating_topology_expiry(after, largest));
+      using clock = std::chrono::system_clock;
+      const auto maximum = clock::time_point::max();
+      const auto tick = std::chrono::duration_cast<clock::duration>(std::chrono::milliseconds{1});
+      const auto near_maximum = maximum - tick;
+      BOOST_CHECK(detail::saturating_topology_expiry(near_maximum, std::chrono::milliseconds{2}) == maximum);
+      BOOST_CHECK(detail::saturating_topology_expiry(near_maximum, std::chrono::milliseconds{1}) == maximum);
+      BOOST_CHECK(detail::saturating_topology_expiry(maximum - 3 * tick, std::chrono::milliseconds{1}) ==
+                  maximum - 2 * tick);
+   }
+
    static void mdns_callbacks_do_not_retain_node() {
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
       auto owner_weak = std::weak_ptr<node::impl>{};
@@ -2316,6 +2349,10 @@ BOOST_AUTO_TEST_CASE(p2p_reachability_getter_and_subscription_share_snapshot_acr
 
 BOOST_AUTO_TEST_CASE(p2p_startup_publishes_maintenance_without_background_refresh) {
    node_session_fixture::startup_publishes_maintenance_without_background_refresh();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_endpoint_backoff_bounds_deadline_addition_and_exhausted_failure_counter) {
+   node_session_fixture::endpoint_backoff_bounds_native_clock_addition();
 }
 
 } // namespace forge::net::p2p

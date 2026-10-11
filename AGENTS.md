@@ -335,6 +335,12 @@ implementation-library namespaces. For plugin family/role decisions, follow
 ## Reflection And Serialization
 
 - New canonical reflection uses Boost.Describe directly.
+- Declare ordinary classes, structs and enums before reflection/schema/API
+  metadata. Keep namespace-scope `BOOST_DESCRIBE_*`, serialization/API generation
+  macros and schema specializations together at the bottom of the file; never
+  interleave them with the types they describe. Preserve their C++-required
+  namespace and export placement. The narrow class-scope exception and layout
+  details are defined by `create-library`.
 - Diagnostic aggregate fallback may use Boost.PFR through `forge_reflect` and
   `forge_variant`. It must not replace explicit Boost.Describe field order for
   existing wire/persisted contracts or introduce a logger-owned serializer.
@@ -575,8 +581,10 @@ implementation-library namespaces. For plugin family/role decisions, follow
   application has substantial state or lifecycle customization that callbacks
   cannot express cleanly.
 - Plugin-owned descriptor factories live on the owner type as
-  `plugin_type::descriptor()`. Avoid free `*_descriptor()` functions when the
-  owner type already names the concept.
+  `[[nodiscard]] static plugin_descriptor plugin_type::descriptor(...)`.
+  Optional construction parameters belong to this same factory. Do not add a
+  free factory, `default_descriptor()` wrapper or descriptor-only module; apply
+  `create-plugin` for the exact declaration/implementation layout.
 - APIs define typed contracts.
 - Plugins orchestrate behavior.
 - Adapters connect concrete backends and external systems.

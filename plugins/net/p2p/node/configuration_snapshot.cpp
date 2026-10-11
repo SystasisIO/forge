@@ -16,6 +16,7 @@ import forge.config.core.component;
 import forge.net.p2p.dht;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.node;
+import forge.net.p2p.peer_store;
 import forge.net.p2p.scoring;
 import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.types;

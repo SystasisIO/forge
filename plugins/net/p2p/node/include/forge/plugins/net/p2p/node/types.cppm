@@ -76,6 +76,13 @@ struct pubsub_snapshot {
    forge::net::p2p::pubsub::snapshot core;
 };
 
+struct peer_filter {
+   std::optional<forge::net::p2p::peer_id> peer;
+   bool only_connected = false;
+   bool only_protected = false;
+   std::uint64_t limit = 0;
+};
+
 BOOST_DESCRIBE_STRUCT(publish_options, (), (sign))
 BOOST_DESCRIBE_STRUCT(subscribe_options, (), (handler_deadline))
 BOOST_DESCRIBE_STRUCT(message, (), (source, author, subject, data, seqno))
@@ -84,14 +91,6 @@ BOOST_DESCRIBE_STRUCT(pubsub_snapshot, (),
                       (topics, subscriptions, active_handlers, messages_published, messages_delivered,
                        messages_accepted, messages_rejected, messages_ignored, messages_retried, messages_dropped,
                        handler_failures, core))
-
-struct peer_filter {
-   std::optional<forge::net::p2p::peer_id> peer;
-   bool only_connected = false;
-   bool only_protected = false;
-   std::uint64_t limit = 0;
-};
-
 BOOST_DESCRIBE_STRUCT(peer_filter, (), (peer, only_connected, only_protected, limit))
 
 } // namespace forge::plugins::net::p2p::node

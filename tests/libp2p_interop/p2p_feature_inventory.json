@@ -206,11 +206,10 @@
     },
     "plugin.p2p.node": {
       "owner": "plugin.p2p.node",
-      "module_count": 14,
+      "module_count": 13,
       "modules": [
         "forge.plugins.net.p2p.node.api", "forge.plugins.net.p2p.node.config",
         "forge.plugins.net.p2p.node.configuration_api",
-        "forge.plugins.net.p2p.node.descriptor",
         "forge.plugins.net.p2p.node.dht_api",
         "forge.plugins.net.p2p.node.diagnostics_api", "forge.plugins.net.p2p.node.events_api",
         "forge.plugins.net.p2p.node.exceptions",
@@ -224,7 +223,6 @@
         "forge.plugins.net.p2p.node.api": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.config": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ],
         "forge.plugins.net.p2p.node.configuration_api": [ "plugin.node" ],
-        "forge.plugins.net.p2p.node.descriptor": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ],
         "forge.plugins.net.p2p.node.dht_api": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.diagnostics_api": [ "plugin.diagnostics" ],
         "forge.plugins.net.p2p.node.events_api": [ "plugin.diagnostics" ],
@@ -237,14 +235,14 @@
         "forge.plugins.net.p2p.node.types": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ]
       },
       "header_features": {},
-      "sha256": "9ed2353a797959ebf924f230cccb7d7bb2055df99e182f59dda772f19a01238d",
+      "sha256": "431e8dfd539599c17e66242e7cf4f68dcd9ce1f1644efc51fca8175fdb689c39",
       "feature_ids": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ]
     },
     "plugin.p2p.resolver": {
       "owner": "plugin.p2p.resolver",
-      "module_count": 6,
+      "module_count": 5,
       "modules": [
-        "forge.plugins.net.p2p.resolver.api", "forge.plugins.net.p2p.resolver.descriptor",
+        "forge.plugins.net.p2p.resolver.api",
         "forge.plugins.net.p2p.resolver.exceptions",
         "forge.plugins.net.p2p.resolver.managed_api", "forge.plugins.net.p2p.resolver.plugin",
         "forge.plugins.net.p2p.resolver.types"
@@ -252,14 +250,13 @@
       "headers": [],
       "module_features": {
         "forge.plugins.net.p2p.resolver.api": [ "plugin.resolver" ],
-        "forge.plugins.net.p2p.resolver.descriptor": [ "plugin.resolver" ],
         "forge.plugins.net.p2p.resolver.exceptions": [ "plugin.resolver" ],
         "forge.plugins.net.p2p.resolver.managed_api": [ "plugin.resolver" ],
         "forge.plugins.net.p2p.resolver.plugin": [ "plugin.resolver" ],
         "forge.plugins.net.p2p.resolver.types": [ "plugin.resolver" ]
       },
       "header_features": {},
-      "sha256": "60ad06e5655a71e0dc44c9a343cc6813b36da6fbaa8a5ebb7ecfdd26a21d1b20",
+      "sha256": "1b821b285e2e2432a6d9bd80ade8efdbe7261b94faa61ab92c473801a454af8a",
       "feature_ids": [ "plugin.resolver" ]
     }
   },
@@ -1161,7 +1158,6 @@
         "source_paths": [
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/api.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/configuration_api.cppm",
-          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/descriptor.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/dht_api.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/exceptions.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/peer_contribution.cppm",
@@ -1205,7 +1201,6 @@
         "layers": [ "state_machine", "official_plugin" ],
         "source_paths": [
           "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/api.cppm",
-          "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/descriptor.cppm",
           "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/exceptions.cppm",
           "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/managed_api.cppm",
           "plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/plugin.cppm",

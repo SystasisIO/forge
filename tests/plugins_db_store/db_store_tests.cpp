@@ -489,7 +489,7 @@ class installer_plugin final : public forge::app::plugin {
    auto builder = forge::app::application_builder{};
    builder.name("db-store-plugin-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "db-store-plugin-test"})
-       .plugin(store_plugin::descriptor());
+       .plugin(store_plugin::plugin::descriptor());
    if (driver) {
       builder.plugin(installer_descriptor(std::move(driver)));
    }
@@ -582,9 +582,9 @@ void set_p2p_bootstrap(forge::config::core::document& document, const std::optio
    auto builder = forge::app::application_builder{};
    builder.name("p2p-node-db-store-lifecycle-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "p2p-node-db-store-test"})
-       .plugin(store_plugin::descriptor())
-       .plugin(crypto_secrets::descriptor())
-       .plugin(p2p_node::descriptor());
+       .plugin(store_plugin::plugin::descriptor())
+       .plugin(crypto_secrets::plugin::descriptor())
+       .plugin(p2p_node::plugin::descriptor());
    if (driver) {
       builder.plugin(installer_descriptor(std::move(driver), std::string{p2p_peer_store_name}));
    }
@@ -905,7 +905,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_descriptor_api_and_config_are_nested) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_and_api_major) {
-   const auto descriptor = p2p_node::descriptor();
+   const auto descriptor = p2p_node::plugin::descriptor();
    BOOST_TEST(descriptor.id.value == "forge.plugins.net.p2p.node");
    BOOST_REQUIRE_EQUAL(descriptor.dependencies.size(), 2U);
    BOOST_TEST(descriptor.dependencies[0].value == "forge.plugins.db.store");
@@ -1511,7 +1511,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_after_initialize_opens_store_for_central_objec
    auto builder = forge::app::application_builder{};
    builder.name("db-store-ready-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "db-store-ready-test"})
-       .plugin(store_plugin::descriptor())
+       .plugin(store_plugin::plugin::descriptor())
        .plugin(installer_descriptor(driver))
        .after_initialize([&](const forge::app::application_context& context) -> boost::asio::awaitable<void> {
           auto api = context.api_view().get<store_plugin::api>(store_plugin::api::ref());

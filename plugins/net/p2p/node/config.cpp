@@ -45,6 +45,12 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
    schema.field<&forge::plugins::net::p2p::node::config::resources>("resources")
        .default_value(forge::plugins::net::p2p::node::resource_config{})
        .description("Sparse native resource-scope budgets; omitted values preserve defaults, zero denies");
+   schema.field<&forge::plugins::net::p2p::node::config::connections>("connections")
+       .default_value(forge::plugins::net::p2p::node::connection_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::identify>("identify")
+       .default_value(forge::plugins::net::p2p::node::identify_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::peer_state>("peer-state")
+       .default_value(forge::plugins::net::p2p::node::peer_state_config{});
    schema.field<&forge::plugins::net::p2p::node::config::listen>("listen")
        .default_value(std::vector<std::string>{})
        .description("Listen endpoints, for example /ip4/0.0.0.0/udp/9443/quic-v1 or /ip4/0.0.0.0/tcp/4001");
@@ -248,5 +254,57 @@ forge::schema::rules<forge::plugins::net::p2p::node::pubsub_config>::define() {
    schema.field<&forge::plugins::net::p2p::node::pubsub_config::sign_publishes>("sign-publishes").default_value(true);
    schema.field<&forge::plugins::net::p2p::node::pubsub_config::partial_messages>("partial-messages").default_value(false);
    schema.field<&forge::plugins::net::p2p::node::pubsub_config::enabled>("enabled").default_value(false);
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::connection_config>
+forge::schema::rules<forge::plugins::net::p2p::node::connection_config>::define() {
+   using config = forge::plugins::net::p2p::node::connection_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::session_low_watermark>("session-low-watermark");
+   schema.field<&config::session_grace_period_ms>("session-grace-period-ms");
+   schema.field<&config::session_prune_silence_ms>("session-prune-silence-ms");
+   schema.field<&config::dial_backoff_base_ms>("dial-backoff-base-ms");
+   schema.field<&config::dial_backoff_step_ms>("dial-backoff-step-ms");
+   schema.field<&config::dial_backoff_max_ms>("dial-backoff-max-ms");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::identify_config>
+forge::schema::rules<forge::plugins::net::p2p::node::identify_config>::define() {
+   using config = forge::plugins::net::p2p::node::identify_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::timeout_ms>("timeout-ms");
+   schema.field<&config::max_message_size>("max-message-size");
+   schema.field<&config::max_total_message_size>("max-total-message-size");
+   schema.field<&config::max_own_message_size>("max-own-message-size");
+   schema.field<&config::max_message_parts>("max-message-parts");
+   schema.field<&config::max_protocols>("max-protocols");
+   schema.field<&config::max_listen_endpoints>("max-listen-endpoints");
+   schema.field<&config::max_protocol_size>("max-protocol-size");
+   schema.field<&config::max_version_size>("max-version-size");
+   schema.field<&config::max_public_key_size>("max-public-key-size");
+   schema.field<&config::max_signed_peer_record_size>("max-signed-peer-record-size");
+   schema.field<&config::max_push_operations>("max-push-operations");
+   schema.field<&config::protocol_version>("protocol-version");
+   schema.field<&config::agent_version>("agent-version");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::peer_state_config>
+forge::schema::rules<forge::plugins::net::p2p::node::peer_state_config>::define() {
+   using config = forge::plugins::net::p2p::node::peer_state_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::max_peers>("max-peers");
+   schema.field<&config::max_rendezvous>("max-rendezvous");
+   schema.field<&config::max_pending>("max-pending");
+   schema.field<&config::max_endpoints_per_peer>("max-endpoints-per-peer");
+   schema.field<&config::max_protocols_per_peer>("max-protocols-per-peer");
+   schema.field<&config::max_relay_reservations_per_peer>("max-relay-reservations-per-peer");
+   schema.field<&config::max_relay_endpoints_per_reservation>("max-relay-endpoints-per-reservation");
+   schema.field<&config::max_peer_record_bytes>("max-peer-record-bytes");
+   schema.field<&config::hydration_page_limit>("hydration-page-limit");
+   schema.field<&config::prune_page_limit>("prune-page-limit");
+   schema.field<&config::max_persistence_waiters>("max-persistence-waiters");
    return schema;
 }

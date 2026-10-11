@@ -385,8 +385,10 @@ add_executable(
 target_link_libraries(
    test_forge_plugins_descriptor_surfaces PRIVATE
       forge_plugins_crypto_secrets
+      forge_plugins_crypto_wallet
       forge_plugins_chain_signer
       forge_plugins_db_store
+      forge_plugins_log_otlp
       forge_plugins_net_http_server
       forge_plugins_net_p2p_node
       forge_plugins_net_p2p_resolver
@@ -1121,6 +1123,7 @@ add_executable(
    quic_p2p/path_manager_tests.cpp
    quic_p2p/path_session_tests.cpp
    quic_p2p/p2p_tests.cpp
+   quic_p2p/host_policy_tests.cpp
    quic_p2p/gossipsub_test_shutdown.cpp
    quic_p2p/gossipsub_test_shutdown_fixture.cpp
    quic_p2p/gossipsub_test_shutdown_tests.cpp
@@ -1761,6 +1764,7 @@ add_executable(
    plugins/p2p_dht_api_tests.cpp
    plugins/p2p_configuration_api_tests.cpp
    plugins/p2p_resource_config_tests.cpp
+   plugins/p2p_host_config_tests.cpp
    plugins/p2p_protocol_api_tests.cpp
    plugins/p2p_peer_api_tests.cpp
    plugins/p2p_peer_contribution_tests.cpp

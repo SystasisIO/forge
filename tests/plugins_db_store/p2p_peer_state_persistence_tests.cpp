@@ -154,7 +154,7 @@ struct root_guard {
    auto builder = forge::app::application_builder{};
    builder.name("p2p-peer-state-persistence-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "p2p-peer-state-test"})
-       .plugin(store_plugin::descriptor());
+       .plugin(store_plugin::plugin::descriptor());
    auto app = std::move(builder).build();
    app->configure(document);
    forge::asio::blocking::run(app->runtime(), app->startup());
@@ -165,9 +165,9 @@ struct root_guard {
    auto builder = forge::app::application_builder{};
    builder.name("p2p-peer-state-maintenance-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "p2p-maintenance-test"})
-       .plugin(store_plugin::descriptor())
-       .plugin(secrets_plugin::descriptor())
-       .plugin(p2p_node::descriptor());
+       .plugin(store_plugin::plugin::descriptor())
+       .plugin(secrets_plugin::plugin::descriptor())
+       .plugin(p2p_node::plugin::descriptor());
    auto app = std::move(builder).build();
    app->configure(document);
    return app;

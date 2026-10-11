@@ -58,6 +58,7 @@ import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.peer_contribution;
 
 #include "../../plugins/net/p2p/node/details/resource_policy.hxx"
 
@@ -224,6 +225,23 @@ template<class Error> void check_error(int expected) {
    BOOST_TEST(error.code().value() == expected);
    BOOST_TEST(std::string{error.code().category().name()} == "forge.plugins.net.p2p.node");
    BOOST_CHECK(&error.code().category() == &original.code().category());
+}
+
+boost::asio::awaitable<bool> await_identified_sessions(std::shared_ptr<np::diagnostics_api> reads,
+                                                     std::size_t count) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto timer = boost::asio::steady_timer{executor};
+   const auto deadline = std::chrono::steady_clock::now() + 4s;
+   do {
+      const auto state = reads->snapshot({.max_peers = 16, .max_sessions = 16});
+      if (state.sessions.size() == count && std::ranges::all_of(state.sessions, [](const auto& session) {
+             return session.identify_state == p2p::identify::state::identified &&
+                 session.authentication == p2p::peer_authentication::libp2p_tls;
+          })) { co_return true; }
+      timer.expires_after(5ms);
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   } while (std::chrono::steady_clock::now() < deadline);
+   co_return false;
 }
 } // namespace
 
@@ -467,4 +485,237 @@ BOOST_AUTO_TEST_CASE(p2p_resource_config_real_connection_denial_keeps_native_cod
    BOOST_TEST(after.resources.transient.outbound_connections == before.resources.transient.outbound_connections);
    BOOST_TEST(after.resources.transient.file_descriptors == before.resources.transient.file_descriptors);
    BOOST_TEST(after.resources.transient.memory == before.resources.transient.memory);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_host_config_invalid_compound_yaml_and_clock_candidates_leave_last_native_policy_usable) {
+   fixture server;
+   const auto yaml = forge::codec::yaml::read_document(
+       "connections:\n  session-low-watermark: 2\n  session-grace-period-ms: 0\n"
+       "  dial-backoff-base-ms: 3000\n  dial-backoff-max-ms: 5000\n"
+       "identify:\n  protocol-version: /stage7/protocol/1\n  agent-version: stage7-host-policy/1\n"
+       "peer-state:\n  max-peers: 4\n  hydration-page-limit: 7\n");
+   BOOST_REQUIRE(yaml.ok());
+   const auto* settings = yaml.value.object_at("");
+   BOOST_REQUIRE(settings);
+   for (const auto& [name, setting] : *settings) {
+      server.document.set(std::string{section} + "." + name, setting);
+   }
+   server.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
+   server.document.set(std::string{section} + ".max-sessions", std::uint64_t{4});
+   server.configure();
+   const auto valid = server.document;
+   const auto reject = [&](std::string_view path, value input) {
+      server.document = valid;
+      server.document.set(std::string{section} + "." + std::string{path}, std::move(input));
+      BOOST_TEST_CONTEXT(path) { BOOST_CHECK_THROW(server.configure(), np::exceptions::invalid_config); }
+   };
+   reject("connections.session-low-watermark", std::uint64_t{5});
+   reject("connections.dial-backoff-base-ms", std::uint64_t{5001});
+   reject("identify.max-own-message-size", std::uint64_t{8193});
+   reject("identify.max-signed-peer-record-size", std::uint64_t{8193});
+   reject("identify.max-total-message-size", std::uint64_t{8191});
+   reject("identify.max-total-message-size", std::uint64_t{81921});
+   reject("identify.max-message-parts", static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)()));
+   reject("identify.protocol-version", std::string(513, 'p'));
+   reject("identify.agent-version", std::string(513, 'a'));
+   for (const auto* path : {"connections.session-grace-period-ms", "connections.session-prune-silence-ms",
+                            "connections.dial-backoff-base-ms", "connections.dial-backoff-step-ms",
+                            "connections.dial-backoff-max-ms", "identify.timeout-ms"}) {
+      reject(path, std::uint64_t{10'000'000'000'000ULL});
+      reject(path, (std::numeric_limits<std::uint64_t>::max)());
+   }
+   for (const auto* text : {"connections:\n  dial-backof-base-ms: 10\n",
+                            "identify:\n  max-version-siz: 20\n",
+                            "peer-state:\n  max-peer: 10\n", "identfy: {}\n"}) {
+      const auto bad = forge::codec::yaml::read_document(text);
+      BOOST_REQUIRE(bad.ok());
+      const auto* changes = bad.value.object_at("");
+      BOOST_REQUIRE(changes);
+      server.document = valid;
+      for (const auto& [name, setting] : *changes) {
+         server.document.set(std::string{section} + "." + name, setting);
+      }
+      // Identity and persistence remain valid; only the misspelled policy differs.
+      BOOST_CHECK_THROW(server.configure(), np::exceptions::invalid_config);
+   }
+   // Start without another successful configure, witnessing rollback of every rejection.
+   server.start();
+   const auto endpoint = server.host->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   fixture client;
+   client.start();
+   const auto connected = client.run(client.host->connect(*endpoint,
+       {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+   BOOST_REQUIRE(connected.identify_state == p2p::identify::state::identified);
+   const auto state = client.diagnostics->snapshot();
+   const auto observed = std::ranges::find(state.peers, server.host->local_peer(),
+                                          &p2p::diagnostics::peer::peer);
+   BOOST_REQUIRE(observed != state.peers.end());
+   BOOST_TEST(observed->protocol_version == "/stage7/protocol/1");
+   BOOST_TEST(observed->agent_version == "stage7-host-policy/1");
+
+   fixture restricted;
+   restricted.document.set(std::string{section} + ".identify.max-version-size", std::uint64_t{16});
+   restricted.configure(); restricted.start();
+   const auto denied = restricted.run(restricted.host->connect(*endpoint,
+       {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+   BOOST_CHECK(denied.identify_state == p2p::identify::state::failed);
+   const auto rejected = restricted.diagnostics->snapshot();
+   BOOST_REQUIRE(std::ranges::any_of(rejected.sessions, [&](const auto& session) {
+      return session.id == denied.id && session.authentication == p2p::peer_authentication::libp2p_tls &&
+          session.identify_state == p2p::identify::state::failed && !session.identify_error.empty();
+   }));
+}
+
+BOOST_AUTO_TEST_CASE(p2p_host_config_all_settings_freeze_after_startup) {
+   fixture f;
+   f.start();
+   const auto running = f.document;
+   const auto updates = std::array{
+      std::pair{"connections.session-low-watermark", std::uint64_t{512}},
+      std::pair{"connections.session-grace-period-ms", std::uint64_t{0}},
+      std::pair{"connections.session-prune-silence-ms", std::uint64_t{11}},
+      std::pair{"connections.dial-backoff-base-ms", std::uint64_t{6000}},
+      std::pair{"connections.dial-backoff-step-ms", std::uint64_t{2000}},
+      std::pair{"connections.dial-backoff-max-ms", std::uint64_t{300001}},
+      std::pair{"identify.timeout-ms", std::uint64_t{6000}},
+      std::pair{"identify.max-message-size", std::uint64_t{8193}},
+      std::pair{"identify.max-total-message-size", std::uint64_t{81919}},
+      std::pair{"identify.max-own-message-size", std::uint64_t{4097}},
+      std::pair{"identify.max-message-parts", std::uint64_t{11}},
+      std::pair{"identify.max-protocols", std::uint64_t{129}},
+      std::pair{"identify.max-listen-endpoints", std::uint64_t{65}},
+      std::pair{"identify.max-protocol-size", std::uint64_t{1025}},
+      std::pair{"identify.max-version-size", std::uint64_t{513}},
+      std::pair{"identify.max-public-key-size", std::uint64_t{4097}},
+      std::pair{"identify.max-signed-peer-record-size", std::uint64_t{8191}},
+      std::pair{"identify.max-push-operations", std::uint64_t{33}},
+      std::pair{"peer-state.max-peers", std::uint64_t{4097}},
+      std::pair{"peer-state.max-rendezvous", std::uint64_t{16385}},
+      std::pair{"peer-state.max-pending", std::uint64_t{4097}},
+      std::pair{"peer-state.max-endpoints-per-peer", std::uint64_t{65}},
+      std::pair{"peer-state.max-protocols-per-peer", std::uint64_t{129}},
+      std::pair{"peer-state.max-relay-reservations-per-peer", std::uint64_t{65}},
+      std::pair{"peer-state.max-relay-endpoints-per-reservation", std::uint64_t{17}},
+      std::pair{"peer-state.max-peer-record-bytes", std::uint64_t{1048577}},
+      std::pair{"peer-state.hydration-page-limit", std::uint64_t{257}},
+      std::pair{"peer-state.prune-page-limit", std::uint64_t{257}},
+      std::pair{"peer-state.max-persistence-waiters", std::uint64_t{257}},
+   };
+   for (const auto& [path, number] : updates) {
+      BOOST_TEST_CONTEXT(path) {
+         f.document = running;
+         f.document.set(std::string{section} + "." + path, number);
+         BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+      }
+   }
+   for (const auto* path : {"identify.protocol-version", "identify.agent-version"}) {
+      f.document = running;
+      f.document.set(std::string{section} + "." + path, "new-version");
+      BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_host_config_peer_state_capacity_and_diagnostics_only_updates_remain_independent) {
+   fixture server;
+   server.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
+   server.document.set(std::string{section} + ".peer-state.max-peers", std::uint64_t{2});
+   server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{1});
+   server.configure(); server.start();
+   const auto endpoint = server.host->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   auto clients = std::vector<std::unique_ptr<fixture>>{};
+   for (auto index = 0; index != 3; ++index) {
+      auto client = std::make_unique<fixture>();
+      client->start();
+      const auto connected = client->run(client->host->connect(*endpoint,
+          {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+           .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+      BOOST_REQUIRE(connected.identify_state == p2p::identify::state::identified);
+      clients.push_back(std::move(client));
+   }
+   BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 3)));
+   BOOST_REQUIRE_EQUAL(server.diagnostics->snapshot({.max_peers = 16}).peers.size(), 2U);
+   BOOST_REQUIRE_EQUAL(server.diagnostics->snapshot().peers.size(), 1U);
+   const auto running = server.document;
+   server.document.set(std::string{section} + ".peer-state.max-peers", std::uint64_t{3});
+   server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
+   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
+   BOOST_TEST(server.diagnostics->snapshot({.max_peers = 16}).peers.size() == 2U);
+   server.document = running;
+   server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
+   BOOST_CHECK_NO_THROW(server.configure());
+   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_host_config_connection_watermark_prunes_unprotected_sessions_with_zero_grace) {
+   fixture server;
+   server.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
+   server.document.set(std::string{section} + ".max-sessions", std::uint64_t{3});
+   server.document.set(std::string{section} + ".connections.session-low-watermark", std::uint64_t{1});
+   server.document.set(std::string{section} + ".connections.session-grace-period-ms", std::uint64_t{0});
+   server.document.set(std::string{section} + ".connections.session-prune-silence-ms", std::uint64_t{1});
+   server.configure(); server.start();
+   const auto endpoint = server.host->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   auto clients = std::vector<std::unique_ptr<fixture>>{};
+   auto protection = np::peer_contribution{};
+   for (auto index = 0; index != 3; ++index) {
+      auto client = std::make_unique<fixture>();
+      client->start();
+      const auto connected = client->run(client->host->connect(*endpoint,
+          {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+           .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+      BOOST_REQUIRE(connected.identify_state == p2p::identify::state::identified);
+      if (index == 0) { protection = server.host->protect_peer(client->host->local_peer()); }
+      clients.push_back(std::move(client));
+   }
+   BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 3)));
+   const auto before = server.diagnostics->snapshot();
+   BOOST_REQUIRE_EQUAL(before.connections.active_sessions, 3U);
+   BOOST_REQUIRE(server.host->is_peer_protected(clients.front()->host->local_peer()));
+   fixture newcomer;
+   newcomer.start();
+   const auto connected = newcomer.run(newcomer.host->connect(*endpoint,
+       {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+   BOOST_REQUIRE(connected.identify_state == p2p::identify::state::identified);
+   BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 2)));
+   const auto after = server.diagnostics->snapshot();
+   BOOST_TEST(after.metrics.sessions_pruned == before.metrics.sessions_pruned + 2);
+   BOOST_TEST(after.connections.active_sessions == 2U);
+   BOOST_TEST(server.host->is_peer_protected(clients.front()->host->local_peer()));
+   for (const auto& session : after.sessions) {
+      BOOST_CHECK(session.remote_peer == clients.front()->host->local_peer() ||
+                  session.remote_peer == newcomer.host->local_peer());
+   }
+   for (auto index = 1U; index != clients.size(); ++index) {
+      BOOST_CHECK(std::ranges::none_of(after.sessions, [&](const auto& session) {
+         return session.remote_peer == clients[index]->host->local_peer();
+      }));
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_host_config_peer_state_protocol_bound_rejects_identify_without_committing_oversized_state) {
+   fixture server;
+   server.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
+   server.configure(); server.start();
+   const auto endpoint = server.host->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   fixture client;
+   client.document.set(std::string{section} + ".peer-state.max-protocols-per-peer", std::uint64_t{1});
+   client.configure(); client.start();
+   const auto connected = client.run(client.host->connect(*endpoint,
+       {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+   BOOST_CHECK(connected.identify_state == p2p::identify::state::failed);
+   const auto state = client.diagnostics->snapshot({.max_peers = 16});
+   BOOST_REQUIRE(std::ranges::any_of(state.sessions, [&](const auto& session) {
+      return session.id == connected.id && session.authentication == p2p::peer_authentication::libp2p_tls &&
+          session.identify_state == p2p::identify::state::failed && !session.identify_error.empty();
+   }));
+   for (const auto& peer : state.peers) { BOOST_TEST(peer.protocols.size() <= 1U); }
 }

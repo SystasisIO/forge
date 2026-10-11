@@ -191,8 +191,8 @@ void register_p2p(forge::app::plugin_registry& registry,
        .id = {.value = "forge.plugins.crypto.secrets"},
        .factory = [identity = std::move(identity)] { return std::make_unique<secrets_plugin>(identity); },
    });
-   registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
-   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
 }
 
 class publisher_plugin final : public forge::app::plugin {
