@@ -8,6 +8,8 @@ module;
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -54,12 +56,17 @@ import forge.api.p2p.binding;
 import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.host_event_source;
+import forge.net.p2p.host_event;
+import forge.net.p2p.host_event_subscription;
 import forge.plugins.net.p2p.diagnostics.api;
+import forge.plugins.net.p2p.diagnostics.events_api;
 import forge.plugins.net.p2p.diagnostics.exceptions;
 import forge.plugins.net.p2p.diagnostics.types;
 
 #include "details/config.hxx"
 #include "details/api_impl.hxx"
+#include "details/events_api_impl.hxx"
 #include "details/plugin_impl.hxx"
 
 namespace forge::plugins::net::p2p::diagnostics {
@@ -82,22 +89,37 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
 boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
    auto config = decode_config(view);
    validate_config(config);
-   impl_->settings = std::move(config);
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      impl_->settings = std::move(config);
+   }
    co_return;
 }
 
 boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
+   provider.install<events_api>(std::make_shared<events_api_impl>(impl_));
    co_return;
 }
 
 boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
-   impl_->source = context.apis()
+   auto source = context.apis()
                       .get<forge::plugins::net::p2p::node::diagnostics_source>(
                          {.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2, .min_revision = 0})
                       .shared();
-   impl_->initialized = true;
-   impl_->stopping = false;
+   auto events_source = context.apis()
+                            .get<forge::plugins::net::p2p::node::host_event_source>(
+                               {.id = {"forge.plugins.net.p2p.node.host_event_source"}, .major = 1, .min_revision = 0})
+                            .shared();
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      if (impl_->stopping) {
+         FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P diagnostics initialization canceled");
+      }
+      impl_->source.swap(source);
+      impl_->events_source.swap(events_source);
+      impl_->initialized = true;
+   }
    co_return;
 }
 
@@ -106,13 +128,20 @@ boost::asio::awaitable<void> plugin::startup() {
 }
 
 void plugin::request_stop() noexcept {
+   const auto lock = std::scoped_lock{impl_->mutex};
    impl_->stopping = true;
 }
 
 boost::asio::awaitable<void> plugin::shutdown() {
-   impl_->stopping = true;
-   impl_->initialized = false;
-   impl_->source = nullptr;
+   auto source = std::shared_ptr<forge::plugins::net::p2p::node::diagnostics_source>{};
+   auto events_source = std::shared_ptr<forge::plugins::net::p2p::node::host_event_source>{};
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      impl_->stopping = true;
+      impl_->initialized = false;
+      impl_->source.swap(source);
+      impl_->events_source.swap(events_source);
+   }
    co_return;
 }
 

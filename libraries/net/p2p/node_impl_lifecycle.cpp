@@ -357,7 +357,12 @@ boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
    start_topology_manager();
    start_reachability();
    start_autorelay();
-   lifecycle.set_phase(lifecycle_phase::maintenance);
+   {
+      const auto lock = std::scoped_lock{mutex};
+      lifecycle.set_phase(lifecycle_phase::maintenance);
+      refresh_reachability_locked();
+   }
+   publish_host_state({});
    bootstrap->start_maintenance(lifecycle);
    co_return lifecycle_status{
        .phase = lifecycle_phase::maintenance,

@@ -1,10 +1,12 @@
 module;
 
 #include <boost/test/unit_test.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/asio/use_future.hpp>
 #include <future>
 #include <thread>
 #include "libp2p_identity_fixture.hxx"
+#include "../fixtures/local_dns_server.hxx"
 
 #include <forge/exceptions/macros.hpp>
 
@@ -19,6 +21,7 @@ module;
 #include <deque>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -87,6 +90,7 @@ import forge.net.p2p.rendezvous;
 import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
+import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.net.transport.exceptions;
 import forge.net.transport.session;
@@ -113,6 +117,20 @@ import forge.net.yamux.session;
 
 namespace forge::net::p2p {
 namespace {
+
+std::optional<forge::tests::dns::bytes> direct_root_dns_response(const std::uint8_t* request, std::size_t size) {
+   const auto question = forge::tests::dns::parse_question(request, size);
+   if (!question) {
+      return std::nullopt;
+   }
+   if (question->name != "direct-root.test") {
+      return forge::tests::dns::make_failure_response(request, *question, 3);
+   }
+   const auto answers = question->type == 1
+                            ? std::vector<forge::tests::dns::response_answer>{{.type = 1, .value = {127, 0, 0, 1}}}
+                            : std::vector<forge::tests::dns::response_answer>{};
+   return forge::tests::dns::make_response(request, *question, answers);
+}
 
 enum class terminal_close { success, canceled, closed, internal, io_failure };
 
@@ -440,6 +458,68 @@ struct node_session_fixture {
       co_return detail::reachability_manager::probe_result{
           .result = {.value = reachability::state::publicly_reachable, .observed = addresses.front()},
           .verified_dialback = true, .internet_scope = true};
+   }
+
+   static void startup_publishes_maintenance_without_background_refresh() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = passive_reachability_options("startup-host-phase");
+      options.limits.topology.operating_mode = topology::mode::static_only;
+      options.relay_policy.auto_discovery_enabled = false;
+      auto owner = node{runtime, std::move(options)};
+      const auto self = owner.impl_;
+      auto stopped = false;
+      const auto stop = [&] {
+         if (stopped) { return; }
+         auto joined = boost::asio::co_spawn(runtime.context(), owner.async_stop(), boost::asio::use_future);
+         if (joined.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+            std::cerr << "startup host-phase fixture cleanup did not join\n";
+            std::terminate();
+         }
+         stopped = true;
+         joined.get();
+      };
+      auto cleanup = boost::scope::scope_exit{[&] {
+         try { stop(); }
+         catch (const std::exception& error) { BOOST_ERROR("startup host-phase cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("startup host-phase cleanup failed with a non-standard exception"); }
+      }};
+      const auto weak = std::weak_ptr<node::impl>{self};
+      self->reachability_manager_value = std::make_shared<detail::reachability_manager>(
+          runtime.context().get_executor(), self->options.reachability_policy,
+          detail::reachability_manager::callbacks{
+              .observers = [] { return std::vector<detail::reachability_manager::observer>{}; },
+              // Background callbacks cannot repair a missing startup publication.
+              .candidates = [weak] { return weak.lock()->reachability_manager_value->candidates(); },
+              .exchange = [](detail::reachability_manager::observer, bool, std::vector<endpoint>,
+                              std::shared_ptr<cancellation_latch>)
+                  -> boost::asio::awaitable<detail::reachability_manager::probe_result> {
+                 FORGE_THROW_EXCEPTION(exceptions::internal, "idle startup must not launch a reachability probe");
+                 co_return detail::reachability_manager::probe_result{};
+              },
+              .changed = [](host_event) {},
+              .finished = [weak] { if (const auto value = weak.lock()) { value->finish_reachability(); } },
+          });
+      const auto before = owner.reachability_status();
+      const auto started = bounded_result(runtime, owner.async_start());
+      BOOST_CHECK(started.phase == lifecycle_phase::maintenance);
+      BOOST_CHECK(owner.lifecycle_state().phase == lifecycle_phase::maintenance);
+      const auto current = owner.reachability_status();
+      BOOST_CHECK(current.phase == lifecycle_phase::maintenance);
+      BOOST_TEST(current.generation > before.generation);
+      BOOST_CHECK(current.effective == reachability::state::unknown);
+      BOOST_TEST(current.confirmed_addresses.empty());
+
+      auto subscription = owner.host_events();
+      const auto initial = bounded_result(runtime, subscription.async_read());
+      BOOST_REQUIRE(initial);
+      BOOST_CHECK(initial->phase == lifecycle_phase::maintenance);
+      BOOST_TEST(initial->generation == current.generation);
+      BOOST_CHECK(initial->effective == current.effective);
+      BOOST_TEST(initial->confirmed_addresses.empty());
+      BOOST_TEST(owner.metrics().path_direct_attempts == 0U);
+      BOOST_TEST(self->reachability_manager_value->stats().probe_errors == 0U);
+      stop();
+      BOOST_TEST(!bounded_result(runtime, subscription.async_read()).has_value());
    }
 
    static void getter_and_subscription_share_published_snapshot() {
@@ -1724,14 +1804,32 @@ struct node_session_fixture {
    }
 
    static void mixed_duplicate_and_dns_coalesced_roots_persist_any_persistent_input() {
+      auto dns_server = forge::tests::dns::local_dns_server{direct_root_dns_response};
+      auto dns_cleanup = boost::scope::scope_exit{[&] {
+         try { dns_server.close(); }
+         catch (const std::exception& error) { BOOST_ERROR("mixed direct-root DNS cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("mixed direct-root DNS cleanup failed with a non-standard exception"); }
+      }};
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-      auto server = node{runtime, fixture_options("mixed-root-server")};
-      auto client = node{runtime, fixture_options("mixed-root-client")};
+      auto server_options = fixture_options("mixed-root-server");
+      auto client_options = fixture_options("mixed-root-client");
+      server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+      client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
+      auto server = node{runtime, std::move(server_options)};
+      auto client = node{runtime, std::move(client_options)};
       const auto self = client.impl_;
       auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
          for (auto* owner : {&client, &server}) {
-            try { bounded_result(runtime, owner->async_stop()); }
-            catch (...) { BOOST_ERROR("mixed direct-root fixture cleanup failed"); }
+            try {
+               auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+               if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                  std::cerr << "mixed direct-root fixture cleanup did not join\n";
+                  std::terminate();
+               }
+               stopped.get();
+            }
+            catch (const std::exception& error) { BOOST_ERROR("mixed direct-root fixture cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("mixed direct-root fixture cleanup failed with a non-standard exception"); }
          }
       }};
       bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
@@ -1739,7 +1837,7 @@ struct node_session_fixture {
       BOOST_REQUIRE(listening);
       const auto literal = listening->to_multiaddr();
       const auto dns = forge::multiformats::multiaddr::parse(
-          "/dns4/localhost/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
+          "/dns4/direct-root.test/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
       // The DNS and literal roots resolve to one local concrete dial. Only the
       // canonical root with a persistent input may reach the peer store.
       const auto session = bounded_result(
@@ -1773,14 +1871,32 @@ struct node_session_fixture {
    }
 
    static void persistent_dns_root_owns_coalesced_direct_winner() {
+      auto dns_server = forge::tests::dns::local_dns_server{direct_root_dns_response};
+      auto dns_cleanup = boost::scope::scope_exit{[&] {
+         try { dns_server.close(); }
+         catch (const std::exception& error) { BOOST_ERROR("persistent DNS root cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("persistent DNS root cleanup failed with a non-standard exception"); }
+      }};
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-      auto server = node{runtime, fixture_options("persistent-dns-root-server")};
-      auto client = node{runtime, fixture_options("persistent-dns-root-client")};
+      auto server_options = fixture_options("persistent-dns-root-server");
+      auto client_options = fixture_options("persistent-dns-root-client");
+      server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+      client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
+      auto server = node{runtime, std::move(server_options)};
+      auto client = node{runtime, std::move(client_options)};
       const auto self = client.impl_;
       auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
          for (auto* owner : {&client, &server}) {
-            try { bounded_result(runtime, owner->async_stop()); }
-            catch (...) { BOOST_ERROR("persistent DNS root fixture cleanup failed"); }
+            try {
+               auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+               if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                  std::cerr << "persistent DNS root fixture cleanup did not join\n";
+                  std::terminate();
+               }
+               stopped.get();
+            }
+            catch (const std::exception& error) { BOOST_ERROR("persistent DNS root fixture cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("persistent DNS root fixture cleanup failed with a non-standard exception"); }
          }
       }};
       bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
@@ -1789,7 +1905,7 @@ struct node_session_fixture {
       const auto literal = listening->to_multiaddr();
       server.set_advertised_endpoints({parse_endpoint(literal.to_string())});
       const auto dns = forge::multiformats::multiaddr::parse(
-          "/dns4/localhost/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
+          "/dns4/direct-root.test/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
       const auto session = bounded_result(
           runtime,
           self->connect_direct(
@@ -2196,6 +2312,10 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_v1_v2_local_upgraded_gater_refusal_is_not_negat
 
 BOOST_AUTO_TEST_CASE(p2p_reachability_getter_and_subscription_share_snapshot_across_held_publish_and_ttl) {
    node_session_fixture::getter_and_subscription_share_published_snapshot();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_startup_publishes_maintenance_without_background_refresh) {
+   node_session_fixture::startup_publishes_maintenance_without_background_refresh();
 }
 
 } // namespace forge::net::p2p

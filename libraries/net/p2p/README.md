@@ -240,6 +240,29 @@ The returned `partial_topic` is a non-owning registration token. It binds
 `async_forget_partial` and scoped unsubscribe to the same node/topic generation.
 Copying or destroying it does not unsubscribe. Replacement invalidates the old
 token, preventing a delayed callback from changing the replacement's state.
+Token equality compares owner identity, topic and generation even after owner
+expiry; equal tokens do not imply a live or usable registration.
+
+`async_disable_partial(token)` retires that exact Partial registration and its
+advertised groups while preserving the full handler, mesh and message state.
+It publishes a full-only subscription update, not PRUNE or a global extension
+disable. Stale, foreign, default and repeated tokens are rejected. Already
+admitted callbacks keep their byte/busy accounting until they finish; the call
+requests their stop but does not join them or prove remote receipt. Cancellation
+before local commit makes no change; an error or cancellation after commit does
+not restore the registration. A replacement committed while an update waits
+uses the existing current-subscription snapshot refresh.
+Peer-local send failures do not prevent attempts to update the remaining
+candidates; the first such error is reported after those attempts. Caller or
+node cancellation stops and joins the owned send operation instead. Retiring
+the Partial registration does not cancel its independent full-only update.
+
+Full-topic `async_unsubscribe(topic)` remains idempotent after node admission
+closes: it removes local handlers and partial registrations without sending
+network updates. Token-scoped partial unsubscribe still rejects a stopped
+owner. Unsubscribe does not join callbacks already admitted; `async_stop()`
+owns that join. Release callback captures and invoke stop callbacks outside
+node locks.
 
 The application owns group IDs, part encoding, authenticity checks, metadata
 replacement and reconstruction. A group ID must be usable before the full

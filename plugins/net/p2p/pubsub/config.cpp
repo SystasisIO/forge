@@ -64,10 +64,15 @@ config decode_config(const forge::config::core::component_view& view) {
 void validate_config(const config& value) {
    validate_topic_list(value.allowed_topics, "allowed-topics");
    validate_topic_list(value.denied_topics, "denied-topics");
+   forge::net::p2p::pubsub::validate(core_options_for(value));
 }
 
 forge::net::p2p::pubsub::options core_options_for(const config& settings) {
    auto out = forge::net::p2p::pubsub::options{};
+   if (settings.partial_messages) {
+      out.preferred = forge::net::p2p::pubsub::version::v1_3;
+      out.partial_messages = true;
+   }
    out.signatures =
       settings.sign_publishes ? forge::net::p2p::pubsub::signature_policy::strict_sign
                               : forge::net::p2p::pubsub::signature_policy::lax_no_sign;

@@ -25,12 +25,15 @@ bounded snapshots of network state without depending on private node internals.
 - Main API id: `forge.plugins.net.p2p.diagnostics`
 - Plugin version: `2.0.0`
 - Main API contract: `2.0`
+- Events API: `forge.plugins.net.p2p.diagnostics.events` (contract `1.0`, local only)
 - Node diagnostics source dependency: `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
+- Node events source dependency: `forge.plugins.net.p2p.node.host_event_source` (contract `1.0`)
 - Config section: `plugins.net.p2p.diagnostics`
 - Depends on plugin id: `forge.plugins.net.p2p.node`
 - Public modules:
   - `forge.plugins.net.p2p.diagnostics.plugin`
   - `forge.plugins.net.p2p.diagnostics.api`
+  - `forge.plugins.net.p2p.diagnostics.events_api`
   - `forge.plugins.net.p2p.diagnostics.types`
   - `forge.plugins.net.p2p.diagnostics.exceptions`
 
@@ -40,6 +43,7 @@ bounded snapshots of network state without depending on private node internals.
 - Resource-manager snapshot reads.
 - Pubsub snapshot reads when pubsub is enabled.
 - Peer listing and single-peer lookup with bounded limits.
+- Native host-state reads and subscriptions, including reachability and confirmed addresses.
 
 It is read-only. It does not add HTTP endpoints, logging sinks or product health
 semantics by itself.
@@ -86,6 +90,32 @@ auto peers = diagnostics->peers({.only_connected = true, .limit = 100});
 registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
 registry.register_plugin(forge::plugins::net::p2p::diagnostics::descriptor());
 ```
+
+### Observe Host State
+
+```cpp
+import forge.plugins.net.p2p.diagnostics.events_api;
+
+auto events = context.apis().get<forge::plugins::net::p2p::diagnostics::events_api>(
+   {.id = {"forge.plugins.net.p2p.diagnostics.events"}, .major = 1});
+auto subscription = events->host_events();
+while (auto state = co_await subscription.async_read()) {
+   // Each value is a complete native snapshot, not a delta.
+   consume_host_state(*state);
+}
+```
+
+The first value is the native initial snapshot. Later state changes may coalesce;
+preserve `generation` and `resync_required` rather than interpreting this as an
+unbounded event log. Each subscription permits one pending reader. Canceling a
+read does not close the subscription; `close()` closes that subscription only.
+
+New event operations are rejected after diagnostics `request_stop()`. Issued
+subscriptions retain their native lifetime independently of the API handle or
+diagnostics plugin, and end when the shared node stops. Diagnostics does not add
+a queue or promise to drain a previously admitted source callback at shutdown.
+Existing snapshot API 2.0 remains readable until diagnostics shutdown releases
+its source. All source calls execute outside the diagnostics mutex.
 
 ## Migration From 1.x
 

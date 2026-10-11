@@ -6,6 +6,7 @@ module;
 #include <optional>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 export module forge.plugins.net.p2p.node.api;
 
@@ -81,6 +82,18 @@ class pubsub_source : public forge::api::core::contract<pubsub_source> {
    virtual boost::asio::awaitable<forge::net::p2p::pubsub::subscription>
    async_join_topic(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler handler) = 0;
    virtual boost::asio::awaitable<void> async_leave_topic(forge::net::p2p::pubsub::topic subject) = 0;
+   virtual boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic>
+   async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler full_fallback,
+                        forge::net::p2p::pubsub::partial_options options) = 0;
+   virtual boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) = 0;
+   virtual boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token,
+                                                               std::vector<std::uint8_t> group) = 0;
+   virtual boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token,
+                                                            std::vector<std::uint8_t> group) = 0;
+   virtual boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>>
+   async_partial_peers(forge::net::p2p::pubsub::partial_topic token) = 0;
+   virtual boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token,
+       forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop = {}) = 0;
    [[nodiscard]] virtual forge::net::p2p::pubsub::snapshot snapshot() const = 0;
 };
 
@@ -90,4 +103,4 @@ FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forg
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::diagnostics_source,
                  FORGE_API_CONTRACT("forge.plugins.net.p2p.node.diagnostics_source", 2, 0))
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::pubsub_source,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.pubsub_source", 1, 0))
+                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.pubsub_source", 2, 0))

@@ -52,6 +52,8 @@ class pubsub_partial {
    [[nodiscard]] std::shared_ptr<registration> require(const pubsub::partial_topic& token) const;
    [[nodiscard]] bool current(const pubsub::partial_topic& token) const noexcept;
    [[nodiscard]] std::shared_ptr<registration> close(const pubsub::topic& subject);
+   // Validates and removes exactly this owner/topic/generation in one registry transaction.
+   [[nodiscard]] std::shared_ptr<registration> close(const pubsub::partial_topic& token);
    void stop() noexcept;
    void advertise(const pubsub::partial_topic& token, std::vector<std::uint8_t> group, const pubsub::limits& limits);
    void forget(const pubsub::partial_topic& token, const std::vector<std::uint8_t>& group);

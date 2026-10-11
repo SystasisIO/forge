@@ -78,7 +78,9 @@ class plugin final : public forge::app::plugin {
  private:
    struct impl;
    class api_impl;
+   class dht_api_impl;
    class diagnostics_source_adapter;
+   class host_event_source_adapter;
    class pubsub_source_adapter;
 
    friend void apply_config(impl&, const config&);

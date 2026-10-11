@@ -35,6 +35,7 @@ import forge.exceptions;
 import forge.net.p2p.diagnostics;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
@@ -134,6 +135,17 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::require_node() const {
       FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P node plugin is not initialized");
    }
    return current;
+}
+
+std::shared_ptr<forge::net::p2p::node> plugin::impl::require_running_node() const {
+   const auto started = is_started();
+   if (stop_requested.load(std::memory_order_acquire)) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P node plugin admission is closed");
+   }
+   if (!started) {
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P node plugin is not running");
+   }
+   return require_node();
 }
 
 void plugin::impl::add_route(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) {
