@@ -5,6 +5,9 @@ module;
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/describe.hpp>
 #include <boost/scope/scope_exit.hpp>
 
@@ -82,6 +85,7 @@ import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
+import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.host_event_source;
@@ -99,6 +103,7 @@ import forge.plugins.db.store.api;
 #include "details/config.hxx"
 #include "details/api_impl.hxx"
 #include "details/dht_api_impl.hxx"
+#include "details/configuration_api_impl.hxx"
 #include "details/protocol_api_impl.hxx"
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
@@ -152,6 +157,7 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
 boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    provider.install<dht_api>(std::make_shared<dht_api_impl>(impl_));
+   provider.install<configuration_api>(std::make_shared<configuration_api_impl>(impl_));
    provider.install<protocol_api>(std::make_shared<protocol_api_impl>(impl_));
    provider.install<diagnostics_source>(std::make_shared<diagnostics_source_adapter>(impl_));
    provider.install<host_event_source>(std::make_shared<host_event_source_adapter>(impl_));
@@ -160,54 +166,91 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
 }
 
 boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
-   impl_->runtime = &context.scheduler().runtime_context();
-   detail::bind_protocol_registry_executor(
-      impl_->protocols, impl_->runtime->context().get_executor());
-   if (!impl_->peer_store_name.empty()) {
-      impl_->stores =
-          context.apis()
-              .get<forge::plugins::db::store::api>({.id = {"forge.plugins.db.store"}, .major = 2, .min_revision = 0})
-              .operator->();
+   const auto previous = impl_->configuration_candidate_base();
+   auto* runtime = &context.scheduler().runtime_context();
+   auto* stores = static_cast<forge::plugins::db::store::api*>(nullptr);
+   auto* secrets = static_cast<forge::plugins::crypto::secrets::api*>(nullptr);
+   if (!previous->peer_store_name.empty()) {
+      stores = context.apis()
+                   .get<forge::plugins::db::store::api>({.id = {"forge.plugins.db.store"}, .major = 2, .min_revision = 0})
+                   .operator->();
    }
-   if (!impl_->certificate_secret.empty()) {
-      impl_->secrets = context.apis()
-                           .get<forge::plugins::crypto::secrets::api>(
-                               {.id = {"forge.plugins.crypto.secrets"}, .major = 1, .min_revision = 0})
-                           .operator->();
+   if (!previous->certificate_secret.empty()) {
+      secrets = context.apis()
+                    .get<forge::plugins::crypto::secrets::api>(
+                        {.id = {"forge.plugins.crypto.secrets"}, .major = 1, .min_revision = 0})
+                    .operator->();
+   }
+   {
+      const auto lock = std::scoped_lock{impl_->configuration_mutex};
+      if (impl_->configuration != previous || impl_->providers_bound ||
+          impl_->stop_requested.load(std::memory_order_acquire) ||
+          impl_->phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration changed during dependency binding");
+      }
+      detail::bind_protocol_registry_executor(impl_->protocols, runtime->context().get_executor());
+      impl_->runtime = runtime;
+      impl_->stores = stores;
+      impl_->secrets = secrets;
+      impl_->providers_bound = true;
    }
    co_return;
 }
 
 boost::asio::awaitable<void> plugin::after_initialize() {
-   if (impl_->peer_store_name.empty()) {
-      if (!impl_->options.allow_insecure_test_mode) {
+   const auto state = impl_;
+   auto active = false;
+   auto joined = boost::scope::scope_exit{[&] { if (active) { state->finish_setup(); } }};
+   const auto previous = state->configuration_candidate_base();
+   auto name = previous->peer_store_name;
+   {
+      const auto lock = std::scoped_lock{state->configuration_mutex};
+      if (state->configuration != previous || !state->providers_bound || state->bound_peer_store_name ||
+          state->stop_requested.load(std::memory_order_acquire) ||
+          state->phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P peer store binding changed or is frozen");
+      }
+      state->bound_peer_store_name.emplace(std::move(name));
+      ++state->setup_operations;
+      active = true;
+   }
+   if (previous->peer_store_name.empty()) {
+      if (!previous->options.allow_insecure_test_mode) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P peer store is not configured");
       }
       co_return;
    }
-   impl_->peer_state_store =
-       std::make_shared<forge::plugins::db::store::store_handle>(co_await impl_->stores->store(impl_->peer_store_name));
-   detail::p2p_state_schema::register_objects(*impl_->peer_state_store);
+   auto store = std::make_shared<forge::plugins::db::store::store_handle>(
+       co_await state->stores->store(previous->peer_store_name));
+   detail::p2p_state_schema::register_objects(*store);
+   state->peer_state_store = std::move(store);
 }
 
 boost::asio::awaitable<void> plugin::startup() {
-   if (!impl_->begin_startup()) {
-      co_return;
-   }
-   auto private_key_cleanup = boost::scope::scope_exit{[this] { clear_text(impl_->options.private_key_pem); }};
-   if (!impl_->certificate_secret.empty()) {
-      auto certificate = co_await impl_->secrets->get_bytes(
-          {.secret_id = impl_->certificate_secret, .purpose = "p2p.identity.certificate"});
+   const auto state = impl_;
+   auto active = false;
+   auto joined = boost::scope::scope_exit{[&] { if (active) { state->finish_setup(); } }};
+   auto options = forge::net::p2p::node::options{};
+   auto frozen = std::shared_ptr<const detail::configuration_snapshot>{};
+   if (!state->begin_startup(options, frozen)) { co_return; }
+   active = true;
+   auto private_key_cleanup = boost::scope::scope_exit{[&] {
+      clear_text(options.certificate_pem);
+      clear_text(options.private_key_pem);
+   }};
+   if (!frozen->certificate_secret.empty()) {
+      auto certificate = co_await state->secrets->get_bytes(
+          {.secret_id = frozen->certificate_secret, .purpose = "p2p.identity.certificate"});
       try {
-         auto private_key = co_await impl_->secrets->get_bytes(
-             {.secret_id = impl_->private_key_secret, .purpose = "p2p.identity.private-key"});
+         auto private_key = co_await state->secrets->get_bytes(
+             {.secret_id = frozen->private_key_secret, .purpose = "p2p.identity.private-key"});
          try {
-            impl_->options.certificate_pem = secret_text(certificate.bytes);
-            impl_->options.private_key_pem = secret_text(private_key.bytes);
+            options.certificate_pem = secret_text(certificate.bytes);
+            options.private_key_pem = secret_text(private_key.bytes);
          } catch (...) {
             clear_bytes(private_key.bytes);
-            clear_text(impl_->options.certificate_pem);
-            clear_text(impl_->options.private_key_pem);
+            clear_text(options.certificate_pem);
+            clear_text(options.private_key_pem);
             throw;
          }
       } catch (...) {
@@ -215,29 +258,29 @@ boost::asio::awaitable<void> plugin::startup() {
          throw;
       }
    }
-   if (impl_->peer_state_store) {
-      impl_->peer_state = co_await object_peer_state_adapter::async_open(
-          impl_->stores, *impl_->peer_state_store, impl_->options.peer_state, impl_->reset_incompatible_peer_state);
-      impl_->options.peer_state.persistence = impl_->peer_state;
+   if (state->peer_state_store) {
+      state->peer_state = co_await object_peer_state_adapter::async_open(
+          state->stores, *state->peer_state_store, options.peer_state, frozen->reset_incompatible_peer_state);
+      options.peer_state.persistence = state->peer_state;
 
       auto open_failure = std::exception_ptr{};
       try {
-         for (const auto& profile : impl_->options.dht_profiles) {
+         for (const auto& profile : options.dht_profiles) {
             auto persistence = co_await object_dht_record_store_adapter::async_open(
-                impl_->stores, *impl_->peer_state_store, profile.protocol,
+                state->stores, *state->peer_state_store, profile.protocol,
                 forge::net::p2p::dht::record_store::options{
                     .max_providers_per_key = profile.limits.replication,
                     .max_record_bytes = profile.limits.max_record_size,
                 });
-            impl_->options.dht_record_persistence.emplace(profile.protocol, persistence);
-            impl_->dht_state.emplace_back(profile.protocol, std::move(persistence));
+            options.dht_record_persistence.emplace(profile.protocol, persistence);
+            state->dht_state.emplace_back(profile.protocol, std::move(persistence));
          }
       } catch (...) {
          open_failure = std::current_exception();
       }
       if (open_failure) {
          auto cleanup_failure = std::exception_ptr{};
-         for (auto& [_, persistence] : impl_->dht_state) {
+         for (auto& [_, persistence] : state->dht_state) {
             try {
                co_await persistence->async_close();
             } catch (...) {
@@ -246,28 +289,28 @@ boost::asio::awaitable<void> plugin::startup() {
                }
             }
          }
-         impl_->dht_state.clear();
-         impl_->options.dht_record_persistence.clear();
+         state->dht_state.clear();
+         options.dht_record_persistence.clear();
          try {
-            co_await impl_->peer_state->async_close();
+            co_await state->peer_state->async_close();
          } catch (...) {
             if (!cleanup_failure) {
                cleanup_failure = std::current_exception();
             }
          }
-         impl_->peer_state.reset();
-         impl_->options.peer_state.persistence.reset();
+         state->peer_state.reset();
+         options.peer_state.persistence.reset();
          static_cast<void>(cleanup_failure);
          std::rethrow_exception(open_failure);
       }
    }
 
-   if (impl_->stop_requested.load(std::memory_order_acquire)) {
+   if (state->stop_requested.load(std::memory_order_acquire)) {
       co_return;
    }
 
-   auto node = impl_->ensure_node();
-   if (impl_->stop_requested.load(std::memory_order_acquire)) {
+   auto node = state->ensure_node(std::move(options));
+   if (state->stop_requested.load(std::memory_order_acquire)) {
       node->stop();
       co_return;
    }
@@ -278,96 +321,103 @@ boost::asio::awaitable<void> plugin::startup() {
       startup_failure = std::current_exception();
    }
    if (startup_failure) {
-      if (!impl_->stop_requested.load(std::memory_order_acquire)) {
+      if (!state->stop_requested.load(std::memory_order_acquire)) {
          std::rethrow_exception(startup_failure);
       }
       co_await node->async_stop();
       co_return;
    }
-   if (impl_->stop_requested.load(std::memory_order_acquire)) {
+   if (state->stop_requested.load(std::memory_order_acquire)) {
       node->request_stop();
       co_await node->async_stop();
       co_return;
    }
-   impl_->mark_started();
+   state->mark_started();
 }
 
 void plugin::request_stop() noexcept {
-   impl_->stop_requested.store(true, std::memory_order_release);
-   impl_->phase.store(lifecycle_phase::stopping, std::memory_order_release);
-   impl_->contributions->close();
-   detail::request_close_protocol_registry(impl_->protocols);
-   if (auto node = impl_->node_snapshot()) {
-      try {
-         node->request_stop();
-      } catch (...) {
-         // shutdown() retries and reports a synchronous initiation failure.
-      }
-   }
+   impl_->request_stop();
 }
 
 boost::asio::awaitable<void> plugin::shutdown() {
-   request_stop();
-   auto failure = std::exception_ptr{};
-   try {
-      co_await detail::async_close_protocol_registry(impl_->protocols);
-   } catch (...) {
-      failure = std::current_exception();
-   }
-   auto node = impl_->node_snapshot();
-   auto peer_state_closed = !node && !impl_->peer_state && impl_->dht_state.empty();
-   if (node) {
-      try {
-         co_await node->async_stop();
-         peer_state_closed = true;
-      } catch (...) {
-         if (!failure) {
-            failure = std::current_exception();
-         }
-      }
-   } else {
-      peer_state_closed = true;
-      for (auto& [_, persistence] : impl_->dht_state) {
-         try {
-            co_await persistence->async_close();
-         } catch (...) {
-            peer_state_closed = false;
-            if (!failure) {
-               failure = std::current_exception();
-            }
-         }
-      }
-      if (impl_->peer_state) {
-         try {
-            co_await impl_->peer_state->async_close();
-         } catch (...) {
-            peer_state_closed = false;
-            if (!failure) {
-               failure = std::current_exception();
-            }
-         }
-      }
-   }
-   if (peer_state_closed) {
-      auto empty = std::shared_ptr<forge::net::p2p::node>{};
-      std::atomic_compare_exchange_strong_explicit(&impl_->node, &node, empty, std::memory_order_acq_rel,
-                                                   std::memory_order_acquire);
-      impl_->peer_state.reset();
-      impl_->options.peer_state.persistence.reset();
-      impl_->dht_state.clear();
-      impl_->options.dht_record_persistence.clear();
-      impl_->peer_state_store.reset();
-      clear_text(impl_->options.certificate_pem);
-      clear_text(impl_->options.private_key_pem);
-      impl_->stores = nullptr;
-      impl_->secrets = nullptr;
-   }
-   if (peer_state_closed) {
-      impl_->mark_stopped();
-   }
-   if (failure) {
-      std::rethrow_exception(failure);
-   }
+   // The child owns cleanup independently of cancellation of its caller. The
+   // explicit argument keeps state alive without a capturing coroutine lambda.
+   co_await boost::asio::co_spawn(
+       co_await boost::asio::this_coro::executor,
+       [](std::shared_ptr<impl> state) -> boost::asio::awaitable<void> {
+          co_await boost::asio::this_coro::throw_if_cancelled(false);
+          co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
+          state->request_stop();
+          // Setup owns every opened adapter until this joined barrier. Capture epoch
+          // before the predicate so completion cannot be lost before wait registration.
+          for (;;) {
+             const auto epoch = state->setup_changed.epoch();
+             {
+                const auto lock = std::scoped_lock{state->configuration_mutex};
+                if (state->setup_operations == 0) {
+                   break;
+                }
+             }
+             co_await state->setup_changed.async_wait(epoch);
+          }
+          auto failure = std::exception_ptr{};
+          try {
+             co_await detail::async_close_protocol_registry(state->protocols);
+          } catch (...) {
+             failure = std::current_exception();
+          }
+          auto node = state->node_snapshot();
+          auto peer_state_closed = !node && !state->peer_state && state->dht_state.empty();
+          if (node) {
+             try {
+                co_await node->async_stop();
+                peer_state_closed = true;
+             } catch (...) {
+                if (!failure) {
+                   failure = std::current_exception();
+                }
+             }
+          } else {
+             peer_state_closed = true;
+             for (auto& [_, persistence] : state->dht_state) {
+                try {
+                   co_await persistence->async_close();
+                } catch (...) {
+                   peer_state_closed = false;
+                   if (!failure) {
+                      failure = std::current_exception();
+                   }
+                }
+             }
+             if (state->peer_state) {
+                try {
+                   co_await state->peer_state->async_close();
+                } catch (...) {
+                   peer_state_closed = false;
+                   if (!failure) {
+                      failure = std::current_exception();
+                   }
+                }
+             }
+          }
+          if (peer_state_closed) {
+             auto empty = std::shared_ptr<forge::net::p2p::node>{};
+             std::atomic_compare_exchange_strong_explicit(&state->node, &node, empty, std::memory_order_acq_rel,
+                                                          std::memory_order_acquire);
+             state->peer_state.reset();
+             state->dht_state.clear();
+             state->peer_state_store.reset();
+             state->stores = nullptr;
+             state->secrets = nullptr;
+          }
+          if (peer_state_closed) {
+             state->mark_stopped();
+          }
+          if (failure) {
+             std::rethrow_exception(failure);
+          }
+       }(impl_),
+       boost::asio::use_awaitable);
 }
 
 forge::app::plugin_descriptor descriptor() {

@@ -47,6 +47,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Plugin version: `7.0.0`
 - Main API contract: `3.0`
 - Extra API ids:
+  - `forge.plugins.net.p2p.node.configuration` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
   - `forge.plugins.net.p2p.node.host_event_source` (contract `1.0`, local only)
@@ -57,6 +58,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
   - `forge.plugins.net.p2p.node.descriptor`
   - `forge.plugins.net.p2p.node.api`
   - `forge.plugins.net.p2p.node.dht_api`
+  - `forge.plugins.net.p2p.node.configuration_api`
   - `forge.plugins.net.p2p.node.host_event_source`
   - `forge.plugins.net.p2p.node.peer_contribution`
   - `forge.plugins.net.p2p.node.types`
@@ -85,6 +87,44 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Provides internal source APIs used by focused diagnostics and pubsub plugins.
 - Delegates native host-state snapshots and subscriptions through
   `host_event_source`; the diagnostics plugin exposes the consumer events API.
+
+### Pre-Startup Contributions
+
+Import `forge.plugins.net.p2p.node.configuration_api` for local composition. The
+API accepts one nonnull native `connection_gater` and one complete
+`std::vector<forge::net::p2p::dht::value_policy>` per configured custom,
+values-enabled DHT profile. Supply application-owned `validate`, `select` and
+`expiry` callbacks with disjoint native key prefixes. Unknown profiles,
+values-disabled profiles and Amino overrides are rejected; duplicate
+contributions and changes after startup or stop are typed conflicts.
+
+Configuration is an immutable policy snapshot, not a native node or a resource
+store. A custom profile declaration may await its C++ contribution, but cannot
+be passed incomplete to the runtime. Startup completes and validates all native
+options before its first await, Secrets reads or P2P persistence transactions.
+Native `validate_declaration(profile)` checks declaration policy only;
+`validate(profile)` still requires every value callback. Neither executes
+application callbacks. No permissive placeholder policies are installed.
+
+Candidate preparation, callback copies and destruction occur outside the
+configuration mutex. Commit compares the previous snapshot and admission again;
+a nested or concurrent update is preserved and the stale update fails. Existing
+protocol tokens and PubSub contributions survive an unrelated policy update.
+Gater callbacks must be nonblocking and thread-safe; callback captures must own
+their consumer state rather than borrow a destroyed application object.
+
+`initialize()` binds available DB Store and Secrets providers exactly once.
+Later pre-start changes cannot introduce an unbound dependency, but references
+to an already bound Secrets provider may change or be cleared. `after_initialize()`
+fixes the exact Store name, including empty, before awaiting its handle; policy
+updates remain allowed. Production startup requires the initialized Store.
+The explicit empty-store test path can start after `initialize()` alone.
+No PEM or opened persistence handle is stored in the policy snapshot.
+
+`request_stop()` closes configuration admission before requesting native stop.
+`shutdown()` joins admitted startup and Store setup before releasing providers
+or adapters, including an outstanding Secrets read. This does not add a second
+runtime or claim that the earlier shared DB driver setup was resource-free.
 
 ### DHT Consumer Contract
 

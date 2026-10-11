@@ -78,7 +78,7 @@ info plugin::api_impl::network_info() const {
 
 forge::api::p2p::publication
 plugin::api_impl::publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol) {
-   return publish_api(std::move(plan), std::move(protocol), impl_->api_options);
+   return publish_api(std::move(plan), std::move(protocol), impl_->configuration_snapshot()->api_options);
 }
 
 forge::api::p2p::publication

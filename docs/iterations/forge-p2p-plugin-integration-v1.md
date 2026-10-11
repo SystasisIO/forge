@@ -415,4 +415,34 @@ gates pass, describe this as test integration with an evolving stack.
   remote, DB Store, PubSub control queue, structure and inventory. Both reviewers
   reported source-clean for this corrected slice. This is not configured-path
   interop or whole-Stage-7 acceptance.
+- Configuration now has immutable snapshots and local `configuration_api` 1.0
+  contributions for a connection gater and complete custom DHT value policies.
+  Declaration validation does not authorize incomplete native startup. Provider
+  binding and the exact Store name freeze independently from pre-start policy
+  changes; candidate copies, callback retirement and native construction stay
+  outside the configuration mutex.
+- Review found two shutdown cancellation gaps: cancellation while waiting for
+  setup, and cancellation from a retiring raw callback before the protected
+  child started. Stop initiation and the joined cleanup now run in one owned,
+  cancellation-isolated child without changing the caller's cancellation
+  policy. Eighteen focused cases passed (81 assertions). Actual native gater
+  rejection and a successful connect/ping control are covered, but the explicit
+  insecure fixture is not identity evidence.
+- The real Secrets/ObjectDB preflight regression passed 19 assertions: missing
+  custom policy causes no Secrets reads or additional adapter transactions,
+  while supplying the complete policy permits real startup. All six plugin,
+  managed-remote, DB Store, native PubSub control-queue, structure and inventory
+  checkpoint suites passed. Both reviewers reported source-clean for this
+  corrected configuration slice, not for the whole PR.
+- Initial configuration test failures remain recorded: a moved-from producer
+  retained a callback capture, and an older test expected custom value policies
+  to fail at configure instead of startup. Both tests now enforce the intended
+  ownership/composition contract. The installed node consumer passed before the
+  final shutdown-callback fix; public package interfaces did not change in that
+  fix. Its inactive 2.5 GB build was removed after the successful run.
+- The combined native QUIC/P2P run failed in two DHT lookup cases. An isolated
+  run passed, but a subsequent repetition failed on iteration five. This is an
+  open acceptance investigation, not a load-only explanation or a suite PASS;
+  no timeout was increased to hide it. Full configuration mapping, PubSub hooks,
+  diagnostics completion and configured-path donor evidence also remain open.
 - Product migration remains out of scope.

@@ -2,6 +2,7 @@
 #include <boost/asio/awaitable.hpp>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -15,6 +16,7 @@ import forge.chrono.timestamp;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.dht;
+import forge.net.p2p.connection_gater;
 import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
 import forge.net.p2p.identity;
@@ -24,6 +26,7 @@ import forge.net.p2p.provider_registration;
 import forge.net.p2p.pubsub;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
+import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.host_event_source;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.plugin;
@@ -55,6 +58,11 @@ static_assert(std::same_as<decltype(std::declval<const node_api&>().is_peer_prot
 static_assert(std::same_as<decltype(std::declval<node_api&>().protect_peer(p2p::peer_id{})), peer_contribution>);
 static_assert(std::same_as<decltype(std::declval<node_api&>().tag_peer(p2p::peer_id{}, std::int64_t{})), peer_contribution>);
 using dht_api = forge::plugins::net::p2p::node::dht_api;
+using configuration_api = forge::plugins::net::p2p::node::configuration_api;
+static_assert(std::same_as<decltype(std::declval<configuration_api&>().set_connection_gater(
+    std::shared_ptr<p2p::connection_gater>{})), void>);
+static_assert(std::same_as<decltype(std::declval<configuration_api&>().set_dht_value_policies(
+    p2p::protocol_id{}, std::vector<p2p::dht::value_policy>{})), void>);
 using host_event_source = forge::plugins::net::p2p::node::host_event_source;
 using pubsub_source = forge::plugins::net::p2p::node::pubsub_source;
 using protocol_api = forge::plugins::net::p2p::node::protocol_api;
@@ -97,6 +105,7 @@ int main() {
    const auto descriptor = forge::plugins::net::p2p::node::descriptor();
    const auto config = forge::plugins::net::p2p::node::config{};
    const auto dht = dht_api::describe();
+   const auto configuration = configuration_api::describe();
    const auto events = host_event_source::describe();
    const auto pubsub = pubsub_source::describe();
    const auto protocol = protocol_api::describe();
@@ -105,6 +114,9 @@ int main() {
                   config.topology_target == 160 && dht.id.value == "forge.plugins.net.p2p.node.dht" &&
                   dht.version.major == 1 && dht.version.revision == 0 &&
                   dht.supported_surfaces == forge::api::core::surface::local && dht.methods.empty() &&
+                  configuration.id.value == "forge.plugins.net.p2p.node.configuration" &&
+                  configuration.version.major == 1 && configuration.version.revision == 0 &&
+                  configuration.supported_surfaces == forge::api::core::surface::local && configuration.methods.empty() &&
                   events.id.value == "forge.plugins.net.p2p.node.host_event_source" &&
                   events.version.major == 1 && events.version.revision == 0 &&
                   events.supported_surfaces == forge::api::core::surface::local && events.methods.empty() &&

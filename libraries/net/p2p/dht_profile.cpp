@@ -215,7 +215,7 @@ dht::profile custom_dht_profile(protocol_id protocol, dht::mode operating_mode, 
    return result;
 }
 
-void validate(const dht::profile& profile) {
+void validate_declaration(const dht::profile& profile) {
    if (profile.protocol.value.empty() || profile.protocol.value.front() != '/') {
       throw_invalid_profile("DHT profile protocol ID must be an absolute multistream protocol");
    }
@@ -274,6 +274,10 @@ void validate(const dht::profile& profile) {
        invalid_provider_lifetime) {
       throw_invalid_profile("DHT profile limits must be positive and alpha must not exceed k");
    }
+}
+
+void validate(const dht::profile& profile) {
+   validate_declaration(profile);
    if (profile.capabilities.values != !profile.value_policies.empty()) {
       throw_invalid_profile("DHT value capability and validator/selector policies must be configured together");
    }

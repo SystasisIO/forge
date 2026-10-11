@@ -154,6 +154,26 @@ No transport negotiation or libp2p wire behavior changes in this refactoring.
 Tests distinguish absent resources, zero-denial resource scopes, legacy
 normalization, callback presence without invocation, and QUIC limit boundaries.
 
+## Configuration Ownership
+
+Local composition installs native gater and DHT value-policy objects. The
+plugin owns an immutable candidate snapshot and freezes complete policy before
+startup I/O, rather than introducing network policy in its adapter. Native DHT
+declaration validation is shared with full validation; only the latter accepts
+a profile for runtime use. Amino policy cannot be replaced by a contribution.
+
+Existing Forge notification epochs provide the sticky setup-completion barrier.
+The node plugin follows the existing PubSub owned-child shutdown pattern, with
+stop initiation itself inside cancellation isolation: retiring application
+callbacks can synchronously cancel the caller. No new scheduler, task tracker
+or wire-level cancellation scheme is introduced. Configuration callback copies
+and destruction occur outside the configuration mutex, and stale candidates
+cannot replace concurrent contributions.
+
+Focused tests exercise real gater delegation and real Secrets/ObjectDB startup
+preflight. Insecure gater control fixtures do not prove identity, and source
+reviews do not replace the still-required configured donor exchanges.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

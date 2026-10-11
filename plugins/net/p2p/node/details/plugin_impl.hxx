@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "config.hxx"
+#include "configuration_snapshot.hxx"
 #include "lifecycle_phase.hxx"
 #include "object_dht_record_store_adapter.hxx"
 #include "protocol_registry.hxx"
@@ -20,23 +21,12 @@ struct plugin::impl {
    impl();
    ~impl();
 
-   forge::net::p2p::node::options options{
-       .allow_insecure_test_mode = false,
-   };
-   forge::api::transport::options api_options{
-       .codec = forge::api::core::codec_id{.value = "forge.raw"},
-       .max_inflight = 64,
-   };
-   parsed_policy policy{};
-   std::string peer_store_name;
-   std::string certificate_secret;
-   std::string private_key_secret;
+   std::shared_ptr<const detail::configuration_snapshot> configuration;
    forge::plugins::db::store::api* stores = nullptr;
    forge::plugins::crypto::secrets::api* secrets = nullptr;
    std::shared_ptr<forge::plugins::db::store::store_handle> peer_state_store;
    std::shared_ptr<forge::net::p2p::peer_store::persistence> peer_state;
    std::vector<std::pair<forge::net::p2p::protocol_id, std::shared_ptr<object_dht_record_store_adapter>>> dht_state;
-   forge::net::p2p::pubsub::options pubsub_options{};
    std::shared_ptr<detail::protocol_registry> protocols;
    std::shared_ptr<detail::peer_contributions> contributions;
    std::shared_ptr<forge::net::p2p::node> node;
@@ -44,14 +34,23 @@ struct plugin::impl {
    std::atomic_bool stop_requested = false;
    std::atomic<lifecycle_phase> phase = lifecycle_phase::idle;
    mutable std::mutex configuration_mutex;
-   bool pubsub_requested = false;
-   bool reset_incompatible_peer_state = true;
+   bool providers_bound = false;
+   std::optional<std::string> bound_peer_store_name;
+   std::size_t setup_operations = 0;
+   forge::asio::notification setup_changed;
 
-   [[nodiscard]] bool begin_startup();
+   [[nodiscard]] std::shared_ptr<const detail::configuration_snapshot> configuration_snapshot() const;
+   [[nodiscard]] std::shared_ptr<const detail::configuration_snapshot> configuration_candidate_base() const;
+   void commit_configuration(std::shared_ptr<const detail::configuration_snapshot> previous,
+                             std::shared_ptr<const detail::configuration_snapshot> candidate);
+   [[nodiscard]] bool begin_startup(forge::net::p2p::node::options& prepared,
+                                    std::shared_ptr<const detail::configuration_snapshot>& frozen);
+   void finish_setup() noexcept;
+   void request_stop() noexcept;
    void mark_started() noexcept;
    void mark_stopped() noexcept;
    [[nodiscard]] bool is_started() const noexcept;
-   [[nodiscard]] std::shared_ptr<forge::net::p2p::node> ensure_node();
+   [[nodiscard]] std::shared_ptr<forge::net::p2p::node> ensure_node(forge::net::p2p::node::options options);
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> node_snapshot() const noexcept;
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> require_node() const;
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> require_running_node() const;

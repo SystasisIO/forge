@@ -28,6 +28,8 @@ import forge.app.plugin_context;
 import forge.app.plugin_registry;
 import forge.config.core.component;
 import forge.net.p2p.node;
+import forge.net.p2p.dht;
+import forge.net.p2p.connection_gater;
 import forge.net.p2p.protocol;
 import forge.plugins.net.p2p.node.types;
 
@@ -56,6 +58,7 @@ class plugin final : public forge::app::plugin {
    struct impl;
    class api_impl;
    class dht_api_impl;
+   class configuration_api_impl;
    class protocol_api_impl;
    class diagnostics_source_adapter;
    class host_event_source_adapter;

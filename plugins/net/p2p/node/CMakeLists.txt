@@ -7,6 +7,8 @@ add_library(
       peer_contribution.cpp
       peer_contributions.cpp
       dht_api_impl.cpp
+      configuration_api_impl.cpp
+      configuration_snapshot.cpp
       api_publication_generation.cpp
       protocol_registration.cpp
       protocol_api_impl.cpp
@@ -18,11 +20,14 @@ add_library(
       plugin_pubsub_source_adapter.cpp
       config.cpp
       plugin_impl.cpp
+      plugin_impl_configuration.cpp
       object_dht_record_store_adapter.cpp
       object_peer_state_adapter.cpp
       p2p_state_schema.cpp
       details/lifecycle_phase.hxx
       details/dht_api_impl.hxx
+      details/configuration_api_impl.hxx
+      details/configuration_snapshot.hxx
       details/object_dht_record_store_adapter.hxx
       details/object_peer_state_adapter.hxx
       details/p2p_state_schema.hxx

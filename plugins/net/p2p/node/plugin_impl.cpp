@@ -62,21 +62,26 @@ import forge.plugins.db.store.api;
 
 namespace forge::plugins::net::p2p::node {
 plugin::impl::impl()
-    : protocols{detail::make_protocol_registry(options.limits.max_protocol_handlers)},
+    : configuration{std::make_shared<const detail::configuration_snapshot>()},
+      protocols{detail::make_protocol_registry(configuration->options.limits.max_protocol_handlers)},
       contributions{std::make_shared<detail::peer_contributions>()} {}
 plugin::impl::~impl() = default;
 
-bool plugin::impl::begin_startup() {
-   auto lock = std::scoped_lock{configuration_mutex};
-   if (stop_requested.load(std::memory_order_acquire)) {
+void plugin::impl::request_stop() noexcept {
+   {
+      const auto lock = std::scoped_lock{configuration_mutex};
+      stop_requested.store(true, std::memory_order_release);
       phase.store(lifecycle_phase::stopping, std::memory_order_release);
-      return false;
    }
-   if (phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
-      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P node startup has already begun");
+   contributions->close();
+   detail::request_close_protocol_registry(protocols);
+   if (auto current = node_snapshot()) {
+      try {
+         current->request_stop();
+      } catch (...) {
+         // Awaited shutdown retries and reports a synchronous initiation failure.
+      }
    }
-   phase.store(lifecycle_phase::starting, std::memory_order_release);
-   return true;
 }
 
 void plugin::impl::mark_started() noexcept {
@@ -93,7 +98,7 @@ bool plugin::impl::is_started() const noexcept {
    return phase.load(std::memory_order_acquire) == lifecycle_phase::started;
 }
 
-std::shared_ptr<forge::net::p2p::node> plugin::impl::ensure_node() {
+std::shared_ptr<forge::net::p2p::node> plugin::impl::ensure_node(forge::net::p2p::node::options options) {
    if (!runtime) {
       FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P node plugin is not initialized");
    }
@@ -105,14 +110,11 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::ensure_node() {
    // begin_startup owns the only construction attempt and freezes contributions.
    // Neither native attachment nor retiring user captures may hold the config lock.
    if (!current) {
-      if (pubsub_requested) {
-         options.capabilities.add(forge::net::p2p::capabilities::pubsub);
-         options.limits.pubsub = pubsub_options;
-      }
-      auto candidate = std::make_shared<forge::net::p2p::node>(*runtime, options);
+      const auto topology = options.limits.topology;
+      auto candidate = std::make_shared<forge::net::p2p::node>(*runtime, std::move(options));
       try {
          detail::attach_protocol_registry(protocols, candidate);
-         contributions->attach(candidate, options.limits.topology);
+         contributions->attach(candidate, topology);
       } catch (...) {
          candidate->stop();
          throw;
@@ -149,21 +151,12 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::require_running_node() cons
    return require_node();
 }
 
-void plugin::impl::enable_pubsub(forge::net::p2p::pubsub::options options_value) {
-   {
-      auto lock = std::scoped_lock{configuration_mutex};
-      if (phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
-         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P PubSub capability must be requested before startup");
-      }
-      std::swap(pubsub_options, options_value);
-      pubsub_requested = true;
-   }
-}
-
 forge::net::p2p::node::open_options plugin::impl::open_options_for(remote_options value) const {
    if (value.open_deadline.count() <= 0) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P remote open deadline must be positive");
    }
+   const auto snapshot = configuration_snapshot();
+   const auto& policy = snapshot->policy;
    return forge::net::p2p::node::open_options{
        .allow_relay = policy.relay_client_enabled && policy.path.allow_relay,
        .timeout = value.open_deadline,
@@ -176,7 +169,7 @@ forge::net::p2p::node::open_options plugin::impl::open_options_for(remote_option
 }
 
 forge::api::transport::options plugin::impl::api_options_for(const remote_options& value) const {
-   auto out = api_options;
+   auto out = configuration_snapshot()->api_options;
    if (value.codec.has_value()) {
       if (value.codec->value.empty()) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P remote API codec override is invalid");

@@ -4,7 +4,9 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <forge/exceptions/macros.hpp>
 #include <forge/db/object/macros.hpp>
@@ -16,9 +18,12 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <future>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -67,6 +72,7 @@ import forge.db.revision.store;
 import forge.db.revision.transaction;
 import forge.db.revision.types;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
 import forge.plugins.crypto.secrets.api;
@@ -78,6 +84,7 @@ import forge.plugins.db.store.exceptions;
 import forge.plugins.db.store.plugin;
 import forge.plugins.db.store.types;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.types;
@@ -201,6 +208,7 @@ struct memory_state {
    std::map<std::string, std::map<forge::db::core::record_key, std::vector<std::byte>, byte_less>> records;
    std::size_t flush_calls = 0;
    std::size_t snapshot_calls = 0;
+   std::size_t transaction_calls = 0;
    std::size_t active_writes = 0;
    bool overlapping_writes = false;
 };
@@ -367,6 +375,10 @@ class memory_driver final : public forge::db::core::driver {
       return state_->snapshot_calls;
    }
 
+   [[nodiscard]] std::size_t transaction_calls() const noexcept {
+      return state_->transaction_calls;
+   }
+
    [[nodiscard]] std::size_t active_writes() const noexcept {
       return state_->active_writes;
    }
@@ -385,6 +397,7 @@ class memory_driver final : public forge::db::core::driver {
 
  private:
    boost::asio::awaitable<std::unique_ptr<forge::db::core::session>> open_transaction() override {
+      ++state_->transaction_calls;
       co_return std::make_unique<memory_session>(state_, true);
    }
 
@@ -400,6 +413,32 @@ class memory_driver final : public forge::db::core::driver {
 
    std::shared_ptr<memory_state> state_ = std::make_shared<memory_state>();
    std::size_t close_calls_ = 0;
+};
+
+// Counts actual reads while retaining the real Secrets plugin's validation and
+// configured PEM results. No fabricated identity or alternative storage path.
+class counted_p2p_secrets final : public crypto_secrets::api {
+ public:
+   explicit counted_p2p_secrets(std::shared_ptr<crypto_secrets::api> source) : source_(std::move(source)) {}
+   std::atomic_uint reads{0};
+   boost::asio::awaitable<crypto_secrets::snapshot> status(crypto_secrets::query query) override {
+      return source_->status(std::move(query));
+   }
+   boost::asio::awaitable<crypto_secrets::get_result> get_bytes(crypto_secrets::get_request request) override {
+      ++reads;
+      return source_->get_bytes(std::move(request));
+   }
+   boost::asio::awaitable<crypto_secrets::derive_result> derive_hkdf_sha256(crypto_secrets::derive_request request) override {
+      return source_->derive_hkdf_sha256(std::move(request));
+   }
+   boost::asio::awaitable<crypto_secrets::aead_encrypt_result> encrypt_aes_gcm(crypto_secrets::aead_encrypt_request request) override {
+      return source_->encrypt_aes_gcm(std::move(request));
+   }
+   boost::asio::awaitable<crypto_secrets::aead_decrypt_result> decrypt_aes_gcm(crypto_secrets::aead_decrypt_request request) override {
+      return source_->decrypt_aes_gcm(std::move(request));
+   }
+ private:
+   std::shared_ptr<crypto_secrets::api> source_;
 };
 
 class installer_plugin final : public forge::app::plugin {
@@ -915,6 +954,107 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rejects_missing_identity_secret_before_list
 
    auto p2p = app->apis().get<p2p_node::api>(p2p_node::api::ref());
    BOOST_CHECK_THROW((void)p2p->local_endpoint(), p2p_node::exceptions::plugin_not_initialized);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_object_adapter_transactions) {
+   namespace p2p = forge::net::p2p;
+   using value = forge::config::core::value;
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto secret_apis = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto store = store_plugin::plugin{};
+   auto secrets = crypto_secrets::plugin{};
+   auto node = p2p_node::plugin{};
+   auto driver = std::make_shared<memory_driver>();
+   const auto identity = forge::tests::p2p::make_identity_fixture("configuration-preflight");
+   auto document = p2p_production_config(identity);
+   document.set("plugins.net.p2p.node.topology.mode", "static-only");
+   document.set("plugins.net.p2p.node.dht.profiles", value::array_type{
+       value::object_type{{"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
+                          {"peers", true}, {"providers", false}, {"values", true}}});
+   auto run = [&]<class T>(boost::asio::awaitable<T> operation) -> T {
+      auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+      if (result.wait_for(10s) != std::future_status::ready) {
+         std::cerr << "configuration DB fixture failed its owned join budget\n";
+         std::terminate();
+      }
+      return result.get();
+   };
+   auto cleanup = boost::scope::scope_exit{[&] {
+      // Keep providers alive until every startup/adapter operation has joined.
+      node.request_stop();
+      run(node.shutdown());
+      run(secrets.shutdown());
+      run(store.shutdown());
+      run(scheduler.shutdown());
+   }};
+   run(store.configure({document, "plugins.db.store"}));
+   run(secrets.configure({document, "plugins.crypto.secrets"}));
+   run(node.configure({document, "plugins.net.p2p.node"}));
+   auto provider = forge::api::core::installer{apis};
+   auto secret_provider = forge::api::core::installer{secret_apis};
+   run(store.provide(provider));
+   run(secrets.provide(secret_provider));
+   auto counted = std::make_shared<counted_p2p_secrets>(
+       secret_apis.get<crypto_secrets::api>(crypto_secrets::api::ref()).shared());
+   apis.install<crypto_secrets::api>(crypto_secrets::api::describe(), counted);
+   run(node.provide(provider));
+   run(store.initialize(context));
+   auto stores = apis.get<store_plugin::api>(store_plugin::api::ref());
+   run(stores->add_store(std::string{p2p_peer_store_name}, driver));
+   run(secrets.initialize(context));
+   run(node.initialize(context));
+   BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::plugin_not_initialized);
+   BOOST_TEST(counted->reads.load() == 0U);
+   run(store.after_initialize());
+   run(node.after_initialize());
+   run(store.startup());
+   run(secrets.startup());
+
+   // Baselines follow actual provider setup and schema registration, not a
+   // synthetic unopened adapter. Native startup must do no work before policy.
+   const auto snapshots = driver->snapshot_calls();
+   const auto transactions = driver->transaction_calls();
+   BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::invalid_config);
+   BOOST_TEST(counted->reads.load() == 0U);
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   auto api = apis.get<p2p_node::api>(p2p_node::api::ref());
+   BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), p2p_node::exceptions::plugin_not_initialized);
+
+   document.set("plugins.net.p2p.node.peer-store.store", "different");
+   BOOST_CHECK_THROW(run(node.configure({document, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
+   document.set("plugins.net.p2p.node.peer-store.store", "");
+   BOOST_CHECK_THROW(run(node.configure({document, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
+   document.set("plugins.net.p2p.node.peer-store.store", std::string{p2p_peer_store_name});
+   document.set("plugins.net.p2p.node.max-sessions", std::uint64_t{9});
+   run(node.configure({document, "plugins.net.p2p.node"}));
+   auto configuration = apis.get<p2p_node::configuration_api>(p2p_node::configuration_api::ref());
+   auto policies = std::vector<p2p::dht::value_policy>{{
+       .key_prefix = {'/', 't', '/'},
+       .validate = [](const p2p::dht::record&, p2p::dht::value_validation_context) {},
+       .select = [](std::span<const p2p::dht::record>) { return std::size_t{0}; },
+       .expiry = [](const p2p::dht::record&, p2p::dht::value_expiry_context context) { return context.supplied_expires_at; },
+   }};
+   configuration->set_dht_value_policies({"/configuration/store/kad/1"}, std::move(policies));
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   BOOST_TEST(counted->reads.load() == 0U);
+   run(node.startup());
+   BOOST_TEST(counted->reads.load() == 2U);
+   BOOST_TEST(driver->snapshot_calls() > snapshots);
+   BOOST_TEST(driver->transaction_calls() > transactions);
+   const auto listening = api->local_endpoint();
+   BOOST_REQUIRE(listening.has_value());
+   BOOST_TEST(!listening->transport.host.empty());
+   run(node.shutdown());
+   BOOST_TEST(driver->active_writes() == 0U);
+   BOOST_TEST(!driver->overlapping_writes());
 }
 
 BOOST_AUTO_TEST_CASE(store_plugin_rejects_invalid_programmatic_setup) {

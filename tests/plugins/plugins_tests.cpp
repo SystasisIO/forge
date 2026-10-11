@@ -2359,7 +2359,11 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rejects_invalid_typed_config_before_startup
                  forge::config::core::value::array_type{forge::config::core::value{
                      dht_profile_config("custom", "server", "/forge/product/kad/1.0.0", true, true, true)}});
       auto app = p2p_only_application{};
-      BOOST_CHECK_THROW(app.configure(config), forge::plugins::net::p2p::node::exceptions::invalid_config);
+      // Product callbacks are supplied during initialization, not YAML decode.
+      // Without a contribution, startup must still reject the incomplete profile.
+      BOOST_CHECK_NO_THROW(app.configure(config));
+      BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()),
+                        forge::plugins::net::p2p::node::exceptions::invalid_config);
    }
 
    {

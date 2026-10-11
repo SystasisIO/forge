@@ -129,16 +129,11 @@ parse_dht_profiles(const std::vector<dht_profile_config>& configured) {
             if (item.protocol.empty()) {
                FORGE_THROW_EXCEPTION(exceptions::invalid_config, "custom DHT profile requires a protocol ID");
             }
-            if (item.values) {
-               FORGE_THROW_EXCEPTION(exceptions::invalid_config,
-                                     "configured custom DHT values require a product-owned C++ validator and selector");
-            }
-            profile = forge::net::p2p::custom_dht_profile(forge::net::p2p::protocol_id{.value = item.protocol}, mode,
-                                                          forge::net::p2p::dht::profile_capabilities{
-                                                              .peers = item.peers,
-                                                              .providers = item.providers,
-                                                              .values = false,
-                                                          });
+            profile.protocol = forge::net::p2p::protocol_id{.value = item.protocol};
+            profile.operating_mode = mode;
+            profile.limits.operating_mode = mode;
+            profile.capabilities = {.peers = item.peers, .providers = item.providers, .values = item.values};
+            forge::net::p2p::validate_declaration(profile);
             break;
          }
       } catch (const forge::plugins::net::p2p::node::exceptions::invalid_config&) {
@@ -240,6 +235,8 @@ std::vector<forge::net::p2p::endpoint> parse_endpoint_list(const std::vector<std
 }
 
 void apply_config(plugin::impl& state, const config& config) {
+   const auto previous = state.configuration_candidate_base();
+   auto candidate = std::make_shared<detail::configuration_snapshot>(*previous);
    auto policy = parse_policy(config);
    auto options = forge::net::p2p::node::options{};
    auto api_options = forge::api::transport::options{
@@ -262,7 +259,16 @@ void apply_config(plugin::impl& state, const config& config) {
    options.advertised_endpoints = parse_endpoint_list(config.advertised_endpoints);
    auto peer_store_name = config.peer_store;
    auto reset_incompatible_peer_state = config.peer_store_schema_policy == cache_schema_policy::reset;
-   options.dht_profiles = parse_dht_profiles(config.dht_profiles);
+   auto profiles = parse_dht_profiles(config.dht_profiles);
+   for (const auto& prior : previous->dht_profiles) {
+      if (prior.kind != forge::net::p2p::dht::profile_kind::custom || prior.value_policies.empty()) { continue; }
+      const auto found = std::find_if(profiles.begin(), profiles.end(),
+                                      [&](const auto& profile) { return profile.protocol == prior.protocol; });
+      if (found == profiles.end() || found->kind != prior.kind || !found->capabilities.values) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "configuration cannot discard a DHT value contribution");
+      }
+      found->value_policies = prior.value_policies;
+   }
    options.limits.topology = forge::net::p2p::topology::policy{
        .operating_mode = parse_topology_mode(config.topology_mode),
        .peers =
@@ -279,7 +285,7 @@ void apply_config(plugin::impl& state, const config& config) {
        .max_rendezvous_points = static_cast<std::size_t>(config.rendezvous_max_points),
        .max_peer_exchange_peers = static_cast<std::size_t>(config.peer_exchange_max_peers),
        .retry_jitter = config.topology_retry_jitter,
-       .dht_enabled = !options.dht_profiles.empty(),
+       .dht_enabled = !profiles.empty(),
        .peer_exchange_enabled = config.peer_exchange_enabled,
        .rendezvous_points = parse_rendezvous_points(config.rendezvous_points),
    };
@@ -339,8 +345,6 @@ void apply_config(plugin::impl& state, const config& config) {
    session_limits.max_inbound_connections = admission_limit;
    session_limits.max_outbound_connections = admission_limit;
    options.limits.max_protocol_handlers = static_cast<std::size_t>(config.max_protocol_handlers);
-   auto reserved_protocols = std::vector<forge::net::p2p::protocol_id>{};
-   for (const auto& profile : options.dht_profiles) { reserved_protocols.push_back(profile.protocol); }
    options.allow_insecure_test_mode = config.allow_insecure_test_mode;
    const auto has_identity = !certificate_secret.empty() && !private_key_secret.empty();
    if (!config.allow_insecure_test_mode && (peer_store_name.empty() || !has_identity)) {
@@ -351,53 +355,20 @@ void apply_config(plugin::impl& state, const config& config) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config,
                             "P2P certificate and private key secret references must be provided together");
    }
-   // Build without copying live callback-bearing options. Only configuration-owned
-   // fields are exchanged; retired DHT callbacks are destroyed after unlocking.
-   const auto exchange = [](auto& installed, auto& candidate) noexcept {
-      static_assert(std::is_nothrow_swappable_v<std::remove_reference_t<decltype(installed)>>);
-      using std::swap;
-      swap(installed, candidate);
-   };
-   {
-      const auto lock = std::scoped_lock{state.configuration_mutex};
-      if (state.stop_requested.load(std::memory_order_acquire) ||
-          state.phase.load(std::memory_order_acquire) != lifecycle_phase::idle) {
-         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration is frozen after startup or stop");
-      }
-      // Registry configuration has the strong exception guarantee. No throwing
-      // operation follows it, so rejected candidates publish neither half.
-      detail::configure_protocol_registry(state.protocols, std::move(reserved_protocols),
-                                          options.limits.max_protocol_handlers);
-      exchange(state.policy, policy);
-      exchange(state.api_options, api_options);
-      exchange(state.peer_store_name, peer_store_name);
-      exchange(state.certificate_secret, certificate_secret);
-      exchange(state.private_key_secret, private_key_secret);
-      exchange(state.reset_incompatible_peer_state, reset_incompatible_peer_state);
-      exchange(state.options.lifecycle, options.lifecycle);
-      exchange(state.options.advertised_endpoints, options.advertised_endpoints);
-      exchange(state.options.dht_profiles, options.dht_profiles);
-      exchange(state.options.limits.topology, options.limits.topology);
-      exchange(state.options.limits.rendezvous.operating_role, options.limits.rendezvous.operating_role);
-      exchange(state.options.capabilities, options.capabilities);
-      exchange(state.options.path_policy, options.path_policy);
-      exchange(state.options.relay_policy.client_enabled, options.relay_policy.client_enabled);
-      exchange(state.options.relay_policy.service_enabled, options.relay_policy.service_enabled);
-      exchange(state.options.relay_policy.public_relay_allowed, options.relay_policy.public_relay_allowed);
-      exchange(state.options.relay_policy.max_candidates_per_refresh, options.relay_policy.max_candidates_per_refresh);
-      exchange(state.options.relay_policy.target_reservations, options.relay_policy.target_reservations);
-      exchange(state.options.limits.relay.reservation_ttl, options.limits.relay.reservation_ttl);
-      exchange(state.options.explicit_peer_id, options.explicit_peer_id);
-      exchange(state.options.limits.max_sessions, options.limits.max_sessions);
-      exchange(state.options.limits.session_low_watermark, options.limits.session_low_watermark);
-      exchange(state.options.limits.resources.system.max_connections, options.limits.resources.system.max_connections);
-      exchange(state.options.limits.resources.system.max_inbound_connections,
-               options.limits.resources.system.max_inbound_connections);
-      exchange(state.options.limits.resources.system.max_outbound_connections,
-               options.limits.resources.system.max_outbound_connections);
-      exchange(state.options.limits.max_protocol_handlers, options.limits.max_protocol_handlers);
-      exchange(state.options.allow_insecure_test_mode, options.allow_insecure_test_mode);
+   options.connection_gater = previous->options.connection_gater;
+   if (previous->pubsub_requested) {
+      options.capabilities.add(forge::net::p2p::capabilities::pubsub);
+      options.limits.pubsub = previous->options.limits.pubsub;
    }
+   candidate->options = std::move(options);
+   candidate->api_options = std::move(api_options);
+   candidate->policy = std::move(policy);
+   candidate->dht_profiles = std::move(profiles);
+   candidate->peer_store_name = std::move(peer_store_name);
+   candidate->certificate_secret = std::move(certificate_secret);
+   candidate->private_key_secret = std::move(private_key_secret);
+   candidate->reset_incompatible_peer_state = reset_incompatible_peer_state;
+   state.commit_configuration(previous, std::move(candidate));
 }
 
 } // namespace forge::plugins::net::p2p::node
