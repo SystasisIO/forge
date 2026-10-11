@@ -3,7 +3,9 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
@@ -20,6 +22,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -85,10 +88,10 @@ class identity_source final : public secrets::api {
    }
 };
 
-template<class Future> decltype(auto) joined(Future& result) {
+template<class Future> decltype(auto) joined(Future& result, std::string_view phase) {
    if (result.wait_for(5s) != std::future_status::ready) {
       // Never unwind a node/runtime while an owned callback or destructor is live.
-      std::cerr << "official PubSub shutdown fixture exceeded its owned join budget\n";
+      std::cerr << "official PubSub shutdown fixture exceeded its owned join budget: " << phase << '\n';
       std::terminate();
    }
    return result.get();
@@ -164,11 +167,12 @@ struct network_fixture {
    np::plugin node;
    std::shared_ptr<np::api> host;
    std::shared_ptr<np::pubsub_api> pubsub;
+   std::string label;
 
-   network_fixture(std::string name, std::shared_ptr<forge::asio::notification> progress) {
+   explicit network_fixture(std::string name) : label(std::move(name)) {
       // Test mode permits memory persistence only; TCP still uses real identity
       // material and libp2p TLS. Unsigned PubSub isolates callback ownership.
-      apis.install<secrets::api>(std::make_shared<identity_source>(std::move(name)));
+      apis.install<secrets::api>(std::make_shared<identity_source>(label));
       auto config = forge::config::core::document{};
       config.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
       config.set("plugins.net.p2p.node.identity.certificate-secret", "shutdown/cert");
@@ -177,45 +181,44 @@ struct network_fixture {
       config.set("plugins.net.p2p.node.topology.mode", "static-only");
       config.set("plugins.net.p2p.node.pubsub.enabled", true);
       config.set("plugins.net.p2p.node.pubsub.sign-publishes", false);
-      run(node.configure({config, "plugins.net.p2p.node"}));
+      run(node.configure({config, "plugins.net.p2p.node"}), "configure");
       auto installer = forge::api::core::installer{apis};
-      run(node.provide(installer));
+      run(node.provide(installer), "provide");
       auto options = core::options{};
       options.signatures = core::signature_policy::strict_no_sign;
-      options.tracer = [progress](const core::trace_event&) { progress->notify(); };
       apis.get<np::configuration_api>(np::configuration_api::ref())->set_pubsub_options(std::move(options));
-      run(node.initialize(context));
-      run(node.after_initialize());
-      run(node.startup());
+      run(node.initialize(context), "initialize");
+      run(node.after_initialize(), "after_initialize");
+      run(node.startup(), "startup");
       host = apis.get<np::api>(np::api::ref()).shared();
       pubsub = apis.get<np::pubsub_api>(np::pubsub_api::ref()).shared();
    }
    ~network_fixture() {
       node.request_stop();
-      try { run(node.shutdown()); }
+      try { run(node.shutdown(), "fixture cleanup: node.shutdown"); }
       catch (const std::exception& error) { BOOST_ERROR("official PubSub node cleanup: " << error.what()); }
-      run(scheduler.shutdown());
+      run(scheduler.shutdown(), "fixture cleanup: scheduler.shutdown");
    }
    template<class T> std::future<T> start(boost::asio::awaitable<T> operation) {
       return boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
    }
-   template<class T> T run(boost::asio::awaitable<T> operation) {
+   template<class T> T run(boost::asio::awaitable<T> operation, std::string_view phase) {
       auto result = start(std::move(operation));
-      return joined(result);
+      return joined(result, label + ": " + std::string{phase});
    }
 };
 
-boost::asio::awaitable<bool> await_mesh(std::shared_ptr<forge::asio::notification> progress,
-                                      std::shared_ptr<np::pubsub_api> receiver,
+boost::asio::awaitable<bool> await_mesh(std::shared_ptr<np::pubsub_api> receiver,
                                       std::shared_ptr<np::pubsub_api> sender) {
-   const auto deadline = std::chrono::steady_clock::now() + 5s;
+   const auto deadline = std::chrono::steady_clock::now() + 4s;
+   auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
    for (;;) {
-      const auto epoch = progress->epoch();
       if (receiver->snapshot().core.mesh_edges != 0 && sender->snapshot().core.mesh_edges != 0) { co_return true; }
       if (std::chrono::steady_clock::now() >= deadline) { co_return false; }
-      // Passive real-RPC tracing wakes a state recheck; no polling sleeps or
-      // successful timing assumptions substitute for the mandatory mesh witness.
-      co_await progress->async_wait_until(epoch, deadline);
+      // RPC tracing precedes state mutation; only the actual mesh predicate
+      // witnesses readiness. Keep its bound below the unchanged outer join.
+      timer.expires_at(std::min(deadline, std::chrono::steady_clock::now() + 5ms));
+      co_await timer.async_wait(boost::asio::use_awaitable);
    }
 }
 
@@ -230,7 +233,7 @@ class shutdown_call {
       callback_->release();
       destruction_->release();
       resume();
-      try { joined(result_); }
+      try { joined(result_, "receiver shutdown caller: fail-safe cleanup join"); }
       catch (const std::exception& error) { BOOST_ERROR("official node shutdown caller: " << error.what()); }
       work_.reset();
       context_.stop();
@@ -241,7 +244,7 @@ class shutdown_call {
       if (!worker_.joinable()) { worker_ = std::thread{[this] { context_.run(); }}; }
    }
    bool pending() const { return result_.wait_for(0s) == std::future_status::timeout; }
-   void finish() { joined(result_); }
+   void finish() { joined(result_, "receiver shutdown caller: final join after both barrier releases"); }
  private:
    std::shared_ptr<callback_barrier> callback_;
    std::shared_ptr<destruction_barrier> destruction_;
@@ -253,9 +256,8 @@ class shutdown_call {
 } // namespace
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_official_node_shutdown_joins_real_delivery_and_capture_retirement) {
-   auto progress = std::make_shared<forge::asio::notification>();
-   auto receiver = network_fixture{"shutdown-pubsub-receiver", progress};
-   auto sender = network_fixture{"shutdown-pubsub-sender", progress};
+   auto receiver = network_fixture{"shutdown-pubsub-receiver"};
+   auto sender = network_fixture{"shutdown-pubsub-sender"};
    const auto subject = core::topic{"shutdown-owned-delivery"};
    auto callback = std::make_shared<callback_barrier>();
    auto destruction = std::make_shared<destruction_barrier>();
@@ -270,16 +272,16 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_official_node_shutdown_joins_real_delivery_and_c
        [callback, capture](np::message value) -> boost::asio::awaitable<core::validation_result> {
           (void)capture;
           return callback->receive(std::move(value));
-       }));
+       }), "subscribe held full callback");
    BOOST_REQUIRE(subscription.id != 0);
    capture.reset(); // Only the actual consumer registration owns this user capture.
    static_cast<void>(sender.run(sender.pubsub->subscribe(subject,
        [](np::message) -> boost::asio::awaitable<core::validation_result> {
           co_return core::validation_result::accept;
-       })));
+       }), "subscribe sender full callback"));
    const auto address = receiver.host->local_endpoint();
    BOOST_REQUIRE(address);
-   const auto connected = sender.run(sender.host->connect(*address));
+   const auto connected = sender.run(sender.host->connect(*address), "TCP connect/TLS/Identify");
    BOOST_REQUIRE(connected.remote_peer == receiver.host->local_peer());
    BOOST_REQUIRE(connected.identify_state == p2p::identify::state::identified);
    BOOST_REQUIRE(connected.muxer.value == "/yamux/1.0.0");
@@ -289,14 +291,15 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_official_node_shutdown_joins_real_delivery_and_c
           session.authentication == p2p::peer_authentication::libp2p_tls &&
           session.identify_state == p2p::identify::state::identified;
    }));
-   BOOST_REQUIRE(sender.run(await_mesh(progress, receiver.pubsub, sender.pubsub)));
+   BOOST_REQUIRE(sender.run(await_mesh(receiver.pubsub, sender.pubsub), "await both actual mesh edges"));
 
    auto publication = sender.start(sender.pubsub->publish(subject, std::vector<std::uint8_t>{4, 2}));
-   const auto observed = joined(callback->arrival); // Mandatory real delivery witness, not a direct handler invocation.
+   const auto observed = joined(callback->arrival, "receiver actual full delivery: callback entry");
+   // Mandatory real delivery witness, not a direct handler invocation.
    BOOST_CHECK(observed.source == sender.host->local_peer());
    BOOST_CHECK(observed.subject == subject);
    BOOST_CHECK(observed.data == (std::vector<std::uint8_t>{4, 2}));
-   static_cast<void>(joined(publication));
+   static_cast<void>(joined(publication, "sender publish completion while receiver callback is held"));
    BOOST_TEST(callback->calls.load() == 1U);
    BOOST_TEST(!callback->exited.load());
    BOOST_TEST(!weak_capture.expired());

@@ -581,3 +581,12 @@ gates pass, describe this as test integration with an evolving stack.
   preserving unspecified defaults and explicit zero-denial budgets. Full
   policy mapping, configured donor parity and whole-PR acceptance remain open;
   this checkpoint is not merge approval or a production-readiness claim.
+- A subsequent repeated plugin run exposed a fixture readiness race before
+  shutdown. Labeled reproduction identified `await both actual mesh edges`:
+  `rpc_read` tracing occurs before applying control messages and is not a
+  post-mutation mesh notification. The fixture now checks actual mesh state
+  with bounded Asio timer waits, using a 4-second internal deadline inside the
+  unchanged 5-second owner join. No production path, delivery assertion or
+  shutdown barrier changed. The failed original/labeled runs are retained;
+  both independent source reviewers accepted the correction, and ten focused
+  real-TCP repetitions passed (23 assertions each).
