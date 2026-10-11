@@ -158,12 +158,6 @@ resolver_publication_race_node::publish_api(forge::api::core::binding_plan plan,
       [] { return true; });
 }
 
-void resolver_publication_race_node::publish_protocol(forge::net::p2p::protocol_id protocol,
-                                                       forge::net::p2p::node::protocol_handler handler) {
-   static_cast<void>(protocol);
-   static_cast<void>(handler);
-}
-
 boost::asio::awaitable<forge::api::transport::connection>
 resolver_publication_race_node::open_api_connection(forge::net::p2p::peer_id peer,
                                                      forge::net::p2p::protocol_id protocol,

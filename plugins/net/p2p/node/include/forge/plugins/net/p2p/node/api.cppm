@@ -49,7 +49,6 @@ class api : public forge::api::core::contract<api> {
    [[nodiscard]] virtual forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol,
                forge::api::transport::options options) = 0;
-   virtual void publish_protocol(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) = 0;
 
    virtual boost::asio::awaitable<forge::api::transport::connection>
    open_api_connection(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol, remote_options options = {}) = 0;
@@ -57,7 +56,14 @@ class api : public forge::api::core::contract<api> {
    template <typename Interface>
    boost::asio::awaitable<forge::api::core::handle<Interface>>
    remote(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol, remote_options options = {}) {
-      auto connection = co_await open_api_connection(std::move(peer), std::move(protocol), options);
+      return remote_owned<Interface>(open_api_connection(std::move(peer), std::move(protocol), options));
+   }
+
+ private:
+   template <typename Interface>
+   static boost::asio::awaitable<forge::api::core::handle<Interface>>
+   remote_owned(boost::asio::awaitable<forge::api::transport::connection> operation) {
+      auto connection = co_await std::move(operation);
       co_return co_await connection.template get_remote_api<Interface>();
    }
 };
@@ -99,7 +105,7 @@ class pubsub_source : public forge::api::core::contract<pubsub_source> {
 
 } // namespace forge::plugins::net::p2p::node
 
-FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.node", 2, 0))
+FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.node", 3, 0))
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::diagnostics_source,
                  FORGE_API_CONTRACT("forge.plugins.net.p2p.node.diagnostics_source", 2, 0))
 FORGE_EXPORT_API(::forge::plugins::net::p2p::node::pubsub_source,

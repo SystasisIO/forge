@@ -5,8 +5,11 @@ add_library(
       api_impl.cpp
       dht_api_impl.cpp
       api_publication_generation.cpp
-      api_publication_slot.cpp
-      api_publication_registry.cpp
+      protocol_registration.cpp
+      protocol_api_impl.cpp
+      protocol_slot.cpp
+      protocol_operations.cpp
+      protocol_registry.cpp
       plugin_diagnostics_source_adapter.cpp
       plugin_host_event_source_adapter.cpp
       plugin_pubsub_source_adapter.cpp
@@ -24,8 +27,11 @@ add_library(
       details/plugin_host_event_source_adapter.hxx
       details/plugin_pubsub_source_adapter.hxx
       details/api_publication_generation.hxx
-      details/api_publication_slot.hxx
-      details/api_publication_registry.hxx
+      details/protocol_api_impl.hxx
+      details/protocol_registration_state.hxx
+      details/protocol_slot.hxx
+      details/protocol_operations.hxx
+      details/protocol_registry.hxx
 )
 forge_target_modules_at(forge_plugins_net_p2p_node plugins/net/p2p/node)
 

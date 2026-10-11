@@ -56,7 +56,6 @@ class resolver_publication_race_node final : public forge::plugins::net::p2p::no
    [[nodiscard]] forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol,
                forge::api::transport::options options) override;
-   void publish_protocol(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) override;
    boost::asio::awaitable<forge::api::transport::connection>
    open_api_connection(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol,
                        forge::plugins::net::p2p::node::remote_options options) override;

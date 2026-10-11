@@ -1,12 +1,16 @@
 module;
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -14,7 +18,10 @@ module;
 
 module forge.plugins.net.p2p.node.plugin;
 
+import forge.api.p2p.binding;
+import forge.api.p2p.publication;
 import forge.api.transport.options;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.net.p2p.diagnostics;
@@ -27,6 +34,7 @@ import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.scoring;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;

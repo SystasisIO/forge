@@ -1759,6 +1759,10 @@ add_executable(
    quic_p2p/libp2p_identity_fixture.cpp
    plugins/plugins_tests.cpp
    plugins/p2p_dht_api_tests.cpp
+   plugins/p2p_protocol_api_tests.cpp
+   plugins/p2p_protocol_registry_tests.cpp
+   plugins/protocol_registry_fixture.cpp
+   plugins/details/protocol_registry_fixture.hxx
    plugins/p2p_host_event_api_tests.cpp
    plugins/p2p_pubsub_lifecycle_tests.cpp
    plugins/p2p_pubsub_partial_tests.cpp

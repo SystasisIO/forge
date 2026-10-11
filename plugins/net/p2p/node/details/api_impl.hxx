@@ -15,11 +15,13 @@ class plugin::api_impl final : public api {
    [[nodiscard]] forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol,
                forge::api::transport::options options) override;
-   void publish_protocol(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) override;
    boost::asio::awaitable<forge::api::transport::connection>
    open_api_connection(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol, remote_options options) override;
 
  private:
+   static boost::asio::awaitable<forge::api::transport::connection> open_owned(
+       std::shared_ptr<plugin::impl> owner, forge::net::p2p::peer_id peer,
+       forge::net::p2p::protocol_id protocol, remote_options options);
    std::shared_ptr<plugin::impl> impl_;
 };
 

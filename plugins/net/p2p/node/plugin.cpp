@@ -3,6 +3,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 #include <forge/db/object/macros.hpp>
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/describe.hpp>
 #include <boost/scope/scope_exit.hpp>
@@ -44,6 +45,7 @@ import forge.api.transport.connection;
 import forge.api.transport.server;
 import forge.app.plugin;
 import forge.app.plugin_context;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
@@ -77,6 +79,8 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
+import forge.plugins.net.p2p.node.protocol_api;
+import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.host_event_source;
 import forge.net.p2p.host_event;
 import forge.net.p2p.host_event_subscription;
@@ -91,6 +95,7 @@ import forge.plugins.db.store.api;
 #include "details/config.hxx"
 #include "details/api_impl.hxx"
 #include "details/dht_api_impl.hxx"
+#include "details/protocol_api_impl.hxx"
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
 #include "details/p2p_state_schema.hxx"
@@ -98,6 +103,7 @@ import forge.plugins.db.store.api;
 #include "details/plugin_host_event_source_adapter.hxx"
 #include "details/plugin_impl.hxx"
 #include "details/plugin_pubsub_source_adapter.hxx"
+#include "details/protocol_registry.hxx"
 
 namespace forge::plugins::net::p2p::node {
 namespace {
@@ -142,6 +148,7 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
 boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    provider.install<dht_api>(std::make_shared<dht_api_impl>(impl_));
+   provider.install<protocol_api>(std::make_shared<protocol_api_impl>(impl_));
    provider.install<diagnostics_source>(std::make_shared<diagnostics_source_adapter>(impl_));
    provider.install<host_event_source>(std::make_shared<host_event_source_adapter>(impl_));
    provider.install<pubsub_source>(std::make_shared<pubsub_source_adapter>(impl_));
@@ -150,8 +157,8 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
 
 boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
    impl_->runtime = &context.scheduler().runtime_context();
-   detail::bind_api_publication_registry_executor(
-      impl_->api_publications, impl_->runtime->context().get_executor());
+   detail::bind_protocol_registry_executor(
+      impl_->protocols, impl_->runtime->context().get_executor());
    if (!impl_->peer_store_name.empty()) {
       impl_->stores =
           context.apis()
@@ -180,8 +187,7 @@ boost::asio::awaitable<void> plugin::after_initialize() {
 }
 
 boost::asio::awaitable<void> plugin::startup() {
-   auto routes = impl_->begin_startup();
-   if (!routes) {
+   if (!impl_->begin_startup()) {
       co_return;
    }
    auto private_key_cleanup = boost::scope::scope_exit{[this] { clear_text(impl_->options.private_key_pem); }};
@@ -256,7 +262,7 @@ boost::asio::awaitable<void> plugin::startup() {
       co_return;
    }
 
-   auto node = impl_->ensure_node(*routes);
+   auto node = impl_->ensure_node();
    if (impl_->stop_requested.load(std::memory_order_acquire)) {
       node->stop();
       co_return;
@@ -285,7 +291,7 @@ boost::asio::awaitable<void> plugin::startup() {
 void plugin::request_stop() noexcept {
    impl_->stop_requested.store(true, std::memory_order_release);
    impl_->phase.store(lifecycle_phase::stopping, std::memory_order_release);
-   detail::request_close_api_publication_registry(impl_->api_publications);
+   detail::request_close_protocol_registry(impl_->protocols);
    if (auto node = impl_->node_snapshot()) {
       try {
          node->request_stop();
@@ -299,7 +305,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
    request_stop();
    auto failure = std::exception_ptr{};
    try {
-      co_await detail::async_close_api_publication_registry(impl_->api_publications);
+      co_await detail::async_close_protocol_registry(impl_->protocols);
    } catch (...) {
       failure = std::current_exception();
    }

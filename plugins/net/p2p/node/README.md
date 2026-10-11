@@ -45,7 +45,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Plugin id: `forge.plugins.net.p2p.node`
 - Main API id: `forge.plugins.net.p2p.node`
 - Plugin version: `7.0.0`
-- Main API contract: `2.0`
+- Main API contract: `3.0`
 - Extra API ids:
   - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
   - `forge.plugins.net.p2p.node.diagnostics_source` (contract `2.0`)
@@ -228,15 +228,64 @@ returns a move-only `forge::api::p2p::publication`: destroying or closing it
 stops new API-session admission for that protocol and `async_close()` waits for
 its in-flight API sessions. Publishing the same API protocol replaces its
 generation behind one stable node handler; an older handle cannot unregister
-the replacement. Raw `publish_protocol(...)` remains a pre-start-only route
-contribution and cannot share a protocol id with an API publication.
+the replacement. The historical unowned raw `publish_protocol(...)` entry point
+is removed by the Stage 7 migration below.
 
 Plugin 7.0 upgrades the local `forge.plugins.net.p2p.node.pubsub_source` to 2.0
 with exact native Partial registration operations. Source consumers must request
 major 2 and custom implementations must implement the added pure virtual methods.
 Async source calls retain their implementation before first suspension and hold
 the same native node during execution; full-topic leave retains stopped local
-cleanup. The node API remains 2.0 in this slice; no future node API 3.0 is claimed.
+cleanup. The owned-protocol Stage 7 slice upgrades the main node API to 3.0
+without another plugin version change.
+
+### Owned Raw Protocols
+
+Import `forge.plugins.net.p2p.node.protocol_api` and
+`forge.plugins.net.p2p.node.protocol_registration`; request the local contract
+`forge.plugins.net.p2p.node.protocol` major 1, revision 0. Migrate
+`publish_protocol(id, handler)` to `register_protocol(id, handler)` and retain
+the returned move-only registration. Duplicate names fail. To replace a raw
+handler, call `replace_protocol(current_token, id, handler)`; foreign, closed
+or superseded tokens fail. Closing an old token cannot remove its replacement.
+
+Pre-start and live registrations share one bounded registry with API publications.
+Built-ins (including currently disabled services) and every configured DHT
+profile name, including client profiles, are reserved. Active, attaching and
+failed-closing names consume `max-protocol-handlers` capacity.
+
+`close() noexcept` and token destruction close admission, not streams already
+admitted to that generation. They do not promise callback/stream drain. Capture
+destruction happens outside registry/configuration locks. API publication
+cancellation and `async_close()` session drain remain distinct and unchanged.
+If native register/unregister throws after possibly changing the handler,
+admission stays closed and the name remains claimed until a retry unregister
+returns normally; `false` confirms absence. Repeated raw close, a subsequent
+registration, or shutdown performs the retry under the same claim; there is no
+detached retry worker. An API publication's already failed drain remains sticky;
+retrying registry cleanup does not rewrite that result. A still-failing shutdown
+reports the error.
+
+`protocol_api::open(peer, id, native_open_options)` retains the same plugin/node
+owner before suspension and delegates the existing native open and cancellation
+contract. It exposes neither the node nor its secrets. New I/O fails before
+startup and once plugin stop admission closes. This local API does not change
+wire negotiation, native transport policy or deadlines.
+
+Donor boundary: pinned Go `p2p/host/basic/basic_host.go` implements
+`RemoveStreamHandler` by removing mux admission and emitting a protocol update,
+not by closing already admitted streams; `NewStream` retains normal dialing,
+negotiation and context cancellation. Forge adds local generation/name ownership,
+not a new wire protocol. These source mappings are not live donor acceptance.
+
+Private `protocol_operations` delegates install/remove to the same native node.
+Registry unit tests replace only those two calls with a map, explicit before/after
+mutation faults and held-attach barriers. They check stop/close races and uncertain
+cleanup ownership; separate native TCP tests check admission and retained streams.
+The fault tests do not claim to provoke an actual Identify Push allocation failure.
+
+Consumers of the main node contract must request major 3; custom implementations
+remove the old raw publication method. Resolver contract identities are unchanged.
 
 Plugin 6.0 upgraded `forge.plugins.net.p2p.node.diagnostics_source` to contract
 `2.0`: diagnostics endpoint records now carry raw `multiaddr` values in their
@@ -270,7 +319,7 @@ class catalog_p2p_plugin final : public forge::app::plugin {
  public:
    boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::api>(
-         {.id = {"forge.plugins.net.p2p.node"}, .major = 2});
+         {.id = {"forge.plugins.net.p2p.node"}, .major = 3});
 
       auto plan = forge::api::core::binding()
          .serve(context.apis())

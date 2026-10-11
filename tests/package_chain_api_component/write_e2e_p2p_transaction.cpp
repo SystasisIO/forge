@@ -58,7 +58,7 @@ write_p2p_transaction_responses run_p2p_transaction_e2e(std::shared_ptr<write_p2
       forge::asio::blocking::run(server.runtime(), server.startup());
       server_started = true;
       auto server_node = server.apis().get<forge::plugins::net::p2p::node::api>(
-          {.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0});
+          {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
       const auto server_endpoint = server_node->local_endpoint();
       require(server_endpoint.has_value(), "P2P chain API server did not publish a local endpoint");
       auto client_config = p2p_config(test_peer(0x52));
@@ -79,7 +79,7 @@ write_p2p_transaction_responses run_p2p_transaction_e2e(std::shared_ptr<write_p2
           resolver->resolve(server_peer, {.id = {"forge.chain.api.transaction"}, .major = 1, .min_revision = 0}));
       require(resolution.api.protocol == chain_api_protocol, "P2P resolver selected the wrong chain API protocol");
       auto node = client.apis().get<forge::plugins::net::p2p::node::api>(
-          {.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0});
+          {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
       auto connection = forge::asio::blocking::run(
           client.runtime(),
           node->open_api_connection(server_peer, forge::net::p2p::protocol_id{.value = resolution.api.protocol}));

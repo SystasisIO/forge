@@ -707,12 +707,12 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_retired_capture_destruction_precedes_shu
    stopping_context.poll();
    BOOST_CHECK(stopping.wait_for(0ms) != std::future_status::ready);
    BOOST_CHECK(event.wait_for(0ms) != std::future_status::ready);
-   BOOST_CHECK_THROW(f.api->snapshot(), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(f.api->snapshot()), p2p::exceptions::canceled);
    destruction->release();
    joined(event);
    stopping_context.restart(); stopping_context.run_for(5s);
    joined(stopping);
-   BOOST_CHECK_THROW(f.api->snapshot(), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(f.api->snapshot()), p2p::exceptions::canceled);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_saved_awaitables_and_native_source_outlive_handles) {
@@ -742,7 +742,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_native_tcp_full_delivery_survives_downgr
       received.set_value(std::move(value)); co_return;
    };
    const auto remote_token = receiver.enable({"partial"}, std::move(options));
-   const auto remote_node = receiver.native_apis.get<np::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 2});
+   const auto remote_node = receiver.native_apis.get<np::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3});
    const auto address = remote_node->local_endpoint();
    BOOST_REQUIRE(address);
    auto sender = fixture{true, 4, "plugin-partial-sender", address};

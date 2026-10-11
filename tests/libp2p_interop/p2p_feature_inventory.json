@@ -222,12 +222,13 @@
     },
     "plugin.p2p.node": {
       "owner": "plugin.p2p.node",
-      "module_count": 7,
+      "module_count": 9,
       "modules": [
         "forge.plugins.net.p2p.node.api", "forge.plugins.net.p2p.node.descriptor",
         "forge.plugins.net.p2p.node.dht_api",
         "forge.plugins.net.p2p.node.exceptions", "forge.plugins.net.p2p.node.host_event_source",
-        "forge.plugins.net.p2p.node.plugin", "forge.plugins.net.p2p.node.types"
+        "forge.plugins.net.p2p.node.plugin", "forge.plugins.net.p2p.node.protocol_api",
+        "forge.plugins.net.p2p.node.protocol_registration", "forge.plugins.net.p2p.node.types"
       ],
       "headers": [],
       "module_features": {
@@ -237,10 +238,12 @@
         "forge.plugins.net.p2p.node.exceptions": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.host_event_source": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.plugin": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.protocol_api": [ "plugin.node" ],
+        "forge.plugins.net.p2p.node.protocol_registration": [ "plugin.node" ],
         "forge.plugins.net.p2p.node.types": [ "plugin.node" ]
       },
       "header_features": {},
-      "sha256": "6361ae8e556fb6db664dfdb945467be1db1a7be4a500f49d25eb6063b166f525",
+      "sha256": "b338a40954e8df6dbe1b596d1374d0c9131ad27bc0c4aeac702af855f068111f",
       "feature_ids": [ "plugin.node" ]
     },
     "plugin.p2p.resolver": {
@@ -1204,11 +1207,15 @@
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/host_event_source.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/exceptions.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/plugin.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/protocol_api.cppm",
+          "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/protocol_registration.cppm",
           "plugins/net/p2p/node/include/forge/plugins/net/p2p/node/types.cppm",
           "plugins/net/p2p/node/plugin.cpp", "plugins/net/p2p/node/plugin_impl.cpp",
           "plugins/net/p2p/node/api_impl.cpp", "plugins/net/p2p/node/dht_api_impl.cpp",
           "plugins/net/p2p/node/api_publication_generation.cpp",
-          "plugins/net/p2p/node/api_publication_slot.cpp", "plugins/net/p2p/node/api_publication_registry.cpp"
+          "plugins/net/p2p/node/protocol_slot.cpp", "plugins/net/p2p/node/protocol_registry.cpp",
+          "plugins/net/p2p/node/protocol_operations.cpp",
+          "plugins/net/p2p/node/protocol_api_impl.cpp", "plugins/net/p2p/node/protocol_registration.cpp"
         ],
         "tests": [ "test_forge_plugins", "test_forge_package_chain_api_component" ],
         "donor_sources": [ "docs/donors/forge-p2p-node-lifecycle-v1.md" ],

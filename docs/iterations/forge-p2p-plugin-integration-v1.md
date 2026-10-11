@@ -249,7 +249,8 @@ gates pass, describe this as test integration with an evolving stack.
   capture shared ownership before suspension and reject new operations after
   stop. Five focused native-macOS DHT tests passed (97 assertions), including
   a separate reader's network GET_VALUE/GET_PROVIDERS and deferred calls after
-  host/API destruction. The package-consumer update is not executed yet.
+  host/API destruction. The installed node package consumer subsequently passed
+  at the Partial-facade checkpoint, including the DHT and host-event contracts.
 - Native P2P, MDBX and RocksDB foundation targets built in the coordinator's
   single macOS `build/stage7` tree with `-j4`. This is build evidence, not a
   Stage 7 runtime or donor-compatibility verdict.
@@ -291,8 +292,8 @@ gates pass, describe this as test integration with an evolving stack.
   preserving exact failure-count assertions. Both full suites then passed:
   62 control-queue cases and 129 plugin cases. Initial failures are retained;
   this does not substitute for final-head package or donor acceptance.
-- Protocol ownership, policy contributions and the remaining configuration
-  mapping are still pending.
+- At that checkpoint, protocol ownership, policy contributions and the remaining
+  configuration mapping were still pending.
 - The native prerequisite for Partial facade ownership now supports exact-token
   downgrade to a full-only topic without deleting the full handler, mesh,
   scoring or cache. Token equality preserves owner identity after expiry but
@@ -325,6 +326,31 @@ gates pass, describe this as test integration with an evolving stack.
   Initial import/package-boundary and test-barrier failures remain in separate
   logs; these were not counted as successful runs. This is another bounded
   checkpoint, not whole-PR acceptance.
+- The installed node and diagnostics package consumers also passed at the
+  Partial-facade checkpoint. Their inactive consumer build directories were
+  removed after preserving results; the single coordinator build tree remains.
+- The raw-protocol slice replaces unowned `publish_protocol` with local
+  `protocol_api` 1.0 and move-only registration tokens. The main node contract
+  advances to 3.0; API-publication cancellation/drain remains unchanged. One
+  registry protects raw/API names, built-ins and all configured DHT profiles.
+  Sixteen focused cases passed (332 assertions), including real TCP/TLS/Yamux
+  old-stream survival and deterministic install/remove/attach/stop failures.
+- Review found that rejected configuration could retain changed native options
+  while keeping old reservations. Candidates are now fully prepared before
+  reservation commit, followed only by checked nonthrowing state exchanges.
+  Two regressions verify startup, old DHT/options, route survival, name reuse
+  and unchanged quotas after rejection. Private registry declarations are
+  owned by their exact header, not the public plugin interface.
+- This slice's initial compiler/fixture-linker and strict structure failures
+  are retained separately from corrected results. Ordinary connect/ping,
+  scoped peer contributions, configuration completion and configured-path
+  donor evidence are still required before merge.
+- The corrected protocol slice passed the full plugin (162 cases), managed
+  remote (10), DB Store (68) and native PubSub control-queue (70) suites on
+  macOS. Both persistence backends remained enabled. Structure (2,380 sources),
+  inventory and the installed node package consumer passed. The six registry
+  fault/race cases also passed 20 consecutive runs. Both independent reviewers
+  reported source-clean for this frozen slice, not for the complete PR.
 - The complete Stage 7 runtime, package and donor gates remain pending; the
   DHT-slice result is not a whole-PR or production-readiness verdict.
 - Product migration remains out of scope.

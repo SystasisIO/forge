@@ -163,7 +163,7 @@ auto dht_handle(dht_application& app) {
 
 auto node_handle(dht_application& app) {
    return app.apis().get<node_plugin::api>(
-       {.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
 }
 
 boost::asio::awaitable<bool> wait_for_dht_server(std::shared_ptr<node_plugin::diagnostics_source> diagnostics,
@@ -217,7 +217,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_contract_is_local_and_rejects_before_startup) {
    forge::asio::blocking::run(runtime, plugin.provide(installer));
    auto dht = apis.get<node_plugin::dht_api>(
        {.id = {"forge.plugins.net.p2p.node.dht"}, .major = 1, .min_revision = 0});
-   BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0}) != nullptr);
+   BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0}) != nullptr);
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2,
                               .min_revision = 0}) != nullptr);
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2,

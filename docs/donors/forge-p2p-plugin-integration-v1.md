@@ -93,6 +93,32 @@ by the plugin tests. Package tests separately check the installed public
 contract without importing a private node-plugin dependency into the PubSub
 consumer. None of these checks claims a new Go/Rust wire implementation.
 
+## Custom Protocol Ownership
+
+The local `node::protocol_api` separates a move-only raw registration from API
+publication ownership. Go `core/host/host.go` and
+`p2p/host/basic/basic_host.go` distinguish removing a stream handler from
+closing existing streams. Forge preserves this behavior: unregister closes
+admission and updates Identify availability; admitted raw streams retain the
+handler generation they entered. API-publication sessions retain their existing
+application-level cancellation and drain semantics.
+
+One private registry arbitrates raw/API names, configured DHT profiles and all
+built-in protocol names. Replacement requires the exact active raw owner;
+closing a superseded token cannot remove a newer route. Pre-start claims count
+toward the configured bound. A failed native mutation retains the name claim
+until a normal unregister confirms absence, including a false return when the
+handler was already removed. Configuration candidates publish neither native
+options nor reservations if parsing or name reservation fails.
+
+The private `protocol_operations` boundary delegates directly to native node
+registration/removal in production. Deterministic tests replace only those two
+fallible calls and exercise the real registry/slot implementation, including
+errors before/after table mutation and attach/close/stop barriers. These are not
+claims of reproducing a native Identify Push allocator failure. Separate real
+TCP/TLS/Yamux tests cover authenticated stream creation, generation replacement,
+rejected new opens, admitted-stream survival and startup after rejected config.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

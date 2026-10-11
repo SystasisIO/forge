@@ -76,7 +76,7 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
 boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
    auto p2p =
        context.apis()
-           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0})
+           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0})
            .shared();
    auto publications = detail::make_publication_catalog(context.scheduler());
    {

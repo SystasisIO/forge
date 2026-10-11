@@ -295,7 +295,7 @@ class test_application final : public forge::app::application_shell {
 [[nodiscard]] std::string listen_endpoint(test_application& app) {
    const auto endpoint =
        app.apis()
-           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0})
+           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0})
            ->local_endpoint();
    BOOST_REQUIRE(endpoint.has_value());
    return endpoint->to_string();
@@ -304,7 +304,7 @@ class test_application final : public forge::app::application_shell {
 [[nodiscard]] std::string listen_address(test_application& app) {
    const auto endpoint =
        app.apis()
-           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0})
+           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0})
            ->local_endpoint();
    BOOST_REQUIRE(endpoint.has_value());
    auto address = *endpoint;

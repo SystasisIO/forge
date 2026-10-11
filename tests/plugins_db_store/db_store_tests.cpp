@@ -873,11 +873,11 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_an
 
    const auto plugin = descriptor.factory();
    BOOST_REQUIRE(plugin != nullptr);
-   BOOST_TEST(plugin->version() == "6.0.0");
+   BOOST_TEST(plugin->version() == "7.0.0");
 
    const auto api_descriptor = p2p_node::api::describe();
    BOOST_TEST(api_descriptor.id.value == "forge.plugins.net.p2p.node");
-   BOOST_TEST(api_descriptor.version.major == 2U);
+   BOOST_TEST(api_descriptor.version.major == 3U);
 
    const auto diagnostics_source_descriptor = p2p_node::diagnostics_source::describe();
    BOOST_TEST(diagnostics_source_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics_source");
