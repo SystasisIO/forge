@@ -446,3 +446,13 @@ gates pass, describe this as test integration with an evolving stack.
   no timeout was increased to hide it. Full configuration mapping, PubSub hooks,
   diagnostics completion and configured-path donor evidence also remain open.
 - Product migration remains out of scope.
+- The DHT investigation found uncontrolled resolution of synthetic advertised
+  names. Explicit local NXDOMAIN fixtures passed 20 consecutive runs of the
+  same two cases, 33 assertions per run, with actual DNS query logs. No
+  deadlines, provider-count requirements or original assertions changed.
+- Donor review distinguishes Go's batch resolution from Rust's concurrent root
+  futures. The diagnostic immediate-numeric RED tested additional behavior,
+  not the existing Forge contract. Stage 7 preserves batch resolution and its
+  known DNS-delay limitation, with explicit batch/deduplication and joined
+  cancellation regressions. Full-suite validation is still required; this
+  checkpoint is not a new transport or production-readiness claim.

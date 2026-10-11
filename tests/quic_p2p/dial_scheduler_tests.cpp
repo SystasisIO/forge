@@ -1,6 +1,7 @@
 module;
 
 #include <boost/test/unit_test.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <forge/exceptions/macros.hpp>
 
 #include <atomic>
@@ -87,6 +88,7 @@ class dial_script final {
    std::shared_ptr<p2p::resource_manager> resources;
    bool block_discards = false;
    bool block_dns_until_stop = false;
+   bool block_dns_until_release = false;
    bool block_dns_terminal_after_stop = false;
    bool block_attempt_terminal_after_stop = false;
    std::size_t throwing_discards = 0;
@@ -103,7 +105,7 @@ class dial_script final {
             response = found->second;
          }
          not_found = address_not_found.contains(name);
-         block = block_dns_until_stop;
+         block = block_dns_until_stop || block_dns_until_release;
          if (block) {
             ++address_lookups_;
          }
@@ -115,6 +117,13 @@ class dial_script final {
          co_return response;
       }
       address_lookup_started_.notify_all();
+      if (block_dns_until_release) {
+         co_await wait_for_dns_terminal_release();
+         if (stop.stop_requested()) {
+            FORGE_THROW_EXCEPTION(dns::exceptions::canceled, "scripted DNS lookup canceled");
+         }
+         co_return response;
+      }
       co_await wait_for_stop(stop, dns_stop_wakeup_);
       if (block_dns_terminal_after_stop) {
          {
@@ -255,6 +264,16 @@ class dial_script final {
    [[nodiscard]] bool wait_for_dns_terminal_waiting() {
       auto lock = std::unique_lock{mutex_};
       return dns_terminal_waiting_changed_.wait_for(lock, std::chrono::seconds{1}, [&] { return dns_terminal_waiting_; });
+   }
+
+   [[nodiscard]] std::size_t address_lookups() const {
+      const auto lock = std::scoped_lock{mutex_};
+      return address_lookups_;
+   }
+
+   [[nodiscard]] bool dns_terminal_waiting() const {
+      const auto lock = std::scoped_lock{mutex_};
+      return dns_terminal_waiting_;
    }
 
    [[nodiscard]] bool wait_for_attempt_terminal_waiting() {
@@ -862,6 +881,126 @@ BOOST_AUTO_TEST_CASE(dial_scheduler_keeps_a_dns_failed_sibling_neutral_for_root_
    BOOST_REQUIRE_EQUAL(result.root_outcomes.size(), 2U);
    BOOST_CHECK(result.root_outcomes[0].outcome == p2p::dialing::outcome::neutral);
    BOOST_CHECK(result.root_outcomes[1].outcome == p2p::dialing::outcome::success);
+}
+
+BOOST_AUTO_TEST_CASE(dial_scheduler_resolves_the_batch_before_dialing_a_shared_numeric_target) {
+   for (const auto dns_first : {false, true}) {
+      BOOST_TEST_CONTEXT("DNS root first=" << dns_first) {
+         auto context = boost::asio::io_context{};
+         const auto poll = [&] {
+            context.restart();
+            static_cast<void>(context.poll());
+         };
+         const auto numeric = std::string{"/ip4/127.0.0.1/tcp/4001"};
+         const auto dns_root = std::string{"/dns/batch-numeric.test/tcp/4001"};
+         auto script = std::make_shared<dial_script>();
+         script->resources = std::make_shared<p2p::resource_manager>();
+         script->block_dns_until_release = true;
+         script->address_responses.emplace("batch-numeric.test", addresses({"127.0.0.1"}));
+         script->behaviors.emplace(numeric, dial_script::behavior::succeed);
+         auto scheduler = p2p::detail::dial_scheduler{context.get_executor(), {.max_concurrent_attempts = 1}};
+         auto roots = dns_first ? std::vector<std::string>{dns_root, numeric}
+                                : std::vector<std::string>{numeric, dns_root};
+         auto result = boost::asio::co_spawn(
+             context, scheduler.async_dial(request_for(roots, std::chrono::seconds{2}), callbacks_for(script)),
+             boost::asio::bind_executor(context.get_executor(), boost::asio::use_future));
+         auto cleanup = boost::scope::scope_exit{[&] {
+            scheduler.request_stop();
+            script->release_dns_terminal();
+            poll();
+         }};
+
+         poll();
+         BOOST_TEST(script->address_lookups() == 1U);
+         BOOST_TEST(script->starts().empty());
+         BOOST_CHECK(result.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+
+         script->release_dns_terminal();
+         poll();
+         BOOST_REQUIRE(result.wait_for(std::chrono::milliseconds{0}) == std::future_status::ready);
+         auto winner = result.get();
+         BOOST_TEST(winner.winner.to_string() == numeric);
+         BOOST_TEST(script->starts().size() == 1U);
+         BOOST_TEST(script->finished_attempts() == 1U);
+         BOOST_REQUIRE_EQUAL(winner.winner_roots.size(), 2U);
+         BOOST_TEST(winner.winner_roots[0].canonical.to_string() == roots[0]);
+         BOOST_TEST(winner.winner_roots[1].canonical.to_string() == roots[1]);
+         winner.attempt.reset();
+
+         auto closed = boost::asio::co_spawn(
+             context, scheduler.async_close(), boost::asio::bind_executor(context.get_executor(), boost::asio::use_future));
+         poll();
+         BOOST_REQUIRE(closed.wait_for(std::chrono::milliseconds{0}) == std::future_status::ready);
+         closed.get();
+         BOOST_TEST(script->active_attempts() == 0U);
+         BOOST_TEST(script->resources->current().system.outbound_connections == 0U);
+         BOOST_TEST(script->resources->current().system.file_descriptors == 0U);
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(dial_scheduler_cancellation_joins_batch_dns_without_starting_numeric_siblings) {
+   for (const auto dns_first : {false, true}) {
+      BOOST_TEST_CONTEXT("DNS root first=" << dns_first) {
+         auto context = boost::asio::io_context{};
+         const auto poll = [&] {
+            context.restart();
+            static_cast<void>(context.poll());
+         };
+         const auto numeric = std::string{"/ip4/127.0.0.1/tcp/4001"};
+         const auto stalled = std::string{"/dns/stalled-numeric-sibling.test/tcp/4001"};
+         auto script = std::make_shared<dial_script>();
+         script->resources = std::make_shared<p2p::resource_manager>();
+         script->block_dns_until_stop = true;
+         script->block_dns_terminal_after_stop = true;
+         script->behaviors.emplace(numeric, dial_script::behavior::succeed);
+         auto scheduler = p2p::detail::dial_scheduler{context.get_executor(), {.max_concurrent_attempts = 1}};
+         auto stop = std::stop_source{};
+         auto roots = dns_first ? std::vector<std::string>{stalled, numeric}
+                                : std::vector<std::string>{numeric, stalled};
+         // The deadline is a failure guard, not the event that releases either barrier.
+         auto request = request_for(std::move(roots), std::chrono::seconds{2}, {}, stop.get_token());
+         auto result = boost::asio::co_spawn(
+             context, scheduler.async_dial(std::move(request), callbacks_for(script)),
+             boost::asio::bind_executor(context.get_executor(), boost::asio::use_future));
+         auto cleanup = boost::scope::scope_exit{[&] {
+            static_cast<void>(stop.request_stop());
+            script->release_dns_terminal();
+            scheduler.request_stop();
+            poll();
+         }};
+
+         // The numeric root must not bypass the documented batch-resolution barrier.
+         poll();
+         BOOST_TEST(script->address_lookups() == 1U);
+         BOOST_TEST(script->starts().empty());
+         BOOST_CHECK(result.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+
+         static_cast<void>(stop.request_stop());
+         poll();
+         BOOST_REQUIRE(script->dns_terminal_waiting());
+         auto closed = boost::asio::co_spawn(
+             context, scheduler.async_close(), boost::asio::bind_executor(context.get_executor(), boost::asio::use_future));
+         poll();
+         BOOST_CHECK(result.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+         BOOST_CHECK(closed.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+         BOOST_TEST(script->starts().empty());
+
+         script->release_dns_terminal();
+         poll();
+         BOOST_REQUIRE(result.wait_for(std::chrono::milliseconds{0}) == std::future_status::ready);
+         BOOST_CHECK_EXCEPTION(static_cast<void>(result.get()), forge::exceptions::base, [](const auto& error) {
+            return p2p::exceptions::code_of(error) == p2p::exceptions::code::canceled;
+         });
+         BOOST_REQUIRE(closed.wait_for(std::chrono::milliseconds{0}) == std::future_status::ready);
+         closed.get();
+         BOOST_TEST(script->starts().empty());
+         BOOST_TEST(script->finished_attempts() == 0U);
+         BOOST_TEST(script->active_attempts() == 0U);
+         BOOST_TEST(script->resources->current().system.outbound_connections == 0U);
+         BOOST_TEST(script->resources->current().system.file_descriptors == 0U);
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(dial_scheduler_marks_each_exhausted_attributable_root_once) {

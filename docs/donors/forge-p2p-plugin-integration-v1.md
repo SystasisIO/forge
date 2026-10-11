@@ -174,6 +174,37 @@ Focused tests exercise real gater delegation and real Secrets/ObjectDB startup
 preflight. Insecure gater control fixtures do not prove identity, and source
 reviews do not replace the still-required configured donor exchanges.
 
+## DNS Fixture Isolation And Scheduling Boundary
+
+Two existing DHT fixtures advertised synthetic `example.com` addresses without
+configuring their resolver. They now use the existing joined local DNS fixture
+with explicit NXDOMAIN responses on every participating node. Request names are
+recorded; the original topology, provider count, assertions and deadlines stay
+unchanged. Go's pinned `p2p/net/swarm/resolve_test.go:14-24` similarly controls
+resolution of synthetic names rather than depending on public DNS.
+
+At Go `9cfe2cc00be5b20a0be737f002c99f81b92255c5`,
+`p2p/net/swarm/dial_worker.go:180-193` calls `addrsForDial` before ranking;
+`swarm_dial.go:293-314` completes the resolver pass first. Forge's documented
+batch-before-dial contract follows that order. A stalled DNS sibling can delay
+a known numeric address until resolution completes or the logical deadline
+expires. Stage 7 does not claim to remove this limitation.
+
+Rust `22fb4c784fc55ad8b15d05fdc9f98d663107d4cb` differs:
+`transports/dns/src/lib.rs:219-301` dials concrete candidates within each root,
+while `swarm/src/connection/pool/concurrent_dial.rs:54-100` bounds concurrent
+root futures. These are different scheduling policies, not different wire
+protocols. Immediate numeric dialing during pending DNS would require a
+separately scoped change preserving global budgets, peer admission, root
+provenance and joined cleanup; it is not inferred from donor compatibility.
+
+An experimental immediate-numeric test failed in both root orders and its RED
+result was retained. It tested that additional behavior, not the accepted
+batch contract. The retained regressions instead require completion of the
+batch before a deduplicated numeric dial and prove that caller cancellation
+and scheduler close wait for a held DNS callback, without launching siblings.
+They do not weaken existing limits or skip an accepted acceptance gate.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

@@ -1134,6 +1134,57 @@ std::optional<forge::tests::dns::bytes> hidden_dns_response(const std::uint8_t* 
    return forge::tests::dns::make_response(request, *question, answers);
 }
 
+class dht_fixture_dns final {
+ public:
+   dht_fixture_dns()
+       : requests_(std::make_shared<request_log>()),
+         server_([requests = requests_](const std::uint8_t* request,
+                                        std::size_t size) -> std::optional<forge::tests::dns::bytes> {
+            const auto question = forge::tests::dns::parse_question(request, size);
+            if (!question) {
+               throw std::runtime_error{"DHT fixture received a malformed DNS request"};
+            }
+            {
+               const auto lock = std::scoped_lock{requests->mutex};
+               requests->questions.push_back(*question);
+            }
+            // Synthetic advertised names are discovery evidence, not live dial targets.
+            return forge::tests::dns::make_failure_response(request, *question, 3);
+         }) {}
+
+   ~dht_fixture_dns() {
+      try {
+         server_.close();
+         const auto lock = std::scoped_lock{requests_->mutex};
+         if (requests_->questions.empty()) {
+            BOOST_TEST_MESSAGE("DHT fixture DNS: no requests");
+         }
+         for (const auto& question : requests_->questions) {
+            BOOST_TEST_MESSAGE("DHT fixture DNS NXDOMAIN name=" << question.name << " type=" << question.type);
+         }
+      } catch (const std::exception& error) {
+         BOOST_ERROR("DHT fixture DNS cleanup failed: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("DHT fixture DNS cleanup failed with a non-standard exception");
+      }
+   }
+
+   void configure(std::initializer_list<node::options*> options) const {
+      for (auto* value : options) {
+         value->dns_resolver.nameservers = {{.address = "127.0.0.1", .port = server_.port()}};
+      }
+   }
+
+ private:
+   struct request_log {
+      std::mutex mutex;
+      std::vector<forge::tests::dns::parsed_question> questions;
+   };
+
+   std::shared_ptr<request_log> requests_;
+   forge::tests::dns::local_dns_server server_;
+};
+
 endpoint listen_quic_with_advertised_dns4(node& value, forge::asio::runtime& runtime) {
    forge::asio::blocking::run(runtime, value.async_listen(make_quic_endpoint(0, "0.0.0.0")));
    const auto local_endpoint = value.local_endpoint();
@@ -11848,6 +11899,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_find_node_returns_exact_peer_store_and_self_before_
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream) {
+   auto dns = dht_fixture_dns{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    const auto server_identity = make_test_certificate_identity("dht-node-server");
    const auto client_identity = make_test_certificate_identity("dht-node-client");
@@ -11864,6 +11916,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream
    provider_options.advertised_endpoints.push_back(provider_endpoint);
    auto provider_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    provider_options.dht_record_persistence.emplace(builtins::kad_dht, provider_persistence);
+   dns.configure({&server_options, &client_options, &target_options, &provider_options});
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
    auto target_node = node{runtime, std::move(target_options)};
@@ -12169,6 +12222,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_iterative_lookup_walks_many_peer_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_iterative_provider_lookup_and_provide_reach_closest_peers) {
+   auto dns = dht_fixture_dns{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    const auto seed_identity = make_test_certificate_identity("dht-provider-seed");
    const auto hop_identity = make_test_certificate_identity("dht-provider-hop");
@@ -12185,6 +12239,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_iterative_provider_lookup_and_provide_reach_closest
    provider_endpoint.peer = provider_identity.peer;
    auto provider_options = dht_options_for(provider_identity, client_profile);
    provider_options.advertised_endpoints.push_back(provider_endpoint);
+   dns.configure({&seed_options, &hop_options, &client_options, &provider_options});
 
    auto seed = node{runtime, std::move(seed_options)};
    auto hop = node{runtime, std::move(hop_options)};
