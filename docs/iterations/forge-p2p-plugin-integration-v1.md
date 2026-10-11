@@ -718,7 +718,7 @@ gates pass, describe this as test integration with an evolving stack.
 ### TCP Security And QUIC Checkpoint
 
 - `tcp.security` selects the existing TLS/Noise negotiation policy; five sparse
-  `quic` settings map connection, stream and outbound/inbound packet-queue
+  `quic` settings map connection, stream, outbound-data and inbound-packet queue
   limits. Unknown settings, invalid enum values, zero/overflow and incompatible
   TLS-only relay configuration fail before mutation. Both groups freeze at
   startup and preserve unspecified native defaults.
@@ -737,9 +737,12 @@ gates pass, describe this as test integration with an evolving stack.
 - Fourteen focused configured-path cases passed 438 assertions. TCP covers
   seven compatible selection pairs, both disjoint directions, actual identity,
   Identify/Ping, rollback and freeze. Three QUIC cases use the official app,
-  Secrets and ObjectDB plugins with insecure mode disabled: authenticated QUIC
+  Secrets and DB Store plugins with an Object layer and insecure mode disabled:
+  authenticated QUIC
   still works under TCP Noise-only selection; queue denial recovers; stream
-  denial/reset/reuse and listener saturation/reuse retain the connection.
+  denial/reset/reuse retain the existing connection. Listener saturation leaves
+  the first connection usable; its subsequent shutdown releases the slot for a
+  replacement peer.
   Their ObjectDB driver is explicitly in-memory, not a disk-persistence claim.
 - The initial QUIC fixture incorrectly enabled insecure mode; it was replaced
   with the real configured app rather than weakening authentication assertions.
