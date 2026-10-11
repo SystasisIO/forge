@@ -11,8 +11,9 @@ acceptance is complete. This PR does not promote the stack to production.
 The [implementation roadmap](forge-p2p-production-implementation-v1.md) and
 [production criteria](forge-p2p-production-hardening-v1.md) remain authoritative.
 Apply `create-library` and `create-plugin` before implementation. Keep the
-existing `plugins/net/p2p/{node,resolver,pubsub,diagnostics}` leaf ownership;
-do not restore `plugins/p2p` or introduce an aggregate plugin.
+`plugins/net/p2p/{node,resolver}` leaf ownership. The maintainer-approved
+consolidation below supersedes the original four-plugin layout; do not restore
+`plugins/p2p` or introduce an aggregate plugin.
 
 ## Approved Boundaries
 
@@ -32,6 +33,59 @@ do not restore `plugins/p2p` or introduce an aggregate plugin.
   owner-only configuration/lifecycle, or explicitly deferred capability with
   rationale. Ordinary DHT operations and host events cannot disappear behind
   an owner-only label.
+- Node also owns consumer PubSub registration/callback lifetime and read-only
+  diagnostics/events. Resolver remains an optional application API catalog and
+  connection service, not part of native peer discovery.
+
+## Approved Plugin Consolidation
+
+The maintainer approved consolidating PubSub and diagnostics into node within
+PR 172. This is an intentional source/package/configuration break, not removal
+of their functionality. Standalone `plugins.net.p2p.pubsub` and
+`plugins.net.p2p.diagnostics` plugins, targets, components and configuration
+sections are removed without aliases. Resolver stays separate.
+
+| Old consumer surface | Canonical replacement |
+| --- | --- |
+| `pubsub::api` | `node::pubsub_api`, module `forge.plugins.net.p2p.node.pubsub_api` |
+| `diagnostics::api` | `node::diagnostics_api`, module `forge.plugins.net.p2p.node.diagnostics_api` |
+| `diagnostics::events_api` | `node::events_api`, module `forge.plugins.net.p2p.node.events_api` |
+| Separate PubSub/diagnostics descriptors and package components | Node descriptor and `plugins_net_p2p_node` component |
+| `plugins.net.p2p.pubsub` / `plugins.net.p2p.diagnostics` config | `plugins.net.p2p.node.pubsub` / `plugins.net.p2p.node.diagnostics` |
+
+The public `pubsub_source`, `diagnostics_source` and `host_event_source`
+intermediaries disappear. Do not preserve them under different public names or
+use a second registry hop inside node. The main `api.cppm` owns only `node::api`;
+each additional interface owns its matching module. New contract IDs use the
+node leaf and role suffix and start at 1.0. Existing unaffected contracts retain
+their versions. The node plugin moves from 7.0.0 to 8.0.0 for this approved
+consolidation; the Forge project version is unchanged.
+
+Preserve ordinary and typed publishing/subscription, per-consumer callbacks,
+quotas, filtering, validation, Partial Messages and immutable registration
+tokens. Move the existing callback/registration machinery into one coherent
+private PubSub component with exact header/source pairing and justified aspect
+units. Native protocol workers, score engine and queues remain in the raw node.
+Do not flatten this machinery into `plugin_impl.hxx` or recreate a fake public
+source contract solely to retain old test doubles.
+
+Read-only APIs capture shared native-node ownership before delegation and invoke
+outside lifecycle/configuration locks. Snapshots keep configured default bounds
+and explicit per-call bounds, peer filtering, typed not-found/profile errors and
+owned return values. Events retain native initial snapshot, overflow/resync,
+cancellation and shutdown behavior, without another queue.
+
+Stop closes PubSub admission and cancels its owned operations. Awaited shutdown
+joins callbacks and native operations, disposes callback captures outside locks
+and releases the node/persistence only afterwards. Concurrent or delayed API
+objects must remain safe. Any necessary sequencing change must have a regression
+for blocked operations, self-unsubscribe, cancellation and failed startup.
+
+Migrate real-node and private-component tests rather than delete source-double
+coverage without replacement. Installed node consumers exercise all three new
+modules; static/package gates reject the removed components/contracts. Update
+active catalogs, inventory owners and documentation without rewriting historical
+release notes. Wire formats, libp2p negotiation and persisted schema do not change.
 
 ## Current Starting Point
 
@@ -58,8 +112,8 @@ parallel plugin DTO or network runtime.
 | `node::dht_api` | Profile-aware find peer/providers, provide, put/get value, typed IPNS record creation | Return the existing provider registration; never expose identity private material |
 | `node::configuration_api` | Pre-start connection gater and custom DHT value-policy contributions | Local composition only; reject duplicate/unknown policies and freeze before node startup work |
 | `node::protocol_api` | Owned custom protocol registration and stream opening | Protect built-ins/API routes and replacement generations; unregister closes admission, not unrelated existing streams |
-| `pubsub::api` | Ordinary/typed publishing and subscriptions, validation, partial-topic registration, advertisement, discovery and send | Preserve immutable registration tokens and distinguish requested cancellation from completed callbacks |
-| `diagnostics::api`, additive `diagnostics::events_api` | Bounded node/resource/peer/DHT/relay/PubSub snapshots and existing typed host events | Read-only; reuse the library event subscription and resynchronization semantics |
+| `node::pubsub_api` | Ordinary/typed publishing and subscriptions, validation, partial-topic registration, advertisement, discovery and send | Preserve immutable registration tokens and distinguish requested cancellation from completed callbacks |
+| `node::diagnostics_api`, `node::events_api` | Bounded node/resource/peer/DHT/relay/PubSub snapshots and existing typed host events | Read-only; reuse the library event subscription and resynchronization semantics |
 | `resolver::api`, `resolver::managed_api` | Existing peer API catalog, contract resolution and managed connection | API discovery at known peers, not a second DHT or peer-discovery implementation |
 
 New independently versioned local contracts start at 1.0. Audit existing
@@ -77,21 +131,20 @@ raw/API route conflicts in both publication paths under consistent ownership.
 Remove the old unowned `publish_protocol()` entry point with an explicit node
 contract migration rather than retaining a bypass.
 
-Host events use a new local `node::host_event_source` delegated to
-`diagnostics::events_api`, both initially 1.0. Preserve the existing diagnostics
-source contract instead of adding pure virtual methods to it invisibly. Copy
-shared sources under synchronization, invoke outside the lock, and do not add a
-second event queue. Preserve native initial snapshots, resynchronization flags,
-single-reader admission, cancellation and end-of-stream on shutdown.
+Host events use local `node::events_api` 1.0, delegated directly to the owned
+native node. Capture shared ownership under synchronization, invoke outside the
+lock, and do not add a second event queue. Preserve native initial snapshots,
+resynchronization flags, single-reader admission, cancellation and end-of-stream
+on shutdown.
 
 ## Configuration And Contributions
 
 - Node owns identity and persistence settings, transports, protection/resource
   limits, PSK, DNS/dial policy, topology/DHT, reachability, mDNS, relay and path
   policy. Adapt to the existing validated library options.
-- PubSub owns its configuration of versions, scoring, quotas and extensions;
-  apply it to the shared node before startup. Resolver and diagnostics retain
-  only their own settings.
+- Node owns PubSub versions, scoring, quotas and extensions and diagnostics
+  snapshot bounds in separate configuration records. Apply native policy before
+  startup. Resolver retains only its own settings.
 - Product-specific DHT validation/selection/expiry and connection policy callbacks
   are supplied as typed C++ contributions during composition/initialization.
   Freeze global contributions before node startup, reject duplicates or missing
@@ -131,7 +184,7 @@ The remaining configuration work is grouped by the existing native owners:
 | Node | mDNS families/interfaces/TTL and packet/peer bounds |
 | Node | AutoRelay candidates/reservations/renewal and Circuit Relay v2 service quotas |
 | Node | Per-profile DHT record/provider policy, bootstrap retries, topology and Rendezvous bounds |
-| PubSub | Version preference/fallback, signature policy, flood publish, scoring, IDONTWANT and Partial Messages bounds |
+| Node PubSub configuration | Version preference/fallback, signature policy, flood publish, scoring, IDONTWANT and Partial Messages bounds |
 
 Reuse described native resource-limit types where possible. Other configuration
 records express checked units and policy only; they must not duplicate native
@@ -194,8 +247,8 @@ delivery obligation, not evidence of an implemented plugin feature.
 | API publications and connections | Existing `node::api` / resolver | Preserve generation ownership and authenticated invocation |
 | `async_find_peer`, `async_provide`, `async_find_providers`, `async_put_value`, `async_get_value`, `create_ipns_record` | `node::dht_api` | Complete profile-aware data/discovery operations |
 | Custom `register_protocol_handler`, `unregister_protocol_handler`, `async_open_protocol_stream` | Owned `node::protocol_api` | Do not export unowned global route mutation |
-| `async_subscribe`, `async_unsubscribe`, `async_publish`, all partial operations | `pubsub::api` | Registration-scoped full and partial messaging |
-| `metrics`, `diagnostics`, `routing_status`, `lifecycle_state`, `reachability_status`, `host_events`, `pubsub_snapshot`, `pubsub_scores` | `diagnostics::api` with source delegation | Bounded read-only visibility, including event overflow |
+| `async_subscribe`, `async_unsubscribe`, `async_publish`, all partial operations | `node::pubsub_api` | Registration-scoped full and partial messaging |
+| `metrics`, `diagnostics`, `routing_status`, `lifecycle_state`, `reachability_status`, `host_events`, `pubsub_snapshot`, `pubsub_scores` | `node::diagnostics_api` / `node::events_api` | Bounded read-only visibility, including event overflow |
 | `async_ping` | Consumer connectivity operation | Bounded liveness/latency probe, not a second maintenance loop |
 | `protect_peer`, `unprotect_peer`, `tag_peer`, `untag_peer`, `is_peer_protected` | Owner-scoped policy contribution | Consumers must not remove another owner's protection or globally overwrite tags; exact contribution ownership tested |
 | `async_refresh_discovery`, `async_request_peer_exchange`, `async_rendezvous_register/discover` | Owner discovery policy / managed node execution | Preserve configured source/namespace bounds; no ad-hoc plugin discovery loops |
@@ -216,6 +269,9 @@ One focused implementation PR with sequential bounded slices:
 3. Introduce controlled custom-protocol registration/opening and ordinary
    connect/ping operations. Prove route collision, pre-start close, replacement
    and shutdown behavior; do not conflate raw streams with API publications.
+   Consolidate PubSub/diagnostics ownership and contracts as approved above
+   before completing the remaining configuration slice. Preserve previously
+   tested behavior and add merged-owner shutdown/package regressions.
 4. Complete node policy/configuration mapping and typed pre-start contributions.
    Validate secrets and incompatible settings before network admission.
 5. Fill the coverage table with source/test evidence and run raw-node/plugin
