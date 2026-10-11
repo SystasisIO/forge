@@ -714,3 +714,55 @@ gates pass, describe this as test integration with an evolving stack.
   Go/Rust acceptance and whole-PR review. The next slice must distinguish TCP
   security from the currently QUIC-applied transport limits; do not advertise
   those limits as already controlling Yamux or private-network transport.
+
+### TCP Security And QUIC Checkpoint
+
+- `tcp.security` selects the existing TLS/Noise negotiation policy; five sparse
+  `quic` settings map connection, stream and outbound/inbound packet-queue
+  limits. Unknown settings, invalid enum values, zero/overflow and incompatible
+  TLS-only relay configuration fail before mutation. Both groups freeze at
+  startup and preserve unspecified native defaults.
+- Bounds retain their native ownership: listener connections, local stream-open
+  admission and advertised incoming credit, and connection-owned queues. These
+  are not Yamux limits, application receive-buffer limits or a combined
+  bidirectional stream ceiling. The unenforced native `max_frame_size` knob is
+  deliberately not exposed through P2P configuration.
+- Native QUIC validation now rejects stream credit above `2^60`. A separate
+  native race was reproduced: four remote-credit waiters bypassed the local
+  limit after a real `MAX_STREAMS` update, creating five active streams under a
+  limit of two. Rechecking admission on each allocation-loop iteration fixes
+  it. The unchanged regression failed on the old implementation, then passed
+  all 54 assertions and five additional repetitions after the fix. No test-only
+  production bypass, wire change or donor patch was introduced.
+- Fourteen focused configured-path cases passed 438 assertions. TCP covers
+  seven compatible selection pairs, both disjoint directions, actual identity,
+  Identify/Ping, rollback and freeze. Three QUIC cases use the official app,
+  Secrets and ObjectDB plugins with insecure mode disabled: authenticated QUIC
+  still works under TCP Noise-only selection; queue denial recovers; stream
+  denial/reset/reuse and listener saturation/reuse retain the connection.
+  Their ObjectDB driver is explicitly in-memory, not a disk-persistence claim.
+- The initial QUIC fixture incorrectly enabled insecure mode; it was replaced
+  with the real configured app rather than weakening authentication assertions.
+  The stream fixture also incorrectly equated `identified` with native idle:
+  initial Identify Push can still occupy a slot. Filling the four retained
+  application slots now retries only typed backpressure under one deadline;
+  the fifth denial and reset/replacement assertions remain strict. Cleanup joins
+  the fixture scheduler even when plugin shutdown reports an error.
+- Final native QUIC selection passed 140 cases / 2,375 assertions; the remaining
+  P2P cases were not part of that selection. This includes the independent
+  packet-count barrier regression (41 assertions). Synthetic packets are
+  discarded before releasing the held drain, not presented as wire evidence.
+- Seven affected suites passed three consecutive runs: structure, network-plugin
+  structure, inventory, descriptor surfaces, plugins (224 cases), managed remote
+  (10 cases) and DB Store (74 cases, including local MDBX/RocksDB coverage).
+  The installed node consumer rebuilt and ran after the final native fix.
+  Build parallelism remained `-j4`; full CI was not run.
+- Both independent scoped source reviews closed their findings. Public node
+  module count remains 13 and only the inventory surface digest changes; no
+  production support state is promoted. Temporary task-owned package builds
+  and the install prefix are removed after their processes finish; the active
+  Stage 7 build and failure/success logs are retained.
+- Next are private-network secret provisioning, DNS/dial/path and the remaining
+  reachability, mDNS, relay, DHT/lifecycle and PubSub policies. Configured-path
+  Go/Rust acceptance and whole-PR review remain open. This checkpoint is not
+  Stage 7 completion or permission to merge the incomplete PR.

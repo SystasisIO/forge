@@ -3,6 +3,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 
 module forge.net.quic.options;
@@ -27,7 +28,8 @@ void validate_timeout(std::chrono::milliseconds value, const char* name) {
 } // namespace
 
 void validate(const transport_limits& limits) {
-   if (limits.max_connections == 0 || limits.max_streams_per_connection == 0 || limits.max_queued_bytes == 0 ||
+   if (limits.max_connections == 0 || limits.max_streams_per_connection == 0 ||
+       limits.max_streams_per_connection > (std::uint64_t{1} << 60) || limits.max_queued_bytes == 0 ||
        limits.max_inbound_queued_bytes == 0 || limits.max_inbound_queued_packets == 0 || limits.max_frame_size == 0 ||
        limits.max_frame_size > 0xffff'ffffULL) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid QUIC transport limits");

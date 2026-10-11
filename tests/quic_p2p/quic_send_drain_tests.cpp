@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -19,6 +20,7 @@
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include "../../libraries/net/quic/details/engine_connection_impl.hxx"
 #include "../../libraries/net/quic/details/engine_listener_impl.hxx"
@@ -139,10 +141,12 @@ struct quic_send_fixture {
    bool expected_close_allocation_failure = false;
    bool expected_listener_allocation_failure = false;
 
-   quic_send_fixture() {
+   quic_send_fixture(detail::engine_transport_limits client_limits = {},
+                     detail::engine_transport_limits server_limits = {}) {
       const auto client_identity = forge::tests::p2p::make_identity_fixture("send-drain-client");
       const auto server_identity = forge::tests::p2p::make_identity_fixture("send-drain-server");
       auto server_options = detail::engine_server_options{};
+      server_options.limits = server_limits;
       server_options.certificate_pem = server_identity.certificate_pem;
       server_options.private_key_pem = server_identity.private_key_pem;
       server_options.security.expected_sha256_fingerprint =
@@ -152,6 +156,7 @@ struct quic_send_fixture {
       listener = detail::engine_listener_fixture::state(listener_facade);
       BOOST_REQUIRE_GT(listener->bind_endpoint.port, 0U);
       auto options = detail::engine_client_options{};
+      options.limits = client_limits;
       options.connect_timeout = 3s;
       options.handshake_timeout = 2s;
       options.certificate_pem = client_identity.certificate_pem;
@@ -411,6 +416,210 @@ BOOST_AUTO_TEST_CASE(quic_udp_send_failure_is_sticky_and_not_counted_as_sent) {
        },
        asio::use_future);
    BOOST_TEST(completed(joined));
+}
+
+BOOST_AUTO_TEST_CASE(quic_inbound_packet_count_rejects_independently_while_native_drain_is_held) {
+   auto fixture = quic_send_fixture{};
+   auto pause = std::make_shared<std::atomic_bool>(true);
+   auto entered = std::make_shared<forge::asio::notification>();
+   auto draining = std::future<void>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      // Retire queued probe bytes before releasing the drain: they must never reach ngtcp2.
+      auto stopped = asio::co_spawn(fixture.owner->strand,
+          [owner = fixture.owner]() -> asio::awaitable<void> {
+             owner->fail_all();
+             owner->test_failpoint = {};
+             co_return;
+          }, asio::use_future);
+      if (stopped.wait_for(8s) != std::future_status::ready) { std::terminate(); }
+      BOOST_CHECK_NO_THROW(stopped.get());
+      pause->store(false, std::memory_order_release);
+      fixture.held.release();
+      if (draining.valid()) {
+         if (draining.wait_for(8s) != std::future_status::ready) { std::terminate(); }
+         BOOST_CHECK_NO_THROW(draining.get());
+      }
+      auto joined = asio::co_spawn(fixture.runtime.context(), fixture.server->async_close(), asio::use_future);
+      if (joined.wait_for(8s) != std::future_status::ready) { std::terminate(); }
+      BOOST_CHECK_NO_THROW(joined.get());
+      fixture.require_sender_joined();
+   }};
+   auto armed = asio::co_spawn(fixture.owner->strand,
+       [owner = fixture.owner, pause, entered]() -> asio::awaitable<void> {
+          owner->test_failpoint = [pause, entered](std::string_view phase) {
+             if (phase == "drain_after_owner_claim_before_native_write") {
+                entered->notify();
+                return pause->load(std::memory_order_acquire);
+             }
+             return phase == "drain_after_owner_claim_before_native_write_wait" &&
+                 pause->load(std::memory_order_acquire);
+          };
+          co_return;
+       }, asio::use_future);
+   completed(armed, "arm held native drain for packet-count queue proof");
+   draining = asio::co_spawn(fixture.owner->strand, fixture.owner->drain_send(), asio::use_future);
+   auto waiting = asio::co_spawn(fixture.runtime.context(),
+       entered->async_wait_until(0, std::chrono::steady_clock::now() + 3s), asio::use_future);
+   BOOST_REQUIRE(completed(waiting, "native drain entered before queue probes") > 0U);
+   BOOST_CHECK(draining.wait_for(0ms) != std::future_status::ready);
+   auto probe = asio::co_spawn(fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<void> {
+          BOOST_REQUIRE(owner->drain_active);
+          BOOST_REQUIRE(!owner->closing && !owner->canceled);
+          const auto count = owner->inbound_packets.size();
+          const auto bytes = owner->queued_inbound_packet_bytes;
+          const auto rejections = owner->metrics.backpressure_rejections.load(std::memory_order_relaxed);
+          constexpr auto packet_size = std::size_t{4};
+          owner->limits.max_inbound_queued_packets = count + 1;
+          owner->limits.max_inbound_queued_bytes = bytes + 2 * packet_size;
+          const auto route = forge::net::transport::datagram_io::received{
+              .remote = owner->remote_endpoint, .local = owner->local_endpoint()};
+          // This is an owner-queue unit probe, not a wire/parser or interoperability fixture.
+          co_await owner->handle_packet(std::vector<std::uint8_t>(packet_size, 0x51), route);
+          BOOST_TEST(owner->inbound_packets.size() == count + 1);
+          BOOST_TEST(owner->queued_inbound_packet_bytes == bytes + packet_size);
+          BOOST_TEST(owner->metrics.backpressure_rejections.load(std::memory_order_relaxed) == rejections);
+          auto rejected = false;
+          try {
+             co_await owner->handle_packet(std::vector<std::uint8_t>(packet_size, 0x52), route);
+          } catch (const detail::engine_failure& error) {
+             BOOST_CHECK(error.kind() == detail::engine_error_kind::backpressure_rejected);
+             rejected = true;
+          }
+          BOOST_REQUIRE(rejected);
+          BOOST_TEST(owner->metrics.backpressure_rejections.load(std::memory_order_relaxed) == rejections + 1);
+          BOOST_TEST(owner->inbound_packets.empty());
+          BOOST_TEST(owner->queued_inbound_packet_bytes == 0U);
+          BOOST_TEST(owner->metrics.closed.load(std::memory_order_relaxed));
+          BOOST_CHECK(owner->closing && owner->canceled);
+          // Terminal admission must win even over an otherwise oversized packet budget check.
+          co_await owner->handle_packet(
+              std::vector<std::uint8_t>(owner->limits.max_inbound_queued_bytes + 1, 0x53), route);
+          BOOST_TEST(owner->metrics.backpressure_rejections.load(std::memory_order_relaxed) == rejections + 1);
+          BOOST_TEST(owner->inbound_packets.empty());
+          BOOST_TEST(owner->queued_inbound_packet_bytes == 0U);
+       }, asio::use_future);
+   completed(probe, "independent packet-count denial and terminal cleanup");
+}
+
+BOOST_AUTO_TEST_CASE(quic_concurrent_credit_waiters_recheck_local_stream_limit) {
+   auto client_limits = detail::engine_transport_limits{};
+   client_limits.max_streams_per_connection = 2;
+   auto server_limits = detail::engine_transport_limits{};
+   server_limits.max_streams_per_connection = 1;
+   auto fixture = quic_send_fixture{client_limits, server_limits};
+   const auto client_owner = detail::engine_connection_fixture::state(fixture.client);
+   auto opens = std::array<std::future<std::shared_ptr<detail::engine_stream>>, 4>{};
+   auto retained = std::vector<std::shared_ptr<detail::engine_stream>>{};
+   auto credit_drain = std::future<void>{};
+   auto reset_read = std::future<std::vector<std::uint8_t>>{};
+   auto reset_join = std::future<void>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      fixture.client->request_cancel();
+      fixture.server->request_cancel();
+      fixture.held.release();
+      for (const auto& stream : retained) { stream->request_cancel(); }
+      const auto join = [](auto& pending, std::string_view phase) {
+         if (!pending.valid()) { return; }
+         if (pending.wait_for(8s) != std::future_status::ready) {
+            BOOST_ERROR("QUIC credit regression cleanup did not join: " << phase);
+            std::terminate();
+         }
+         try { static_cast<void>(pending.get()); }
+         catch (const detail::engine_failure& error) {
+            BOOST_CHECK(error.kind() == detail::engine_error_kind::backpressure_rejected ||
+                        error.kind() == detail::engine_error_kind::canceled ||
+                        error.kind() == detail::engine_error_kind::connection_closed ||
+                        error.kind() == detail::engine_error_kind::stream_reset);
+         } catch (const boost::system::system_error& error) {
+            BOOST_CHECK(error.code() == asio::error::operation_aborted);
+         } catch (...) { BOOST_ERROR("unexpected QUIC credit regression cleanup error: " << phase); }
+      };
+      for (auto& pending : opens) { join(pending, "pending open"); }
+      join(credit_drain, "MAX_STREAMS socket send");
+      join(reset_read, "reset terminal read");
+      join(reset_join, "reset cleanup");
+   }};
+   const auto rejections_before = fixture.client->metrics().backpressure_rejections;
+   for (auto& pending : opens) {
+      pending = asio::co_spawn(fixture.runtime.context(), fixture.client->async_open_stream(), asio::use_future);
+   }
+   auto waiting = asio::co_spawn(client_owner->strand,
+       [owner = client_owner]() -> asio::awaitable<std::size_t> {
+          auto timer = asio::steady_timer{owner->strand};
+          const auto deadline = std::chrono::steady_clock::now() + 3s;
+          for (;;) {
+             const auto count = static_cast<std::size_t>(std::ranges::count_if(
+                 owner->open_stream_waiters, [](const auto& waiter) { return !waiter.expired(); }));
+             if (count == 4) {
+                BOOST_TEST(owner->active_stream_count() == 1U);
+                BOOST_TEST(owner->limits.max_streams_per_connection == 2U);
+                co_return count;
+             }
+             if (std::chrono::steady_clock::now() >= deadline) {
+                throw boost::system::system_error{asio::error::timed_out,
+                    "four QUIC opens did not enter remote-credit waiters"};
+             }
+             timer.expires_at(std::min(deadline, std::chrono::steady_clock::now() + 5ms));
+             co_await timer.async_wait(asio::use_awaitable);
+          }
+       }, asio::use_future);
+   BOOST_REQUIRE_EQUAL(completed(waiting, "all four opens waiting for remote stream credit"), 4U);
+   for (auto& pending : opens) { BOOST_CHECK(pending.wait_for(0ms) != std::future_status::ready); }
+   auto extended = asio::co_spawn(fixture.owner->strand,
+       [owner = fixture.owner]() -> asio::awaitable<std::uint64_t> {
+          BOOST_TEST(owner->active_stream_count() == 1U);
+          BOOST_TEST(owner->limits.max_streams_per_connection == 1U);
+          // Extend only peer wire credit; neither configured local limit changes.
+          ngtcp2_conn_extend_max_streams_bidi(owner->conn, 4);
+          co_return owner->udp_enqueued_generation;
+       }, asio::use_future);
+   const auto prefix_before = completed(extended, "server extends real remote stream credit");
+   credit_drain = asio::co_spawn(fixture.owner->strand,
+       [owner = fixture.owner, prefix_before]() -> asio::awaitable<void> {
+          co_await owner->drain_send();
+          BOOST_REQUIRE_GT(owner->udp_enqueued_generation, prefix_before);
+          co_await owner->wait_udp_send_prefix(owner->udp_enqueued_generation,
+                                               std::chrono::steady_clock::now() + 2s);
+       }, asio::use_future);
+   fixture.held.release();
+   completed(credit_drain, "real MAX_STREAMS socket send");
+   auto rejected = std::size_t{0};
+   for (auto& pending : opens) {
+      try { retained.push_back(completed(pending, "open after remote credit")); }
+      catch (const detail::engine_failure& error) {
+         BOOST_CHECK(error.kind() == detail::engine_error_kind::backpressure_rejected);
+         if (error.kind() == detail::engine_error_kind::backpressure_rejected) { ++rejected; }
+      }
+   }
+   BOOST_TEST(retained.size() == 1U);
+   BOOST_TEST(rejected == 3U);
+   BOOST_TEST(fixture.client->metrics().active_streams == 2U);
+   BOOST_TEST(fixture.client->metrics().backpressure_rejections == rejections_before + 3);
+   auto admitted = asio::co_spawn(client_owner->strand,
+       [owner = client_owner]() -> asio::awaitable<void> {
+          BOOST_TEST(owner->active_stream_count() == 2U);
+          BOOST_TEST(owner->open_stream_waiters.empty());
+          BOOST_CHECK(!owner->closing && !owner->canceled);
+          co_return;
+       }, asio::use_future);
+   completed(admitted, "seed and exactly one retained successful open");
+   BOOST_REQUIRE_EQUAL(retained.size(), 1U);
+   retained.front()->request_cancel();
+   reset_read = asio::co_spawn(fixture.runtime.context(), retained.front()->async_read(), asio::use_future);
+   BOOST_CHECK_EXCEPTION(completed(reset_read, "successful open reset terminal witness"), detail::engine_failure,
+       [](const auto& error) { return error.kind() == detail::engine_error_kind::stream_reset; });
+   reset_join = asio::co_spawn(fixture.runtime.context(), retained.front()->async_close(), asio::use_future);
+   BOOST_CHECK_NO_THROW(completed(reset_join, "successful open reset cleanup join"));
+   auto reclaimed = asio::co_spawn(client_owner->strand,
+       [owner = client_owner]() -> asio::awaitable<void> {
+          BOOST_TEST(owner->active_stream_count() == 1U);
+          BOOST_TEST(owner->limits.max_streams_per_connection == 2U);
+          BOOST_TEST(owner->open_stream_waiters.empty());
+          BOOST_CHECK(!owner->closing && !owner->canceled);
+          co_return;
+       }, asio::use_future);
+   completed(reclaimed, "local reset releases only the new stream slot");
 }
 
 BOOST_AUTO_TEST_CASE(quic_fin_close_waits_for_actual_gated_socket_send) {

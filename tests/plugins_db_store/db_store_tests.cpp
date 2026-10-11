@@ -75,6 +75,13 @@ import forge.net.p2p.diagnostics;
 import forge.net.p2p.dht;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
+import forge.net.p2p.identify;
+import forge.net.p2p.exceptions;
+import forge.net.p2p.node;
+import forge.net.p2p.protocol;
+import forge.net.p2p.stream;
+import forge.net.quic.exceptions;
+import forge.net.transport.exceptions;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.exceptions;
 import forge.plugins.crypto.secrets.plugin;
@@ -88,6 +95,8 @@ import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
+import forge.plugins.net.p2p.node.protocol_api;
+import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
 import forge.raw.raw;
 
@@ -594,6 +603,102 @@ void set_p2p_bootstrap(forge::config::core::document& document, const std::optio
    return app;
 }
 
+template<class T> T transport_run(forge::app::application_shell& app, boost::asio::awaitable<T> operation,
+                                  std::string_view phase) {
+   using namespace std::chrono_literals;
+   auto result = boost::asio::co_spawn(app.runtime().context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(10s) != std::future_status::ready) {
+      std::cerr << "secure transport fixture exceeded owned join budget: " << phase << '\n';
+      std::terminate();
+   }
+   return result.get();
+}
+
+void shutdown_transport_app(forge::app::application_shell& app) {
+   app.request_stop();
+   auto shutdown_failure = std::exception_ptr{};
+   try { transport_run(app, app.shutdown(), "reverse plugin shutdown and scheduler join"); }
+   catch (...) { shutdown_failure = std::current_exception(); }
+   // This fixture has no compute pool. A plugin failure can bypass the shell's scheduler join.
+   auto scheduler_failure = std::exception_ptr{};
+   try { transport_run(app, app.scheduler().shutdown(), "unconditional fixture scheduler join"); }
+   catch (...) { scheduler_failure = std::current_exception(); }
+   const auto report = [](const std::exception_ptr& failure, std::string_view phase) {
+      if (!failure) { return; }
+      try { std::rethrow_exception(failure); }
+      catch (const std::exception& error) { BOOST_ERROR("secure transport " << phase << ": " << error.what()); }
+      catch (...) { BOOST_ERROR("secure transport " << phase << ": non-standard exception"); }
+   };
+   report(shutdown_failure, "plugin cleanup");
+   report(scheduler_failure, "scheduler join");
+}
+
+forge::config::core::document secure_transport_config(const forge::tests::p2p::identity_fixture& identity) {
+   auto config = p2p_production_config(identity);
+   config.set("plugins.net.p2p.node.allow-insecure-test-mode", false);
+   config.set("plugins.net.p2p.node.topology.mode", "static-only");
+   config.set("plugins.net.p2p.node.tcp.security", "noise");
+   return config;
+}
+
+boost::asio::awaitable<bool> await_secure_transport_sessions(std::shared_ptr<p2p_node::diagnostics_api> reads,
+                                                            std::size_t count,
+                                                            std::optional<forge::net::p2p::peer_id> expected = {}) {
+   using namespace std::chrono_literals;
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto timer = boost::asio::steady_timer{executor};
+   const auto deadline = std::chrono::steady_clock::now() + 4s;
+   do {
+      const auto state = reads->snapshot();
+      if (state.sessions.size() == count && std::ranges::all_of(state.sessions, [&](const auto& session) {
+             return !session.closed && session.identify_state == forge::net::p2p::identify::state::identified &&
+                 session.authentication == forge::net::p2p::peer_authentication::quic_tls &&
+                 (!expected || session.remote_peer == *expected);
+          })) { co_return true; }
+      timer.expires_after(5ms);
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   } while (std::chrono::steady_clock::now() < deadline);
+   co_return false;
+}
+
+boost::asio::awaitable<forge::net::p2p::stream>
+open_after_identify_cleanup(std::shared_ptr<p2p_node::protocol_api> api, forge::net::p2p::peer_id peer,
+                            forge::net::p2p::protocol_id protocol, forge::net::p2p::node::open_options options,
+                            std::chrono::steady_clock::time_point deadline) {
+   using namespace std::chrono_literals;
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto timer = boost::asio::steady_timer{executor};
+   auto last_rejection = std::exception_ptr{};
+   for (;;) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (remaining <= 0ms && last_rejection) { std::rethrow_exception(last_rejection); }
+      BOOST_REQUIRE_MESSAGE(remaining > 0ms, "Identify streams did not release QUIC capacity within 4s");
+      auto attempt_options = options;
+      attempt_options.timeout = std::min(options.timeout, remaining);
+      try { co_return co_await api->open(peer, protocol, attempt_options); }
+      catch (const forge::exceptions::base& error) {
+         if (!forge::net::p2p::exceptions::is(error, forge::net::p2p::exceptions::code::backpressure_rejected)) {
+            throw;
+         }
+         last_rejection = std::current_exception();
+      }
+      timer.expires_at(std::min(deadline, std::chrono::steady_clock::now() + 5ms));
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   }
+}
+
+forge::net::p2p::node::protocol_handler transport_echo() {
+   return [](forge::net::p2p::node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+      for (;;) {
+         const auto bytes = co_await incoming.stream.async_read_frame();
+         if (bytes.empty()) { break; }
+         co_await incoming.stream.async_write_frame(bytes);
+      }
+      co_await incoming.stream.async_close();
+   };
+}
+
 [[nodiscard]] forge::db::core::record_key header_record_key() {
    return forge::db::core::record_key{std::vector<std::byte>(11U, std::byte{0U})};
 }
@@ -932,6 +1037,208 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_production_lifecycle_reopens_persisted_peer
           set_p2p_bootstrap(document, bootstrap);
           return make_p2p_app(driver, std::move(document));
        });
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_noise_only_keeps_quic_tls_and_configured_queue_rejects_then_recovers) {
+   using namespace std::chrono_literals;
+   namespace p2p = forge::net::p2p;
+   const auto server_identity = forge::tests::p2p::make_identity_fixture("transport-queue-server");
+   const auto client_identity = forge::tests::p2p::make_identity_fixture("transport-queue-client");
+   auto server = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(server_identity));
+   auto client_config = secure_transport_config(client_identity);
+   constexpr auto queued_bytes = std::uint64_t{65536};
+   client_config.set("plugins.net.p2p.node.quic.max-queued-bytes", queued_bytes);
+   auto client = make_p2p_app(std::make_shared<memory_driver>(), std::move(client_config));
+   auto cleanup = boost::scope::scope_exit{[&] {
+      shutdown_transport_app(*client);
+      shutdown_transport_app(*server);
+   }};
+   transport_run(*server, server->startup(), "server production startup");
+   transport_run(*client, client->startup(), "client production startup");
+   const auto server_api = server->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto client_api = client->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto server_reads = server->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto client_reads = client->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto expected_client = p2p::make_peer_id_from_certificate_pem(client_identity.certificate_pem);
+   BOOST_CHECK(client_api->local_peer() == expected_client);
+   const auto endpoint = server_api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   const auto protocol = p2p::protocol_id{"/stage7/transport-queue/1"};
+   const auto server_raw = server->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   const auto client_raw = client->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   auto registration = server_raw->register_protocol(protocol, transport_echo());
+   const auto connected = transport_run(*client, client_api->connect(*endpoint,
+       {.expected_peer = server_api->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}), "authenticated QUIC connect");
+   BOOST_CHECK(connected.remote_peer == server_api->local_peer());
+   BOOST_CHECK(connected.identify_state == p2p::identify::state::identified);
+   BOOST_REQUIRE(transport_run(*client, await_secure_transport_sessions(client_reads, 1, server_api->local_peer()),
+       "client identified QUIC TLS session"));
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, expected_client),
+       "server identified QUIC TLS client identity"));
+   auto stream = transport_run(*client, client_raw->open(server_api->local_peer(), protocol,
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}), "open queue probe stream");
+   auto cancel = boost::scope::scope_exit{[&] { stream.request_cancel(); }};
+   BOOST_CHECK(stream.authentication() == p2p::peer_authentication::quic_tls);
+   const auto oversized = std::vector<std::uint8_t>(queued_bytes + 1, 0x7a);
+   BOOST_CHECK_EXCEPTION(transport_run(*client, stream.async_write(oversized), "oversized write rejection"),
+       forge::exceptions::base, [](const auto& error) {
+          return forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::backpressure_rejected);
+       });
+   const auto small = std::vector<std::uint8_t>{7, 8, 9};
+   transport_run(*client, stream.async_write_frame(small), "small write after rejection");
+   const auto response = transport_run(*client, stream.async_read_frame(), "small echo after rejection");
+   BOOST_CHECK(response == small);
+   transport_run(*client, stream.async_close(), "close queue probe stream");
+   cancel.set_active(false);
+   registration.close();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_quic_local_open_limit_rejects_and_reset_reuses_capacity) {
+   using namespace std::chrono_literals;
+   namespace p2p = forge::net::p2p;
+   const auto server_identity = forge::tests::p2p::make_identity_fixture("transport-stream-server");
+   const auto client_identity = forge::tests::p2p::make_identity_fixture("transport-stream-client");
+   auto server = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(server_identity));
+   auto config = secure_transport_config(client_identity);
+   constexpr auto active_limit = std::uint64_t{4};
+   config.set("plugins.net.p2p.node.quic.max-streams-per-connection", active_limit);
+   auto client = make_p2p_app(std::make_shared<memory_driver>(), std::move(config));
+   auto cleanup = boost::scope::scope_exit{[&] {
+      shutdown_transport_app(*client);
+      shutdown_transport_app(*server);
+   }};
+   transport_run(*server, server->startup(), "stream-limit server startup");
+   transport_run(*client, client->startup(), "stream-limit client startup");
+   const auto server_api = server->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto client_api = client->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto server_reads = server->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto client_reads = client->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto raw = client->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   const auto server_raw = server->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   const auto protocol = p2p::protocol_id{"/stage7/transport-active-streams/1"};
+   auto registration = server_raw->register_protocol(protocol, transport_echo());
+   const auto endpoint = server_api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   transport_run(*client, client_api->connect(*endpoint,
+       {.expected_peer = server_api->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}), "stream-limit authenticated connect");
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, client_api->local_peer()),
+       "server Identify complete before local stream budget probe"));
+   BOOST_REQUIRE(transport_run(*client, await_secure_transport_sessions(client_reads, 1, server_api->local_peer()),
+       "client Identify complete before local stream budget probe"));
+   auto streams = std::vector<p2p::stream>{};
+   auto cancel = boost::scope::scope_exit{[&] {
+      for (auto& stream : streams) { stream.request_cancel(); }
+   }};
+   const auto open_options = p2p::node::open_options{
+       .allow_relay = false, .timeout = 3s, .allow_hole_punch = false};
+   const auto small = std::vector<std::uint8_t>{1, 2, 3};
+   // identified starts initial Identify Push; native admission, not that state, witnesses FIN cleanup.
+   const auto cleanup_deadline = std::chrono::steady_clock::now() + 4s;
+   // This exercises local async_open_stream admission, not a global bidirectional hard count.
+   for (auto index = std::uint64_t{0}; index != active_limit; ++index) {
+      streams.push_back(transport_run(*client,
+          open_after_identify_cleanup(raw, server_api->local_peer(), protocol, open_options, cleanup_deadline),
+          "open configured active slot after observed Identify cleanup"));
+      BOOST_CHECK(streams.back().authentication() == p2p::peer_authentication::quic_tls);
+      transport_run(*client, streams.back().async_write_frame(small), "keep active slot usable");
+      BOOST_CHECK(transport_run(*client, streams.back().async_read_frame(), "active slot echo") == small);
+   }
+   BOOST_REQUIRE_EQUAL(streams.size(), active_limit);
+   BOOST_CHECK_EXCEPTION(transport_run(*client, raw->open(server_api->local_peer(), protocol, open_options),
+       "local open exceeds configured active limit"), forge::exceptions::base, [](const auto& error) {
+          return p2p::exceptions::is(error, p2p::exceptions::code::backpressure_rejected);
+       });
+   BOOST_TEST(client_reads->snapshot().connections.active_sessions == 1U);
+   streams.front().request_cancel();
+   BOOST_CHECK_EXCEPTION(transport_run(*client, streams.front().async_read(), "local reset terminal witness"),
+       forge::exceptions::base, [](const auto& error) {
+          return forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::stream_reset);
+       });
+   try { transport_run(*client, streams.front().async_close(), "join reset stream cleanup"); }
+   catch (const forge::exceptions::base& error) {
+      BOOST_CHECK(forge::net::transport::exceptions::is(error, forge::net::transport::exceptions::code::canceled) ||
+                  forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::stream_reset));
+   }
+   streams.push_back(transport_run(*client, raw->open(server_api->local_peer(), protocol, open_options),
+       "replacement open after joined reset"));
+   BOOST_CHECK(streams.back().authentication() == p2p::peer_authentication::quic_tls);
+   transport_run(*client, streams.back().async_write_frame(small), "replacement stream write");
+   BOOST_CHECK(transport_run(*client, streams.back().async_read_frame(), "replacement stream echo") == small);
+   // Neighbouring streams and the original connection survive the reset.
+   transport_run(*client, streams[1].async_write_frame(small), "neighbour write after reset");
+   BOOST_CHECK(transport_run(*client, streams[1].async_read_frame(), "neighbour echo after reset") == small);
+   BOOST_TEST(client_reads->snapshot().connections.active_sessions == 1U);
+   registration.close();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_quic_listener_connection_limit_denies_then_reuses_slot) {
+   using namespace std::chrono_literals;
+   namespace p2p = forge::net::p2p;
+   const auto server_identity = forge::tests::p2p::make_identity_fixture("transport-listener-server");
+   const auto first_identity = forge::tests::p2p::make_identity_fixture("transport-listener-first");
+   const auto denied_identity = forge::tests::p2p::make_identity_fixture("transport-listener-denied");
+   const auto replacement_identity = forge::tests::p2p::make_identity_fixture("transport-listener-replacement");
+   auto config = secure_transport_config(server_identity);
+   config.set("plugins.net.p2p.node.quic.max-connections", std::uint64_t{1});
+   auto server = make_p2p_app(std::make_shared<memory_driver>(), std::move(config));
+   auto first = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(first_identity));
+   auto denied = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(denied_identity));
+   auto replacement = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(replacement_identity));
+   auto cleanup = boost::scope::scope_exit{[&] {
+      shutdown_transport_app(*replacement);
+      shutdown_transport_app(*denied);
+      shutdown_transport_app(*first);
+      shutdown_transport_app(*server);
+   }};
+   for (auto* app : {server.get(), first.get(), denied.get(), replacement.get()}) {
+      transport_run(*app, app->startup(), "listener-limit production startup");
+   }
+   const auto server_api = server->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto first_api = first->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto denied_api = denied->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto replacement_api = replacement->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto server_reads = server->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto denied_reads = denied->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto endpoint = server_api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   const auto connect_options = p2p::node::connect_options{
+       .expected_peer = server_api->local_peer(), .allow_relay = false, .timeout = 3s,
+       .direct_attempt_timeout = 2s, .allow_hole_punch = false};
+   transport_run(*first, first_api->connect(*endpoint, connect_options), "occupy configured listener slot");
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, first_api->local_peer()),
+       "authenticated first listener occupant"));
+   const auto before = denied_reads->snapshot();
+   // Listener admission drops the extra Initial; the remote dial observes its bounded timeout.
+   BOOST_CHECK_EXCEPTION(transport_run(*denied, denied_api->connect(*endpoint, connect_options),
+       "dial while listener slot is occupied"), forge::exceptions::base, [](const auto& error) {
+          return p2p::exceptions::is(error, p2p::exceptions::code::timeout);
+       });
+   const auto after = denied_reads->snapshot();
+   BOOST_TEST(after.connections.active_sessions == 0U);
+   BOOST_TEST(after.resources.active_dials == before.resources.active_dials);
+   BOOST_TEST(after.resources.system.outbound_connections == before.resources.system.outbound_connections);
+   BOOST_TEST(after.resources.system.file_descriptors == before.resources.system.file_descriptors);
+   BOOST_TEST(after.resources.transient.outbound_connections == before.resources.transient.outbound_connections);
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, first_api->local_peer()),
+       "listener still retains only the first authenticated occupant"));
+   transport_run(*first, first_api->ping(server_api->local_peer(),
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}), "first occupant remains usable");
+   first->request_stop();
+   transport_run(*first, first->shutdown(), "release first listener connection slot");
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 0),
+       "server observes released connection slot"));
+   // A fresh peer avoids turning slot reuse into a dial-backoff timing test.
+   const auto connected = transport_run(*replacement, replacement_api->connect(*endpoint, connect_options),
+       "replacement uses released listener slot");
+   BOOST_CHECK(connected.remote_peer == server_api->local_peer());
+   BOOST_CHECK(connected.identify_state == p2p::identify::state::identified);
+   BOOST_REQUIRE(transport_run(*server,
+       await_secure_transport_sessions(server_reads, 1, replacement_api->local_peer()),
+       "authenticated replacement listener occupant"));
+   transport_run(*replacement, replacement_api->ping(server_api->local_peer(),
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}), "replacement connection remains usable");
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_rejects_unknown_named_peer_store_before_listening) {

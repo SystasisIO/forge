@@ -1765,6 +1765,7 @@ add_executable(
    plugins/p2p_configuration_api_tests.cpp
    plugins/p2p_resource_config_tests.cpp
    plugins/p2p_host_config_tests.cpp
+   plugins/p2p_transport_config_tests.cpp
    plugins/p2p_protocol_api_tests.cpp
    plugins/p2p_peer_api_tests.cpp
    plugins/p2p_peer_contribution_tests.cpp

@@ -61,6 +61,12 @@ static_assert(std::same_as<
 static_assert(std::same_as<
               decltype(forge::plugins::net::p2p::node::peer_state_config::max_peers),
               std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::tcp_config::security),
+              std::optional<forge::plugins::net::p2p::node::tcp_security>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::quic_config::max_queued_bytes),
+              std::optional<std::uint64_t>>);
 
 static_assert(std::same_as<
               decltype(std::declval<forge::plugins::net::p2p::node::api&>().publish_api(
@@ -180,6 +186,12 @@ int main() {
    connections.session_grace_period_ms = 0;
    identify.protocol_version = "/package/1";
    peer_state.max_peers = 7;
+   auto tcp = node_plugin::tcp_config{};
+   auto quic = node_plugin::quic_config{};
+   forge::schema::rules<node_plugin::tcp_config>::define().apply_defaults(tcp);
+   forge::schema::rules<node_plugin::quic_config>::define().apply_defaults(quic);
+   tcp.security = node_plugin::tcp_security::noise;
+   quic.max_queued_bytes = 65536;
    const auto invalid = node_plugin::exceptions::invalid_config{"package category probe"};
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
                   resources.system.max_connections.has_value() && *resources.system.max_connections == 0 &&
@@ -191,6 +203,11 @@ int main() {
                   peer_state.max_peers && *peer_state.max_peers == 7 && !peer_state.max_persistence_waiters &&
                   !config.connections.session_low_watermark && !config.identify.timeout_ms &&
                   !config.peer_state.max_peers &&
+                  tcp.security && *tcp.security == node_plugin::tcp_security::noise &&
+                  quic.max_queued_bytes && *quic.max_queued_bytes == 65536 &&
+                  !quic.max_connections && !quic.max_streams_per_connection &&
+                  !quic.max_inbound_queued_bytes && !quic.max_inbound_queued_packets &&
+                  !config.tcp.security && !config.quic.max_queued_bytes &&
                   invalid.code().value() == 3 &&
                   std::string{invalid.code().category().name()} == "forge.plugins.net.p2p.node" &&
                   config.topology_mode == forge::plugins::net::p2p::node::topology_mode::managed &&

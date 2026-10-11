@@ -79,6 +79,44 @@ sessions. API publications have separately established application ownership.
 Do not serialize validators, connection gates or callbacks into YAML; contribute
 typed code before startup and reuse node-side validation.
 
+## TCP And QUIC Configuration
+
+At pinned Go `9cfe2cc0`, `defaults.go` composes TLS and Noise as stream-security
+protocols independently of the QUIC transport. `p2p/transport/quic/transport.go`
+uses libp2p TLS identity for QUIC. Rust `22fb4c78`,
+`transports/quic/src/config.rs`, similarly owns its QUIC configuration separately
+from TCP security upgrades. The plugin therefore separates `tcp.security` from
+`quic` limits rather than inventing a uniform enforcement claim across transports.
+
+Forge's existing `quic_profile` passes transport limits to QUIC. Enforcement is
+in `engine_listener_impl`, `quic_engine_connector`, `quic_engine_connection`,
+`quic_engine_stream` and `engine_connection_impl`. Connection limits are local
+to a listener, outbound queued data belongs to a connection, and inbound queue
+bounds count UDP packets before processing. They are not interchangeable with
+Yamux windows or node-wide resource reservations. The native transport
+`max_frame_size` field has no enforcement in this path. The separate framed-stream
+API takes its own independent codec options, so neither is exposed as a P2P
+configuration setting. No framing or wire change is made. Local stream opens
+check active-stream count; incoming bidirectional credit is separately advertised.
+These are not a combined inbound/outbound ceiling, and unidirectional credit is
+separate. Native validation must reject stream credit above the QUIC `2^60` limit
+before it reaches ngtcp2 transport-parameter encoding.
+
+The adapter audit also reproduced an existing local-admission race: four opens
+waiting for remote credit could all allocate after `MAX_STREAMS`, leaving five
+active streams under a local limit of two. The native loop now rechecks local
+admission after every credit wait, before allocation on the connection strand.
+The regression uses authenticated QUIC, observes all four waiters, and sends a
+real ngtcp2 credit extension without changing either configured limit. It fails
+on the previous implementation and passes after the fix, including reset and
+joined cleanup. This is native Forge evidence, not a new Go/Rust interop claim.
+
+Required adapter evidence includes real authenticated TCP TLS and Noise
+exchanges, disjoint-security rejection, QUIC operation under TCP Noise-only
+selection, native stream/queue rejection and cleanup, atomic config rejection
+and startup freeze. Donor source inspection and local Forge pairs are separate
+from the final configured-path Go/Rust gate.
+
 ## PubSub Adapter Ownership
 
 The node-owned private PubSub service multiplexes consumer callbacks over one

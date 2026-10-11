@@ -83,4 +83,32 @@ void apply_peer_state(forge::net::p2p::peer_store::options& options, const peer_
    apply_size(options.max_persistence_waiters, value.max_persistence_waiters, "peer-state.max-persistence-waiters");
 }
 
+void apply_tcp(forge::net::p2p::node::options& options, const tcp_config& value) {
+   if (!value.security) { return; }
+   using native = forge::net::p2p::node::stream_security;
+   switch (*value.security) {
+   case tcp_security::tls_and_noise:
+      options.stream_security = native::tls_and_noise;
+      return;
+   case tcp_security::tls:
+      options.stream_security = native::tls;
+      return;
+   case tcp_security::noise:
+      options.stream_security = native::noise;
+      return;
+   }
+   FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Invalid P2P TCP security policy",
+                         forge::exceptions::ctx("field", "tcp.security"));
+}
+
+void apply_quic(forge::net::p2p::node::options& options, const quic_config& value) {
+   auto& limits = options.transport_limits;
+   apply_size(limits.max_connections, value.max_connections, "quic.max-connections");
+   apply_size(limits.max_streams_per_connection, value.max_streams_per_connection,
+              "quic.max-streams-per-connection");
+   apply_size(limits.max_queued_bytes, value.max_queued_bytes, "quic.max-queued-bytes");
+   apply_size(limits.max_inbound_queued_bytes, value.max_inbound_queued_bytes, "quic.max-inbound-queued-bytes");
+   apply_size(limits.max_inbound_queued_packets, value.max_inbound_queued_packets, "quic.max-inbound-queued-packets");
+}
+
 } // namespace forge::plugins::net::p2p::node

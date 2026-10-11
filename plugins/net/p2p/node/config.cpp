@@ -51,6 +51,10 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
        .default_value(forge::plugins::net::p2p::node::identify_config{});
    schema.field<&forge::plugins::net::p2p::node::config::peer_state>("peer-state")
        .default_value(forge::plugins::net::p2p::node::peer_state_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::tcp>("tcp")
+       .default_value(forge::plugins::net::p2p::node::tcp_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::quic>("quic")
+       .default_value(forge::plugins::net::p2p::node::quic_config{});
    schema.field<&forge::plugins::net::p2p::node::config::listen>("listen")
        .default_value(std::vector<std::string>{})
        .description("Listen endpoints, for example /ip4/0.0.0.0/udp/9443/quic-v1 or /ip4/0.0.0.0/tcp/4001");
@@ -306,5 +310,25 @@ forge::schema::rules<forge::plugins::net::p2p::node::peer_state_config>::define(
    schema.field<&config::hydration_page_limit>("hydration-page-limit");
    schema.field<&config::prune_page_limit>("prune-page-limit");
    schema.field<&config::max_persistence_waiters>("max-persistence-waiters");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::tcp_config>
+forge::schema::rules<forge::plugins::net::p2p::node::tcp_config>::define() {
+   using config = forge::plugins::net::p2p::node::tcp_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::security>("security");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::quic_config>
+forge::schema::rules<forge::plugins::net::p2p::node::quic_config>::define() {
+   using config = forge::plugins::net::p2p::node::quic_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::max_connections>("max-connections");
+   schema.field<&config::max_streams_per_connection>("max-streams-per-connection");
+   schema.field<&config::max_queued_bytes>("max-queued-bytes");
+   schema.field<&config::max_inbound_queued_bytes>("max-inbound-queued-bytes");
+   schema.field<&config::max_inbound_queued_packets>("max-inbound-queued-packets");
    return schema;
 }

@@ -381,6 +381,8 @@ void apply_config(plugin::impl& state, const config& config) {
    apply_connections(options.limits, config.connections);
    apply_identify(options, config.identify);
    apply_peer_state(options.peer_state, config.peer_state);
+   apply_tcp(options, config.tcp);
+   apply_quic(options, config.quic);
    options.limits.max_protocol_handlers = static_cast<std::size_t>(config.max_protocol_handlers);
    options.allow_insecure_test_mode = config.allow_insecure_test_mode;
    const auto has_identity = !certificate_secret.empty() && !private_key_secret.empty();

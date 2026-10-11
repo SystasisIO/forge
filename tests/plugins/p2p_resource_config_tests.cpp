@@ -22,6 +22,7 @@ module;
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -228,21 +229,43 @@ template<class Error> void check_error(int expected) {
 }
 
 boost::asio::awaitable<bool> await_identified_sessions(std::shared_ptr<np::diagnostics_api> reads,
-                                                     std::size_t count) {
+                                                     std::size_t count,
+                                                     p2p::peer_authentication authentication =
+                                                         p2p::peer_authentication::libp2p_tls) {
    const auto executor = co_await boost::asio::this_coro::executor;
    auto timer = boost::asio::steady_timer{executor};
    const auto deadline = std::chrono::steady_clock::now() + 4s;
    do {
       const auto state = reads->snapshot({.max_peers = 16, .max_sessions = 16});
-      if (state.sessions.size() == count && std::ranges::all_of(state.sessions, [](const auto& session) {
+      if (state.sessions.size() == count && std::ranges::all_of(state.sessions, [authentication](const auto& session) {
              return session.identify_state == p2p::identify::state::identified &&
-                 session.authentication == p2p::peer_authentication::libp2p_tls;
+                 session.authentication == authentication;
           })) { co_return true; }
       timer.expires_after(5ms);
       co_await timer.async_wait(boost::asio::use_awaitable);
    } while (std::chrono::steady_clock::now() < deadline);
    co_return false;
 }
+
+void configure_tcp(fixture& owner, std::string_view security, bool listen = false) {
+   owner.document.set(std::string{section} + ".tcp.security", std::string{security});
+   if (security == "tls") { owner.document.set(std::string{section} + ".relay.client-enabled", false); }
+   if (listen) {
+      owner.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
+   }
+   owner.configure();
+}
+
+void check_session_authentication(const fixture& owner, const p2p::node::session_info& connected,
+                                  p2p::peer_authentication authentication) {
+   const auto snapshot = owner.diagnostics->snapshot();
+   const auto session = std::ranges::find(snapshot.sessions, connected.id, &p2p::diagnostics::session::id);
+   BOOST_REQUIRE(session != snapshot.sessions.end());
+   BOOST_CHECK(session->authentication == authentication);
+   BOOST_CHECK(session->identify_state == p2p::identify::state::identified);
+   BOOST_TEST(!session->closed);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(p2p_resource_config_single_error_category_preserves_original_numbers) {
@@ -718,4 +741,128 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_peer_state_protocol_bound_rejects_identify_
           session.identify_state == p2p::identify::state::failed && !session.identify_error.empty();
    }));
    for (const auto& peer : state.peers) { BOOST_TEST(peer.protocols.size() <= 1U); }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_real_tcp_security_compatible_pairs_negotiate_tls_or_noise) {
+   using auth = p2p::peer_authentication;
+   for (const auto& [dial, accept, authentication] : std::array{
+            std::tuple{"tls-and-noise", "tls-and-noise", auth::libp2p_tls},
+            std::tuple{"tls", "tls", auth::libp2p_tls},
+            std::tuple{"noise", "noise", auth::noise},
+            std::tuple{"tls-and-noise", "tls", auth::libp2p_tls},
+            std::tuple{"tls", "tls-and-noise", auth::libp2p_tls},
+            std::tuple{"tls-and-noise", "noise", auth::noise},
+            std::tuple{"noise", "tls-and-noise", auth::noise}}) {
+      BOOST_TEST_CONTEXT(dial << " -> " << accept) {
+         fixture server, client;
+         configure_tcp(server, accept, true);
+         configure_tcp(client, dial);
+         server.start(); client.start();
+         const auto endpoint = server.host->local_endpoint();
+         BOOST_REQUIRE(endpoint);
+         const auto connected = client.run(client.host->connect(*endpoint,
+             {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+              .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+         BOOST_CHECK(connected.remote_peer == server.host->local_peer());
+         BOOST_TEST(connected.muxer.value == "/yamux/1.0.0");
+         check_session_authentication(client, connected, authentication);
+         BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 1, authentication)));
+         BOOST_CHECK_NO_THROW(client.run(client.host->ping(server.host->local_peer(),
+             {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false})));
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_real_tcp_disjoint_security_rejects_both_directions_without_session) {
+   for (const auto reverse : {false, true}) {
+      BOOST_TEST_CONTEXT("reverse=" << reverse) {
+         fixture server, client;
+         configure_tcp(server, reverse ? "tls" : "noise", true);
+         configure_tcp(client, reverse ? "noise" : "tls");
+         server.start(); client.start();
+         const auto endpoint = server.host->local_endpoint();
+         BOOST_REQUIRE(endpoint);
+         const auto before = client.diagnostics->snapshot();
+         BOOST_CHECK_EXCEPTION(client.run(client.host->connect(*endpoint,
+             {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+              .direct_attempt_timeout = 2s, .allow_hole_punch = false})), forge::exceptions::base,
+             [](const auto& error) {
+                return p2p::exceptions::is(error, p2p::exceptions::code::unsupported_protocol);
+             });
+         const auto after = client.diagnostics->snapshot();
+         BOOST_TEST(after.connections.active_sessions == 0U);
+         BOOST_TEST(after.sessions.empty());
+         BOOST_TEST(after.resources.active_dials == before.resources.active_dials);
+         BOOST_TEST(after.resources.system.outbound_connections == before.resources.system.outbound_connections);
+         BOOST_TEST(after.resources.system.file_descriptors == before.resources.system.file_descriptors);
+         BOOST_TEST(after.resources.transient.outbound_connections == before.resources.transient.outbound_connections);
+         const auto remote = server.diagnostics->snapshot();
+         BOOST_TEST(remote.connections.active_sessions == 0U);
+         BOOST_TEST(remote.sessions.empty());
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_invalid_mixed_candidates_and_frozen_updates_preserve_live_policy) {
+   fixture server;
+   configure_tcp(server, "noise", true);
+   server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{1});
+   server.configure();
+   const auto valid = server.document;
+   for (const auto& [path, number] : std::array{
+            std::pair{"quic.max-queued-bytes", std::uint64_t{0}},
+            std::pair{"quic.max-streams-per-connection", (std::uint64_t{1} << 60) + 1}}) {
+      server.document = valid;
+      server.document.set(std::string{section} + "." + path, number);
+      server.document.set(std::string{section} + ".tcp.security", "tls");
+      server.document.set(std::string{section} + ".relay.client-enabled", false);
+      server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
+      BOOST_CHECK_THROW(server.configure(), np::exceptions::invalid_config);
+   }
+   server.start(); // No successful configure after the invalid mixed candidates.
+   const auto endpoint = server.host->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   auto clients = std::vector<std::unique_ptr<fixture>>{};
+   for (auto index = 0; index != 2; ++index) {
+      auto client = std::make_unique<fixture>();
+      configure_tcp(*client, "noise");
+      client->start();
+      const auto connected = client->run(client->host->connect(*endpoint,
+          {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+           .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+      check_session_authentication(*client, connected, p2p::peer_authentication::noise);
+      clients.push_back(std::move(client));
+   }
+   BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 2, p2p::peer_authentication::noise)));
+   BOOST_REQUIRE(server.run(await_peer_records(server.diagnostics, 2)));
+   BOOST_REQUIRE_EQUAL(server.diagnostics->snapshot().peers.size(), 1U);
+   for (const auto& [path, number] : std::array{
+            std::pair{"quic.max-connections", std::uint64_t{17}},
+            std::pair{"quic.max-streams-per-connection", std::uint64_t{19}},
+            std::pair{"quic.max-queued-bytes", std::uint64_t{65536}},
+            std::pair{"quic.max-inbound-queued-bytes", std::uint64_t{131072}},
+            std::pair{"quic.max-inbound-queued-packets", std::uint64_t{29}}}) {
+      BOOST_TEST_CONTEXT(path) {
+         server.document = valid;
+         server.document.set(std::string{section} + "." + path, number);
+         server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
+         BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+         BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
+      }
+   }
+   server.document = valid;
+   server.document.set(std::string{section} + ".tcp.security", "tls-and-noise");
+   server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
+   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
+   server.document = valid;
+   server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
+   BOOST_CHECK_NO_THROW(server.configure());
+   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 2U);
+   BOOST_CHECK_NO_THROW(clients.front()->run(clients.front()->host->ping(server.host->local_peer(),
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false})));
+   server.node.request_stop();
+   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   server.run(server.node.shutdown());
+   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
 }

@@ -567,6 +567,49 @@ All three groups freeze at startup. Failed validation or a mixed post-start
 update preserves the old native and diagnostics settings atomically. Connection
 maintenance, Identify exchange and peer persistence still run only in the node.
 
+### TCP Security And QUIC Limits
+
+`tcp.security` selects `tls-and-noise` (native default), `tls` or `noise` for
+TCP/Yamux negotiation. It does not change QUIC's built-in TLS authentication.
+TLS-only TCP requires `relay.client-enabled: false`: the current native relay
+client needs Noise for its inner stream. Invalid combinations fail before
+listeners open, rather than silently enabling another security protocol.
+
+The optional `quic` fields overlay the existing native QUIC limits:
+
+| Field | Actual enforcement |
+| --- | --- |
+| `max-connections` | Per-listener connections, including listener-backed pending dials; not a node-wide outbound limit |
+| `max-streams-per-connection` | Active-stream check on local opens, plus advertised incoming bidirectional stream credit; not a combined inbound/outbound ceiling |
+| `max-queued-bytes` | Per-connection outbound data retained until acknowledgement or terminal cleanup |
+| `max-inbound-queued-bytes` | Per-connection queued UDP packet bytes, not application receive-buffer size |
+| `max-inbound-queued-packets` | Per-connection queued UDP packet count |
+
+Omitted fields preserve native defaults. Explicit zero is invalid; stream credit
+cannot exceed QUIC's `2^60` wire limit. Unidirectional stream credit remains a
+separate native setting, not part of this field. These are
+QUIC settings, not Yamux or private TCP budgets. Node-wide limits remain under
+`resources` and `max-sessions`. There is deliberately no `quic.max-frame-size`:
+P2P uses native byte streams, not the separate opt-in QUIC framed-stream API.
+Use the owning application protocol's message bounds instead; the Forge API
+binding has its independent `api.max-frame-size`.
+
+```yaml
+plugins:
+  net:
+    p2p:
+      node:
+        tcp:
+          security: tls-and-noise
+        quic:
+          max-streams-per-connection: 128
+          max-queued-bytes: 8388608
+```
+
+Both groups freeze at startup. A rejected update also leaves unrelated
+diagnostics settings unchanged. Mapping these policies does not by itself
+prove configured-path Go/Rust interoperability.
+
 ### Plugin 8.0 Consolidation Migration
 
 The maintainer approved this pre-stabilization source/package/configuration break.
