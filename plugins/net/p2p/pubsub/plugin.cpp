@@ -12,6 +12,7 @@ module;
 #include <string>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 module forge.plugins.net.p2p.pubsub.plugin;
 
@@ -24,6 +25,7 @@ import forge.exceptions;
 import forge.asio.gate;
 import forge.asio.notification;
 import forge.net.p2p.pubsub;
+import forge.net.p2p.identity;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.pubsub.api;
 import forge.plugins.net.p2p.pubsub.types;
@@ -42,7 +44,7 @@ forge::app::plugin_id plugin::id() const {
 }
 
 std::string plugin::version() const {
-   return "1.0.0";
+   return "2.0.0";
 }
 
 std::optional<forge::config::core::component_descriptor> plugin::describe_config() const {
@@ -64,7 +66,7 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
 boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
    auto source = context.apis()
                       .get<forge::plugins::net::p2p::node::pubsub_source>(
-                         {.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 1, .min_revision = 0})
+                         {.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2, .min_revision = 0})
                       .shared();
    impl_->initialize(std::move(source));
    return impl::ready_owned(impl_);

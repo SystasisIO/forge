@@ -9,6 +9,7 @@ struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
    std::shared_ptr<forge::plugins::net::p2p::node::pubsub_source> source;
    std::map<std::string, std::shared_ptr<topic_state>> topics;
    forge::asio::notification changed;
+   std::stop_source partial_stop;
    std::size_t active_operations = 0;
    std::size_t active_events = 0;
    std::uint64_t next_subscription = 1;
@@ -34,6 +35,19 @@ struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
    void finish_operation() noexcept;
    void finish_topic_operation(const std::shared_ptr<topic_state>& topic,
                                std::shared_ptr<handler_record>& record, bool subscribing) noexcept;
+   void finish_partial_operation(const std::shared_ptr<topic_state>& topic,
+                                 std::shared_ptr<partial_record>& record) noexcept;
+   [[nodiscard]] std::shared_ptr<partial_record> require_partial_locked(
+       const forge::net::p2p::pubsub::partial_topic& token, bool cleanup = false) const;
+   [[nodiscard]] std::shared_ptr<partial_record> admit_partial_event_locked(const std::weak_ptr<partial_record>& expected,
+       const forge::net::p2p::pubsub::partial_topic& token);
+   static forge::net::p2p::pubsub::handler full_dispatch(std::weak_ptr<impl> self);
+   static boost::asio::awaitable<void> receive_partial_owned(std::weak_ptr<impl> owner,
+       std::weak_ptr<partial_record> expected, forge::net::p2p::pubsub::partial_event event, std::stop_token native);
+   static boost::asio::awaitable<void> gossip_partial_owned(std::weak_ptr<impl> owner,
+       std::weak_ptr<partial_record> expected, forge::net::p2p::pubsub::partial_gossip_event event, std::stop_token native);
+   static boost::asio::awaitable<void> restore_full_owned(std::shared_ptr<impl> self,
+       std::shared_ptr<topic_state> topic, std::shared_ptr<forge::plugins::net::p2p::node::pubsub_source> source);
    void ensure_topic_allowed_locked(const forge::net::p2p::pubsub::topic& subject) const;
    void request_stop() noexcept;
    void configure(config value);

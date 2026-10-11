@@ -17,6 +17,7 @@ module;
 #include <utility>
 #include <variant>
 #include <vector>
+#include <stop_token>
 
 module forge.plugins.net.p2p.pubsub.plugin;
 
@@ -107,6 +108,8 @@ plugin::impl::handle_event_owned(std::shared_ptr<impl> self, forge::net::p2p::pu
          for (const auto& [_, record] : found->second->handlers) {
             if (record->committed && !record->removing) { handlers.push_back(record); }
          }
+         const auto& partial = found->second->partial;
+         if (partial && partial->committed && partial->admission) { handlers.push_back(partial->fallback); }
       }
       if (handlers.empty()) { co_return forge::net::p2p::pubsub::validation_result::ignore; }
       ++self->active_events;

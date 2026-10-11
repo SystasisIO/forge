@@ -41,6 +41,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include <stop_token>
+#include <stdexcept>
 
 #include "../quic_p2p/libp2p_identity_fixture.hxx"
 
@@ -676,6 +678,30 @@ struct subscribe_task_result {
 
 class fake_pubsub_source final : public forge::plugins::net::p2p::node::pubsub_source {
  public:
+   boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler callback, forge::net::p2p::pubsub::partial_options options) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return forge::net::p2p::pubsub::partial_topic{};
+   }
+   boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
+   boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
+   boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
+   boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> async_partial_peers(forge::net::p2p::pubsub::partial_topic token) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return std::vector<forge::net::p2p::peer_id>{};
+   }
+   boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token, forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
    explicit fake_pubsub_source(std::shared_ptr<fake_pubsub_source_state> state) : state_{std::move(state)} {}
 
    void enable(forge::net::p2p::pubsub::options) override {
@@ -2908,7 +2934,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_api_rejects_facade_calls_before_initialize) {
    forge::asio::blocking::run(runtime, plugin.provide(provider));
 
    auto pubsub =
-       apis.get<forge::plugins::net::p2p::pubsub::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       apis.get<forge::plugins::net::p2p::pubsub::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
 
    BOOST_CHECK_THROW((void)pubsub->snapshot(), forge::plugins::net::p2p::pubsub::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)pubsub->subscriptions(), forge::plugins::net::p2p::pubsub::exceptions::plugin_not_initialized);
@@ -2944,7 +2970,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_requests_core_pubsub_capability_before_st
    forge::asio::blocking::run(app.runtime(), app.startup());
 
    auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    auto subscription = forge::asio::blocking::run(
        app.runtime(), pubsub->subscribe(forge::net::p2p::pubsub::topic{.value = "forge.local"},
                                         [](forge::plugins::net::p2p::pubsub::message)
@@ -2965,7 +2991,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_omits_unverified_author_from_unsigned_mes
    forge::asio::blocking::run(app.runtime(), app.startup());
 
    auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    const auto published = forge::asio::blocking::run(
        app.runtime(), pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.fake.unsigned"}, {1, 2, 3},
                                       forge::plugins::net::p2p::pubsub::publish_options{.sign = false}));
@@ -2983,7 +3009,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_serializes_first_join_per_topic) {
    forge::asio::blocking::run(app.runtime(), app.startup());
 
    auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    const auto topic = forge::net::p2p::pubsub::topic{.value = "forge.fake.pending"};
    auto first = std::make_shared<subscribe_task_result>();
    auto second = std::make_shared<subscribe_task_result>();
@@ -3041,7 +3067,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_failed_first_join_clears_pending_topic) {
    forge::asio::blocking::run(app.runtime(), app.startup());
 
    auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    const auto topic = forge::net::p2p::pubsub::topic{.value = "forge.fake.failed"};
    auto first = std::make_shared<subscribe_task_result>();
    auto second = std::make_shared<subscribe_task_result>();
@@ -3131,9 +3157,9 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_publishes_and_subscribes_raw_and_typed_me
 
    auto received = std::make_shared<received_pubsub_messages>();
    auto subscriber_pubsub = subscriber.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    auto publisher_pubsub = publisher.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
 
    const auto raw_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.raw"};
    const auto typed_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.typed"};
@@ -3259,9 +3285,9 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
 
    auto received = std::make_shared<received_pubsub_messages>();
    auto subscriber_pubsub = subscriber.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    auto publisher_pubsub = publisher.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
 
    const auto aggregate_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.aggregate"};
    const auto timeout_topic = forge::net::p2p::pubsub::topic{.value = "forge.plugins.timeout"};
@@ -3409,7 +3435,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_enforces_topic_policy_and_handler_bounds)
    forge::asio::blocking::run(app.runtime(), app.startup());
 
    auto pubsub = app.apis().get<forge::plugins::net::p2p::pubsub::api>(
-       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1, .min_revision = 0});
+       {.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2, .min_revision = 0});
    auto handler =
        [](forge::plugins::net::p2p::pubsub::message) -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
       co_return forge::net::p2p::pubsub::validation_result::ignore;

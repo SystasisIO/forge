@@ -1761,6 +1761,7 @@ add_executable(
    plugins/p2p_dht_api_tests.cpp
    plugins/p2p_host_event_api_tests.cpp
    plugins/p2p_pubsub_lifecycle_tests.cpp
+   plugins/p2p_pubsub_partial_tests.cpp
    plugins/http_server_tests.cpp
    plugins/net_identity_tests.cpp
    plugins/config_assertions.cpp
@@ -2795,6 +2796,17 @@ add_custom_target(
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
       --test-command forge_package_plugins_net_p2p_resolver
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
+   test_forge_package_plugins_net_p2p_pubsub
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_pubsub
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-pubsub
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_plugins_net_p2p_pubsub
    DEPENDS test_forge_package_install
 )
 add_custom_target(
@@ -3884,6 +3896,17 @@ add_test(
       --test-command forge_package_plugins_net_p2p_diagnostics
 )
 set_tests_properties(test_forge_package_plugins_net_p2p_diagnostics PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_plugins_net_p2p_pubsub
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_net_p2p_pubsub
+      ${CMAKE_BINARY_DIR}/forge-package-plugins-net-p2p-pubsub
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_plugins_net_p2p_pubsub
+)
+set_tests_properties(test_forge_package_plugins_net_p2p_pubsub PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_plugins_net_p2p_resolver
    COMMAND ${CMAKE_CTEST_COMMAND}

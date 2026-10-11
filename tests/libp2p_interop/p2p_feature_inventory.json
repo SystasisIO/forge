@@ -240,7 +240,7 @@
         "forge.plugins.net.p2p.node.types": [ "plugin.node" ]
       },
       "header_features": {},
-      "sha256": "ce52e00849e5377615ab57dbe66c1589e7b90c63aa77869e68ab314e8e06757a",
+      "sha256": "6361ae8e556fb6db664dfdb945467be1db1a7be4a500f49d25eb6063b166f525",
       "feature_ids": [ "plugin.node" ]
     },
     "plugin.p2p.resolver": {
@@ -281,7 +281,7 @@
         "forge.plugins.net.p2p.pubsub.types": [ "plugin.pubsub" ]
       },
       "header_features": {},
-      "sha256": "f18a8aa88190dfb73686700d5f67eb5b0a33d9c8ba295e72d7c614cef7617883",
+      "sha256": "29b20ddc1c953c455131df586a703bedc4d789a61179a7cfd1782eebbfabb6c4",
       "feature_ids": [ "plugin.pubsub" ]
     },
     "plugin.p2p.diagnostics": {

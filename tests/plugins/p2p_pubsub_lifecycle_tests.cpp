@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 import forge.api.core.handle;
 import forge.api.core.registry;
@@ -123,6 +124,30 @@ struct barrier {
 
 class controlled_source final : public node_plugin::pubsub_source {
  public:
+   boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler callback, forge::net::p2p::pubsub::partial_options options) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return forge::net::p2p::pubsub::partial_topic{};
+   }
+   boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
+   boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
+   boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
+   boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> async_partial_peers(forge::net::p2p::pubsub::partial_topic token) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return std::vector<forge::net::p2p::peer_id>{};
+   }
+   boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token, forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop) override {
+      throw std::logic_error{"Partial operation outside this ordinary-only source fixture"};
+      co_return;
+   }
    mutable std::mutex mutex;
    std::map<std::string, std::shared_ptr<core::handler>> handlers;
    std::map<std::string, std::shared_ptr<barrier>> joins;
@@ -242,7 +267,7 @@ struct fixture {
       run(owner->provide(provider));
       run(owner->initialize(context));
       run(owner->startup());
-      api = apis.get<facade::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1}).shared();
+      api = apis.get<facade::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2}).shared();
    }
 
    ~fixture() {
@@ -323,6 +348,24 @@ struct retiring_capture {
 // Only the return from the real source's join is held, after its native mutation.
 class held_native_source final : public node_plugin::pubsub_source {
  public:
+   boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> async_enable_partial(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler callback, forge::net::p2p::pubsub::partial_options options) override {
+      return native->async_enable_partial(std::move(subject), std::move(callback), std::move(options));
+   }
+   boost::asio::awaitable<void> async_disable_partial(forge::net::p2p::pubsub::partial_topic token) override {
+      return native->async_disable_partial(std::move(token));
+   }
+   boost::asio::awaitable<void> async_advertise_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
+      return native->async_advertise_partial(std::move(token), std::move(group));
+   }
+   boost::asio::awaitable<void> async_forget_partial(forge::net::p2p::pubsub::partial_topic token, std::vector<std::uint8_t> group) override {
+      return native->async_forget_partial(std::move(token), std::move(group));
+   }
+   boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> async_partial_peers(forge::net::p2p::pubsub::partial_topic token) override {
+      return native->async_partial_peers(std::move(token));
+   }
+   boost::asio::awaitable<void> async_send_partial(forge::net::p2p::pubsub::partial_topic token, forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop) override {
+      return native->async_send_partial(std::move(token), std::move(peer), std::move(value), stop);
+   }
    std::shared_ptr<node_plugin::pubsub_source> native;
    std::shared_ptr<barrier> joined_topic;
    std::shared_ptr<barrier> leaving_topic;
@@ -372,7 +415,7 @@ struct native_source_fixture {
       auto provider = forge::api::core::installer{apis};
       run(node.provide(native_provider));
       source = std::make_shared<held_native_source>(native_apis.get<node_plugin::pubsub_source>(
-          {.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 1}).shared());
+          {.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2}).shared());
       apis.install<node_plugin::pubsub_source>(source);
       run(pubsub.provide(provider));
       run(node.initialize(context));
@@ -380,7 +423,7 @@ struct native_source_fixture {
       run(node.after_initialize());
       run(node.startup());
       run(pubsub.startup());
-      api = apis.get<facade::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 1}).shared();
+      api = apis.get<facade::api>({.id = {"forge.plugins.net.p2p.pubsub"}, .major = 2}).shared();
    }
 
    ~native_source_fixture() {

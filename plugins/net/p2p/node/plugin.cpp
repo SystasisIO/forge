@@ -22,6 +22,7 @@ module;
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 module forge.plugins.net.p2p.node.plugin;
 
@@ -125,7 +126,7 @@ forge::app::plugin_id plugin::id() const {
 }
 
 std::string plugin::version() const {
-   return "6.0.0";
+   return "7.0.0";
 }
 
 std::optional<forge::config::core::component_descriptor> plugin::describe_config() const {

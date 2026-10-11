@@ -30,6 +30,7 @@ struct config {
    std::vector<std::string> allowed_topics;
    std::vector<std::string> denied_topics;
    bool sign_publishes = true;
+   bool partial_messages = false;
 };
 
 struct publish_options {
@@ -78,7 +79,7 @@ struct snapshot {
 
 BOOST_DESCRIBE_STRUCT(config, (),
                       (max_topics, max_handlers_per_topic, max_active_handlers, max_message_size, handler_deadline_ms,
-                       allowed_topics, denied_topics, sign_publishes))
+                       allowed_topics, denied_topics, sign_publishes, partial_messages))
 BOOST_DESCRIBE_STRUCT(publish_options, (), (sign))
 BOOST_DESCRIBE_STRUCT(subscribe_options, (), (handler_deadline))
 BOOST_DESCRIBE_STRUCT(message, (), (source, author, subject, data, seqno))
@@ -91,30 +92,5 @@ BOOST_DESCRIBE_STRUCT(snapshot, (),
 } // namespace forge::plugins::net::p2p::pubsub
 
 export template <> struct forge::schema::rules<forge::plugins::net::p2p::pubsub::config> {
-   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::pubsub::config> define() {
-      auto schema = forge::schema::object<forge::plugins::net::p2p::pubsub::config>();
-      schema.field<&forge::plugins::net::p2p::pubsub::config::max_topics>("max-topics")
-         .default_value(std::uint64_t{1'024})
-         .range(1, 1'000'000);
-      schema.field<&forge::plugins::net::p2p::pubsub::config::max_handlers_per_topic>("max-handlers-per-topic")
-         .default_value(std::uint64_t{64})
-         .range(1, 1'000'000);
-      schema.field<&forge::plugins::net::p2p::pubsub::config::max_active_handlers>("max-active-handlers")
-         .default_value(std::uint64_t{4'096})
-         .range(1, 1'000'000);
-      schema.field<&forge::plugins::net::p2p::pubsub::config::max_message_size>("max-message-size")
-         .default_value(std::uint64_t{1024 * 1024})
-         .range(1, 1024 * 1024 * 1024);
-      schema.field<&forge::plugins::net::p2p::pubsub::config::handler_deadline_ms>("handler-deadline-ms")
-         .default_value(std::uint64_t{5'000})
-         .range(1, 86'400'000);
-      schema.field<&forge::plugins::net::p2p::pubsub::config::allowed_topics>("allowed-topics")
-         .default_value(std::vector<std::string>{})
-         .each_non_empty();
-      schema.field<&forge::plugins::net::p2p::pubsub::config::denied_topics>("denied-topics")
-         .default_value(std::vector<std::string>{})
-         .each_non_empty();
-      schema.field<&forge::plugins::net::p2p::pubsub::config::sign_publishes>("sign-publishes").default_value(true);
-      return schema;
-   }
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::pubsub::config> define();
 };

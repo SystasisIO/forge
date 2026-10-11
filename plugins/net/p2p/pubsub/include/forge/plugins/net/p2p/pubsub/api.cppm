@@ -8,6 +8,7 @@ module;
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 export module forge.plugins.net.p2p.pubsub.api;
 
@@ -21,6 +22,7 @@ import forge.api.core.registry;
 import forge.api.core.binding;
 import forge.api.core.dispatcher;
 import forge.net.p2p.pubsub;
+import forge.net.p2p.identity;
 import forge.plugins.net.p2p.pubsub.types;
 import forge.raw.raw;
 
@@ -39,6 +41,20 @@ class api : public forge::api::core::contract<api> {
    virtual boost::asio::awaitable<subscription> subscribe(forge::net::p2p::pubsub::topic subject, handler callback,
                                                           subscribe_options options = {}) = 0;
    virtual boost::asio::awaitable<void> unsubscribe(subscription value) = 0;
+   // One Partial owner per topic. Its required full fallback is not an ordinary subscription.
+   virtual boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> enable_partial(
+       forge::net::p2p::pubsub::topic subject, handler full_fallback,
+       forge::net::p2p::pubsub::partial_options options, subscribe_options fallback_options = {}) = 0;
+   // Retires admission without waiting for already admitted callbacks (including the caller).
+   virtual boost::asio::awaitable<void> disable_partial(forge::net::p2p::pubsub::partial_topic token) = 0;
+   virtual boost::asio::awaitable<void> advertise_partial(forge::net::p2p::pubsub::partial_topic token,
+                                                         std::vector<std::uint8_t> group) = 0;
+   virtual boost::asio::awaitable<void> forget_partial(forge::net::p2p::pubsub::partial_topic token,
+                                                      std::vector<std::uint8_t> group) = 0;
+   virtual boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>>
+   partial_peers(forge::net::p2p::pubsub::partial_topic token) = 0;
+   virtual boost::asio::awaitable<void> send_partial(forge::net::p2p::pubsub::partial_topic token,
+       forge::net::p2p::peer_id peer, forge::net::p2p::pubsub::partial_message value, std::stop_token stop = {}) = 0;
    [[nodiscard]] virtual std::vector<subscription> subscriptions() const = 0;
    [[nodiscard]] virtual snapshot snapshot() const = 0;
 
@@ -72,4 +88,4 @@ class api : public forge::api::core::contract<api> {
 
 } // namespace forge::plugins::net::p2p::pubsub
 
-FORGE_EXPORT_API(::forge::plugins::net::p2p::pubsub::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.pubsub", 1, 0))
+FORGE_EXPORT_API(::forge::plugins::net::p2p::pubsub::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.pubsub", 2, 0))

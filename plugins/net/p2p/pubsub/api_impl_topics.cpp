@@ -17,6 +17,7 @@ module;
 #include <string>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 module forge.plugins.net.p2p.pubsub.plugin;
 
@@ -25,6 +26,7 @@ import forge.asio.notification;
 import forge.exceptions;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.pubsub;
+import forge.net.p2p.identity;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.pubsub.api;
 import forge.plugins.net.p2p.pubsub.exceptions;
@@ -74,7 +76,7 @@ boost::asio::awaitable<subscription> plugin::api_impl::subscribe_transition(
          FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P PubSub topic limit reached");
       }
       topic = found == self->topics.end() ? candidate : found->second;
-      if (topic->handlers.size() >= self->settings.max_handlers_per_topic ||
+      if (topic->handlers.size() + static_cast<std::size_t>(static_cast<bool>(topic->partial)) >= self->settings.max_handlers_per_topic ||
           self->next_subscription == (std::numeric_limits<std::uint64_t>::max)()) {
          FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P PubSub subscription limit reached");
       }
@@ -170,7 +172,10 @@ boost::asio::awaitable<void> plugin::api_impl::unsubscribe_transition(
    {
       const auto lock = std::scoped_lock{self->mutex};
       (void)self->require_source_locked();
-      leave = true;
+      // A pre-gate reservation owns quota, not the native topic. The same gate excludes
+      // an in-progress enable/repair, so only a committed or dirty native owner can retain it.
+      const auto& partial = topic->partial;
+      leave = !partial || !(partial->committed || partial->attempted || partial->cleanup_pending);
       for (const auto& [id, other] : topic->handlers) {
          if (id != value.id && other->committed) { leave = false; break; }
       }

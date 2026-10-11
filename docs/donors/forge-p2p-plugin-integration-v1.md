@@ -79,6 +79,20 @@ cache and callback accounting, a reset at the first of two recipients, and
 caller/node cancellation while Yamux send credit blocks a write. These local
 tests do not replace the Stage 7 configured-path donor checks.
 
+The official Partial facade reuses native generation tokens. Its required full
+fallback participates in the existing full-handler aggregation, while partial
+callbacks retain their own admission and cancellation state. A queued enable
+reservation is not a native subscription owner: cancellation before acquiring
+the transition gate must not prevent the last ordinary owner from leaving.
+The deterministic regression checks native leave count, native topic count and
+plugin quota reuse, and was also verified to fail with the former predicate.
+
+Full downgrade, blocked send cancellation, stale tokens, deferred awaitable
+lifetime, shutdown capture destruction and real TCP full delivery are covered
+by the plugin tests. Package tests separately check the installed public
+contract without importing a private node-plugin dependency into the PubSub
+consumer. None of these checks claims a new Go/Rust wire implementation.
+
 ## Evidence Boundaries
 
 No new donor compatibility claim follows from compiling a plugin adapter. The

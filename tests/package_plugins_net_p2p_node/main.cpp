@@ -19,6 +19,7 @@ import forge.net.p2p.identity;
 import forge.net.p2p.ipns;
 import forge.net.p2p.protocol;
 import forge.net.p2p.provider_registration;
+import forge.net.p2p.pubsub;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.host_event_source;
@@ -33,6 +34,11 @@ static_assert(std::same_as<
 namespace p2p = forge::net::p2p;
 using dht_api = forge::plugins::net::p2p::node::dht_api;
 using host_event_source = forge::plugins::net::p2p::node::host_event_source;
+using pubsub_source = forge::plugins::net::p2p::node::pubsub_source;
+
+static_assert(std::same_as<decltype(std::declval<pubsub_source&>().async_enable_partial(
+    p2p::pubsub::topic{}, p2p::pubsub::handler{}, p2p::pubsub::partial_options{})),
+    boost::asio::awaitable<p2p::pubsub::partial_topic>>);
 
 static_assert(std::same_as<decltype(std::declval<const host_event_source&>().reachability_status()), p2p::host_event>);
 static_assert(std::same_as<decltype(std::declval<const host_event_source&>().host_events()), p2p::host_event_subscription>);
@@ -62,6 +68,7 @@ int main() {
    const auto config = forge::plugins::net::p2p::node::config{};
    const auto dht = dht_api::describe();
    const auto events = host_event_source::describe();
+   const auto pubsub = pubsub_source::describe();
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
                   config.topology_mode == forge::plugins::net::p2p::node::topology_mode::managed &&
                   config.topology_target == 160 && dht.id.value == "forge.plugins.net.p2p.node.dht" &&
@@ -69,7 +76,10 @@ int main() {
                   dht.supported_surfaces == forge::api::core::surface::local && dht.methods.empty() &&
                   events.id.value == "forge.plugins.net.p2p.node.host_event_source" &&
                   events.version.major == 1 && events.version.revision == 0 &&
-                  events.supported_surfaces == forge::api::core::surface::local && events.methods.empty()
+                  events.supported_surfaces == forge::api::core::surface::local && events.methods.empty() &&
+                  pubsub.id.value == "forge.plugins.net.p2p.node.pubsub_source" &&
+                  pubsub.version.major == 2 && pubsub.version.revision == 0 &&
+                  pubsub.supported_surfaces == forge::api::core::surface::local && pubsub.methods.empty()
               ? 0
               : 1;
 }

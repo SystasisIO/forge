@@ -1,6 +1,7 @@
 #pragma once
 
 #include "handler_record.hxx"
+#include "partial_record.hxx"
 
 namespace forge::plugins::net::p2p::pubsub {
 
@@ -8,6 +9,7 @@ struct topic_state {
    forge::net::p2p::pubsub::topic subject;
    forge::asio::gate transition;
    std::map<std::uint64_t, std::shared_ptr<handler_record>> handlers;
+   std::shared_ptr<partial_record> partial;
    std::size_t participants = 0;
    bool joined = false;
    bool native_dirty = false;

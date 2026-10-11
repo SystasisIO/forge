@@ -3,10 +3,14 @@ add_library(
       descriptor.cpp
       plugin.cpp
       config.cpp
+      types.cpp
       project_message.cpp
       plugin_impl.cpp
       plugin_impl_lifecycle.cpp
+      plugin_impl_partial.cpp
       api_impl_topics.cpp
+      api_impl_partial.cpp
+      api_impl_partial_operations.cpp
       api_impl.cpp
 )
 forge_target_modules_at(forge_plugins_net_p2p_pubsub plugins/net/p2p/pubsub)

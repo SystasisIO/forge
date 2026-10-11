@@ -12,6 +12,7 @@ module;
 #include <string>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 module forge.plugins.net.p2p.pubsub.plugin;
 

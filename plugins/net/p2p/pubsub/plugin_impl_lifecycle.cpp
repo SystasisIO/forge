@@ -17,6 +17,7 @@ module;
 #include <string>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 module forge.plugins.net.p2p.pubsub.plugin;
 
@@ -68,7 +69,7 @@ void plugin::impl::finish_topic_operation(const std::shared_ptr<topic_state>& to
       if (subscribing && !record->committed) { topic->handlers.erase(record->id); }
       if (!subscribing) { record->removing = false; }
       --topic->participants;
-      if (topic->participants == 0 && topic->handlers.empty() && !topic->native_dirty) {
+      if (topic->participants == 0 && topic->handlers.empty() && !topic->partial && !topic->native_dirty) {
          const auto found = topics.find(topic->subject.value);
          if (found != topics.end() && found->second == topic) { topics.erase(found); }
       }
@@ -134,6 +135,8 @@ void plugin::impl::request_stop() noexcept {
       const auto lock = std::scoped_lock{mutex};
       stopping = true;
    }
+   // Active retired records also subscribe to this shared stop source.
+   partial_stop.request_stop();
    // No allocations or callbacks under mutex. Stopping prevents new topics from entering.
    for (;;) {
       auto topic = std::shared_ptr<topic_state>{};
@@ -225,13 +228,16 @@ boost::asio::awaitable<void> plugin::impl::shutdown_joined(std::shared_ptr<impl>
          }
          if (!topic) { break; }
          auto handlers = std::map<std::uint64_t, std::shared_ptr<handler_record>>{};
+         auto partial = std::shared_ptr<partial_record>{};
          auto leave = false;
          {
             const auto lock = std::scoped_lock{self->mutex};
             handlers.swap(topic->handlers);
+            partial = std::move(topic->partial);
             leave = topic->native_dirty;
          }
          handlers.clear();
+         if (partial) { partial->stop.request_stop(); partial.reset(); }
          if (!leave) { continue; }
          auto error = std::exception_ptr{};
          try { co_await source->async_leave_topic(topic->subject); }

@@ -44,7 +44,7 @@ isolated codec and interop fixtures do not promote this plugin to production.
 - Package component: `plugins_net_p2p_node`
 - Plugin id: `forge.plugins.net.p2p.node`
 - Main API id: `forge.plugins.net.p2p.node`
-- Plugin version: `6.0.0`
+- Plugin version: `7.0.0`
 - Main API contract: `2.0`
 - Extra API ids:
   - `forge.plugins.net.p2p.node.dht` (contract `1.0`, local only)
@@ -231,7 +231,14 @@ generation behind one stable node handler; an older handle cannot unregister
 the replacement. Raw `publish_protocol(...)` remains a pre-start-only route
 contribution and cannot share a protocol id with an API publication.
 
-Plugin 6.0 upgrades `forge.plugins.net.p2p.node.diagnostics_source` to contract
+Plugin 7.0 upgrades the local `forge.plugins.net.p2p.node.pubsub_source` to 2.0
+with exact native Partial registration operations. Source consumers must request
+major 2 and custom implementations must implement the added pure virtual methods.
+Async source calls retain their implementation before first suspension and hold
+the same native node during execution; full-topic leave retains stopped local
+cleanup. The node API remains 2.0 in this slice; no future node API 3.0 is claimed.
+
+Plugin 6.0 upgraded `forge.plugins.net.p2p.node.diagnostics_source` to contract
 `2.0`: diagnostics endpoint records now carry raw `multiaddr` values in their
 `address` field so DNS address carriers survive. Consumers must request major
 `2`; no v1 alias is provided. The private ObjectDB P2P cache marker is v3;

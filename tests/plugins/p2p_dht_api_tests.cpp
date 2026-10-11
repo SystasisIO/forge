@@ -220,7 +220,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_contract_is_local_and_rejects_before_startup) {
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0}) != nullptr);
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.diagnostics_source"}, .major = 2,
                               .min_revision = 0}) != nullptr);
-   BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 1,
+   BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.pubsub_source"}, .major = 2,
                               .min_revision = 0}) != nullptr);
    BOOST_TEST(node_plugin::dht_api::describe().methods.empty());
    BOOST_CHECK(node_plugin::dht_api::describe().supported_surfaces == forge::api::core::surface::local);

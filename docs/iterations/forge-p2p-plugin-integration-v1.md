@@ -291,8 +291,8 @@ gates pass, describe this as test integration with an evolving stack.
   preserving exact failure-count assertions. Both full suites then passed:
   62 control-queue cases and 129 plugin cases. Initial failures are retained;
   this does not substitute for final-head package or donor acceptance.
-- Partial-topic facade operations, protocol ownership, policy contributions
-  and the remaining configuration mapping are still pending.
+- Protocol ownership, policy contributions and the remaining configuration
+  mapping are still pending.
 - The native prerequisite for Partial facade ownership now supports exact-token
   downgrade to a full-only topic without deleting the full handler, mesh,
   scoring or cache. Token equality preserves owner identity after expiry but
@@ -307,6 +307,24 @@ gates pass, describe this as test integration with an evolving stack.
   70 control-queue cases and 129 plugin cases. Initial failure evidence is
   retained. This is native adapter groundwork, not a completed plugin facade
   or a new live donor result.
+- The plugin Partial facade now delegates enable/disable, advertisement,
+  discovery and sends using native generation tokens and required full-message
+  fallback. Pending fallback handlers count toward limits; cancellation reaches
+  native sends without holding the topic transition gate across their I/O.
+  PubSub API/plugin advance to 2.0/2.0.0, the node PubSub source to 2.0 and the
+  node plugin to 7.0.0. The main node contract is unchanged in this slice.
+- Independent review found that canceling a reserved Partial enable could leave
+  the last ordinary native subscription alive. The transition now distinguishes
+  a queued reservation from an attempted or committed native owner. The focused
+  regression passed 20 consecutive runs; temporarily restoring the old predicate
+  reproduced all three leak assertions, after which the fix was restored.
+- The corrected Partial facade passed 17 cases (100 assertions), including
+  real TCP delivery after downgrade. Both complete suites passed again:
+  70 native control-queue cases and 146 plugin cases. Structure (2,368 sources),
+  inventory and the independent installed PubSub package consumer passed.
+  Initial import/package-boundary and test-barrier failures remain in separate
+  logs; these were not counted as successful runs. This is another bounded
+  checkpoint, not whole-PR acceptance.
 - The complete Stage 7 runtime, package and donor gates remain pending; the
   DHT-slice result is not a whole-PR or production-readiness verdict.
 - Product migration remains out of scope.
