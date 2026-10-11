@@ -41,11 +41,11 @@ import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.diagnostics_api;
-import forge.plugins.net.p2p.node.diagnostics_types;
-import forge.plugins.net.p2p.node.diagnostics_exceptions;
-import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
@@ -75,7 +75,7 @@ forge::net::p2p::diagnostics::snapshot plugin::diagnostics_api_impl::take_snapsh
 std::shared_ptr<forge::net::p2p::node> plugin::diagnostics_api_impl::require_node() const {
    auto current = impl_->node_snapshot();
    if (!current) {
-      FORGE_THROW_EXCEPTION(diagnostics_exceptions::plugin_not_initialized, "P2P diagnostics is not initialized");
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P diagnostics is not initialized");
    }
    return current;
 }
@@ -118,7 +118,7 @@ std::vector<forge::net::p2p::diagnostics::peer> plugin::diagnostics_api_impl::pe
 forge::net::p2p::diagnostics::peer plugin::diagnostics_api_impl::peer(forge::net::p2p::peer_id value) const {
    auto values = peers(peer_filter{.peer = std::move(value), .limit = 1});
    if (values.empty()) {
-      FORGE_THROW_EXCEPTION(diagnostics_exceptions::not_found, "P2P diagnostics peer was not found");
+      FORGE_THROW_EXCEPTION(exceptions::not_found, "P2P diagnostics peer was not found");
    }
    return std::move(values.front());
 }

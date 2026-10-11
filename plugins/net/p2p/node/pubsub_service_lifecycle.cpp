@@ -28,9 +28,10 @@ import forge.exceptions;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.node;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/pubsub_policy.hxx"
 #include "details/pubsub_service.hxx"
@@ -42,7 +43,7 @@ std::shared_ptr<forge::net::p2p::node> pubsub_service::require_node_locked() con
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
    }
    if (!initialized || !source) {
-      FORGE_THROW_EXCEPTION(pubsub_exceptions::plugin_not_initialized, "P2P PubSub plugin is not initialized");
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P PubSub plugin is not initialized");
    }
    if (!settings.enabled) {
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::unsupported_protocol, "P2P PubSub is disabled");
@@ -89,7 +90,7 @@ void pubsub_service::ensure_topic_allowed_locked(const forge::net::p2p::pubsub::
    };
    if (subject.value.empty() || (!settings.allowed_topics.empty() && !contains(settings.allowed_topics)) ||
        contains(settings.denied_topics)) {
-      FORGE_THROW_EXCEPTION(pubsub_exceptions::topic_not_allowed, "P2P PubSub topic is not allowed",
+      FORGE_THROW_EXCEPTION(exceptions::topic_not_allowed, "P2P PubSub topic is not allowed",
                             forge::exceptions::ctx("topic", subject.value));
    }
 }
@@ -100,7 +101,7 @@ void pubsub_service::initialize(pubsub_config value, std::shared_ptr<forge::net:
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
    }
    if (initialized || !current) {
-      FORGE_THROW_EXCEPTION(pubsub_exceptions::invalid_config, "P2P PubSub is already initialized or has no node");
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P PubSub is already initialized or has no node");
    }
    // Policy was validated in the immutable node configuration candidate.
    settings = std::move(value);

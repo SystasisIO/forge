@@ -26,10 +26,11 @@ add_library(
       pubsub_service_partial.cpp
       pubsub_operations.cpp
       pubsub_policy.cpp
-      pubsub_types.cpp
       project_message.cpp
       diagnostics_policy.cpp
+      resource_policy.cpp
       config.cpp
+      configuration_policy.cpp
       plugin_impl.cpp
       plugin_impl_configuration.cpp
       object_dht_record_store_adapter.cpp
@@ -39,6 +40,8 @@ add_library(
       details/shutdown_attempt.hxx
       details/dht_api_impl.hxx
       details/configuration_api_impl.hxx
+      details/configuration_policy.hxx
+      details/parsed_policy.hxx
       details/configuration_snapshot.hxx
       details/object_dht_record_store_adapter.hxx
       details/object_peer_state_adapter.hxx
@@ -54,6 +57,7 @@ add_library(
       details/partial_record.hxx
       details/project_message.hxx
       details/diagnostics_policy.hxx
+      details/resource_policy.hxx
       details/api_publication_generation.hxx
       details/protocol_api_impl.hxx
       details/protocol_registration_state.hxx

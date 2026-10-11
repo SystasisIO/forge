@@ -57,7 +57,7 @@ import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 

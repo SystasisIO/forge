@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#include "config.hxx"
+#include "configuration_policy.hxx"
 #include "configuration_snapshot.hxx"
 #include "lifecycle_phase.hxx"
 #include "object_dht_record_store_adapter.hxx"

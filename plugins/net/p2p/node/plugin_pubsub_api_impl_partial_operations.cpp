@@ -28,9 +28,10 @@ import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.node;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/project_message.hxx"
 #include "details/pubsub_policy.hxx"
@@ -81,7 +82,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::group_owned(std::shared_pt
       const auto lock = std::scoped_lock{self->mutex};
       static_cast<void>(self->require_node_locked());
       if (self->require_partial_locked(token) != record) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::subscription_not_found, "Partial owner changed while waiting");
+         FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "Partial owner changed while waiting");
       }
    }
 
@@ -109,7 +110,7 @@ boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> plugin::pubsub_api
       const auto lock = std::scoped_lock{self->mutex};
       static_cast<void>(self->require_node_locked());
       if (self->require_partial_locked(token) != record) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::subscription_not_found, "Partial owner changed while waiting");
+         FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "Partial owner changed while waiting");
       }
    }
 

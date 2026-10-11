@@ -55,7 +55,7 @@ import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 
 namespace {
 namespace p2p = forge::net::p2p;

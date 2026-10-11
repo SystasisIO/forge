@@ -9,7 +9,7 @@ module forge.plugins.net.p2p.node.plugin;
 
 import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/project_message.hxx"
 

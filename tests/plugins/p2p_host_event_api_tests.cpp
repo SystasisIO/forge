@@ -57,9 +57,8 @@ import forge.plugins.crypto.secrets.types;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.diagnostics_api;
-import forge.plugins.net.p2p.node.diagnostics_exceptions;
-import forge.plugins.net.p2p.node.events_api;
 import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.events_api;
 import forge.plugins.net.p2p.node.plugin;
 
 namespace {
@@ -346,10 +345,10 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_contracts_are_node_owned_local_and_rejec
          BOOST_CHECK(environment.apis.describe({.id = {id}, .major = major}) == nullptr);
       }
    }
-   BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)reads->snapshot({.max_peers = 3}), node_plugin::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)reads->routing_status(routing_profile), node_plugin::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)reads->pubsub_scores(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->snapshot({.max_peers = 3}), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->routing_status(routing_profile), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->pubsub_scores(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)events->reachability_status(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)events->host_events(), node_plugin::exceptions::plugin_not_initialized);
 }
@@ -415,10 +414,10 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_unified_node_stop_wakes_pending_and_clos
    BOOST_TEST(!read_result(io, second, other).has_value());
    BOOST_TEST(!first.active());
    BOOST_TEST(!second.active());
-   BOOST_CHECK_THROW((void)fixture.snapshots()->snapshot(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)fixture.snapshots()->snapshot(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)fixture.snapshots()->routing_status(routing_profile),
-                     node_plugin::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)fixture.snapshots()->pubsub_scores(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+                     node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)fixture.snapshots()->pubsub_scores(), node_plugin::exceptions::plugin_not_initialized);
    auto late = boost::asio::co_spawn(io, first.async_read(), boost::asio::use_future);
    BOOST_TEST(!read_result(io, first, late).has_value());
 }
@@ -563,7 +562,7 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_native_reads_race_unified_shutdown_with_
                case 3: out.native_state = out.native_state && reads->pubsub_scores().peers.empty(); break;
             }
             ++out.completed;
-         } catch (const node_plugin::diagnostics_exceptions::plugin_not_initialized&) {
+         } catch (const node_plugin::exceptions::plugin_not_initialized&) {
             ++out.closed;
          }
          try {
@@ -602,7 +601,7 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_stop_before_initialize_cannot_reopen_adm
    environment.run(node.startup());
    BOOST_CHECK_THROW((void)events->reachability_status(), p2p::exceptions::canceled);
    BOOST_CHECK_THROW((void)events->host_events(), p2p::exceptions::canceled);
-   BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::exceptions::plugin_not_initialized);
    environment.run(node.shutdown());
 }
 
@@ -654,9 +653,9 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_late_handles_and_cold_native_read_surviv
    BOOST_TEST(!weak_owner.expired());
    BOOST_CHECK_THROW((void)events->host_events(), p2p::exceptions::canceled);
    BOOST_CHECK_THROW((void)events->reachability_status(), p2p::exceptions::canceled);
-   BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)reads->routing_status(routing_profile), node_plugin::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)reads->pubsub_scores(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->routing_status(routing_profile), node_plugin::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)reads->pubsub_scores(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_TEST(!subscription.active());
    events.reset();
    BOOST_TEST(!weak_owner.expired());

@@ -61,6 +61,15 @@ node leaf and role suffix and start at 1.0. Existing unaffected contracts retain
 their versions. The node plugin moves from 7.0.0 to 8.0.0 for this approved
 consolidation; the Forge project version is unchanged.
 
+The maintainer additionally approved a single plugin exceptions set and a
+canonical public value/configuration layout. `node.exceptions` owns the only
+plugin error category; `node.config` owns declarative settings, enums and schema
+declarations, with definitions in its paired `.cpp`; `node.types` owns consumer
+DTOs without a schema/config dependency. Retire role-specific types/exceptions
+modules without aliases. Keep coherent role API and ownership-token modules,
+not one large API facade. The original node error numbers 1--3 remain stable;
+the README specifies the consolidated PubSub/diagnostics code migration.
+
 Preserve ordinary and typed publishing/subscription, per-consumer callbacks,
 quotas, filtering, validation, Partial Messages and immutable registration
 tokens. Move the existing callback/registration machinery into one coherent
@@ -194,7 +203,7 @@ The remaining configuration work is grouped by the existing native owners:
 | Plugin owner | Configuration groups to map and test |
 | --- | --- |
 | Node | Transport/security selection, transport buffers, private-network secret and egress policy |
-| Node | Resource scopes, connection admission/pruning, Identify and peer-store bounds |
+| Node | Sparse resource scopes and counters; then connection admission/pruning, Identify and peer-store bounds |
 | Node | DNS resolver/expansion, dial staggering and black-hole detection, path policy |
 | Node | AutoNAT v1/v2 client/service, observed addresses, Ping and host-event bounds |
 | Node | mDNS families/interfaces/TTL and packet/peer bounds |
@@ -590,3 +599,38 @@ gates pass, describe this as test integration with an evolving stack.
   shutdown barrier changed. The failed original/labeled runs are retained;
   both independent source reviewers accepted the correction, and ten focused
   real-TCP repetitions passed (23 assertions each).
+- The resource/module checkpoint now consolidates plugin errors into one
+  `node.exceptions` category and public values into `node.config` (249 lines)
+  and `node.types` (97 lines). Schema definitions are out-of-line; private
+  mapping and parsed state keep exact pairs. Public modules decrease from 17
+  to 14 without removing role APIs or ownership tokens. The source gate rejects
+  reintroduced role-specific config/types/exceptions modules and extra plugin
+  error categories, with 13 positive/negative gate cases.
+- Sparse resource configuration maps nine scopes, eight budgets per scope and
+  four operational counters. Eight focused tests passed 11,943 assertions:
+  default preservation, explicit zero, YAML and invalid inputs, rollback,
+  startup freeze, one error category and native connection denial. A real
+  Secrets-supplied TLS/Identify/Yamux connection is the positive contrast; the
+  denied operation retains native backpressure and releases reservations.
+  Three authenticated peer records separately prove diagnostics rollback and
+  live bound changes. Persistence is explicitly in-memory in these fixtures;
+  they are not production-persistence or Go/Rust acceptance.
+- All eight scoped suites passed three consecutive runs each: plugins (204
+  cases), managed remote, DB Store with local MDBX/RocksDB, descriptor surfaces,
+  native PubSub control queue, structure, network-plugin structure and inventory.
+  Installed node, resolver and descriptor consumers built and ran. Package
+  consumers used a fresh dev-component install, without retired modules.
+  Builds used the coordinator's one tree with `-j4`; full CI was not run.
+- Both independent source reviewers closed the resource/module findings. Fixes
+  included the exact `parsed_policy.hxx` owner, cleanup joining before reporting
+  exceptions, an isolated YAML typo negative and an observable mixed-update
+  rollback. Initial build failures (a changed consumer import during dependency
+  scanning, a missing explicit test import and Boost.Test member-pointer
+  decomposition) are retained; no production bypass or weaker assertion was
+  introduced. Narrow-`size_t` overflow coverage is conditional, not a claim of
+  a 32-bit runtime run.
+- Next are connection admission/pruning, Identify and peer-state bounds, then
+  the other native policy groups above. Configured-path Go/Rust evidence and
+  whole-PR acceptance remain open. No donor support-state promotion, project
+  version change or merge approval follows from this checkpoint. Task-owned
+  package consumer builds were removed; the active Stage 7 build is retained.

@@ -10,6 +10,7 @@ module;
 
 export module forge.plugins.net.p2p.node.plugin;
 
+import forge.plugins.net.p2p.node.config;
 export import forge.plugins.net.p2p.node.descriptor;
 
 import forge.api.core.exceptions;

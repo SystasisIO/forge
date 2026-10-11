@@ -37,6 +37,7 @@ import forge.net.p2p.scoring;
 import forge.net.p2p.topology;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.protocol_registration;

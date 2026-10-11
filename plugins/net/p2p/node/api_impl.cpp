@@ -40,6 +40,7 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.scoring;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.protocol_registration;

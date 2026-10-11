@@ -27,8 +27,9 @@ import forge.asio.notification;
 import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.node;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/project_message.hxx"
 #include "details/pubsub_service.hxx"

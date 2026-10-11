@@ -55,12 +55,12 @@ import forge.net.p2p.lifecycle;
 import forge.net.p2p.node;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.stream;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
 
@@ -379,13 +379,13 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_contract_opt_in_and_required_handlers) {
    const auto old_options = np::detail::pubsub_options_for(old.settings);
    BOOST_CHECK(old_options.preferred == core::version::v1_1);
    BOOST_CHECK(!old_options.partial_messages);
-   BOOST_CHECK_THROW(old.enable(), facade::pubsub_exceptions::invalid_config);
+   BOOST_CHECK_THROW(old.enable(), facade::exceptions::invalid_config);
    auto f = fixture{};
    const auto options = np::detail::pubsub_options_for(f.settings);
    BOOST_CHECK(options.preferred == core::version::v1_3);
    BOOST_CHECK(options.partial_messages);
-   BOOST_CHECK_THROW(f.run(f.api->enable_partial({"partial"}, {}, callbacks())), facade::pubsub_exceptions::handler_limit);
-   BOOST_CHECK_THROW(f.run(f.api->enable_partial({"partial"}, accepting(), {})), facade::pubsub_exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->enable_partial({"partial"}, {}, callbacks())), facade::exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->enable_partial({"partial"}, accepting(), {})), facade::exceptions::handler_limit);
    const auto contract = np::pubsub_api::describe();
    BOOST_CHECK_EQUAL(contract.id.value, "forge.plugins.net.p2p.node.pubsub");
    BOOST_CHECK_EQUAL(contract.version.major, 1U);
@@ -422,14 +422,14 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_independent_owners_aggregate_and_exact_t
    f.run(f.api->disable_partial(token));
    BOOST_CHECK_EQUAL(f.api->subscriptions().size(), 1U);
    BOOST_CHECK(f.run(f.source->full_handler({"partial"})(f.event())) == core::validation_result::accept);
-   BOOST_CHECK_THROW(f.run(f.api->disable_partial(token)), facade::pubsub_exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->disable_partial(token)), facade::exceptions::subscription_not_found);
    const auto replacement = f.enable();
    BOOST_CHECK(token != replacement);
-   BOOST_CHECK_THROW(f.run(f.api->forget_partial(token, {1})), facade::pubsub_exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->forget_partial(token, {1})), facade::exceptions::subscription_not_found);
    auto other = fixture{};
    const auto foreign = other.enable();
-   BOOST_CHECK_THROW(f.run(f.api->partial_peers(foreign)), facade::pubsub_exceptions::subscription_not_found);
-   BOOST_CHECK_THROW(f.run(f.api->partial_peers({})), facade::pubsub_exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->partial_peers(foreign)), facade::exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->partial_peers({})), facade::exceptions::subscription_not_found);
    f.run(f.api->disable_partial(replacement));
    f.run(f.api->unsubscribe(next_ordinary));
    BOOST_CHECK_EQUAL(f.source->snapshot().topics, 0U);
@@ -444,8 +444,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_pending_fallback_reserves_limit_and_stop
       if (enabled.valid()) { try { joined(enabled); } catch (...) {} }
    }};
    f.source->enabling->await_entered();
-   BOOST_CHECK_THROW(f.run(f.api->subscribe({"partial"}, accepting())), facade::pubsub_exceptions::handler_limit);
-   BOOST_CHECK_THROW(f.enable(), facade::pubsub_exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->subscribe({"partial"}, accepting())), facade::exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.enable(), facade::exceptions::handler_limit);
    f.owner->request_stop();
    auto stopping = f.start(f.owner->shutdown());
    auto join_stop = boost::scope::scope_exit{[&] {
@@ -485,7 +485,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_canceled_reservation_cannot_retain_last_
    BOOST_REQUIRE_EQUAL(unsubscribe_context.poll_one(), 1U);
    BOOST_REQUIRE(leaving.wait_for(0ms) != std::future_status::ready);
    BOOST_REQUIRE_EQUAL(f.source->leaves.load(), 0U);
-   BOOST_CHECK_THROW(f.run(f.api->unsubscribe(ordinary)), facade::pubsub_exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->unsubscribe(ordinary)), facade::exceptions::subscription_not_found);
 
    enabling = boost::asio::co_spawn(enable_context,
        f.api->enable_partial({"partial"}, accepting(), callbacks()),
@@ -494,7 +494,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_canceled_reservation_cannot_retain_last_
    BOOST_REQUIRE(enabling.wait_for(0ms) != std::future_status::ready);
    BOOST_REQUIRE_EQUAL(f.source->enable_calls.load(), 0U);
    // The one ordinary slot plus the actual pending fallback fill the configured quota.
-   BOOST_CHECK_THROW(f.run(f.api->subscribe({"partial"}, accepting())), facade::pubsub_exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->subscribe({"partial"}, accepting())), facade::exceptions::handler_limit);
 
    // Cancel while the gate waiter is queued, but keep its cleanup executor paused.
    // Unsubscribe must not treat that still-visible reservation as a native owner.
@@ -543,7 +543,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_failed_downgrade_never_resurrects_admiss
    BOOST_CHECK_EXCEPTION(f.run(f.api->disable_partial(token)), std::runtime_error, [](const std::runtime_error& error) {
       return std::string{error.what()} == "controlled error after native downgrade";
    });
-   BOOST_CHECK_THROW(f.run(f.api->advertise_partial(token, {1})), facade::pubsub_exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->advertise_partial(token, {1})), facade::exceptions::subscription_not_found);
    f.run(old.receive(f.part(token), {}));
    BOOST_CHECK_EQUAL(received.load(), 0U);
    BOOST_CHECK_EQUAL(f.api->subscriptions().size(), 1U);
@@ -564,7 +564,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_failed_enable_and_restore_retain_cleanup
    BOOST_CHECK_EQUAL(f.source->snapshot().topics, 1U);
    f.source->fail_enable = false;
    f.source->fail_restore = false;
-   BOOST_CHECK_THROW(f.enable(), facade::pubsub_exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.enable(), facade::exceptions::handler_limit);
    BOOST_CHECK_EXCEPTION(f.run(f.api->subscribe({"partial"}, accepting())), std::runtime_error,
        [](const std::runtime_error& error) { return std::string{error.what()} == "controlled restore failure"; });
    f.owner->request_stop();

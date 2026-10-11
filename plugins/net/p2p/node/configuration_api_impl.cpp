@@ -41,6 +41,7 @@ import forge.exceptions;
 import forge.net.p2p.diagnostics;
 import forge.net.p2p.dht;
 import forge.net.p2p.connection_gater;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.endpoint;
@@ -60,7 +61,7 @@ import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 
 #include "details/plugin_impl.hxx"
-#include "details/config.hxx"
+#include "details/configuration_policy.hxx"
 #include "details/protocol_registry.hxx"
 
 #include "details/configuration_api_impl.hxx"

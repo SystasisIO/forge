@@ -18,8 +18,9 @@ import forge.config.core.component;
 import forge.config.core.decode;
 import forge.exceptions;
 import forge.net.p2p.pubsub;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.config;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/pubsub_policy.hxx"
 
@@ -30,11 +31,11 @@ void validate_topic_list(const std::vector<std::string>& values, std::string_vie
    auto seen = std::set<std::string>{};
    for (const auto& value : values) {
       if (value.empty()) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::invalid_config, "P2P PubSub topic policy contains empty topic",
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P PubSub topic policy contains empty topic",
                              forge::exceptions::ctx("list", std::string{name}));
       }
       if (!seen.insert(value).second) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::invalid_config,
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config,
                              "P2P PubSub topic policy contains duplicate topic",
                              forge::exceptions::ctx("list", std::string{name}), forge::exceptions::ctx("topic", value));
       }

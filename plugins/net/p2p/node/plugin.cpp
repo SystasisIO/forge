@@ -85,6 +85,7 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
 import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.configuration_api;
@@ -104,7 +105,7 @@ import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
 
-#include "details/config.hxx"
+#include "details/configuration_policy.hxx"
 #include "details/api_impl.hxx"
 #include "details/dht_api_impl.hxx"
 #include "details/configuration_api_impl.hxx"

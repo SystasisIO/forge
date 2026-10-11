@@ -51,6 +51,7 @@ import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.scoring;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
@@ -61,7 +62,7 @@ import forge.plugins.db.store.api;
 
 #include "details/plugin_impl.hxx"
 #include "details/pubsub_service.hxx"
-#include "details/config.hxx"
+#include "details/configuration_policy.hxx"
 #include "details/protocol_registry.hxx"
 
 namespace forge::plugins::net::p2p::node {

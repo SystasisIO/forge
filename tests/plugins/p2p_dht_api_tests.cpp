@@ -45,12 +45,11 @@ import forge.net.p2p.stream;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.net.p2p.node.diagnostics_api;
-import forge.plugins.net.p2p.node.diagnostics_exceptions;
+import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.pubsub_api;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
-import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 
 namespace {
@@ -471,7 +470,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
    BOOST_TEST(!retained.active());
    BOOST_TEST(routing.active == 1U);
    BOOST_TEST(routing.nonempty_buckets == 1U);
-   BOOST_CHECK_THROW((void)diagnostics->routing_status(providers), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)diagnostics->routing_status(providers), node_plugin::exceptions::plugin_not_initialized);
    // Both other hosts are stopped: this result must come from the server's stored advertisement.
    const auto stored_provider = forge::asio::blocking::run(
        server.runtime(), server_dht->find_providers(providers, key, {.requested_count = 1}));
@@ -532,7 +531,7 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_api_reports_native_pubsub_scores_over_authe
    BOOST_CHECK_NO_THROW((void)facade->pubsub_scores());
    forge::asio::blocking::run(client.runtime(), client.shutdown());
    client_cleanup.set_active(false);
-   BOOST_CHECK_THROW((void)facade->pubsub_scores(), node_plugin::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)facade->pubsub_scores(), node_plugin::exceptions::plugin_not_initialized);
    BOOST_CHECK(scores.peers.front().peer == server_peer);
    BOOST_TEST(scores.peers.front().app_specific_score == 6.0);
    BOOST_TEST(snapshot.messages_published == 1U);

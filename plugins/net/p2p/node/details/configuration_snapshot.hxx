@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "config.hxx"
+#include "configuration_policy.hxx"
 
 namespace forge::plugins::net::p2p::node::detail {
 

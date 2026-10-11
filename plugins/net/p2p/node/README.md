@@ -79,15 +79,18 @@ isolated codec and interop fixtures do not promote this plugin to production.
   - `forge.plugins.net.p2p.node.protocol_api`
   - `forge.plugins.net.p2p.node.protocol_registration`
   - `forge.plugins.net.p2p.node.pubsub_api`
-  - `forge.plugins.net.p2p.node.pubsub_types`
-  - `forge.plugins.net.p2p.node.pubsub_exceptions`
   - `forge.plugins.net.p2p.node.diagnostics_api`
-  - `forge.plugins.net.p2p.node.diagnostics_types`
-  - `forge.plugins.net.p2p.node.diagnostics_exceptions`
   - `forge.plugins.net.p2p.node.events_api`
   - `forge.plugins.net.p2p.node.peer_contribution`
+  - `forge.plugins.net.p2p.node.config`
   - `forge.plugins.net.p2p.node.types`
   - `forge.plugins.net.p2p.node.exceptions`
+
+`config` owns declarative settings, policy enums and their schema declarations;
+schema definitions live out-of-line in `config.cpp`. `types` owns consumer DTOs
+only and does not import configuration/schema. `exceptions` is the single plugin
+error set and category. Role APIs and owning registration tokens keep their own
+modules; no aggregate or forwarding modules are supplied.
 
 ## What It Provides Today
 
@@ -236,10 +239,10 @@ survive until the returned awaitable starts.
 `pubsub.enabled` defaults to false. Providing the role does not request native
 PubSub support. With no explicit opt-in, operations reject with native
 `unsupported`; before consumer initialization they reject with
-`pubsub_exceptions::plugin_not_initialized`. Stop closes new admission with native
+`exceptions::plugin_not_initialized`. Stop closes new admission with native
 `canceled`. Topic policy, missing registrations, capacity and message-size errors
 remain typed: `topic_not_allowed`, `subscription_not_found`, `handler_limit` and
-`message_too_large` live in `pubsub_exceptions`.
+`message_too_large` live in `exceptions`.
 
 Each topic serializes its native join/leave transitions independently. Pending
 subscriptions reserve topic and handler capacity before waiting. A failed last
@@ -307,13 +310,13 @@ Import `forge.plugins.net.p2p.node.diagnostics_api` and request
 diagnostics bounds; `snapshot(native_options)` uses the explicit options without
 replacing the configured defaults. `network()`, `resources()`, `pubsub()` and
 `peers(peer_filter)` use bounded snapshots. `peer(id)` throws
-`diagnostics_exceptions::not_found` when the bounded snapshot has no matching
+`exceptions::not_found` when the bounded snapshot has no matching
 peer. `only_connected`, `only_protected` and `limit` are local peer filters.
 
 `routing_status(profile)` and `pubsub_scores()` return native `dht::routing_status`
 and `pubsub::score_snapshot` values. Unknown DHT profiles retain native
 `unsupported_protocol`. Reads before native construction or after detach reject
-with `diagnostics_exceptions::plugin_not_initialized`; reads remain admitted after
+with `exceptions::plugin_not_initialized`; reads remain admitted after
 `request_stop()` until detach. A read copies the native owner and, for a default
 snapshot, its configured options before releasing the configuration mutex and
 delegating. A concurrent diagnostics-only update cannot alter that read's bounds.
@@ -476,6 +479,42 @@ the former PubSub source and upgraded the main node API to 3.0 for owned raw
 protocols. Plugin 8.0 consolidates those consumers as described below; the old
 source contracts are not a supported composition path.
 
+### Sparse Resource Limits
+
+`resources` maps the existing native scopes: `system`, `transient`, `peer`,
+`protocol`, `service`, `protocol-peer`, `service-peer`, `connection` and `stream`.
+Each scope accepts `max-memory` (bytes), `max-file-descriptors`,
+`max-inbound-connections`, `max-outbound-connections`, `max-connections`,
+`max-inbound-streams`, `max-outbound-streams` and `max-streams`.
+
+Missing or null individual budgets preserve that scope's native defaults.
+An empty scope also preserves defaults; a null scope is invalid. Explicit zero
+denies that resource, rather than selecting a default. Application order is native
+defaults, existing session-derived defaults, then explicit resource patches.
+Thus `max-sessions` never overwrites an explicit resource budget.
+
+```yaml
+plugins:
+  net:
+    p2p:
+      node:
+        resources:
+          system:
+            max-memory: 67108864
+            max-outbound-connections: 32
+          peer:
+            max-streams: 64
+          max-dial-attempts: 32
+          max-dial-attempts-per-peer: 4
+```
+
+The four resource counters `max-dial-attempts`, `max-dial-attempts-per-peer`,
+`max-relay-reservations` and `max-malformed-messages-per-peer` must be positive
+when supplied. Negative, fractional, overflowing and unknown fields are rejected
+before mutation. Only the exact application-shell-owned `enabled` selector is
+excluded from node's unknown-field check. Limits freeze with native policy at
+startup; rejected mixed updates do not partially change diagnostics bounds.
+
 ### Plugin 8.0 Consolidation Migration
 
 The maintainer approved this pre-stabilization source/package/configuration break.
@@ -490,9 +529,17 @@ are unchanged by role consolidation. No compatibility aliases are provided.
   `forge.plugins.net.p2p.node.pubsub` contract 1.0.
 - Replace diagnostics and events module imports with `node.diagnostics_api` and
   `node.events_api`, requesting the corresponding `forge.plugins.net.p2p.node`
-  role IDs at 1.0. Diagnostics records/exceptions move to `diagnostics_types` and
-  `diagnostics_exceptions`; PubSub records/exceptions move to `pubsub_types` and
-  `pubsub_exceptions`. The consumer snapshot is named `node::pubsub_snapshot`.
+  role IDs at 1.0. Import `node.types` for all consumer records, `node.config`
+  for declarative settings and policy enums, and `node.exceptions` for errors.
+  The consumer snapshot is named `node::pubsub_snapshot`.
+- Replace former `pubsub_exceptions` / `diagnostics_exceptions` catch types with
+  `node::exceptions::<same-name>`. Their category becomes
+  `forge.plugins.net.p2p.node`; any code/category comparisons must migrate too.
+  Node's existing `plugin_not_initialized=1`, `route_conflict=2` and
+  `invalid_config=3` remain unchanged. Consolidated codes are
+  `topic_not_allowed=4`, `subscription_not_found=5`, `handler_limit=6`,
+  `message_too_large=7` and `not_found=8`. Native P2P error categories/codes,
+  including cancellation and backpressure, remain native and unchanged.
 - Move config from `plugins.net.p2p.pubsub` and `plugins.net.p2p.diagnostics`
   underneath `plugins.net.p2p.node.pubsub` and `.diagnostics`, and explicitly
   enable PubSub when needed. Old standalone sections, including `enabled: false`,
@@ -667,7 +714,7 @@ descriptor or source API is required.
 
 ```cpp
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 import forge.net.p2p.pubsub;
 
 auto pubsub = context.apis().get<forge::plugins::net::p2p::node::pubsub_api>(

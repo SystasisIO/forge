@@ -23,9 +23,10 @@ import forge.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.node;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/pubsub_policy.hxx"
 #include "details/project_message.hxx"
@@ -66,7 +67,7 @@ boost::asio::awaitable<message> plugin::pubsub_api_impl::publish_owned(
       source = self->require_node_locked();
       self->ensure_topic_allowed_locked(subject);
       if (data.size() > self->settings.max_message_size) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::message_too_large, "P2P PubSub message exceeds configured limit",
+         FORGE_THROW_EXCEPTION(exceptions::message_too_large, "P2P PubSub message exceeds configured limit",
                                forge::exceptions::ctx("topic", subject.value));
       }
       sign = options.sign.value_or(self->settings.sign_publishes);

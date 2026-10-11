@@ -16,7 +16,7 @@ import forge.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.pubsub;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
+import forge.plugins.net.p2p.node.exceptions;
 
 #include "details/pubsub_operations.hxx"
 
@@ -57,7 +57,7 @@ pubsub_operations::pubsub_operations()
 void pubsub_operations::validate() const {
    if (!publish || !subscribe || !unsubscribe || !enable_partial || !disable_partial || !advertise_partial ||
        !forget_partial || !partial_peers || !send_partial) {
-      FORGE_THROW_EXCEPTION(pubsub_exceptions::invalid_config, "P2P PubSub native operations are incomplete");
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P PubSub native operations are incomplete");
    }
 }
 

@@ -41,6 +41,7 @@ import forge.net.p2p.pubsub;
 import forge.net.p2p.scoring;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.db.store.api;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;

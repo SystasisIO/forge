@@ -101,24 +101,21 @@ import forge.net.p2p.negotiation;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
 import forge.multiformats.multiaddr;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.api.p2p.authenticated_peer;
 import forge.api.p2p.binding;
 import forge.api.p2p.publication;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.crypto.secrets.api;
-import forge.plugins.net.p2p.node.diagnostics_types;
-import forge.plugins.net.p2p.node.diagnostics_exceptions;
+import forge.plugins.net.p2p.node.types;
+import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.diagnostics_api;
-import forge.plugins.net.p2p.node.pubsub_types;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
 import forge.plugins.net.p2p.node.pubsub_api;
 import forge.plugins.net.p2p.resolver.types;
 import forge.plugins.net.p2p.resolver.exceptions;
 import forge.plugins.net.p2p.resolver.api;
 import forge.plugins.net.p2p.resolver.plugin;
-import forge.plugins.net.p2p.node.types;
-import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
@@ -2298,15 +2295,15 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_api_rejects_facade_calls_before_initialize)
        {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0});
 
    BOOST_CHECK_THROW((void)diagnostics->snapshot(),
-                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)diagnostics->network(),
-                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)diagnostics->resources(),
-                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)diagnostics->pubsub(), forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)diagnostics->peers(), forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)diagnostics->pubsub(), forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)diagnostics->peers(), forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW((void)diagnostics->peer(test_peer(90)),
-                     forge::plugins::net::p2p::node::diagnostics_exceptions::plugin_not_initialized);
+                     forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_reports_live_p2p_node_state) {
@@ -2363,7 +2360,7 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_plugin_reports_live_p2p_node_state) {
 
    const auto server_record = diagnostics->peer(server_peer);
    BOOST_TEST(server_record.peer.to_string() == server_peer.to_string());
-   BOOST_CHECK_THROW((void)diagnostics->peer(test_peer(93)), forge::plugins::net::p2p::node::diagnostics_exceptions::not_found);
+   BOOST_CHECK_THROW((void)diagnostics->peer(test_peer(93)), forge::plugins::net::p2p::node::exceptions::not_found);
 
    forge::asio::blocking::run(client.runtime(), client.shutdown());
    forge::asio::blocking::run(server.runtime(), server.shutdown());
@@ -2736,12 +2733,12 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_api_rejects_facade_calls_before_initialize) {
    auto pubsub =
        apis.get<forge::plugins::net::p2p::node::pubsub_api>({.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 1, .min_revision = 0});
 
-   BOOST_CHECK_THROW((void)pubsub->snapshot(), forge::plugins::net::p2p::node::pubsub_exceptions::plugin_not_initialized);
-   BOOST_CHECK_THROW((void)pubsub->subscriptions(), forge::plugins::net::p2p::node::pubsub_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)pubsub->snapshot(), forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)pubsub->subscriptions(), forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(
            runtime, pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.before-init"}, {1, 2, 3})),
-       forge::plugins::net::p2p::node::pubsub_exceptions::plugin_not_initialized);
+       forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_rejects_invalid_typed_config_before_startup) {
@@ -2978,7 +2975,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_aggregates_handler_results_and_deadlines)
        subscriber_pubsub->subscribe(aggregate_topic,
                                     [](forge::plugins::net::p2p::node::message)
                                         -> boost::asio::awaitable<forge::net::p2p::pubsub::validation_result> {
-                                       throw forge::plugins::net::p2p::node::pubsub_exceptions::handler_limit{
+                                       throw forge::plugins::net::p2p::node::exceptions::handler_limit{
                                            "test handler failure"};
                                     }));
    (void)forge::asio::blocking::run(
@@ -3120,14 +3117,14 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_enforces_topic_policy_and_handler_bounds)
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(app.runtime(),
                                   pubsub->subscribe(forge::net::p2p::pubsub::topic{.value = "forge.allowed"}, handler)),
-       forge::plugins::net::p2p::node::pubsub_exceptions::handler_limit);
+       forge::plugins::net::p2p::node::exceptions::handler_limit);
    BOOST_CHECK_THROW(forge::asio::blocking::run(
                          app.runtime(), pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.denied"}, {1})),
-                     forge::plugins::net::p2p::node::pubsub_exceptions::topic_not_allowed);
+                     forge::plugins::net::p2p::node::exceptions::topic_not_allowed);
    BOOST_CHECK_THROW(
        forge::asio::blocking::run(
            app.runtime(), pubsub->publish(forge::net::p2p::pubsub::topic{.value = "forge.allowed"}, {1, 2, 3, 4, 5})),
-       forge::plugins::net::p2p::node::pubsub_exceptions::message_too_large);
+       forge::plugins::net::p2p::node::exceptions::message_too_large);
 
    forge::asio::blocking::run(app.runtime(), app.shutdown());
 }

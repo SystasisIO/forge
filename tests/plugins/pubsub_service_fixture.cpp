@@ -23,8 +23,9 @@ import forge.net.p2p.node;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.topology;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 
 #include "../../../plugins/net/p2p/node/details/pubsub_service.hxx"
 #include "../../../plugins/net/p2p/node/details/pubsub_policy.hxx"

@@ -1760,6 +1760,7 @@ add_executable(
    plugins/plugins_tests.cpp
    plugins/p2p_dht_api_tests.cpp
    plugins/p2p_configuration_api_tests.cpp
+   plugins/p2p_resource_config_tests.cpp
    plugins/p2p_protocol_api_tests.cpp
    plugins/p2p_peer_api_tests.cpp
    plugins/p2p_peer_contribution_tests.cpp
@@ -1784,6 +1785,7 @@ add_executable(
 target_link_libraries(
    test_forge_plugins
    forge_app
+   forge_codec_yaml
    forge_api_http
    forge_api_p2p
    forge_api_transport

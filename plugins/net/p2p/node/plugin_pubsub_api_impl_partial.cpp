@@ -28,9 +28,10 @@ import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.node;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/project_message.hxx"
 #include "details/pubsub_policy.hxx"
@@ -69,7 +70,7 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
     std::shared_ptr<detail::pubsub_service> self, forge::net::p2p::pubsub::topic subject, handler fallback,
     forge::net::p2p::pubsub::partial_options options, subscribe_options fallback_options) {
    if (!fallback || !options.receive || !options.gossip) {
-      FORGE_THROW_EXCEPTION(pubsub_exceptions::handler_limit, "Partial requires full fallback, receive and gossip handlers");
+      FORGE_THROW_EXCEPTION(exceptions::handler_limit, "Partial requires full fallback, receive and gossip handlers");
    }
    auto record = std::make_shared<partial_record>();
    record->fallback = std::make_shared<handler_record>();
@@ -85,15 +86,15 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
       source = self->require_node_locked();
       self->ensure_topic_allowed_locked(subject);
       if (!self->settings.partial_messages) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::invalid_config, "Partial Messages are disabled");
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Partial Messages are disabled");
       }
       const auto found = self->topics.find(subject.value);
       if (found == self->topics.end() && self->topics.size() >= self->settings.max_topics) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::handler_limit, "P2P PubSub topic limit reached");
+         FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P PubSub topic limit reached");
       }
       topic = found == self->topics.end() ? candidate : found->second;
       if (topic->partial || topic->handlers.size() >= self->settings.max_handlers_per_topic) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::handler_limit, "P2P Partial owner or handler limit reached");
+         FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P Partial owner or handler limit reached");
       }
       record->fallback->deadline = fallback_options.handler_deadline.count() > 0
           ? fallback_options.handler_deadline : to_ms(self->settings.handler_deadline_ms);
@@ -200,7 +201,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::disable_partial_transition
       const auto lock = std::scoped_lock{self->mutex};
       static_cast<void>(self->require_node_locked());
       if (topic->partial != record || record->token != token) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::subscription_not_found, "Partial owner changed");
+         FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "Partial owner changed");
       }
       repair = record->cleanup_pending;
       record->admission = record->committed = false;

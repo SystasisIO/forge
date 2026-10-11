@@ -29,9 +29,10 @@ import forge.net.p2p.exceptions;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/pubsub_policy.hxx"
 #include "details/project_message.hxx"
@@ -65,7 +66,7 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
     std::shared_ptr<detail::pubsub_service> self, forge::net::p2p::pubsub::topic subject,
     handler callback, subscribe_options options) {
    if (!callback) {
-      FORGE_THROW_EXCEPTION(pubsub_exceptions::handler_limit, "P2P PubSub subscription requires handler");
+      FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P PubSub subscription requires handler");
    }
    auto record = std::make_shared<handler_record>();
    record->subject = subject;
@@ -81,12 +82,12 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
       self->ensure_topic_allowed_locked(subject);
       const auto found = self->topics.find(subject.value);
       if (found == self->topics.end() && self->topics.size() >= self->settings.max_topics) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::handler_limit, "P2P PubSub topic limit reached");
+         FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P PubSub topic limit reached");
       }
       topic = found == self->topics.end() ? candidate : found->second;
       if (topic->handlers.size() + static_cast<std::size_t>(static_cast<bool>(topic->partial)) >= self->settings.max_handlers_per_topic ||
           self->next_subscription == (std::numeric_limits<std::uint64_t>::max)()) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::handler_limit, "P2P PubSub subscription limit reached");
+         FORGE_THROW_EXCEPTION(exceptions::handler_limit, "P2P PubSub subscription limit reached");
       }
       record->id = self->next_subscription++;
       record->deadline = options.handler_deadline.count() > 0
@@ -167,7 +168,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::unsubscribe_transition(
          }
       }
       if (!record || !record->committed || record->removing) {
-         FORGE_THROW_EXCEPTION(pubsub_exceptions::subscription_not_found, "P2P PubSub subscription was not found or is leaving");
+         FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "P2P PubSub subscription was not found or is leaving");
       }
       record->removing = true;
       ++topic->participants;

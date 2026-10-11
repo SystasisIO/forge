@@ -17,6 +17,7 @@ import forge.net.p2p.dht;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.node;
 import forge.net.p2p.scoring;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.node.exceptions;
 

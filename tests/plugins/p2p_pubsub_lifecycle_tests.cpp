@@ -45,10 +45,11 @@ import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.pubsub;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_exceptions;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 import forge.raw.raw;
 
 #include "../../../plugins/net/p2p/node/details/pubsub_operations.hxx"
@@ -429,8 +430,8 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_pending_reservations_enforce_both_limi
    hold->await_call();
    auto second = f.start(f.api->subscribe({"one"}, accepting()));
    f.settle();
-   BOOST_CHECK_THROW(f.run(f.api->subscribe({"one"}, accepting())), facade::pubsub_exceptions::handler_limit);
-   BOOST_CHECK_THROW(f.run(f.api->subscribe({"two"}, accepting())), facade::pubsub_exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->subscribe({"one"}, accepting())), facade::exceptions::handler_limit);
+   BOOST_CHECK_THROW(f.run(f.api->subscribe({"two"}, accepting())), facade::exceptions::handler_limit);
    hold->release();
    (void)joined(first);
    (void)joined(second);
@@ -493,7 +494,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_last_leave_serializes_new_join_and_rej
    hold->await_call();
    auto replacement = f.start(f.api->subscribe({"one"}, accepting()));
    f.settle();
-   BOOST_CHECK_THROW(f.run(f.api->unsubscribe(token)), facade::pubsub_exceptions::subscription_not_found);
+   BOOST_CHECK_THROW(f.run(f.api->unsubscribe(token)), facade::exceptions::subscription_not_found);
    BOOST_TEST(f.source->count(true, "one") == 1U);
    BOOST_CHECK(replacement.wait_for(0ms) != std::future_status::ready);
    hold->release();

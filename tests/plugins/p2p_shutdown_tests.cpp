@@ -38,7 +38,7 @@ import forge.net.p2p.diagnostics;
 import forge.net.p2p.identity;
 import forge.plugins.db.store.api;
 import forge.plugins.net.p2p.node.diagnostics_api;
-import forge.plugins.net.p2p.node.diagnostics_exceptions;
+import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 
 namespace {
@@ -319,7 +319,7 @@ BOOST_AUTO_TEST_CASE(p2p_shutdown_failed_durable_cleanup_is_shared_then_external
    BOOST_TEST(f.stores->cleanup_flushes == 2U);
    BOOST_TEST(f.stores->failed_flushes == 1U);
    BOOST_TEST(f.stores->owner.expired());
-   BOOST_CHECK_THROW((void)f.diagnostics->snapshot(), np::diagnostics_exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW((void)f.diagnostics->snapshot(), np::exceptions::plugin_not_initialized);
    BOOST_CHECK(first_error == second_error);
 
    auto terminal = f.start_shutdown();

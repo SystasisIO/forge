@@ -21,7 +21,7 @@ import forge.net.p2p.dht;
 import forge.net.p2p.protocol;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.resource_manager;
-import forge.plugins.net.p2p.node.diagnostics_types;
+import forge.plugins.net.p2p.node.types;
 
 export namespace forge::plugins::net::p2p::node {
 

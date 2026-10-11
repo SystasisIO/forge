@@ -101,9 +101,10 @@ Deterministic tests substitute fallible operations to prove compensation and
 joined cleanup after mutation; this is not a public provider API or another
 network runtime. Real configured-plugin fixtures separately exercise network
 delivery. Package tests import the installed node PubSub contract directly,
-not a private implementation or removed plugin component. Consolidation
-validation is pending; earlier adapter results are not evidence for the
-changed ownership. None of these checks claims a new Go/Rust wire implementation.
+not a private implementation or removed plugin component. Local consolidation
+regression results are recorded in the implementation plan; they do not replace
+configured-path donor acceptance for the completed Stage 7. None of these checks
+claims a new Go/Rust wire implementation.
 
 ## Native Diagnostics Delegation
 
@@ -190,6 +191,31 @@ Tests distinguish absent resources, zero-denial resource scopes, legacy
 normalization, callback presence without invocation, and QUIC limit boundaries.
 
 ## Configuration Ownership
+
+### Sparse Resource Limits
+
+At Go libp2p `9cfe2cc00be5b20a0be737f002c99f81b92255c5`,
+`p2p/host/resource-manager/limit_defaults.go` separates absent/default values
+from explicit denial: `LimitVal.UnmarshalJSON` converts an explicit numeric
+zero into `BlockAllLimit`; `ResourceLimits.Build` and `PartialLimitConfig.Build`
+overlay configured dimensions onto concrete defaults. The inspected ranges are
+lines 118-175, 297-346 and 447-489. This is configuration semantics, not a
+new wire protocol or a claim of identical numerical defaults.
+
+The node plugin uses optional budget fields for the same distinction. It maps
+native defaults, derived session-admission defaults and explicit resource
+patches in that order. Empty scopes must not replace finite native limits with
+the standalone native scope type's unlimited member defaults. An explicit zero
+must reach the existing native resource manager unchanged. Configuration
+mapping owns no reservations, counters or network workers.
+
+Required adapter evidence includes all scope/dimension mappings, untouched
+defaults, explicit denial, checked narrowing, nested unknown-field rejection
+and rejection without configuration mutation. A configured secure-capable TCP
+dial denied before authentication is resource-admission evidence, not proof of
+an authenticated connection or donor exchange.
+
+### Frozen Contributions
 
 Local composition installs native gater, DHT value-policy and PubSub callback
 objects. The

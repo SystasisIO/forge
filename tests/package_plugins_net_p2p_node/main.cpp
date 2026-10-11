@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -25,21 +26,29 @@ import forge.net.p2p.ipns;
 import forge.net.p2p.protocol;
 import forge.net.p2p.provider_registration;
 import forge.net.p2p.pubsub;
+import forge.plugins.net.p2p.node.config;
+import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.dht_api;
 import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.diagnostics_api;
 import forge.plugins.net.p2p.node.events_api;
 import forge.plugins.net.p2p.node.pubsub_api;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.net.p2p.node;
 import forge.net.p2p.stream;
-import forge.plugins.net.p2p.node.types;
 import forge.schema.object;
+
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::resource_config::scope_patch::max_connections),
+              std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::resource_config::max_dial_attempts),
+              std::optional<std::uint64_t>>);
 
 static_assert(std::same_as<
               decltype(std::declval<forge::plugins::net::p2p::node::api&>().publish_api(
@@ -147,7 +156,15 @@ int main() {
    auto pubsub_config = node_plugin::pubsub_config{};
    pubsub_config.partial_messages = true;
    forge::schema::rules<node_plugin::pubsub_config>::define().apply_defaults(pubsub_config);
+   auto resources = node_plugin::resource_config{};
+   forge::schema::rules<node_plugin::resource_config>::define().apply_defaults(resources);
+   resources.system.max_connections = 0;
+   const auto invalid = node_plugin::exceptions::invalid_config{"package category probe"};
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
+                  resources.system.max_connections.has_value() && *resources.system.max_connections == 0 &&
+                  !resources.system.max_memory && !resources.max_dial_attempts &&
+                  invalid.code().value() == 3 &&
+                  std::string{invalid.code().category().name()} == "forge.plugins.net.p2p.node" &&
                   config.topology_mode == forge::plugins::net::p2p::node::topology_mode::managed &&
                   config.topology_target == 160 && dht.id.value == "forge.plugins.net.p2p.node.dht" &&
                   dht.version.major == 1 && dht.version.revision == 0 &&

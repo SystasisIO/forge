@@ -18,9 +18,10 @@ import forge.net.p2p.diagnostics;
 import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.resource_manager;
+import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.diagnostics_api;
-import forge.plugins.net.p2p.node.diagnostics_exceptions;
-import forge.plugins.net.p2p.node.diagnostics_types;
+import forge.plugins.net.p2p.node.exceptions;
+import forge.plugins.net.p2p.node.types;
 
 #include "details/diagnostics_policy.hxx"
 

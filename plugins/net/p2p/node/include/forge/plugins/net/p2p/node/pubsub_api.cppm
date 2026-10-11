@@ -23,7 +23,7 @@ import forge.api.core.binding;
 import forge.api.core.dispatcher;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.identity;
-import forge.plugins.net.p2p.node.pubsub_types;
+import forge.plugins.net.p2p.node.types;
 import forge.raw.raw;
 
 export namespace forge::plugins::net::p2p::node {
