@@ -119,7 +119,7 @@ def _append_control(work, controls, process_role, kind, **fields):
 
 def run_case(spec, binaries, root, *, command_attempt):
     from plugin_pubsub_evidence import (
-        active_actor, command_done, delivery_ready, forge_ack, forge_delivery, ready_actor, validate_delivery,
+        active_actor, command_done, delivery_ready, donor_marker_written, forge_ack, forge_delivery, ready_actor, validate_delivery,
     )
     from pubsub_evidence import quiesce_ack, shutdown_ack
 
@@ -183,7 +183,11 @@ def run_case(spec, binaries, root, *, command_attempt):
     def forge_received(raw):
         active_actor(raw, spec, "victim", token, owners["victim"].ready["peer_id"])
         return forge_delivery(raw, spec, owners["replacement"].ready["peer_id"], token, before=before) is not None
-    wait("victim", forge_received)
+    received = wait("victim", forge_received)
+    delivered = forge_delivery(received, spec, owners["replacement"].ready["peer_id"], token, before=before)
+    # Topic.Publish completion and receiver delivery can precede publication of
+    # the donor's native-write receipt. Wait for that same signed message only.
+    wait("replacement", lambda raw: donor_marker_written(raw, spec, owners["victim"].ready["peer_id"], token, delivered))
     execute("victim", "sample", label="after-donor")
     validate_delivery({actor: _read(work / (actor + ".json")) for actor in ACTORS}, spec, token)
 

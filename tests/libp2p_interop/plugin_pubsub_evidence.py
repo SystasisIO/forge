@@ -192,6 +192,11 @@ def _input(raw, spec, remote, token, payload, event, direction):
             and message["seqno_hex"] == event["seqno_hex"] and bool(message["signature_hex"])]
 
 
+def donor_marker_written(raw, spec, remote, token, delivered):
+    active_actor(raw, spec, "replacement", token, delivered["author_peer"])
+    return bool(_input(raw, spec, remote, token, probes(spec, token)[2].encode(), delivered, "write"))
+
+
 def donor_delivery(raw, spec, remote, token, payload):
     _events(raw, spec.donor, token, "replacement", active=raw.get("finalized") is False)
     digest = hashlib.sha256(payload).hexdigest()

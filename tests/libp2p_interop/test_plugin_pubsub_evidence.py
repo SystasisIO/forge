@@ -6,10 +6,15 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from plugin_pubsub_cases import ACTORS, Case, case_specs, command, probes
+from plugin_pubsub_cases import (
+    ACTORS, CASE_SECONDS, Case, _append_control, _wait, case_specs, command, probes, run_case,
+)
 from plugin_pubsub_evidence import (
-    FORGE_SOURCES, _forge_connection, delivery_ready, forge_delivery, validate_case, validate_terminal_sources,
+    FORGE_SOURCES, _forge_connection, delivery_ready, donor_marker_written, forge_delivery,
+    validate_case, validate_delivery, validate_terminal_sources,
 )
 from pubsub_evidence import AUTHENTICATION, _same_json
 from rust_upgrade_evidence import _peer
@@ -479,6 +484,281 @@ class PluginPubSubEvidenceTests(unittest.TestCase):
             delivery = next(event for event in forge["events"] if event["kind"] == "subscription_delivery")
             forge["events"] = forge["events"][:delivery["sequence"]]
             self.assertIsNone(forge_delivery(forge, spec, record["endpoints"]["replacement"]["result"]["local_peer_id"], record["case_token"]))
+
+    def test_marker_wait_requires_matching_owned_signed_native_write(self):
+        for backend in ("mdbx", "rocksdb"):
+            for spec in case_specs(backend):
+                with self.subTest(spec=spec), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory).resolve()
+                    record = synthetic_record(spec, root)
+                    self.assert_positive_baseline(record, spec, root)
+                    forge = record["prepared"]["victim"]["result"]
+                    donor = record["prepared"]["replacement"]["result"]
+                    remote, token = forge["local_peer_id"], record["case_token"]
+                    delivered = forge_delivery(forge, spec, donor["local_peer_id"], token)
+                    self.assertIsNotNone(delivered)
+                    self.assertTrue(donor_marker_written(donor, spec, remote, token, delivered))
+                    marker = probes(spec, token)[2].encode()
+                    for mode in ("identity", "rpc-peer", "connection", "stream", "hash", "payload",
+                                 "author", "seqno", "topic", "signature", "direction"):
+                        with self.subTest(mode=mode):
+                            raw = deepcopy(donor)
+                            rpc = next(event for event in raw["events"] if event["kind"] == "rpc"
+                                       and event["direction"] == "write")
+                            if mode == "identity":
+                                raw["local_peer_id"] = peer_id(3)
+                            elif mode == "rpc-peer":
+                                rpc["peer_id"] = peer_id(3)
+                            elif mode == "connection":
+                                rpc["connection_id"] = "foreign"
+                            elif mode == "stream":
+                                rpc["stream_id"] = "foreign"
+                            elif mode == "hash":
+                                rpc["receipt"]["write"]["framed_sha256"] = "f" * 64
+                            else:
+                                body = field(1, _peer(peer_id(3) if mode == "author" else donor["local_peer_id"]))
+                                body += field(2, marker + b"!" if mode == "payload" else marker)
+                                body += field(3, (3 if mode == "seqno" else 2).to_bytes(8, "big"))
+                                body += field(4, ("foreign" if mode == "topic" else forge["topic"]).encode())
+                                if mode != "signature":
+                                    body += field(5, b"synthetic-signature")
+                                rpc["direction"] = "read" if mode == "direction" else "write"
+                                if mode == "direction" and spec.donor == "go":
+                                    rpc["source"] = "go.pubsub.native_stream.read"
+                                rpc["receipt"] = receipt(field(2, body), rpc["direction"])
+                            if mode in ("identity", "rpc-peer", "connection", "stream", "hash"):
+                                with self.assertRaises(ValueError):
+                                    donor_marker_written(raw, spec, remote, token, delivered)
+                            else:
+                                self.assertFalse(donor_marker_written(raw, spec, remote, token, delivered))
+                            with self.assertRaises(ValueError):
+                                validate_delivery({"victim": forge, "replacement": raw}, spec, token)
+
+    def test_delayed_marker_write_receipt_waits_without_republishing(self):
+        for implementation in ("go", "rust"):
+            with self.subTest(implementation=implementation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                spec = Case("rocksdb", implementation, "yaml-only")
+                record = synthetic_record(spec, root)
+                self.assert_positive_baseline(record, spec, root)
+                forge = record["prepared"]["victim"]["result"]
+                donor = deepcopy(record["prepared"]["replacement"]["result"])
+                # Model command completion published before the native write.
+                wire = next(event for event in donor["events"] if event["kind"] == "rpc"
+                            and event["direction"] == "write")
+                donor["events"].remove(wire)
+                done = next(index for index, event in enumerate(donor["events"])
+                            if event["kind"] == "command_done" and event["command_kind"] == "publish")
+                donor["events"].insert(done + 1, wire)
+                for sequence, event in enumerate(donor["events"], 1):
+                    event.update(sequence=sequence, mono_ns=sequence)
+                stale = deepcopy(donor)
+                stale["events"] = stale["events"][:done + 1]
+                token, remote = record["case_token"], forge["local_peer_id"]
+                delivered = forge_delivery(forge, spec, donor["local_peer_id"], token)
+                self.assertIsNotNone(delivered)
+                self.assertFalse(donor_marker_written(stale, spec, remote, token, delivered))
+                with self.assertRaisesRegex(ValueError, "marker lacks native donor write"):
+                    validate_delivery({"victim": forge, "replacement": stale}, spec, token)
+                path = root / "delayed.json"
+                path.write_text(json.dumps(stale))
+                owner = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+                original_controls = deepcopy(record["controls"])
+                with patch("plugin_pubsub_cases.time.monotonic", side_effect=(1, 1.1)), \
+                        patch("plugin_pubsub_cases.time.sleep", side_effect=lambda _: path.write_text(json.dumps(donor))) as poll:
+                    observed = _wait(owner, path,
+                        lambda raw: donor_marker_written(raw, spec, remote, token, delivered), 2)
+                self.assertEqual(poll.call_count, 1)
+                self.assertEqual(observed, donor)
+                self.assertEqual(record["controls"], original_controls)
+                validate_delivery({"victim": forge, "replacement": observed}, spec, token)
+
+    def test_missing_marker_write_expires_same_observation_deadline(self):
+        for implementation in ("go", "rust"):
+            with self.subTest(implementation=implementation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                spec = Case("mdbx", implementation, "yaml-only")
+                record = synthetic_record(spec, root)
+                self.assert_positive_baseline(record, spec, root)
+                forge = record["prepared"]["victim"]["result"]
+                donor = deepcopy(record["prepared"]["replacement"]["result"])
+                wire = next(event for event in donor["events"] if event["kind"] == "rpc"
+                            and event["direction"] == "write")
+                donor["events"].remove(wire)
+                for sequence, event in enumerate(donor["events"], 1):
+                    event.update(sequence=sequence, mono_ns=sequence)
+                token, remote = record["case_token"], forge["local_peer_id"]
+                delivered = forge_delivery(forge, spec, donor["local_peer_id"], token)
+                self.assertIsNotNone(delivered)
+                self.assertFalse(donor_marker_written(donor, spec, remote, token, delivered))
+                path = root / "missing.json"
+                path.write_text(json.dumps(donor))
+                owner = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+                with patch("plugin_pubsub_cases.time.monotonic", side_effect=(1, 2)), \
+                        patch("plugin_pubsub_cases.time.sleep") as poll, \
+                        self.assertRaisesRegex(TimeoutError, "observation deadline: missing.json"):
+                    _wait(owner, path, lambda raw: donor_marker_written(raw, spec, remote, token, delivered), 2)
+                self.assertEqual(poll.call_count, 1)
+                with self.assertRaisesRegex(ValueError, "marker lacks native donor write"):
+                    validate_delivery({"victim": forge, "replacement": donor}, spec, token)
+
+    def assert_run_case_marker_barrier(self, spec, root, *, receipt_arrives):
+        record = synthetic_record(spec, root)
+        self.assert_positive_baseline(record, spec, root)
+        token = record["case_token"]
+        work = root / spec.scenario_id.replace("/", "-")
+        native = {actor: deepcopy(record["endpoints"][actor]["result"]) for actor in ACTORS}
+        donor_events = native["replacement"]["events"]
+        wire = next(event for event in donor_events if event["kind"] == "rpc" and event["direction"] == "write")
+        donor_events.remove(wire)
+        done_index = next(index for index, event in enumerate(donor_events)
+                          if event["kind"] == "command_done" and event["command_kind"] == "publish")
+        donor_events.insert(done_index + 1, wire)
+        for sequence, event in enumerate(donor_events, 1):
+            event.update(sequence=sequence, mono_ns=sequence)
+        controls, timeline, deadlines, owners = {actor: [] for actor in ACTORS}, [], [], {}
+        clock = SimpleNamespace(now=100.0)
+        deadline = clock.now + 0.25 + CASE_SECONDS
+        scope = SimpleNamespace(attempts=[], evidence=lambda: [])
+
+        def monotonic():
+            clock.now += 0.25
+            return clock.now
+
+        def capture(actor, count):
+            raw = deepcopy(record["prepared"][actor]["result"])
+            raw["events"] = deepcopy(native[actor]["events"][:count])
+            if actor == "victim":
+                prepared = any(event["kind"] == "shutdown_prepared" for event in raw["events"])
+                raw.update(command_admission_closed=prepared, subscription_drained=prepared,
+                           commands_completed=sum(event["kind"] == "command_done" for event in raw["events"]))
+            elif any(event["kind"] == "shutdown_quiesced" for event in raw["events"]):
+                raw["active_fixture_workers"] = 0
+            (work / (actor + ".json")).write_text(json.dumps(raw))
+            return raw
+
+        def completion(actor, kind, sequence):
+            return next(event["sequence"] for event in native[actor]["events"]
+                        if event["kind"] == "command_done" and event["command_kind"] == kind
+                        and event["command_sequence"] == sequence)
+
+        def attempt(argv, log, scenario, number, actor, budget):
+            self.assertEqual((scenario, number), (spec.scenario_id, 1))
+            scope.attempts.append({"actor": actor, "command": argv})
+            return scope.attempts[-1]
+
+        def spawn(argv, log, stop, attempted, *, stop_budget):
+            actor = argv[argv.index("--actor") + 1]
+            endpoint = record["endpoints"][actor]
+            (work / (actor + ".ready.json")).write_text(json.dumps(endpoint["process"]["ready"]))
+            capture(actor, 1)
+            def close():
+                timeline.append(actor + ":joined")
+                (work / (actor + ".json")).write_text(json.dumps(native[actor]))
+                return []
+            owner = SimpleNamespace(process=SimpleNamespace(pid=endpoint["process"]["pid"], poll=lambda: None),
+                request_stop=lambda: timeline.append(actor + ":stop"), close=close,
+                evidence=lambda: endpoint["process"])
+            owners[actor] = owner
+            return owner
+
+        def issue(path, issued, process_role, kind, **fields):
+            actor = process_role
+            sequence = _append_control(path, issued, actor, kind, **fields)
+            controls[actor].append(deepcopy(issued[actor][-1]))
+            self.assertEqual(controls[actor][-1], record["controls"][actor][sequence - 1])
+            timeline.append(actor + ":" + kind)
+            raw = capture(actor, completion(actor, kind, sequence))
+            if actor == "victim" and kind == "connect":
+                # Connect publishes both peers' authenticated stream/subscription
+                # and mesh evidence before either side is allowed to publish.
+                donor = capture("replacement", next(event["sequence"] for event in donor_events
+                                if event["kind"] == "snapshot" and event["label"] == "periodic"))
+                _forge_connection(raw, donor["local_peer_id"], owners["replacement"].ready)
+                self.assertTrue(delivery_ready(donor, spec, raw["local_peer_id"], token))
+                timeline.append("replacement:delivery_ready")
+            if actor == "victim" and kind == "publish_binary":
+                capture("replacement", next(event["sequence"] - 1 for event in donor_events if event["kind"] == "publish"))
+            if actor == "replacement" and kind == "publish":
+                # The receiver has delivered and sampled before the writer's
+                # next receipt publication, despite command_done being visible.
+                capture("victim", completion("victim", "sample", 5) - 1)
+            return sequence
+
+        def wait(owner, path, predicate, observed_deadline):
+            deadlines.append((path.name, observed_deadline))
+            return _wait(owner, path, predicate, observed_deadline)
+
+        def poll_receipt(_):
+            self.assertEqual([item["kind"] for item in controls["victim"]],
+                             ["connect", "publish_binary", "publish_oversized", "sample"])
+            self.assertEqual([item["kind"] for item in controls["replacement"]], ["publish"])
+            self.assertEqual(deadlines[-1], ("replacement.json", deadline))
+            forge = json.loads((work / "victim.json").read_text())
+            donor = json.loads((work / "replacement.json").read_text())
+            delivered = forge_delivery(forge, spec, donor["local_peer_id"], token)
+            self.assertIsNotNone(delivered)
+            self.assertEqual(donor["events"][-1]["command_kind"], "publish")
+            self.assertFalse(donor_marker_written(donor, spec, forge["local_peer_id"], token, delivered))
+            timeline.append("marker:pending")
+            if receipt_arrives:
+                donor = capture("replacement", wire["sequence"])
+                self.assertTrue(donor_marker_written(donor, spec, forge["local_peer_id"], token, delivered))
+                timeline.append("marker:written")
+            else:
+                clock.now = deadline
+
+        with patch("plugin_pubsub_cases.current_scope", return_value=scope), \
+                patch("plugin_pubsub_cases.spawn_owned", side_effect=spawn) as spawned, \
+                patch("plugin_pubsub_cases.secrets.token_hex", return_value=token), \
+                patch("plugin_pubsub_cases.time.monotonic", side_effect=monotonic), \
+                patch("plugin_pubsub_cases.time.sleep", side_effect=poll_receipt) as poll, \
+                patch("plugin_pubsub_cases._append_control", side_effect=issue), \
+                patch("plugin_pubsub_cases._wait", side_effect=wait):
+            if receipt_arrives:
+                result = run_case(spec, BINARY_PATHS, root, command_attempt=attempt)
+                self.assertEqual(result["controls"], record["controls"])
+                self.assertEqual(controls, record["controls"])
+                validate_delivery({actor: result["prepared"][actor]["result"] for actor in ACTORS}, spec, token)
+                written = timeline.index("marker:written")
+                self.assertLess(timeline.index("marker:pending"), written)
+                for actor in ACTORS:
+                    self.assertLess(written, timeline.index(actor + ":prepare_shutdown"))
+                    self.assertLess(written, timeline.index(actor + ":stop"))
+                if spec.donor == "go":
+                    self.assertLess(written, timeline.index("replacement:quiesce_shutdown"))
+            else:
+                with self.assertRaisesRegex(TimeoutError, "observation deadline: replacement.json"):
+                    run_case(spec, BINARY_PATHS, root, command_attempt=attempt)
+                self.assertEqual(timeline[-1], "marker:pending")
+                self.assertEqual(controls["victim"], record["controls"]["victim"][:4])
+                self.assertEqual(controls["replacement"], record["controls"]["replacement"][:1])
+                self.assertFalse(any(work.glob("*.prepare.json")))
+                with self.assertRaisesRegex(ValueError, "marker lacks native donor write"):
+                    validate_delivery({actor: json.loads((work / (actor + ".json")).read_text())
+                                       for actor in ACTORS}, spec, token)
+            self.assertEqual(poll.call_count, 1)
+            self.assertEqual(spawned.call_count, len(ACTORS))
+            self.assertEqual([item["actor"] for item in scope.attempts], list(ACTORS))
+            self.assertEqual(set(owners), set(ACTORS))
+            self.assertLess(timeline.index("replacement:delivery_ready"), timeline.index("victim:publish_binary"))
+            self.assertTrue(deadlines)
+            self.assertTrue(all(observed == deadline for _, observed in deadlines))
+            for actor in ACTORS:
+                persisted = [json.loads(line) for line in (work / (actor + ".control")).read_text().splitlines()]
+                self.assertEqual(persisted, controls[actor])
+
+    def test_run_case_waits_for_matching_marker_write_before_prepare_and_quiesce(self):
+        for backend in ("mdbx", "rocksdb"):
+            for spec in case_specs(backend):
+                with self.subTest(spec=spec), tempfile.TemporaryDirectory() as directory:
+                    self.assert_run_case_marker_barrier(spec, Path(directory).resolve(), receipt_arrives=True)
+
+    def test_run_case_missing_marker_write_fails_closed_without_republish(self):
+        for backend in ("mdbx", "rocksdb"):
+            for spec in case_specs(backend):
+                with self.subTest(spec=spec), tempfile.TemporaryDirectory() as directory:
+                    self.assert_run_case_marker_barrier(spec, Path(directory).resolve(), receipt_arrives=False)
 
     def test_subscription_alone_does_not_release_nonflood_donor_publish(self):
         for donor in ("go", "rust"):
