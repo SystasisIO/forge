@@ -67,6 +67,14 @@ static_assert(std::same_as<
 static_assert(std::same_as<
               decltype(forge::plugins::net::p2p::node::quic_config::max_queued_bytes),
               std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::config::private_network),
+              std::optional<forge::plugins::net::p2p::node::private_network_config>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::private_network_config::psk_secret), std::string>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::private_network_config::internet_egress),
+              forge::plugins::net::p2p::node::internet_egress_policy>);
 
 static_assert(std::same_as<
               decltype(std::declval<forge::plugins::net::p2p::node::api&>().publish_api(

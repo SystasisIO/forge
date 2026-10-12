@@ -337,6 +337,35 @@ batch before a deduplicated numeric dial and prove that caller cancellation
 and scheduler close wait for a held DNS callback, without launching siblings.
 They do not weaken existing limits or skip an accepted acceptance gate.
 
+## Private-Network Secret Provisioning
+
+Inspected Go `9cfe2cc00be5b20a0be737f002c99f81b92255c5`:
+`p2p/net/pnet/protector.go` requires a 32-byte PSK;
+`p2p/net/upgrader/upgrader.go` applies protection before security and muxer
+negotiation; `defaults.go` and `p2p/transport/quic/transport.go` distinguish
+private TCP defaults from unsupported private QUIC composition. Rust
+`22fb4c784fc55ad8b15d05fdc9f98d663107d4cb` uses the same 32-byte key and 24-byte
+nonce/XSalsa20 protection in `transports/pnet/src/lib.rs`; its smoke fixture
+composes pnet, Noise and Yamux. Donor key Debug/Display behavior is not imported.
+
+The plugin uses these already implemented native mechanisms unchanged. Secrets
+supplies decoded bytes for `p2p.private-network.psk`; permission checks and source
+decoding stay in Secrets. The returned vector moves into `secret_bytes`, and the
+existing native `pre_shared_key` makes its own secure copy. This is not a claim
+of entirely zero-copy provisioning. The declarative snapshot contains only the
+reference/egress policy, not the provisioned protector. Freeze, setup accounting
+and shutdown joining reuse the existing plugin lifecycle.
+
+The private-profile QUIC/relay/DCUtR refusal is Forge's approved composition
+boundary. Native preflight also checks configured Rendezvous points: previously
+a QUIC point could pass configuration and fail only when discovery dialed it.
+The fix uses the same native TCP check as other configured endpoints, including
+when discovery is disabled. Public QUIC Rendezvous remains valid.
+
+Configured Forge pairs and deterministic held-lookup regressions test the
+adapter boundary. They are not new configured-plugin Go/Rust evidence. No donor
+source or libp2p wire format is modified by this checkpoint.
+
 ## Evidence Boundaries
 
 The consolidated node checkpoint preserves the donor ownership pattern rather

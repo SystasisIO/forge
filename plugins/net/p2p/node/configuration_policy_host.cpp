@@ -15,6 +15,7 @@ import forge.exceptions;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
+import forge.net.p2p.private_network;
 import forge.net.p2p.scoring;
 import forge.plugins.net.p2p.node.config;
 import forge.plugins.net.p2p.node.exceptions;
@@ -49,6 +50,29 @@ void apply_connections(forge::net::p2p::node::limits& limits, const connection_c
    apply_time(limits.dial_backoff_base, value.dial_backoff_base_ms);
    apply_time(limits.dial_backoff_step, value.dial_backoff_step_ms);
    apply_time(limits.dial_backoff_max, value.dial_backoff_max_ms);
+}
+
+void apply_private_network(forge::net::p2p::node::options& options, const config& value) {
+   options.private_network.reset();
+   if (!value.private_network) { return; }
+   if (value.private_network->psk_secret.empty()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network requires a nonempty PSK secret reference");
+   }
+   if (value.quic != quic_config{}) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network does not permit explicit QUIC limits");
+   }
+   if (value.path_policy != path_policy::direct_only) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network requires explicit direct-only path policy");
+   }
+   using native = forge::net::p2p::private_network::internet_egress_policy;
+   auto egress = native::deny_external;
+   switch (value.private_network->internet_egress) {
+   case internet_egress_policy::deny_external: break;
+   case internet_egress_policy::allow_internet: egress = native::allow_internet; break;
+   default: FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network Internet-egress policy is invalid");
+   }
+   // Only the declaration is stored here; startup provisions the real protector through Secrets.
+   options.private_network = forge::net::p2p::private_network::options{.internet_egress = egress};
 }
 
 void apply_identify(forge::net::p2p::node::options& options, const identify_config& value) {

@@ -610,6 +610,54 @@ Both groups freeze at startup. A rejected update also leaves unrelated
 diagnostics settings unchanged. Mapping these policies does not by itself
 prove configured-path Go/Rust interoperability.
 
+### Private Network Through Secrets
+
+The optional `private-network` group selects the existing native `/pnet`
+protector. It contains only a Secrets reference and the native egress policy,
+never inline key material. An absent or null group keeps the public profile.
+
+```yaml
+plugins:
+  net:
+    p2p:
+      node:
+        listen: ["/ip4/0.0.0.0/tcp/4001"]
+        path:
+          policy: direct-only
+        relay:
+          client-enabled: false
+          server-enabled: false
+          auto-discovery-enabled: false
+        private-network:
+          psk-secret: p2p/network
+          internet-egress: deny-external
+```
+
+The referenced Secrets entry must allow purpose `p2p.private-network.psk`,
+operation `get_bytes` and `allow-raw-export: true`. Its provider decodes the
+configured encoding; the result must be exactly 32 bytes. The node plugin does
+not parse a swarm-key file, derive a replacement key or add a file/environment
+loader. Production identity certificate/private-key references and the named
+ObjectDB store are still required. The PSK is shared network protection, not a
+replacement for the peer identity authenticated by TLS/Noise.
+
+The selected profile supports direct TCP/Yamux only. QUIC settings, incompatible
+listen/advertised/bootstrap/Rendezvous endpoints, non-direct-only paths and any
+enabled relay policy fail before secret reads or listeners. Public defaults are
+not silently rewritten: `relay.auto-discovery-enabled` defaults to true and must
+also be explicitly disabled here. Both `tls` and `noise` TCP selections remain
+available. This Forge relay/DCUtR restriction describes the accepted private
+profile, not a claim that the pnet specification universally prohibits relays.
+
+`deny-external` is the default native AutoNAT/external-protocol policy, **not an
+IP firewall**: it does not prohibit configured PSK-protected TCP or DNS traffic.
+`allow-internet` enables the corresponding native operations, not QUIC, relay
+or DCUtR. The reference and egress policy freeze before the first startup await.
+Secret exports enter secure-erasing ownership before cancellation checks; only
+the native runtime retains the protector. Shutdown joins an admitted Secrets
+lookup, and a lookup returning after stop cannot open the P2P persistence adapter
+or listener. Secrets permission/not-found errors retain their typed category.
+
 ### Plugin 8.0 Consolidation Migration
 
 The maintainer approved this pre-stabilization source/package/configuration break.

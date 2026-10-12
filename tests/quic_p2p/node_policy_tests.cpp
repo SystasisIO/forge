@@ -143,6 +143,30 @@ BOOST_AUTO_TEST_CASE(private_policy_defers_only_the_actual_protector) {
    BOOST_CHECK_NO_THROW(p2p::validate(options));
 }
 
+BOOST_AUTO_TEST_CASE(private_policy_rendezvous_points_require_tcp_even_when_discovery_is_disabled) {
+   const auto identity = forge::tests::p2p::make_identity_fixture("private-policy-rendezvous");
+   const auto peer = p2p::make_peer_id_from_certificate_pem(identity.certificate_pem).to_string();
+   const auto quic = p2p::parse_endpoint("/ip4/127.0.0.1/udp/4001/quic-v1/p2p/" + peer);
+   const auto tcp = p2p::parse_endpoint("/ip4/127.0.0.1/tcp/4001/p2p/" + peer);
+   for (const auto egress : {p2p::private_network::internet_egress_policy::deny_external,
+                             p2p::private_network::internet_egress_policy::allow_internet}) {
+      auto options = private_policy();
+      options.private_network->internet_egress = egress;
+      options.limits.topology.operating_mode = p2p::topology::mode::static_only;
+      // Native role has no disabled enumerator; disabled discovery and no
+      // rendezvous capability are the native equivalent of the plugin choice.
+      options.limits.topology.rendezvous_enabled = false;
+      options.limits.topology.rendezvous_points = {{.endpoint = quic, .namespaces = {"stage7"}}};
+      BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+      options.limits.topology.rendezvous_points.front().endpoint = tcp;
+      BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+      BOOST_TEST(!options.private_network->protector);
+      options.private_network.reset();
+      options.limits.topology.rendezvous_points.front().endpoint = quic;
+      BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+   }
+}
+
 BOOST_AUTO_TEST_CASE(quic_limit_validation_is_shared_by_client_and_server_options) {
    namespace quic = forge::net::quic;
    auto limits = quic::transport_limits{};

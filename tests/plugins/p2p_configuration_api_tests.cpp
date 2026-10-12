@@ -104,7 +104,11 @@ class identity_source final : public secrets::api {
  public:
    forge::tests::p2p::identity_fixture identity = forge::tests::p2p::make_identity_fixture("configuration-api");
    std::atomic_uint reads{0};
+   std::atomic_uint psk_reads{0};
    std::string last_certificate;
+   std::string last_psk;
+   std::string held_purpose = "p2p.identity.certificate";
+   std::size_t psk_size = 32;
    std::atomic_bool hold{false};
    std::promise<void> entered;
    forge::asio::notification released;
@@ -113,14 +117,21 @@ class identity_source final : public secrets::api {
       ++reads;
       if (request.purpose == "p2p.identity.certificate") {
          last_certificate = request.secret_id;
-         if (hold.load()) {
-            entered.set_value();
-            while (hold.load()) {
-               const auto epoch = released.epoch();
-               if (!hold.load()) { break; }
-               co_await released.async_wait(epoch);
-            }
+      }
+      if (request.purpose == "p2p.private-network.psk") {
+         ++psk_reads;
+         last_psk = request.secret_id;
+      }
+      if (request.purpose == held_purpose && hold.load()) {
+         entered.set_value();
+         while (hold.load()) {
+            const auto epoch = released.epoch();
+            if (!hold.load()) { break; }
+            co_await released.async_wait(epoch);
          }
+      }
+      if (request.purpose == "p2p.private-network.psk") {
+         co_return secrets::get_result{.secret_id = request.secret_id, .bytes = std::vector<std::uint8_t>(psk_size, 0x71)};
       }
       const auto& material = request.purpose == "p2p.identity.certificate" ? identity.certificate_pem : identity.private_key_pem;
       co_return secrets::get_result{.secret_id = request.secret_id, .bytes = {material.begin(), material.end()}};
@@ -186,6 +197,16 @@ struct fixture {
       configure();
    }
 };
+
+void select_private_network(fixture& f, std::string reference = "configuration/psk") {
+   f.document.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
+       forge::config::core::value{"/ip4/127.0.0.1/tcp/0"}});
+   f.document.set("plugins.net.p2p.node.path.policy", "direct-only");
+   f.document.set("plugins.net.p2p.node.relay.client-enabled", false);
+   f.document.set("plugins.net.p2p.node.relay.server-enabled", false);
+   f.document.set("plugins.net.p2p.node.relay.auto-discovery-enabled", false);
+   f.document.set("plugins.net.p2p.node.private-network.psk-secret", std::move(reference));
+}
 
 std::vector<p2p::dht::value_policy> policies() {
    return {{.key_prefix = {'/', 't', '/'},
@@ -541,7 +562,7 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_shutdown_joins_startup_secret_read_before
    BOOST_CHECK(shutdown.wait_for(30ms) != std::future_status::ready);
    f.identity->hold.store(false); f.identity->released.notify();
    joined(startup); joined(shutdown);
-   BOOST_TEST(f.identity->reads.load() == 2U);
+   BOOST_TEST(f.identity->reads.load() == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_configuration_cancelled_shutdown_still_joins_setup_and_preserves_caller_policy) {
@@ -572,7 +593,129 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_cancelled_shutdown_still_joins_setup_and_
    f.identity->hold.store(false); f.identity->released.notify();
    joined(startup);
    BOOST_TEST(joined(shutdown));
-   BOOST_TEST(f.identity->reads.load() == 2U);
+   BOOST_TEST(f.identity->reads.load() == 1U);
+   const auto api = f.apis.get<np::api>(np::api::ref()).shared();
+   BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), np::exceptions::plugin_not_initialized);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_private_network_mixed_rejection_preserves_frozen_secret_and_policy) {
+   fixture f;
+   select_private_network(f, "accepted/psk");
+   f.configure();
+   const auto accepted = f.document;
+   f.document.set("plugins.net.p2p.node.private-network.psk-secret", "rejected/psk");
+   f.document.set("plugins.net.p2p.node.quic.max-connections", std::uint64_t{1});
+   BOOST_CHECK_THROW(f.configure(), np::exceptions::invalid_config);
+   f.initialize();
+   f.run(f.node.startup());
+   BOOST_TEST(f.identity->reads.load() == 3U);
+   BOOST_TEST(f.identity->psk_reads.load() == 1U);
+   BOOST_TEST(f.identity->last_psk == "accepted/psk");
+   const auto api = f.apis.get<np::api>(np::api::ref()).shared();
+   const auto endpoint = api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   BOOST_TEST(endpoint->is_direct_tcp());
+   f.document = accepted;
+   f.document.set("plugins.net.p2p.node.private-network.psk-secret", "too-late/psk");
+   BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+   f.document = accepted;
+   f.document.set("plugins.net.p2p.node.private-network.internet-egress", "allow-internet");
+   BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_private_network_rejects_empty_short_and_long_export) {
+   for (const auto size : {0U, 31U, 33U}) {
+      fixture f;
+      select_private_network(f);
+      f.configure();
+      f.initialize();
+      f.identity->psk_size = size;
+      BOOST_CHECK_THROW(f.run(f.node.startup()), np::exceptions::invalid_config);
+      BOOST_TEST(f.identity->psk_reads.load() == 1U);
+      const auto api = f.apis.get<np::api>(np::api::ref()).shared();
+      BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), np::exceptions::plugin_not_initialized);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_private_network_can_clear_or_replace_before_startup_and_bind_psk_only) {
+   fixture cleared;
+   select_private_network(cleared);
+   cleared.configure();
+   cleared.initialize();
+   cleared.document.set("plugins.net.p2p.node.private-network", forge::config::core::value{});
+   cleared.configure();
+   cleared.run(cleared.node.startup());
+   BOOST_TEST(cleared.identity->psk_reads.load() == 0U);
+
+   // This is dependency-binding evidence only: no secure wire claim for the
+   // explicit test identity / in-memory persistence fixture.
+   fixture psk_only{false};
+   select_private_network(psk_only, "initial/psk");
+   psk_only.configure();
+   psk_only.initialize();
+   psk_only.document.set("plugins.net.p2p.node.private-network", forge::config::core::value{});
+   psk_only.configure();
+   select_private_network(psk_only, "replacement/psk");
+   psk_only.configure();
+   psk_only.run(psk_only.node.startup());
+   BOOST_TEST(psk_only.identity->reads.load() == 1U);
+   BOOST_TEST(psk_only.identity->psk_reads.load() == 1U);
+   BOOST_TEST(psk_only.identity->last_psk == "replacement/psk");
+}
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_held_psk_stop_cancelled_shutdown_and_retry_join_setup) {
+   fixture f;
+   select_private_network(f);
+   f.configure();
+   f.initialize();
+   f.identity->held_purpose = "p2p.private-network.psk";
+   f.identity->hold.store(true);
+   auto entered = f.identity->entered.get_future();
+   const auto executor = boost::asio::make_strand(f.runtime.context());
+   boost::asio::cancellation_signal cancellation;
+   auto shutdown = std::future<bool>{};
+   auto retry = std::future<void>{};
+   auto cancelled = std::future<void>{};
+   auto startup = boost::asio::co_spawn(f.runtime.context(), f.node.startup(), boost::asio::use_future);
+   auto cleanup = boost::scope::scope_exit{[&] {
+      f.identity->hold.store(false); f.identity->released.notify();
+      auto failure = std::exception_ptr{};
+      const auto drain = [&](auto& pending) {
+         if (!pending.valid()) { return; }
+         try { static_cast<void>(joined(pending)); }
+         catch (...) { if (!failure) { failure = std::current_exception(); } }
+      };
+      drain(cancelled);
+      drain(startup);
+      drain(shutdown);
+      drain(retry);
+      if (failure) { BOOST_ERROR("held PSK fixture cleanup reported an error after joining all operations"); }
+   }};
+   joined(entered);
+   BOOST_TEST(f.identity->reads.load() == 3U);
+   BOOST_TEST(f.identity->psk_reads.load() == 1U);
+   f.document.set("plugins.net.p2p.node.private-network.psk-secret", "too-late/psk");
+   BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+   f.node.request_stop();
+   shutdown = boost::asio::co_spawn(executor,
+       [](np::plugin* node) -> boost::asio::awaitable<bool> {
+          co_await node->shutdown();
+          const auto state = co_await boost::asio::this_coro::cancellation_state;
+          co_return state.cancelled() != boost::asio::cancellation_type::none;
+       }(&f.node), boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   BOOST_REQUIRE(shutdown.wait_for(30ms) == std::future_status::timeout);
+   cancelled = boost::asio::post(executor, boost::asio::use_future([&] {
+      cancellation.emit(boost::asio::cancellation_type::terminal);
+   }));
+   joined(cancelled);
+   retry = boost::asio::co_spawn(f.runtime.context(), f.node.shutdown(), boost::asio::use_future);
+   BOOST_REQUIRE(shutdown.wait_for(30ms) == std::future_status::timeout);
+   BOOST_REQUIRE(retry.wait_for(30ms) == std::future_status::timeout);
+   f.identity->hold.store(false); f.identity->released.notify();
+   joined(startup);
+   BOOST_TEST(joined(shutdown));
+   joined(retry);
+   BOOST_TEST(f.identity->reads.load() == 3U);
    const auto api = f.apis.get<np::api>(np::api::ref()).shared();
    BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), np::exceptions::plugin_not_initialized);
 }

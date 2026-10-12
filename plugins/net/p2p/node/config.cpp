@@ -55,6 +55,7 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
        .default_value(forge::plugins::net::p2p::node::tcp_config{});
    schema.field<&forge::plugins::net::p2p::node::config::quic>("quic")
        .default_value(forge::plugins::net::p2p::node::quic_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::private_network>("private-network");
    schema.field<&forge::plugins::net::p2p::node::config::listen>("listen")
        .default_value(std::vector<std::string>{})
        .description("Listen endpoints, for example /ip4/0.0.0.0/udp/9443/quic-v1 or /ip4/0.0.0.0/tcp/4001");
@@ -163,6 +164,8 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
        .default_value(true);
    schema.field<&forge::plugins::net::p2p::node::config::relay_server_enabled>("relay.server-enabled")
        .default_value(false);
+   schema.field<&forge::plugins::net::p2p::node::config::relay_auto_discovery_enabled>("relay.auto-discovery-enabled")
+       .default_value(true);
    schema.field<&forge::plugins::net::p2p::node::config::relay_public_allowed>("relay.public-allowed")
        .default_value(false);
    schema.field<&forge::plugins::net::p2p::node::config::relay_reservation_ttl_ms>("relay.reservation-ttl-ms")
@@ -171,6 +174,16 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
    schema.field<&forge::plugins::net::p2p::node::config::relay_max_candidates>("relay.max-candidates")
        .default_value(std::uint64_t{4})
        .range(1, 10'000);
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::private_network_config>
+forge::schema::rules<forge::plugins::net::p2p::node::private_network_config>::define() {
+   auto schema = forge::schema::object<forge::plugins::net::p2p::node::private_network_config>();
+   schema.field<&forge::plugins::net::p2p::node::private_network_config::psk_secret>("psk-secret")
+       .required().non_empty().description("Secrets reference for the decoded 32-byte private-network PSK");
+   schema.field<&forge::plugins::net::p2p::node::private_network_config::internet_egress>("internet-egress")
+       .default_value(forge::plugins::net::p2p::node::internet_egress_policy::deny_external);
    return schema;
 }
 

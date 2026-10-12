@@ -144,6 +144,9 @@ void validate_policy(const node::options& options) {
       for (const auto& value : options.lifecycle.listen) {
          require_direct_tcp(value, "lifecycle listener");
       }
+      for (const auto& point : topology_policy.rendezvous_points) {
+         require_direct_tcp(point.endpoint, "rendezvous point");
+      }
    }
    const auto relay_duration = std::chrono::duration_cast<std::chrono::seconds>(options.limits.relay.max_duration);
    // Milliseconds can fit their own representation but overflow the clocks at use.

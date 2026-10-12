@@ -340,7 +340,8 @@ void apply_config(plugin::impl& state, const config& config) {
    }
    auto certificate_secret = config.certificate_secret;
    auto private_key_secret = config.private_key_secret;
-   options.capabilities = forge::net::p2p::capability_set{.bits = forge::net::p2p::capabilities::direct_quic};
+   options.capabilities = forge::net::p2p::capability_set{
+       .bits = config.private_network ? 0U : forge::net::p2p::capabilities::direct_quic};
    if (config.peer_exchange_enabled) {
       options.capabilities.add(forge::net::p2p::capabilities::peer_exchange);
    }
@@ -358,6 +359,7 @@ void apply_config(plugin::impl& state, const config& config) {
    options.path_policy = policy.path;
    options.relay_policy.client_enabled = policy.relay_client_enabled;
    options.relay_policy.service_enabled = policy.relay_server_enabled;
+   options.relay_policy.auto_discovery_enabled = config.relay_auto_discovery_enabled;
    options.relay_policy.public_relay_allowed = policy.relay_public_allowed;
    options.relay_policy.max_candidates_per_refresh = policy.relay_max_candidates;
    options.relay_policy.target_reservations =
@@ -383,6 +385,7 @@ void apply_config(plugin::impl& state, const config& config) {
    apply_peer_state(options.peer_state, config.peer_state);
    apply_tcp(options, config.tcp);
    apply_quic(options, config.quic);
+   apply_private_network(options, config);
    options.limits.max_protocol_handlers = static_cast<std::size_t>(config.max_protocol_handlers);
    options.allow_insecure_test_mode = config.allow_insecure_test_mode;
    const auto has_identity = !certificate_secret.empty() && !private_key_secret.empty();

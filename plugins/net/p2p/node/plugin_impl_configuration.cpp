@@ -89,7 +89,8 @@ void plugin::impl::commit_configuration(std::shared_ptr<const detail::configurat
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration changed or is frozen");
       }
       if (providers_bound && ((!candidate->peer_store_name.empty() && !stores) ||
-                              (!candidate->certificate_secret.empty() && !secrets))) {
+                              ((!candidate->certificate_secret.empty() || candidate->declarative.private_network) &&
+                               !secrets))) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P configuration requires an unbound provider");
       }
       if (bound_peer_store_name && *bound_peer_store_name != candidate->peer_store_name) {

@@ -1766,6 +1766,7 @@ add_executable(
    plugins/p2p_resource_config_tests.cpp
    plugins/p2p_host_config_tests.cpp
    plugins/p2p_transport_config_tests.cpp
+   plugins/p2p_private_network_config_tests.cpp
    plugins/p2p_protocol_api_tests.cpp
    plugins/p2p_peer_api_tests.cpp
    plugins/p2p_peer_contribution_tests.cpp
@@ -1833,6 +1834,7 @@ add_executable(
    quic_p2p/libp2p_identity_fixture.cpp
    plugins_db_store/db_store_tests.cpp
    plugins_db_store/p2p_peer_state_persistence_tests.cpp
+   plugins_db_store/p2p_private_network_tests.cpp
 )
 target_link_libraries(
    test_forge_plugins_db_store

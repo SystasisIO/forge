@@ -83,6 +83,7 @@ import forge.net.p2p.stream;
 import forge.net.p2p.negotiation;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.node;
+import forge.net.pnet.protector;
 import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.plugins.net.p2p.node.config;
@@ -121,16 +122,6 @@ import forge.plugins.db.store.api;
 
 namespace forge::plugins::net::p2p::node {
 namespace {
-
-[[nodiscard]] std::string secret_text(forge::crypto::core::bytes& bytes) {
-   auto out = std::string{bytes.begin(), bytes.end()};
-   forge::crypto::core::secure_erase(bytes);
-   return out;
-}
-
-void clear_bytes(forge::crypto::core::bytes& bytes) noexcept {
-   forge::crypto::core::secure_erase(bytes);
-}
 
 void clear_text(std::string& value) noexcept {
    forge::crypto::core::secure_erase(value);
@@ -180,7 +171,7 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
                    .get<forge::plugins::db::store::api>({.id = {"forge.plugins.db.store"}, .major = 2, .min_revision = 0})
                    .operator->();
    }
-   if (!previous->certificate_secret.empty()) {
+   if (!previous->certificate_secret.empty() || previous->declarative.private_network) {
       secrets = context.apis()
                     .get<forge::plugins::crypto::secrets::api>(
                         {.id = {"forge.plugins.crypto.secrets"}, .major = 1, .min_revision = 0})
@@ -244,25 +235,29 @@ boost::asio::awaitable<void> plugin::startup() {
       clear_text(options.private_key_pem);
    }};
    if (!frozen->certificate_secret.empty()) {
-      auto certificate = co_await state->secrets->get_bytes(
+      auto certificate_result = co_await state->secrets->get_bytes(
           {.secret_id = frozen->certificate_secret, .purpose = "p2p.identity.certificate"});
-      try {
-         auto private_key = co_await state->secrets->get_bytes(
-             {.secret_id = frozen->private_key_secret, .purpose = "p2p.identity.private-key"});
-         try {
-            options.certificate_pem = secret_text(certificate.bytes);
-            options.private_key_pem = secret_text(private_key.bytes);
-         } catch (...) {
-            clear_bytes(private_key.bytes);
-            clear_text(options.certificate_pem);
-            clear_text(options.private_key_pem);
-            throw;
-         }
-      } catch (...) {
-         clear_bytes(certificate.bytes);
-         throw;
-      }
+      auto certificate = forge::crypto::core::secret_bytes{std::move(certificate_result.bytes)};
+      if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+      auto private_key_result = co_await state->secrets->get_bytes(
+          {.secret_id = frozen->private_key_secret, .purpose = "p2p.identity.private-key"});
+      auto private_key = forge::crypto::core::secret_bytes{std::move(private_key_result.bytes)};
+      if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+      options.certificate_pem = std::string{certificate.span().begin(), certificate.span().end()};
+      options.private_key_pem = std::string{private_key.span().begin(), private_key.span().end()};
    }
+   if (frozen->declarative.private_network) {
+      auto result = co_await state->secrets->get_bytes({
+          .secret_id = frozen->declarative.private_network->psk_secret, .purpose = "p2p.private-network.psk"});
+      auto material = forge::crypto::core::secret_bytes{std::move(result.bytes)};
+      if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+      if (material.size() != forge::net::pnet::pre_shared_key_size) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network PSK secret must decode to exactly 32 bytes");
+      }
+      options.private_network->protector = std::make_shared<const forge::net::pnet::protector>(
+          forge::net::pnet::pre_shared_key{material.span()});
+   }
+   if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
    if (state->peer_state_store) {
       state->peer_state = co_await object_peer_state_adapter::async_open(
           state->stores, *state->peer_state_store, options.peer_state, frozen->reset_incompatible_peer_state);

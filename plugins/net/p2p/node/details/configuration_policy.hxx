@@ -13,6 +13,7 @@ void apply_identify(forge::net::p2p::node::options& options, const identify_conf
 void apply_peer_state(forge::net::p2p::peer_store::options& options, const peer_state_config& value);
 void apply_tcp(forge::net::p2p::node::options& options, const tcp_config& value);
 void apply_quic(forge::net::p2p::node::options& options, const quic_config& value);
+void apply_private_network(forge::net::p2p::node::options& options, const config& value);
 void apply_config(plugin::impl& state, const config& config);
 
 } // namespace forge::plugins::net::p2p::node

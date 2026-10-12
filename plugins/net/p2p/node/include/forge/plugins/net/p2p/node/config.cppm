@@ -103,6 +103,17 @@ struct quic_config {
    bool operator==(const quic_config&) const = default;
 };
 
+enum class internet_egress_policy : std::uint8_t {
+   deny_external = 1,
+   allow_internet = 2,
+};
+
+struct private_network_config {
+   std::string psk_secret;
+   internet_egress_policy internet_egress = internet_egress_policy::deny_external;
+   bool operator==(const private_network_config&) const = default;
+};
+
 struct resource_config {
    // Missing budgets preserve the owning native scope's defaults; zero denies.
    struct scope_patch {
@@ -245,6 +256,8 @@ struct config {
    peer_state_config peer_state;
    tcp_config tcp;
    quic_config quic;
+   bool relay_auto_discovery_enabled = true;
+   std::optional<private_network_config> private_network;
    bool operator==(const config&) const = default;
 };
 
@@ -257,6 +270,7 @@ BOOST_DESCRIBE_ENUM(cache_schema_policy, reject, reset)
 BOOST_DESCRIBE_ENUM(topology_mode, managed, static_only)
 BOOST_DESCRIBE_ENUM(rendezvous_role, disabled, client, server, client_and_server)
 BOOST_DESCRIBE_ENUM(tcp_security, tls_and_noise, tls, noise)
+BOOST_DESCRIBE_ENUM(internet_egress_policy, deny_external, allow_internet)
 BOOST_DESCRIBE_STRUCT(dht_profile_config, (), (kind, mode, protocol, peers, providers, values))
 BOOST_DESCRIBE_STRUCT(rendezvous_point_config, (), (endpoint, namespaces))
 BOOST_DESCRIBE_STRUCT(pubsub_config, (),
@@ -288,6 +302,7 @@ BOOST_DESCRIBE_STRUCT(tcp_config, (), (security))
 BOOST_DESCRIBE_STRUCT(quic_config, (),
                       (max_connections, max_streams_per_connection, max_queued_bytes,
                        max_inbound_queued_bytes, max_inbound_queued_packets))
+BOOST_DESCRIBE_STRUCT(private_network_config, (), (psk_secret, internet_egress))
 BOOST_DESCRIBE_STRUCT(config, (),
                       (listen, bootstrap, advertised_endpoints, peer_id, peer_store, certificate_secret,
                        private_key_secret, api_codec, api_deadline_ms, api_max_frame_size, max_inflight_per_peer,
@@ -299,7 +314,8 @@ BOOST_DESCRIBE_STRUCT(config, (),
                        topology_query_timeout_ms, topology_max_candidates, topology_max_parallel_queries,
                        topology_max_parallel_dials, topology_retry_jitter, rendezvous_role, rendezvous_points,
                        rendezvous_max_points, peer_exchange_enabled, peer_exchange_max_peers, pubsub, diagnostics,
-                       resources, connections, identify, peer_state, tcp, quic))
+                       resources, connections, identify, peer_state, tcp, quic,
+                       relay_auto_discovery_enabled, private_network))
 
 } // namespace forge::plugins::net::p2p::node
 
@@ -349,4 +365,8 @@ export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::t
 
 export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::quic_config> {
    [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::quic_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::private_network_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::private_network_config> define();
 };

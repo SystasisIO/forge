@@ -769,3 +769,52 @@ gates pass, describe this as test integration with an evolving stack.
   reachability, mDNS, relay, DHT/lifecycle and PubSub policies. Configured-path
   Go/Rust acceptance and whole-PR review remain open. This checkpoint is not
   Stage 7 completion or permission to merge the incomplete PR.
+
+### Private-Network Secrets Checkpoint
+
+- The optional `private-network` group maps a Secrets reference and the native
+  Internet-egress policy. Startup reads purpose `p2p.private-network.psk`, requires
+  exactly 32 decoded bytes and constructs the existing native pnet protector.
+  No inline key, second decoder, network loop or new public module is added.
+  Secrets retains source decoding and permission enforcement; the declarative
+  configuration never stores the provisioned protector.
+- The approved private profile requires direct TCP/Yamux, explicit direct-only
+  paths and disabled relay client/service/discovery. Incompatible endpoints and
+  explicit QUIC settings fail before Secrets access. Native preflight now also
+  checks configured Rendezvous points, closing a late-failure gap even when
+  discovery is disabled. Public QUIC Rendezvous remains valid. `deny-external`
+  is an AutoNAT/external-protocol policy, not an IP firewall.
+- Every Secrets result enters existing secure-erasing ownership before a stop
+  check. A stopped setup does not initiate the next secret read or P2P adapter
+  open. Shutdown waits for an admitted lookup, including when the shutdown
+  caller is cancelled and another caller joins. Typed Secrets errors remain
+  intact; temporary certificate/key strings keep their existing secure cleanup.
+- Config/lifecycle coverage passed 29 cases / 203 assertions. Three additional
+  runtime cases passed 135 assertions: real Secrets permissions and decoded key
+  sizes; configured MDBX/RocksDB plus Noise/TLS/Yamux and binary exchange; and a
+  held real-provider PSK lookup with unchanged ObjectDB operation counters after
+  stop. The held-lookup test uses an instrumented memory driver, not a durable
+  storage claim. The network tests use real configured disk backends with
+  insecure mode disabled.
+- Negative network tests independently witness server acceptance and failed
+  handshakes. Wrong or absent PSK cannot increment successful authentication or
+  session counters, and the same listener subsequently accepts the correct key.
+  Checking only a thrown exception and an empty final session list was rejected
+  as insufficient evidence. Fixture cleanup joins every owned operation even
+  after an earlier join reports an error; frozen-field tests start from an
+  otherwise valid accepted configuration.
+- Native policy/private-network selection passed 21 cases / 217 assertions;
+  the other P2P cases were not part of this selection. Both independent scoped
+  source reviews closed their findings. This is not whole-Stage-7 approval.
+- Seven affected suites passed three consecutive runs each: structure,
+  network-plugin structure, inventory, descriptor surfaces, plugins (234 cases),
+  managed remote (10 cases) and DB Store (77 cases, both local disk backends).
+- The installed node consumer built and ran from a fresh dev-component install.
+  Its completed build and install directories were removed, reclaiming about
+  3.6 GiB. The active Stage 7 tree and failure/success logs remain. Builds used
+  `-j4`; full CI was not run.
+- These are local configured-path and native checks, not new configured-plugin
+  Go/Rust evidence. No wire format, donor source, project version or production
+  support state changed. Remaining work is DNS/dial/path, reachability, mDNS,
+  relay, DHT/lifecycle and PubSub policy mapping, then configured Go/Rust
+  acceptance and whole-PR review. PR #172 remains incomplete and unmerged.

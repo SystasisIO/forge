@@ -45,6 +45,7 @@ import forge.app.plugin_registry;
 import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.runtime;
+import forge.asio.notification;
 import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.document;
@@ -431,12 +432,23 @@ class counted_p2p_secrets final : public crypto_secrets::api {
  public:
    explicit counted_p2p_secrets(std::shared_ptr<crypto_secrets::api> source) : source_(std::move(source)) {}
    std::atomic_uint reads{0};
+   std::atomic_bool hold_psk{false};
+   std::promise<void> psk_entered;
+   forge::asio::notification psk_released;
    boost::asio::awaitable<crypto_secrets::snapshot> status(crypto_secrets::query query) override {
       return source_->status(std::move(query));
    }
    boost::asio::awaitable<crypto_secrets::get_result> get_bytes(crypto_secrets::get_request request) override {
       ++reads;
-      return source_->get_bytes(std::move(request));
+      if (request.purpose == "p2p.private-network.psk" && hold_psk.load()) {
+         psk_entered.set_value();
+         while (hold_psk.load()) {
+            const auto epoch = psk_released.epoch();
+            if (!hold_psk.load()) { break; }
+            co_await psk_released.async_wait(epoch);
+         }
+      }
+      co_return co_await source_->get_bytes(std::move(request));
    }
    boost::asio::awaitable<crypto_secrets::derive_result> derive_hkdf_sha256(crypto_secrets::derive_request request) override {
       return source_->derive_hkdf_sha256(std::move(request));
@@ -1363,6 +1375,112 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_objec
    run(node.shutdown());
    BOOST_TEST(driver->active_writes() == 0U);
    BOOST_TEST(!driver->overlapping_writes());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_held_psk_stop_does_not_open_object_adapter_after_secret_returns) {
+   using value = forge::config::core::value;
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto secret_apis = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto store = store_plugin::plugin{};
+   auto secrets = crypto_secrets::plugin{};
+   auto node = p2p_node::plugin{};
+   auto driver = std::make_shared<memory_driver>();
+   const auto identity = forge::tests::p2p::make_identity_fixture("held-psk-store");
+   auto document = p2p_production_config(identity);
+   document.set("plugins.crypto.secrets.secrets", value::array_type{
+       p2p_secret(std::string{p2p_certificate_secret_id}, identity.certificate_pem, "p2p.identity.certificate"),
+       p2p_secret(std::string{p2p_private_key_secret_id}, identity.private_key_pem, "p2p.identity.private-key"),
+       p2p_secret("network/psk", std::string(32, 's'), "p2p.private-network.psk")});
+   document.set("plugins.net.p2p.node.listen", value::array_type{value{"/ip4/127.0.0.1/tcp/0"}});
+   document.set("plugins.net.p2p.node.topology.mode", "static-only");
+   document.set("plugins.net.p2p.node.path.policy", "direct-only");
+   document.set("plugins.net.p2p.node.relay.client-enabled", false);
+   document.set("plugins.net.p2p.node.relay.server-enabled", false);
+   document.set("plugins.net.p2p.node.relay.auto-discovery-enabled", false);
+   document.set("plugins.net.p2p.node.private-network.psk-secret", "network/psk");
+   auto join = []<class T>(std::future<T>& future) -> T {
+      if (future.wait_for(10s) != std::future_status::ready) {
+         std::cerr << "held PSK/ObjectDB fixture exceeded owned join budget\n";
+         std::terminate();
+      }
+      return future.get();
+   };
+   auto run = [&]<class T>(boost::asio::awaitable<T> operation) -> T {
+      auto future = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+      return join(future);
+   };
+   auto cleanup = boost::scope::scope_exit{[&] {
+      node.request_stop();
+      auto failure = std::exception_ptr{};
+      for (auto step = 0; step != 4; ++step) {
+         try {
+            switch (step) {
+            case 0: run(node.shutdown()); break;
+            case 1: run(secrets.shutdown()); break;
+            case 2: run(store.shutdown()); break;
+            case 3: run(scheduler.shutdown()); break;
+            }
+         } catch (...) { if (!failure) { failure = std::current_exception(); } }
+      }
+      if (failure) { BOOST_ERROR("held PSK/ObjectDB cleanup failed after all shutdown steps completed"); }
+   }};
+   run(store.configure({document, "plugins.db.store"}));
+   run(secrets.configure({document, "plugins.crypto.secrets"}));
+   run(node.configure({document, "plugins.net.p2p.node"}));
+   auto provider = forge::api::core::installer{apis};
+   auto secret_provider = forge::api::core::installer{secret_apis};
+   run(store.provide(provider));
+   run(secrets.provide(secret_provider));
+   auto counted = std::make_shared<counted_p2p_secrets>(
+       secret_apis.get<crypto_secrets::api>(crypto_secrets::api::ref()).shared());
+   apis.install<crypto_secrets::api>(crypto_secrets::api::describe(), counted);
+   run(node.provide(provider));
+   run(store.initialize(context));
+   run(apis.get<store_plugin::api>(store_plugin::api::ref())->add_store(std::string{p2p_peer_store_name}, driver));
+   run(secrets.initialize(context));
+   run(node.initialize(context));
+   run(store.after_initialize());
+   run(node.after_initialize());
+   run(store.startup());
+   run(secrets.startup());
+   const auto snapshots = driver->snapshot_calls();
+   const auto transactions = driver->transaction_calls();
+   counted->hold_psk.store(true);
+   auto entered = counted->psk_entered.get_future();
+   auto startup = boost::asio::co_spawn(runtime.context(), node.startup(), boost::asio::use_future);
+   auto shutdown = std::future<void>{};
+   auto release = boost::scope::scope_exit{[&] {
+      counted->hold_psk.store(false);
+      counted->psk_released.notify();
+      auto failure = std::exception_ptr{};
+      for (auto* pending : {&startup, &shutdown}) {
+         if (!pending->valid()) { continue; }
+         try { join(*pending); }
+         catch (...) { if (!failure) { failure = std::current_exception(); } }
+      }
+      if (failure) { BOOST_ERROR("held PSK/ObjectDB operations failed after both joins completed"); }
+   }};
+   join(entered);
+   node.request_stop();
+   shutdown = boost::asio::co_spawn(runtime.context(), node.shutdown(), boost::asio::use_future);
+   BOOST_CHECK(shutdown.wait_for(30ms) == std::future_status::timeout);
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   counted->hold_psk.store(false);
+   counted->psk_released.notify();
+   join(startup);
+   join(shutdown);
+   BOOST_TEST(counted->reads.load() == 3U);
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   BOOST_CHECK_THROW(static_cast<void>(apis.get<p2p_node::api>(p2p_node::api::ref())->local_endpoint()),
+                     p2p_node::exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(store_plugin_rejects_invalid_programmatic_setup) {
