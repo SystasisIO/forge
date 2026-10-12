@@ -366,6 +366,51 @@ Configured Forge pairs and deterministic held-lookup regressions test the
 adapter boundary. They are not new configured-plugin Go/Rust evidence. No donor
 source or libp2p wire format is modified by this checkpoint.
 
+## DNS, Dial And Path Configuration
+
+The DNS/dial checkpoint reuses native owners rather than introducing another
+resolver or scheduler. Reviewed Go `9cfe2cc00be5b20a0be737f002c99f81b92255c5`:
+`p2p/net/swarm/swarm_dial.go`, `swarm.go`, `dial_ranker.go` and
+`black_hole_detector.go`. Reviewed Rust
+`22fb4c784fc55ad8b15d05fdc9f98d663107d4cb`:
+`transports/dns/src/lib.rs`,
+`swarm/src/connection/pool/concurrent_dial.rs`,
+`protocols/dcutr/src/behaviour.rs` and `protocols/stream/src/shared.rs`.
+
+Forge retains its documented Go-style batch-before-rank contract and bounded
+Happy Eyeballs scheduler. Rust interleaves resolution/dialing and defaults to
+eight concurrent root futures; Forge's existing ceiling remains four attempts
+per logical dial. These local scheduling differences are not wire changes.
+Forge's cancellation/local-rejection feedback remains neutral rather than
+copying Go's treatment of cancelled losing dials as failures. Loopback tests
+cannot establish public-network black-hole behavior; deterministic native
+detector tests cover block/probe/recovery separately.
+
+The canonical plugin config adds sparse resolution/resolver, ranker/detector
+and direct-path limits. Numeric conversions are checked once; native pure
+validation remains the authority for cross-field bounds, numeric nameservers,
+IPv6 scope and scheduling ceilings. Private TCP still disables the UDP
+detector in its native scheduler policy. No callbacks or per-call deadlines are
+serialized into YAML.
+
+Native path preflight now rejects a configured direct budget above the existing
+scheduler request ceiling, instead of accepting it and failing on a later
+protocol open. Both the native node and plugin remote-API policy receive the
+same configured budget. Explicit connect keeps its per-call options; this is
+not a new global attempt limit or a reason to alter donor protocol negotiation.
+
+The new configured no-reply regression initially returned P2P `internal` (15)
+instead of `canceled` (13) on both local disk drivers. Cancellation already
+reached the DNS operation, but the expander's catch-all erased Asio's
+`operation_aborted`. The native error boundary now maps that exact code to
+`canceled`; other system errors remain `internal`. A/AAAA/TXT tests distinguish
+abort from connection-reset, and the original configured expectation is not
+weakened. Resolver ownership, query cleanup and shutdown mechanics are unchanged.
+
+Configured DNS tests use the existing local DNS service and real Secrets/
+ObjectDB plugin composition. They are separate from Go/Rust process evidence;
+no donor support state is promoted by schema or local adapter tests.
+
 ## Evidence Boundaries
 
 The consolidated node checkpoint preserves the donor ownership pattern rather

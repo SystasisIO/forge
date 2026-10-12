@@ -75,6 +75,18 @@ static_assert(std::same_as<
 static_assert(std::same_as<
               decltype(forge::plugins::net::p2p::node::private_network_config::internet_egress),
               forge::plugins::net::p2p::node::internet_egress_policy>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::dns_config::resolver_config::nameservers),
+              std::optional<std::vector<forge::plugins::net::p2p::node::dns_config::nameserver_config>>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::dns_config::resolution_config::max_dns_lookups),
+              std::optional<std::uint64_t>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::dial_config::black_holes_config::udp_enabled),
+              std::optional<bool>>);
+static_assert(std::same_as<
+              decltype(forge::plugins::net::p2p::node::config::path_max_direct_endpoints),
+              std::optional<std::uint64_t>>);
 
 static_assert(std::same_as<
               decltype(std::declval<forge::plugins::net::p2p::node::api&>().publish_api(
@@ -200,6 +212,12 @@ int main() {
    forge::schema::rules<node_plugin::quic_config>::define().apply_defaults(quic);
    tcp.security = node_plugin::tcp_security::noise;
    quic.max_queued_bytes = 65536;
+   auto dns = node_plugin::dns_config{};
+   auto dial = node_plugin::dial_config{};
+   forge::schema::rules<node_plugin::dns_config>::define().apply_defaults(dns);
+   forge::schema::rules<node_plugin::dial_config>::define().apply_defaults(dial);
+   dns.resolver.nameservers = std::vector<node_plugin::dns_config::nameserver_config>{{.address = "127.0.0.1"}};
+   dial.black_holes.udp_enabled = false;
    const auto invalid = node_plugin::exceptions::invalid_config{"package category probe"};
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
                   resources.system.max_connections.has_value() && *resources.system.max_connections == 0 &&
@@ -216,6 +234,11 @@ int main() {
                   !quic.max_connections && !quic.max_streams_per_connection &&
                   !quic.max_inbound_queued_bytes && !quic.max_inbound_queued_packets &&
                   !config.tcp.security && !config.quic.max_queued_bytes &&
+                  !dns.resolution.max_dns_lookups && !dns.resolver.max_in_flight &&
+                  dns.resolver.nameservers && dns.resolver.nameservers->front().port == 53 &&
+                  dial.black_holes.udp_enabled && !*dial.black_holes.udp_enabled &&
+                  !dial.ranker.public_delay_ms && !dial.max_concurrent_attempts &&
+                  !config.path_max_direct_endpoints &&
                   invalid.code().value() == 3 &&
                   std::string{invalid.code().category().name()} == "forge.plugins.net.p2p.node" &&
                   config.topology_mode == forge::plugins::net::p2p::node::topology_mode::managed &&

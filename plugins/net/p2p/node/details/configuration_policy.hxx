@@ -14,6 +14,9 @@ void apply_peer_state(forge::net::p2p::peer_store::options& options, const peer_
 void apply_tcp(forge::net::p2p::node::options& options, const tcp_config& value);
 void apply_quic(forge::net::p2p::node::options& options, const quic_config& value);
 void apply_private_network(forge::net::p2p::node::options& options, const config& value);
+void apply_dns(forge::net::p2p::node::options& options, const dns_config& value);
+void apply_dial(forge::net::p2p::node::options& options, const dial_config& value);
+void apply_path(forge::net::p2p::path::policy& policy, const std::optional<std::uint64_t>& max_direct_endpoints);
 void apply_config(plugin::impl& state, const config& config);
 
 } // namespace forge::plugins::net::p2p::node

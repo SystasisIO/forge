@@ -818,3 +818,52 @@ gates pass, describe this as test integration with an evolving stack.
   support state changed. Remaining work is DNS/dial/path, reachability, mDNS,
   relay, DHT/lifecycle and PubSub policy mapping, then configured Go/Rust
   acceptance and whole-PR review. PR #172 remains incomplete and unmerged.
+
+### DNS, Dial And Path Checkpoint
+
+- The canonical config maps sparse DNS resolver/expansion, dial staggering,
+  UDP/IPv6 black-hole detector settings and `path.max-direct-endpoints` into
+  existing native owners. Missing values preserve native defaults; unknown
+  fields, bad sizes/durations/ports, scope errors and native cross-field limits
+  fail before publishing a candidate. No new public module or plugin loop.
+- Native path preflight now enforces the scheduler's existing `1..100` direct
+  attempt ceiling. Both native protocol-open selection and plugin remote-API
+  policy receive the configured value. Explicit connect still uses its own
+  per-call budget; dial concurrency remains per logical dial, not node-wide.
+- Seven configuration cases passed 915 assertions. Five additional configured
+  runtime cases passed 240 assertions: recursive DNSADDR with foreign-peer
+  filtering and authenticated Noise/TLS/QUIC binary exchange; contrasting result
+  bounds 1/2 and actual post-resolution gater rejection; NXDOMAIN; cancellation
+  and node shutdown during a witnessed no-reply query; and atomic rollback/freeze
+  with observable DNS and diagnostics behavior. Both local MDBX and RocksDB
+  drivers are exercised with real Secrets and insecure mode disabled.
+- The shared test-only secure app fixture replaces the duplicated private-network
+  setup rather than creating another runtime. Both existing private-network
+  cases still pass their 128 assertions. The fixture wraps the official factory
+  only to retain its owned plugin for direct configure tests; application-shell
+  lifecycle guards are not mistaken for plugin freeze evidence. Cleanup joins
+  both plugin shutdown and scheduler before reporting failures.
+- The first runtime run failed on caller cancellation for both disk drivers:
+  actual P2P `internal` (15), expected `canceled` (13). Native DNS cancellation
+  already happened, but its Asio `operation_aborted` was swallowed by the
+  expander's catch-all. The exact error now maps to `canceled`; A/AAAA/TXT
+  regressions retain `internal` for unrelated system errors. Original failed
+  logs and unchanged cancellation expectations are retained.
+- The expanded native selection passed 139 cases / 3,029 assertions, including
+  DNS expansion, scheduler cancellation/concurrency, public detector recovery,
+  path management and policy bounds. The other native cases were not selected.
+  Review corrected a runtime-test name: loopback does not prove public-network
+  detector neutrality; that guarantee belongs to the separate native tests.
+- Seven affected suites passed three consecutive runs: structure, network-plugin
+  structure, inventory, descriptor surfaces, plugins (241 cases), managed remote
+  (10 cases) and DB Store (82 cases). The installed node consumer built from a
+  fresh dev-component install, including the corrected native archive, and checks
+  the new config types and out-of-line schema definitions. Full CI was not run;
+  coordinator builds remain `-j4`.
+- Public module count stays 13; inventory changes only the public-surface digest.
+  No wire, donor source, persisted schema, project version or support-state
+  promotion. These local configured tests do not establish new Go/Rust evidence.
+- Remaining owners are reachability, mDNS, relay, DHT/lifecycle (including raw
+  bootstrap address mapping) and PubSub, then configured Go/Rust acceptance and
+  whole-PR review. This checkpoint is not Stage 7 completion; PR #172 remains
+  draft and must not be merged yet.

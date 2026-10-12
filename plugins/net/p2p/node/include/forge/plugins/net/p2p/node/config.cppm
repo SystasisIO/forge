@@ -114,6 +114,56 @@ struct private_network_config {
    bool operator==(const private_network_config&) const = default;
 };
 
+struct dns_config {
+   struct resolution_config {
+      std::optional<std::uint64_t> max_dns_lookups;
+      std::optional<std::uint64_t> max_txt_records;
+      std::optional<std::uint64_t> max_resolved_addresses;
+      std::optional<std::uint64_t> max_recursion_depth;
+      std::optional<std::uint64_t> max_multiaddr_size;
+      std::optional<std::uint64_t> max_roots;
+      bool operator==(const resolution_config&) const = default;
+   };
+
+   struct nameserver_config {
+      std::string address;
+      std::uint64_t port = 53;
+      std::string scope_id;
+      bool operator==(const nameserver_config&) const = default;
+   };
+
+   struct resolver_config {
+      std::optional<std::vector<nameserver_config>> nameservers;
+      std::optional<std::uint64_t> max_in_flight;
+      bool operator==(const resolver_config&) const = default;
+   };
+
+   resolution_config resolution;
+   resolver_config resolver;
+   bool operator==(const dns_config&) const = default;
+};
+
+struct dial_config {
+   struct ranker_config {
+      std::optional<std::uint64_t> public_delay_ms;
+      std::optional<std::uint64_t> private_delay_ms;
+      bool operator==(const ranker_config&) const = default;
+   };
+
+   struct black_holes_config {
+      std::optional<std::uint64_t> window_size;
+      std::optional<std::uint64_t> min_successes;
+      std::optional<bool> udp_enabled;
+      std::optional<bool> ipv6_enabled;
+      bool operator==(const black_holes_config&) const = default;
+   };
+
+   ranker_config ranker;
+   black_holes_config black_holes;
+   std::optional<std::uint64_t> max_concurrent_attempts;
+   bool operator==(const dial_config&) const = default;
+};
+
 struct resource_config {
    // Missing budgets preserve the owning native scope's defaults; zero denies.
    struct scope_patch {
@@ -258,6 +308,9 @@ struct config {
    quic_config quic;
    bool relay_auto_discovery_enabled = true;
    std::optional<private_network_config> private_network;
+   dns_config dns;
+   dial_config dial;
+   std::optional<std::uint64_t> path_max_direct_endpoints;
    bool operator==(const config&) const = default;
 };
 
@@ -303,6 +356,15 @@ BOOST_DESCRIBE_STRUCT(quic_config, (),
                       (max_connections, max_streams_per_connection, max_queued_bytes,
                        max_inbound_queued_bytes, max_inbound_queued_packets))
 BOOST_DESCRIBE_STRUCT(private_network_config, (), (psk_secret, internet_egress))
+BOOST_DESCRIBE_STRUCT(dns_config::resolution_config, (),
+                      (max_dns_lookups, max_txt_records, max_resolved_addresses, max_recursion_depth,
+                       max_multiaddr_size, max_roots))
+BOOST_DESCRIBE_STRUCT(dns_config::nameserver_config, (), (address, port, scope_id))
+BOOST_DESCRIBE_STRUCT(dns_config::resolver_config, (), (nameservers, max_in_flight))
+BOOST_DESCRIBE_STRUCT(dns_config, (), (resolution, resolver))
+BOOST_DESCRIBE_STRUCT(dial_config::ranker_config, (), (public_delay_ms, private_delay_ms))
+BOOST_DESCRIBE_STRUCT(dial_config::black_holes_config, (), (window_size, min_successes, udp_enabled, ipv6_enabled))
+BOOST_DESCRIBE_STRUCT(dial_config, (), (ranker, black_holes, max_concurrent_attempts))
 BOOST_DESCRIBE_STRUCT(config, (),
                       (listen, bootstrap, advertised_endpoints, peer_id, peer_store, certificate_secret,
                        private_key_secret, api_codec, api_deadline_ms, api_max_frame_size, max_inflight_per_peer,
@@ -315,7 +377,7 @@ BOOST_DESCRIBE_STRUCT(config, (),
                        topology_max_parallel_dials, topology_retry_jitter, rendezvous_role, rendezvous_points,
                        rendezvous_max_points, peer_exchange_enabled, peer_exchange_max_peers, pubsub, diagnostics,
                        resources, connections, identify, peer_state, tcp, quic,
-                       relay_auto_discovery_enabled, private_network))
+                       relay_auto_discovery_enabled, private_network, dns, dial, path_max_direct_endpoints))
 
 } // namespace forge::plugins::net::p2p::node
 
@@ -369,4 +431,32 @@ export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::q
 
 export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::private_network_config> {
    [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::private_network_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dns_config::resolution_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config::resolution_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dns_config::nameserver_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config::nameserver_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dns_config::resolver_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config::resolver_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dns_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dial_config::ranker_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dial_config::ranker_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dial_config::black_holes_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dial_config::black_holes_config> define();
+};
+
+export template <> struct forge::schema::rules<forge::plugins::net::p2p::node::dial_config> {
+   [[nodiscard]] static forge::schema::object_schema<forge::plugins::net::p2p::node::dial_config> define();
 };

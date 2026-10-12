@@ -658,6 +658,76 @@ the native runtime retains the protector. Shutdown joins an admitted Secrets
 lookup, and a lookup returning after stop cannot open the P2P persistence adapter
 or listener. Secrets permission/not-found errors retain their typed category.
 
+### DNS, Dialing And Paths
+
+`dns` and `dial` are sparse overlays of the existing native resolver, address
+expander and dial scheduler. Omitted fields retain native defaults; removing a
+group in a pre-start reconfiguration restores those defaults. There is no
+plugin-owned resolver, discovery loop or separate timeout policy.
+
+```yaml
+plugins:
+  net:
+    p2p:
+      node:
+        dns:
+          resolution:
+            max-dns-lookups: 32
+            max-txt-records: 16
+            max-resolved-addresses: 100
+            max-recursion-depth: 4
+            max-multiaddr-size: 4096
+            max-roots: 100
+          resolver:
+            max-in-flight: 16
+            nameservers: [] # Use system DNS; custom entries require numeric addresses.
+        dial:
+          ranker:
+            public-delay-ms: 250
+            private-delay-ms: 30
+          black-holes:
+            window-size: 100
+            min-successes: 5
+            udp-enabled: true
+            ipv6-enabled: true
+          max-concurrent-attempts: 4
+        path:
+          policy: direct-preferred
+          max-direct-endpoints: 4
+```
+
+A custom nameserver entry contains `address`, optional `port` (default 53) and
+optional `scope-id`. Ports must fit `1..65535`; a scope is required only for
+IPv6 link-local addresses and is forbidden for other addresses. An empty list
+selects system configuration. The resolver's `max-in-flight` limit (`1..1024`)
+is distinct from the address expander's per-batch lookup/result bounds.
+
+Resolution bounds are positive and cannot exceed the native ceilings shown
+above. Root count is checked before deduplication; lookup/result budgets are
+shared by the whole expansion batch. Resolution completes before ranking and
+dialing, so a slow DNS sibling can delay a numeric address. The existing native
+expected-peer filter, post-resolution address gater and joined cancellation
+remain authoritative.
+
+Dial concurrency is `1..4` **per logical dial**, not a node-wide connection
+limit. Staggering delays are positive and cannot exceed the defaults shown.
+Black-hole detection tracks unavailable UDP/IPv6 paths with a window of
+`1..100` outcomes; required successes must be between `ceil(window/20)` and
+the window size. Local gater rejection and cancellation are not remote-network
+failure evidence. Private TCP mode still disables the native UDP detector;
+the IPv6 detector is independent.
+
+`path.max-direct-endpoints` accepts `1..100`. It feeds native protocol-open
+selection and the plugin's remote-API open policy, alongside the existing
+`path.policy` and `relay.max-candidates`. Native per-call limits still apply:
+raising the node budget alone does not raise a caller's default of four.
+Explicit `connect()` retains its own per-call attempt budget; this setting is
+not a global dial firewall. Resource reservations remain a separate hard bound.
+
+These settings freeze at startup. Unknown fields, invalid native bounds and
+mixed frozen-policy/diagnostics changes fail without replacing the accepted
+configuration. Mapping them does not establish new configured Go/Rust evidence.
+
 ### Plugin 8.0 Consolidation Migration
 
 The maintainer approved this pre-stabilization source/package/configuration break.

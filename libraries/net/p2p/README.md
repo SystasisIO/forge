@@ -740,6 +740,12 @@ before ranking, so an ineligible QUIC record does not hide an eligible TCP recor
 Peer gating follows resolved identity inference; address gating runs on each
 concrete candidate before native transport admission.
 
+`path_policy.max_direct_endpoints` is validated against the scheduler ceiling
+(`1..100`) before startup; protocol-open budgets are still bounded by the
+caller's options. Explicit connect retains its own attempt budget. Asio
+`operation_aborted` during A/AAAA or TXT resolution maps to the typed P2P
+`canceled` error, not `internal`; unrelated system errors remain failures.
+
 Only the authenticated winner enters the node session registry, after all
 losers have completed native cleanup. Stop seals session admission before
 draining the scheduler. A failed publication retires the exact session and

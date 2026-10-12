@@ -282,6 +282,19 @@ BOOST_AUTO_TEST_CASE(legacy_discovery_is_canonicalized_without_mutation_or_capac
    BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
 }
 
+BOOST_AUTO_TEST_CASE(path_direct_endpoint_budget_matches_scheduler_attempt_bound) {
+   for (auto options : {p2p::node::options{}, private_policy()}) {
+      for (const auto limit : {std::size_t{0}, std::size_t{101}}) {
+         options.path_policy.max_direct_endpoints = limit;
+         BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+      }
+      for (const auto limit : {std::size_t{1}, std::size_t{100}}) {
+         options.path_policy.max_direct_endpoints = limit;
+         BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(full_validation_requires_real_identity_and_explicit_backends) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto options = p2p::node::options{};

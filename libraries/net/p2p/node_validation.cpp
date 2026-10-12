@@ -205,8 +205,11 @@ void validate_policy(const node::options& options) {
    if (!options.path_policy.allow_direct && !options.path_policy.allow_hole_punch && !options.path_policy.allow_relay) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P path policy must allow at least one path kind");
    }
-   if (options.path_policy.max_direct_endpoints == 0 || options.path_policy.max_relay_candidates == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P path policy limits must be positive");
+   if (options.path_policy.max_direct_endpoints == 0 ||
+       options.path_policy.max_direct_endpoints > detail::dial_scheduler::request{}.max_attempts ||
+       options.path_policy.max_relay_candidates == 0) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options,
+                            "P2P path policy limits must be positive and fit the direct dial attempt budget");
    }
    if (options.relay_policy.target_reservations == 0 || options.relay_policy.refresh_margin.count() <= 0 ||
        options.relay_policy.max_candidates_per_refresh == 0 || options.relay_policy.max_parallel_reservations == 0 ||

@@ -56,6 +56,10 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
    schema.field<&forge::plugins::net::p2p::node::config::quic>("quic")
        .default_value(forge::plugins::net::p2p::node::quic_config{});
    schema.field<&forge::plugins::net::p2p::node::config::private_network>("private-network");
+   schema.field<&forge::plugins::net::p2p::node::config::dns>("dns")
+       .default_value(forge::plugins::net::p2p::node::dns_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::dial>("dial")
+       .default_value(forge::plugins::net::p2p::node::dial_config{});
    schema.field<&forge::plugins::net::p2p::node::config::listen>("listen")
        .default_value(std::vector<std::string>{})
        .description("Listen endpoints, for example /ip4/0.0.0.0/udp/9443/quic-v1 or /ip4/0.0.0.0/tcp/4001");
@@ -157,6 +161,7 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
    schema.field<&forge::plugins::net::p2p::node::config::path_policy>("path.policy")
        .default_value("direct-preferred")
        .description("Default host path policy: direct-only, direct-preferred or relay-only");
+   schema.field<&forge::plugins::net::p2p::node::config::path_max_direct_endpoints>("path.max-direct-endpoints");
    schema.field<&forge::plugins::net::p2p::node::config::relay_trust>("relay.trust")
        .default_value("known-only")
        .description("Relay trust policy: known-only or public-allowed");
@@ -174,6 +179,78 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
    schema.field<&forge::plugins::net::p2p::node::config::relay_max_candidates>("relay.max-candidates")
        .default_value(std::uint64_t{4})
        .range(1, 10'000);
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config::resolution_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dns_config::resolution_config>::define() {
+   using config = forge::plugins::net::p2p::node::dns_config::resolution_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::max_dns_lookups>("max-dns-lookups");
+   schema.field<&config::max_txt_records>("max-txt-records");
+   schema.field<&config::max_resolved_addresses>("max-resolved-addresses");
+   schema.field<&config::max_recursion_depth>("max-recursion-depth");
+   schema.field<&config::max_multiaddr_size>("max-multiaddr-size");
+   schema.field<&config::max_roots>("max-roots");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config::nameserver_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dns_config::nameserver_config>::define() {
+   using config = forge::plugins::net::p2p::node::dns_config::nameserver_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::address>("address").required().non_empty();
+   schema.field<&config::port>("port").default_value(std::uint64_t{53});
+   schema.field<&config::scope_id>("scope-id").default_value("");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config::resolver_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dns_config::resolver_config>::define() {
+   using config = forge::plugins::net::p2p::node::dns_config::resolver_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::nameservers>("nameservers")
+       .items<forge::plugins::net::p2p::node::dns_config::nameserver_config>();
+   schema.field<&config::max_in_flight>("max-in-flight");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dns_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dns_config>::define() {
+   using config = forge::plugins::net::p2p::node::dns_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::resolution>("resolution").default_value(config::resolution_config{});
+   schema.field<&config::resolver>("resolver").default_value(config::resolver_config{});
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dial_config::ranker_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dial_config::ranker_config>::define() {
+   using config = forge::plugins::net::p2p::node::dial_config::ranker_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::public_delay_ms>("public-delay-ms");
+   schema.field<&config::private_delay_ms>("private-delay-ms");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dial_config::black_holes_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dial_config::black_holes_config>::define() {
+   using config = forge::plugins::net::p2p::node::dial_config::black_holes_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::window_size>("window-size");
+   schema.field<&config::min_successes>("min-successes");
+   schema.field<&config::udp_enabled>("udp-enabled");
+   schema.field<&config::ipv6_enabled>("ipv6-enabled");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dial_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dial_config>::define() {
+   using config = forge::plugins::net::p2p::node::dial_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::ranker>("ranker").default_value(config::ranker_config{});
+   schema.field<&config::black_holes>("black-holes").default_value(config::black_holes_config{});
+   schema.field<&config::max_concurrent_attempts>("max-concurrent-attempts");
    return schema;
 }
 

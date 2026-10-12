@@ -235,7 +235,7 @@
         "forge.plugins.net.p2p.node.types": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ]
       },
       "header_features": {},
-      "sha256": "a28e309b908f5e8aafe938f9f40b2efff48dbdf7fe1bc5a162994c9ea897567b",
+      "sha256": "5021e357e00969a3112c85a3d21fcf8bd2d1d85f5c0d813cd07851a4f6db4035",
       "feature_ids": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ]
     },
     "plugin.p2p.resolver": {

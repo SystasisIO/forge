@@ -236,7 +236,7 @@ config decode_config(const forge::config::core::component_view& view) {
 
 parsed_policy parse_policy(const config& config) {
    const auto relay_max_candidates = static_cast<std::size_t>(config.relay_max_candidates);
-   return parsed_policy{
+   auto policy = parsed_policy{
        .path = parse_path_policy(config.path_policy, config.relay_client_enabled, relay_max_candidates),
        .relay_client_enabled = config.relay_client_enabled,
        .relay_server_enabled = config.relay_server_enabled,
@@ -244,6 +244,8 @@ parsed_policy parse_policy(const config& config) {
        .relay_reservation_ttl = to_ms(config.relay_reservation_ttl_ms),
        .relay_max_candidates = relay_max_candidates,
    };
+   apply_path(policy.path, config.path_max_direct_endpoints);
+   return policy;
 }
 
 std::vector<forge::net::p2p::endpoint> parse_endpoint_list(const std::vector<std::string>& values) {
@@ -386,6 +388,8 @@ void apply_config(plugin::impl& state, const config& config) {
    apply_tcp(options, config.tcp);
    apply_quic(options, config.quic);
    apply_private_network(options, config);
+   apply_dns(options, config.dns);
+   apply_dial(options, config.dial);
    options.limits.max_protocol_handlers = static_cast<std::size_t>(config.max_protocol_handlers);
    options.allow_insecure_test_mode = config.allow_insecure_test_mode;
    const auto has_identity = !certificate_secret.empty() && !private_key_secret.empty();

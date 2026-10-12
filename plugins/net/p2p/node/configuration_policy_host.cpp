@@ -7,11 +7,14 @@ module;
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 module forge.plugins.net.p2p.node.plugin;
 
 import forge.config.core.component;
 import forge.exceptions;
+import forge.net.dns.types;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
@@ -133,6 +136,48 @@ void apply_quic(forge::net::p2p::node::options& options, const quic_config& valu
    apply_size(limits.max_queued_bytes, value.max_queued_bytes, "quic.max-queued-bytes");
    apply_size(limits.max_inbound_queued_bytes, value.max_inbound_queued_bytes, "quic.max-inbound-queued-bytes");
    apply_size(limits.max_inbound_queued_packets, value.max_inbound_queued_packets, "quic.max-inbound-queued-packets");
+}
+
+void apply_dns(forge::net::p2p::node::options& options, const dns_config& value) {
+   auto& bounds = options.dns_resolution.bounds;
+   apply_size(bounds.max_dns_lookups, value.resolution.max_dns_lookups, "dns.resolution.max-dns-lookups");
+   apply_size(bounds.max_txt_records, value.resolution.max_txt_records, "dns.resolution.max-txt-records");
+   apply_size(bounds.max_resolved_addresses, value.resolution.max_resolved_addresses,
+              "dns.resolution.max-resolved-addresses");
+   apply_size(bounds.max_recursion_depth, value.resolution.max_recursion_depth, "dns.resolution.max-recursion-depth");
+   apply_size(bounds.max_multiaddr_size, value.resolution.max_multiaddr_size, "dns.resolution.max-multiaddr-size");
+   apply_size(bounds.max_roots, value.resolution.max_roots, "dns.resolution.max-roots");
+   apply_size(options.dns_resolver.max_in_flight, value.resolver.max_in_flight, "dns.resolver.max-in-flight");
+   if (value.resolver.nameservers) {
+      auto servers = std::vector<forge::net::dns::nameserver>{};
+      servers.reserve(value.resolver.nameservers->size());
+      for (const auto& server : *value.resolver.nameservers) {
+         auto port = std::uint16_t{};
+         try {
+            port = forge::schema::checked_integral_cast<std::uint16_t>(server.port);
+         } catch (const forge::schema::exceptions::invalid_value&) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P DNS nameserver port exceeds the native type range",
+                                  forge::exceptions::ctx("field", "dns.resolver.nameservers.port"));
+         }
+         servers.push_back({.address = server.address, .port = port, .scope_id = server.scope_id});
+      }
+      options.dns_resolver.nameservers = std::move(servers);
+   }
+}
+
+void apply_dial(forge::net::p2p::node::options& options, const dial_config& value) {
+   auto& policy = options.direct_dial;
+   apply_time(policy.ranker.public_delay, value.ranker.public_delay_ms);
+   apply_time(policy.ranker.private_delay, value.ranker.private_delay_ms);
+   apply_size(policy.black_holes.window_size, value.black_holes.window_size, "dial.black-holes.window-size");
+   apply_size(policy.black_holes.min_successes, value.black_holes.min_successes, "dial.black-holes.min-successes");
+   if (value.black_holes.udp_enabled) { policy.black_holes.udp_enabled = *value.black_holes.udp_enabled; }
+   if (value.black_holes.ipv6_enabled) { policy.black_holes.ipv6_enabled = *value.black_holes.ipv6_enabled; }
+   apply_size(policy.max_concurrent_attempts, value.max_concurrent_attempts, "dial.max-concurrent-attempts");
+}
+
+void apply_path(forge::net::p2p::path::policy& policy, const std::optional<std::uint64_t>& max_direct_endpoints) {
+   apply_size(policy.max_direct_endpoints, max_direct_endpoints, "path.max-direct-endpoints");
 }
 
 } // namespace forge::plugins::net::p2p::node
