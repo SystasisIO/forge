@@ -32,6 +32,7 @@ class secure_node_fixture final {
    };
    directory _directory;
    forge::plugins::net::p2p::node::plugin* _node = nullptr;
+   void build_shell();
 
  public:
    struct secret_policy {
@@ -55,6 +56,9 @@ class secure_node_fixture final {
 
    [[nodiscard]] static std::vector<std::string> backends();
    void start();
+   // Join the old owners and configure a new shell over the same durable directory.
+   // Like construction, reopening leaves consumer initialization/startup to the test.
+   void reopen();
    // Invoke the official plugin directly, committing the fixture document only
    // after acceptance. This is not application_shell's post-init config guard.
    void configure_node(const forge::config::core::document& candidate);

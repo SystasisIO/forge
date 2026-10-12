@@ -58,6 +58,9 @@ void validate_options(const options& opts) {
        limits.max_topics == 0 || limits.max_validation_queue == 0 || limits.max_outbound_queue_bytes == 0 ||
        limits.max_ihave_per_peer == 0 || limits.max_iwant_per_peer == 0 || limits.max_graft_per_peer == 0 ||
        limits.heartbeat_initial_delay.count() <= 0 || limits.heartbeat_interval.count() <= 0 ||
+       limits.validation_retry_max_delay < limits.validation_retry_initial_delay ||
+       limits.max_validation_attempts == 0 || limits.max_validation_redeliveries == 0 ||
+       limits.max_validation_requests == 0 ||
        limits.fanout_ttl.count() <= 0 || limits.prune_backoff.count() <= 0 ||
        limits.unsubscribe_backoff.count() <= 0 || limits.mesh_n == 0 || limits.mesh_n_low == 0 ||
        limits.mesh_n_high < limits.mesh_n_low || limits.history_length == 0 || limits.history_gossip == 0 ||
@@ -860,6 +863,10 @@ void validate(const options& opts) {
    validate_options(opts);
    const auto& b = opts.limits;
    score_duration(b.iwant_followup_time, "router.iwant_followup_time", true);
+   score_duration(b.validation_retry_initial_delay, "validation_retry_initial_delay", true);
+   score_duration(b.validation_retry_max_delay, "validation_retry_max_delay", true);
+   score_duration(b.heartbeat_initial_delay, "heartbeat_initial_delay", true);
+   score_duration(b.heartbeat_interval, "heartbeat_interval", true);
    require_score(b.max_remote_topics_per_peer > 0 && b.max_remote_topic_entries > 0 && b.max_iwant_promises > 0 &&
                  b.mesh_n_low <= b.mesh_n && b.mesh_n <= b.mesh_n_high &&
                  b.mesh_outbound_min <= b.mesh_n / 2 && b.mesh_outbound_min < b.mesh_n_low &&

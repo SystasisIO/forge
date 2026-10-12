@@ -301,7 +301,8 @@ def _connections(result: dict, field: str, transport: str, label: str, errors: l
     return records
 
 
-def _result(value: object, role: str, version: int, transport: str, errors: list[str]) -> dict | None:
+def _result(value: object, role: str, version: int, transport: str, errors: list[str],
+            *, forge_boundary: str = "raw") -> dict | None:
     if not isinstance(value, dict) or value.get("implementation") not in ("forge", "go", "rust"):
         errors.append(f"{role} result is missing or has an unknown implementation")
         return None
@@ -338,7 +339,28 @@ def _result(value: object, role: str, version: int, transport: str, errors: list
         nonce = "not_exposed_by_public_API"
         after = _object(value.get("diagnostics_after_stop"))
         before = _object(value.get("diagnostics_before_stop"))
-        if after is None or before is None:
+        if forge_boundary == "configured-plugin":
+            # The plugin detaches its APIs after joined shutdown. Never invent
+            # a raw-node stopped snapshot from the retained public facade.
+            initial = _object(value.get("diagnostics_before_connect"))
+            detached = value.get("diagnostics_after_detach")
+            if (value.get("fixture_kind") != "configured-plugin"
+                    or value.get("lifecycle") != {"plugins_joined": True, "scheduler_joined": True}
+                    or not isinstance(detached, dict) or detached.get("rejected") is not True
+                    or detached.get("error_category") != "forge.plugins.net.p2p.node"
+                    or not _integer(detached.get("error_code"), 1, 1)
+                    or detached.get("native_snapshot_read") is not False
+                    or detached.get("after_plugins_joined") is not True
+                    or detached.get("after_scheduler_joined") is not True
+                    or value.get("diagnostics_after_stop") is not None or before is None or initial is None):
+                errors.append(f"{role} configured Forge lacks actual startup/pre-stop/joined-detach evidence")
+            enabled = f"{'service' if role == 'listener' else 'client'}_v{version}_enabled"
+            for snapshot in (initial, before):
+                state = snapshot.get("reachability") if snapshot else None
+                if (not isinstance(state, dict) or state.get("internet_egress_allowed") is not True
+                        or state.get(enabled) is not True):
+                    errors.append(f"{role} configured Forge diagnostics do not enable the selected AutoNAT role")
+        elif after is None or before is None:
             errors.append(f"{role} Forge diagnostics are missing or malformed")
         else:
             resources = after.get("resources")
@@ -386,6 +408,7 @@ def validate_autonat_evidence(
     client_terminal_status: object,
     server_terminal_status: object,
     expected_outcome: str = "reachable",
+    forge_boundary: str = "raw",
 ) -> list[str]:
     """Validate one independently terminated pair, not an aggregate PASS label.
 
@@ -401,6 +424,8 @@ def validate_autonat_evidence(
         type(version) is not int or version not in PROTOCOLS
         or transport not in ("tcp", "tcp-tls", "tcp-pnet", "quic")
         or expected_outcome not in ("reachable", "unreachable")
+        or forge_boundary not in ("raw", "configured-plugin")
+        or (forge_boundary == "configured-plugin" and (transport != "tcp" or expected_outcome != "reachable"))
     ):
         return ["unsupported AutoNAT version, transport or expected outcome"]
     requested = _address(expected_requested_address, transport)
@@ -408,8 +433,8 @@ def validate_autonat_evidence(
         return ["runner must bind a public numeric requested address and exact service peer"]
     _terminal(client_terminal_status, "client", errors)
     _terminal(server_terminal_status, "server", errors)
-    client = _result(client, "dialer", version, transport, errors)
-    server = _result(server, "listener", version, transport, errors)
+    client = _result(client, "dialer", version, transport, errors, forge_boundary=forge_boundary)
+    server = _result(server, "listener", version, transport, errors, forge_boundary=forge_boundary)
     if client is None or server is None:
         return errors
     ci, si = client["implementation"], server["implementation"]
@@ -522,7 +547,7 @@ def validate_autonat_evidence(
     # Independent Go probe-host ownership and authentication are checked above;
     # the Forge v1 public vote is checked below, not inferred from a PASS label.
     go_v1_probe = (
-        version == 1 and ci == "forge" and si == "go" and not inbound and len(cc) == 1
+        forge_boundary == "raw" and version == 1 and ci == "forge" and si == "go" and not inbound and len(cc) == 1
         and any(p["direction"] == "outbound" and p["authenticated_peer"] == cp
                 and not _wildcard(p["local_addr"]) and p["remote_addr"] == requested for p in probes)
     )
@@ -558,16 +583,18 @@ def validate_autonat_evidence(
             errors.append("positive result lacks paired fresh authenticated dialback to the exact target")
 
     if ci == "forge":
+        configured = forge_boundary == "configured-plugin"
         if (
-            not _integer(client.get("autonat_probe_api_calls"), 1, 256)
+            not _integer(client.get("autonat_probe_api_calls"), 0 if configured else 1, 0 if configured else 256)
             or client.get("response_addr") is not None
             or client.get("response_addr_proof") != "not_exposed_by_public_API"
         ):
             errors.append("Forge result must expose actual API calls without inventing a wire response")
         if version == 1:
             if (
-                client.get("v1_vote") != ("private" if negative else "public")
-                or client.get("probe_state") != client.get("v1_vote")
+                client.get("v1_vote") != (None if configured else "private" if negative else "public")
+                or client.get("probe_state") != ("unknown" if configured else client.get("v1_vote"))
+                or (configured and client.get("autonat_v1_state") != "unknown")
                 or client.get("autonat_v2_address_state") is not None
                 or client.get("current_v2_address_state") is not None
             ):

@@ -15,6 +15,7 @@ module;
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -37,6 +38,7 @@ import forge.net.p2p.endpoint;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.identity;
+import forge.net.p2p.exceptions;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.node;
@@ -158,43 +160,6 @@ parse_dht_profiles(const std::vector<dht_profile_config>& configured) {
    return profiles;
 }
 
-[[nodiscard]] forge::net::p2p::topology::mode parse_topology_mode(topology_mode value) {
-   switch (value) {
-   case topology_mode::managed:
-      return forge::net::p2p::topology::mode::managed;
-   case topology_mode::static_only:
-      return forge::net::p2p::topology::mode::static_only;
-   }
-   FORGE_THROW_EXCEPTION(exceptions::invalid_config, "invalid P2P topology mode");
-}
-
-[[nodiscard]] forge::net::p2p::rendezvous::role parse_rendezvous_role(rendezvous_role value) {
-   switch (value) {
-   case rendezvous_role::disabled:
-   case rendezvous_role::client:
-      return forge::net::p2p::rendezvous::role::client;
-   case rendezvous_role::server:
-      return forge::net::p2p::rendezvous::role::server;
-   case rendezvous_role::client_and_server:
-      return forge::net::p2p::rendezvous::role::client_and_server;
-   }
-   FORGE_THROW_EXCEPTION(exceptions::invalid_config, "invalid P2P rendezvous role");
-}
-
-[[nodiscard]] std::vector<forge::net::p2p::topology::rendezvous_point>
-parse_rendezvous_points(const std::vector<rendezvous_point_config>& configured) {
-   auto points = std::vector<forge::net::p2p::topology::rendezvous_point>{};
-   points.reserve(configured.size());
-   for (const auto& item : configured) {
-      auto parsed = parse_endpoint_list({item.endpoint});
-      points.push_back(forge::net::p2p::topology::rendezvous_point{
-          .endpoint = std::move(parsed.front()),
-          .namespaces = item.namespaces,
-      });
-   }
-   return points;
-}
-
 } // namespace
 
 std::chrono::milliseconds to_ms(std::uint64_t value) {
@@ -203,6 +168,58 @@ std::chrono::milliseconds to_ms(std::uint64_t value) {
    } catch (const forge::schema::exceptions::invalid_value&) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P milliseconds exceed the native duration range");
    }
+}
+
+std::chrono::seconds to_seconds(std::uint64_t value) {
+   try {
+      return std::chrono::seconds{forge::schema::checked_integral_cast<std::chrono::seconds::rep>(value)};
+   } catch (const forge::schema::exceptions::invalid_value&) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P seconds exceed the native duration range");
+   }
+}
+
+void apply_size(std::size_t& target, const std::optional<std::uint64_t>& value, std::string_view field) {
+   if (!value) { return; }
+   try {
+      target = forge::schema::checked_integral_cast<std::size_t>(*value);
+   } catch (const forge::schema::exceptions::invalid_value&) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P count exceeds the native type range",
+                            forge::exceptions::ctx("field", field));
+   }
+}
+
+void apply_time(std::chrono::milliseconds& target, const std::optional<std::uint64_t>& value) {
+   if (value) { target = to_ms(*value); }
+}
+
+void apply_bool(bool& target, const std::optional<bool>& value) {
+   if (value) { target = *value; }
+}
+
+void apply_dht_profiles(forge::net::p2p::node::options& options, const std::vector<dht_profile_config>& value) {
+   auto profiles = parse_dht_profiles(value);
+   auto records_by_profile = std::map<forge::net::p2p::protocol_id, forge::net::p2p::dht::record_store::options>{};
+   for (auto index = std::size_t{}; index < profiles.size(); ++index) {
+      const auto& profile = profiles[index];
+      const auto& patch = value[index].records;
+      try {
+         auto records = forge::net::p2p::dht::record_store::options_for(profile);
+         apply_size(records.max_values, patch.max_values, "dht.profiles.records.max-values");
+         apply_size(records.max_total_bytes, patch.max_total_bytes, "dht.profiles.records.max-total-bytes");
+         apply_size(records.hydration_page_limit, patch.hydration_page_limit, "dht.profiles.records.hydration-page-limit");
+         apply_size(records.prune_page_limit, patch.prune_page_limit, "dht.profiles.records.prune-page-limit");
+         apply_size(records.max_hydration_pages, patch.max_hydration_pages, "dht.profiles.records.max-hydration-pages");
+         apply_size(records.max_providers, patch.max_providers, "dht.profiles.records.max-providers");
+         apply_size(records.max_local_providers, patch.max_local_providers, "dht.profiles.records.max-local-providers");
+         forge::net::p2p::validate(profile, records);
+         records_by_profile.emplace(profile.protocol, std::move(records));
+      } catch (const forge::net::p2p::exceptions::invalid_options& error) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "invalid P2P DHT record-store configuration",
+                               forge::exceptions::ctx("error", error.what()));
+      }
+   }
+   options.dht_profiles = std::move(profiles);
+   options.dht_records = std::move(records_by_profile);
 }
 
 config decode_config(const forge::config::core::component_view& view) {
@@ -235,16 +252,17 @@ config decode_config(const forge::config::core::component_view& view) {
 }
 
 parsed_policy parse_policy(const config& config) {
-   const auto relay_max_candidates = static_cast<std::size_t>(config.relay_max_candidates);
+   auto relay_max_candidates = std::size_t{};
+   apply_size(relay_max_candidates, config.relay.max_candidates, "relay.max-candidates");
    auto policy = parsed_policy{
-       .path = parse_path_policy(config.path_policy, config.relay_client_enabled, relay_max_candidates),
-       .relay_client_enabled = config.relay_client_enabled,
-       .relay_server_enabled = config.relay_server_enabled,
-       .relay_public_allowed = config.relay_public_allowed || config.relay_trust == relay_trust_policy::public_allowed,
-       .relay_reservation_ttl = to_ms(config.relay_reservation_ttl_ms),
+       .path = parse_path_policy(config.path.policy, config.relay.client_enabled, relay_max_candidates),
+       .relay_client_enabled = config.relay.client_enabled,
+       .relay_server_enabled = config.relay.server_enabled,
+       .relay_public_allowed = config.relay.public_allowed || config.relay.trust == relay_trust_policy::public_allowed,
+       .relay_reservation_ttl = to_ms(config.relay.reservation_ttl_ms),
        .relay_max_candidates = relay_max_candidates,
    };
-   apply_path(policy.path, config.path_max_direct_endpoints);
+   apply_path(policy.path, config.path.max_direct_endpoints);
    return policy;
 }
 
@@ -280,21 +298,18 @@ void apply_config(plugin::impl& state, const config& config) {
        .deadline = to_ms(config.api_deadline_ms),
        .max_frame_size = static_cast<std::uint32_t>(config.api_max_frame_size),
    };
-   options.lifecycle.listen = parse_endpoint_list(config.listen);
-   options.lifecycle.bootstrap.clear();
-   for (auto& endpoint : parse_endpoint_list(config.bootstrap)) {
-      options.lifecycle.bootstrap.push_back(forge::net::p2p::bootstrap_peer{.address = endpoint.to_multiaddr()});
-   }
-   options.lifecycle.requirement = config.bootstrap_requirement == bootstrap_requirement::require_connection
-                                             ? forge::net::p2p::bootstrap_requirement::require_connection
-                                             : forge::net::p2p::bootstrap_requirement::allow_disconnected;
-   options.lifecycle.startup_budget = to_ms(config.bootstrap_startup_budget_ms);
-   options.lifecycle.connect_timeout = to_ms(config.bootstrap_connect_timeout_ms);
-   options.lifecycle.max_parallel_bootstrap = static_cast<std::size_t>(config.bootstrap_max_parallel);
+   apply_lifecycle(options, config);
    options.advertised_endpoints = parse_endpoint_list(config.advertised_endpoints);
-   auto peer_store_name = config.peer_store;
-   auto reset_incompatible_peer_state = config.peer_store_schema_policy == cache_schema_policy::reset;
-   auto profiles = parse_dht_profiles(config.dht_profiles);
+   auto peer_store_name = config.peer_store.store;
+   auto reset_incompatible_peer_state = false;
+   switch (config.peer_store.schema_policy) {
+   case cache_schema_policy::reject: break;
+   case cache_schema_policy::reset: reset_incompatible_peer_state = true; break;
+   default: FORGE_THROW_EXCEPTION(exceptions::invalid_config, "invalid P2P peer-store schema policy");
+   }
+   apply_dht_profiles(options, config.dht_profiles);
+   auto profiles = std::move(options.dht_profiles);
+   options.dht_profiles.clear();
    for (const auto& prior : previous->dht_profiles) {
       if (prior.kind != forge::net::p2p::dht::profile_kind::custom || prior.value_policies.empty()) { continue; }
       const auto found = std::find_if(profiles.begin(), profiles.end(),
@@ -304,51 +319,16 @@ void apply_config(plugin::impl& state, const config& config) {
       }
       found->value_policies = prior.value_policies;
    }
-   options.limits.topology = forge::net::p2p::topology::policy{
-       .operating_mode = parse_topology_mode(config.topology_mode),
-       .peers =
-           forge::net::p2p::topology::watermarks{
-               .low = static_cast<std::size_t>(config.topology_low),
-               .target = static_cast<std::size_t>(config.topology_target),
-               .high = static_cast<std::size_t>(config.topology_high),
-           },
-       .refresh_interval = to_ms(config.topology_refresh_interval_ms),
-       .query_timeout = to_ms(config.topology_query_timeout_ms),
-       .max_candidates = static_cast<std::size_t>(config.topology_max_candidates),
-       .max_parallel_queries = static_cast<std::size_t>(config.topology_max_parallel_queries),
-       .max_parallel_dials = static_cast<std::size_t>(config.topology_max_parallel_dials),
-       .max_rendezvous_points = static_cast<std::size_t>(config.rendezvous_max_points),
-       .max_peer_exchange_peers = static_cast<std::size_t>(config.peer_exchange_max_peers),
-       .retry_jitter = config.topology_retry_jitter,
-       .dht_enabled = !profiles.empty(),
-       .peer_exchange_enabled = config.peer_exchange_enabled,
-       .rendezvous_points = parse_rendezvous_points(config.rendezvous_points),
-   };
-   if (config.rendezvous_role == rendezvous_role::disabled && !config.rendezvous_points.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "disabled P2P rendezvous cannot configure discovery points");
-   }
-   if (config.rendezvous_role == rendezvous_role::server && !config.rendezvous_points.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config,
-                            "server-only P2P rendezvous cannot configure client discovery points");
-   }
-   options.limits.rendezvous.operating_role = parse_rendezvous_role(config.rendezvous_role);
-   try {
-      forge::net::p2p::validate(options.limits.topology);
-   } catch (const forge::plugins::net::p2p::node::exceptions::invalid_config&) {
-      throw;
-   } catch (const std::exception& error) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "invalid P2P topology configuration",
-                            forge::exceptions::ctx("error", error.what()));
-   }
-   auto certificate_secret = config.certificate_secret;
-   auto private_key_secret = config.private_key_secret;
+   apply_topology(options, config, !profiles.empty());
+   auto certificate_secret = config.identity.certificate_secret;
+   auto private_key_secret = config.identity.private_key_secret;
    options.capabilities = forge::net::p2p::capability_set{
        .bits = config.private_network ? 0U : forge::net::p2p::capabilities::direct_quic};
-   if (config.peer_exchange_enabled) {
+   if (config.peer_exchange.enabled) {
       options.capabilities.add(forge::net::p2p::capabilities::peer_exchange);
    }
-   if (config.rendezvous_role == rendezvous_role::server ||
-       config.rendezvous_role == rendezvous_role::client_and_server) {
+   if (config.rendezvous.role == rendezvous_role::server ||
+       config.rendezvous.role == rendezvous_role::client_and_server) {
       options.capabilities.add(forge::net::p2p::capabilities::rendezvous);
    }
    if (policy.relay_client_enabled) {
@@ -359,21 +339,13 @@ void apply_config(plugin::impl& state, const config& config) {
       options.capabilities.add(forge::net::p2p::capabilities::relay_reservation);
    }
    options.path_policy = policy.path;
-   options.relay_policy.client_enabled = policy.relay_client_enabled;
-   options.relay_policy.service_enabled = policy.relay_server_enabled;
-   options.relay_policy.auto_discovery_enabled = config.relay_auto_discovery_enabled;
-   options.relay_policy.public_relay_allowed = policy.relay_public_allowed;
-   options.relay_policy.max_candidates_per_refresh = policy.relay_max_candidates;
-   options.relay_policy.target_reservations =
-       std::min(options.relay_policy.target_reservations, policy.relay_max_candidates);
-   if (options.relay_policy.target_reservations == 0) {
-      options.relay_policy.target_reservations = 1;
-   }
-   options.limits.relay.reservation_ttl = policy.relay_reservation_ttl;
+   apply_relay(options, config.relay, policy);
+   apply_reachability(options, config.reachability);
+   apply_mdns(options, config.mdns);
    const auto& peer_id = config.peer_id;
    options.explicit_peer_id =
        peer_id.empty() ? std::nullopt : std::make_optional(forge::net::p2p::peer_id{.value = peer_id});
-   options.limits.max_sessions = static_cast<std::size_t>(config.max_sessions);
+   apply_size(options.limits.max_sessions, config.max_sessions, "max-sessions");
    options.limits.session_low_watermark =
        options.limits.max_sessions == 1 ? std::size_t{1} : options.limits.max_sessions - 1;
    auto& session_limits = options.limits.resources.system;
@@ -390,7 +362,7 @@ void apply_config(plugin::impl& state, const config& config) {
    apply_private_network(options, config);
    apply_dns(options, config.dns);
    apply_dial(options, config.dial);
-   options.limits.max_protocol_handlers = static_cast<std::size_t>(config.max_protocol_handlers);
+   apply_size(options.limits.max_protocol_handlers, config.max_protocol_handlers, "max-protocol-handlers");
    options.allow_insecure_test_mode = config.allow_insecure_test_mode;
    const auto has_identity = !certificate_secret.empty() && !private_key_secret.empty();
    if (!config.allow_insecure_test_mode && (peer_store_name.empty() || !has_identity)) {

@@ -44,6 +44,7 @@ import forge.crypto.asymmetric;
 import forge.multiformats.multiaddr;
 import forge.net.dns.resolver;
 import forge.net.p2p.dht;
+import forge.net.p2p.dht.record_store;
 import forge.net.p2p.dialing;
 import forge.net.p2p.discovery;
 import forge.net.p2p.endpoint;
@@ -155,10 +156,11 @@ void validate_policy(const node::options& options) {
        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::duration::max()));
    for (const auto delay : {options.limits.session_grace_period, options.limits.session_prune_silence,
                             options.limits.dial_backoff_base, options.limits.dial_backoff_step,
-                            options.limits.dial_backoff_max, options.identify.timeout}) {
+                            options.limits.dial_backoff_max, options.identify.timeout,
+                            options.limits.relay.reservation_ttl, options.limits.relay.max_duration}) {
       if (delay > maximum_clock_delay) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P connection or Identify duration exceeds the native clock range");
+                               "P2P connection, Identify or relay duration exceeds the native clock range");
       }
    }
    validate(topology_policy);
@@ -185,6 +187,7 @@ void validate_policy(const node::options& options) {
        options.limits.relay.max_reservations == 0 || options.limits.relay.max_streams_per_reservation == 0 ||
        options.limits.relay.max_relay_bytes == 0 || options.limits.relay.max_queued_bytes == 0 ||
        relay_duration.count() <= 0 ||
+       relay_duration > std::chrono::seconds{(std::numeric_limits<std::uint32_t>::max)()} ||
        std::chrono::duration_cast<std::chrono::milliseconds>(relay_duration) != options.limits.relay.max_duration ||
        options.limits.relay.reservation_ttl.count() <= 0 || options.limits.resources.max_relay_reservations == 0 ||
        options.limits.resources.max_dial_attempts == 0 || options.limits.resources.max_dial_attempts_per_peer == 0 ||
@@ -192,14 +195,10 @@ void validate_policy(const node::options& options) {
        options.limits.rendezvous.default_ttl.count() <= 0 || options.limits.rendezvous.min_ttl.count() <= 0 ||
        options.limits.rendezvous.max_ttl.count() <= 0 ||
        options.limits.rendezvous.min_ttl > options.limits.rendezvous.max_ttl ||
+       options.limits.rendezvous.default_ttl < options.limits.rendezvous.min_ttl ||
+       options.limits.rendezvous.default_ttl > options.limits.rendezvous.max_ttl ||
        options.limits.rendezvous.max_namespace_size == 0 || options.limits.rendezvous.max_registrations_per_peer == 0 ||
-       options.limits.rendezvous.max_discover_limit == 0 || options.limits.rendezvous.max_message_size == 0 ||
-       options.limits.pubsub.limits.validation_retry_initial_delay.count() <= 0 ||
-       options.limits.pubsub.limits.validation_retry_max_delay <
-           options.limits.pubsub.limits.validation_retry_initial_delay ||
-       options.limits.pubsub.limits.max_validation_attempts == 0 ||
-       options.limits.pubsub.limits.max_validation_redeliveries == 0 ||
-       options.limits.pubsub.limits.max_validation_requests == 0) {
+       options.limits.rendezvous.max_discover_limit == 0 || options.limits.rendezvous.max_message_size == 0) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid P2P node limits");
    }
    if (!options.path_policy.allow_direct && !options.path_policy.allow_hole_punch && !options.path_policy.allow_relay) {
@@ -223,6 +222,9 @@ void validate_policy(const node::options& options) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P AutoRelay policy limits must be positive");
    }
    const auto& relay_limits = options.limits.relay;
+   if (!relay_limits.require_reservation) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P relay service requires target reservations");
+   }
    if (relay_limits.max_reservations_per_ip == 0 || relay_limits.max_circuits_per_peer == 0 ||
        relay_limits.max_service_requests == 0 || relay_limits.max_service_requests > 65'536 ||
        relay_limits.max_service_requests_per_peer == 0 || relay_limits.max_service_requests_per_ip == 0 ||
@@ -255,10 +257,16 @@ void validate_policy(const node::options& options) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P DHT profile protocol IDs must be unique");
       }
    }
-   for (const auto& [protocol, persistence] : options.dht_record_persistence) {
+   auto dht_backends = std::set<const dht::record_store::persistence*>{};
+   for (const auto& [protocol, records] : options.dht_records) {
       if (!dht_protocols.contains(protocol)) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P DHT persistence must reference one configured profile");
+                               "P2P DHT records must reference one configured profile");
+      }
+      const auto profile = std::ranges::find(options.dht_profiles, protocol, &dht::profile::protocol);
+      forge::net::p2p::validate(*profile, records);
+      if (records.persistence && !dht_backends.insert(records.persistence.get()).second) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P DHT profiles require distinct persistence backends");
       }
    }
    const auto& identify = options.identify;
@@ -303,17 +311,11 @@ void validate(const node::options& options) {
    }
    for (const auto& profile : options.dht_profiles) {
       if (!options.allow_insecure_test_mode) {
-         const auto persistence = options.dht_record_persistence.find(profile.protocol);
-         if (persistence == options.dht_record_persistence.end() || !persistence->second) {
+         const auto records = options.dht_records.find(profile.protocol);
+         if (records == options.dht_records.end() || !records->second.persistence) {
             FORGE_THROW_EXCEPTION(exceptions::invalid_options,
                                   "production P2P DHT profile requires durable record persistence");
          }
-      }
-   }
-   for (const auto& [protocol, persistence] : options.dht_record_persistence) {
-      if (!persistence) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P DHT persistence must reference one configured profile");
       }
    }
 }

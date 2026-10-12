@@ -28,23 +28,6 @@ import forge.schema.scalar;
 #include "details/configuration_policy.hxx"
 
 namespace forge::plugins::net::p2p::node {
-namespace {
-
-void apply_size(std::size_t& target, const std::optional<std::uint64_t>& value, std::string_view field) {
-   if (!value) { return; }
-   try {
-      target = forge::schema::checked_integral_cast<std::size_t>(*value);
-   } catch (const forge::schema::exceptions::invalid_value&) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P count exceeds the native type range",
-                            forge::exceptions::ctx("field", field));
-   }
-}
-
-void apply_time(std::chrono::milliseconds& target, const std::optional<std::uint64_t>& value) {
-   if (value) { target = to_ms(*value); }
-}
-
-} // namespace
 
 void apply_connections(forge::net::p2p::node::limits& limits, const connection_config& value) {
    apply_size(limits.session_low_watermark, value.session_low_watermark, "connections.session-low-watermark");
@@ -64,7 +47,7 @@ void apply_private_network(forge::net::p2p::node::options& options, const config
    if (value.quic != quic_config{}) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network does not permit explicit QUIC limits");
    }
-   if (value.path_policy != path_policy::direct_only) {
+   if (value.path.policy != path_policy::direct_only) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network requires explicit direct-only path policy");
    }
    using native = forge::net::p2p::private_network::internet_egress_policy;

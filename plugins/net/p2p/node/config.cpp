@@ -22,6 +22,22 @@ forge::schema::rules<forge::plugins::net::p2p::node::dht_profile_config>::define
    schema.field<&forge::plugins::net::p2p::node::dht_profile_config::peers>("peers").default_value(true);
    schema.field<&forge::plugins::net::p2p::node::dht_profile_config::providers>("providers").default_value(true);
    schema.field<&forge::plugins::net::p2p::node::dht_profile_config::values>("values").default_value(true);
+   schema.field<&forge::plugins::net::p2p::node::dht_profile_config::records>("records").default_value(
+       forge::plugins::net::p2p::node::dht_profile_config::records_config{});
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::dht_profile_config::records_config>
+forge::schema::rules<forge::plugins::net::p2p::node::dht_profile_config::records_config>::define() {
+   using config = forge::plugins::net::p2p::node::dht_profile_config::records_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::max_values>("max-values");
+   schema.field<&config::max_total_bytes>("max-total-bytes");
+   schema.field<&config::hydration_page_limit>("hydration-page-limit");
+   schema.field<&config::prune_page_limit>("prune-page-limit");
+   schema.field<&config::max_hydration_pages>("max-hydration-pages");
+   schema.field<&config::max_providers>("max-providers");
+   schema.field<&config::max_local_providers>("max-local-providers");
    return schema;
 }
 
@@ -60,85 +76,37 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
        .default_value(forge::plugins::net::p2p::node::dns_config{});
    schema.field<&forge::plugins::net::p2p::node::config::dial>("dial")
        .default_value(forge::plugins::net::p2p::node::dial_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::reachability>("reachability")
+       .default_value(forge::plugins::net::p2p::node::reachability_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::mdns>("mdns")
+       .default_value(forge::plugins::net::p2p::node::mdns_config{});
    schema.field<&forge::plugins::net::p2p::node::config::listen>("listen")
        .default_value(std::vector<std::string>{})
        .description("Listen endpoints, for example /ip4/0.0.0.0/udp/9443/quic-v1 or /ip4/0.0.0.0/tcp/4001");
    schema.field<&forge::plugins::net::p2p::node::config::bootstrap>("bootstrap")
        .default_value(std::vector<std::string>{})
        .description("Bootstrap peer endpoints as libp2p multiaddr text");
-   schema.field<&forge::plugins::net::p2p::node::config::bootstrap_requirement>("bootstrap-requirement")
-       .default_value("allow-disconnected")
-       .description("Startup connectivity policy: allow-disconnected or require-connection");
-   schema.field<&forge::plugins::net::p2p::node::config::bootstrap_startup_budget_ms>("bootstrap-startup-budget-ms")
-       .default_value(std::uint64_t{10'000})
-       .range(1, 600'000);
-   schema.field<&forge::plugins::net::p2p::node::config::bootstrap_connect_timeout_ms>("bootstrap-connect-timeout-ms")
-       .default_value(std::uint64_t{2'000})
-       .range(1, 300'000);
-   schema.field<&forge::plugins::net::p2p::node::config::bootstrap_max_parallel>("bootstrap-max-parallel")
-       .default_value(std::uint64_t{4})
-       .range(1, 256);
+   schema.field<&forge::plugins::net::p2p::node::config::bootstrap_policy>("bootstrap-policy")
+       .default_value(forge::plugins::net::p2p::node::bootstrap_policy_config{});
    schema.field<&forge::plugins::net::p2p::node::config::advertised_endpoints>("advertised-endpoints")
        .default_value(std::vector<std::string>{})
        .description("Endpoints advertised to peers as libp2p multiaddr text");
    schema.field<&forge::plugins::net::p2p::node::config::peer_id>("peer-id").default_value("");
-   schema.field<&forge::plugins::net::p2p::node::config::peer_store>("peer-store.store").default_value("");
-   schema.field<&forge::plugins::net::p2p::node::config::peer_store_schema_policy>("peer-store.schema-policy")
-       .default_value(forge::plugins::net::p2p::node::cache_schema_policy::reset)
-       .description("Recoverable cache schema handling: reset or reject");
+   schema.field<&forge::plugins::net::p2p::node::config::peer_store>("peer-store")
+       .default_value(forge::plugins::net::p2p::node::peer_store_config{});
    schema.field<&forge::plugins::net::p2p::node::config::dht_profiles>("dht.profiles")
        .items<forge::plugins::net::p2p::node::dht_profile_config>()
        .default_value(std::vector<forge::plugins::net::p2p::node::dht_profile_config>{})
        .max_items(64)
        .description("Independent Amino or product Kademlia profiles");
-   schema.field<&forge::plugins::net::p2p::node::config::topology_mode>("topology.mode")
-       .default_value(forge::plugins::net::p2p::node::topology_mode::managed);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_low>("topology.peers.low")
-       .default_value(std::uint64_t{128})
-       .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_target>("topology.peers.target")
-       .default_value(std::uint64_t{160})
-       .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_high>("topology.peers.high")
-       .default_value(std::uint64_t{192})
-       .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_refresh_interval_ms>("topology.refresh-interval-ms")
-       .default_value(std::uint64_t{600'000})
-       .range(1, 86'400'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_query_timeout_ms>("topology.query-timeout-ms")
-       .default_value(std::uint64_t{10'000})
-       .range(1, 600'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_max_candidates>("topology.max-candidates")
-       .default_value(std::uint64_t{256})
-       .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_max_parallel_queries>(
-             "topology.max-parallel-queries")
-       .default_value(std::uint64_t{10})
-       .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_max_parallel_dials>("topology.max-parallel-dials")
-       .default_value(std::uint64_t{4})
-       .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::config::topology_retry_jitter>("topology.retry-jitter")
-       .default_value(0.20)
-       .range(0.0, 0.999999);
-   schema.field<&forge::plugins::net::p2p::node::config::rendezvous_role>("rendezvous.role")
-       .default_value(forge::plugins::net::p2p::node::rendezvous_role::disabled);
-   schema.field<&forge::plugins::net::p2p::node::config::rendezvous_points>("rendezvous.points")
-       .items<forge::plugins::net::p2p::node::rendezvous_point_config>()
-       .default_value(std::vector<forge::plugins::net::p2p::node::rendezvous_point_config>{})
-       .max_items(1'000);
-   schema.field<&forge::plugins::net::p2p::node::config::rendezvous_max_points>("rendezvous.max-points")
-       .default_value(std::uint64_t{4})
-       .range(1, 1'000);
-   schema.field<&forge::plugins::net::p2p::node::config::peer_exchange_enabled>("peer-exchange.enabled")
-       .default_value(true);
-   schema.field<&forge::plugins::net::p2p::node::config::peer_exchange_max_peers>("peer-exchange.max-peers")
-       .default_value(std::uint64_t{4})
-       .range(1, 1'000);
-   schema.field<&forge::plugins::net::p2p::node::config::certificate_secret>("identity.certificate-secret")
-       .default_value("");
-   schema.field<&forge::plugins::net::p2p::node::config::private_key_secret>("identity.private-key-secret")
-       .default_value("");
+   schema.field<&forge::plugins::net::p2p::node::config::topology>("topology")
+       .default_value(forge::plugins::net::p2p::node::topology_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::rendezvous>("rendezvous")
+       .default_value(forge::plugins::net::p2p::node::rendezvous_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::peer_exchange>("peer-exchange")
+       .default_value(forge::plugins::net::p2p::node::peer_exchange_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::identity>("identity")
+       .default_value(forge::plugins::net::p2p::node::identity_config{});
    schema.field<&forge::plugins::net::p2p::node::config::api_codec>("api-codec").default_value("forge.raw");
    schema.field<&forge::plugins::net::p2p::node::config::api_deadline_ms>("api.deadline-ms")
        .default_value(std::uint64_t{0})
@@ -158,27 +126,10 @@ forge::schema::rules<forge::plugins::net::p2p::node::config>::define() {
    schema.field<&forge::plugins::net::p2p::node::config::allow_insecure_test_mode>("allow-insecure-test-mode")
        .default_value(false)
        .description("Test-only mode for local development without deployment identity material");
-   schema.field<&forge::plugins::net::p2p::node::config::path_policy>("path.policy")
-       .default_value("direct-preferred")
-       .description("Default host path policy: direct-only, direct-preferred or relay-only");
-   schema.field<&forge::plugins::net::p2p::node::config::path_max_direct_endpoints>("path.max-direct-endpoints");
-   schema.field<&forge::plugins::net::p2p::node::config::relay_trust>("relay.trust")
-       .default_value("known-only")
-       .description("Relay trust policy: known-only or public-allowed");
-   schema.field<&forge::plugins::net::p2p::node::config::relay_client_enabled>("relay.client-enabled")
-       .default_value(true);
-   schema.field<&forge::plugins::net::p2p::node::config::relay_server_enabled>("relay.server-enabled")
-       .default_value(false);
-   schema.field<&forge::plugins::net::p2p::node::config::relay_auto_discovery_enabled>("relay.auto-discovery-enabled")
-       .default_value(true);
-   schema.field<&forge::plugins::net::p2p::node::config::relay_public_allowed>("relay.public-allowed")
-       .default_value(false);
-   schema.field<&forge::plugins::net::p2p::node::config::relay_reservation_ttl_ms>("relay.reservation-ttl-ms")
-       .default_value(std::uint64_t{60'000})
-       .range(1, 86'400'000);
-   schema.field<&forge::plugins::net::p2p::node::config::relay_max_candidates>("relay.max-candidates")
-       .default_value(std::uint64_t{4})
-       .range(1, 10'000);
+   schema.field<&forge::plugins::net::p2p::node::config::path>("path")
+       .default_value(forge::plugins::net::p2p::node::path_config{});
+   schema.field<&forge::plugins::net::p2p::node::config::relay>("relay")
+       .default_value(forge::plugins::net::p2p::node::relay_config{});
    return schema;
 }
 
@@ -321,36 +272,6 @@ forge::schema::rules<forge::plugins::net::p2p::node::resource_config>::define() 
    return schema;
 }
 
-forge::schema::object_schema<forge::plugins::net::p2p::node::pubsub_config>
-forge::schema::rules<forge::plugins::net::p2p::node::pubsub_config>::define() {
-   auto schema = forge::schema::object<forge::plugins::net::p2p::node::pubsub_config>();
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::max_topics>("max-topics")
-      .default_value(std::uint64_t{1'024})
-      .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::max_handlers_per_topic>("max-handlers-per-topic")
-      .default_value(std::uint64_t{64})
-      .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::max_active_handlers>("max-active-handlers")
-      .default_value(std::uint64_t{4'096})
-      .range(1, 1'000'000);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::max_message_size>("max-message-size")
-      .default_value(std::uint64_t{1024 * 1024})
-      .range(1, 1024 * 1024 * 1024);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::handler_deadline_ms>("handler-deadline-ms")
-      .default_value(std::uint64_t{5'000})
-      .range(1, 86'400'000);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::allowed_topics>("allowed-topics")
-      .default_value(std::vector<std::string>{})
-      .each_non_empty();
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::denied_topics>("denied-topics")
-      .default_value(std::vector<std::string>{})
-      .each_non_empty();
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::sign_publishes>("sign-publishes").default_value(true);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::partial_messages>("partial-messages").default_value(false);
-   schema.field<&forge::plugins::net::p2p::node::pubsub_config::enabled>("enabled").default_value(false);
-   return schema;
-}
-
 forge::schema::object_schema<forge::plugins::net::p2p::node::connection_config>
 forge::schema::rules<forge::plugins::net::p2p::node::connection_config>::define() {
    using config = forge::plugins::net::p2p::node::connection_config;
@@ -420,5 +341,113 @@ forge::schema::rules<forge::plugins::net::p2p::node::quic_config>::define() {
    schema.field<&config::max_queued_bytes>("max-queued-bytes");
    schema.field<&config::max_inbound_queued_bytes>("max-inbound-queued-bytes");
    schema.field<&config::max_inbound_queued_packets>("max-inbound-queued-packets");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::bootstrap_policy_config>
+forge::schema::rules<forge::plugins::net::p2p::node::bootstrap_policy_config>::define() {
+   using config = forge::plugins::net::p2p::node::bootstrap_policy_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::requirement>("requirement").default_value("allow-disconnected");
+   schema.field<&config::startup_budget_ms>("startup-budget-ms")
+       .default_value(std::uint64_t{10'000}).range(1, 600'000);
+   schema.field<&config::connect_timeout_ms>("connect-timeout-ms")
+       .default_value(std::uint64_t{2'000}).range(1, 300'000);
+   schema.field<&config::max_parallel>("max-parallel").default_value(std::uint64_t{4}).range(1, 256);
+   schema.field<&config::retry_initial_delay_ms>("retry-initial-delay-ms");
+   schema.field<&config::retry_max_delay_ms>("retry-max-delay-ms");
+   schema.field<&config::retry_jitter>("retry-jitter");
+   schema.field<&config::maintenance_interval_ms>("maintenance-interval-ms");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::identity_config>
+forge::schema::rules<forge::plugins::net::p2p::node::identity_config>::define() {
+   using config = forge::plugins::net::p2p::node::identity_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::certificate_secret>("certificate-secret").default_value("");
+   schema.field<&config::private_key_secret>("private-key-secret").default_value("");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::peer_store_config>
+forge::schema::rules<forge::plugins::net::p2p::node::peer_store_config>::define() {
+   using config = forge::plugins::net::p2p::node::peer_store_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::store>("store").default_value("");
+   schema.field<&config::schema_policy>("schema-policy")
+       .default_value(forge::plugins::net::p2p::node::cache_schema_policy::reset);
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::path_config>
+forge::schema::rules<forge::plugins::net::p2p::node::path_config>::define() {
+   using config = forge::plugins::net::p2p::node::path_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::policy>("policy").default_value("direct-preferred");
+   schema.field<&config::max_direct_endpoints>("max-direct-endpoints");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::topology_config::watermarks>
+forge::schema::rules<forge::plugins::net::p2p::node::topology_config::watermarks>::define() {
+   using config = forge::plugins::net::p2p::node::topology_config::watermarks;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::low>("low").default_value(std::uint64_t{128}).range(1, 1'000'000);
+   schema.field<&config::target>("target").default_value(std::uint64_t{160}).range(1, 1'000'000);
+   schema.field<&config::high>("high").default_value(std::uint64_t{192}).range(1, 1'000'000);
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::topology_config>
+forge::schema::rules<forge::plugins::net::p2p::node::topology_config>::define() {
+   using config = forge::plugins::net::p2p::node::topology_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::mode>("mode").default_value(forge::plugins::net::p2p::node::topology_mode::managed);
+   schema.field<&config::peers>("peers").default_value(config::watermarks{});
+   schema.field<&config::refresh_interval_ms>("refresh-interval-ms")
+       .default_value(std::uint64_t{600'000}).range(1, 86'400'000);
+   schema.field<&config::query_timeout_ms>("query-timeout-ms")
+       .default_value(std::uint64_t{10'000}).range(1, 600'000);
+   schema.field<&config::max_candidates>("max-candidates").default_value(std::uint64_t{256}).range(1, 1'000'000);
+   schema.field<&config::max_parallel_queries>("max-parallel-queries")
+       .default_value(std::uint64_t{10}).range(1, 1'000'000);
+   schema.field<&config::max_parallel_dials>("max-parallel-dials")
+       .default_value(std::uint64_t{4}).range(1, 1'000'000);
+   schema.field<&config::retry_jitter>("retry-jitter").default_value(0.20).range(0.0, 0.999999);
+   schema.field<&config::max_tagged_peers>("max-tagged-peers");
+   schema.field<&config::max_tags_per_peer>("max-tags-per-peer");
+   schema.field<&config::max_tag_size>("max-tag-size");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::rendezvous_config>
+forge::schema::rules<forge::plugins::net::p2p::node::rendezvous_config>::define() {
+   using config = forge::plugins::net::p2p::node::rendezvous_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::role>("role").default_value(forge::plugins::net::p2p::node::rendezvous_role::disabled);
+   schema.field<&config::points>("points").items<forge::plugins::net::p2p::node::rendezvous_point_config>()
+       .default_value(std::vector<forge::plugins::net::p2p::node::rendezvous_point_config>{}).max_items(1'000);
+   schema.field<&config::max_points>("max-points").default_value(std::uint64_t{4}).range(1, 1'000);
+   schema.field<&config::max_namespaces>("max-namespaces");
+   schema.field<&config::default_ttl_seconds>("default-ttl-seconds");
+   schema.field<&config::min_ttl_seconds>("min-ttl-seconds");
+   schema.field<&config::max_ttl_seconds>("max-ttl-seconds");
+   schema.field<&config::max_namespace_size>("max-namespace-size");
+   schema.field<&config::max_registrations_per_peer>("max-registrations-per-peer");
+   schema.field<&config::max_discover_limit>("max-discover-limit");
+   schema.field<&config::max_message_size>("max-message-size");
+   return schema;
+}
+
+forge::schema::object_schema<forge::plugins::net::p2p::node::peer_exchange_config>
+forge::schema::rules<forge::plugins::net::p2p::node::peer_exchange_config>::define() {
+   using config = forge::plugins::net::p2p::node::peer_exchange_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::enabled>("enabled").default_value(true);
+   schema.field<&config::max_peers>("max-peers").default_value(std::uint64_t{4}).range(1, 1'000);
+   schema.field<&config::max_message_size>("max-message-size");
+   schema.field<&config::max_records>("max-records");
+   schema.field<&config::max_queue>("max-queue");
    return schema;
 }

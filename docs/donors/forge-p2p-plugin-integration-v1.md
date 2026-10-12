@@ -48,6 +48,23 @@ The Forge local API boundary is intentionally narrower than Go's complete
 method to close the shared node. This is a local ownership decision, not a
 claim that an in-process C++ interface is a security sandbox.
 
+## Configuration Composition Baseline
+
+Kubo `e931b379e7dc9a74d62e005097e7b9601484b5dc`, `config/swarm.go`,
+composes `RelayClient`, `RelayService`, `Transports`, `ConnMgr` and `ResourceMgr`.
+Optional relay/resource settings retain the host defaults when omitted.
+Pinned Go's `config/config.go` similarly composes the connection/resource
+managers, transports and service options instead of implementing their runtime
+inside the configuration layer. Forge adopts that ownership pattern, not every
+Kubo deployment feature or knob: unsupported WebSocket, UPnP and alternative
+browser transports do not become configurable by analogy.
+
+Forge keeps themed records in one `node.config` module, sparse overrides for
+native bounds, and explicit typed contributions for application callbacks.
+Native validation remains authoritative. Mapping, rejection/rollback, restart
+and configured wire behavior are separate acceptance requirements; a large
+schema or a donor field-name match proves none of them.
+
 ## Connection And Identify Configuration
 
 The next declarative slice reuses existing Forge node policies. At the pinned
@@ -78,6 +95,17 @@ Do not equate removing a raw protocol handler with cancelling API-publication
 sessions. API publications have separately established application ownership.
 Do not serialize validators, connection gates or callbacks into YAML; contribute
 typed code before startup and reuse node-side validation.
+
+## Relay Reservation Admission
+
+Pinned Go `9cfe2cc0`, `p2p/protocol/circuitv2/relay/relay.go`, rejects CONNECT
+when the destination has no current reservation. The pinned Circuit Relay v2
+specification also describes a deprecated active-relay mode for controlled
+environments. It is not a proven Forge deployment profile and must not be
+silently exposed by Stage 7 configuration. Forge's supported service requires
+a live reservation, including the post-STOP identity/session/expiry recheck.
+This source decision is separate from the configured positive, expired and
+unreserved-target runtime evidence.
 
 ## TCP And QUIC Configuration
 
@@ -412,6 +440,49 @@ ObjectDB plugin composition. They are separate from Go/Rust process evidence;
 no donor support state is promoted by schema or local adapter tests.
 
 ## Evidence Boundaries
+
+### PubSub Deployment Policy
+
+Native scoring, validation retry, IDONTWANT and Partial Messages keep their
+existing protocol owners. The plugin maps bounded deployment settings and
+calls the native validators; it does not duplicate heartbeat or mesh logic.
+Scoring is opt-in, with named topic policies and pure numeric settings. Consumer
+callbacks and algorithmic mesh/history/gossip tuning remain available through
+the authoritative typed native snapshot rather than an exhaustive YAML mirror.
+
+Pinned Go pubsub `0ed6f6fd`, `pubsub.go`, sets `DefaultMaxMessageSize` to 1 MiB.
+Pinned Rust `22fb4c784fc55ad8b15d05fdc9f98d663107d4cb`,
+`protocols/gossipsub/src/config.rs`, defaults `max_transmit_size` to 65536 bytes.
+These are deployment policies, not a universal negotiated GossipSub maximum.
+Forge preserves the existing 1 MiB consumer payload bound and its extra
+1024-byte message envelope; the configured RPC limit now also covers protobuf
+framing instead of failing to carry its own envelope. Explicit smaller limits
+fail configuration. Products still need compatible peer limits. A large
+configured Forge pair is not evidence of a stock donor accepting the same size.
+
+### Configured Fixture Identity And Observability
+
+The configured-plugin process uses the same Ed25519 libp2p identity generator
+as the existing raw-node fixture, extracted into a shared test-only pair. The
+identity still passes through Secrets and the official application shell; it
+does not bypass configured TLS/Noise or ObjectDB ownership. The pinned Rust
+fixture enables Ed25519 identities, but not the optional RSA identity feature.
+This lane therefore does not claim RSA interoperability. The existing RSA
+unit/runtime fixtures remain unchanged.
+
+For public TCP, the unchanged Go listener uses its existing `echo` scenario
+because that scenario publishes the completed connection/stream trace. The
+challenge remains the same 192 KiB binary payload. Go's `echo_large` dialer
+provides actual connection state, application stream identity and same-connection
+automatic Identify evidence, not an upgrade-phase trace; the checker verifies
+those facts against the configured Forge receipt rather than inventing phases.
+Ready addresses must contain exactly one matching peer ID. Duplicate or foreign
+suffixes, conflicting socket/identity facts and incomplete shutdown receipts
+fail acceptance. Original failed development-run artifacts are retained.
+
+The initial `plugin-node` matrix covers configured public/private transport,
+identity and DNS paths. It is not the whole Stage 7 services/policies gate and
+does not promote the production-support inventory.
 
 The consolidated node checkpoint preserves the donor ownership pattern rather
 than adding a protocol loop. A real TLS/Identify/Yamux two-plugin PubSub test

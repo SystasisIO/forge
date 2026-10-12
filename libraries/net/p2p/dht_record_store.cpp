@@ -2,6 +2,8 @@ module;
 
 #include <boost/asio/awaitable.hpp>
 
+#include <forge/exceptions/macros.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -17,15 +19,36 @@ module;
 module forge.net.p2p.dht.record_store;
 
 import forge.asio.gate;
+import forge.net.p2p.exceptions;
 
 #include "details/dht_record_store_impl.hxx"
 #include "details/memory_dht_record_store_persistence.hxx"
 
 namespace forge::net::p2p {
 
+void validate(const dht::record_store::options& options) {
+   if (options.max_values == 0 || options.max_providers == 0 || options.max_local_providers == 0 ||
+       options.max_providers_per_key == 0 || options.max_total_bytes == 0 || options.max_record_bytes == 0 ||
+       options.hydration_page_limit == 0 || options.prune_page_limit == 0 || options.max_hydration_pages == 0 ||
+       options.max_persistence_waiters == 0) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "DHT record store limits must be positive");
+   }
+}
+
+void validate(const dht::profile& profile, const dht::record_store::options& options) {
+   validate_declaration(profile);
+   validate(options);
+   if (options.max_providers_per_key > profile.limits.replication) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "DHT provider per-key capacity exceeds profile replication");
+   }
+}
+
 dht::record_store::persistence::~persistence() = default;
 
-dht::record_store::record_store(dht::profile profile) : record_store{std::move(profile), options{}} {}
+dht::record_store::record_store(dht::profile profile) {
+   auto defaults = options_for(profile);
+   impl_ = std::make_shared<impl>(std::move(profile), std::move(defaults));
+}
 
 dht::record_store::record_store(dht::profile profile, options options_value)
     : impl_(std::make_shared<impl>(std::move(profile), std::move(options_value))) {}
@@ -36,6 +59,14 @@ dht::record_store& dht::record_store::operator=(record_store&&) noexcept = defau
 
 std::shared_ptr<dht::record_store::persistence> dht::record_store::make_memory_persistence() {
    return make_memory_dht_record_store_persistence();
+}
+
+dht::record_store::options dht::record_store::options_for(const dht::profile& profile) {
+   validate_declaration(profile);
+   auto result = options{};
+   result.max_providers_per_key = profile.limits.replication;
+   result.max_record_bytes = profile.limits.max_record_size;
+   return result;
 }
 
 boost::asio::awaitable<dht::record_store::put_result>

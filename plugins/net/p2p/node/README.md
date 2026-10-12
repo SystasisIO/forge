@@ -184,6 +184,24 @@ destruction, then performs local native topic cleanup before native `async_stop(
 and persistence/provider release. Native full-topic unsubscribe remains usable
 after `request_stop()`; cleanup does not require running-node admission.
 
+### Connection Operations
+
+The endpoint and multiaddr overloads of `node::api::connect()` establish a
+direct TCP/QUIC carrier. They do not accept `/p2p-circuit` addresses. Relay-aware
+peer operations (`protocol_api::open()`, API connection and Ping) use the native
+path selector and `open_options`, including an explicit relay peer when needed.
+This differs from Go's circuit-address dial facade; successful relay operation
+does not imply circuit-address support in this direct-connect method.
+
+`protocol_api::open()` returns a native byte stream for a consumer-owned
+application protocol. `api::open_api_connection()` opens the same native stream
+and wraps it in `forge::api::transport::connection`, which owns Forge API
+framing, calls and live streams. Both delegate to the same node path selector,
+authentication and resource admission; there is no second dialer or connection
+pool. Use the API connection for `FORGE_API` services and the protocol interface
+only when implementing a distinct wire protocol. Neither interface transfers
+ownership of the shared node, its listeners or peer store to the consumer.
+
 ### DHT Consumer Contract
 
 `forge.plugins.net.p2p.node.dht_api` is a local application contract, not a new
@@ -263,6 +281,61 @@ consumer captures happen outside the component mutex. A handler may unsubscribe
 itself; unsubscribe does not wait for that handler to return. Do not await plugin
 shutdown from inside one of its own handlers. There is no hard shutdown deadline,
 detached user code or background cleanup worker.
+
+### PubSub Configuration
+
+PubSub configuration separates consumer policy from native protocol policy.
+`enabled`, topic allow/deny lists, handler capacity/deadline and `sign-publishes`
+keep their existing meanings. The sparse `preferred-version` (`v1-0` through
+`v1-3`), `allow-v1-0-fallback`, `flood-publish` and `peer-exchange` settings map to
+the existing native options. Omitted settings preserve native defaults.
+
+`signature-policy` selects `strict-sign`, `strict-no-sign`, `lax-sign` or
+`lax-no-sign`; it does not silently change the consumer publish default.
+Strict receive policies must agree with `sign-publishes`. Without an explicit
+policy, the existing mapping remains strict-sign for signed publishing and
+lax-no-sign otherwise. Per-call signing remains an explicit operation subject
+to the native policy. `partial-messages: true` infers v1.3 only when the preferred
+version is absent; an explicit lower version is rejected.
+
+The `wire` group contains deployment bounds: `max-rpc-size`,
+`max-outbound-queue-bytes`, `max-remote-topics-per-peer`,
+`max-remote-topic-entries` and `max-iwant-promises`. `max-message-size` is the
+consumer payload bound, not the complete encoded RPC size. The adapter keeps
+the existing additional 1024-byte message envelope and derives enough RPC
+space for that envelope plus protobuf framing. An explicit smaller RPC bound
+is rejected. The allowance is not a promise for every possible signing key
+and topic combination; native encoded-message limits still apply.
+
+These are local limits, not a negotiated peer guarantee. The pinned Go donor
+defaults to a 1 MiB RPC bound, whereas the pinned Rust donor defaults to 64 KiB.
+Products must align their encoded-message limits or select payloads within the
+receiving peers' bounds. The configured Forge-to-Forge maximum-payload regression
+does not assert that stock Go/Rust peers accept that maximum.
+
+Algorithmic mesh/history/gossip tuning remains in the native defaults and the
+full typed `configuration_api::set_pubsub_options` path instead of duplicating
+every internal parameter in YAML. A typed contribution remains the authoritative
+complete native snapshot across pre-start configure calls, including callbacks;
+it is not reduced to callback-only enrichment.
+
+Other optional groups follow the native responsibility boundaries:
+
+- `validation` bounds retry attempts, redeliveries and requests, plus initial
+  and maximum retry delay in milliseconds.
+- `idontwant` bounds the announcement threshold, retention in heartbeats, and
+  per-peer/global entries and bytes.
+- `partial` bounds per-topic/global groups, aggregate group bytes, metadata,
+  retention in heartbeats, and callback count/bytes. Topic callbacks and content
+  semantics still belong to the consumer's Partial registration.
+- `scoring` explicitly enables the native engine and maps per-topic factors,
+  thresholds, decay/retention, numeric IP policy and main peer/message bounds.
+  It defaults to disabled. Application-specific score callbacks are C++ only.
+
+Missing values retain native defaults. Duplicate scoring topics, unknown
+properties, invalid numeric IPs, non-finite factors and inconsistent thresholds
+fail before a new configuration is published. Supplying a disabled scoring
+group does not bypass validation of its explicit parameters.
 
 ### Partial Registrations
 
@@ -345,10 +418,11 @@ plugins:
         node:
            listen: ["/ip4/0.0.0.0/udp/9443/quic-v1"]
            bootstrap: ["/dns4/bootstrap.example/udp/9443/quic-v1/p2p/<peer-id>"]
-           bootstrap-requirement: allow-disconnected
-           bootstrap-startup-budget-ms: 10000
-           bootstrap-connect-timeout-ms: 2000
-           bootstrap-max-parallel: 4
+           bootstrap-policy:
+              requirement: allow-disconnected
+              startup-budget-ms: 10000
+              connect-timeout-ms: 2000
+              max-parallel: 4
            advertised-endpoints: ["/dns4/node.example/udp/9443/quic-v1"]
            peer-id: ""
            peer-store:
@@ -433,6 +507,17 @@ authenticated peer and is recommended for production. Existing peer-less
 bootstrap endpoints remain supported; their peer is learned only after the
 authenticated connection succeeds.
 
+Each `dht.profiles[]` entry may set a sparse `records` group:
+`max-values`, `max-providers`, `max-local-providers`, `max-total-bytes`,
+`hydration-page-limit`, `prune-page-limit` and `max-hydration-pages`.
+Omitted fields retain native profile-derived defaults. Quotas apply independently
+per protocol ID; they are operational record-store bounds, not a physical disk
+quota. Record size and per-key provider capacity remain derived from the profile,
+not duplicated configuration knobs. Invalid values and unsupported ObjectDB page
+sizes are rejected before identity-secret reads or P2P adapter transactions.
+The same effective page limits reach the ObjectDB adapter. Removing an override
+before startup restores the default; startup freezes the complete policy.
+
 The named DB Store must provide an Object layer dedicated to P2P peer and DHT
 record state.
 One authoritative schema marker versions the complete private row family, so
@@ -440,9 +525,12 @@ startup validates the format without scanning durable history. A missing marker
 in nonempty storage or a version mismatch fails startup. With
 `schema-policy: reset`, the v3 recovery path atomically removes the complete private P2P row
 family, including peer, Rendezvous, DHT value/provider and sequence records.
-Normal node startup hydrates peer candidates from configured bootstrap peers;
-it does not recover DHT values, local provider ownership or Rendezvous
-registrations. Products must publish or register those records again.
+Normal startup hydrates bounded persisted peer candidates, DHT value/provider
+records and server-side Rendezvous registrations. Persisted peers are candidates,
+not fresh proof of reachability or protocol support. Local provider ownership is
+not restored: products must confirm content availability again through
+`dht_api::provide()`. Client-side Rendezvous registration is owned by the native
+topology lifecycle, independently of the persisted server-side registry.
 Secret policies must allow
 `p2p.identity.certificate` and `p2p.identity.private-key` respectively.
 `allow-insecure-test-mode` is for local tests only. Programmatic low-level node
@@ -727,6 +815,63 @@ not a global dial firewall. Resource reservations remain a separate hard bound.
 These settings freeze at startup. Unknown fields, invalid native bounds and
 mixed frozen-policy/diagnostics changes fail without replacing the accepted
 configuration. Mapping them does not establish new configured Go/Rust evidence.
+
+### Reachability, LAN Discovery And Relay Policies
+
+The `reachability` group maps the existing node-owned AutoNAT v1/v2 clients and
+services, observation bounds, periodic Ping and host-event subscriber capacity.
+Fields are sparse overrides: an omitted field keeps its native default, while
+an explicit `false` disables the corresponding role. The clients are enabled by
+default and services are opt-in. The private-network Internet-egress policy
+still controls their effective activation; enabling a service does not override
+that policy. Diagnostics and advertised Identify protocols reflect effective
+roles, not merely the requested YAML value.
+
+The `mdns` group controls `enabled`, `ipv4-enabled`, `ipv6-enabled`,
+`record-ttl-seconds`, `query-interval-ms`, `max-interfaces`, `max-peers`,
+`max-addresses-per-peer`, `max-pending-packets`, `max-packet-size` and
+`max-records-per-packet`. mDNS is opt-in. `max-interfaces` is a capacity bound,
+not an interface selector. Native public/private discovery namespaces and
+signed peer authentication are unchanged; discovery supplies candidates, not
+trusted identities.
+
+The existing `relay` group also accepts sparse reservation-target, refresh,
+backoff and parallelism settings, plus service reservation/circuit, byte, time
+and request-rate bounds. `max-candidates` remains the single configured
+candidate budget used by the relay manager and plugin path policy. Renewal,
+replacement, advertised circuit-address lifetime and shutdown belong to the
+native node, not a plugin timer. Relay remains unsupported in private PSK mode.
+There is no YAML option to admit circuits without a live reservation.
+
+These groups reuse native validation and freeze at startup. Rejected mixed
+updates do not partially replace the accepted configuration. Mapping tests,
+configured runtime tests and configured Go/Rust exchanges are separate evidence;
+adding these settings alone does not establish new interoperability support.
+
+### Configuration Composition
+
+The config module groups values by their native owner: identity, persistence,
+bootstrap lifecycle, topology, Rendezvous, peer exchange, transports, resources,
+reachability, relay, DHT and PubSub. These are value records in one canonical
+module, not new runtime services or a public module per group. Reflection/schema
+metadata follows the type declarations.
+
+Existing thematic YAML paths retain their meanings. The four formerly flat
+bootstrap settings move together; the `bootstrap` address array does not move:
+
+| Old key | Canonical key |
+| --- | --- |
+| `bootstrap-requirement` | `bootstrap-policy.requirement` |
+| `bootstrap-startup-budget-ms` | `bootstrap-policy.startup-budget-ms` |
+| `bootstrap-connect-timeout-ms` | `bootstrap-policy.connect-timeout-ms` |
+| `bootstrap-max-parallel` | `bootstrap-policy.max-parallel` |
+
+Old spellings are rejected, not silently ignored or kept as aliases. Defaults
+remain allow-disconnected, 10 seconds, 2 seconds and four attempts respectively.
+Bootstrap retry/maintenance, topology tag and Rendezvous/PEX bounds use sparse
+overrides and the existing native validators. Bootstrap addresses are preserved
+as multiaddrs, including DNSADDR, until the node's configured resolver owns their
+resolution. No plugin-owned bootstrap, discovery or renewal loop is introduced.
 
 ### Plugin 8.0 Consolidation Migration
 

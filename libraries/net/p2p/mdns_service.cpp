@@ -85,8 +85,6 @@ mdns_service::mdns_service(asio::any_io_executor executor, resource_manager& res
       _service(std::move(service)), _callbacks(std::move(value)) {
    validate(_policy);
    if (!_policy.enabled || !_callbacks.listeners || !_callbacks.replace || _local.value.empty() ||
-       _policy.max_interfaces > 256 || _policy.max_pending_packets > 1024 ||
-       _policy.max_records_per_packet > 1024 || _policy.max_addresses_per_peer > 64 ||
        _service.size() != 3 || _service[0].empty() || _service[0].size() > 63 ||
        _service[0][0] != '_' || _service[1] != "_udp" || _service[2] != "local") {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid mDNS service configuration");

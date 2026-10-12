@@ -105,7 +105,7 @@ struct fixture {
       config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{"/ip4/127.0.0.1/tcp/0"});
       if (bootstrap) {
          config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{bootstrap->to_string()});
-         config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+         config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
       }
       run(node.configure({config, "plugins.net.p2p.node"}));
       apis.install<secrets::api>(secrets::api::describe(), std::make_shared<identity_source>());

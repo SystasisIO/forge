@@ -85,7 +85,7 @@ BOOST_AUTO_TEST_CASE(p2p_private_network_config_absence_preserves_public_default
    const auto decoded = forge::config::core::decode<np::config>({});
    BOOST_REQUIRE(decoded.ok());
    BOOST_TEST(!decoded.value.private_network);
-   BOOST_TEST(decoded.value.relay_auto_discovery_enabled);
+   BOOST_TEST(decoded.value.relay.auto_discovery_enabled);
    auto native = p2p::node::options{};
    np::apply_private_network(native, decoded.value);
    BOOST_TEST(!native.private_network);

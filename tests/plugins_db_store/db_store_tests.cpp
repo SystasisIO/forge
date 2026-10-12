@@ -1362,6 +1362,15 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_objec
        .expiry = [](const p2p::dht::record&, p2p::dht::value_expiry_context context) { return context.supplied_expires_at; },
    }};
    configuration->set_dht_value_policies({"/configuration/store/kad/1"}, std::move(policies));
+   for (const auto& records : {
+            value::object_type{{"max-values", std::uint64_t{0}}},
+            value::object_type{{"hydration-page-limit", std::uint64_t{1'000'000}}}}) {
+      auto invalid = document;
+      invalid.set("plugins.net.p2p.node.dht.profiles", value::array_type{value::object_type{
+          {"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
+          {"peers", true}, {"providers", false}, {"values", true}, {"records", records}}});
+      BOOST_CHECK_THROW(run(node.configure({invalid, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
+   }
    BOOST_TEST(driver->snapshot_calls() == snapshots);
    BOOST_TEST(driver->transaction_calls() == transactions);
    BOOST_TEST(counted->reads.load() == 0U);

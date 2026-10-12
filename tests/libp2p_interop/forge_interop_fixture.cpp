@@ -38,13 +38,8 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 
-#include <openssl/asn1.h>
-#include <openssl/bio.h>
-#include <openssl/buffer.h>
-#include <openssl/evp.h>
-#include <openssl/objects.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
+#include "libp2p_identity.hxx"
+#include "dht_value_fixture.hxx"
 
 import forge.asio.blocking;
 import forge.asio.notification;
@@ -94,6 +89,9 @@ import forge.variant.containers;
 namespace {
 
 using namespace std::chrono_literals;
+using forge::test::libp2p_interop::generate_libp2p_identity;
+using forge::test::libp2p_interop::libp2p_identity;
+using forge::test::libp2p_interop::dht_value_fixture;
 
 constexpr auto echo_protocol = std::string_view{"/forge/interop/relay-echo/1"};
 constexpr auto maximum_echo_payload = std::size_t{256 * 1024};
@@ -102,90 +100,6 @@ constexpr auto rendezvous_namespace = std::string_view{"forge.discovery"};
 constexpr auto pubsub_topic = std::string_view{"forge.pubsub.interop"};
 constexpr auto pubsub_payload = std::string_view{"forge-gossipsub-live"};
 constexpr auto dht_wire_timeout = 5s;
-
-struct dht_value_fixture {
-   forge::net::p2p::dht::key key;
-   std::vector<std::uint8_t> value;
-};
-
-[[nodiscard]] bool is_dht_value_scenario(std::string_view scenario) noexcept {
-   return scenario == "dht_pk_put_get" || scenario == "dht_ipns_put_get";
-}
-
-[[nodiscard]] dht_value_fixture value_fixture(std::string_view scenario) {
-   constexpr auto identity_multihash =
-       std::string_view{"00240801122079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"};
-   if (scenario == "dht_pk_put_get") {
-      return {
-          .key = {.bytes = forge::codec::hex::decode(std::string{"2f706b2f"} + std::string{identity_multihash})},
-          .value =
-              forge::codec::hex::decode("0801122079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"),
-      };
-   }
-   if (scenario == "dht_ipns_put_get") {
-      return {
-          .key = {.bytes = forge::codec::hex::decode(std::string{"2f69706e732f"} + std::string{identity_multihash})},
-          .value = forge::codec::hex::decode(
-              "0a1f2f697066732f6261666b716163336a6f627868676964736e3572777734796b1240b7be19b36e1955d2e1ccddd889d25c"
-              "4eaef61aa72763bc44db9696697be7587e35d2efb2a625e7ac19b05f8c348086114103ee042a5a4041683e39c4ac0c460118"
-              "00221e323033302d30312d30325430333a30343a30352e3132333435363738395a28073080f092cbdd0842408904024a1b09"
-              "b52636334f17b9098f648f9a00214e6c6c89bb954c01300b00f54d085ddcacbe42952f2f819d70a48ff453d13329bb775d66"
-              "e5a4b6165c38a40a4a76a56354544c1b00000045d964b8006556616c7565581f2f697066732f6261666b716163336a6f6278"
-              "68676964736e3572777734796b6853657175656e6365076856616c6964697479581e323033302d30312d30325430333a30343a"
-              "30352e3132333435363738395a6c56616c69646974795479706500"),
-      };
-   }
-   throw std::runtime_error{"unknown DHT value fixture: " + std::string{scenario}};
-}
-
-struct bio_deleter {
-   void operator()(BIO* value) const noexcept {
-      BIO_free(value);
-   }
-};
-
-struct evp_md_ctx_deleter {
-   void operator()(EVP_MD_CTX* value) const noexcept {
-      EVP_MD_CTX_free(value);
-   }
-};
-
-struct evp_pkey_deleter {
-   void operator()(EVP_PKEY* value) const noexcept {
-      EVP_PKEY_free(value);
-   }
-};
-
-struct asn1_object_deleter {
-   void operator()(ASN1_OBJECT* value) const noexcept {
-      ASN1_OBJECT_free(value);
-   }
-};
-
-struct asn1_octet_string_deleter {
-   void operator()(ASN1_OCTET_STRING* value) const noexcept {
-      ASN1_OCTET_STRING_free(value);
-   }
-};
-
-struct x509_deleter {
-   void operator()(X509* value) const noexcept {
-      X509_free(value);
-   }
-};
-
-struct x509_extension_deleter {
-   void operator()(X509_EXTENSION* value) const noexcept {
-      X509_EXTENSION_free(value);
-   }
-};
-
-struct libp2p_identity {
-   std::string certificate_pem;
-   std::string private_key_pem;
-   std::vector<std::uint8_t> public_key;
-   forge::net::p2p::peer_id peer;
-};
 
 std::string json_escape(std::string_view value) {
    auto out = std::string{};
@@ -275,158 +189,6 @@ void write_file(const std::filesystem::path& path, std::string_view value) {
       throw std::runtime_error{"failed to open " + path.string()};
    }
    out << value;
-}
-
-void require_openssl(bool ok, std::string_view message) {
-   if (!ok) {
-      throw std::runtime_error{std::string{message}};
-   }
-}
-
-std::string bio_to_string(BIO* bio) {
-   BUF_MEM* memory = nullptr;
-   BIO_get_mem_ptr(bio, &memory);
-   if (memory == nullptr) {
-      throw std::runtime_error{"failed to read OpenSSL memory BIO"};
-   }
-   return std::string{memory->data, memory->length};
-}
-
-std::vector<std::uint8_t> public_key_spki_der(EVP_PKEY* key) {
-   const auto length = i2d_PUBKEY(key, nullptr);
-   require_openssl(length > 0, "failed to DER-encode libp2p certificate public key");
-   auto out = std::vector<std::uint8_t>(static_cast<std::size_t>(length));
-   auto* cursor = out.data();
-   require_openssl(i2d_PUBKEY(key, &cursor) == length, "failed to DER-write libp2p certificate public key");
-   return out;
-}
-
-std::vector<std::uint8_t> raw_public_key(EVP_PKEY* key) {
-   auto size = std::size_t{};
-   require_openssl(EVP_PKEY_get_raw_public_key(key, nullptr, &size) == 1 && size != 0,
-                   "failed to size libp2p identity public key");
-   auto out = std::vector<std::uint8_t>(size);
-   require_openssl(EVP_PKEY_get_raw_public_key(key, out.data(), &size) == 1,
-                   "failed to read libp2p identity public key");
-   out.resize(size);
-   return out;
-}
-
-std::vector<std::uint8_t> identity_sign(EVP_PKEY* key, std::span<const std::uint8_t> message) {
-   auto context = std::unique_ptr<EVP_MD_CTX, evp_md_ctx_deleter>{EVP_MD_CTX_new()};
-   require_openssl(context != nullptr, "failed to allocate libp2p signing context");
-   require_openssl(EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr, key) == 1,
-                   "failed to initialize libp2p certificate extension signer");
-   auto size = std::size_t{};
-   require_openssl(EVP_DigestSign(context.get(), nullptr, &size, message.data(), message.size()) == 1,
-                   "failed to size libp2p certificate extension signature");
-   auto out = std::vector<std::uint8_t>(size);
-   require_openssl(EVP_DigestSign(context.get(), out.data(), &size, message.data(), message.size()) == 1,
-                   "failed to sign libp2p certificate extension");
-   out.resize(size);
-   return out;
-}
-
-void append_der_length(std::vector<std::uint8_t>& out, std::size_t value) {
-   if (value < 128) {
-      out.push_back(static_cast<std::uint8_t>(value));
-      return;
-   }
-   auto bytes = std::vector<std::uint8_t>{};
-   while (value != 0) {
-      bytes.push_back(static_cast<std::uint8_t>(value & 0xffU));
-      value >>= 8U;
-   }
-   out.push_back(static_cast<std::uint8_t>(0x80U | bytes.size()));
-   for (auto it = bytes.rbegin(); it != bytes.rend(); ++it) {
-      out.push_back(*it);
-   }
-}
-
-void append_der_octet_string(std::vector<std::uint8_t>& out, std::span<const std::uint8_t> value) {
-   out.push_back(0x04);
-   append_der_length(out, value.size());
-   out.insert(out.end(), value.begin(), value.end());
-}
-
-std::vector<std::uint8_t> signed_key_der(std::span<const std::uint8_t> public_key,
-                                         std::span<const std::uint8_t> signature) {
-   auto content = std::vector<std::uint8_t>{};
-   append_der_octet_string(content, public_key);
-   append_der_octet_string(content, signature);
-   auto out = std::vector<std::uint8_t>{0x30};
-   append_der_length(out, content.size());
-   out.insert(out.end(), content.begin(), content.end());
-   return out;
-}
-
-libp2p_identity generate_libp2p_identity() {
-   auto key = std::unique_ptr<EVP_PKEY, evp_pkey_deleter>{EVP_PKEY_Q_keygen(nullptr, nullptr, "ED25519")};
-   require_openssl(key != nullptr, "failed to generate libp2p Ed25519 identity key");
-
-   const auto spki = public_key_spki_der(key.get());
-   auto signed_message = std::vector<std::uint8_t>{};
-   constexpr auto prefix = std::string_view{"libp2p-tls-handshake:"};
-   signed_message.insert(signed_message.end(), prefix.begin(), prefix.end());
-   signed_message.insert(signed_message.end(), spki.begin(), spki.end());
-   const auto signature = identity_sign(key.get(), signed_message);
-   const auto public_key = forge::net::p2p::encode_public_key(forge::net::p2p::public_key{
-       .type = forge::net::p2p::public_key::type::ed25519,
-       .data = raw_public_key(key.get()),
-   });
-   const auto extension_value = signed_key_der(public_key, signature);
-
-   auto certificate = std::unique_ptr<X509, x509_deleter>{X509_new()};
-   require_openssl(certificate != nullptr, "failed to allocate libp2p certificate");
-   require_openssl(X509_set_version(certificate.get(), 2) == 1, "failed to set libp2p certificate version");
-   require_openssl(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) == 1,
-                   "failed to set libp2p certificate serial");
-   require_openssl(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) != nullptr,
-                   "failed to set libp2p certificate notBefore");
-   require_openssl(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 100L * 365L * 24L * 60L * 60L) != nullptr,
-                   "failed to set libp2p certificate notAfter");
-   require_openssl(X509_set_pubkey(certificate.get(), key.get()) == 1, "failed to set libp2p certificate key");
-   auto* name = X509_get_subject_name(certificate.get());
-   require_openssl(name != nullptr, "failed to allocate libp2p certificate subject");
-   const auto serial = std::string{"forge-libp2p-interop"};
-   require_openssl(X509_NAME_add_entry_by_txt(name, "serialNumber", MBSTRING_ASC,
-                                              reinterpret_cast<const unsigned char*>(serial.data()),
-                                              static_cast<int>(serial.size()), -1, 0) == 1,
-                   "failed to set libp2p certificate subject");
-   require_openssl(X509_set_issuer_name(certificate.get(), name) == 1, "failed to set libp2p certificate issuer");
-
-   auto object = std::unique_ptr<ASN1_OBJECT, asn1_object_deleter>{OBJ_txt2obj("1.3.6.1.4.1.53594.1.1", 1)};
-   require_openssl(object != nullptr, "failed to create libp2p extension OID");
-   auto octets = std::unique_ptr<ASN1_OCTET_STRING, asn1_octet_string_deleter>{ASN1_OCTET_STRING_new()};
-   require_openssl(octets != nullptr, "failed to allocate libp2p extension value");
-   require_openssl(
-       ASN1_OCTET_STRING_set(octets.get(), extension_value.data(), static_cast<int>(extension_value.size())) == 1,
-       "failed to set libp2p extension value");
-   auto extension = std::unique_ptr<X509_EXTENSION, x509_extension_deleter>{
-       X509_EXTENSION_create_by_OBJ(nullptr, object.get(), 1, octets.get())};
-   require_openssl(extension != nullptr, "failed to create libp2p public key extension");
-   require_openssl(X509_add_ext(certificate.get(), extension.get(), -1) == 1,
-                   "failed to add libp2p public key extension");
-   require_openssl(X509_sign(certificate.get(), key.get(), nullptr) > 0, "failed to sign libp2p certificate");
-
-   auto certificate_bio = std::unique_ptr<BIO, bio_deleter>{BIO_new(BIO_s_mem())};
-   auto private_key_bio = std::unique_ptr<BIO, bio_deleter>{BIO_new(BIO_s_mem())};
-   require_openssl(certificate_bio != nullptr && private_key_bio != nullptr, "failed to allocate libp2p PEM BIO");
-   require_openssl(PEM_write_bio_X509(certificate_bio.get(), certificate.get()) == 1,
-                   "failed to write libp2p certificate PEM");
-   require_openssl(PEM_write_bio_PrivateKey(private_key_bio.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) ==
-                       1,
-                   "failed to write libp2p private key PEM");
-
-   return libp2p_identity{
-       .certificate_pem = bio_to_string(certificate_bio.get()),
-       .private_key_pem = bio_to_string(private_key_bio.get()),
-       .public_key = public_key,
-       .peer = forge::net::p2p::make_peer_id(forge::net::p2p::public_key{
-           .type = forge::net::p2p::public_key::type::ed25519,
-           .data = raw_public_key(key.get()),
-       }),
-   };
 }
 
 const libp2p_identity& local_identity() {
@@ -1339,7 +1101,9 @@ int listen_mode(const std::map<std::string, std::string>& args) {
    configure_dns_server(options, args);
    configure_private_network(options, args, transport);
    configure_rendezvous_lifecycle_ttls(options, scenario);
-   options.dht_record_persistence.emplace(forge::net::p2p::builtins::kad_dht, persistence);
+   auto records = forge::net::p2p::dht::record_store::options_for(options.dht_profiles.front());
+   records.persistence = persistence;
+   options.dht_records.emplace(forge::net::p2p::builtins::kad_dht, std::move(records));
    auto value = forge::net::p2p::node{runtime, std::move(options)};
    register_echo(value);
    auto stress_state = std::shared_ptr<pubsub_stress_state>{};
@@ -1368,8 +1132,8 @@ int listen_mode(const std::map<std::string, std::string>& args) {
          write_file(required(args, "result-file"), "{\"implementation\":\"forge\",\"role\":\"listener\",\"scenario\":\"pnet\",\"status\":\"ok\"," + pnet_evidence(args) + "}\n");
          pnet_result_reported = true;
       }
-      if (!value_record_reported && is_dht_value_scenario(scenario) &&
-          persistence_contains(runtime, persistence, value_fixture(scenario))) {
+      if (!value_record_reported && dht_value_fixture::is_scenario(scenario) &&
+          persistence_contains(runtime, persistence, dht_value_fixture::for_scenario(scenario))) {
          write_file(required(args, "result-file"),
                     "{\"implementation\":\"forge\",\"role\":\"listener\",\"scenario\":\"" + json_escape(scenario) +
                         "\",\"status\":\"ok\",\"record_persisted\":true}\n");
@@ -1708,8 +1472,8 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
          std::rethrow_exception(primary);
       }
    }
-   if (is_dht_value_scenario(scenario)) {
-      const auto fixture = value_fixture(scenario);
+   if (dht_value_fixture::is_scenario(scenario)) {
+      const auto fixture = dht_value_fixture::for_scenario(scenario);
       const auto record = forge::net::p2p::dht::record{
           .key_value = fixture.key,
           .value = fixture.value,

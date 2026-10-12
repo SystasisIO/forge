@@ -112,7 +112,7 @@ class node {
       identify::limits identify;
       lifecycle_options lifecycle;
       std::vector<dht::profile> dht_profiles;
-      std::map<protocol_id, std::shared_ptr<dht::record_store::persistence>> dht_record_persistence;
+      std::map<protocol_id, dht::record_store::options> dht_records;
       forge::net::p2p::mdns_policy mdns{};
    };
 

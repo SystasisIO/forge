@@ -227,6 +227,24 @@ then follow their existing native owners. Native mDNS currently provides an
 interface-count bound, not an interface-selection API: do not advertise a
 selector that the node cannot implement.
 
+The maintainer approved a donor-style configuration composition refinement:
+the root groups policies by owner rather than accumulating flat per-protocol
+members. Kubo's `config/swarm.go` composes relay client/service, transports,
+connection and resource managers; Go host options delegate detailed policies
+to those components. Lotus's deliberately smaller operator surface also shows
+that every internal constant need not become a YAML setting. Forge keeps
+reasonable defaults and sparse overrides, while exposing supported deployment
+choices and resource bounds with demonstrated native enforcement. Do not add
+duplicate knobs, runtime records, callbacks or undocumented protocol bypasses.
+Grouping is not permission to remove supported functionality: preserve existing
+thematic YAML behavior, migrate intentional C++ record changes, and keep typed pre-start
+contributions for application-owned validators and callbacks. New config
+records stay in the canonical `config` module, with metadata after declarations.
+The four flat bootstrap keys migrate to `bootstrap-policy.requirement`,
+`startup-budget-ms`, `connect-timeout-ms` and `max-parallel`; their values/defaults
+are unchanged and the root `bootstrap` array stays in place. The README records
+the mechanical migration. Old keys are rejected without compatibility aliases.
+
 The DHT checkpoint must also reconcile record-store capacities: current native
 profile construction passes persistence and derives only per-key provider and
 record-size limits. Adding unused YAML capacity fields would not satisfy Stage 7.
@@ -320,6 +338,23 @@ delivery obligation, not evidence of an implemented plugin feature.
 | `set_advertised_endpoints`, `async_set_bootstrap`, `async_listen`, `async_hydrate_peer_state`, `async_start`, `request_stop`, `async_stop`, `stop` | Owner-only lifecycle/configuration | One owner for listeners, signed identity facts, persistence and shutdown |
 
 ## Implementation Sequence
+
+The following source-to-test map records the current implementation, not a
+blanket acceptance result. Paths are repository-relative. Configured live donor
+evidence is tracked separately; native tests cannot substitute for that layer.
+
+| Consumer/owner boundary | Adapter/component | Focused regression source |
+| --- | --- | --- |
+| Peer identity, connect, ping | `plugins/net/p2p/node/api_impl*.cpp` | `tests/plugins/p2p_peer_api_tests.cpp` |
+| DHT and local provider ownership | `plugins/net/p2p/node/dht_api_impl.cpp` | `tests/plugins/p2p_dht_api_tests.cpp`, `tests/plugins_db_store/p2p_dht_policy_tests.cpp` |
+| Custom protocol admission and generations | `plugins/net/p2p/node/protocol_api_impl.cpp`, private `protocol_registry` | `tests/plugins/p2p_protocol_api_tests.cpp`, `tests/plugins/p2p_protocol_registry_tests.cpp` |
+| Consumer peer tags/protection | `plugins/net/p2p/node/peer_contribution.cpp` | `tests/plugins/p2p_peer_contribution_tests.cpp` |
+| Read-only snapshots and events | `plugins/net/p2p/node/plugin_diagnostics_api_impl.cpp`, `plugin_events_api_impl.cpp` | `tests/plugins/p2p_host_event_api_tests.cpp` |
+| PubSub subscriptions, partial callbacks and shutdown | `plugins/net/p2p/node/plugin_pubsub_api_impl*.cpp`, private `pubsub_service` | `tests/plugins/p2p_pubsub_lifecycle_tests.cpp`, `p2p_pubsub_partial_tests.cpp`, `p2p_pubsub_shutdown_tests.cpp` |
+| Immutable pre-start policy contributions | `plugins/net/p2p/node/configuration_api_impl.cpp`, private `configuration_snapshot` | `tests/plugins/p2p_configuration_api_tests.cpp` |
+| Secrets, hydration and persistence | `plugins/net/p2p/node/plugin.cpp`, private ObjectDB adapters | `tests/plugins_db_store/p2p_peer_state_persistence_tests.cpp` |
+| Configured discovery/reachability/relay owners | `plugins/net/p2p/node/configuration_policy_lifecycle.cpp`, `configuration_policy_services.cpp` | `tests/plugins/p2p_lifecycle_config_tests.cpp`, `p2p_service_config_tests.cpp`, `tests/plugins_db_store/p2p_service_policy_tests.cpp` |
+| Configured PubSub options and bounds | `plugins/net/p2p/node/pubsub_policy*.cpp` | `tests/plugins/p2p_pubsub_config_tests.cpp`, `p2p_pubsub_scoring_config_tests.cpp`, `tests/plugins_db_store/p2p_pubsub_policy_tests.cpp` |
 
 One focused implementation PR with sequential bounded slices:
 
@@ -867,3 +902,160 @@ gates pass, describe this as test integration with an evolving stack.
   bootstrap address mapping) and PubSub, then configured Go/Rust acceptance and
   whole-PR review. This checkpoint is not Stage 7 completion; PR #172 remains
   draft and must not be merged yet.
+
+### Grouped Policies And Configured Interop Checkpoint
+
+- The canonical config now groups identity, persistence, bootstrap, topology,
+  Rendezvous, peer exchange, reachability, mDNS, relay and PubSub settings by
+  their existing native owner. Sparse overrides preserve unspecified native
+  defaults. Metadata stays after type declarations; schemas and mapping use
+  coherent aspect units instead of more public config modules.
+- DHT record capacities now reach the operational store and ObjectDB adapter.
+  Native `node::options::dht_records` owns per-profile store options; the plugin
+  supplies persistence without replacing configured bounds. Two configured
+  runtime cases passed 120 assertions through MDBX and RocksDB, covering quotas,
+  reopen and profile isolation. A separate preflight case passed 21 assertions
+  without reading Secrets or opening the P2P adapter for an invalid policy.
+- Three configured service cases passed 156 assertions for reachability role
+  advertisement, private-profile restrictions, Ping/events and AutoRelay
+  reservation, renewal, traffic and withdrawal. These are Forge-to-Forge
+  runtime checks, not new donor evidence.
+- PubSub maps version/fallback, signature/flood policy, wire bounds, validation
+  retry, IDONTWANT, Partial Messages and scoring into the existing native
+  engine. Typed pre-start PubSub options remain an authoritative complete
+  snapshot; YAML does not overwrite application callbacks or explicit native
+  options. Sixteen pure cases passed 630 assertions. Two configured runtime
+  cases passed 68 assertions through both disk backends, including signed and
+  strict-unsigned delivery, size rejection, typed precedence, rollback and
+  startup freeze. The 1 MiB payload case is Forge-to-Forge only; donor RPC
+  defaults differ and are not a negotiated universal message limit.
+- Review found one native retry-duration gap: a representable milliseconds
+  value can overflow the steady clock, and adding a valid duration near the
+  clock maximum also needs saturation. Native validation now rejects unrepresentable
+  retry and heartbeat durations; a shared private helper safely converts and
+  saturates accepted deadlines at all affected call sites. Targeted native,
+  runtime and typed-config regressions passed, including no early retry/tick,
+  rollback before Secrets and bounded stop/join. Independent scoped review
+  found no actionable findings in this fix.
+- The new configured-plugin interop fixture owns an official application shell,
+  Secrets, a real named MDBX/RocksDB ObjectDB store and the node plugin. It uses
+  public plugin APIs, not a raw replacement node. Its first closed matrix has
+  42 cases per backend for public TCP Noise/TLS/QUIC, DNS and private-network
+  positive/negative controls. This is a transport/identity subset, not the full
+  Stage 7 service acceptance matrix.
+- The development MDBX matrix recorded 30 passes, 11 failures and one separately
+  tracked Go QUIC close failure. Failed logs and receipts are retained. PSK
+  rejection-counter expectations and a Rust connection-observation failure
+  were investigated separately. Repeated immediate-disconnect Go QUIC trials recorded
+  four passes and six canceled Forge stream closes. No failed close is relabeled
+  successful because the payload arrived.
+- The next complete development transport matrix recorded 81 passes and three
+  QUIC echo-close failures out of 84, through MDBX and RocksDB. All private
+  positive/negative controls passed. Go dial synchronization now preserves the
+  actual stream through independently witnessed Forge close; negative PSK
+  checks distinguish logical timeout from attributable exhausted pre-auth roots.
+  Rust TCP completion evidence uses its actual successful close snapshot and
+  never repairs missing facts from the final connection snapshot.
+- A bounded opt-in Go QUIC listener subsequently proved actual request EOF
+  before checked close. Eight predetermined public/DNS cases through both DB
+  backends passed strict semantic and captured-source validation. This fixture
+  change does not patch the donor library or hide the preceding RED results.
+  Four predetermined Rust-to-Forge QUIC cases subsequently passed through both
+  backends with a same-stream barrier, actual read/write hashes, authenticated
+  connection observation and joined fixture tasks. The existing upstream Rust
+  whole-host QUIC shutdown limitation remains separate. The subsequent complete
+  development rerun passed all 84 cases, including strict semantic and captured-source
+  validation through both backends. Independent scoped review of the Rust barrier and Python
+  receipt/ownership checks found no actionable findings; this is not a whole-PR
+  acceptance verdict.
+- Six focused suites passed, and the installed node package consumer built and
+  executed after updating its old flat config references to the thematic groups.
+- The installed resolver consumer also built and executed. Both temporary
+  package-consumer build directories were removed after checking that no process
+  or file owner remained; the common install and active Stage 7 build were kept.
+- Thematic review found inconsistent Rendezvous default TTL acceptance. Native
+  validation now requires `min <= default <= max`; seven native boundary assertions
+  and seven lifecycle/config cases with 1325 assertions passed, including rejection
+  without replacing the previously accepted topology snapshot.
+- The configured DHT value fixture now shares existing `/pk` and `/ipns` golden
+  records with the raw fixture. Four development Forge-writer/Go-server/fresh-Forge-reader
+  exchanges succeeded through MDBX/RocksDB after the writer exited. This is a
+  smoke result, not the final bilateral Go/Rust matrix or durable restart proof.
+  Its session-history capture has a 64-entry budget and fails on overflow rather
+  than silently losing observations. The independent fixture review is source-clean;
+  the subsequent 16-case development matrix passed in both Go/Rust roles through
+  both disk backends, including final semantic and captured-source validation.
+  Twenty-two case/evidence regressions and 25 shared canonical-acceptance tests
+  passed. Negative source tests first establish a valid baseline, so unrelated
+  macOS temporary-path aliases cannot manufacture rejection coverage.
+  Complete service acceptance remains pending.
+- The configured PubSub development matrix passed eight cases through both
+  disk backends and Go/Rust. It proves signed bidirectional delivery, exact
+  payload-limit acceptance/rejection and authoritative typed configuration
+  retaining application callbacks. Fifty-four configured PubSub and shared
+  acceptance Python tests passed. Fixture self-tests cover 55 checks.
+  A GossipSub-only Rust peer is correctly recorded as authenticated with
+  unsuccessful Identify, not made artificially identified. The base transport
+  and DHT tests retain their independent Identify requirements. Earlier failed
+  PubSub runs remain preserved; control-field collisions, duplicate JSON source
+  keys and a redacted empty Secrets container were fixed rather than relaxing
+  validators. Native scoring/extension and whole Stage 7 promotion are separate.
+- Configured AutoRelay passed eight development Go/Rust cases through MDBX and
+  RocksDB: native client acquisition, renewal, loss/replacement and address
+  withdrawal, plus the official plugin as a relay service. The existing runner,
+  donor observers and validators are composed, not copied into another runtime.
+  Review strengthened the configured proof to require both Forge seed receipts
+  and all three lifecycle echoes, bound to actual donor identities and carrier
+  sessions with completed writes/closes. All eight retained live sources passed
+  revalidation; 68 Python checks and 65 C++ fixture self-checks passed. The configured
+  boundary proves joined owners, a retained diagnostics API rejecting after
+  detach, and a retained host-event subscription ending. It does not fabricate
+  raw-node snapshots before startup or after detach, and raw post-stop counter
+  requirements stay unchanged.
+- Four configured value/provider cases passed through both disk backends. A
+  fresh independent reader discovers the remote provider through a server;
+  local and total provider quotas, profile isolation, restart reconfirmation,
+  withdrawal and retained remote records are checked without a self-query
+  masquerading as network discovery. Shutdown/reopen is not crash recovery.
+- Configured Rendezvous connects to a hidden peer without manual discovery,
+  verifies its authenticated Identify result and Ping, and leaves a configured
+  static-only control idle. After that inactivity check, the independent control
+  uses read-only DISCOVER to verify both exact signed registrations. Joined
+  seeker shutdown removes only its registration while the hidden peer remains;
+  the native 7200-second TTL excludes natural expiry as an explanation. The
+  MDBX/RocksDB runtime check passed. Receiver metrics alone are not used to
+  identify a registration.
+- Two explicit LAN tests passed through MDBX and RocksDB: private mDNS discovery
+  without seed addresses plus disabled/withdrawal controls, and host-event
+  coalescing after genuine Identify address confirmation and TTL expiry. The
+  latter retains the authenticated session while the observation expires.
+  `FORGE_TEST_P2P_LAN_ADDRESS` must select a real non-loopback IPv4 interface;
+  absent input is reported as `NOT_RUN`/CTest skipped, not success. These are
+  configured Forge-to-Forge runtime tests, not new Go/Rust multicast or public
+  AutoNAT classifications. Independent review strengthened fresh host-event
+  subscription assertions to compare all snapshot fields, not just generation;
+  the subsequent two LAN tests passed again. The subsequent configured AutoNAT
+  development run passed eight isolated Linux cases: both ObjectDB backends,
+  Forge client/service, v1 with Rust and v2 with Go. Its explicit configured
+  boundary reuses the existing process/network owners and preserves raw-node
+  checks; 87 shared AutoNAT regressions and 24 configured regressions passed.
+  One v1 observer leaves the native host quorum unknown, while v2 verifies the
+  actual address-level state. The first incorrectly launched shared-namespace
+  attempt was refused before spawning participants and is retained separately.
+  A subsequent review tightened the C++ fixture to its closed isolated address
+  set; no general-purpose routability classifier is duplicated in the fixture.
+- These results use an uncommitted development tree, not exact-head acceptance.
+  A subsequent independent review found four mDNS upper bounds checked only at
+  service construction. They now live in the common native policy validator,
+  without a second plugin-specific limit list. Exact/+1 enabled/disabled tests
+  and rejected-candidate rollback passed: seven native cases and nine focused
+  plugin cases. The bounded fix received independent source-clean review.
+  The refreshed installed `net_p2p`, `api_p2p`, node and resolver consumers also
+  built and executed successfully. Each temporary package build was removed
+  after process completion and an open-file check; about 8 GiB of cumulative
+  package intermediates were removed without touching the shared build or
+  neighboring worktrees. Structure, network-plugin structure, descriptor and
+  inventory gates passed; the focused evidence foundation passed 254 Python tests.
+  Complete configured service exchanges, package checks, fixture provenance and
+  independent final reviews remain required. PR 172 is still incomplete and
+  unmerged; no support claim or project version changes at this checkpoint.

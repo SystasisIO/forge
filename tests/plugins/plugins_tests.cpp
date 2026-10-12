@@ -1208,27 +1208,33 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_config_is_described_from_public_schema) {
    BOOST_TEST(static_cast<int>(bootstrap.kind) == static_cast<int>(forge::schema::value_kind::string_list));
    BOOST_TEST(bootstrap.has_default);
 
-   const auto& bootstrap_requirement = require_field(*descriptor, "bootstrap-requirement");
+   BOOST_TEST(require_field(*descriptor, "bootstrap-policy").has_default);
+   const auto bootstrap_policy_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::bootstrap_policy_config>("plugins.net.p2p.node.bootstrap-policy");
+   const auto& bootstrap_requirement = require_field(bootstrap_policy_descriptor, "requirement");
    BOOST_TEST(bootstrap_requirement.has_default);
    BOOST_TEST(std::get<std::string>(bootstrap_requirement.default_value.storage) == "allow-disconnected");
 
-   const auto& bootstrap_startup_budget = require_field(*descriptor, "bootstrap-startup-budget-ms");
+   const auto& bootstrap_startup_budget = require_field(bootstrap_policy_descriptor, "startup-budget-ms");
    BOOST_TEST(bootstrap_startup_budget.has_default);
    BOOST_TEST(std::get<std::uint64_t>(bootstrap_startup_budget.default_value.storage) == 10'000U);
 
-   const auto& bootstrap_connect_timeout = require_field(*descriptor, "bootstrap-connect-timeout-ms");
+   const auto& bootstrap_connect_timeout = require_field(bootstrap_policy_descriptor, "connect-timeout-ms");
    BOOST_TEST(bootstrap_connect_timeout.has_default);
    BOOST_TEST(std::get<std::uint64_t>(bootstrap_connect_timeout.default_value.storage) == 2'000U);
 
-   const auto& bootstrap_parallelism = require_field(*descriptor, "bootstrap-max-parallel");
+   const auto& bootstrap_parallelism = require_field(bootstrap_policy_descriptor, "max-parallel");
    BOOST_TEST(bootstrap_parallelism.has_default);
    BOOST_TEST(std::get<std::uint64_t>(bootstrap_parallelism.default_value.storage) == 4U);
 
-   const auto& peer_store = require_field(*descriptor, "peer-store.store");
+   BOOST_TEST(require_field(*descriptor, "peer-store").has_default);
+   const auto peer_store_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::peer_store_config>("plugins.net.p2p.node.peer-store");
+   const auto& peer_store = require_field(peer_store_descriptor, "store");
    BOOST_TEST(peer_store.has_default);
    BOOST_TEST(std::get<std::string>(peer_store.default_value.storage).empty());
 
-   const auto& schema_policy = require_field(*descriptor, "peer-store.schema-policy");
+   const auto& schema_policy = require_field(peer_store_descriptor, "schema-policy");
    BOOST_TEST(schema_policy.has_default);
    BOOST_TEST(std::get<std::string>(schema_policy.default_value.storage) == "reset");
 
@@ -1236,30 +1242,44 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_config_is_described_from_public_schema) {
    BOOST_TEST(static_cast<int>(dht_profiles.kind) == static_cast<int>(forge::schema::value_kind::object_list));
    BOOST_TEST(dht_profiles.has_default);
 
-   const auto& topology_mode = require_field(*descriptor, "topology.mode");
+   BOOST_TEST(require_field(*descriptor, "topology").has_default);
+   const auto topology_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::topology_config>("plugins.net.p2p.node.topology");
+   const auto watermarks_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::topology_config::watermarks>("plugins.net.p2p.node.topology.peers");
+   const auto& topology_mode = require_field(topology_descriptor, "mode");
    BOOST_TEST(topology_mode.has_default);
    BOOST_TEST(std::get<std::string>(topology_mode.default_value.storage) == "managed");
-   BOOST_TEST(std::get<std::uint64_t>(require_field(*descriptor, "topology.peers.low").default_value.storage) == 128U);
-   BOOST_TEST(std::get<std::uint64_t>(require_field(*descriptor, "topology.peers.target").default_value.storage) ==
+   BOOST_TEST(std::get<std::uint64_t>(require_field(watermarks_descriptor, "low").default_value.storage) == 128U);
+   BOOST_TEST(std::get<std::uint64_t>(require_field(watermarks_descriptor, "target").default_value.storage) ==
               160U);
-   BOOST_TEST(std::get<std::uint64_t>(require_field(*descriptor, "topology.peers.high").default_value.storage) == 192U);
+   BOOST_TEST(std::get<std::uint64_t>(require_field(watermarks_descriptor, "high").default_value.storage) == 192U);
    BOOST_TEST(
-       std::get<std::uint64_t>(require_field(*descriptor, "topology.max-parallel-dials").default_value.storage) == 4U);
+       std::get<std::uint64_t>(require_field(topology_descriptor, "max-parallel-dials").default_value.storage) == 4U);
 
-   const auto& rendezvous_role = require_field(*descriptor, "rendezvous.role");
+   BOOST_TEST(require_field(*descriptor, "rendezvous").has_default);
+   const auto rendezvous_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::rendezvous_config>("plugins.net.p2p.node.rendezvous");
+   const auto& rendezvous_role = require_field(rendezvous_descriptor, "role");
    BOOST_TEST(rendezvous_role.has_default);
    BOOST_TEST(std::get<std::string>(rendezvous_role.default_value.storage) == "disabled");
-   BOOST_TEST(static_cast<int>(require_field(*descriptor, "rendezvous.points").kind) ==
+   BOOST_TEST(static_cast<int>(require_field(rendezvous_descriptor, "points").kind) ==
               static_cast<int>(forge::schema::value_kind::object_list));
-   BOOST_TEST(std::get<bool>(require_field(*descriptor, "peer-exchange.enabled").default_value.storage));
-   BOOST_TEST(std::get<std::uint64_t>(require_field(*descriptor, "peer-exchange.max-peers").default_value.storage) ==
+   BOOST_TEST(require_field(*descriptor, "peer-exchange").has_default);
+   const auto peer_exchange_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::peer_exchange_config>("plugins.net.p2p.node.peer-exchange");
+   BOOST_TEST(std::get<bool>(require_field(peer_exchange_descriptor, "enabled").default_value.storage));
+   BOOST_TEST(std::get<std::uint64_t>(require_field(peer_exchange_descriptor, "max-peers").default_value.storage) ==
               4U);
 
-   const auto& certificate_secret = require_field(*descriptor, "identity.certificate-secret");
+   BOOST_TEST(require_field(*descriptor, "identity").has_default);
+   const auto identity_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::identity_config>("plugins.net.p2p.node.identity");
+   const auto& certificate_secret = require_field(identity_descriptor, "certificate-secret");
    BOOST_TEST(certificate_secret.has_default);
    BOOST_TEST(std::get<std::string>(certificate_secret.default_value.storage).empty());
 
-   const auto& private_key_secret = require_field(*descriptor, "identity.private-key-secret");
+   const auto& private_key_secret = require_field(identity_descriptor, "private-key-secret");
    BOOST_TEST(private_key_secret.has_default);
    BOOST_TEST(std::get<std::string>(private_key_secret.default_value.storage).empty());
    BOOST_TEST(!has_field(*descriptor, "certificate-pem"));
@@ -1281,11 +1301,17 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_config_is_described_from_public_schema) {
    BOOST_TEST(insecure.has_default);
    BOOST_TEST(!std::get<bool>(insecure.default_value.storage));
 
-   const auto& path_policy = require_field(*descriptor, "path.policy");
+   BOOST_TEST(require_field(*descriptor, "path").has_default);
+   const auto path_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::path_config>("plugins.net.p2p.node.path");
+   const auto& path_policy = require_field(path_descriptor, "policy");
    BOOST_TEST(path_policy.has_default);
    BOOST_TEST(std::get<std::string>(path_policy.default_value.storage) == "direct-preferred");
 
-   const auto& relay_trust = require_field(*descriptor, "relay.trust");
+   BOOST_TEST(require_field(*descriptor, "relay").has_default);
+   const auto relay_descriptor = forge::config::core::describe_component<
+       forge::plugins::net::p2p::node::relay_config>("plugins.net.p2p.node.relay");
+   const auto& relay_trust = require_field(relay_descriptor, "trust");
    BOOST_TEST(relay_trust.has_default);
    BOOST_TEST(std::get<std::string>(relay_trust.default_value.storage) == "known-only");
 
@@ -2107,7 +2133,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rejects_invalid_typed_config_before_startup
 
    {
       auto config = test_p2p_config();
-      config.set("plugins.net.p2p.node.bootstrap-requirement", std::string{"always-online"});
+      config.set("plugins.net.p2p.node.bootstrap-policy.requirement", std::string{"always-online"});
       auto app = p2p_only_application{};
       BOOST_CHECK_THROW(app.configure(config), forge::plugins::net::p2p::node::exceptions::invalid_config);
    }
@@ -2257,7 +2283,7 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_config_preserves_legacy_positional_prefix) 
    const auto value = forge::plugins::net::p2p::node::config{{}, {}, {"/ip4/127.0.0.1/tcp/4001"}};
    BOOST_REQUIRE_EQUAL(value.advertised_endpoints.size(), 1U);
    BOOST_TEST(value.advertised_endpoints.front() == "/ip4/127.0.0.1/tcp/4001");
-   BOOST_TEST(static_cast<int>(value.bootstrap_requirement) ==
+   BOOST_TEST(static_cast<int>(value.bootstrap_policy.requirement) ==
               static_cast<int>(forge::plugins::net::p2p::node::bootstrap_requirement::allow_disconnected));
 }
 
@@ -2518,9 +2544,9 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_live_slots_accept_registration_during_start
                                                     "/ip4/127.0.0.1/tcp/1/p2p/" + test_peer(225).to_string(),
                                                 },
                                             });
-   config.set("plugins.net.p2p.node.bootstrap-requirement", std::string{"require-connection"});
-   config.set("plugins.net.p2p.node.bootstrap-startup-budget-ms", std::uint64_t{5'000});
-   config.set("plugins.net.p2p.node.bootstrap-connect-timeout-ms", std::uint64_t{1'000});
+   config.set("plugins.net.p2p.node.bootstrap-policy.requirement", std::string{"require-connection"});
+   config.set("plugins.net.p2p.node.bootstrap-policy.startup-budget-ms", std::uint64_t{5'000});
+   config.set("plugins.net.p2p.node.bootstrap-policy.connect-timeout-ms", std::uint64_t{1'000});
 
    auto app = p2p_only_application{forge::app::application_shell_options{
        .name = "p2p-route-startup-boundary",
@@ -2687,9 +2713,9 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rolls_back_strict_bootstrap_failure) {
                                                     "/ip4/127.0.0.1/tcp/1/p2p/" + test_peer(119).to_string(),
                                                 },
                                             });
-   config.set("plugins.net.p2p.node.bootstrap-requirement", std::string{"require-connection"});
-   config.set("plugins.net.p2p.node.bootstrap-startup-budget-ms", std::uint64_t{100});
-   config.set("plugins.net.p2p.node.bootstrap-connect-timeout-ms", std::uint64_t{50});
+   config.set("plugins.net.p2p.node.bootstrap-policy.requirement", std::string{"require-connection"});
+   config.set("plugins.net.p2p.node.bootstrap-policy.startup-budget-ms", std::uint64_t{100});
+   config.set("plugins.net.p2p.node.bootstrap-policy.connect-timeout-ms", std::uint64_t{50});
 
    auto app = p2p_only_application{};
    app.configure(config);

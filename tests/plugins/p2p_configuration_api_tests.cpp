@@ -341,6 +341,50 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_native_declarations_are_not_complete_prof
    BOOST_CHECK_THROW(p2p::validate(profile), p2p::exceptions::invalid_options);
 }
 
+BOOST_AUTO_TEST_CASE(p2p_configuration_heartbeat_overflow_rejection_retains_typed_snapshot_before_secrets) {
+   fixture f;
+   const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(
+       std::chrono::steady_clock::duration::max());
+   auto retained = std::make_shared<int>(42);
+   const auto weak_retained = std::weak_ptr<int>{retained};
+   auto options = p2p::pubsub::options{};
+   options.limits.heartbeat_initial_delay = maximum;
+   options.limits.heartbeat_interval = maximum;
+   options.limits.max_data_size = 32;
+   options.tracer = [retained](const p2p::pubsub::trace_event&) { (void)retained; };
+   f.configuration->set_pubsub_options(std::move(options));
+   options.tracer = {};
+   retained.reset();
+   BOOST_TEST(!weak_retained.expired());
+   for (const auto field : {&p2p::pubsub::limits::heartbeat_initial_delay,
+                            &p2p::pubsub::limits::heartbeat_interval}) {
+      if (maximum < std::chrono::milliseconds::max()) {
+         for (const auto delay : {maximum + 1ms, std::chrono::milliseconds::max()}) {
+            auto rejected_capture = std::make_shared<int>(7);
+            const auto weak_rejected = std::weak_ptr<int>{rejected_capture};
+            auto invalid = p2p::pubsub::options{};
+            invalid.limits.*field = delay;
+            invalid.limits.max_data_size = 64;
+            invalid.tracer = [rejected_capture](const p2p::pubsub::trace_event&) { (void)rejected_capture; };
+            rejected_capture.reset();
+            BOOST_CHECK_THROW(f.configuration->set_pubsub_options(std::move(invalid)), np::exceptions::invalid_config);
+            invalid.tracer = {};
+            BOOST_TEST(weak_rejected.expired());
+            BOOST_TEST(!weak_retained.expired());
+            BOOST_TEST(f.identity->reads.load() == 0U);
+         }
+      }
+   }
+   f.initialize();
+   f.run(f.node.startup());
+   BOOST_TEST(f.identity->reads.load() == 2U);
+   const auto pubsub = f.apis.get<np::pubsub_api>(np::pubsub_api::ref()).shared();
+   (void)f.run(pubsub->publish({"retained-heartbeat-options"}, std::vector<std::uint8_t>(32, 0x71)));
+   BOOST_CHECK_THROW(f.run(pubsub->publish({"retained-heartbeat-options"}, std::vector<std::uint8_t>(33, 0x71))),
+                     p2p::exceptions::backpressure_rejected);
+   BOOST_TEST(!weak_retained.expired());
+}
+
 BOOST_AUTO_TEST_CASE(p2p_configuration_custom_policy_is_complete_unique_and_reserved) {
    fixture f;
    f.declare_custom();

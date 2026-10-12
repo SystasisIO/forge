@@ -110,7 +110,7 @@ struct fixture {
       config.set("plugins.net.p2p.node.max-protocol-handlers", static_cast<std::uint64_t>(limit));
       if (bootstrap) {
          config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{bootstrap->to_string()});
-         config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+         config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
       }
       run(node.configure({config, "plugins.net.p2p.node"}));
       apis.install<secrets::api>(secrets::api::describe(), std::make_shared<identity_source>());

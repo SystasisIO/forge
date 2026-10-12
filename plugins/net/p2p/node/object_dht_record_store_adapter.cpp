@@ -260,11 +260,11 @@ boost::asio::awaitable<void> upsert_row(forge::db::object::transaction& objects,
 }
 
 [[nodiscard]] forge::db::core::page_request
-hydration_page_request(const forge::net::p2p::dht::record_store::hydration_request& request) {
-   if (request.limit == 0 || request.limit > forge::db::core::max_page_limit) {
+hydration_page_request(const forge::net::p2p::dht::record_store::hydration_request& request, std::size_t maximum) {
+   if (request.limit == 0 || request.limit > maximum || request.limit > forge::db::core::max_page_limit) {
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_options, "DHT hydration limit is invalid",
                             forge::exceptions::ctx("limit", request.limit),
-                            forge::exceptions::ctx("max", forge::db::core::max_page_limit));
+                            forge::exceptions::ctx("max", maximum));
    }
    if (request.cursor && request.cursor->empty()) {
       FORGE_THROW_EXCEPTION(forge::db::object::exceptions::invalid_cursor, "DHT hydration cursor is empty");
@@ -346,8 +346,21 @@ boost::asio::awaitable<bool> has_expired_rows(forge::db::object::transaction& ob
 object_dht_record_store_adapter::object_dht_record_store_adapter(forge::plugins::db::store::api* db,
                                                                  forge::plugins::db::store::store_handle store,
                                                                  forge::net::p2p::protocol_id profile,
-                                                                 std::size_t max_record_bytes)
-    : db_{db}, store_{std::move(store)}, profile_{std::move(profile)}, max_record_bytes_{max_record_bytes} {}
+                                                                 const forge::net::p2p::dht::record_store::options& limits)
+    : db_{db}, store_{std::move(store)}, profile_{std::move(profile)}, max_record_bytes_{limits.max_record_bytes},
+      hydration_page_limit_{limits.hydration_page_limit}, prune_page_limit_{limits.prune_page_limit} {}
+
+void object_dht_record_store_adapter::validate_options(const forge::net::p2p::protocol_id& profile,
+                                                       const forge::net::p2p::dht::record_store::options& limits) {
+   forge::net::p2p::validate(limits);
+   validate_profile(profile, limits.max_record_bytes);
+   if (limits.hydration_page_limit > forge::db::core::max_page_limit ||
+       limits.prune_page_limit > forge::db::core::max_page_limit) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_options,
+                            "ObjectDB DHT page limits exceed the backend page bound",
+                            forge::exceptions::ctx("max", forge::db::core::max_page_limit));
+   }
+}
 
 boost::asio::awaitable<std::shared_ptr<object_dht_record_store_adapter>> object_dht_record_store_adapter::async_open(
     forge::plugins::db::store::api* db, forge::plugins::db::store::store_handle store,
@@ -356,7 +369,7 @@ boost::asio::awaitable<std::shared_ptr<object_dht_record_store_adapter>> object_
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_options,
                             "ObjectDB DHT persistence requires a named DB Store handle");
    }
-   validate_profile(profile, limits.max_record_bytes);
+   validate_options(profile, limits);
 
    auto snapshot = co_await store.begin_read();
    auto objects = snapshot.objects();
@@ -368,7 +381,7 @@ boost::asio::awaitable<std::shared_ptr<object_dht_record_store_adapter>> object_
    require_format(state->format_version);
 
    co_return std::shared_ptr<object_dht_record_store_adapter>{
-       new object_dht_record_store_adapter{db, std::move(store), std::move(profile), limits.max_record_bytes}};
+       new object_dht_record_store_adapter{db, std::move(store), std::move(profile), limits}};
 }
 
 void object_dht_record_store_adapter::ensure_open() const {
@@ -380,7 +393,7 @@ void object_dht_record_store_adapter::ensure_open() const {
 boost::asio::awaitable<forge::net::p2p::dht::record_store::hydration_page>
 object_dht_record_store_adapter::async_hydrate(forge::net::p2p::dht::record_store::hydration_request request) {
    ensure_open();
-   const auto page_request = hydration_page_request(request);
+   const auto page_request = hydration_page_request(request, hydration_page_limit_);
    auto snapshot = co_await store_.begin_read();
    auto objects = snapshot.objects();
    const auto state = co_await objects.get(detail::p2p_state_schema::schema_state_id);
@@ -499,11 +512,13 @@ object_dht_record_store_adapter::async_apply(forge::net::p2p::dht::record_store:
 boost::asio::awaitable<forge::net::p2p::dht::record_store::prune_result>
 object_dht_record_store_adapter::async_prune_expired(std::chrono::system_clock::time_point now, std::size_t limit) {
    ensure_open();
-   if (limit == 0) {
-      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_options, "DHT prune limit must be positive");
+   if (limit == 0 || limit > prune_page_limit_) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::invalid_options, "DHT prune limit is invalid",
+                            forge::exceptions::ctx("limit", limit),
+                            forge::exceptions::ctx("max", prune_page_limit_));
    }
    const auto now_ns = time_to_ns(now);
-   const auto bounded_limit = static_cast<std::uint32_t>(std::min<std::size_t>(limit, forge::db::core::max_page_limit));
+   const auto bounded_limit = static_cast<std::uint32_t>(limit);
 
    auto transaction = co_await store_.begin_transaction();
    auto objects = co_await store_.objects().join(transaction);

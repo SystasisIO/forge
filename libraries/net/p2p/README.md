@@ -810,6 +810,22 @@ Per-profile diagnostics expose whether autonomous maintenance is enabled, the
 startup lookup and in-flight state, consecutive failures and the bounded delay
 until the next attempt.
 
+`node::options::dht_records` configures each profile's complete
+`dht::record_store::options`, including its persistence port. Build a profile's
+baseline with `dht::record_store::options_for(profile)`, then set its supported
+capacities and `persistence`. An omitted entry retains profile-derived per-key
+and record-size defaults; production still requires durable persistence for
+every profile. Unknown profiles, shared persistence owners, zero bounds and a
+per-key provider capacity above the profile's `k` are rejected. This replaces
+the former persistence-only `dht_record_persistence` map without an alias;
+wire protocols and persisted row layouts are unchanged.
+
+Count and aggregate-byte capacities bound the operational record store, not
+the physical size of a database file. The official ObjectDB adapter receives
+the same effective record/page limits and bounds hydration/pruning requests.
+It does not introduce a second quota engine. Adapter-specific page limits are
+checked before identity Secrets reads and peer-state transactions.
+
 Custom value validators report deterministic record invalidity with
 `exceptions::record_rejected`. Capacity, persistence, key resolution and other
 operational failures must retain their original typed error so a GET quorum

@@ -25,12 +25,17 @@ add_library(
       pubsub_service_partial.cpp
       pubsub_operations.cpp
       pubsub_policy.cpp
+      pubsub_policy_scoring.cpp
       project_message.cpp
       diagnostics_policy.cpp
       resource_policy.cpp
       config.cpp
+      config_pubsub.cpp
+      config_services.cpp
       configuration_policy.cpp
       configuration_policy_host.cpp
+      configuration_policy_lifecycle.cpp
+      configuration_policy_services.cpp
       plugin_impl.cpp
       plugin_impl_configuration.cpp
       object_dht_record_store_adapter.cpp

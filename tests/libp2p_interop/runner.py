@@ -40,6 +40,23 @@ from process_lifecycle import Listener, current_scope, enter_scope, exit_scope, 
 from provider_evidence import validate_hidden_find_peer_evidence, validate_provider_evidence
 from private_profile_cases import case_specs as private_profile_specs, run_case as private_profile_case
 from private_profile_evidence import PRIVATE_CONTRACTS, INLINE_CONTRACTS, validate_private_profile
+from plugin_node_cases import case_specs as plugin_node_specs, run_case as plugin_node_case
+from plugin_node_evidence import rust_build_environment, validate_case as validate_plugin_node_case
+from plugin_dht_cases import case_specs as plugin_dht_specs, run_case as plugin_dht_case
+from plugin_dht_evidence import (
+    validate_case as validate_plugin_dht_case,
+    validate_terminal_sources as validate_plugin_dht_sources,
+)
+from plugin_pubsub_cases import case_specs as plugin_pubsub_specs, run_case as plugin_pubsub_case
+from plugin_pubsub_evidence import (
+    validate_case as validate_plugin_pubsub_case,
+    validate_terminal_sources as validate_plugin_pubsub_sources,
+)
+from plugin_relay_cases import case_specs as plugin_relay_specs, run_case as plugin_relay_case
+from plugin_autonat_cases import (
+    case_specs as plugin_autonat_specs, run_case as plugin_autonat_case,
+    platform_preflight as plugin_autonat_preflight, not_run_record as plugin_autonat_not_run,
+)
 from provenance import (
     WorktreeIdentity,
     fixture_donor_checkout_errors,
@@ -55,6 +72,8 @@ GO_EXECUTION_POLICY = {
     "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off",
     "GOFLAGS": "", "GOENV": "off", "GOWORK": "off",
 }
+
+CONFIGURED_PLUGIN_SUITES = ("plugin-node", "plugin-dht", "plugin-pubsub", "plugin-relay", "plugin-autonat")
 
 
 def go_execution_environment(inherited: Optional[dict[str, str]] = None) -> dict[str, str]:
@@ -1069,19 +1088,23 @@ def refresh_rust_fixture_source(source: Path, work: Path) -> None:
 
 
 def prepare_rust_fixture(source_dir: Path, build_dir: Path, cargo_tool: str,
-                         environment: dict[str, str], *, quic_observer=False) -> tuple[Path, list[dict]]:
+                         environment: dict[str, str], *, quic_observer=False,
+                         record_build_environment=False) -> tuple[Path, list[dict]]:
     work = build_dir / "rust_fixture"
     refresh_rust_fixture_source(source_dir / "rust_fixture", work)
+    policy = {"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"}
+    if record_build_environment:
+        policy = rust_build_environment(environment)
     commands = [
         {
             "command": [cargo_tool, "test", "--frozen"],
             "cwd": str(work),
-            "environment": {"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"},
+            "environment": dict(policy),
         },
         {
             "command": [cargo_tool, "build", "--release", "--frozen"],
             "cwd": str(work),
-            "environment": {"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"},
+            "environment": dict(policy),
         },
     ]
     if quic_observer:
@@ -1345,6 +1368,93 @@ def run_private_profile_case(spec, binaries, root, *, key, mismatch, fingerprint
     errors = validate_private_profile(record["result"], record, record["listener_result"])
     if errors:
         raise RuntimeError(f"{spec.contract}: " + "; ".join(errors))
+    return record
+
+
+@owned_case
+def run_plugin_node_case(spec, binaries, root, *, key, mismatch, fingerprint):
+    record = plugin_node_case(spec, binaries, root, key=key, mismatch=mismatch, fingerprint=fingerprint,
+                              wait_json=wait_json, command_attempt=command_attempt)
+    errors = validate_plugin_node_case(record, spec)
+    if errors:
+        raise RuntimeError(spec.scenario_id + ": " + "; ".join(errors))
+    record["status"] = "observed"
+    return record
+
+
+@owned_case
+def run_owned_plugin_dht_case(spec, binaries, root):
+    return plugin_dht_case(spec, binaries, root, command_attempt=command_attempt)
+
+
+def run_plugin_dht_case(spec, binaries, root):
+    if current_scope() is not None:
+        raise RuntimeError("plugin-dht terminal source validation requires a completed top-level case teardown")
+    record = run_owned_plugin_dht_case(spec, binaries, root)
+    errors = validate_plugin_dht_case(record, spec) + validate_plugin_dht_sources(record, binaries, root)
+    if errors:
+        primary = RuntimeError(spec.scenario_id + ": " + "; ".join(errors))
+        raise CaseFailure(primary, [], {"status": "failed", "case_function": "run_plugin_dht_case",
+            "primary_error": str(primary), "cleanup_errors": [], "processes": record["owned_processes"],
+            "attempts": record["attempts"], "uncommitted_result": record}) from primary
+    record["status"] = "observed"
+    record["amino_evidence"] = {
+        "kind": "causal-api-and-remote-io", "protocol": "/ipfs/kad/1.0.0", "negotiation_event_capture": False,
+        "value_proof": "forge.dht-api.selected" if spec.forge_role == "client" else "donor.get_value.golden-comparison",
+        "listener_snapshot_is_record_proof": False,
+    }
+    return record
+
+
+@owned_case
+def run_owned_plugin_pubsub_case(spec, binaries, root):
+    return plugin_pubsub_case(spec, binaries, root, command_attempt=command_attempt)
+
+
+def run_plugin_pubsub_case(spec, binaries, root):
+    if current_scope() is not None:
+        raise RuntimeError("plugin-pubsub terminal source validation requires a completed top-level case teardown")
+    record = run_owned_plugin_pubsub_case(spec, binaries, root)
+    errors = validate_plugin_pubsub_case(record, spec) + validate_plugin_pubsub_sources(record, binaries, root)
+    if errors:
+        primary = RuntimeError(spec.scenario_id + ": " + "; ".join(errors))
+        raise CaseFailure(primary, [], {"status": "failed", "case_function": "run_plugin_pubsub_case",
+            "primary_error": str(primary), "cleanup_errors": [], "processes": record["owned_processes"],
+            "attempts": record["attempts"], "uncommitted_result": record}) from primary
+    record["status"] = "observed"
+    return record
+
+
+def run_plugin_relay_case(spec, binaries, root):
+    if current_scope() is not None:
+        raise RuntimeError("plugin-relay must retain its existing top-level native owner")
+    # The composed case owns, joins and captures native AutoRelay actors before
+    # validating configured receipts and their terminal sources. Do not wrap it.
+    record = plugin_relay_case(spec, binaries, root, wait_json=wait_json, command_attempt=command_attempt,
+                               start_destination=start_destination, run_relay_dial=run_relay_dial)
+    if record.get("status") != "observed" or record.get("errors") != []:
+        native = record.get("native", {})
+        primary = RuntimeError(spec.scenario_id + ": " + "; ".join(record.get("errors") or ["case was not observed"]))
+        cleanup = native.get("cleanup_errors", [])
+        raise CaseFailure(primary, cleanup, {"status": "failed", "case_function": "run_plugin_relay_case",
+            "primary_error": str(primary), "cleanup_errors": cleanup, "processes": native.get("processes", []),
+            "attempts": native.get("attempts", []), "uncommitted_result": record}) from primary
+    return record
+
+
+def run_plugin_autonat_case(spec, binaries, root):
+    if current_scope() is not None:
+        raise RuntimeError("plugin-autonat must retain its existing top-level native owner")
+    # The native AutoNAT owner already creates, joins and captures its paired
+    # processes and isolated network. A second owned_case would obscure joins.
+    record = plugin_autonat_case(spec, binaries, root, wait_json=wait_json, command_attempt=command_attempt)
+    if record.get("status") != "observed" or record.get("errors") != []:
+        native = record.get("native") or {}
+        primary = RuntimeError(spec.scenario_id + ": " + "; ".join(record.get("errors") or ["case was not observed"]))
+        cleanup = native.get("cleanup_errors", [])
+        raise CaseFailure(primary, cleanup, {"status": "failed", "case_function": "run_plugin_autonat_case",
+            "primary_error": str(primary), "cleanup_errors": cleanup, "processes": native.get("owned_processes", []),
+            "attempts": native.get("attempts", []), "uncommitted_result": record}) from primary
     return record
 
 
@@ -1720,13 +1830,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--enabled", required=True)
     parser.add_argument("--provenance-only", action="store_true")
-    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring", "pubsub-extensions"), default="stage6")
+    parser.add_argument("--suite", choices=("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring", "pubsub-extensions") + CONFIGURED_PLUGIN_SUITES, default="stage6")
     parser.add_argument("--forge-fixture", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--forge-root", required=True)
     parser.add_argument("--donors-root", required=True)
     parser.add_argument("--acceptance-manifest")
+    parser.add_argument("--plugin-store-backend", choices=("all", "mdbx", "rocksdb"), default="all")
     args = parser.parse_args()
 
     if not args.provenance_only and not enabled_from_args(args.enabled):
@@ -1790,11 +1901,36 @@ def main() -> int:
         forge_fixture = Path(args.forge_fixture).resolve()
         build_info, build_info_command = require_fixture_provenance(forge_fixture, start_identity, fixture_lock)
         provenance["fixture_build_info"] = build_info
+        if args.suite in CONFIGURED_PLUGIN_SUITES:
+            if args.acceptance_manifest is not None:
+                raise RuntimeError(args.suite + " has its own closed matrix; do not supply a Stage6 acceptance manifest")
+            available = build_info.get("store_backends")
+            if build_info.get("fixture_kind") != "configured-plugin" or not isinstance(available, list) \
+                    or not available or len(set(available)) != len(available) or any(
+                        backend not in ("mdbx", "rocksdb") for backend in available):
+                raise RuntimeError(args.suite + " requires the official configured fixture and an actual ObjectDB backend")
+            backends = available if args.plugin_store_backend == "all" else [args.plugin_store_backend]
+            if args.suite in ("plugin-dht", "plugin-pubsub", "plugin-relay", "plugin-autonat") and args.plugin_store_backend == "all" \
+                    and set(available) != {"mdbx", "rocksdb"}:
+                raise RuntimeError(f"complete {args.suite} matrix needs both ObjectDB backends; matrix NOT_RUN")
+            if any(backend not in available for backend in backends):
+                raise RuntimeError("requested configured ObjectDB backend not built; matrix NOT_RUN, no memory fallback")
+            provenance["runner_inputs"].update(plugin_store_backend=args.plugin_store_backend,
+                                               plugin_store_backends=backends)
+        elif build_info.get("fixture_kind") == "configured-plugin":
+            raise RuntimeError("configured-plugin fixture must not be used to relabel raw Stage6 suites")
         provenance["commands"].append({"kind": "forge_build_info", **build_info_command})
         provenance["binaries"]["forge"] = {
             "path": str(forge_fixture),
             "sha256": sha256_file(forge_fixture),
         }
+
+        if args.suite == "plugin-autonat" and not args.provenance_only:
+            preflight = plugin_autonat_preflight()
+            if preflight["status"] != "eligible":
+                artifacts.extend(plugin_autonat_not_run(spec, preflight)
+                                 for backend in backends for spec in plugin_autonat_specs(backend))
+                raise RuntimeError(preflight["reason"])
 
         if not args.provenance_only:
             donor_checkout_errors = fixture_donor_checkout_errors(
@@ -1826,7 +1962,8 @@ def main() -> int:
                 source_dir, build_dir, tools["go"]["path"], go_environment
             )
             rust_fixture, rust_build_commands = prepare_rust_fixture(
-                source_dir, build_dir, tools["cargo"]["path"], rust_environment
+                source_dir, build_dir, tools["cargo"]["path"], rust_environment,
+                record_build_environment=args.suite in CONFIGURED_PLUGIN_SUITES
             )
             provenance.update({
                 "lock_file": str(source_dir / "fixture-lock.json"),
@@ -1862,6 +1999,42 @@ def main() -> int:
                 shutil.rmtree(root)
             root.mkdir(parents=True)
             pnet_key_file, pnet_mismatch_key_file, pnet_fingerprint = pnet_fixture_paths(source_dir, root)
+            if args.suite == "plugin-node":
+                for backend in backends:
+                    for spec in plugin_node_specs(backend):
+                        try:
+                            artifacts.append(run_plugin_node_case(spec, binaries, root, key=pnet_key_file,
+                                mismatch=pnet_mismatch_key_file, fingerprint=pnet_fingerprint))
+                        except Exception as error:
+                            record_case_failure(artifacts, failures, spec.scenario_id, error)
+            if args.suite == "plugin-dht":
+                for backend in backends:
+                    for spec in plugin_dht_specs(backend):
+                        try:
+                            artifacts.append(run_plugin_dht_case(spec, binaries, root))
+                        except Exception as error:
+                            record_case_failure(artifacts, failures, spec.scenario_id, error)
+            if args.suite == "plugin-pubsub":
+                for backend in backends:
+                    for spec in plugin_pubsub_specs(backend):
+                        try:
+                            artifacts.append(run_plugin_pubsub_case(spec, binaries, root))
+                        except Exception as error:
+                            record_case_failure(artifacts, failures, spec.scenario_id, error)
+            if args.suite == "plugin-relay":
+                for backend in backends:
+                    for spec in plugin_relay_specs(backend):
+                        try:
+                            artifacts.append(run_plugin_relay_case(spec, binaries, root))
+                        except Exception as error:
+                            record_case_failure(artifacts, failures, spec.scenario_id, error)
+            if args.suite == "plugin-autonat":
+                for backend in backends:
+                    for spec in plugin_autonat_specs(backend):
+                        try:
+                            artifacts.append(run_plugin_autonat_case(spec, binaries, root))
+                        except Exception as error:
+                            record_case_failure(artifacts, failures, spec.scenario_id, error)
             if args.suite == "stage6":
                 for listener in ("go", "rust", "forge"):
                     for dialer in ("forge", "go", "rust"):

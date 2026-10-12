@@ -1,14 +1,17 @@
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "libp2p_identity_fixture.hxx"
 
@@ -91,6 +94,24 @@ void add_custom_profile(p2p::node::options& options, callback_counts& counts) {
 
 BOOST_AUTO_TEST_SUITE(p2p_node_policy_test_suite)
 
+BOOST_AUTO_TEST_CASE(rendezvous_default_ttl_must_fit_the_accepted_interval) {
+   auto options = p2p::node::options{};
+   options.limits.rendezvous.min_ttl = 1s;
+   options.limits.rendezvous.max_ttl = 60s;
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   for (const auto ttl : {1s, 30s, 60s}) {
+      options.limits.rendezvous.default_ttl = ttl;
+      BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+   }
+   for (const auto ttl : {0s, 61s}) {
+      options.limits.rendezvous.default_ttl = ttl;
+      BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   }
+   options.limits.rendezvous.min_ttl = 10s;
+   options.limits.rendezvous.default_ttl = 9s;
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+}
+
 BOOST_AUTO_TEST_CASE(default_policy_needs_no_resources_but_full_validation_does) {
    const auto options = p2p::node::options{};
    BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
@@ -100,7 +121,42 @@ BOOST_AUTO_TEST_CASE(default_policy_needs_no_resources_but_full_validation_does)
    BOOST_TEST(!options.allow_insecure_test_mode);
    BOOST_TEST(!options.peer_state.persistence);
    BOOST_TEST(!options.private_network);
-   BOOST_TEST(options.dht_record_persistence.empty());
+   BOOST_TEST(options.dht_records.empty());
+}
+
+BOOST_AUTO_TEST_CASE(relay_reservations_are_required_even_when_service_is_disabled) {
+   for (const auto service_enabled : {false, true}) {
+      auto options = p2p::node::options{};
+      options.relay_policy.service_enabled = service_enabled;
+      options.limits.relay.require_reservation = false;
+      BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+      options.limits.relay.require_reservation = true;
+      BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+   }
+}
+
+BOOST_AUTO_TEST_CASE(relay_ttl_and_duration_are_bounded_by_native_clocks_and_wire_seconds) {
+   auto options = p2p::node::options{};
+   const auto maximum_clock_delay = std::min(
+       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()),
+       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::duration::max()));
+   options.limits.relay.reservation_ttl = maximum_clock_delay;
+   BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+   options.limits.relay.reservation_ttl = maximum_clock_delay + 1ms;
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   options.limits.relay.reservation_ttl = std::chrono::milliseconds::max();
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   options.limits.relay.reservation_ttl = 1ms;
+
+   const auto maximum_wire_duration = std::chrono::seconds{(std::numeric_limits<std::uint32_t>::max)()};
+   options.limits.relay.max_duration = std::chrono::duration_cast<std::chrono::milliseconds>(maximum_wire_duration);
+   BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+   options.limits.relay.max_duration = std::chrono::duration_cast<std::chrono::milliseconds>(maximum_wire_duration + 1s);
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   options.limits.relay.max_duration = 1'500ms;
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   options.limits.relay.max_duration = std::chrono::milliseconds::max();
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
 }
 
 BOOST_AUTO_TEST_CASE(zero_resource_scope_budgets_remain_legal) {
@@ -324,10 +380,11 @@ BOOST_AUTO_TEST_CASE(full_validation_requires_real_identity_and_explicit_backend
    options.dht_profiles.push_back(p2p::amino_v1(p2p::dht::mode::client));
    BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
    BOOST_CHECK_THROW(p2p::validate(options), p2p::exceptions::invalid_options);
-   options.dht_record_persistence.emplace(options.dht_profiles.front().protocol, nullptr);
+   options.dht_records.emplace(options.dht_profiles.front().protocol,
+                               p2p::dht::record_store::options_for(options.dht_profiles.front()));
    BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
    BOOST_CHECK_THROW(p2p::validate(options), p2p::exceptions::invalid_options);
-   options.dht_record_persistence.begin()->second = p2p::dht::record_store::make_memory_persistence();
+   options.dht_records.begin()->second.persistence = p2p::dht::record_store::make_memory_persistence();
    BOOST_CHECK_NO_THROW(p2p::validate(options));
 }
 
@@ -353,6 +410,109 @@ BOOST_AUTO_TEST_CASE(peer_store_pure_bounds_are_shared_without_removing_standalo
    BOOST_TEST(!defaults.persistence);
 }
 
+BOOST_AUTO_TEST_CASE(dht_record_limits_are_checked_without_requiring_or_calling_a_backend) {
+   const auto fields = std::array{
+       &p2p::dht::record_store::options::max_values,
+       &p2p::dht::record_store::options::max_providers,
+       &p2p::dht::record_store::options::max_local_providers,
+       &p2p::dht::record_store::options::max_providers_per_key,
+       &p2p::dht::record_store::options::max_total_bytes,
+       &p2p::dht::record_store::options::max_record_bytes,
+       &p2p::dht::record_store::options::hydration_page_limit,
+       &p2p::dht::record_store::options::prune_page_limit,
+       &p2p::dht::record_store::options::max_persistence_waiters,
+       &p2p::dht::record_store::options::max_hydration_pages,
+   };
+   callback_counts counts;
+   auto options = p2p::node::options{};
+   add_custom_profile(options, counts);
+   auto records = p2p::dht::record_store::options_for(options.dht_profiles.front());
+   records.public_keys = counted_callback<std::optional<p2p::public_key>>{counts};
+   options.dht_records.emplace(options.dht_profiles.front().protocol, std::move(records));
+   counts = {};
+   auto& configured = options.dht_records.begin()->second;
+   for (const auto field : fields) {
+      const auto original = std::exchange(configured.*field, 0);
+      BOOST_CHECK_THROW(p2p::validate(configured), p2p::exceptions::invalid_options);
+      BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+      configured.*field = original;
+   }
+   BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+   BOOST_TEST(!configured.persistence);
+   options.allow_insecure_test_mode = true;
+   options.explicit_peer_id = p2p::make_peer_id(p2p::public_key{
+       .type = p2p::public_key::type::ed25519, .data = std::vector<std::uint8_t>(32, 41)});
+   BOOST_CHECK_NO_THROW(p2p::validate(options));
+   BOOST_TEST(counts.copies == 0U);
+   BOOST_TEST(counts.calls == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(dht_record_backend_identity_is_checked_during_pure_preflight) {
+   auto options = p2p::node::options{};
+   auto first = p2p::custom_dht_profile({"/forge/test/records/a/1"}, p2p::dht::mode::client, {.peers = true});
+   auto second = p2p::custom_dht_profile({"/forge/test/records/b/1"}, p2p::dht::mode::client, {.peers = true});
+   auto records = p2p::dht::record_store::options_for(first);
+   records.persistence = p2p::dht::record_store::make_memory_persistence();
+   options.dht_records.emplace(first.protocol, records);
+   options.dht_records.emplace(second.protocol, records);
+   options.dht_profiles = {std::move(first), std::move(second)};
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   options.dht_records.rbegin()->second.persistence = p2p::dht::record_store::make_memory_persistence();
+   BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+}
+
+BOOST_AUTO_TEST_CASE(dht_record_defaults_follow_profile_without_relaxing_amino_invariants) {
+   auto profile = p2p::custom_dht_profile({"/forge/test/records/defaults/1"}, p2p::dht::mode::client,
+                                          {.peers = true});
+   profile.limits.replication = 2;
+   profile.limits.alpha = 1;
+   profile.limits.max_record_size = 128;
+   const auto custom = p2p::dht::record_store::options_for(profile);
+   BOOST_TEST(custom.max_providers_per_key == 2U);
+   BOOST_TEST(custom.max_record_bytes == 128U);
+   BOOST_TEST(custom.max_values == p2p::dht::record_store::options{}.max_values);
+   BOOST_TEST(!custom.persistence);
+   auto amino = p2p::amino_v1();
+   const auto defaults = p2p::dht::record_store::options_for(amino);
+   BOOST_TEST(defaults.max_providers_per_key == amino.limits.replication);
+   BOOST_TEST(defaults.max_record_bytes == amino.limits.max_record_size);
+   --amino.limits.replication;
+   BOOST_CHECK_THROW(static_cast<void>(p2p::dht::record_store::options_for(amino)), p2p::exceptions::invalid_options);
+}
+
+BOOST_AUTO_TEST_CASE(dht_record_preflight_accepts_declared_custom_values_before_policy_binding) {
+   auto profile = p2p::dht::profile{};
+   profile.protocol = {"/forge/test/records/unbound/1"};
+   profile.capabilities.values = true;
+   const auto records = p2p::dht::record_store::options_for(profile);
+   BOOST_CHECK_NO_THROW(p2p::validate(profile, records));
+   BOOST_CHECK_THROW(p2p::validate(profile), p2p::exceptions::invalid_options);
+   BOOST_CHECK_THROW(static_cast<void>(p2p::dht::record_store{profile, records}), p2p::exceptions::invalid_options);
+   auto options = p2p::node::options{};
+   options.dht_profiles.push_back(profile);
+   options.dht_records.emplace(profile.protocol, records);
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+}
+
+BOOST_AUTO_TEST_CASE(dht_record_per_key_capacity_cannot_exceed_amino_or_custom_replication) {
+   auto custom = p2p::custom_dht_profile({"/forge/test/records/per-key/1"}, p2p::dht::mode::client,
+                                        {.peers = true, .providers = true});
+   custom.limits.replication = 2;
+   custom.limits.alpha = 1;
+   for (const auto& profile : std::array{p2p::amino_v1(), std::move(custom)}) {
+      auto records = p2p::dht::record_store::options_for(profile);
+      BOOST_CHECK_NO_THROW(p2p::validate(profile, records));
+      BOOST_CHECK_NO_THROW(static_cast<void>(p2p::dht::record_store{profile, records}));
+      ++records.max_providers_per_key;
+      BOOST_CHECK_THROW(p2p::validate(profile, records), p2p::exceptions::invalid_options);
+      BOOST_CHECK_THROW(static_cast<void>(p2p::dht::record_store{profile, records}), p2p::exceptions::invalid_options);
+      auto options = p2p::node::options{};
+      options.dht_profiles.push_back(profile);
+      options.dht_records.emplace(profile.protocol, std::move(records));
+      BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   }
+}
+
 BOOST_AUTO_TEST_CASE(pubsub_validation_always_checks_router_scoring_and_node_retry_limits) {
    auto options = p2p::node::options{};
    options.limits.pubsub.scoring.emplace();
@@ -376,6 +536,71 @@ BOOST_AUTO_TEST_CASE(pubsub_validation_always_checks_router_scoring_and_node_ret
    BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
 }
 
+BOOST_AUTO_TEST_CASE(pubsub_retry_native_authority_checks_clock_range_order_and_counts) {
+   const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(
+       std::chrono::steady_clock::duration::max());
+   for (const auto field : {&p2p::pubsub::limits::validation_retry_initial_delay,
+                            &p2p::pubsub::limits::validation_retry_max_delay}) {
+      auto options = p2p::node::options{};
+      auto& limits = options.limits.pubsub.limits;
+      limits.validation_retry_initial_delay = 1ms;
+      limits.validation_retry_max_delay = maximum;
+      limits.*field = maximum;
+      BOOST_CHECK_NO_THROW(p2p::pubsub::validate(options.limits.pubsub));
+      BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+      for (const auto invalid : {0ms, -1ms}) {
+         limits.*field = invalid;
+         BOOST_CHECK_THROW(p2p::pubsub::validate(options.limits.pubsub), p2p::exceptions::invalid_options);
+         BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+      }
+      if (maximum < std::chrono::milliseconds::max()) {
+         for (const auto invalid : {maximum + 1ms, std::chrono::milliseconds::max()}) {
+            limits.*field = invalid;
+            BOOST_CHECK_THROW(p2p::pubsub::validate(options.limits.pubsub), p2p::exceptions::invalid_options);
+            BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+         }
+      }
+   }
+   auto options = p2p::node::options{};
+   options.limits.pubsub.limits.validation_retry_initial_delay = 2ms;
+   options.limits.pubsub.limits.validation_retry_max_delay = 1ms;
+   BOOST_CHECK_THROW(p2p::pubsub::validate(options.limits.pubsub), p2p::exceptions::invalid_options);
+   BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   for (const auto field : {&p2p::pubsub::limits::max_validation_attempts,
+                            &p2p::pubsub::limits::max_validation_redeliveries,
+                            &p2p::pubsub::limits::max_validation_requests}) {
+      options = {};
+      options.limits.pubsub.limits.*field = 0;
+      BOOST_CHECK_THROW(p2p::pubsub::validate(options.limits.pubsub), p2p::exceptions::invalid_options);
+      BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(pubsub_heartbeat_native_authority_checks_clock_range) {
+   const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(
+       std::chrono::steady_clock::duration::max());
+   for (const auto field : {&p2p::pubsub::limits::heartbeat_initial_delay,
+                            &p2p::pubsub::limits::heartbeat_interval}) {
+      auto options = p2p::node::options{};
+      auto& limits = options.limits.pubsub.limits;
+      limits.*field = maximum;
+      BOOST_CHECK_NO_THROW(p2p::pubsub::validate(options.limits.pubsub));
+      BOOST_CHECK_NO_THROW(p2p::validate_policy(options));
+      for (const auto invalid : {0ms, -1ms}) {
+         limits.*field = invalid;
+         BOOST_CHECK_THROW(p2p::pubsub::validate(options.limits.pubsub), p2p::exceptions::invalid_options);
+         BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+      }
+      if (maximum < std::chrono::milliseconds::max()) {
+         for (const auto invalid : {maximum + 1ms, std::chrono::milliseconds::max()}) {
+            limits.*field = invalid;
+            BOOST_CHECK_THROW(p2p::pubsub::validate(options.limits.pubsub), p2p::exceptions::invalid_options);
+            BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
+         }
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(validation_never_copies_or_invokes_complete_application_callbacks) {
    callback_counts counts;
    auto options = p2p::node::options{};
@@ -390,8 +615,11 @@ BOOST_AUTO_TEST_CASE(validation_never_copies_or_invokes_complete_application_cal
    BOOST_TEST(counts.calls == 0U);
    provision_identity(options);
    options.peer_state.persistence = p2p::peer_store::make_memory_persistence();
-   options.dht_record_persistence.emplace(options.dht_profiles.front().protocol,
-                                          p2p::dht::record_store::make_memory_persistence());
+   auto records = p2p::dht::record_store::options_for(options.dht_profiles.front());
+   records.persistence = p2p::dht::record_store::make_memory_persistence();
+   records.public_keys = counted_callback<std::optional<p2p::public_key>>{counts};
+   options.dht_records.emplace(options.dht_profiles.front().protocol, std::move(records));
+   counts = {};
    BOOST_CHECK_NO_THROW(p2p::validate(options));
    BOOST_TEST(counts.copies == 0U);
    BOOST_TEST(counts.calls == 0U);
@@ -426,7 +654,7 @@ BOOST_AUTO_TEST_CASE(dht_protocol_and_persistence_names_are_checked_before_actua
    BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
    BOOST_CHECK_THROW(p2p::validate(options), p2p::exceptions::invalid_options);
    options.dht_profiles.pop_back();
-   options.dht_record_persistence.emplace(p2p::protocol_id{"/foreign/kad/1.0.0"}, nullptr);
+   options.dht_records.emplace(p2p::protocol_id{"/foreign/kad/1.0.0"}, p2p::dht::record_store::options{});
    BOOST_CHECK_THROW(p2p::validate_policy(options), p2p::exceptions::invalid_options);
    BOOST_CHECK_THROW(p2p::validate(options), p2p::exceptions::invalid_options);
 }

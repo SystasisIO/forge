@@ -169,7 +169,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "f5303a13b5bd578f74c31675666c8df27f9c85a5dabd82edc677752e17b40db2",
+      "sha256": "1cfcdf7973d6bc998d19e3b3aecfea5aa9d863e63dca0a718bf4c3d2f4f094de",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -235,7 +235,7 @@
         "forge.plugins.net.p2p.node.types": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ]
       },
       "header_features": {},
-      "sha256": "5021e357e00969a3112c85a3d21fcf8bd2d1d85f5c0d813cd07851a4f6db4035",
+      "sha256": "b087770c44b74569bef26f7836a488f2b1ec251c654d4aea162cb29806c83a66",
       "feature_ids": [ "plugin.node", "plugin.pubsub", "plugin.diagnostics" ]
     },
     "plugin.p2p.resolver": {

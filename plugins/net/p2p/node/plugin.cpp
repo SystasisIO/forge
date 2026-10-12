@@ -266,13 +266,11 @@ boost::asio::awaitable<void> plugin::startup() {
       auto open_failure = std::exception_ptr{};
       try {
          for (const auto& profile : options.dht_profiles) {
+            auto& records = options.dht_records.try_emplace(
+                profile.protocol, forge::net::p2p::dht::record_store::options_for(profile)).first->second;
             auto persistence = co_await object_dht_record_store_adapter::async_open(
-                state->stores, *state->peer_state_store, profile.protocol,
-                forge::net::p2p::dht::record_store::options{
-                    .max_providers_per_key = profile.limits.replication,
-                    .max_record_bytes = profile.limits.max_record_size,
-                });
-            options.dht_record_persistence.emplace(profile.protocol, persistence);
+                state->stores, *state->peer_state_store, profile.protocol, records);
+            records.persistence = persistence;
             state->dht_state.emplace_back(profile.protocol, std::move(persistence));
          }
       } catch (...) {
@@ -290,7 +288,7 @@ boost::asio::awaitable<void> plugin::startup() {
             }
          }
          state->dht_state.clear();
-         options.dht_record_persistence.clear();
+         options.dht_records.clear();
          try {
             co_await state->peer_state->async_close();
          } catch (...) {

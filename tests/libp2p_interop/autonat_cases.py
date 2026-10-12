@@ -244,7 +244,8 @@ def validate_policy_denial(spec, client, server, peer, client_terminal, server_t
 
 
 def run_case(spec: Case, binaries: dict[str, Path], root: Path, *, pnet_key: Path,
-             pnet_fingerprint: str, wait_json, command_attempt) -> dict:
+             pnet_fingerprint: str, wait_json, command_attempt,
+             forge_cli_arguments=None, semantic_checker=validate_autonat_evidence) -> dict:
     """One attempt, one process scope; commit only after process/network cleanup."""
     artifact = {"scenario_id": spec.identifier, "suite": "autonat", "status": "failed",
                 "client_implementation": spec.client, "server_implementation": spec.server,
@@ -268,7 +269,10 @@ def run_case(spec: Case, binaries: dict[str, Path], root: Path, *, pnet_key: Pat
                        "--bind-ip", network.addresses[role][0],
                        "--result-file", str(work / f"{role}.json"), *extra]
             if implementation == "forge":
-                command += ["--store-dir", str(work / f"{role}-store")]
+                store = work / f"{role}-store"
+                command += ["--store-dir", str(store)]
+                if forge_cli_arguments is not None:
+                    command += list(forge_cli_arguments(role, store))
             if spec.transport == "tcp-pnet":
                 command += ["--pnet-key-file", str(pnet_key), "--internet-egress",
                             "deny" if role == "client" and spec.outcome == "policy_denied" else "allow"]
@@ -361,7 +365,7 @@ def run_case(spec: Case, binaries: dict[str, Path], root: Path, *, pnet_key: Pat
             artifact["errors"].extend(validate_policy_denial(
                 spec, raw["client"], raw["server"], peer, client.terminal_status, server.terminal_status))
         else:
-            artifact["errors"].extend(validate_autonat_evidence(
+            artifact["errors"].extend(semantic_checker(
                 raw["client"], raw["server"], version=spec.version, transport=spec.transport,
                 expected_service_peer=peer, expected_requested_address=target,
                 client_terminal_status=client.terminal_status, server_terminal_status=server.terminal_status,

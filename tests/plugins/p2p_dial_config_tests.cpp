@@ -98,7 +98,7 @@ np::config decode(const forge::config::core::document& document) {
 p2p::node::options mapped(const np::config& config, p2p::node::options native = {}) {
    np::apply_dns(native, config.dns);
    np::apply_dial(native, config.dial);
-   np::apply_path(native.path_policy, config.path_max_direct_endpoints);
+   np::apply_path(native.path_policy, config.path.max_direct_endpoints);
    return native;
 }
 
@@ -146,7 +146,7 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_defaults_and_each_numeric_field_map_without
    const auto empty = forge::config::core::decode<np::config>({});
    BOOST_REQUIRE(empty.ok());
    BOOST_TEST(!empty.value.dns.resolver.nameservers);
-   BOOST_TEST(!empty.value.path_max_direct_endpoints);
+   BOOST_TEST(!empty.value.path.max_direct_endpoints);
    check_settings(mapped(empty.value), p2p::node::options{});
    for (const auto& field : fields) {
       for (const auto number : {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{123}}) {

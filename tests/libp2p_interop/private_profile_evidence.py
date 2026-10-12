@@ -9,7 +9,7 @@ import re
 
 from autorelay_wire import _fields, varint
 from rust_upgrade_evidence import (
-    _peer, _varint, _negotiation, _upgrades, _lifecycle, _selection, _events, _milestones,
+    _peer, _varint, _body, _negotiation, _upgrades, _lifecycle, _selection, _events, _milestones,
     _transport_receipts, _swarm_events, _bound_remote_endpoint,
     ERROR_EVENTS,
 )
@@ -382,9 +382,22 @@ def donor_observation(payload, implementation, local, remote, security, protocol
                     and stream.get("response_write_complete") is True
                     and marks[0].get("detail", {}).get("write") == stream["write"],
                     "matched Rust response lacks its exact completed-write boundary")
-        # Keep shutdown failures in history. Only an inbound response's actual
-        # completed write/close, bound above to the requested bytes, permits a
-        # later post-upgrade failure; an outbound request marker is not a reply.
+        elif protocol == ECHO:
+            boundary = stream.get("response_completed_sequence")
+            marks = [e for e in events if e["kind"] == "response_completion"]
+            require(type(boundary) is int and len(marks) == 1 and marks[0]["sequence"] == boundary
+                    and stream.get("response_write_complete") is True,
+                    "matched Rust outbound echo lacks its completion boundary")
+            detail = marks[0].get("detail", {})
+            read, write = _body(detail.get("read")), _body(detail.get("write"))
+            require(detail.get("write_close_returned") is True and "completion_basis" not in detail
+                    and read == stream["read"] and write == stream["write"]
+                    and all(b["frames"] == 1 and b["complete_frames"] is True
+                            and b["invalid_or_over_limit"] is False for b in (read, write)),
+                    "matched Rust outbound echo was not fully read/written at its native close boundary")
+        # Preserve shutdown errors. The inbound write boundary or outbound
+        # echo's immutable full read/write/close permits only later post-upgrade
+        # failures, never a request-only marker repaired by the final snapshot.
         _upgrades(c, security, remote, last_required_response=boundary)
     if direction == "outbound":
         receipt = payload.get("connection_receipt", {})

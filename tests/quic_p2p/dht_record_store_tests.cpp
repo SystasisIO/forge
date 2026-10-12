@@ -1,11 +1,17 @@
 #include <boost/test/unit_test.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include <forge/exceptions/macros.hpp>
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <future>
+#include <iostream>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -26,6 +32,16 @@ import forge.test.net.p2p.dht_record_store_fixture;
 
 namespace forge::net::p2p {
 namespace {
+
+template<class T>
+T bounded_record_result(forge::asio::runtime& runtime, boost::asio::awaitable<T> operation) {
+   auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+      std::cerr << "default DHT record store fixture did not join its operation\n";
+      std::terminate();
+   }
+   return result.get();
+}
 
 [[nodiscard]] peer_id test_peer(std::uint8_t value) {
    const auto payload = forge::multiformats::bytes{value};
@@ -89,6 +105,47 @@ test_provider(dht::key key, peer_id provider, std::chrono::system_clock::time_po
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(dht_record_store_tests)
+
+BOOST_AUTO_TEST_CASE(dht_record_store_default_constructor_preserves_custom_k_one) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto profile = test_profile();
+   profile.limits.replication = 1;
+   profile.limits.alpha = 1;
+   auto store = dht::record_store{std::move(profile)};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try { bounded_record_result(runtime, store.async_close()); }
+      catch (...) { BOOST_ERROR("custom default DHT store cleanup failed"); }
+   }};
+   const auto now = std::chrono::system_clock::now();
+   const auto key = test_key('k');
+   const auto expiry = now + std::chrono::hours{1};
+   bounded_record_result(runtime, store.async_upsert_provider(test_provider(key, test_peer(1), expiry, expiry), now));
+   BOOST_CHECK_THROW(bounded_record_result(runtime, store.async_upsert_provider(
+       test_provider(key, test_peer(2), expiry, expiry), now)), exceptions::backpressure_rejected);
+   const auto providers = store.find_providers(key, 20, now);
+   BOOST_REQUIRE_EQUAL(providers.size(), 1U);
+   BOOST_CHECK(providers.front().provider == test_peer(1));
+}
+
+BOOST_AUTO_TEST_CASE(dht_record_store_default_constructor_preserves_amino_k_twenty) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto store = dht::record_store{amino_v1()};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try { bounded_record_result(runtime, store.async_close()); }
+      catch (...) { BOOST_ERROR("Amino default DHT store cleanup failed"); }
+   }};
+   const auto now = std::chrono::system_clock::now();
+   const auto key = test_key('a');
+   const auto expiry = now + std::chrono::hours{1};
+   for (auto id = std::uint8_t{1}; id <= 20; ++id) {
+      bounded_record_result(runtime, store.async_upsert_provider(test_provider(key, test_peer(id), expiry, expiry), now));
+   }
+   BOOST_CHECK_THROW(bounded_record_result(runtime, store.async_upsert_provider(
+       test_provider(key, test_peer(21), expiry, expiry), now)), exceptions::backpressure_rejected);
+   const auto providers = store.find_providers(key, 21, now);
+   BOOST_REQUIRE_EQUAL(providers.size(), 20U);
+   for (const auto& provider : providers) { BOOST_CHECK(provider.provider != test_peer(21)); }
+}
 
 BOOST_AUTO_TEST_CASE(dht_record_store_validates_and_selects_before_durable_publication) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

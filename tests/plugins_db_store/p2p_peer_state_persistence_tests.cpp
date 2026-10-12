@@ -577,6 +577,91 @@ void check_object_peer_state_clears_terminal_hydration_cursor(std::string driver
    forge::asio::blocking::run(app->runtime(), app->shutdown());
 }
 
+void check_object_dht_bounded_requests(std::string driver, const std::filesystem::path& path) {
+   auto run = []<class T>(forge::app::application_shell& app, boost::asio::awaitable<T> operation) -> T {
+      auto result = boost::asio::co_spawn(app.runtime().context(), std::move(operation), boost::asio::use_future);
+      if (result.wait_for(std::chrono::seconds{10}) != std::future_status::ready) {
+         std::cerr << "ObjectDB DHT bounded-request fixture did not join its operation\n";
+         std::terminate();
+      }
+      return result.get();
+   };
+   const auto profile = p2p::protocol_id{"/forge/test/dht/bounded/1"};
+   auto limits = p2p::dht::record_store::options{};
+   limits.hydration_page_limit = 2;
+   limits.prune_page_limit = 1;
+   // Direct backend requests are not operational admission: quotas remain native-owned.
+   limits.max_values = 1;
+   limits.max_total_bytes = 1;
+   BOOST_CHECK_NO_THROW(p2p_node::object_dht_record_store_adapter::validate_options(profile, limits));
+   for (const auto field : std::array{&p2p::dht::record_store::options::hydration_page_limit,
+                                     &p2p::dht::record_store::options::prune_page_limit}) {
+      auto invalid = limits;
+      invalid.*field = 0;
+      BOOST_CHECK_THROW(p2p_node::object_dht_record_store_adapter::validate_options(profile, invalid),
+                        p2p::exceptions::invalid_options);
+      invalid.*field = static_cast<std::size_t>(forge::db::core::max_page_limit) + 1;
+      BOOST_CHECK_THROW(p2p_node::object_dht_record_store_adapter::validate_options(profile, invalid),
+                        p2p::exceptions::invalid_options);
+   }
+
+   auto builder = forge::app::application_builder{};
+   builder.name("p2p-dht-bounded-requests-test")
+       .runtime(forge::asio::runtime_options{.worker_threads = 1})
+       .plugin(store_plugin::plugin::descriptor());
+   auto app = std::move(builder).build();
+   std::shared_ptr<p2p::peer_store::persistence> peer_persistence;
+   std::shared_ptr<p2p::dht::record_store::persistence> persistence;
+   auto cleanup = boost::scope::scope_exit{[&] {
+      if (persistence) {
+         try { run(*app, persistence->async_close()); }
+         catch (...) { BOOST_ERROR("bounded-request DHT adapter cleanup failed"); }
+      }
+      if (peer_persistence) {
+         try { run(*app, peer_persistence->async_close()); }
+         catch (...) { BOOST_ERROR("bounded-request peer adapter cleanup failed"); }
+      }
+      app->request_stop();
+      try { run(*app, app->shutdown()); }
+      catch (...) { BOOST_ERROR("bounded-request application cleanup failed"); }
+   }};
+   app->configure(document_for(std::move(driver), path));
+   run(*app, app->startup());
+   auto stores = app->apis().get<store_plugin::api>(store_plugin::api::ref());
+   auto handle = run(*app, stores->store(std::string{peer_store_name}));
+   p2p_state_schema::register_objects(handle);
+   peer_persistence = run(*app, p2p_node::object_peer_state_adapter::async_open(stores.operator->(), handle, {}, false));
+   persistence = run(*app, p2p_node::object_dht_record_store_adapter::async_open(stores.operator->(), handle, profile, limits));
+
+   const auto now = std::chrono::system_clock::now();
+   auto batch = p2p::dht::record_store::mutation_batch{};
+   for (const auto key : {'a', 'b'}) {
+      batch.value_upserts.push_back({
+          .record = {.key_value = {.bytes = {'/', static_cast<std::uint8_t>(key)}}, .value = {1}},
+          .expires_at = now - std::chrono::seconds{1},
+      });
+   }
+   BOOST_TEST(run(*app, persistence->async_apply(std::move(batch))).durability_confirmed);
+   for (const auto limit : {std::size_t{0}, std::size_t{3}}) {
+      BOOST_CHECK_THROW(run(*app, persistence->async_hydrate({.limit = limit})), p2p::exceptions::invalid_options);
+   }
+   for (const auto limit : {std::size_t{0}, std::size_t{2}}) {
+      BOOST_CHECK_THROW(run(*app, persistence->async_prune_expired(now, limit)), p2p::exceptions::invalid_options);
+   }
+   const auto unchanged = run(*app, persistence->async_hydrate({.limit = 2}));
+   BOOST_REQUIRE_EQUAL(unchanged.values.size(), 2U);
+   const auto first = run(*app, persistence->async_prune_expired(now, 1));
+   BOOST_REQUIRE_EQUAL(first.values.size(), 1U);
+   BOOST_TEST(first.may_have_more);
+   BOOST_TEST(first.durability.durability_confirmed);
+   const auto second = run(*app, persistence->async_prune_expired(now, 1));
+   BOOST_REQUIRE_EQUAL(second.values.size(), 1U);
+   BOOST_TEST(!second.may_have_more);
+   BOOST_TEST(second.durability.durability_confirmed);
+   BOOST_TEST(first.values.front().bytes != second.values.front().bytes);
+   BOOST_TEST(run(*app, persistence->async_hydrate({.limit = 2})).values.empty());
+}
+
 void check_object_dht_record_persistence(std::string driver, const std::filesystem::path& path) {
    const auto profile_a = p2p::protocol_id{.value = "/forge/test/dht/a/1"};
    const auto profile_b = p2p::protocol_id{.value = "/forge/test/dht/b/1"};
@@ -1128,6 +1213,11 @@ BOOST_AUTO_TEST_CASE(p2p_dht_record_state_mdbx_reopens_prunes_and_isolates_profi
    check_object_dht_record_persistence("mdbx", root.root / "mdbx-dht-records");
 }
 
+BOOST_AUTO_TEST_CASE(p2p_dht_record_state_mdbx_enforces_configured_request_bounds) {
+   auto root = root_guard{};
+   check_object_dht_bounded_requests("mdbx", root.root / "mdbx-dht-bounded");
+}
+
 BOOST_AUTO_TEST_CASE(p2p_state_mdbx_rejects_or_resets_v1_v2_and_missing_markers) {
    auto root = root_guard{};
    check_object_p2p_state_incompatible_and_missing_marker_policy("mdbx", root.root / "mdbx-schema-policy");
@@ -1189,6 +1279,11 @@ BOOST_AUTO_TEST_CASE(p2p_peer_state_rocksdb_clears_terminal_hydration_cursor) {
 BOOST_AUTO_TEST_CASE(p2p_dht_record_state_rocksdb_reopens_prunes_and_isolates_profiles) {
    auto root = root_guard{};
    check_object_dht_record_persistence("rocksdb", root.root / "rocksdb-dht-records");
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dht_record_state_rocksdb_enforces_configured_request_bounds) {
+   auto root = root_guard{};
+   check_object_dht_bounded_requests("rocksdb", root.root / "rocksdb-dht-bounded");
 }
 
 BOOST_AUTO_TEST_CASE(p2p_state_rocksdb_rejects_or_resets_v1_v2_and_missing_markers) {

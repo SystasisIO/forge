@@ -796,6 +796,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
 
    void finish_pubsub_validation(const peer_id& peer);
 
+   [[nodiscard]] static std::chrono::steady_clock::time_point pubsub_deadline(
+       std::chrono::steady_clock::time_point now, std::chrono::milliseconds delay);
+
    [[nodiscard]] pubsub_state::claim claim_pubsub_message(const peer_id& peer, const std::string& key,
       const pubsub::message& value, bool requires_validation, const std::shared_ptr<session_state>& session = {});
 

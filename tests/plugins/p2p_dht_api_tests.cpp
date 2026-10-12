@@ -355,7 +355,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
    auto config = configuration();
    config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{
                                                    forge::config::core::value{address->to_string()}});
-   config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+   config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
    client.configure(config);
    forge::asio::blocking::run(client.runtime(), client.startup());
    auto client_cleanup = boost::scope::scope_exit{[&] {
@@ -432,7 +432,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_api_provider_registration_preserves_profile_and_lif
    auto reader_config = configuration("client");
    reader_config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{
                                                           forge::config::core::value{address->to_string()}});
-   reader_config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+   reader_config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
    reader.configure(reader_config);
    forge::asio::blocking::run(reader.runtime(), reader.startup());
    auto reader_cleanup = boost::scope::scope_exit{[&] {
@@ -495,7 +495,7 @@ BOOST_AUTO_TEST_CASE(p2p_diagnostics_api_reports_native_pubsub_scores_over_authe
    auto config = configuration();
    config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{
                                                    forge::config::core::value{address->to_string()}});
-   config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+   config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
    client.configure(config);
    forge::asio::blocking::run(client.runtime(), client.initialize());
    auto client_cleanup = boost::scope::scope_exit{[&] {

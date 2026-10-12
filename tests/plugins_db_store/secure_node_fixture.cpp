@@ -90,6 +90,13 @@ secure_node_fixture::secure_node_fixture(const std::string& backend)
 secure_node_fixture::secure_node_fixture(const std::string& backend, secret_policy policy, std::string security,
                                          forge::config::core::document overrides)
     : identity(make_identity_fixture("private-plugin")) {
+   build_shell();
+   config = forge::config::core::merge({document(_directory.path / "peers", backend, identity, policy,
+                                               std::move(security)), overrides});
+   shell->configure(config);
+}
+
+void secure_node_fixture::build_shell() {
    auto node_descriptor = forge::plugins::net::p2p::node::plugin::descriptor();
    auto factory = std::move(node_descriptor.factory);
    node_descriptor.factory = [this, factory = std::move(factory)] {
@@ -104,12 +111,19 @@ secure_node_fixture::secure_node_fixture(const std::string& backend, secret_poli
        .plugin(forge::plugins::crypto::secrets::plugin::descriptor())
        .plugin(std::move(node_descriptor));
    shell = std::move(builder).build();
-   config = forge::config::core::merge({document(_directory.path / "peers", backend, identity, policy,
-                                               std::move(security)), overrides});
-   shell->configure(config);
 }
 
 void secure_node_fixture::start() { run(shell->startup(), "official application startup"); }
+
+void secure_node_fixture::reopen() {
+   shell->request_stop();
+   run(shell->shutdown(), "reverse plugin shutdown before reopen");
+   run(shell->scheduler().shutdown(), "scheduler join before reopen");
+   _node = nullptr;
+   shell.reset();
+   build_shell();
+   shell->configure(config);
+}
 
 void secure_node_fixture::configure_node(const forge::config::core::document& candidate) {
    if (!_node) { throw std::logic_error{"official node factory has not run"}; }
@@ -127,6 +141,7 @@ boost::asio::awaitable<void> secure_node_fixture::shutdown_node() {
 }
 
 secure_node_fixture::~secure_node_fixture() {
+   if (!shell) { return; }
    shell->request_stop();
    auto shutdown_failure = std::exception_ptr{};
    auto scheduler_failure = std::exception_ptr{};

@@ -85,8 +85,12 @@ static_assert(std::same_as<
               decltype(forge::plugins::net::p2p::node::dial_config::black_holes_config::udp_enabled),
               std::optional<bool>>);
 static_assert(std::same_as<
-              decltype(forge::plugins::net::p2p::node::config::path_max_direct_endpoints),
+              decltype(forge::plugins::net::p2p::node::path_config::max_direct_endpoints),
               std::optional<std::uint64_t>>);
+static_assert(std::same_as<decltype(forge::plugins::net::p2p::node::reachability_config::service_v2_enabled),
+                          std::optional<bool>>);
+static_assert(std::same_as<decltype(forge::plugins::net::p2p::node::mdns_config::max_interfaces),
+                          std::optional<std::uint64_t>>);
 
 static_assert(std::same_as<
               decltype(std::declval<forge::plugins::net::p2p::node::api&>().publish_api(
@@ -218,6 +222,12 @@ int main() {
    forge::schema::rules<node_plugin::dial_config>::define().apply_defaults(dial);
    dns.resolver.nameservers = std::vector<node_plugin::dns_config::nameserver_config>{{.address = "127.0.0.1"}};
    dial.black_holes.udp_enabled = false;
+   auto reachability = node_plugin::reachability_config{};
+   auto mdns = node_plugin::mdns_config{};
+   forge::schema::rules<node_plugin::reachability_config>::define().apply_defaults(reachability);
+   forge::schema::rules<node_plugin::mdns_config>::define().apply_defaults(mdns);
+   reachability.service_v2_enabled = false;
+   mdns.max_interfaces = 2;
    const auto invalid = node_plugin::exceptions::invalid_config{"package category probe"};
    return descriptor.id.value == "forge.plugins.net.p2p.node" &&
                   resources.system.max_connections.has_value() && *resources.system.max_connections == 0 &&
@@ -238,11 +248,14 @@ int main() {
                   dns.resolver.nameservers && dns.resolver.nameservers->front().port == 53 &&
                   dial.black_holes.udp_enabled && !*dial.black_holes.udp_enabled &&
                   !dial.ranker.public_delay_ms && !dial.max_concurrent_attempts &&
-                  !config.path_max_direct_endpoints &&
+                  !config.path.max_direct_endpoints &&
+                  reachability.service_v2_enabled && !*reachability.service_v2_enabled &&
+                  !reachability.timeout_ms && !reachability.max_event_subscribers &&
+                  mdns.max_interfaces && *mdns.max_interfaces == 2 && !mdns.enabled && !mdns.query_interval_ms &&
                   invalid.code().value() == 3 &&
                   std::string{invalid.code().category().name()} == "forge.plugins.net.p2p.node" &&
-                  config.topology_mode == forge::plugins::net::p2p::node::topology_mode::managed &&
-                  config.topology_target == 160 && dht.id.value == "forge.plugins.net.p2p.node.dht" &&
+                  config.topology.mode == forge::plugins::net::p2p::node::topology_mode::managed &&
+                  config.topology.peers.target == 160 && dht.id.value == "forge.plugins.net.p2p.node.dht" &&
                   dht.version.major == 1 && dht.version.revision == 0 &&
                   dht.supported_surfaces == forge::api::core::surface::local && dht.methods.empty() &&
                   configuration.id.value == "forge.plugins.net.p2p.node.configuration" &&

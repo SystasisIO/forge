@@ -96,7 +96,8 @@ void node::impl::launch_pubsub_heartbeat() {
    if (!launch_tracked([self]() -> asio::awaitable<void> {
           const auto wakeup = self->lifecycle_wakeup;
           auto observed = wakeup->epoch();
-          auto deadline = std::chrono::steady_clock::now() + self->options.limits.pubsub.limits.heartbeat_initial_delay;
+          auto deadline = self->pubsub_deadline(std::chrono::steady_clock::now(),
+                                               self->options.limits.pubsub.limits.heartbeat_initial_delay);
           while (true) {
              // Admission also notifies this wakeup; only the deadline schedules work.
              while (!self->lifecycle.stop_requested() && std::chrono::steady_clock::now() < deadline) {
@@ -116,7 +117,8 @@ void node::impl::launch_pubsub_heartbeat() {
              } catch (const std::bad_alloc&) {
                 // A transient local preparation refusal skips one tick, not the sole maintenance owner.
              }
-             deadline = std::chrono::steady_clock::now() + self->options.limits.pubsub.limits.heartbeat_interval;
+             deadline = self->pubsub_deadline(std::chrono::steady_clock::now(),
+                                              self->options.limits.pubsub.limits.heartbeat_interval);
           }
        })) {
       auto lock = std::scoped_lock{mutex};

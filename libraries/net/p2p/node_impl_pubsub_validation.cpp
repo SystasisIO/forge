@@ -98,6 +98,18 @@ boost::asio::awaitable<std::vector<std::uint8_t>> async_read_length_delimited(fo
    return std::min(delay, limits.validation_retry_max_delay);
 }
 
+std::chrono::steady_clock::time_point node::impl::pubsub_deadline(
+    std::chrono::steady_clock::time_point now, std::chrono::milliseconds delay) {
+   constexpr auto maximum_delay = std::chrono::duration_cast<std::chrono::milliseconds>(
+       std::chrono::steady_clock::duration::max());
+   if (delay > maximum_delay) {
+      return std::chrono::steady_clock::time_point::max();
+   }
+   const auto ticks = std::chrono::duration_cast<std::chrono::steady_clock::duration>(delay);
+   const auto latest_start = std::chrono::steady_clock::time_point::max() - ticks;
+   return now > latest_start ? std::chrono::steady_clock::time_point::max() : now + ticks;
+}
+
 void node::impl::finish_pubsub_validation(const peer_id& peer) {
    auto lock = std::scoped_lock{mutex};
    if (pubsub_value.active_validations > 0) {
@@ -128,7 +140,7 @@ node::impl::pubsub_state::claim node::impl::claim_pubsub_message(const peer_id& 
          ++metrics_value.backpressure_rejections;
          const auto ordinal = std::max(validation.attempts, redeliveries + 1);
          const auto retry_after =
-             std::chrono::steady_clock::now() + validation_retry_delay(options.limits.pubsub.limits, ordinal);
+             pubsub_deadline(now, validation_retry_delay(options.limits.pubsub.limits, ordinal));
          validation.state = pubsub_state::validation::status::retryable;
          validation.retry_after = retry_after;
          validation.request_after = retry_after;
@@ -145,7 +157,8 @@ node::impl::pubsub_state::claim node::impl::claim_pubsub_message(const peer_id& 
                }
                ++metrics_value.backpressure_rejections;
                validation.state = pubsub_state::validation::status::retryable;
-               validation.retry_after = now + options.limits.pubsub.limits.validation_retry_initial_delay;
+               validation.retry_after =
+                   pubsub_deadline(now, options.limits.pubsub.limits.validation_retry_initial_delay);
                validation.request_after = validation.retry_after;
                return pubsub_state::claim_status::backpressured;
             }
@@ -357,8 +370,8 @@ void node::impl::defer_pubsub_message(const std::string& key, std::uint64_t gene
    }
 
    const auto ordinal = std::max(found->second.attempts, found->second.redeliveries + 1);
-   const auto retry_after =
-       std::chrono::steady_clock::now() + validation_retry_delay(options.limits.pubsub.limits, ordinal);
+   const auto retry_after = pubsub_deadline(std::chrono::steady_clock::now(),
+                                           validation_retry_delay(options.limits.pubsub.limits, ordinal));
    found->second.state = pubsub_state::validation::status::retryable;
    found->second.retry_after = retry_after;
    found->second.request_after = retry_after;
@@ -393,7 +406,7 @@ bool node::impl::should_request_pubsub_message_locked(const std::string& key, co
       }
    }
    validation->second.request_after =
-       now + std::max(options.limits.pubsub.limits.heartbeat_interval, std::min(delay, maximum));
+       pubsub_deadline(now, std::max(options.limits.pubsub.limits.heartbeat_interval, std::min(delay, maximum)));
    return true;
 }
 

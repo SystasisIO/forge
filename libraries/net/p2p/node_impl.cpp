@@ -381,7 +381,7 @@ node::impl::impl(forge::asio::runtime& runtime_value, node::options options_valu
       lifecycle_wakeup(std::make_shared<detail::lifecycle_wakeup>()),
       identify_service(runtime_value.context().get_executor()), store(options.peer_state),
       dht_profiles(
-          detail::make_dht_profile_states(local, options.dht_profiles, options.dht_record_persistence,
+          detail::make_dht_profile_states(local, options.dht_profiles, options.dht_records,
                                           [this](const peer_id& peer) { return store.find_public_key(peer); })),
       peer_exchange_value(options.limits.max_peer_exchange_queue) {
    initialize_pubsub();

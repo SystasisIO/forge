@@ -338,7 +338,7 @@ struct network_fixture {
       config.set("plugins.net.p2p.node.pubsub.max-topics", std::uint64_t{1024});
       if (bootstrap) {
          config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{bootstrap->to_string()});
-         config.set("plugins.net.p2p.node.bootstrap-requirement", "require-connection");
+         config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
       }
       run(node.configure({config, "plugins.net.p2p.node"}));
       auto provider = forge::api::core::installer{apis};

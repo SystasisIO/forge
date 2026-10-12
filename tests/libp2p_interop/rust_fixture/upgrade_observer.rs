@@ -202,7 +202,10 @@ impl Connection {
         } else {
             let write = selection.bodies[1].snapshot();
             let mut detail = json!({"protocol": protocol, "write": write});
-            if !selection.write_closed {
+            if selection.write_closed {
+                detail["read"] = selection.bodies[0].snapshot();
+                detail["write_close_returned"] = json!(true);
+            } else {
                 detail["completion_basis"] = json!(selection.response_flush_basis());
                 detail["read"] = selection.bodies[0].snapshot();
             }
@@ -2276,7 +2279,65 @@ mod tests {
                         < events.last().unwrap()["sequence"].as_u64().unwrap()
                 );
                 assert_eq!(completed[0]["detail"]["write"]["frames"], 1);
+                assert_eq!(completed[0]["detail"]["write_close_returned"], true);
+                assert_eq!(completed[0]["detail"]["read"]["framed_bytes"], 0);
             }
+        }
+    }
+
+    #[test]
+    fn upgrade_outbound_echo_close_snapshots_do_not_grow_with_later_reads() {
+        let protocol = b"/forge/interop/relay-echo/1\n";
+        let negotiation = [frame(HEADER.as_bytes()), frame(protocol)].concat();
+        let response = frame(b"private-profile-exchange");
+        for consumed in 0..=response.len() {
+            let (observer, trace) = fixture_trace();
+            let phase = trace.substream(true);
+            let mut stream = ObservedIo {
+                inner: ScriptIo::new([negotiation.clone(), response.clone()].concat(), trace.clone()),
+                trace: trace.clone(),
+                phase,
+            };
+            futures::executor::block_on(async {
+                stream.write_all(&frame(HEADER.as_bytes())).await.unwrap();
+                stream.write_all(&frame(protocol)).await.unwrap();
+                let mut selected = vec![0; negotiation.len()];
+                stream.read_exact(&mut selected).await.unwrap();
+                assert_eq!(selected, negotiation);
+                stream.write_all(&response).await.unwrap();
+                let mut prefix = vec![0; consumed];
+                stream.read_exact(&mut prefix).await.unwrap();
+                assert_eq!(prefix, response[..consumed]);
+                assert!(observer.snapshot()["connections"][0]["streams"][0]["response_completed_sequence"].is_null());
+                stream.close().await.unwrap();
+            });
+            assert_eq!(stream.inner.state.lock().unwrap().closes, 1);
+            let at_close = observer.snapshot();
+            let connection = &at_close["connections"][0];
+            let marker = connection["events"].as_array().unwrap().iter()
+                .find(|event| event["kind"] == "response_completion").unwrap().clone();
+            assert_eq!(marker["sequence"], connection["streams"][0]["response_completed_sequence"]);
+            assert_eq!(marker["detail"]["write_close_returned"], true);
+            assert_eq!(marker["detail"]["write"], connection["streams"][0]["write"]);
+            assert_eq!(marker["detail"]["read"], connection["streams"][0]["read"]);
+            assert_eq!(marker["detail"]["read"]["framed_bytes"], consumed);
+            assert_eq!(marker["detail"]["read"]["complete_frames"], consumed == response.len());
+            futures::executor::block_on(async {
+                let mut remainder = Vec::new();
+                stream.read_to_end(&mut remainder).await.unwrap();
+                assert_eq!(remainder, response[consumed..]);
+            });
+            trace.io_error(1, "muxer_poll_error", &io::Error::other("after close"));
+            let final_snapshot = observer.snapshot();
+            let connection = &final_snapshot["connections"][0];
+            assert_eq!(connection["streams"][0]["read"]["complete_frames"], true);
+            assert_eq!(connection["streams"][0]["read"]["framed_bytes"], response.len());
+            let markers = connection["events"].as_array().unwrap().iter()
+                .filter(|event| event["kind"] == "response_completion").collect::<Vec<_>>();
+            assert_eq!(markers.len(), 1);
+            assert_eq!(markers[0], &marker);
+            assert!(marker["sequence"].as_u64().unwrap()
+                < connection["events"].as_array().unwrap().last().unwrap()["sequence"].as_u64().unwrap());
         }
     }
 
