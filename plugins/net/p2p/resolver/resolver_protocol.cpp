@@ -5,8 +5,15 @@ module;
 
 #include <boost/asio/awaitable.hpp>
 
+#include <chrono>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 module forge.plugins.net.p2p.resolver.plugin;
 
@@ -18,10 +25,17 @@ import forge.api.core.exceptions;
 import forge.api.core.handle;
 import forge.api.core.registry;
 import forge.api.core.types;
+import forge.api.p2p.publication;
+import forge.api.transport.options;
 import forge.exceptions;
+import forge.net.p2p.identity;
+import forge.net.p2p.protocol;
+import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.resolver.exceptions;
 import forge.plugins.net.p2p.resolver.types;
 
+#include "details/plugin_impl.hxx"
 #include "details/resolver_protocol.hxx"
 
 FORGE_API(::forge::plugins::net::p2p::resolver::detail::resolver_protocol,

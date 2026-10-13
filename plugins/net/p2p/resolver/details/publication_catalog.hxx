@@ -92,4 +92,13 @@ class publication_catalog final : public std::enable_shared_from_this<publicatio
    bool closed_ = false;
 };
 
+[[nodiscard]] std::shared_ptr<publication_catalog> make_publication_catalog(forge::asio::task::scheduler& scheduler);
+[[nodiscard]] forge::api::p2p::publication
+publish_catalog_api(const std::shared_ptr<publication_catalog>& catalog, forge::plugins::net::p2p::node::api& p2p,
+                    forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol,
+                    forge::api::transport::options options, std::vector<entry> entries, std::size_t max_apis);
+[[nodiscard]] std::vector<entry> publication_catalog_snapshot(const std::shared_ptr<publication_catalog>& catalog);
+void request_close_publication_catalog(const std::shared_ptr<publication_catalog>& catalog) noexcept;
+boost::asio::awaitable<void> async_close_publication_catalog(const std::shared_ptr<publication_catalog>& catalog);
+
 } // namespace forge::plugins::net::p2p::resolver::detail
