@@ -60,7 +60,9 @@ if [[ "$phase" == dependencies ]]; then
       'set(CMAKE_JOB_POOL_LINK auth_link CACHE STRING "CI link bound" FORCE)' > "$CMAKE_TOOLCHAIN_FILE"
    bash .github/scripts/install-glaze.sh "$glaze"
    fetch_pin "$work/jansson-src" https://github.com/akheron/jansson.git ed5cae4ed0621ef409510f94270c9f8f263736d0
+   # Accept Jansson's legacy policy baseline under CMake 4, only for this dependency.
    cmake -S "$work/jansson-src" -B "$work/jansson-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
       -DCMAKE_C_COMPILER="$CC" -DCMAKE_INSTALL_PREFIX="$deps" -DCMAKE_INSTALL_LIBDIR=lib \
       -DJANSSON_BUILD_SHARED_LIBS=ON -DJANSSON_BUILD_DOCS=OFF -DJANSSON_EXAMPLES=OFF
    cmake --build "$work/jansson-build" -j4
