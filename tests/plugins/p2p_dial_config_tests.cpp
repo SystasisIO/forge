@@ -2,6 +2,7 @@ module;
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <array>
 #include <chrono>
@@ -19,6 +20,7 @@ module;
 module forge.plugins.net.p2p.node.plugin;
 
 import forge.api.core.registry;
+import forge.app.exceptions;
 import forge.asio.runtime;
 import forge.codec.yaml;
 import forge.config.core.component;
@@ -127,6 +129,17 @@ void configure(forge::asio::runtime& runtime, np::plugin& plugin, const forge::c
    run(runtime, plugin.configure({document, std::string{section}}));
 }
 
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto plugin = np::plugin{};
+   auto failure = std::exception_ptr{};
+   try { configure(runtime, plugin, document); }
+   catch (...) { failure = std::current_exception(); }
+   // Failed input closes admission too. Each validation probe owns and joins
+   // its real cleanup before the next independent candidate is exercised.
+   run(runtime, plugin.shutdown());
+   if (failure) { std::rethrow_exception(failure); }
+}
+
 forge::config::core::document yaml_candidate(std::string_view text) {
    const auto parsed = forge::codec::yaml::read_document(text);
    BOOST_REQUIRE(parsed.ok());
@@ -192,11 +205,21 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_sparse_overlay_and_removal_restore_native_b
    document.set(std::string{section} + ".dial.black-holes.ipv6-enabled", false);
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto plugin = np::plugin{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try { run(runtime, plugin.shutdown()); }
+      catch (...) { BOOST_ERROR("dial overlay owner cleanup failed"); }
+   }};
    configure(runtime, plugin, document);
+   const auto accepted = plugin.lifecycle().snapshot();
    document.set(std::string{section} + ".dns", value::object_type{});
    document.set(std::string{section} + ".dial", value::object_type{});
    document.set(std::string{section} + ".path", value::object_type{});
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   BOOST_CHECK_THROW(configure(runtime, plugin, document), forge::app::exceptions::invalid_state);
+   const auto unchanged = plugin.lifecycle().snapshot();
+   BOOST_TEST(unchanged.epoch == accepted.epoch);
+   BOOST_TEST(unchanged.generation == accepted.generation);
+   BOOST_CHECK(!unchanged.failure);
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
    check_settings(mapped(decode(document)), p2p::node::options{});
    BOOST_TEST(np::parse_policy(decode(document)).path.max_direct_endpoints == p2p::path::policy{}.max_direct_endpoints);
 }
@@ -230,36 +253,34 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_valid_yaml_maps_nameserver_defaults_scope_a
    BOOST_TEST(!policy.path.allow_relay);
    BOOST_TEST(!policy.path.allow_hole_punch);
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dial_config_bad_numbers_and_native_bounds_reject_before_commit) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto valid = valid_document();
-   configure(runtime, plugin, valid);
+   configure_fresh(runtime, valid);
    for (const auto& field : fields) {
       BOOST_TEST_CONTEXT(field.path) {
          for (const auto& invalid : {value{std::int64_t{-1}}, value{1.5}, value{"18446744073709551616"},
                                      value{std::uint64_t{0}}, value{field.ceiling + 1}}) {
             auto candidate = valid;
             candidate.set(std::string{section} + "." + field.path, invalid);
-            BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
          }
          auto candidate = valid;
          candidate.set(std::string{section} + "." + field.path, field.ceiling);
-         BOOST_CHECK_NO_THROW(configure(runtime, plugin, candidate));
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, candidate));
       }
    }
    auto candidate = valid;
    candidate.set(std::string{section} + ".dial.black-holes.window-size", std::uint64_t{21});
    candidate.set(std::string{section} + ".dial.black-holes.min-successes", std::uint64_t{1});
-   BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
    candidate.set(std::string{section} + ".dial.black-holes.min-successes", std::uint64_t{2});
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, candidate));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, candidate));
    candidate.set(std::string{section} + ".dial.black-holes.min-successes", std::uint64_t{22});
-   BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dial_config_checked_count_duration_and_nameserver_port_ranges) {
@@ -279,23 +300,21 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_checked_count_duration_and_nameserver_port_
       }
    }
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto port : {std::uint64_t{1}, std::uint64_t{53}, std::uint64_t{65535}}) {
       auto document = valid_document();
       document.set(std::string{section} + ".dns.resolver.nameservers", nameservers("127.0.0.1", port));
       BOOST_TEST(mapped(decode(document)).dns_resolver.nameservers.front().port == port);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
    }
    for (const auto port : {std::uint64_t{0}, std::uint64_t{65536}, (std::numeric_limits<std::uint64_t>::max)()}) {
       auto document = valid_document();
       document.set(std::string{section} + ".dns.resolver.nameservers", nameservers("127.0.0.1", port));
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dial_config_strict_yaml_and_invalid_nameserver_scope_remain_typed) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto* text : {
             "dnas: {}\n", "dail: {}\n", "dns: null\n", "dial: []\n",
             "dns:\n  resolution: []\n", "dns:\n  resolver: null\n",
@@ -310,7 +329,7 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_strict_yaml_and_invalid_nameserver_scope_re
             "dial:\n  attempt-timeout-ms: 1\n", "dial:\n  black-holes:\n    udp-enabled: 2\n",
             "dial:\n  black-holes:\n    ipv6-enabled: []\n", "path:\n  max-direct-endpoint: 1\n"}) {
       BOOST_TEST_CONTEXT(text) {
-         BOOST_CHECK_THROW(configure(runtime, plugin, yaml_candidate(text)), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, yaml_candidate(text)), np::exceptions::invalid_config);
       }
    }
    for (const auto& [address, scope] : std::array{
@@ -319,19 +338,23 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_strict_yaml_and_invalid_nameserver_scope_re
             std::pair{"fe80::1", "bad zone"}, std::pair{"fe80::1", "bad:zone"}}) {
       auto document = valid_document();
       document.set(std::string{section} + ".dns.resolver.nameservers", nameservers(address, 53, scope));
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    }
    auto document = valid_document();
    document.set(std::string{section} + ".dns.resolver.nameservers", nameservers("fe80::1", 53, "zone-1"));
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
    document.set(std::string{section} + ".dns.resolver.nameservers", value::array_type{});
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
    BOOST_TEST(mapped(decode(document)).dns_resolver.nameservers.empty());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dial_config_configure_needs_no_providers_or_native_node_and_stop_freezes_updates) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto plugin = np::plugin{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try { run(runtime, plugin.shutdown()); }
+      catch (...) { BOOST_ERROR("stopped dial owner cleanup failed"); }
+   }};
    auto document = valid_document();
    document.set(std::string{section} + ".listen", value::array_type{value{"/ip4/127.0.0.1/tcp/0"}});
    document.set(std::string{section} + ".dns.resolver.nameservers", nameservers("203.0.113.7", 65535));
@@ -349,6 +372,8 @@ BOOST_AUTO_TEST_CASE(p2p_dial_config_configure_needs_no_providers_or_native_node
    document.set(std::string{section} + ".dns.resolution.max-roots", std::uint64_t{1});
    document.set(std::string{section} + ".dial.max-concurrent-attempts", std::uint64_t{1});
    document.set(std::string{section} + ".path.max-direct-endpoints", std::uint64_t{1});
-   BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(configure(runtime, plugin, document), forge::app::exceptions::invalid_state);
+   BOOST_CHECK_THROW(static_cast<void>(host->local_endpoint()), np::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW(static_cast<void>(diagnostics->snapshot()), np::exceptions::plugin_not_initialized);
    run(runtime, plugin.shutdown());
 }

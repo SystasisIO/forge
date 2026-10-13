@@ -5,6 +5,7 @@ module;
 #include <cstddef>
 #include <exception>
 #include <memory>
+#include <stop_token>
 #include <vector>
 
 export module forge.app.application;
@@ -42,6 +43,8 @@ class application_runtime {
    boost::asio::awaitable<void> provide(forge::api::core::provider& provider);
    boost::asio::awaitable<void> initialize();
    boost::asio::awaitable<void> startup();
+   // The accepted owner joins cleanup despite cancellation; joiners may cancel
+   // their wait. Caller cancellation state/throw policy and lazy entry are preserved.
    boost::asio::awaitable<void> shutdown();
    void request_stop() noexcept;
 
@@ -62,6 +65,7 @@ class application_runtime {
    boost::asio::awaitable<void> initialize_plugins();
    boost::asio::awaitable<void> startup_plugins();
    boost::asio::awaitable<void> shutdown_plugins();
+   boost::asio::awaitable<void> shutdown_owned(std::stop_token stop = {});
    boost::asio::awaitable<void> rollback(std::exception_ptr failure);
    void stop_plugins() noexcept;
 

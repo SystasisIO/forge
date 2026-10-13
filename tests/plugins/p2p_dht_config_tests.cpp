@@ -22,6 +22,8 @@ module;
 
 module forge.plugins.net.p2p.node.plugin;
 
+import forge.app.exceptions;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.codec.yaml;
 import forge.config.core.component;
@@ -121,6 +123,24 @@ template<class T> T run(forge::asio::runtime& runtime, boost::asio::awaitable<T>
 void configure(forge::asio::runtime& runtime, np::plugin& plugin, const forge::config::core::document& document) {
    run(runtime, plugin.configure({document, std::string{section}}));
 }
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto owner = np::plugin{};
+   configure(runtime, owner, document);
+}
+
+void check_repeated_config(forge::asio::runtime& runtime, np::plugin& plugin,
+                           const forge::config::core::document& document) {
+   const auto before = plugin.lifecycle().snapshot();
+   BOOST_CHECK_THROW(configure(runtime, plugin, document), forge::app::exceptions::invalid_state);
+   const auto after = plugin.lifecycle().snapshot();
+   BOOST_CHECK(after.phase == before.phase);
+   BOOST_TEST(after.epoch == before.epoch);
+   BOOST_TEST(after.generation == before.generation);
+   BOOST_TEST(after.completed_operations == before.completed_operations);
+   BOOST_TEST(after.admission_open == before.admission_open);
+   BOOST_TEST(after.failure.has_value() == before.failure.has_value());
+}
 } // namespace
 
 BOOST_AUTO_TEST_CASE(p2p_dht_config_records_defaults_derive_from_each_declared_profile) {
@@ -140,9 +160,9 @@ BOOST_AUTO_TEST_CASE(p2p_dht_config_records_defaults_derive_from_each_declared_p
 BOOST_AUTO_TEST_CASE(p2p_dht_config_every_sparse_record_patch_maps_without_changing_other_budgets) {
    const auto defaults = mapped({custom()});
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& field : fields) {
       BOOST_TEST_CONTEXT(field.name) {
+         auto plugin = np::plugin{};
          const auto document = document_with({{field.name, value{field.sample}}});
          const auto config = decode(document);
          BOOST_REQUIRE_EQUAL(config.dht_profiles.size(), 1U);
@@ -155,6 +175,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_config_every_sparse_record_patch_maps_without_chang
          // Missing custom value callbacks are allowed in declaration preflight;
          // no providers are bound and no Secrets/ObjectDB operation is started.
          BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+         check_repeated_config(runtime, plugin, document);
       }
    }
 }
@@ -192,12 +213,11 @@ BOOST_AUTO_TEST_CASE(p2p_dht_config_per_profile_isolation_removal_and_failed_map
 
 BOOST_AUTO_TEST_CASE(p2p_dht_config_numeric_types_checked_counts_and_objectdb_page_preflight) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
    for (const auto& field : fields) {
       for (const auto& invalid : std::array{value{std::uint64_t{0}}, value{std::int64_t{-1}}, value{1.5}}) {
          BOOST_TEST_CONTEXT(field.name) {
-            BOOST_CHECK_THROW(configure(runtime, plugin, document_with({{field.name, invalid}})),
+            BOOST_CHECK_THROW(configure_fresh(runtime, document_with({{field.name, invalid}})),
                               np::exceptions::invalid_config);
          }
       }
@@ -213,13 +233,13 @@ BOOST_AUTO_TEST_CASE(p2p_dht_config_numeric_types_checked_counts_and_objectdb_pa
    }
    for (const auto* field : {"hydration-page-limit", "prune-page-limit"}) {
       const auto boundary = static_cast<std::uint64_t>(forge::db::core::max_page_limit);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, document_with({{field, value{boundary}}})));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, document_with({{field, value{boundary}}})));
       auto oversized = document_with({{field, value{boundary + 1}}});
-      BOOST_CHECK_THROW(configure(runtime, plugin, oversized), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, oversized), np::exceptions::invalid_config);
       // Memory-native persistence does not acquire an ObjectDB page contract.
       oversized.set(std::string{section} + ".peer-store.store", "");
       oversized.set(std::string{section} + ".allow-insecure-test-mode", true);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, oversized));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, oversized));
    }
 }
 
@@ -241,14 +261,17 @@ BOOST_AUTO_TEST_CASE(p2p_dht_config_real_yaml_strict_records_and_no_duplicate_pr
    for (const auto* key : {"max-record-bytes", "max-record-size", "max-providers-per-key", "max-persistence-waiters",
                            "max-value", "inline-persistence", "public-keys"}) {
       BOOST_TEST_CONTEXT(key) {
-         BOOST_CHECK_THROW(configure(runtime, plugin, document_with({{key, value{std::uint64_t{7}}}})),
+         const auto invalid = document_with({{key, value{std::uint64_t{7}}}});
+         BOOST_CHECK_THROW(configure_fresh(runtime, invalid),
                            np::exceptions::invalid_config);
+         check_repeated_config(runtime, plugin, invalid);
       }
    }
    auto malformed = document_with();
    malformed.set(std::string{section} + ".dht.profiles", value::array_type{
        value::object_type{{"kind", "custom"}, {"protocol", std::string{protocol}}, {"records", value::array_type{}}}});
-   BOOST_CHECK_THROW(configure(runtime, plugin, malformed), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, malformed), np::exceptions::invalid_config);
+   check_repeated_config(runtime, plugin, malformed);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_config_record_configuration_is_frozen_after_stop) {
@@ -261,9 +284,10 @@ BOOST_AUTO_TEST_CASE(p2p_dht_config_record_configuration_is_frozen_after_stop) {
       auto candidate = document_with({{field.name, value{field.sample}}});
       candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
       BOOST_TEST_CONTEXT(field.name) {
-         BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict);
+         check_repeated_config(runtime, plugin, candidate);
       }
    }
+   BOOST_CHECK_THROW(run(runtime, plugin.startup()), forge::app::exceptions::invalid_state);
    run(runtime, plugin.shutdown());
-   BOOST_CHECK_THROW(configure(runtime, plugin, accepted), np::exceptions::route_conflict);
+   check_repeated_config(runtime, plugin, accepted);
 }

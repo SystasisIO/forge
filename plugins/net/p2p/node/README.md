@@ -144,8 +144,9 @@ contributions and changes after startup or stop are typed conflicts.
 PubSub policy, including application scoring and tracer callbacks. It requires
 explicit `pubsub.enabled: true`; it does not turn on native support implicitly.
 Options use the same immutable candidate preparation, validation and commit/freeze
-path. Pre-start YAML updates retain a supplied native contribution; they cannot
-disable PubSub and silently discard its callbacks. Consumer topic policies and
+path. The one-shot YAML input establishes declarative PubSub admission before
+typed composition; it cannot be repeated to disable PubSub and discard supplied
+callbacks. Consumer topic policies and
 quotas remain declarative, while supplied native options replace the native
 defaults derived from that declaration. Native bounds and capability errors remain
 authoritative: for example, Partial needs both declarative `partial-messages`
@@ -331,7 +332,7 @@ does not assert that stock Go/Rust peers accept that maximum.
 Algorithmic mesh/history/gossip tuning remains in the native defaults and the
 full typed `configuration_api::set_pubsub_options` path instead of duplicating
 every internal parameter in YAML. A typed contribution remains the authoritative
-complete native snapshot across pre-start configure calls, including callbacks;
+complete native snapshot until startup, including callbacks;
 it is not reduced to callback-only enrichment.
 
 Other optional groups follow the native responsibility boundaries:
@@ -407,7 +408,8 @@ and `pubsub::score_snapshot` values. Unknown DHT profiles retain native
 with `exceptions::plugin_not_initialized`; reads remain admitted after
 `request_stop()` until detach. A read copies the native owner and, for a default
 snapshot, its configured options before releasing the configuration mutex and
-delegating. A concurrent diagnostics-only update cannot alter that read's bounds.
+delegating. Explicit per-read bounds do not change the immutable configured defaults;
+diagnostics-only YAML reconfiguration is rejected.
 Returned value snapshots remain usable after plugin shutdown. There is no
 adapter-owned routing/score cache, event queue, HTTP endpoint or logging sink.
 
@@ -531,8 +533,8 @@ per protocol ID; they are operational record-store bounds, not a physical disk
 quota. Record size and per-key provider capacity remain derived from the profile,
 not duplicated configuration knobs. Invalid values and unsupported ObjectDB page
 sizes are rejected before identity-secret reads or P2P adapter transactions.
-The same effective page limits reach the ObjectDB adapter. Removing an override
-before startup restores the default; startup freezes the complete policy.
+The same effective page limits reach the ObjectDB adapter. Omitting an override
+from the one-shot input retains the default; startup freezes the complete composed policy.
 
 The named DB Store must provide an Object layer dedicated to P2P peer and DHT
 record state.
@@ -765,8 +767,8 @@ or listener. Secrets permission/not-found errors retain their typed category.
 ### DNS, Dialing And Paths
 
 `dns` and `dial` are sparse overlays of the existing native resolver, address
-expander and dial scheduler. Omitted fields retain native defaults; removing a
-group in a pre-start reconfiguration restores those defaults. There is no
+expander and dial scheduler. Omitted fields and groups retain native defaults in
+the one-shot configuration input; changing YAML requires a fresh plugin instance. There is no
 plugin-owned resolver, discovery loop or separate timeout policy.
 
 ```yaml

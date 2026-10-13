@@ -3,11 +3,15 @@ module;
 #include "details/lifecycle_log.hxx"
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
 #include <exception>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -95,9 +99,16 @@ boost::asio::awaitable<void> application_runtime::configure(const config::core::
    failure = operation.complete(failure);
    detail::log_application_operation(lifecycle_.snapshot(), "configure", false, failure);
    if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
       co_await boost::asio::this_coro::throw_if_cancelled(false);
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-      co_await rollback(failure);
+      try {
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
+      std::rethrow_exception(failure);
    }
 }
 
@@ -129,9 +140,16 @@ boost::asio::awaitable<void> application_runtime::provide(forge::api::core::prov
    failure = operation.complete(failure);
    detail::log_application_operation(lifecycle_.snapshot(), "provide", false, failure);
    if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
       co_await boost::asio::this_coro::throw_if_cancelled(false);
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-      co_await rollback(failure);
+      try {
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
+      std::rethrow_exception(failure);
    }
 }
 
@@ -171,9 +189,16 @@ boost::asio::awaitable<void> application_runtime::initialize() {
    failure = operation.complete(failure);
    detail::log_application_operation(lifecycle_.snapshot(), "initialize", false, failure);
    if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
       co_await boost::asio::this_coro::throw_if_cancelled(false);
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-      co_await rollback(failure);
+      try {
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
+      std::rethrow_exception(failure);
    }
 }
 
@@ -208,16 +233,23 @@ boost::asio::awaitable<void> application_runtime::startup() {
    failure = operation.complete(failure);
    detail::log_application_operation(lifecycle_.snapshot(), "startup", false, failure);
    if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
       co_await boost::asio::this_coro::throw_if_cancelled(false);
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-      co_await rollback(failure);
+      try {
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
+      std::rethrow_exception(failure);
    }
 }
 
 boost::asio::awaitable<void> application_runtime::rollback(std::exception_ptr failure) {
-   // The caller disables cancellation before entering this child coroutine.
+   // Run on an independently spawned, uncancelled coroutine thread.
    try {
-      co_await shutdown();
+      co_await shutdown_owned();
    } catch (...) {
       std::throw_with_nested(exceptions::shutdown_failed{"application rollback failed"});
    }
@@ -244,16 +276,43 @@ boost::asio::awaitable<void> application_runtime::shutdown_plugins() {
 }
 
 boost::asio::awaitable<void> application_runtime::shutdown() {
+   const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+   co_await boost::asio::this_coro::throw_if_cancelled(false);
+   auto failure = std::exception_ptr{};
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   try {
+      auto stop = std::stop_source{};
+      if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+         static_cast<void>(stop.request_stop());
+      }
+      if (cancellation.slot().is_connected()) {
+         cancellation.slot().assign([stop](boost::asio::cancellation_type_t type) mutable {
+            if (type != boost::asio::cancellation_type::none) {
+               static_cast<void>(stop.request_stop());
+            }
+         });
+      }
+      co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, shutdown_owned(stop.get_token()),
+          boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   cancellation.slot().clear();
+   co_await boost::asio::this_coro::throw_if_cancelled(throws);
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<void> application_runtime::shutdown_owned(std::stop_token stop) {
    request_stop();
-   auto operation = co_await lifecycle_.begin(lifecycle_operation::shutdown);
+   auto operation = co_await lifecycle_.begin(lifecycle_operation::shutdown, std::move(stop));
    if (!operation) {
       co_return;
    }
    detail::log_application_operation(lifecycle_.snapshot(), "shutdown", true);
    auto failure = std::exception_ptr{};
    try {
-      co_await boost::asio::this_coro::throw_if_cancelled(false);
-      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
       co_await shutdown_plugins();
    } catch (...) {
       failure = std::current_exception();

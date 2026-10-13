@@ -78,7 +78,13 @@ class plugin_lifecycle {
    // are rejected rather than silently ignoring different inputs. Concurrent
    // after_initialize/startup/shutdown join an attempt; a joined or already
    // successful operation returns an inactive token and runs no hook.
+   // Shutdown-owner draining is protected without resetting caller cancellation
+   // state or throw policy; low-level joiners remain cancellable. A composition
+   // owner must isolate its whole stop/cleanup hook, not just this admission.
    boost::asio::awaitable<operation> begin(lifecycle_operation value) const;
+   // Isolated cleanup facades can forward only waiter cancellation. An accepted
+   // shutdown owner ignores this token while draining; joiners remain cancellable.
+   boost::asio::awaitable<operation> begin(lifecycle_operation value, std::stop_token stop) const;
    // Owner-only ensure for immutable bootstrap inputs. Unlike the strict
    // plugin input entrypoints, this atomically joins/skips an existing attempt.
    // Never use it to accept a new document, provider or plugin context.
@@ -108,7 +114,9 @@ class plugin_lifecycle {
    std::shared_ptr<impl> impl_;
 
    static boost::asio::awaitable<operation> begin_owned(std::shared_ptr<impl> owner,
-                                                        lifecycle_operation value, bool join_input);
+       lifecycle_operation value, bool join_input, std::optional<std::stop_token> stop = {});
+   static boost::asio::awaitable<void> drain_cleanup(std::shared_ptr<impl> owner,
+                                                    std::shared_ptr<attempt> pending);
 
    friend class lifecycle_observer;
 };

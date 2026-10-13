@@ -6,6 +6,7 @@ module;
 #include <exception>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 
 export module forge.app.application_shell;
@@ -108,6 +109,8 @@ class application_shell {
    boost::asio::awaitable<void> async_configure(forge::config::core::document document);
    boost::asio::awaitable<void> initialize();
    boost::asio::awaitable<void> startup();
+   // The accepted owner joins cleanup despite cancellation; joiners may cancel
+   // their wait. Caller cancellation state/throw policy and lazy entry are preserved.
    boost::asio::awaitable<void> shutdown();
    void request_stop() noexcept;
 
@@ -141,6 +144,7 @@ class application_shell {
    boost::asio::awaitable<void> apply_effective_config(forge::config::core::document document,
                                                      std::uint64_t generation);
    boost::asio::awaitable<void> rollback(std::exception_ptr failure);
+   boost::asio::awaitable<void> shutdown_owned(std::stop_token stop = {});
 
    struct impl;
    std::unique_ptr<impl> impl_;

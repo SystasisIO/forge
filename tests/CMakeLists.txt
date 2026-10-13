@@ -1041,6 +1041,7 @@ add_executable(
    app/application_environment_tests.cpp
    app/application_shell_lifecycle_tests.cpp
    app/application_cancellation_tests.cpp
+   app/application_shutdown_policy_tests.cpp
    app/diagnostics_tests.cpp
    app/app_observability_tests.cpp
 )

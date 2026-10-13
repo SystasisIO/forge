@@ -22,6 +22,8 @@ module;
 
 module forge.plugins.net.p2p.node.plugin;
 
+import forge.app.exceptions;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.codec.yaml;
 import forge.config.core.component;
@@ -177,6 +179,24 @@ template<class T> T run(forge::asio::runtime& runtime, boost::asio::awaitable<T>
 void configure(forge::asio::runtime& runtime, np::plugin& plugin,
                const forge::config::core::document& document) {
    run(runtime, plugin.configure({document, std::string{section}}));
+}
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto owner = np::plugin{};
+   configure(runtime, owner, document);
+}
+
+void check_repeated_config(forge::asio::runtime& runtime, np::plugin& plugin,
+                           const forge::config::core::document& document) {
+   const auto before = plugin.lifecycle().snapshot();
+   BOOST_CHECK_THROW(configure(runtime, plugin, document), forge::app::exceptions::invalid_state);
+   const auto after = plugin.lifecycle().snapshot();
+   BOOST_CHECK(after.phase == before.phase);
+   BOOST_TEST(after.epoch == before.epoch);
+   BOOST_TEST(after.generation == before.generation);
+   BOOST_TEST(after.completed_operations == before.completed_operations);
+   BOOST_TEST(after.admission_open == before.admission_open);
+   BOOST_TEST(after.failure.has_value() == before.failure.has_value());
 }
 } // namespace
 
@@ -356,25 +376,30 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_scoring_config_real_yaml_strict_callbacks_and_ty
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto plugin = np::plugin{};
    BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   check_repeated_config(runtime, plugin, document);
    for (const auto* key : {"app-specific-score", "app-specific-weight", "thresholds.graylist",
                            "limits.max-topics", "limits.max-message-id-size", "retain-score-seconds"}) {
       auto bad = document;
       bad.set(std::string{section} + ".pubsub.scoring." + key, std::uint64_t{7});
-      BOOST_CHECK_THROW(configure(runtime, plugin, bad), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, bad), np::exceptions::invalid_config);
+      check_repeated_config(runtime, plugin, bad);
    }
    for (const auto& field : limit_fields) {
       for (const auto& invalid : {value{std::int64_t{-1}}, value{1.5}, value{true}}) {
          auto bad = document;
          bad.set(std::string{section} + ".pubsub.scoring.limits." + field.name, invalid);
-         BOOST_CHECK_THROW(configure(runtime, plugin, bad), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, bad), np::exceptions::invalid_config);
+         check_repeated_config(runtime, plugin, bad);
       }
    }
    auto bad = document;
    bad.set(std::string{section} + ".pubsub.scoring.topics", value::object_type{{"configured", value::object_type{}}});
-   BOOST_CHECK_THROW(configure(runtime, plugin, bad), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, bad), np::exceptions::invalid_config);
+   check_repeated_config(runtime, plugin, bad);
    bad.set(std::string{section} + ".pubsub.scoring.topics", value::array_type{
        value::object_type{{"topic", "configured"}, {"app-specific-weight", 2.}}});
-   BOOST_CHECK_THROW(configure(runtime, plugin, bad), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, bad), np::exceptions::invalid_config);
+   check_repeated_config(runtime, plugin, bad);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_scoring_config_frozen_after_stop) {
@@ -391,7 +416,9 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_scoring_config_frozen_after_stop) {
       auto candidate = accepted;
       candidate.set(std::string{section} + ".pubsub.scoring." + key, setting);
       candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict);
+      check_repeated_config(runtime, plugin, candidate);
    }
+   BOOST_CHECK_THROW(run(runtime, plugin.startup()), forge::app::exceptions::invalid_state);
    run(runtime, plugin.shutdown());
+   check_repeated_config(runtime, plugin, accepted);
 }

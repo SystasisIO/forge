@@ -3,6 +3,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <compare>
 
@@ -58,6 +59,10 @@ class plugin {
    virtual boost::asio::awaitable<void> after_initialize() final;
    virtual boost::asio::awaitable<void> startup() final;
    virtual void request_stop() noexcept final;
+   // Once accepted, the cleanup owner joins despite cancellation; joined callers
+   // may cancel their wait without cancelling cleanup. Caller cancellation state
+   // and throw policy are preserved. Asio can reject cancellation before body
+   // entry; construction remains lazy.
    virtual boost::asio::awaitable<void> shutdown() final;
 
  protected:
@@ -74,6 +79,7 @@ class plugin {
    virtual boost::asio::awaitable<void> on_shutdown() = 0;
 
  private:
+   boost::asio::awaitable<void> shutdown_owned(std::stop_token stop = {});
    plugin_lifecycle lifecycle_;
 };
 

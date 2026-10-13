@@ -3,12 +3,16 @@ module;
 #include "details/lifecycle_log.hxx"
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <exception>
 #include <optional>
+#include <stop_token>
 #include <utility>
 
 module forge.app.plugin;
@@ -198,15 +202,42 @@ void plugin::request_stop() noexcept {
 }
 
 boost::asio::awaitable<void> plugin::shutdown() {
+   // Protect the join before stop callbacks can cancel the caller. The child
+   // has its own cancellation state; the caller retains its masks and history.
+   const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+   co_await boost::asio::this_coro::throw_if_cancelled(false);
+   auto failure = std::exception_ptr{};
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   try {
+      auto stop = std::stop_source{};
+      if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+         static_cast<void>(stop.request_stop());
+      }
+      if (cancellation.slot().is_connected()) {
+         cancellation.slot().assign([stop](boost::asio::cancellation_type_t type) mutable {
+            if (type != boost::asio::cancellation_type::none) {
+               static_cast<void>(stop.request_stop());
+            }
+         });
+      }
+      co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, shutdown_owned(stop.get_token()),
+          boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   cancellation.slot().clear();
+   co_await boost::asio::this_coro::throw_if_cancelled(throws);
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<void> plugin::shutdown_owned(std::stop_token stop) {
    request_stop();
-   auto operation = co_await lifecycle_.begin(lifecycle_operation::shutdown);
+   auto operation = co_await lifecycle_.begin(lifecycle_operation::shutdown, std::move(stop));
    if (!operation) {
       co_return;
    }
-   // The accepted cleanup is shared by all callers. Canceling any one caller
-   // cannot abandon resources or cancel the owner's cleanup hook.
-   co_await boost::asio::this_coro::throw_if_cancelled(false);
-   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
    log_lifecycle(*this, "shutdown", true);
    try {
       co_await on_shutdown();

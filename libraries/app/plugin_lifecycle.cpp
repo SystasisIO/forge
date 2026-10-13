@@ -1,9 +1,11 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
-#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 #include <forge/exceptions/macros.hpp>
 
@@ -47,12 +49,18 @@ plugin_lifecycle::begin(lifecycle_operation value) const {
 }
 
 boost::asio::awaitable<plugin_lifecycle::operation>
+plugin_lifecycle::begin(lifecycle_operation value, std::stop_token stop) const {
+   return begin_owned(impl_, value, false, std::move(stop));
+}
+
+boost::asio::awaitable<plugin_lifecycle::operation>
 plugin_lifecycle::begin_joined(lifecycle_operation value) const {
    return begin_owned(impl_, value, true);
 }
 
 boost::asio::awaitable<plugin_lifecycle::operation>
-plugin_lifecycle::begin_owned(std::shared_ptr<impl> owner, lifecycle_operation value, bool join_input) {
+plugin_lifecycle::begin_owned(std::shared_ptr<impl> owner, lifecycle_operation value, bool join_input,
+                              std::optional<std::stop_token> stop) {
    if (static_cast<std::size_t>(value) >= owner->succeeded.size()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_state, "invalid lifecycle operation");
    }
@@ -152,14 +160,29 @@ plugin_lifecycle::begin_owned(std::shared_ptr<impl> owner, lifecycle_operation v
       }
 
       if (cleanup_owner) {
-         // Cancellation of a caller must not cancel the shared cleanup attempt
-         // while it drains an in-flight hook. Other callers remain cancellable.
+         // Only the accepted owner drains independently. Low-level joined
+         // callers remain cancellable and cannot alter the owned attempt.
+         const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
          co_await boost::asio::this_coro::throw_if_cancelled(false);
-         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
+         auto failure = std::exception_ptr{};
+         try {
+            co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
+                drain_cleanup(owner, cleanup_owner.pending_),
+                boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+         } catch (...) {
+            failure = std::current_exception();
+            cleanup_owner.complete(failure);
+         }
+         co_await boost::asio::this_coro::throw_if_cancelled(throws);
+         if (failure) {
+            std::rethrow_exception(failure);
+         }
+         co_return std::move(cleanup_owner);
       }
       try {
          if (!same_operation) {
-            static_cast<void>(co_await owner->changed.async_wait(observed));
+            static_cast<void>(stop ? co_await owner->changed.async_wait(observed, *stop)
+                                  : co_await owner->changed.async_wait(observed));
          } else {
             // Keep the joined attempt alive across later retries. Inspect the
             // terminal result under the same lock that publishes it.
@@ -178,13 +201,40 @@ plugin_lifecycle::begin_owned(std::shared_ptr<impl> owner, lifecycle_operation v
                   }
                   co_return operation{};
                }
-               static_cast<void>(co_await owner->changed.async_wait(observed));
+               if (stop && stop->stop_requested()) {
+                  throw boost::system::system_error{boost::asio::error::operation_aborted};
+               }
+               static_cast<void>(stop ? co_await owner->changed.async_wait(observed, *stop)
+                                     : co_await owner->changed.async_wait(observed));
             }
          }
       } catch (...) {
          cleanup_owner.complete(std::current_exception());
          throw;
       }
+   }
+}
+
+boost::asio::awaitable<void> plugin_lifecycle::drain_cleanup(std::shared_ptr<impl> owner,
+                                                           std::shared_ptr<attempt> pending) {
+   for (;;) {
+      auto observed = std::uint64_t{};
+      {
+         const auto lock = std::scoped_lock{owner->mutex};
+         if (!owner->owner_alive) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_state, "lifecycle owner was destroyed");
+         }
+         if (owner->cleanup != pending || pending->completed) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_state, "lifecycle cleanup attempt is no longer current");
+         }
+         if (!owner->active && !owner->stop_hook_running) {
+            owner->active = owner->cleanup;
+            owner->changed.notify();
+            co_return;
+         }
+         observed = owner->changed.epoch();
+      }
+      static_cast<void>(co_await owner->changed.async_wait(observed));
    }
 }
 

@@ -37,6 +37,7 @@ import forge.api.core.registry;
 import forge.app.events;
 import forge.app.exceptions;
 import forge.app.plugin_context;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.codec.yaml;
@@ -174,7 +175,6 @@ struct fixture {
       document.set("plugins.net.p2p.node.identity.certificate-secret", "resources/cert");
       document.set("plugins.net.p2p.node.identity.private-key-secret", "resources/key");
       document.set("plugins.net.p2p.node.topology.mode", "static-only");
-      configure();
       apis.install<secrets::api>(secrets::api::describe(), std::make_shared<identity_source>());
       auto installer = forge::api::core::installer{apis};
       run(node.provide(installer));
@@ -202,8 +202,18 @@ struct fixture {
       return joined(result);
    }
    void configure() { run(node.configure({document, std::string{section}})); }
-   void start() { run(node.initialize(context)); run(node.after_initialize()); run(node.startup()); }
+   void start() {
+      if (!node.lifecycle().snapshot().completed(forge::app::lifecycle_operation::configure)) { configure(); }
+      run(node.initialize(context)); run(node.after_initialize()); run(node.startup());
+   }
 };
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto owner = np::plugin{};
+   auto result = boost::asio::co_spawn(runtime.context(), owner.configure({document, std::string{section}}),
+                                      boost::asio::use_future);
+   joined(result);
+}
 
 boost::asio::awaitable<bool> await_peer_records(std::shared_ptr<np::diagnostics_api> reads,
                                               std::size_t count) {
@@ -246,13 +256,12 @@ boost::asio::awaitable<bool> await_identified_sessions(std::shared_ptr<np::diagn
    co_return false;
 }
 
-void configure_tcp(fixture& owner, std::string_view security, bool listen = false) {
+void set_tcp_config(fixture& owner, std::string_view security, bool listen = false) {
    owner.document.set(std::string{section} + ".tcp.security", std::string{security});
    if (security == "tls") { owner.document.set(std::string{section} + ".relay.client-enabled", false); }
    if (listen) {
       owner.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
    }
-   owner.configure();
 }
 
 void check_session_authentication(const fixture& owner, const p2p::node::session_info& connected,
@@ -323,8 +332,12 @@ BOOST_AUTO_TEST_CASE(p2p_resource_config_operational_counters_are_sparse_and_che
       fixture f;
       const auto prior = f.document;
       f.document.set("plugins.net.p2p.node.resources." + std::string{field.name}, std::uint64_t{0});
-      BOOST_CHECK_THROW(f.configure(), np::exceptions::invalid_config);
+      const auto invalid = f.document;
+      BOOST_CHECK_THROW(configure_fresh(f.runtime, invalid), np::exceptions::invalid_config);
       f.document = prior;
+      f.configure();
+      f.document = invalid;
+      BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
       f.start();
       auto native = limits{};
       native.system.max_connections = native.system.max_inbound_connections = native.system.max_outbound_connections = 1025;
@@ -375,7 +388,10 @@ BOOST_AUTO_TEST_CASE(p2p_resource_config_invalid_shapes_unknowns_and_overflow_ro
    const auto reject = [&](const std::string& path, value input) {
       f.document = valid;
       f.document.set(path, std::move(input));
-      BOOST_TEST_CONTEXT(path) { BOOST_CHECK_THROW(f.configure(), np::exceptions::invalid_config); }
+      BOOST_TEST_CONTEXT(path) {
+         BOOST_CHECK_THROW(configure_fresh(f.runtime, f.document), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
+      }
    };
    for (const auto& scope : scopes) {
       for (const auto& field : budgets) {
@@ -404,8 +420,9 @@ BOOST_AUTO_TEST_CASE(p2p_resource_config_invalid_shapes_unknowns_and_overflow_ro
       f.document.set(std::string{section} + "." + name, setting);
    }
    // The valid identity, persistence and policy remain intact; only the typo differs.
-   BOOST_CHECK_THROW(f.configure(), np::exceptions::invalid_config);
-   f.start(); // No successful configure after the rejected candidates.
+   BOOST_CHECK_THROW(configure_fresh(f.runtime, f.document), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
+   f.start(); // Repeated input never replaces the original configuration.
    auto expected = limits{};
    expected.system.max_connections = 3;
    expected.system.max_inbound_connections = expected.system.max_outbound_connections = 8;
@@ -531,7 +548,10 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_invalid_compound_yaml_and_clock_candidates_
    const auto reject = [&](std::string_view path, value input) {
       server.document = valid;
       server.document.set(std::string{section} + "." + std::string{path}, std::move(input));
-      BOOST_TEST_CONTEXT(path) { BOOST_CHECK_THROW(server.configure(), np::exceptions::invalid_config); }
+      BOOST_TEST_CONTEXT(path) {
+         BOOST_CHECK_THROW(configure_fresh(server.runtime, server.document), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
+      }
    };
    reject("connections.session-low-watermark", std::uint64_t{5});
    reject("connections.dial-backoff-base-ms", std::uint64_t{5001});
@@ -560,9 +580,10 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_invalid_compound_yaml_and_clock_candidates_
          server.document.set(std::string{section} + "." + name, setting);
       }
       // Identity and persistence remain valid; only the misspelled policy differs.
-      BOOST_CHECK_THROW(server.configure(), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(server.runtime, server.document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
    }
-   // Start without another successful configure, witnessing rollback of every rejection.
+   // Start without another successful configure, witnessing the unchanged original policy.
    server.start();
    const auto endpoint = server.host->local_endpoint();
    BOOST_REQUIRE(endpoint);
@@ -632,13 +653,13 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_all_settings_freeze_after_startup) {
       BOOST_TEST_CONTEXT(path) {
          f.document = running;
          f.document.set(std::string{section} + "." + path, number);
-         BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+         BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
       }
    }
    for (const auto* path : {"identify.protocol-version", "identify.agent-version"}) {
       f.document = running;
       f.document.set(std::string{section} + "." + path, "new-version");
-      BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+      BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
    }
 }
 
@@ -666,13 +687,14 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_peer_state_capacity_and_diagnostics_only_up
    const auto running = server.document;
    server.document.set(std::string{section} + ".peer-state.max-peers", std::uint64_t{3});
    server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
    BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
    BOOST_TEST(server.diagnostics->snapshot({.max_peers = 16}).peers.size() == 2U);
    server.document = running;
    server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-   BOOST_CHECK_NO_THROW(server.configure());
-   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 2U);
+   BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
+   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
+   BOOST_TEST(server.diagnostics->snapshot({.max_peers = 2}).peers.size() == 2U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_host_config_connection_watermark_prunes_unprotected_sessions_with_zero_grace) {
@@ -825,8 +847,8 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_real_tcp_security_compatible_pairs_neg
             std::tuple{"noise", "tls-and-noise", auth::noise}}) {
       BOOST_TEST_CONTEXT(dial << " -> " << accept) {
          fixture server, client;
-         configure_tcp(server, accept, true);
-         configure_tcp(client, dial);
+         set_tcp_config(server, accept, true);
+         set_tcp_config(client, dial);
          server.start(); client.start();
          const auto endpoint = server.host->local_endpoint();
          BOOST_REQUIRE(endpoint);
@@ -847,8 +869,8 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_real_tcp_disjoint_security_rejects_bot
    for (const auto reverse : {false, true}) {
       BOOST_TEST_CONTEXT("reverse=" << reverse) {
          fixture server, client;
-         configure_tcp(server, reverse ? "tls" : "noise", true);
-         configure_tcp(client, reverse ? "noise" : "tls");
+         set_tcp_config(server, reverse ? "tls" : "noise", true);
+         set_tcp_config(client, reverse ? "noise" : "tls");
          server.start(); client.start();
          const auto endpoint = server.host->local_endpoint();
          BOOST_REQUIRE(endpoint);
@@ -875,7 +897,7 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_real_tcp_disjoint_security_rejects_bot
 
 BOOST_AUTO_TEST_CASE(p2p_transport_config_invalid_mixed_candidates_and_frozen_updates_preserve_live_policy) {
    fixture server;
-   configure_tcp(server, "noise", true);
+   set_tcp_config(server, "noise", true);
    server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{1});
    server.configure();
    const auto valid = server.document;
@@ -887,15 +909,16 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_invalid_mixed_candidates_and_frozen_up
       server.document.set(std::string{section} + ".tcp.security", "tls");
       server.document.set(std::string{section} + ".relay.client-enabled", false);
       server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-      BOOST_CHECK_THROW(server.configure(), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(server.runtime, server.document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
    }
-   server.start(); // No successful configure after the invalid mixed candidates.
+   server.start(); // Repeated input never replaces the original Noise policy.
    const auto endpoint = server.host->local_endpoint();
    BOOST_REQUIRE(endpoint);
    auto clients = std::vector<std::unique_ptr<fixture>>{};
    for (auto index = 0; index != 2; ++index) {
       auto client = std::make_unique<fixture>();
-      configure_tcp(*client, "noise");
+      set_tcp_config(*client, "noise");
       client->start();
       const auto connected = client->run(client->host->connect(*endpoint,
           {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
@@ -916,23 +939,24 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_invalid_mixed_candidates_and_frozen_up
          server.document = valid;
          server.document.set(std::string{section} + "." + path, number);
          server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-         BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+         BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
          BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
       }
    }
    server.document = valid;
    server.document.set(std::string{section} + ".tcp.security", "tls-and-noise");
    server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
    BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
    server.document = valid;
    server.document.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-   BOOST_CHECK_NO_THROW(server.configure());
-   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 2U);
+   BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
+   BOOST_TEST(server.diagnostics->snapshot().peers.size() == 1U);
+   BOOST_TEST(server.diagnostics->snapshot({.max_peers = 2}).peers.size() == 2U);
    BOOST_CHECK_NO_THROW(clients.front()->run(clients.front()->host->ping(server.host->local_peer(),
        {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false})));
    server.node.request_stop();
-   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
    server.run(server.node.shutdown());
-   BOOST_CHECK_THROW(server.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(server.configure(), forge::app::exceptions::invalid_state);
 }

@@ -13,6 +13,7 @@ module;
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 module forge.plugins.net.p2p.node.plugin;
 
@@ -92,12 +93,26 @@ forge::config::core::document valid_document() {
    return document;
 }
 
+template<class T> T run(forge::asio::runtime& runtime, boost::asio::awaitable<T> operation) {
+   auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(5s) != std::future_status::ready) { std::terminate(); }
+   return result.get();
+}
+
 void configure(forge::asio::runtime& runtime, np::plugin& plugin,
                const forge::config::core::document& document) {
-   auto result = boost::asio::co_spawn(runtime.context(),
-       plugin.configure({document, std::string{section}}), boost::asio::use_future);
-   if (result.wait_for(5s) != std::future_status::ready) { std::terminate(); }
-   result.get();
+   run(runtime, plugin.configure({document, std::string{section}}));
+}
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto plugin = np::plugin{};
+   auto failure = std::exception_ptr{};
+   try { configure(runtime, plugin, document); }
+   catch (...) { failure = std::current_exception(); }
+   // Failed input closes admission too. Each validation probe owns and joins
+   // its real cleanup before the next independent candidate is exercised.
+   run(runtime, plugin.shutdown());
+   if (failure) { std::rethrow_exception(failure); }
 }
 
 forge::config::core::document yaml_candidate(std::string_view text) {
@@ -178,20 +193,19 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_sparse_patches_preserve_preexisting_na
 
 BOOST_AUTO_TEST_CASE(p2p_transport_config_all_limits_reject_negative_fraction_overflow_and_native_zero) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto valid = valid_document();
-   configure(runtime, plugin, valid);
+   configure_fresh(runtime, valid);
    for (const auto& field : fields) {
       BOOST_TEST_CONTEXT(field.name) {
          for (const auto& invalid : {value{std::int64_t{-1}}, value{1.5}, value{"18446744073709551616"},
                                      value{std::uint64_t{0}}}) {
             auto document = valid;
             document.set(std::string{section} + ".quic." + field.name, invalid);
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
          auto document = valid;
          document.set(std::string{section} + ".quic." + field.name, std::uint64_t{1});
-         BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       }
    }
 }
@@ -229,8 +243,7 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_valid_yaml_and_strict_unknown_or_malfo
    BOOST_TEST(native.transport_limits.max_inbound_queued_bytes == 131072U);
    BOOST_TEST(native.transport_limits.max_inbound_queued_packets == 29U);
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, valid));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, valid));
    for (const auto* text : {
             "tcp:\n  securty: noise\n", "tpc: {}\n", "quic:\n  max-connection: 1\n", "quiic: {}\n",
             "quic:\n  max-frame-size: 1\n", "tcp: null\n", "quic: null\n", "tcp: noise\n",
@@ -241,40 +254,38 @@ BOOST_AUTO_TEST_CASE(p2p_transport_config_valid_yaml_and_strict_unknown_or_malfo
       BOOST_TEST_CONTEXT(text) {
          // Merge only this malformed policy into otherwise valid identity/persistence config.
          const auto document = yaml_candidate(text);
-         BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
       }
    }
    auto permitted = valid;
    permitted.set(std::string{section} + ".enabled", true);
    permitted.set("plugins.other.quic.max-frame-size", std::uint64_t{1});
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, permitted));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, permitted));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_transport_config_tls_only_requires_native_relay_client_disabled) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    auto document = valid_document();
    document.set(std::string{section} + ".tcp.security", "tls");
-   BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    document.set(std::string{section} + ".relay.client-enabled", false);
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_transport_config_native_quic_stream_wire_bound_is_checked_before_commit) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    auto document = valid_document();
    constexpr auto maximum = std::uint64_t{1} << 60;
    if constexpr (std::numeric_limits<std::size_t>::digits > 60) {
       document.set(std::string{section} + ".quic.max-streams-per-connection", maximum);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       document.set(std::string{section} + ".quic.max-streams-per-connection", maximum + 1);
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    } else {
       document.set(std::string{section} + ".quic.max-streams-per-connection",
                    static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)()));
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       document.set(std::string{section} + ".quic.max-streams-per-connection", maximum);
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    }
 }
