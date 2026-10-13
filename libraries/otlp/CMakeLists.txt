@@ -2,6 +2,7 @@ add_library(
    forge_otlp STATIC
    crash.cpp
    log_exporter.cpp
+   log_exporter_impl.cpp
    log_sink.cpp
 )
 forge_target_modules(forge_otlp otlp)

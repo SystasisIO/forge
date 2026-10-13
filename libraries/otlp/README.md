@@ -42,7 +42,6 @@ an exporter or contact a collector.
 - `forge.otlp.options` - resource, queue, batch and retry options.
 - `forge.otlp.crash` - POSIX crash-spool install and next-start resend helpers.
 - `forge.otlp.exceptions` - typed OTLP exception category.
-- `forge.otlp` - aggregate module.
 
 Target: `forge_otlp`.
 
@@ -110,6 +109,43 @@ tests or supervised helpers may disable it to exit cleanly after capture.
 - Queue overflow policy is explicit. Prefer dropping or blocking according to
   the application risk profile rather than growing queues without bounds.
 
+## Concurrency And Shutdown
+
+`enqueue()` and `metrics()` use a short queue/metrics lock. Async entry points
+capture their implementation owner before returning an awaitable; even a delayed
+awaitable does not retain a raw facade receiver. Callers may use other executors.
+The operation itself is spawned on the exporter's strand, not merely posted there
+once. Timers, retry state, cancellation and lifecycle transitions stay on that
+strand. The application must keep the supplied runtime alive until its exporter
+and outstanding awaitables are released; facade lifetime and runtime lifetime are
+different obligations.
+
+Each HTTP request runs in a separate coroutine chain on the same exporter strand.
+The HTTP connection's request-specific cancellation-state filter is confined to
+that chain and cannot suppress cancellation of a subsequent exporter retry timer.
+
+`async_flush()` shares the current queued drain. Cancelling a flush caller cancels
+only that wait, not the shared sink export. Direct `async_export()` operations
+are individually tracked and cancelled when their caller abandons the wait.
+HTTP/status failures remain best-effort failed-record results/counters.
+
+The first executing `async_shutdown()` closes admission, fixes one shutdown
+deadline and drains queued records. Concurrent/repeated shutdown calls share the
+same completion and terminal error; they do not restart or extend that deadline.
+At the deadline, cancellation reaches preexisting HTTP requests and retry waits,
+including direct exports. Shutdown joins their completion callbacks before
+returning. New direct exports fail with the existing `queue_closed` error;
+`enqueue()` returns false and accounts for the dropped record. A caller cancelled
+after shutdown begins cannot abandon the shared cleanup.
+
+Facade destruction without graceful shutdown closes admission under the short
+lock, then posts an owned cancellation/cleanup callback to the strand. It does
+not cancel live timers or manipulate the HTTP client from the destructor thread.
+After completed graceful shutdown, destruction schedules no new cleanup task.
+There are no detached tasks or exporter-owned threads/runtimes. As with other
+Asio components, runtime workers and participating caller executors must continue
+making progress while shutdown joins outstanding work.
+
 ## Common Mistakes
 
 - Adding the exporter and forgetting `async_flush()` during graceful shutdown.
@@ -122,6 +158,11 @@ tests or supervised helpers may disable it to exit cleanly after capture.
 
 - `test_forge_otlp` covers OTLP JSON shape, batching, queue overflow, retry,
   shutdown, redaction and crash-spool resend.
+- Its concurrency cases use a gated HTTP collector to cover delayed awaitables,
+  facade destruction, multi-executor flush/metrics/shutdown, shared shutdown,
+  cancellation and preexisting slow direct requests at the shutdown deadline.
+- Queued and direct 503-retry regressions confirm an already-started five-second
+  retry wait through a strand barrier before initiating a 100-millisecond shutdown.
 - `test_forge_package_otlp_component` verifies
   `find_package(Forge CONFIG REQUIRED COMPONENTS otlp)` and `Forge::forge_otlp`.
 - `test_forge_log`, `test_forge_http_websocket` and `test_forge_app` cover adjacent

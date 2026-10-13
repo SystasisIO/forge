@@ -23,16 +23,18 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
    virtual ~api() = default;
 
    boost::asio::awaitable<void> flush() {
-      (void)co_await flush(flush_request{});
-      co_return;
+      return discard_flush_result(flush(flush_request{}));
    }
 
    boost::asio::awaitable<::forge::plugins::log::otlp::metrics> metrics() {
-      co_return co_await metrics(metrics_request{});
+      return metrics(metrics_request{});
    }
 
    virtual boost::asio::awaitable<flush_result> flush(flush_request value) = 0;
    virtual boost::asio::awaitable<::forge::plugins::log::otlp::metrics> metrics(metrics_request value) = 0;
+
+ private:
+   static boost::asio::awaitable<void> discard_flush_result(boost::asio::awaitable<flush_result> operation);
 };
 
 } // namespace forge::plugins::log::otlp

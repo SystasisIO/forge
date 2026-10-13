@@ -102,37 +102,11 @@ log_config& log_config::get() {
 }
 
 logger log_config::get_logger(const std::string& name) {
-   std::lock_guard lock(get().log_mutex);
-   auto& loggers = get().logger_map;
-   if (const auto existing = loggers.find(name); existing != loggers.end()) {
-      return existing->second;
-   }
-   auto result = logger{name};
-   if (name != default_logger_name) {
-      if (const auto parent = loggers.find(default_logger_name); parent != loggers.end()) {
-         result.set_parent(parent->second);
-         result.set_enabled(parent->second.is_enabled());
-         result.set_log_level(parent->second.get_log_level());
-      }
-   }
-   loggers.emplace(name, result);
-   return result;
+   return logger::get(name);
 }
 
 void log_config::update_logger(const std::string& name, logger& log) {
-   std::lock_guard lock(get().log_mutex);
-   if (log.get_name().empty()) {
-      log.set_name(name);
-   }
-   if (name != default_logger_name && log.get_parent() == nullptr) {
-      if (const auto parent = get().logger_map.find(default_logger_name); parent != get().logger_map.end()) {
-         log.set_parent(parent->second);
-      }
-   }
-   get().logger_map[name] = log;
-   if (name == default_logger_name) {
-      logger::default_logger() = log;
-   }
+   logger::update(name, log);
 }
 
 bool configure_logging(const logging_config& config) {
@@ -176,9 +150,13 @@ bool log_config::configure_logging(const logging_config& config) {
          }
       }
 
-      std::lock_guard lock(get().log_mutex);
-      get().logger_map = std::move(loggers);
-      logger::default_logger() = parent;
+      auto retired_default = logger{parent};
+      {
+         std::lock_guard lock(get().log_mutex);
+         get().logger_map.swap(loggers);
+         retired_default = std::move(logger::default_logger());
+      }
+      // Retired routes and their sinks must be destroyed after unlocking.
       return true;
    } catch (const std::exception& error) {
       std::cerr << "logging configuration failed: " << error.what() << '\n';

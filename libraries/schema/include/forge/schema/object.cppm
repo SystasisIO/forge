@@ -517,8 +517,9 @@ template <typename T> class object_schema {
             return value->size();
          };
       }
-      rule.apply_default = [state = fields_, index = fields_->size()](T& object) {
-         const auto& self = (*state)[index];
+      rule.apply_default = [state = std::weak_ptr{fields_}, index = fields_->size()](T& object) {
+         const auto owner = lock_fields(state);
+         const auto& self = (*owner)[index];
          if (self.has_default) {
             self.assign_any(object, self.default_value);
          }
@@ -672,6 +673,15 @@ template <typename T> class object_schema {
 
  private:
    friend class field_builder<T>;
+
+   static std::shared_ptr<std::vector<field_rule<T>>> lock_fields(
+       const std::weak_ptr<std::vector<field_rule<T>>>& state) {
+      auto owner = state.lock();
+      if (!owner) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_value, "schema callback owner has expired");
+      }
+      return owner;
+   }
 
    struct path_catalog {
       std::set<std::string> fields;
@@ -863,10 +873,11 @@ template <typename T> class field_builder {
    }
 
    field_builder& non_empty() {
-      current().validators.push_back([state = schema_.fields_, index = index_](const T& object,
+      current().validators.push_back([state = std::weak_ptr{schema_.fields_}, index = index_](const T& object,
                                                                                std::string_view base_path,
                                                                                std::vector<diagnostic>& diagnostics) {
-         const auto& field = (*state)[index];
+         const auto owner = object_schema<T>::lock_fields(state);
+         const auto& field = (*owner)[index];
          if (field.kind != value_kind::string) {
             return;
          }
@@ -886,9 +897,10 @@ template <typename T> class field_builder {
 
    field_builder& min_items(std::size_t count) {
       current().validators.push_back(
-          [state = schema_.fields_, index = index_, count](const T& object, std::string_view base_path,
+          [state = std::weak_ptr{schema_.fields_}, index = index_, count](const T& object, std::string_view base_path,
                                                            std::vector<diagnostic>& diagnostics) {
-             const auto& field = (*state)[index];
+             const auto owner = object_schema<T>::lock_fields(state);
+             const auto& field = (*owner)[index];
              if (!field.read_size) {
                 return;
              }
@@ -903,9 +915,10 @@ template <typename T> class field_builder {
 
    field_builder& max_items(std::size_t count) {
       current().validators.push_back(
-          [state = schema_.fields_, index = index_, count](const T& object, std::string_view base_path,
+          [state = std::weak_ptr{schema_.fields_}, index = index_, count](const T& object, std::string_view base_path,
                                                            std::vector<diagnostic>& diagnostics) {
-             const auto& field = (*state)[index];
+             const auto owner = object_schema<T>::lock_fields(state);
+             const auto& field = (*owner)[index];
              if (!field.read_size) {
                 return;
              }
@@ -919,10 +932,11 @@ template <typename T> class field_builder {
    }
 
    field_builder& each_non_empty() {
-      current().validators.push_back([state = schema_.fields_, index = index_](const T& object,
+      current().validators.push_back([state = std::weak_ptr{schema_.fields_}, index = index_](const T& object,
                                                                                std::string_view base_path,
                                                                                std::vector<diagnostic>& diagnostics) {
-         const auto& field = (*state)[index];
+         const auto owner = object_schema<T>::lock_fields(state);
+         const auto& field = (*owner)[index];
          if (field.kind != value_kind::string_list) {
             return;
          }
@@ -945,10 +959,11 @@ template <typename T> class field_builder {
    template <auto Member> field_builder& unique_by() {
       using item_type = typename member_pointer_traits<decltype(Member)>::object_type;
       using member_type = std::remove_cvref_t<typename member_pointer_traits<decltype(Member)>::member_type>;
-      current().validators.push_back([state = schema_.fields_, index = index_](const T& object,
+      current().validators.push_back([state = std::weak_ptr{schema_.fields_}, index = index_](const T& object,
                                                                                std::string_view base_path,
                                                                                std::vector<diagnostic>& diagnostics) {
-         const auto& field = (*state)[index];
+         const auto owner = object_schema<T>::lock_fields(state);
+         const auto& field = (*owner)[index];
          const auto any_value = field.read_validation_any ? field.read_validation_any(object)
                                                           : std::optional<std::any>{field.read_any(object)};
          if (!any_value) {

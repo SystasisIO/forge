@@ -3,6 +3,7 @@ add_library(
    record.cpp
    thread_name_state.cpp
    logger.cpp
+   logger_impl.cpp
    sink_delivery.cpp
    logger_config.cpp
 )

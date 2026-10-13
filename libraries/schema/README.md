@@ -158,6 +158,27 @@ Scalar conversion and schema materialization failures that cannot be returned
 as diagnostics throw `forge::schema::exceptions::invalid_value`. Standard and
 Boost exceptions are confined to their implementation boundaries.
 
+## Schema Lifetime
+
+Schema copies share their field storage; moving a schema transfers that
+ownership. A live field builder also keeps the shared storage alive. Defaults
+and validators continue to observe builder changes through any surviving
+schema copy, including after additional fields grow the storage vector.
+
+`fields()` returns a borrowed const reference. Copying a `field_rule` preserves
+its independent metadata values, but its schema-dependent `apply_default` and
+built-in validators (`non_empty`, `min_items`, `max_items`, `each_non_empty`,
+`unique_by`) borrow the owning schema storage. They retain that owner for the
+duration of each invocation, without keeping the whole schema alive between
+calls. Extracting or copying these callbacks alone is not an ownership handle:
+after the last schema/builder owner is destroyed, invoking them throws
+`forge::schema::exceptions::invalid_value`, even when the supplied object would
+otherwise need no default or validation. Other independent field callbacks,
+such as member readers, are not subject to this owner check.
+
+Keep a schema copy or builder alive when retaining schema-dependent callbacks.
+This lifetime contract does not make concurrent schema mutation thread-safe.
+
 ## Risks And Anti-Patterns
 
 - Do not use schema rules as authorization, live connectivity or credential
