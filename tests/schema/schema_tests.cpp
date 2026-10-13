@@ -1,11 +1,16 @@
 #include <boost/describe.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include <any>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace forge_schema_tests {
@@ -33,6 +38,12 @@ struct optional_list_item {
 };
 
 struct optional_list_config {
+   std::optional<std::vector<std::string>> tags;
+   std::optional<std::vector<optional_list_item>> items;
+};
+
+struct lifetime_config {
+   std::optional<std::string> name;
    std::optional<std::vector<std::string>> tags;
    std::optional<std::vector<optional_list_item>> items;
 };
@@ -82,6 +93,7 @@ BOOST_DESCRIBE_STRUCT(forge_schema_tests::optional_config, (), (token, port))
 BOOST_DESCRIBE_STRUCT(forge_schema_tests::optional_default_config, (), (wrapped_port, raw_port))
 BOOST_DESCRIBE_STRUCT(forge_schema_tests::optional_list_item, (), (id))
 BOOST_DESCRIBE_STRUCT(forge_schema_tests::optional_list_config, (), (tags, items))
+BOOST_DESCRIBE_STRUCT(forge_schema_tests::lifetime_config, (), (name, tags, items))
 BOOST_DESCRIBE_STRUCT(forge_schema_tests::policy_list_config, (), (policies))
 BOOST_DESCRIBE_STRUCT(forge_schema_tests::byte_list_config, (), (payload))
 BOOST_DESCRIBE_STRUCT(forge_schema_tests::wide_range_config, (), (signed_value, unsigned_value))
@@ -221,6 +233,19 @@ template <> struct forge::schema::rules<forge_schema_tests::diagnostic_wire_reco
 
 namespace {
 
+auto make_lifetime_schema() {
+   using config = forge_schema_tests::lifetime_config;
+   auto schema = forge::schema::object<config>();
+   schema.field<&config::name>("name").default_value("initial").non_empty();
+   schema.field<&config::tags>("tags")
+       .default_value(std::vector<std::string>{"valid"})
+       .min_items(1).max_items(2).each_non_empty();
+   schema.field<&config::items>("items")
+       .default_value(std::vector<forge_schema_tests::optional_list_item>{{.id = "first"}, {.id = "second"}})
+       .unique_by<&forge_schema_tests::optional_list_item::id>();
+   return schema;
+}
+
 [[nodiscard]] bool has_error_code(const std::vector<forge::schema::diagnostic>& diagnostics, std::string_view code) {
    return std::ranges::any_of(diagnostics, [&](const forge::schema::diagnostic& entry) {
       return entry.level == forge::schema::severity::error && entry.code == code;
@@ -228,6 +253,125 @@ namespace {
 }
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(schema_copy_and_move_preserve_shared_defaults_and_all_validators) {
+   using config = forge_schema_tests::lifetime_config;
+   auto source = make_lifetime_schema();
+   auto copied = source;
+   auto assigned = forge::schema::object<config>();
+   assigned = source;
+   auto moved = std::move(copied);
+   auto move_assigned = forge::schema::object<config>();
+   move_assigned = std::move(assigned);
+   {
+      auto builder = forge::schema::field_builder<config>{source, 0};
+      builder.default_value("updated");
+   }
+   source = forge::schema::object<config>();
+   BOOST_CHECK(std::addressof(moved.fields()) == std::addressof(move_assigned.fields()));
+
+   for (const auto* schema : {&moved, &move_assigned}) {
+      auto value = config{};
+      BOOST_TEST(schema->validate(value, "config").empty());
+      schema->apply_defaults(value);
+      BOOST_REQUIRE(value.name.has_value());
+      BOOST_TEST(*value.name == "updated");
+      BOOST_REQUIRE(value.tags.has_value());
+      BOOST_REQUIRE_EQUAL(value.tags->size(), 1U);
+      BOOST_TEST(value.tags->front() == "valid");
+      BOOST_REQUIRE(value.items.has_value());
+      BOOST_REQUIRE_EQUAL(value.items->size(), 2U);
+      BOOST_TEST(schema->validate(value, "config").empty());
+
+      value.name = "";
+      value.tags = std::vector<std::string>{"", "b", "c"};
+      value.items = std::vector<forge_schema_tests::optional_list_item>{{.id = "same"}, {.id = "same"}};
+      const auto invalid = schema->validate(value, "config");
+      BOOST_REQUIRE_EQUAL(invalid.size(), 4U);
+      BOOST_TEST(invalid[0].path == "config.name");
+      BOOST_TEST(invalid[0].code == "schema.non_empty");
+      BOOST_TEST(invalid[1].path == "config.tags");
+      BOOST_TEST(invalid[1].code == "schema.max_items");
+      BOOST_TEST(invalid[2].path == "config.tags[0]");
+      BOOST_TEST(invalid[2].code == "schema.non_empty");
+      BOOST_TEST(invalid[3].path == "config.items");
+      BOOST_TEST(invalid[3].code == "schema.unique");
+
+      value = config{};
+      schema->apply_defaults(value);
+      value.tags = std::vector<std::string>{};
+      const auto too_short = schema->validate(value, "config");
+      BOOST_REQUIRE_EQUAL(too_short.size(), 1U);
+      BOOST_TEST(too_short.front().path == "config.tags");
+      BOOST_TEST(too_short.front().code == "schema.min_items");
+   }
+}
+
+BOOST_AUTO_TEST_CASE(schema_extracted_callbacks_reject_expired_owners_without_retaining_field_storage) {
+   using config = forge_schema_tests::lifetime_config;
+   auto fields = std::vector<forge::schema::field_rule<config>>{};
+   {
+      auto schema = make_lifetime_schema();
+      fields = schema.fields();
+      auto value = config{};
+      fields.front().apply_default(value);
+      BOOST_REQUIRE(value.name.has_value());
+      BOOST_TEST(*value.name == "initial");
+   }
+   auto apply_default = fields.front().apply_default;
+   auto validator = fields.front().validators.front();
+   auto value = config{.name = "unchanged"};
+   auto diagnostics = std::vector<forge::schema::diagnostic>{};
+   for (const auto& field : fields) {
+      BOOST_CHECK_THROW(field.apply_default(value), forge::schema::exceptions::invalid_value);
+      for (const auto& validate : field.validators) {
+         BOOST_CHECK_THROW(validate(value, "config", diagnostics), forge::schema::exceptions::invalid_value);
+      }
+   }
+   BOOST_TEST(*value.name == "unchanged");
+   BOOST_TEST(!value.tags.has_value());
+   BOOST_TEST(!value.items.has_value());
+   BOOST_TEST(diagnostics.empty());
+
+   // Independent copied values/readers remain usable after the schema dies.
+   BOOST_TEST(fields.front().name == "name");
+   BOOST_TEST(std::any_cast<std::optional<std::string>>(fields.front().read_any(value)).value() == "unchanged");
+   fields.clear();
+   BOOST_CHECK_THROW(apply_default(value), forge::schema::exceptions::invalid_value);
+   BOOST_CHECK_THROW(validator(value, "config", diagnostics), forge::schema::exceptions::invalid_value);
+}
+
+BOOST_AUTO_TEST_CASE(schema_live_builder_keeps_extracted_callbacks_valid_through_storage_growth) {
+   using config = forge_schema_tests::lifetime_config;
+   auto builder = std::optional<forge::schema::field_builder<config>>{};
+   auto fields = std::vector<forge::schema::field_rule<config>>{};
+   {
+      auto schema = make_lifetime_schema();
+      fields = schema.fields();
+      builder.emplace(schema, 0);
+   }
+   builder->default_value("builder-owned");
+   for (int item = 0; item < 32; ++item) {
+      static_cast<void>(builder->field<&config::name>("extra-" + std::to_string(item)));
+   }
+   auto value = config{};
+   for (const auto& field : fields) {
+      field.apply_default(value);
+   }
+   BOOST_REQUIRE(value.name.has_value());
+   BOOST_TEST(*value.name == "builder-owned");
+   auto diagnostics = std::vector<forge::schema::diagnostic>{};
+   for (const auto& field : fields) {
+      for (const auto& validate : field.validators) {
+         validate(value, "config", diagnostics);
+      }
+   }
+   BOOST_TEST(diagnostics.empty());
+   builder.reset();
+   BOOST_CHECK_THROW(fields.front().apply_default(value), forge::schema::exceptions::invalid_value);
+   BOOST_CHECK_THROW(fields.front().validators.front()(value, "config", diagnostics),
+                     forge::schema::exceptions::invalid_value);
+}
 
 BOOST_AUTO_TEST_CASE(schema_describes_fields_defaults_and_validation) {
    const auto schema = forge::schema::rules<forge_schema_tests::http_config>::define();

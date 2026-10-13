@@ -1,4 +1,12 @@
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/describe.hpp>
 #include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
@@ -12,6 +20,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -22,6 +31,8 @@
 #include <thread>
 #include <variant>
 #include <vector>
+
+#include "../otlp/controlled_collector.hxx"
 
 namespace otlp_log_fixtures {
 struct credentials {
@@ -329,6 +340,36 @@ void expect_contains(std::string_view haystack, std::string_view needle) {
    BOOST_TEST_CONTEXT("needle: " << needle) {
       BOOST_TEST(haystack.find(needle) != std::string_view::npos);
    }
+}
+
+boost::asio::awaitable<bool> observe_management_closed(std::shared_ptr<log_otlp::api> api) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   const auto deadline = std::chrono::steady_clock::now() + 2s;
+   while (std::chrono::steady_clock::now() < deadline) {
+      try {
+         static_cast<void>(co_await api->metrics(log_otlp::metrics_request{}));
+      } catch (const log_otlp::exceptions::exporter_unavailable&) {
+         co_return true;
+      }
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   }
+   co_return false;
+}
+
+boost::asio::awaitable<void> sample_management_metrics(std::shared_ptr<log_otlp::api> api) {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   for (auto count = 0; count != 128; ++count) {
+      try {
+         static_cast<void>(co_await api->metrics(log_otlp::metrics_request{}));
+      } catch (const log_otlp::exceptions::exporter_unavailable&) {
+         co_return;
+      }
+      co_await boost::asio::post(executor, boost::asio::use_awaitable);
+   }
+}
+
+template <typename T> void require_concurrent_ready(std::future<T>& future) {
+   BOOST_REQUIRE(future.wait_for(3s) == std::future_status::ready);
 }
 
 } // namespace
@@ -892,6 +933,154 @@ BOOST_AUTO_TEST_CASE(log_otlp_rejects_invalid_config_through_schema_and_domain_v
       auto document = plugin_config("http://localhost:4318", {logger_route("bad\nname")});
       BOOST_CHECK_THROW(harness.configure(document), log_otlp::exceptions::invalid_config);
    }
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_shutdown_joins_admitted_call_with_blocked_external_continuation) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   auto harness = plugin_harness{};
+   auto caller = forge::asio::runtime{{.worker_threads = 1}};
+   auto observer = forge::asio::runtime{{.worker_threads = 2}};
+   auto caller_strand = boost::asio::make_strand(caller.context());
+   auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
+   auto document = plugin_config(collector.endpoint(), {logger_route("plugin.join")});
+   document.set("plugins.log.otlp.request-timeout-ms", std::uint64_t{10000});
+   document.set("plugins.log.otlp.shutdown-timeout-ms", std::uint64_t{5000});
+   harness.configure(document);
+   harness.provide_and_start();
+   auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref()).shared();
+   // Constructing an awaitable is not admission and must not block shutdown.
+   auto never_started = api->flush(log_otlp::flush_request{});
+   ilog("plugin.join", "before stop", ("event", "fixture.before-stop"));
+   auto flush = boost::asio::co_spawn(caller_strand, api->flush(log_otlp::flush_request{}),
+                                      boost::asio::use_future);
+   BOOST_REQUIRE(collector.wait_for_requests(1));
+
+   auto entered = std::make_shared<std::promise<void>>();
+   auto blocked = entered->get_future();
+   auto unblock = std::make_shared<std::promise<void>>();
+   auto gate = unblock->get_future().share();
+   auto release_caller = boost::scope::scope_exit{[unblock] { unblock->set_value(); }};
+   boost::asio::post(caller_strand, [entered, gate] {
+      entered->set_value();
+      gate.wait();
+   });
+   require_concurrent_ready(blocked);
+   blocked.get();
+   harness.plugin.request_stop();
+   const auto before_shutdown = forge::asio::blocking::run(observer, api->metrics(log_otlp::metrics_request{}));
+   BOOST_TEST(before_shutdown.enqueued_records == 1U);
+   ilog("plugin.join", "after stop", ("event", "fixture.after-stop"));
+   auto samples = boost::asio::co_spawn(observer.context(), sample_management_metrics(api), boost::asio::use_future);
+   auto shutdown = boost::asio::co_spawn(harness.runtime.context(), harness.plugin.shutdown(), boost::asio::use_future);
+   auto closed = boost::asio::co_spawn(observer.context(), observe_management_closed(api), boost::asio::use_future);
+   require_concurrent_ready(closed);
+   BOOST_REQUIRE(closed.get());
+   collector.release();
+   BOOST_REQUIRE(collector.wait_for_requests(2));
+   // The transport is released, but flush cannot release its exporter on the
+   // blocked caller strand. Shutdown must join that accepted call, not just I/O.
+   BOOST_CHECK(shutdown.wait_for(100ms) == std::future_status::timeout);
+   BOOST_CHECK(flush.wait_for(0ms) == std::future_status::timeout);
+   unblock->set_value();
+   release_caller.set_active(false);
+   require_concurrent_ready(flush);
+   require_concurrent_ready(shutdown);
+   require_concurrent_ready(samples);
+   static_cast<void>(flush.get());
+   shutdown.get();
+   samples.get();
+   BOOST_CHECK_THROW(forge::asio::blocking::run(observer, std::move(never_started)),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(observer, api->flush(log_otlp::flush_request{})),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(observer, api->metrics(log_otlp::metrics_request{})),
+                     log_otlp::exceptions::exporter_unavailable);
+   const auto bodies = collector.bodies();
+   const auto body = std::accumulate(bodies.begin(), bodies.end(), std::string{});
+   expect_contains(body, "fixture.before-stop");
+   expect_contains(body, "fixture.after-stop");
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_cancelled_management_call_releases_admission_and_preserves_sink) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   auto harness = plugin_harness{};
+   auto caller = forge::asio::runtime{{.worker_threads = 2}};
+   auto caller_strand = boost::asio::make_strand(caller.context());
+   auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
+   harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.cancel")}));
+   harness.provide_and_start();
+   auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref()).shared();
+   ilog("plugin.cancel", "before cancellation");
+   auto signal = boost::asio::cancellation_signal{};
+   auto cancelled = boost::asio::co_spawn(caller_strand, api->flush(log_otlp::flush_request{}),
+       boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+   BOOST_REQUIRE(collector.wait_for_requests(1));
+   boost::asio::post(caller_strand, [&] { signal.emit(boost::asio::cancellation_type::all); });
+   require_concurrent_ready(cancelled);
+   BOOST_CHECK_THROW(static_cast<void>(cancelled.get()), boost::system::system_error);
+   harness.plugin.request_stop();
+   ilog("plugin.cancel", "final producer log");
+   auto surviving = boost::asio::co_spawn(caller.context(), api->flush(log_otlp::flush_request{}),
+                                         boost::asio::use_future);
+   collector.release();
+   require_concurrent_ready(surviving);
+   static_cast<void>(surviving.get());
+   const auto metrics = forge::asio::blocking::run(caller, api->metrics(log_otlp::metrics_request{}));
+   BOOST_TEST(metrics.exported_records == 2U);
+   BOOST_TEST(metrics.failed_records == 0U);
+   harness.shutdown();
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_held_api_and_delayed_call_are_safe_after_plugin_and_runtime_destruction) {
+   auto held = std::shared_ptr<log_otlp::api>{};
+   auto delayed = std::optional<boost::asio::awaitable<log_otlp::flush_result>>{};
+   {
+      BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+      auto harness = plugin_harness{};
+      auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
+      harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.held")}));
+      harness.provide_and_start();
+      held = harness.apis.get<log_otlp::api>(log_otlp::api::ref()).shared();
+      delayed.emplace(held->flush(log_otlp::flush_request{}));
+      harness.plugin.request_stop();
+      // No pending log work, so an unstarted awaitable cannot delay shutdown.
+      harness.shutdown();
+   }
+   auto caller = forge::asio::runtime{{.worker_threads = 2}};
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, std::move(*delayed)),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, held->metrics(log_otlp::metrics_request{})),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, held->flush(log_otlp::flush_request{})),
+                     log_otlp::exceptions::exporter_unavailable);
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_noarg_awaitables_are_safe_after_all_api_owners_and_runtime_are_destroyed) {
+   auto caller = forge::asio::runtime{{.worker_threads = 2}};
+   auto delayed_flush = std::optional<boost::asio::awaitable<void>>{};
+   auto delayed_metrics = std::optional<boost::asio::awaitable<log_otlp::metrics>>{};
+   auto retired_api = std::weak_ptr<log_otlp::api>{};
+   {
+      BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+      auto harness = plugin_harness{};
+      auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
+      harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.noarg-delayed")}));
+      harness.provide_and_start();
+      auto handle = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
+      auto api = handle.shared();
+      retired_api = api;
+      delayed_flush.emplace(api->flush());
+      delayed_metrics.emplace(api->metrics());
+      harness.plugin.request_stop();
+      // Both no-arg awaitables remain unstarted throughout shutdown. This scope
+      // then destroys every API handle, the registry, plugin and source runtime.
+      harness.shutdown();
+   }
+   BOOST_REQUIRE(retired_api.expired());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, std::move(*delayed_flush)),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, std::move(*delayed_metrics)),
+                     log_otlp::exceptions::exporter_unavailable);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

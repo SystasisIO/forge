@@ -1,4 +1,5 @@
 module;
+#include <atomic>
 #include <memory>
 #include <source_location>
 #include <string>
@@ -56,6 +57,7 @@ class logger {
 
  private:
    class impl;
+   // Access through the standard shared_ptr atomic free functions only.
    std::shared_ptr<impl> my;
 };
 

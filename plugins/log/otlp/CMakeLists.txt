@@ -2,6 +2,7 @@ add_library(
    forge_plugins_log_otlp STATIC
    plugin.cpp
    config.cpp
+   api.cpp
    api_impl.cpp
    plugin_impl.cpp
 )

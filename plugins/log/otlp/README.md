@@ -186,6 +186,27 @@ auto metrics = co_await logs->metrics();
 `flush()` waits for queued OTLP log records to be exported. `metrics()` returns
 queue/export counters from the underlying `forge_otlp` exporter.
 
+Both management methods may execute on other executors concurrently with reverse
+shutdown. Admission happens when their coroutine executes, under a short lock;
+constructing an awaitable is not admission. An admitted call pins its exporter
+until its coroutine completes or is cancelled. The plugin counts these calls and
+joins them with `forge.asio.notification`, after core export shutdown, before
+releasing its runtime owner. No lock covers an await or exporter I/O. An API
+handle, or an unstarted management awaitable, may outlive plugin/runtime teardown;
+executing it then raises the existing `exporter_unavailable` error.
+
+`request_stop()` leaves sink export **and management calls** available. Only
+explicit `shutdown()` closes new management admission. Accepted calls finish or
+cancel safely; cancellation of a flush waiter does not stop the shared sink drain.
+Startup failure/export-disabled mode also reports `exporter_unavailable`.
+Plugin lifecycle phases remain application-owner serialized; this contract does
+not introduce concurrent configure/startup/restart as supported lifecycle use.
+
+The exporter timeout bounds export work, not a caller executor that has stopped
+making progress. Plugin shutdown deliberately waits for admitted caller
+continuations to release their exporter owners. Keep those executors running
+until the join finishes; an unstarted awaitable never causes that wait.
+
 ## Boundaries
 
 ### Application Lifecycle Order
@@ -199,6 +220,11 @@ and P2P startup. Header resolution, optional crash capture and crash resend also
 occur in that phase. `startup()` is idempotent and does not attach a second sink.
 
 Shutdown runs in reverse order: producers finish before OTLP flush/shutdown.
+Finishing producers includes joining their in-progress synchronous logging calls.
+Detaching a sink prevents future route snapshots from acquiring it, but does not
+cancel a delivery that already captured the sink. Such a delivery must finish
+before the application's runtime is destroyed. Logging through detached routes
+can continue; the requirement concerns already captured OTLP deliveries.
 OTLP `request_stop()` does not close log admission. Application-added dependency
 edges must not require an explicitly disabled OTLP plugin. DB/P2P library and
 canonical plugin descriptors deliberately do not depend on telemetry export.
@@ -230,4 +256,7 @@ Keep a local sink when those best-effort export guarantees are insufficient.
 ## Tests
 
 - `test_forge_plugins_log_otlp`
+- Gated concurrency tests cover retained APIs after stop/teardown, delayed
+  unstarted calls, cancellation, multi-executor metrics/flush, and a blocked
+  external caller continuation that shutdown must join.
 - `test_forge_package_plugins_log_otlp`
