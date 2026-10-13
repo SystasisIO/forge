@@ -14,6 +14,7 @@ module forge.plugins.net.p2p.node.plugin;
 
 import forge.config.core.component;
 import forge.exceptions;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.mdns_policy;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;

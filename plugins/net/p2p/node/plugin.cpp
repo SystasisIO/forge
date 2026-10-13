@@ -63,6 +63,7 @@ import forge.db.object.index;
 import forge.db.object.object;
 import forge.exceptions;
 import forge.log.logger;
+import forge.net.p2p.connection_gater;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
