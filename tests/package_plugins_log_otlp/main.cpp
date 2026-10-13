@@ -1,3 +1,5 @@
+#include <string>
+
 import forge.plugins.log.otlp.plugin;
 
 int main() {
