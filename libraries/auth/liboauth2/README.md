@@ -3,8 +3,10 @@
 `forge_auth_liboauth2` implements `forge::auth::oauth2::token_verifier` using
 the resource-server public API of the liboauth2 fork. Its sole public
 module is `forge.auth.liboauth2.verifier`; vendor types remain private.
-This implementation is pending the final F0 matrix and independent review,
-not production acceptance. Legacy vendor defaults are not a supported profile.
+The pinned fork passed the strict-profile F0 matrix on macOS and Linux; see
+the [qualification report](../../../docs/donors/auth-liboauth2-fork-qualification.md).
+Whole-delivery integration and live acceptance remain separate gates. Legacy
+vendor defaults are not a supported profile.
 
 ## Configuration
 
@@ -93,8 +95,10 @@ counted; do not separately initialize/shut down liboauth2 in the same process.
 `test_forge_auth_liboauth2` uses a real generated-CA HTTPS fixture, CJOSE-signed
 tokens and the actual adapter for claims/purpose/isolation/cache-collision,
 size/URL/TLS/outage, cancellation/backpressure/drain and bounded clone refresh.
-This is a local fixture, not live IdP, Linux or installed-package acceptance.
-The coordinator owns test execution, package consumers and final qualification.
+This unit fixture alone is not live IdP or installed-package acceptance.
+Platform runs, package consumers and the separate real Keycloak fixture are
+recorded in the [iteration report](../../../docs/iterations/auth-api-resource-verification-v1.md).
+The coordinator owns execution and final qualification.
 
 Public dependencies: `forge_auth_oauth2`, `forge_asio`.
 Private dependencies: `oauth2-internal`, `Boost::url`; the vendor owns private

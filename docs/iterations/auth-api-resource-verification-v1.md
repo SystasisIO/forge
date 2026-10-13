@@ -1,7 +1,7 @@
 # Auth/API Resource Verification
 
 Date: 2026-10-13.
-Status: implementation in progress; maintained fork qualified, integration pending.
+Status: server implementation and resource acceptance passed; native interactive acceptance pending.
 Branch: `auth-api-resource-verification-v1`.
 Starting development commit: `411644237490a63a52d1f810336673367c962651`.
 
@@ -104,13 +104,99 @@ backend selection. Do not weaken acceptance to complete the adapter.
 
 ## Acceptance And Delivery
 
-Current pre-integration evidence: the real adapter's 17 cases pass on macOS
-(3.82 seconds) and Linux (3.76 seconds). Both use the same frozen source.
-Credential/session regressions, six installed Auth package consumers and
-bounded outbound-request preparation also passed focused macOS checks.
-HTTP/WebSocket shutdown repairs and native positive login acceptance remain
-open. All affected checks must run again after integration with current `dev`;
-these scoped results are not permission to merge an incomplete branch.
+The feature was integrated onto development commit
+`9eac8072575da0ccc1f1337aa456a1f0caecf25c` and rebuilt with LLVM 22.1.8,
+Ninja and `-j4` on macOS arm64 and Linux aarch64. Integration removed duplicate
+trusted-context declarations while preserving upstream parameter-only DTO
+handling, error renderers, buffered WebSocket upgrade input and owned-operation
+shutdown. A new regression covers typed admission denial through the upstream
+error renderer before payload decoding or service invocation.
+
+| Post-integration gate | Result | Evidence |
+| --- | --- | --- |
+| macOS verifier, trusted subject, HTTP/WS, preparation, parameters, renderer | 6/6 PASS, 15.58 s | `build-auth-resource/rebase-regression-tests.log` |
+| macOS credential/pairing/session/HTTP auth, verifier contract, client auth, HTTP plugin | 7/7 PASS, 3.99 s | `build-auth-resource/rebase-auth-tests.log` |
+| macOS fresh installed Auth package consumers | 6/6 PASS, 82.30 s | `build-auth-resource/rebase-package-tests.log` |
+| Linux auth, trusted subject, preparation, parameters and renderer | 11/11 PASS, 7.85 s | `build-auth-resource/linux/rebase-auth-tests.log` |
+| macOS structure, network plugin layout and SDK dependency/runtime policy | 4/4 PASS | `build-auth-resource/rebase-static-tests.log` |
+| Real Keycloak resource acceptance, macOS | PASS | `build-auth-resource/real-idp-acceptance.log` |
+| Real Keycloak resource acceptance, Linux | PASS | `build-auth-resource/linux/real-idp-acceptance.log` |
+| AppAuth browser login, Keychain restart and refresh | BLOCKED: login was not completed within the 900 s browser deadline | Not a positive native acceptance result |
+| Real oidc-agent Device Flow, process restart and refresh | NOT_RUN: disposable agent prepared, human enrollment not completed | Setup-required probes do not prove successful enrollment |
+
+The package and SDK policy rows are macOS evidence, not Linux package/SDK PASS.
+A separate Linux SDK configure attempt was blocked by the toolchain image's
+missing `libLLVMDemangle.a`; no complete Contract SDK build is claimed here.
+
+The resource fixture uses pinned Keycloak 26.8.0, actual client-credentials
+tokens, separate JWT and introspection verifiers, typed unary and server-stream
+calls through HTTP and WebSocket admission. A real RSA key rotation preserves
+the old public key; the same warmed JWT verifier accepts the new token without
+being recreated. Its 600-second snapshot cannot expire during this test. The
+driver waits two seconds before requesting rotation, respecting its explicit
+one-second unknown-key refresh cooldown; it never retries a rejected token.
+Shutdown PASS requires HTTP server stop, verifier drain and compute-pool join.
+
+The Python orchestrator uses Authlib 1.8.0, Requests 2.34.2 and joserfc 1.7.5 in
+a private Python 3.12 environment. It changes only a disposable realm whose
+ownership marker matches its private generated inputs. Tokens travel through
+private pipes, and evidence contains fixed labels only. The WebSocket test peer
+uses Beast because the Forge client currently has no custom Upgrade headers;
+this proves production server-side admission, not Forge WS client acquisition.
+Resource calls use isolated loopback HTTP/WS, while Keycloak endpoints use
+verified HTTPS. This is not a production ingress, user SSO or workload-exchange
+acceptance claim. See the [driver protocol](../../tests/integration/auth/README.md)
+and [issuer fixture](../../tests/auth/live/keycloak/README.md).
+
+Two independent reviewers found the integrated F3 and fixture source scopes
+clean after the cooldown correction. Whole-delivery CLEAN and push remain
+blocked on mandatory native interactive acceptance. No Forge development push,
+Gate pin update, tag or release has been performed. Generated build evidence is
+retained for the remaining acceptance and removed only after accepted integration.
+
+### Evidence Digests
+
+SHA-256 of the exact test driver source:
+`6aab0f070332e310f8d880ccb05741f7cb87fc84ed2d8c5e0002118c0d57438a`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| macOS six-target regression log | `d872a30e4050ceaf600078e11239ef22c0312c35b090b110f3e5e2057b530bf0` |
+| macOS seven-target auth log | `94c0fc13b265dd441e012d1c931f03aacb5a633e9bda66a4cc8700239a12addc` |
+| Installed consumer log | `feda75be051447c92d0f8a33cc7c7dff4ab8352376a488e3d23c9867ddf36a75` |
+| Linux eleven-target regression log | `5bb571c1fb78380419f948f75011f3dbb67f5aa3e44b0a56ddb4392a26747015` |
+| Resource PASS labels, identical on both platforms by design | `afacb304834ee0c406eb9eededfacfd7d16f0637a2e9e9dba188b8ceb8dbe182` |
+| macOS Mach-O resource executable | `9dea707e112be01e932966c59b0aec9ca4f252d118d85adf7fd43eb10f783da6` |
+| Linux ELF resource executable | `bc80858c1b4a0ffdc8aeea43d1cd9d9e392f21273b72e4b897d5c91af415d49c` |
+
+### Remaining Native Gate
+
+Use only the disposable users and public native clients from the fixture.
+Complete AppAuth Authorization Code + PKCE in the system browser, then run
+resume, post-expiry refresh, a second process resume and local invalidate.
+Enroll the real Linux agent with Device Flow from a separate browser, then run
+acquire, process resume, post-expiry refresh, unload and setup-required checks.
+For both providers, safe issuer refresh-grant counts must increase. Remove the
+isolated Keychain item, agent, fixture container/data and the exact temporary
+localhost certificate trust after testing, including interrupted attempts.
+Do not substitute service-account tokens or the passing resource fixture for
+these user-mediated flows. Refresh development ancestry before final delivery.
+
+### Interrupted Fixture Cleanup
+
+The isolated AppAuth Keychain item was invalidated. The `forge-auth-live`
+Compose project and its data volume, and the `forge-auth-resource-linux`
+container with its disposable agent, were removed. Generated fixture passwords,
+client credentials, realm import and TLS private key were deleted. Other
+projects' containers, volumes and cached images were not changed.
+
+Temporary user-level localhost certificate trust removal is still pending a
+macOS authorization dialog; it is not a completed cleanup gate. Retain the
+public certificate until the pending command finishes, then delete only its
+exact Keychain certificate and confirm it is no longer trusted. Its SHA-256 is
+`F15ECE0A65DF5E459537D9F7E28519B07778A17E836972991D62F2B27AAD5568`.
+Recreate disposable credentials and an explicitly trusted test certificate for
+the next native attempt; do not reuse the interrupted fixture's secrets.
 
 Credential migration is a scoped public source break, not a wire/storage reset.
 Document the mechanical consumer migration and preserve enum and field order
