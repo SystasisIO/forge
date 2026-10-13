@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/system_executor.hpp>
@@ -17,6 +18,8 @@ module;
 #include <vector>
 
 module forge.db.object.transaction;
+
+import forge.log.logger;
 
 import forge.db.core.exceptions;
 import forge.db.object.exceptions;
@@ -289,6 +292,8 @@ boost::asio::awaitable<void> transaction::commit() {
       FORGE_THROW_EXCEPTION(exceptions::unsupported_operation, "joined db object transaction does not own commit");
    }
    co_await active_transaction().commit();
+   dlog("forge.db.object", "object changes committed",
+        ("event", "changes.committed")("mutations", impl_->participant->committed_mutation_count()));
    co_return;
 }
 

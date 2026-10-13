@@ -8,6 +8,15 @@ retain/release/ref counts and bounded collection of unreferenced blobs. It does
 not own runtime GC scheduling, disk-pressure policy, encryption, erasure coding,
 manifests or product namespaces.
 
+## Logging
+
+The private `forge_log` dependency uses `forge.db.blob`. DEBUG lifecycle and
+autonomous `blob.committed` / `collection.committed` events run after the
+owning transaction has completed. Collection reports only removed/limit
+counts, including empty passes; it never emits routine INFO. Payloads, digests,
+owners, keys and native exception strings are omitted. Joined transactions do
+not invent separate Blob commit ownership or duplicate backend outcomes.
+
 ## Store
 
 ```cpp

@@ -40,6 +40,7 @@ class plugin final : public forge::app::plugin {
    boost::asio::awaitable<void> configure(forge::config::core::component_view view) override;
    boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override;
    boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override;
+   boost::asio::awaitable<void> after_initialize() override;
    boost::asio::awaitable<void> startup() override;
    void request_stop() noexcept override;
    boost::asio::awaitable<void> shutdown() override;

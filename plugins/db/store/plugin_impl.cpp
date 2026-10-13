@@ -2,6 +2,7 @@ module;
 
 #include <boost/asio/awaitable.hpp>
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -11,6 +12,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -20,6 +22,7 @@ module forge.plugins.db.store.plugin;
 import forge.api.core.binding;
 import forge.app.plugin_context;
 import forge.asio.affine;
+import forge.asio.exceptions;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.db.blob.store;
@@ -27,6 +30,7 @@ import forge.db.core.driver;
 import forge.db.core.exceptions;
 import forge.db.core.record;
 import forge.exceptions;
+import forge.log.logger;
 import forge.db.object.store;
 import forge.db.revision.store;
 import forge.plugins.db.store.exceptions;
@@ -63,7 +67,7 @@ void plugin::impl::configure(config value) {
       configured.emplace(record->name, std::move(record));
    }
 
-   auto lock = std::scoped_lock{mutex};
+   auto lock = std::unique_lock{mutex};
    const auto state = current.load();
    if (state == phase::starting || state == phase::ready || state == phase::started || state == phase::stopping ||
        state == phase::stopped) {
@@ -72,8 +76,12 @@ void plugin::impl::configure(config value) {
 
    settings = std::move(value);
    enabled = true;
-   stores = std::move(configured);
+   stores.swap(configured);
    current.store(phase::configured);
+   const auto count = stores.size();
+   lock.unlock();
+   dlog("forge.db.store", "store configuration accepted",
+        ("event", "configuration.accepted")("stores", count));
 }
 
 void plugin::impl::initialize() {
@@ -126,10 +134,17 @@ void plugin::impl::add_store(std::string name, std::shared_ptr<forge::db::core::
    record->options = std::move(options);
    record->driver = std::move(driver);
 
-   auto lock = std::scoped_lock{mutex};
+   auto lock = std::unique_lock{mutex};
    reject_started_setup();
    reject_duplicate_name(record->name);
-   stores.emplace(record->name, std::move(record));
+   const auto object = record->options.object.has_value();
+   const auto blob = record->options.blob.has_value();
+   const auto revision = record->options.revision.has_value();
+   stores.emplace(record->name, record);
+   lock.unlock();
+   dlog("forge.db.store", "external store registered",
+        ("event", "store.registered")("store", record->name)("backend", "custom")("owns_driver", false)
+        ("object", object)("blob", blob)("revision", revision));
 }
 
 boost::asio::awaitable<void> plugin::impl::open() {
@@ -176,8 +191,10 @@ boost::asio::awaitable<void> plugin::impl::open() {
       }
    }
 
+   const auto* failed = static_cast<const pending_open*>(nullptr);
    try {
       for (auto& item : pending) {
+         failed = &item;
          if (!item.driver) {
             item.driver = co_await make_configured_driver(*item.config);
             item.owns_driver = true;
@@ -218,6 +235,7 @@ boost::asio::awaitable<void> plugin::impl::open() {
          FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin initialization state changed");
       }
       for (auto& item : pending) {
+         failed = &item;
          const auto found = stores.find(item.name);
          if (found == stores.end()) {
             FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store is no longer registered",
@@ -234,17 +252,40 @@ boost::asio::awaitable<void> plugin::impl::open() {
       }
       current.store(phase::ready);
    } catch (...) {
-      auto lock = std::scoped_lock{mutex};
+      auto lock = std::unique_lock{mutex};
+      const auto stopping = current.load() == phase::stopping || current.load() == phase::stopped;
       if (current.load() == phase::starting) {
          current.store(restore_phase);
       }
+      lock.unlock();
+      const auto failed_store = failed ? std::string_view{failed->name} : std::string_view{};
+      const auto failed_backend = failed
+         ? (failed->config ? std::string_view{failed->config->driver} : std::string_view{"custom"})
+         : std::string_view{};
+      auto canceled = false;
+      try {
+         throw;
+      } catch (const forge::asio::exceptions::canceled&) {
+         canceled = true;
+      } catch (...) {
+      }
+      if (canceled) {
+         dlog("forge.db.store", "store composition canceled", ("event", "composition.canceled")
+              ("store", failed_store)("backend", failed_backend));
+      } else if (!stopping) {
+         elog("forge.db.store", "store composition failed", ("event", "composition.failed")
+              ("store", failed_store)("backend", failed_backend));
+      }
       throw;
    }
+   const auto owned_count = std::ranges::count_if(pending, [](const auto& item) { return item.owns_driver; });
+   dlog("forge.db.store", "store composition ready",
+        ("event", "composition.ready")("stores", pending.size())("owned_drivers", owned_count));
    co_return;
 }
 
 void plugin::impl::start() {
-   auto lock = std::scoped_lock{mutex};
+   auto lock = std::unique_lock{mutex};
    const auto state = current.load();
    if (state == phase::started) {
       return;
@@ -260,6 +301,9 @@ void plugin::impl::start() {
       record->started = true;
    }
    current.store(phase::started);
+   const auto count = stores.size();
+   lock.unlock();
+   ilog("forge.db.store", "store plugin started", ("event", "plugin.started")("stores", count));
 }
 
 void plugin::impl::request_stop() noexcept {
@@ -272,17 +316,25 @@ void plugin::impl::request_stop() noexcept {
 
 boost::asio::awaitable<void> plugin::impl::close() {
    auto owned = std::vector<std::shared_ptr<forge::db::core::driver>>{};
+   auto retired = std::vector<opened_store>{};
    {
       auto lock = std::scoped_lock{mutex};
+      if (shutdown_completed) {
+         co_return;
+      }
       owned.reserve(stores.size());
+      retired.reserve(stores.size());
       for (auto& [_, record] : stores) {
-         record->revisions.reset();
-         record->objects.reset();
-         record->blobs.reset();
+         retired.push_back(opened_store{
+            .driver = {},
+            .objects = std::move(record->objects),
+            .blobs = std::move(record->blobs),
+            .revisions = std::move(record->revisions),
+         });
          if (record->owns_driver && record->driver) {
             owned.push_back(std::move(record->driver));
          } else {
-            record->driver.reset();
+            retired.back().driver = std::move(record->driver);
          }
          record->owns_driver = false;
          record->opened = false;
@@ -290,6 +342,8 @@ boost::asio::awaitable<void> plugin::impl::close() {
       }
       current.store(phase::stopped);
    }
+   // Backend destruction can emit diagnostics and must not run under the plugin mutex.
+   retired.clear();
 
    auto first_error = std::exception_ptr{};
    for (auto& driver : owned) {
@@ -305,7 +359,19 @@ boost::asio::awaitable<void> plugin::impl::close() {
    }
 
    if (first_error) {
+      elog("forge.db.store", "owned driver shutdown failed", ("event", "shutdown.failed")
+           ("owned_drivers", owned.size()));
       std::rethrow_exception(first_error);
+   }
+   auto stopped_now = false;
+   {
+      auto lock = std::scoped_lock{mutex};
+      stopped_now = !shutdown_completed;
+      shutdown_completed = true;
+   }
+   if (stopped_now) {
+      ilog("forge.db.store", "store plugin stopped", ("event", "plugin.stopped")
+           ("owned_drivers", owned.size()));
    }
 }
 

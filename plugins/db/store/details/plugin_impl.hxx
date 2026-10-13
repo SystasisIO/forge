@@ -12,6 +12,7 @@ struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
    std::unordered_map<std::string, std::shared_ptr<managed_store>> stores;
    std::atomic<phase> current = phase::registered;
    bool enabled = true;
+   bool shutdown_completed = false;
 
    void configure(config value);
    void initialize();

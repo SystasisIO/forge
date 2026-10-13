@@ -18,4 +18,6 @@ target_link_libraries(
       forge_exceptions
       forge_db_ids
       forge_raw
+   PRIVATE
+      forge_log
 )

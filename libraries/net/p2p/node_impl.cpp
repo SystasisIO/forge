@@ -3,6 +3,7 @@ module;
 #include "details/rendezvous_time.hxx"
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -48,6 +49,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -734,7 +737,8 @@ void node::impl::launch_peer_exchange() {
                 stopping = self->stopped || self->peer_exchange_admission_closed;
              }
              if (!stopping) {
-                forge::exceptions::capture_and_log("P2P peer exchange refresh failed");
+                tlog("forge.net.p2p.discovery", "P2P peer exchange refresh failed",
+                     ("event", "peer_exchange.refresh_failed"));
              }
           }
        }));

@@ -1,5 +1,26 @@
 # DB Store Plugin
 
+## Logging
+
+`forge.db.store` owns plugin composition/ownership events, not native DB
+commits. INFO covers plugin start/stop; DEBUG covers configuration, external
+registration and composition readiness. `plugin.stopped` is emitted once after
+successful shutdown; repeated shutdown is quiet, and a failed cleanup does not
+mark shutdown complete or prevent a later cleanup attempt. `composition.failed`
+includes the logical store name and backend so one failed configured store is
+identifiable. Diagnostic context refers to existing owned records without
+allocating copies before the best-effort logging macro.
+No physical path, record key, payload or unsafe exception text is logged.
+
+Log delivery and last-owner resource destruction occur outside the plugin
+mutex. Programmatic drivers remain caller-owned (`owns_driver=false`) and
+are never closed by plugin shutdown. Configured drivers are plugin-owned;
+busy close with surviving sessions is not a warning. The plugin has no OTLP
+dependency: an application can configure the existing Forge routes/sinks
+before DB initialization, including an optional exporter owned by that app.
+
+## Ownership
+
 `forge::plugins::db::store` owns configured named physical DB stores for
 applications. Each named store owns one `forge::db::core::driver` and may expose
 `forge::db::object::store`, `forge::db::blob::store` and

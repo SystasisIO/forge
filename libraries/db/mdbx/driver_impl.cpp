@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <mdbx.h>
 
 #include <boost/asio/awaitable.hpp>
@@ -24,6 +25,8 @@ module;
 module forge.db.mdbx.driver;
 
 import :error;
+import forge.db.mdbx.diagnostics;
+import forge.log.logger;
 import forge.asio.affine;
 import forge.asio.gate;
 import forge.db.core.driver;
@@ -115,6 +118,9 @@ boost::asio::awaitable<void> driver_impl::create_checkpoint(std::string destinat
             throw;
          }
       });
+   ticket.release();
+   diagnostics::drain();
+   ilog("forge.db.mdbx", "checkpoint created", ("event", "checkpoint.created"));
 }
 
 boost::asio::awaitable<void> driver_impl::flush(bool sync) {
@@ -124,6 +130,10 @@ boost::asio::awaitable<void> driver_impl::flush(bool sync) {
    co_await executor_.execute(
       {.name = sync ? "mdbx-flush-sync" : "mdbx-flush-poll"},
       [environment = environment_, sync] { environment->flush(sync); });
+   ticket.release();
+   diagnostics::drain();
+   dlog("forge.db.mdbx", "environment flush request completed",
+        ("event", "environment.flush_request_completed")("sync", sync));
 }
 
 boost::asio::awaitable<void> driver_impl::close() {
@@ -138,6 +148,9 @@ boost::asio::awaitable<void> driver_impl::close() {
       {.name = "mdbx-close"},
       [environment = environment_] { environment->close(); });
    closed_.store(true, std::memory_order_release);
+   ticket.release();
+   diagnostics::drain();
+   ilog("forge.db.mdbx", "environment closed", ("event", "environment.closed"));
 }
 
 boost::asio::awaitable<void> driver_impl::shutdown_managed_lane() {

@@ -1,5 +1,7 @@
 module;
 
+#include <forge/log/macros.hpp>
+
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
@@ -27,6 +29,8 @@ module;
 #include <boost/asio/this_coro.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import forge.asio.notification;
 import forge.net.p2p.discovery;
@@ -308,14 +312,8 @@ boost::asio::awaitable<void> topology_manager::async_dial_worker(const std::shar
          settle(succeeded);
          cleanup();
          if (dial_failure && !stopping()) {
-            try {
-               std::rethrow_exception(dial_failure);
-            } catch (...) {
-               try {
-                  forge::exceptions::capture_and_log("P2P topology dial failed");
-               } catch (...) {
-               }
-            }
+            tlog("forge.net.p2p.discovery", "P2P topology dial failed",
+                 ("event", "topology.dial_failed")("source", static_cast<int>(candidate->result.discovered_by)));
          }
          if (candidate->result.discovered_by != discovery::source::mdns) {
             note_dial_result(candidate->result, succeeded);

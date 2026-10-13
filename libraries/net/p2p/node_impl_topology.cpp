@@ -3,6 +3,7 @@ module;
 #include "details/rendezvous_time.hxx"
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <array>
 #include <atomic>
@@ -49,6 +50,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -955,7 +958,8 @@ node::impl::async_collect_topology_peer_exchange(std::shared_ptr<cancellation_la
                          node_stopped = self->stopped || self->peer_exchange_admission_closed;
                       }
                       if (!node_stopped && p2p_code(error) != exceptions::code::canceled) {
-                         forge::exceptions::capture_and_log("P2P topology peer exchange query failed");
+                         tlog("forge.net.p2p.discovery", "P2P topology peer exchange query failed",
+                              ("event", "peer_exchange.query_failed")("code", static_cast<int>(p2p_code(error))));
                       }
                       co_return;
                    } catch (...) {
@@ -966,7 +970,8 @@ node::impl::async_collect_topology_peer_exchange(std::shared_ptr<cancellation_la
                          node_stopped = self->stopped || self->peer_exchange_admission_closed;
                       }
                       if (!node_stopped) {
-                         forge::exceptions::capture_and_log("P2P topology peer exchange query failed");
+                         tlog("forge.net.p2p.discovery", "P2P topology peer exchange query failed",
+                              ("event", "peer_exchange.query_failed"));
                       }
                       co_return;
                    }

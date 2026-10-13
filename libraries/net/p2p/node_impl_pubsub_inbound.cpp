@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <array>
@@ -52,6 +53,7 @@ module forge.net.p2p.node;
 import :lifecycle_stop_listener;
 
 import forge.exceptions;
+import forge.log.logger;
 import forge.asio.gate;
 import forge.asio.notification;
 import forge.crypto.asymmetric;
@@ -164,6 +166,8 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
             .generation = generation, .protocol = protocol, .session_id = session->id, .stream_id = stream.id(),
             .framed_rpc = payload};
       });
+      tlog("forge.net.p2p.pubsub", "P2P PubSub RPC received",
+           ("event", "pubsub.rpc_received")("session_id", session->id)("generation", generation)("bytes", payload.size()));
       auto received = pubsub::codec::received_rpc{};
       try {
          received = pubsub::codec::decode_received(payload, wire_options);
@@ -298,6 +302,11 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
             continue;
          }
          if (claim.status != pubsub_state::claim_status::claimed) {
+            if (claim.status == pubsub_state::claim_status::backpressured && claim.rejections != 0 &&
+                (claim.rejections & (claim.rejections - 1)) == 0) {
+               dlog("forge.net.p2p.pubsub", "P2P PubSub validation admission overloaded",
+                    ("event", "pubsub.overloaded")("session_id", session->id)("rejections", claim.rejections));
+            }
             continue;
          }
          auto finish = [this, &peer, &handler](void*) noexcept {
@@ -350,11 +359,16 @@ boost::asio::awaitable<void> node::impl::handle_pubsub_stream(std::shared_ptr<se
          admission.reset();
          if (result == pubsub::validation_result::retry) {
             defer_pubsub_message(key, claim.generation, session);
+            tlog("forge.net.p2p.pubsub", "P2P PubSub validation deferred",
+                 ("event", "pubsub.validation_deferred")("session_id", session->id)("generation", claim.generation));
             continue;
          }
          if (!complete_pubsub_message(key, claim.generation, result, session)) {
             continue;
          }
+         tlog("forge.net.p2p.pubsub", "P2P PubSub validation committed",
+              ("event", "pubsub.validation_committed")("session_id", session->id)("generation", claim.generation)
+              ("result", static_cast<int>(result)));
          trace_pubsub([&] {
             return pubsub::trace_event{.kind = pubsub::trace_kind::validation_committed, .peer = peer,
                .author = published.from, .subject = published.subject, .message_id = id, .seqno = published.seqno,

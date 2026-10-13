@@ -236,6 +236,7 @@ struct node::impl : std::enable_shared_from_this<impl> {
       struct claim {
          claim_status status = claim_status::duplicate;
          std::uint64_t generation = 0;
+         std::uint64_t rejections = 0; // Existing owner counter snapshotted for unlocked diagnostics.
       };
 
       std::map<std::string, pubsub::handler> handlers;

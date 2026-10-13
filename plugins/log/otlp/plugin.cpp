@@ -116,7 +116,7 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::after_initialize() {
    if (impl_->started) {
       co_return;
    }
@@ -140,6 +140,13 @@ boost::asio::awaitable<void> plugin::startup() {
    }
 
    try {
+      auto rollback = boost::scope::scope_exit{[this] {
+         impl_->crash_guard = forge::otlp::crash_guard{};
+         impl_->detach_sink();
+         impl_->sink.reset();
+         impl_->exporter.reset();
+         impl_->started = false;
+      }};
       auto options = make_exporter_options(impl_->settings);
       if (impl_->resolve_headers) {
          auto secure_headers = std::make_shared<std::vector<std::pair<std::string, forge::crypto::core::secret_bytes>>>(
@@ -182,8 +189,8 @@ boost::asio::awaitable<void> plugin::startup() {
             return;
          }
          auto logger = forge::logger::get(route.name);
-         logger.add_sink(impl_->sink);
          impl_->attached_loggers.push_back(attached_logger{.name = route.name, .logger = logger});
+         logger.add_sink(impl_->sink);
          forge::logger::update(route.name, logger);
       };
       for (const auto& route : impl_->settings.loggers) {
@@ -197,20 +204,18 @@ boost::asio::awaitable<void> plugin::startup() {
          }
       }
       impl_->started = true;
+      rollback.set_active(false);
    } catch (const exceptions::startup_failed&) {
-      impl_->detach_sink();
-      impl_->sink.reset();
-      impl_->exporter.reset();
-      impl_->started = false;
       throw;
    } catch (const std::exception& error) {
-      impl_->detach_sink();
-      impl_->sink.reset();
-      impl_->exporter.reset();
-      impl_->started = false;
       FORGE_THROW_EXCEPTION(exceptions::startup_failed, "failed to start OTLP logs exporter",
                             forge::exceptions::ctx("error", error.what()));
    }
+}
+
+boost::asio::awaitable<void> plugin::startup() {
+   // Direct plugin consumers may not use application_runtime's phase barrier.
+   co_await after_initialize();
 }
 
 void plugin::request_stop() noexcept {

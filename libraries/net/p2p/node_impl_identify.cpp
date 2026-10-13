@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <array>
@@ -45,6 +46,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -672,6 +675,7 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
    };
    auto launch = false;
    auto verified_dht_server = false;
+   auto certified_record_accepted = false;
    {
       auto lock = std::scoped_lock{mutex};
       const auto found = sessions.find(session->id);
@@ -708,6 +712,7 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
          }
       }
       if (certified) {
+         certified_record_accepted = true;
          update.signed_peer_record = document.signed_peer_record;
          update.signed_endpoints = validated_identify_addresses(certified->endpoints, peer, context);
       } else if (!received_push || !document.listen_endpoints.empty()) {
@@ -749,6 +754,11 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
          launch = schedule_identify_push_locked();
       }
    }
+   tlog("forge.net.p2p.connection", "P2P Identify metadata applied",
+        ("event", received_push ? "identify.push_applied" : "identify.metadata_applied")
+        ("session_id", session->id)("protocols", document.protocols.size())
+        ("addresses", document.listen_endpoints.size())("certified_record", certified_record_accepted)
+        ("dht_server", verified_dht_server));
    observe_address(session, document);
    notify_reachability_changed();
    refresh_relay_publication();

@@ -98,4 +98,5 @@ target_link_libraries(
       forge_plugins_crypto_secrets
    PRIVATE
       forge_api_stream
+      forge_log
 )

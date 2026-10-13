@@ -107,12 +107,6 @@ std::mutex& runtime_registry_mutex() {
    return mutex;
 }
 
-bool same_owner(const std::shared_ptr<forge::db::core::driver>& left,
-                const std::shared_ptr<forge::db::core::driver>& right) noexcept {
-   const auto less = std::owner_less<std::shared_ptr<forge::db::core::driver>>{};
-   return !less(left, right) && !less(right, left);
-}
-
 std::shared_ptr<runtime_state> acquire_runtime_state(const std::shared_ptr<forge::db::core::driver>& driver,
                                                      const forge::db::core::family& family) {
    auto guard = std::scoped_lock{runtime_registry_mutex()};
@@ -124,8 +118,9 @@ std::shared_ptr<runtime_state> acquire_runtime_state(const std::shared_ptr<forge
        entries.end());
 
    for (const auto& entry : entries) {
-      auto existing_driver = entry.driver.lock();
-      if (existing_driver && entry.family == family.name && same_owner(existing_driver, driver)) {
+      const auto less = std::owner_less<void>{};
+      if (!entry.driver.expired() && entry.family == family.name &&
+          !less(entry.driver, driver) && !less(driver, entry.driver)) {
          if (auto runtime = entry.runtime.lock()) {
             return runtime;
          }

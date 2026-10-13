@@ -5,6 +5,16 @@ It captures before-images from one active `forge::db::core::transaction`, commit
 the application changes and journal atomically, and can later revert only the
 current committed revision.
 
+## Logging
+
+The private `forge_log` dependency uses `forge.db.revision`. DEBUG initialization
+and owned `revision.committed` events are emitted outside active native writes
+and after Core completion hooks. Corrupt initialization has a constant ERROR
+reason after initialization cleanup. Before-images, deltas, record keys and
+exception strings are never logged. Joined revision scopes and staged
+revert/prune operations do not emit speculative commit events or invoke sinks
+while another owner still controls their transaction.
+
 ## Stability
 
 The DB Revision public C++ API is **Preview** in Forge 8.x. It may receive

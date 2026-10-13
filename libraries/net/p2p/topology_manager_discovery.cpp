@@ -1,5 +1,7 @@
 module;
 
+#include <forge/log/macros.hpp>
+
 #include "details/rendezvous_time.hxx"
 
 #include <algorithm>
@@ -30,6 +32,7 @@ module;
 module forge.net.p2p.node;
 
 import forge.exceptions;
+import forge.log.logger;
 import forge.asio.notification;
 import forge.net.p2p.discovery;
 import forge.net.p2p.exceptions;
@@ -130,7 +133,8 @@ boost::asio::awaitable<std::vector<discovery::result>> topology_manager::async_c
          if (!first_failure) {
             first_failure = std::current_exception();
          }
-         forge::exceptions::capture_and_log(message);
+         tlog("forge.net.p2p.discovery", "P2P discovery source failed",
+              ("event", "topology.source_failed")("source", message));
       };
 
       if (dht_enabled) {
@@ -144,7 +148,7 @@ boost::asio::awaitable<std::vector<discovery::result>> topology_manager::async_c
             ++successful_sources;
          } catch (...) {
             if (!stopping()) {
-               remember_failure("P2P topology DHT discovery failed");
+               remember_failure("dht");
             }
          }
       }
@@ -157,7 +161,7 @@ boost::asio::awaitable<std::vector<discovery::result>> topology_manager::async_c
             ++successful_sources;
          } catch (...) {
             if (!stopping()) {
-               remember_failure("P2P topology Rendezvous discovery failed");
+               remember_failure("rendezvous");
             }
          }
       }
@@ -171,7 +175,7 @@ boost::asio::awaitable<std::vector<discovery::result>> topology_manager::async_c
             ++successful_sources;
          } catch (...) {
             if (!stopping()) {
-               remember_failure("P2P topology peer exchange discovery failed");
+               remember_failure("peer_exchange");
             }
          }
       }
@@ -325,7 +329,7 @@ topology_manager::async_collect_rendezvous(const std::shared_ptr<cancellation_la
          note_rendezvous_failure(work.key);
          remember_failure(std::current_exception());
          if (!stopping()) {
-            forge::exceptions::capture_and_log("P2P topology rendezvous query failed");
+            tlog("forge.net.p2p.discovery", "P2P rendezvous query failed", ("event", "rendezvous.query_failed"));
          }
       }
    }
@@ -356,7 +360,7 @@ boost::asio::awaitable<void> topology_manager::async_unregister_rendezvous() {
       try {
          co_await callbacks_.rendezvous_unregister(state.point_index, key.namespace_name);
       } catch (...) {
-         forge::exceptions::capture_and_log("P2P topology rendezvous unregister failed");
+         dlog("forge.net.p2p.discovery", "P2P rendezvous unregister failed", ("event", "rendezvous.unregister_failed"));
       }
    }
 }

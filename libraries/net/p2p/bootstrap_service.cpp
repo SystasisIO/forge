@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -41,6 +42,7 @@ module forge.net.p2p.node;
 import forge.asio.notification;
 import forge.crypto.core.random;
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.identity;
@@ -226,6 +228,7 @@ boost::asio::awaitable<bool> bootstrap_service::async_attempt(const std::string&
    auto should_unprotect_previous = false;
    auto current = false;
    auto suppress_failure_log = false;
+   auto failures = std::size_t{};
    {
       const auto lock = std::scoped_lock{mutex_};
       const auto found = entries_.find(key);
@@ -255,6 +258,7 @@ boost::asio::awaitable<bool> bootstrap_service::async_attempt(const std::string&
                ++found->second.failures;
             }
             found->second.next_attempt = std::chrono::steady_clock::now() + retry_delay(found->second.failures);
+            failures = found->second.failures;
          }
       }
    }
@@ -265,17 +269,13 @@ boost::asio::awaitable<bool> bootstrap_service::async_attempt(const std::string&
          callbacks_.unprotect(*previously_protected);
       }
    }
-   if (failure && !suppress_failure_log) {
-      try {
-         std::rethrow_exception(failure);
-      } catch (const forge::exceptions::base& error) {
-         if (!forge::net::p2p::exceptions::is(error, forge::net::p2p::exceptions::code::canceled) &&
-             !forge::net::p2p::exceptions::is(error, forge::net::p2p::exceptions::code::closed)) {
-            forge::exceptions::capture_and_log("P2P bootstrap connect failed");
-         }
-      } catch (...) {
-         forge::exceptions::capture_and_log("P2P bootstrap connect failed");
-      }
+   // The existing retry ordinal bounds diagnostics without retaining another peer map.
+   if (failure && !suppress_failure_log && failures != 0 && (failures & (failures - 1)) == 0) {
+      dlog("forge.net.p2p.discovery", "P2P bootstrap connection failed",
+           ("event", "bootstrap.connect_failed")("failures", failures)("timeout_ms", timeout.count()));
+   } else if (connected && current) {
+      dlog("forge.net.p2p.discovery", "P2P bootstrap connection established",
+           ("event", "bootstrap.connected")("generation", generation));
    }
    co_return connected.has_value() && current;
 }
@@ -461,6 +461,15 @@ void bootstrap_service::start_maintenance(lifecycle_tracker& tracker) {
 }
 
 boost::asio::awaitable<void> bootstrap_service::async_maintenance() {
+   auto degraded = false;
+   // Health sampling copies endpoint state and calls an owner predicate. Its
+   // diagnostic failure must not terminate the existing maintenance operation.
+   try {
+      degraded = configured_count() != 0 && connected_count() == 0;
+      if (degraded && !stopping()) {
+         ilog("forge.net.p2p", "P2P bootstrap connectivity degraded", ("event", "lifecycle.degraded"));
+      }
+   } catch (...) {}
    try {
       while (!stopping()) {
          const auto now = std::chrono::steady_clock::now();
@@ -469,10 +478,22 @@ boost::asio::awaitable<void> bootstrap_service::async_maintenance() {
             break;
          }
          try {
+            const auto configured = configured_count();
+            const auto connected = connected_count();
+            const auto now_degraded = configured != 0 && connected == 0;
+            if (now_degraded != degraded) {
+               degraded = now_degraded;
+               ilog("forge.net.p2p", "P2P bootstrap connectivity changed",
+                    ("event", degraded ? "lifecycle.degraded" : "lifecycle.recovered")
+                    ("configured_bootstrap", configured)("connected_bootstrap", connected));
+            }
+         } catch (...) {}
+         try {
             co_await callbacks_.prune_peer_state();
          } catch (...) {
             if (!stopping()) {
-               forge::exceptions::capture_and_log("P2P peer persistence maintenance failed");
+               tlog("forge.net.p2p.discovery", "P2P peer persistence maintenance failed",
+                    ("event", "maintenance.persistence_failed"));
             }
          }
 
@@ -488,8 +509,9 @@ boost::asio::awaitable<void> bootstrap_service::async_maintenance() {
          static_cast<void>(co_await retry_wakeup_->async_wait_until(observed, deadline));
       }
    } catch (...) {
-      if (!stopping()) {
-         forge::exceptions::capture_and_log("P2P bootstrap maintenance failed");
+      if (!stopping() && !is_expected_cancellation(std::current_exception())) {
+         wlog("forge.net.p2p.discovery", "P2P bootstrap maintenance stopped unexpectedly",
+              ("event", "maintenance.stopped_unexpectedly"));
       }
    }
    const auto lock = std::scoped_lock{mutex_};

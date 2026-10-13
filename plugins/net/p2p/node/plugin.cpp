@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <forge/db/object/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -61,6 +62,7 @@ import forge.crypto.core.secret_bytes;
 import forge.db.object.index;
 import forge.db.object.object;
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
@@ -147,6 +149,9 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
 boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
    const auto config = decode_config(view);
    apply_config(*impl_, config);
+   dlog("forge.plugins.net.p2p.node", "P2P plugin configuration committed",
+        ("event", "config.committed")("listeners", config.listen.size())("bootstrap", config.bootstrap.size())
+        ("dht_profiles", config.dht_profiles.size()));
    co_return;
 }
 
@@ -158,6 +163,7 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
    provider.install<diagnostics_api>(std::make_shared<diagnostics_api_impl>(impl_));
    provider.install<events_api>(std::make_shared<events_api_impl>(impl_));
    provider.install<pubsub_api>(impl_->pubsub->interface());
+   dlog("forge.plugins.net.p2p.node", "P2P plugin APIs published", ("event", "api.published")("contracts", 7U));
    co_return;
 }
 
@@ -190,6 +196,8 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
       impl_->secrets = secrets;
       impl_->providers_bound = true;
    }
+   dlog("forge.plugins.net.p2p.node", "P2P plugin dependencies bound",
+        ("event", "dependencies.bound")("stores", stores != nullptr)("secrets", secrets != nullptr));
    co_return;
 }
 
@@ -332,6 +340,9 @@ boost::asio::awaitable<void> plugin::startup() {
    }
    state->pubsub->initialize(frozen->pubsub, node);
    state->mark_started();
+   if (state->is_started()) {
+      ilog("forge.plugins.net.p2p.node", "P2P plugin APIs ready", ("event", "api.ready"));
+   }
 }
 
 void plugin::request_stop() noexcept {
@@ -461,6 +472,13 @@ boost::asio::awaitable<void> plugin::shutdown() {
              attempt->done = true;
           }
           attempt->completed.notify();
+          if (registry_closed && peer_state_closed) {
+             ilog("forge.plugins.net.p2p.node", "P2P plugin APIs stopped", ("event", "api.stopped"));
+          }
+          if (failure) {
+             elog("forge.plugins.net.p2p.node", "P2P plugin shutdown failed",
+                  ("event", "api.shutdown_failed")("terminal", registry_closed && peer_state_closed));
+          }
           if (failure) { std::rethrow_exception(failure); }
        }(impl_),
        boost::asio::use_awaitable);

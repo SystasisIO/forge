@@ -76,6 +76,28 @@ class capture_sink final : public forge::sink {
    std::vector<forge::log_record> records;
 };
 
+class throwing_sink final : public forge::sink {
+ public:
+   void log(const forge::log_record&) override {
+      throw std::runtime_error{"secret-sink-error-must-not-be-exported"};
+   }
+};
+
+class recursive_sink final : public forge::sink {
+ public:
+   explicit recursive_sink(forge::logger route) : route_(std::move(route)) {}
+   void log(const forge::log_record&) override {
+      ++calls;
+      if (calls < 8) {
+         ilog(route_, "nested sink operation");
+      }
+   }
+   int calls = 0;
+
+ private:
+   forge::logger route_;
+};
+
 std::string read_file(const std::filesystem::path& path) {
    auto input = std::ifstream{path};
    return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
@@ -84,6 +106,63 @@ std::string read_file(const std::filesystem::path& path) {
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(log_test_suite)
+
+BOOST_AUTO_TEST_CASE(macros_contain_route_message_and_field_failures) {
+   auto logger = forge::logger{"test.failure-isolation"};
+   logger.set_log_level(forge::log_level::all);
+   auto captured = std::make_shared<capture_sink>();
+   logger.add_sink(captured);
+   const auto broken_route = []() -> forge::logger {
+      throw std::runtime_error{"secret-route"};
+   };
+   const auto broken_text = []() -> std::string {
+      throw std::runtime_error{"secret-message"};
+   };
+   BOOST_CHECK_NO_THROW(ilog(broken_route(), "ignored"));
+   BOOST_CHECK_NO_THROW(ilog(logger, broken_text()));
+   BOOST_CHECK_NO_THROW(ilog(logger, "ignored ${value}", ("value", broken_text())));
+   BOOST_TEST(captured->records.empty());
+   ilog(logger, "still usable");
+   BOOST_REQUIRE_EQUAL(captured->records.size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(sink_failure_does_not_interrupt_other_sinks_or_reenter_itself) {
+   auto logger = forge::logger{"test.sink-isolation"};
+   logger.set_log_level(forge::log_level::info);
+   auto recursive = std::make_shared<recursive_sink>(logger);
+   auto captured = std::make_shared<capture_sink>();
+   logger.add_sink(std::make_shared<throwing_sink>());
+   logger.add_sink(recursive);
+   logger.add_sink(captured);
+   BOOST_CHECK_NO_THROW(ilog(logger, "outer operation"));
+   BOOST_TEST(recursive->calls == 1);
+   BOOST_REQUIRE_EQUAL(captured->records.size(), 2U);
+   BOOST_TEST(captured->records.front().message == "nested sink operation");
+   BOOST_TEST(captured->records.back().message == "outer operation");
+   logger.remove_sink(recursive);
+}
+
+BOOST_AUTO_TEST_CASE(sink_recursion_is_suppressed_across_routes_and_guard_is_reusable) {
+   auto outer = forge::logger{"test.outer"};
+   auto nested = forge::logger{"test.nested"};
+   outer.set_log_level(forge::log_level::info);
+   nested.set_log_level(forge::log_level::info);
+   auto recursive = std::make_shared<recursive_sink>(nested);
+   auto captured = std::make_shared<capture_sink>();
+   auto failed = std::make_shared<throwing_sink>();
+   outer.add_sink(recursive);
+   outer.add_sink(failed);
+   nested.add_sink(recursive);
+   nested.add_sink(failed);
+   nested.add_sink(captured);
+   ilog(outer, "first");
+   ilog(outer, "second");
+   BOOST_TEST(recursive->calls == 2);
+   BOOST_REQUIRE_EQUAL(captured->records.size(), 2U);
+   nested.remove_sink(recursive);
+   ilog(nested, "after exception");
+   BOOST_TEST(captured->records.size() == 3U);
+}
 
 BOOST_AUTO_TEST_CASE(default_configuration_uses_a_structured_console_sink) {
    const auto config = forge::logging_config::default_config();

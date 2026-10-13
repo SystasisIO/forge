@@ -12,6 +12,7 @@ module;
 #include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -27,6 +28,7 @@ import forge.app.plugin_context;
 import forge.app.signals;
 import forge.asio.runtime;
 import forge.asio.task;
+import forge.log.logger;
 import forge.codec.yaml;
 import forge.config.core.component;
 import forge.config.core.decode;
@@ -167,6 +169,54 @@ forge::config::core::document yaml_candidate(std::string_view text) {
    return document;
 }
 } // namespace
+
+BOOST_AUTO_TEST_CASE(p2p_logging_plugin_configuration_is_count_only_and_optional) {
+   struct capture_sink final : forge::sink {
+      std::mutex mutex;
+      std::vector<forge::log_record> records;
+      void log(const forge::log_record& record) override {
+         const auto lock = std::scoped_lock{mutex};
+         records.push_back(record);
+      }
+   };
+   auto capture = std::make_shared<capture_sink>();
+   auto previous = forge::logger::get("forge.plugins.net.p2p.node");
+   auto route = forge::logger{"forge.plugins.net.p2p.node"};
+   route.set_log_level(forge::log_level::debug);
+   route.add_sink(capture);
+   forge::logger::update("forge.plugins.net.p2p.node", route);
+   auto restore = boost::scope::scope_exit{[&] { forge::logger::update("forge.plugins.net.p2p.node", previous); }};
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto plugin = np::plugin{};
+   auto document = valid_document();
+   document.set(std::string{section} + ".identity.certificate-secret", "unsafe-certificate-secret-sentinel");
+   document.set(std::string{section} + ".identity.private-key-secret", "unsafe-key-secret-sentinel");
+   configure(runtime, plugin, document);
+#ifndef FORGE_DISABLE_LOGGING
+   {
+      const auto lock = std::scoped_lock{capture->mutex};
+      BOOST_REQUIRE_EQUAL(capture->records.size(), 1U);
+      const auto& record = capture->records.front();
+      BOOST_TEST(record.logger == "forge.plugins.net.p2p.node");
+      BOOST_TEST(record.level.value == forge::log_level::debug);
+      BOOST_REQUIRE_EQUAL(record.fields.size(), 4U);
+      BOOST_TEST(record.fields.front().key == "event");
+      BOOST_TEST(record.fields.front().value == "config.committed");
+      const auto text = forge::format_json_log_record(record);
+      BOOST_TEST(text.find("unsafe-certificate-secret-sentinel") == std::string::npos);
+      BOOST_TEST(text.find("unsafe-key-secret-sentinel") == std::string::npos);
+      BOOST_TEST(text.find("unbound-store") == std::string::npos);
+   }
+#endif
+   route.set_enabled(false);
+   configure(runtime, plugin, document);
+   const auto lock = std::scoped_lock{capture->mutex};
+#ifndef FORGE_DISABLE_LOGGING
+   BOOST_TEST(capture->records.size() == 1U);
+#else
+   BOOST_TEST(capture->records.empty());
+#endif
+}
 
 BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_defaults_and_every_numeric_patch_are_independent) {
    const auto defaults = mapped({});

@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
 
@@ -10,6 +11,7 @@ module;
 module forge.db.revision.transaction;
 
 import forge.db.revision.exceptions;
+import forge.log.logger;
 
 namespace forge::db::revision {
 
@@ -38,7 +40,12 @@ revision_id_t transaction::id() const {
 
 boost::asio::awaitable<void> transaction::commit() {
    if (active_) {
+      const auto was_active = active_->active();
       co_await active_->commit();
+      if (was_active) {
+         dlog("forge.db.revision", "revision committed",
+              ("event", "revision.committed")("revision", scope_.id()));
+      }
    }
 }
 

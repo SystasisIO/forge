@@ -16,6 +16,7 @@ module;
 module forge.db.mdbx.driver;
 
 import :error;
+import forge.db.mdbx.diagnostics;
 import forge.db.core.record;
 import forge.db.core.exceptions;
 import forge.db.mdbx.exceptions;
@@ -68,6 +69,7 @@ environment::environment(MDBX_env* native,
       max_key_size_{max_key_size}, max_value_size_{max_value_size} {}
 
 std::shared_ptr<environment> environment::open(const config& value) {
+   diagnostics::claim_process();
    const auto path = std::filesystem::path{value.path};
    auto error = std::error_code{};
    const auto exists = std::filesystem::exists(path, error);
@@ -150,9 +152,10 @@ std::shared_ptr<environment> environment::open(const config& value) {
          FORGE_THROW_EXCEPTION(exceptions::open_failed,
                                "MDBX record limits are unavailable");
       }
-      return std::shared_ptr<environment>{new environment{
+      auto result = std::shared_ptr<environment>{new environment{
          native, std::move(families), static_cast<std::size_t>(max_key_size),
          static_cast<std::size_t>(max_value_size)}};
+      return result;
    } catch (...) {
       static_cast<void>(mdbx_env_close_ex(native, true));
       throw;

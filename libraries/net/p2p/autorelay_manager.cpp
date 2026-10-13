@@ -1,8 +1,10 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -24,6 +26,8 @@ module;
 #include <boost/asio/strand.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -242,12 +246,15 @@ autorelay_manager::time_point autorelay_manager::tick() {
    auto cancellations = std::vector<std::shared_ptr<cancellation_latch>>{};
    auto sources = std::map<peer_id, candidate>{};
    auto priority = std::vector<peer_id>{};
+   auto before = diagnostics::autorelay_state{};
+   auto after = diagnostics::autorelay_state{};
    for (const auto& value : snapshot.candidates) {
       if (sources.size() == _policy.max_candidates_per_refresh) { break; }
       if (sources.emplace(value.peer, value).second) { priority.push_back(value.peer); }
    }
    {
       const auto lock = std::scoped_lock{_mutex};
+      before = _stats;
       _stats.permitted = !_stopping && _stats.enabled && snapshot.permitted;
       for (auto& [peer, value] : _candidates) {
          const auto item = value.pending;
@@ -377,6 +384,7 @@ autorelay_manager::time_point autorelay_manager::tick() {
          increment(_stats.attempts);
       }
       increment(_round);
+      after = _stats;
    }
    for (const auto& cancellation : cancellations) { cancellation->request_stop(); }
    for (const auto& item : launches) {
@@ -390,6 +398,20 @@ autorelay_manager::time_point autorelay_manager::tick() {
    }
    static_cast<void>(launch_guard.release());
    _changed->notify();
+   if (before.permitted != after.permitted) {
+      ilog("forge.net.p2p.relay", "P2P AutoRelay permission changed",
+           ("event", "autorelay.permission_changed")("permitted", after.permitted));
+   }
+   if (before.successes != after.successes || before.automatic_reservations != after.automatic_reservations) {
+      dlog("forge.net.p2p.relay", "P2P AutoRelay reservation state changed",
+           ("event", "autorelay.reservations_changed")("reservations", after.automatic_reservations)
+           ("successes", after.successes)("renewals", after.renewals)("pending", after.pending_reservations));
+   }
+   // A reap may cross several sampling thresholds without landing on one.
+   if (std::bit_width(after.failures) > std::bit_width(before.failures)) {
+      dlog("forge.net.p2p.relay", "P2P AutoRelay reservation attempt failed",
+           ("event", "autorelay.reservation_failed")("failures", after.failures));
+   }
    return deadline;
 }
 

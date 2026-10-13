@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -50,6 +51,7 @@ import forge.asio.gate;
 import forge.asio.notification;
 import forge.crypto.asymmetric;
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.p2p.dht;
 import forge.net.p2p.discovery;
 import forge.net.p2p.endpoint;
@@ -100,6 +102,7 @@ boost::asio::awaitable<lifecycle_status> node::async_start() {
    const auto executor = operation.executor();
    auto failure = std::exception_ptr{};
    auto result = lifecycle_status{};
+   const auto started_at = std::chrono::steady_clock::now();
    try {
       result = co_await boost::asio::co_spawn(executor, self->async_start_lifecycle(), boost::asio::use_awaitable);
    } catch (...) {
@@ -108,6 +111,11 @@ boost::asio::awaitable<lifecycle_status> node::async_start() {
    operation.release();
 
    if (!failure) {
+      ilog("forge.net.p2p", "P2P node ready",
+           ("event", "lifecycle.ready")("configured_bootstrap", result.configured_bootstrap)
+           ("connected_bootstrap", result.connected_bootstrap)("degraded", result.degraded)
+           ("duration_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - started_at).count()));
       co_return result;
    }
    const auto phase = self->lifecycle.phase();
@@ -115,7 +123,7 @@ boost::asio::awaitable<lifecycle_status> node::async_start() {
       try {
          co_await async_stop();
       } catch (...) {
-         forge::exceptions::capture_and_log("P2P lifecycle rollback failed");
+         elog("forge.net.p2p", "P2P lifecycle rollback failed", ("event", "lifecycle.rollback_failed"));
       }
    }
    std::rethrow_exception(failure);

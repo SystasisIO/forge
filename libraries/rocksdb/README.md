@@ -8,6 +8,29 @@ boundaries.
 This library is the owner of native RocksDB status mapping. Public modules do
 not expose `::rocksdb::*`; native handles, options and iterators stay private.
 
+## Diagnostics
+
+The private `forge_log` dependency uses the constant route `forge.db.rocksdb`.
+INFO is limited to store open/close. `transaction.outcomes` contains DEBUG
+commit/rollback counts; failures contain numeric codes, never paths, keys,
+values or native status text. Ordinary not-found, contention and cancellation
+outcomes are DEBUG, not warnings.
+
+The official RocksDB `Logger` replaces the native diagnostic `LOG` file; WAL
+and durability options are unchanged. Logger/listener callbacks only update
+fixed atomic counters and never invoke Forge sinks, format vendor arguments,
+or change background error status. Native WARN/ERROR/FATAL severity is retained
+when these counters are delivered. Background errors include code counts,
+latest subcode/reason and the maximum severity observed for that code.
+
+CRUD and transaction methods do not deliver buffered diagnostics while record
+locks may be held. Counters drain at open, `flush_wal()` and final store
+destruction. A flush skips delivery while any transaction handle is retained,
+including a finished handle; release the handle first. An inactive backend can
+therefore retain diagnostics until explicit flush/close, not the next read.
+Call lifecycle/flush boundaries outside application-owned locks. There is no
+private worker, exporter dependency or deadline for idle delivery.
+
 ## When To Use
 
 - A library needs direct blocking RocksDB access without app/plugin lifecycle.

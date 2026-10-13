@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <array>
@@ -18,6 +19,7 @@ module;
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,6 +41,7 @@ module forge.net.p2p.node;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.exceptions;
+import forge.log.logger;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
@@ -186,18 +189,27 @@ bool path_manager::seal(const std::shared_ptr<operation>& owner, bool original_o
 
 void path_manager::finish(const std::shared_ptr<operation>& owner, hole_punch::status result, time_point now) noexcept {
    auto terminal = std::vector<std::weak_ptr<dial_batch>>{};
+   auto attempts = std::size_t{};
+   auto peer = std::string_view{};
+   auto session_id = std::uint64_t{};
    {
       const auto lock = std::scoped_lock{_mutex};
       if (owner->completed) { return; }
       owner->completed = true;
       owner->closing = true;
       owner->result = result;
+      attempts = owner->attempts;
+      peer = owner->peer.value;
+      session_id = owner->session_id;
       if (!owner->current && !owner->pending) { terminal = retire_locked(owner, now); }
    }
    _wakeup->notify();
    for (const auto& waiter : terminal) {
       if (const auto pending = waiter.lock()) { pending->complete_worker(); }
    }
+   dlog("forge.net.p2p.relay", "P2P DCUtR path upgrade completed",
+        ("event", "dcutr.completed")("session_id", session_id)("peer_id", std::string{peer})("attempts", attempts)
+        ("result", static_cast<int>(result)));
 }
 
 std::vector<std::weak_ptr<path_manager::dial_batch>>

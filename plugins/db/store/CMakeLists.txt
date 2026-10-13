@@ -32,7 +32,7 @@ target_link_libraries(
       Boost::asio
 )
 
-target_link_libraries(forge_plugins_db_store PRIVATE forge_asio)
+target_link_libraries(forge_plugins_db_store PRIVATE forge_asio forge_log)
 
 target_compile_definitions(
    forge_plugins_db_store PRIVATE

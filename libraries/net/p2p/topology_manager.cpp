@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -28,6 +29,8 @@ module;
 #include <vector>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import forge.asio.notification;
 import forge.exceptions;
@@ -404,16 +407,17 @@ void topology_manager::finish_parent(std::exception_ptr failure) noexcept {
    }
    changed_->notify();
    if (should_log) {
-      try {
-         forge::exceptions::capture_and_log("P2P topology manager stopped unexpectedly");
-      } catch (...) {
-         // Completion handlers must remain noexcept so lifecycle tracking is released.
-      }
+      wlog("forge.net.p2p.discovery", "P2P topology manager stopped unexpectedly",
+           ("event", "topology.stopped_unexpectedly"));
    }
 }
 
 void topology_manager::finish_refresh(std::uint64_t generation, std::vector<discovery::result> results,
                                       std::exception_ptr failure) noexcept {
+   const auto result_count = results.size();
+   const auto failed = static_cast<bool>(failure);
+   auto failures = std::uint64_t{};
+   auto stopped = false;
    if (clocks_.before_refresh_completion) {
       try {
          clocks_.before_refresh_completion();
@@ -434,8 +438,17 @@ void topology_manager::finish_refresh(std::uint64_t generation, std::vector<disc
          // The waiter slot was allocated before this generation could start.
          waiter->second.completed.emplace(completion{.results = std::move(results), .failure = std::move(failure)});
       }
+      failures = failed_refreshes_;
+      stopped = phase_ == phase::stopping || phase_ == phase::stopped;
    }
    changed_->notify();
+   if (!stopped && failed && failures != 0 && (failures & (failures - 1)) == 0) {
+      dlog("forge.net.p2p.discovery", "P2P topology refresh failed",
+           ("event", "topology.refresh_failed")("generation", generation)("failures", failures));
+   } else if (!stopped && !failed) {
+      tlog("forge.net.p2p.discovery", "P2P topology refresh completed",
+           ("event", "topology.refresh_completed")("generation", generation)("candidates", result_count));
+   }
 }
 
 void topology_manager::add_cancellation(const std::shared_ptr<cancellation_latch>& cancellation) {
@@ -570,7 +583,10 @@ boost::asio::awaitable<void> topology_manager::async_run() {
          if (reconcile) {
             try { co_await async_reconcile_sessions(); }
             catch (...) {
-               if (!stopping()) { forge::exceptions::capture_and_log("P2P mDNS reconciliation failed"); }
+               if (!stopping()) {
+                  tlog("forge.net.p2p.discovery", "P2P mDNS reconciliation failed",
+                       ("event", "mdns.reconciliation_failed"));
+               }
             }
             continue;
          }
@@ -587,7 +603,7 @@ boost::asio::awaitable<void> topology_manager::async_run() {
             }
          } catch (...) {
             if (!stopping()) {
-               forge::exceptions::capture_and_log("P2P topology manager timer failed");
+               tlog("forge.net.p2p.discovery", "P2P topology timer failed", ("event", "topology.timer_failed"));
             }
          }
          {
@@ -599,13 +615,14 @@ boost::asio::awaitable<void> topology_manager::async_run() {
       }
    } catch (...) {
       if (!stopping()) {
-         forge::exceptions::capture_and_log("P2P topology manager failed");
+         wlog("forge.net.p2p.discovery", "P2P topology manager failed", ("event", "topology.failed"));
       }
    }
    try {
       co_await async_unregister_rendezvous();
    } catch (...) {
-      forge::exceptions::capture_and_log("P2P topology rendezvous unregister failed");
+      dlog("forge.net.p2p.discovery", "P2P topology rendezvous unregister failed",
+           ("event", "rendezvous.unregister_failed"));
    }
 }
 
@@ -618,9 +635,6 @@ boost::asio::awaitable<void> topology_manager::async_refresh_generation(std::uin
       co_await async_reconcile_sessions();
    } catch (...) {
       failure = std::current_exception();
-      if (!stopping()) {
-         forge::exceptions::capture_and_log("P2P topology refresh failed");
-      }
    }
    finish_refresh(generation, std::move(results), std::move(failure));
 }

@@ -137,7 +137,7 @@ MDBX_txn* snapshot_session::clone::native() const noexcept {
 
 snapshot_session::clone snapshot_session::acquire_clone() {
    auto* transaction = static_cast<MDBX_txn*>(nullptr);
-   auto guard = std::scoped_lock{clones_mutex_};
+   auto guard = std::unique_lock{clones_mutex_};
    if (!clones_.empty()) {
       transaction = clones_.back();
       clones_.pop_back();
@@ -148,6 +148,7 @@ snapshot_session::clone snapshot_session::acquire_clone() {
       if (transaction != nullptr) {
          static_cast<void>(mdbx_txn_abort(transaction));
       }
+      guard.unlock();
       require_mdbx_success(code, "mdbx_txn_clone");
    }
    return clone{*this, transaction};

@@ -18,6 +18,8 @@ module;
 
 module forge.db.mdbx.driver;
 
+import forge.db.mdbx.result_diagnostics;
+
 import :error;
 import forge.asio.affine;
 import forge.asio.gate;
@@ -211,6 +213,7 @@ boost::asio::awaitable<void> transaction_session::commit() {
             require_mdbx_success(code, "mdbx_txn_commit");
          });
       finish();
+      result_diagnostics::process().record_commit(true);
    } catch (...) {
       if (transactions_.empty()) {
          finish();
@@ -246,6 +249,7 @@ boost::asio::awaitable<void> transaction_session::rollback() {
             require_mdbx_success(first_error, "mdbx_txn_abort");
          });
       finish();
+      result_diagnostics::process().record_commit(false);
    } catch (...) {
       if (transactions_.empty()) {
          finish();

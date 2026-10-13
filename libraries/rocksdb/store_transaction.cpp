@@ -168,14 +168,18 @@ void transaction::release_savepoint() {
 
 void transaction::commit() {
    ensure_active("failed to commit RocksDB transaction");
-   detail::throw_if_error(impl_->transaction->Commit(), "failed to commit RocksDB transaction");
+   const auto status = impl_->transaction->Commit();
+   detail::throw_if_error(status, "failed to commit RocksDB transaction");
    impl_->finished = true;
+   impl_->store->record_commit(true);
 }
 
 void transaction::rollback() {
    ensure_active("failed to rollback RocksDB transaction");
-   detail::throw_if_error(impl_->transaction->Rollback(), "failed to rollback RocksDB transaction");
+   const auto status = impl_->transaction->Rollback();
+   detail::throw_if_error(status, "failed to rollback RocksDB transaction");
    impl_->finished = true;
+   impl_->store->record_commit(false);
 }
 
 } // namespace forge::rocksdb

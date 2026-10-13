@@ -52,6 +52,11 @@ The logger expression is evaluated once. Its level filter runs before the
 message, record expression or field values are evaluated. A macro captures the
 user callsite, including file, line and function. `FORGE_DISABLE_LOGGING`
 removes every level and every argument expression at preprocessing time.
+Macros are best-effort: exceptions from route resolution, message/field
+preparation or delivery do not escape into the instrumented operation. The
+emergency path prints one fixed warning per process, never exception text.
+Do not put required application side effects in logging arguments. Direct APIs
+retain ordinary eager argument evaluation and may throw during preparation.
 
 Levels retain their order: `all` (the `tlog` level), `debug`, `info`,
 `warn`, `error`, `off`. An originating logger filters its own event.
@@ -158,7 +163,16 @@ Programmatic custom sinks derive from `forge::sink` and attach with
 `logger.add_sink(...)`; no appender factory or bridge exists. Sink callbacks
 run outside the routing lock. File/JSONL sinks lock their own output; console
 output is synchronized across all console sinks for a complete record.
-Sink failures are contained and reported to stderr.
+Sink failures are contained and reported by the same bounded emergency path.
+A sink is not invoked recursively while it is already delivering on that
+thread, even through a different route. Other sinks still receive the nested
+event. Sink callbacks must remain short; this guard is not an asynchronous
+queue and does not make synchronous file/console output non-blocking.
+
+Thread names are released at normal thread exit. Late static-destructor logs
+use the `shutdown` fallback instead of accessing destroyed thread-local state.
+`test_forge_log_shutdown` exercises the real macro path after TLS teardown and
+checks that throwing sinks produce only the fixed emergency message.
 
 ## Tests and migration
 
