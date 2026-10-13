@@ -89,7 +89,7 @@
     "rust_fixture/upgrade_observer.rs": "199bcbf3cc5911cb1c37df774dc8fdbe67003adeac22ae265d10e083ea29786e"
   },
   "runtime_artifact_sources": {
-    "../CMakeLists.txt": "ce99e0c180923546ddd786cdcf6b0da6b5947ce6bc45beef50b8be9db695795c",
+    "../CMakeLists.txt": "951de8d5d99fcbd8fa9868911721acde62b3171862e3a5ff569a777c5d39aef1",
     "autonat_acceptance.py": "73a46c9be9c0e68fd25c26065839126586783777fe2f49f99df284b1eb1dbb3c",
     "autonat_cases.py": "5c9e84517f80034d5af23e5351c533960c736e2d12501e7f67caec5f91d6397b",
     "autonat_evidence.py": "737e70d9e54a569efb890366f49ebeb57309b599a9468f48fa8753332fd7329d",
@@ -193,7 +193,7 @@
   "evidence_sources": {
     "donor_cases.json": "64cc5ef50aa0f899bb43736011b42564364ff0327e2653d49767901528643589",
     "p2p_donor_capabilities.json": "2df2880fb567a8cc16bf4a374f73d41bb4a37737e9e7fac0a3dfe3fe2030e87d",
-    "p2p_feature_inventory.json": "a07a8cb5ca5c202e39d49efca4f2fa0daca9a90172f7e1aa79b36a8848cc2a43"
+    "p2p_feature_inventory.json": "b79390438d9a40fbe637afb2e518a337e9e947076712f5401c353406a743e89e"
   },
   "regression_sources": {
     "../quic_p2p/control/node_session_fixture_extensions.cpp": "241871e9b4132ccf93b651d4dd604e36a9357bbd2dfe9bc54bb7cbc153604686",
