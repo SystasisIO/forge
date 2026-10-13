@@ -6,6 +6,7 @@ module;
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -278,7 +279,8 @@ boost::asio::awaitable<void> plugin::impl::open() {
       }
       throw;
    }
-   const auto owned_count = std::ranges::count_if(pending, [](const auto& item) { return item.owns_driver; });
+   const auto owned_count = static_cast<std::size_t>(
+       std::ranges::count_if(pending, [](const auto& item) { return item.owns_driver; }));
    dlog("forge.db.store", "store composition ready",
         ("event", "composition.ready")("stores", pending.size())("owned_drivers", owned_count));
    co_return;

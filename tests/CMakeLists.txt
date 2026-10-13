@@ -172,6 +172,7 @@ add_executable(
    unit/main.cpp
    log/log_tests.cpp
    log/log_disabled_tests.cpp
+   log/concurrency_tests.cpp
 )
 target_link_libraries(test_forge_log forge_log Boost::included_unit_test_framework)
 add_executable(test_forge_log_shutdown log/shutdown_helper.cpp)
@@ -183,11 +184,14 @@ add_test(NAME test_forge_log_shutdown
 )
 set_tests_properties(test_forge_log_shutdown PROPERTIES TIMEOUT 15)
 add_test(NAME test_forge_log COMMAND test_forge_log WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_log PROPERTIES TIMEOUT 60)
 
 add_executable(
    test_forge_otlp
    unit/main.cpp
    otlp/otlp_tests.cpp
+   otlp/concurrency_tests.cpp
+   otlp/controlled_collector.cpp
 )
 target_link_libraries(test_forge_otlp forge_otlp Boost::included_unit_test_framework)
 add_executable(forge_otlp_crash_helper otlp/crash_helper.cpp)
@@ -195,6 +199,7 @@ target_link_libraries(forge_otlp_crash_helper forge_otlp)
 add_dependencies(test_forge_otlp forge_otlp_crash_helper)
 target_compile_definitions(test_forge_otlp PRIVATE FORGE_OTLP_CRASH_HELPER="$<TARGET_FILE:forge_otlp_crash_helper>")
 add_test(NAME test_forge_otlp COMMAND test_forge_otlp WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_otlp PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_codec_json
@@ -1016,16 +1021,21 @@ add_executable(
    unit/main.cpp
    schema/schema_tests.cpp
 )
-target_link_libraries(test_forge_schema forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_schema
+   forge_schema forge_crypto_core forge_crypto_digest forge_crypto_asymmetric
+   forge_crypto_bls forge_variant forge_codec_json forge_raw
+   Boost::included_unit_test_framework)
 add_test(NAME test_forge_schema COMMAND test_forge_schema WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_schema PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_config_core
    unit/main.cpp
    config/config_tests.cpp
 )
-target_link_libraries(test_forge_config_core forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_config_core forge_config_core Boost::included_unit_test_framework)
 add_test(NAME test_forge_config_core COMMAND test_forge_config_core WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_config_core PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_codec_yaml
@@ -1896,6 +1906,7 @@ add_executable(
    plugins/details/config_assertions.hxx
    plugins/resolver_publication_race.cpp
    plugins/log_otlp_tests.cpp
+   otlp/controlled_collector.cpp
    plugins/details/resolver_publication_race.hxx
 )
 target_link_libraries(
@@ -1923,6 +1934,28 @@ target_compile_definitions(test_forge_plugins PRIVATE
    FORGE_HAS_MDBX=$<BOOL:${FORGE_HAS_MDBX}>
 )
 add_test(NAME test_forge_plugins COMMAND test_forge_plugins WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(
+   test_forge_plugins_log_otlp
+   unit/main.cpp
+   plugins/log_otlp_tests.cpp
+   otlp/controlled_collector.cpp
+)
+target_link_libraries(
+   test_forge_plugins_log_otlp
+   forge_plugins_log_otlp
+   forge_plugins_db_store
+   forge_plugins_crypto_secrets
+   forge_codec_json
+   Boost::included_unit_test_framework
+)
+target_compile_definitions(test_forge_plugins_log_otlp PRIVATE
+   FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>
+   FORGE_HAS_MDBX=$<BOOL:${FORGE_HAS_MDBX}>
+)
+add_test(NAME test_forge_plugins_log_otlp COMMAND test_forge_plugins_log_otlp
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_plugins_log_otlp PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_p2p_managed_remote

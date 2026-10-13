@@ -1,6 +1,8 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/scope/scope_exit.hpp>
 #include <forge/exceptions/macros.hpp>
 
@@ -17,6 +19,7 @@ module;
 module forge.plugins.log.otlp.plugin;
 
 import forge.api.core.registry;
+import forge.asio.notification;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.config.core.component;
@@ -112,7 +115,7 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
          FORGE_THROW_EXCEPTION(exceptions::startup_failed, "OTLP secret headers require the local Crypto Secrets API");
       }
    }
-   impl_->stopping = false;
+   impl_->reset_admission();
    co_return;
 }
 
@@ -120,7 +123,6 @@ boost::asio::awaitable<void> plugin::after_initialize() {
    if (impl_->started) {
       co_return;
    }
-   impl_->stopping = false;
    const auto configure_route = [](const logger_route& route) {
       auto logger = forge::logger::get(route.name);
       logger.set_name(route.name);
@@ -144,7 +146,7 @@ boost::asio::awaitable<void> plugin::after_initialize() {
          impl_->crash_guard = forge::otlp::crash_guard{};
          impl_->detach_sink();
          impl_->sink.reset();
-         impl_->exporter.reset();
+         impl_->clear_exporter();
          impl_->started = false;
       }};
       auto options = make_exporter_options(impl_->settings);
@@ -182,8 +184,8 @@ boost::asio::awaitable<void> plugin::after_initialize() {
             return result;
          };
       }
-      impl_->exporter = std::make_shared<forge::otlp::log_exporter>(*impl_->runtime, std::move(options));
-      impl_->sink = std::make_shared<forge::otlp::log_sink>(impl_->exporter);
+      auto exporter = std::make_shared<forge::otlp::log_exporter>(*impl_->runtime, std::move(options));
+      impl_->sink = std::make_shared<forge::otlp::log_sink>(exporter);
       const auto attach_export_sink = [this](const logger_route& route) {
          if (!route.export_logs) {
             return;
@@ -200,9 +202,10 @@ boost::asio::awaitable<void> plugin::after_initialize() {
          const auto crash_options = make_crash_spool_options(impl_->settings);
          impl_->crash_guard = forge::otlp::install_crash_capture(crash_options);
          if (impl_->settings.crash_spool.resend_on_startup) {
-            co_await forge::otlp::async_resend_crashes(*impl_->exporter, crash_options);
+            co_await forge::otlp::async_resend_crashes(*exporter, crash_options);
          }
       }
+      impl_->publish_exporter(std::move(exporter));
       impl_->started = true;
       rollback.set_active(false);
    } catch (const exceptions::startup_failed&) {
@@ -219,28 +222,32 @@ boost::asio::awaitable<void> plugin::startup() {
 }
 
 void plugin::request_stop() noexcept {
-   impl_->stopping = true;
+   // Producers and management callers remain live until reverse shutdown reaches OTLP.
 }
 
 boost::asio::awaitable<void> plugin::shutdown() {
-   impl_->stopping = true;
-   impl_->crash_guard = forge::otlp::crash_guard{};
-   auto exporter = std::move(impl_->exporter);
+   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+   auto state = impl_;
+   auto exporter = state->take_exporter();
+   state->crash_guard = forge::otlp::crash_guard{};
+   auto error = std::exception_ptr{};
    if (exporter) {
       try {
          co_await exporter->async_shutdown();
       } catch (...) {
-         impl_->detach_sink();
-         impl_->sink.reset();
-         impl_->started = false;
-         throw;
+         error = std::current_exception();
       }
    }
-   impl_->detach_sink();
-   impl_->sink.reset();
-   impl_->started = false;
-   impl_->runtime = nullptr;
-   impl_->resolve_headers = {};
+   state->detach_sink();
+   state->sink.reset();
+   state->started = false;
+   state->runtime = nullptr;
+   state->resolve_headers = {};
+   co_await state->wait_for_calls();
+   exporter.reset();
+   if (error) {
+      std::rethrow_exception(error);
+   }
 }
 
 forge::app::plugin_descriptor plugin::descriptor() {

@@ -63,6 +63,39 @@ Levels retain their order: `all` (the `tlog` level), `debug`, `info`,
 Parent routing is additive and does not refilter that event. A sink shared by
 the child and its parents receives it once; cycle detection bounds routing.
 
+### Concurrent routes and handles
+
+Logger copies share route state. Setters for enabled/level/name/parent, getters,
+sink attachment/removal and registry operations use the same routing mutex.
+A delivered record captures its originating filter, name and complete additive
+sink route under that mutex. Formatting and sink callbacks run after unlocking.
+Concurrent setters may therefore affect later records, not a delivery already
+captured. Separate setter calls are not one atomic configuration transaction;
+macro filtering remains a lazy preliminary check before the delivery check.
+
+Handles use the standard C++23 `shared_ptr` atomic load/store/exchange free
+functions, supported by the current libc++ toolchain. Copying, assigning and
+reading the same live logger handle can run concurrently. Each operation retains
+one implementation snapshot; changing a handle does not retarget existing
+copies. Move construction empties its source; move assignment preserves the
+existing swap behavior. A two-handle move assignment is not an atomic transaction
+for concurrent observers. Object destruction still requires the caller to end
+concurrent access to that object.
+
+`default_logger()` keeps its mutable reference API. `configure_logging(...)`
+replaces that handle atomically while publishing the registry. Ordinary
+one-argument macros resolve `"default"` by name each time, not through the mutable
+reference. Assigning the reference directly does not update the registry; use
+`logger::update("default", route)` to update both. Retained logger copies keep
+their previous routes after configuration replacement.
+
+Registry creation/update reads route state directly while holding the routing
+mutex; it must not call the public locking getters/setters from inside that
+lock. Retired handles and sinks are released after unlocking, including on
+parent replacement, registry update and configuration replacement. No executor,
+background worker, additional runtime dependency or asynchronous delivery is
+introduced by this synchronization.
+
 ## Diagnostic fields and redaction
 
 Each named value passes through
@@ -161,7 +194,11 @@ configuration changes are permitted.
 
 Programmatic custom sinks derive from `forge::sink` and attach with
 `logger.add_sink(...)`; no appender factory or bridge exists. Sink callbacks
-run outside the routing lock. File/JSONL sinks lock their own output; console
+and final sink destruction run outside the routing lock, so they can log or
+change routes reentrantly. Removing a sink excludes it from subsequent route
+snapshots, but does not cancel an already captured delivery: that snapshot keeps
+the sink alive until delivery completes. Custom sinks must synchronize their
+own mutable state when multiple logging threads call them. File/JSONL sinks lock their own output; console
 output is synchronized across all console sinks for a complete record.
 Sink failures are contained and reported by the same bounded emergency path.
 A sink is not invoked recursively while it is already delivering on that
@@ -181,6 +218,16 @@ callsite metadata, all levels and compile-disabled logging; nested Schema
 redaction and safe diagnostics; record/direct parity; parent deduplication;
 console/file/JSONL parity; concurrent console writes; configuration validation
 before file creation; and exception routing.
+
+[`concurrency_tests.cpp`](../../tests/log/concurrency_tests.cpp) adds fixed-size
+barrier/loop regressions for setters versus shared-route logging, name/parent
+changes and cycle deduplication, concurrent shared-handle replacement,
+configuration versus the mutable default reference and named resolution,
+default-macro registry semantics, in-flight sink removal, reentrant callbacks
+and last-owner destruction during route retirement. These tests use no sleeps
+or timing assumptions. The test process needs a finite timeout to turn a
+deadlock regression into a bounded failure; a race-detector run remains useful
+in addition to ordinary functional tests.
 
 OTLP and plugin tests cover delivery through the existing exporter.
 The installed package consumer compiles macro calls from installed modules and
