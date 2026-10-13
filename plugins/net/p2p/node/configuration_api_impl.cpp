@@ -118,4 +118,3 @@ void plugin::configuration_api_impl::set_dht_value_policies(forge::net::p2p::pro
 }
 
 } // namespace forge::plugins::net::p2p::node
-

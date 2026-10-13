@@ -168,6 +168,4 @@ void plugin::impl::finish_setup() noexcept {
    setup_changed.notify();
 }
 
-
 } // namespace forge::plugins::net::p2p::node
-
