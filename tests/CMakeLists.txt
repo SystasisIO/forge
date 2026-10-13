@@ -1101,6 +1101,7 @@ add_executable(
    quic_p2p/interface_state_tests.cpp
    quic_p2p/interface_watcher_tests.cpp
    quic_p2p/quic_tests.cpp
+   quic_p2p/quic_stream_eof_tests.cpp
    quic_p2p/quic_connector_cleanup_tests.cpp
    quic_p2p/quic_send_drain_tests.cpp
    quic_p2p/quic_cid_registry_tests.cpp
@@ -1152,6 +1153,7 @@ add_executable(
    quic_p2p/node_addressing_tests.cpp
    quic_p2p/node_bootstrap_addressing_tests.cpp
    quic_p2p/topology_tests.cpp
+   quic_p2p/rendezvous_unregister_tests.cpp
 )
 target_sources(
    test_forge_quic_p2p

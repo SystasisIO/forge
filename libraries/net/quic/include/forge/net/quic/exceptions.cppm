@@ -35,8 +35,6 @@ enum class code : std::uint16_t {
    connection_rejected = 19,
 };
 
-FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.net.quic")
-
 using invalid_endpoint = forge::exceptions::coded_exception<code, code::invalid_endpoint>;
 using invalid_options = forge::exceptions::coded_exception<code, code::invalid_options>;
 using dependency_unavailable = forge::exceptions::coded_exception<code, code::dependency_unavailable>;
@@ -56,6 +54,13 @@ using stream_reset = forge::exceptions::coded_exception<code, code::stream_reset
 using canceled = forge::exceptions::coded_exception<code, code::canceled>;
 using unsupported = forge::exceptions::coded_exception<code, code::unsupported>;
 using internal = forge::exceptions::coded_exception<code, code::internal>;
+
+class end_of_stream : public stream_closed {
+ public:
+   using stream_closed::stream_closed;
+};
+
+FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.net.quic")
 
 [[nodiscard]] inline std::optional<code> code_of(const forge::exceptions::base& error) noexcept {
    const auto& value = error.code();

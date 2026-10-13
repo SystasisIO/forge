@@ -28,6 +28,9 @@ namespace {
 
 [[noreturn]] void raise_transport_failure(
    const forge::exceptions::base& error) {
+   if (dynamic_cast<const exceptions::end_of_stream*>(&error)) {
+      FORGE_THROW_EXCEPTION(forge::net::transport::exceptions::end_of_stream, error.what());
+   }
    const auto code = exceptions::code_of(error);
    if (code == exceptions::code::connection_closed ||
        code == exceptions::code::stream_closed) {

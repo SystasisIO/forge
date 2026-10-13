@@ -1102,3 +1102,34 @@ gates pass, describe this as test integration with an evolving stack.
   Linux MDBX/RocksDB. It does not close the independent runtime gap between local
   UNREGISTER write completion and remote stream completion; that gap needs a
   bounded owned-completion fix and regressions before merge.
+- The subsequent native candidate now retains the UNREGISTER stream/resource
+  owner until typed normal remote EOF, after drained bytes, within the existing
+  operation deadline. Remote EOF is stream completion, not a protocol ACK.
+  Reset, cancellation and connection loss do not grant EOF; the additive EOF
+  subtypes preserve existing closed-category catches and numeric codes, including
+  the native QUIC-to-transport translation. No ACK, retry, sleep or global close
+  redesign was added.
+- The coordinator's Linux checkpoint passed six focused QUIC/Rendezvous cases
+  (609 assertions) and two Yamux cases (10 assertions). The complete five CTest
+  gates passed: structure, network-plugin structure, Yamux, native QUIC/P2P and
+  feature inventory (`forge-stage7-eof-full-native.log`). Plugins, managed-remote
+  and DB Store all passed (`forge-stage7-eof-plugin-regressions.log`), followed by
+  five successful DB Store repeats (`forge-stage7-eof-db-repeat.log`). Descriptor
+  validation, all 194 configured Python regressions and the shared checker
+  self-test also passed. Logs are retained outside the source tree. These are
+  dirty-candidate results, not acceptance evidence for a clean exact head.
+- A negative mutation removing the remote-completion barrier failed the
+  TCP/Yamux held-operation check as expected. The restored
+  `libraries/net/p2p/node_impl_topology.cpp` SHA256 is
+  `35332ec7d0488b25de5a2e75342ff0ce2c5232f20e0e115fabec6432fe11e854`.
+  This mutation proves the TCP/Yamux regression gate only; no QUIC mutation
+  result is claimed.
+- The new Forge-to-Rust automatic-manager-unregister phase compiled but has not
+  yet run live. It preserves the original register/discover checks and adds a
+  distinct managed identity, joined refresh/stop, full no-cookie observations,
+  exact managed/control identities, signed control continuity and TTL7200,
+  with logged unregister failures treated as failures even when stop returns.
+  The final configured matrices and independent validators, installed-package
+  checks and clean exact-head acceptance remain pending. Rust's original
+  whole-host QUIC shutdown remains `NOT_PROVEN`; these native/local results do
+  not change that separate limitation or complete Stage 7.

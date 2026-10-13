@@ -34,7 +34,8 @@ enum class engine_error_kind {
    stream_closed,
    stream_reset,
    canceled,
-   internal_error
+   internal_error,
+   end_of_stream
 };
 
 class engine_failure final {

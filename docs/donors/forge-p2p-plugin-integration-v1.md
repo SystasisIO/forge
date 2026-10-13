@@ -501,3 +501,27 @@ local observation patch and its results remain explicitly separate.
 
 Spine integration is a later discussion. It is not part of Stage 7 acceptance,
 and eventual product feedback cannot replace Stage 8 production proof.
+
+### Rendezvous Shutdown Completion
+
+Pinned Rust `22fb4c784fc55ad8b15d05fdc9f98d663107d4cb`,
+`protocols/rendezvous/src/server.rs`, handles `Message::Unregister` by removing
+the authenticated peer's registration and returning no application response.
+`protocols/request-response/src/handler.rs` then closes the stream in its
+`ResponseOmission` path. The request is length-delimited; the server does not
+need the client's FIN to decode it. Forge must not invent an unregister ACK.
+
+The configured shutdown regression exposed a gap between locally completing
+the UNREGISTER write and the server processing it. The correction keeps the
+existing bounded operation and stream resource owner alive until normal remote
+FIN, then closes locally. Reset, connection loss, cancellation, timeout and
+unexpected response data are not successful completion. Additive typed EOF
+exceptions retain the existing transport error categories and numeric codes;
+they distinguish normal remote FIN from those failures without parsing text.
+
+This is an orderly-completion barrier, not a transactional remote durability
+guarantee: a failed or malicious peer can leave a registration until its TTL.
+The existing raw `rendezvous_lifecycle` donor fixture invokes manual unregister
+and must not be reported as automatic node-owned shutdown evidence. New focused
+regressions and fresh donor/configured acceptance are required before crediting
+this correction as verified.

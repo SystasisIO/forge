@@ -99,11 +99,14 @@ boost::asio::awaitable<std::vector<std::uint8_t>> engine_stream::async_read() {
           if (stream->reset || stream->remote_read_reset) {
              throw_engine(engine_error_kind::stream_reset, "QUIC stream was reset while reading");
           }
-          if (connection->canceled) {
+          if (connection->canceled || connection->cancellation_requested.load(std::memory_order_acquire)) {
              throw_engine(engine_error_kind::canceled, "QUIC connection was canceled while reading");
           }
-          if (connection->closing) {
+          if (connection->closing || connection->close_started) {
              throw_engine(engine_error_kind::connection_closed, "QUIC connection closed while reading");
+          }
+          if (stream->remote_read_closed) {
+             throw_engine(engine_error_kind::end_of_stream, "QUIC stream reached remote FIN");
           }
           throw_engine(engine_error_kind::stream_closed, "QUIC stream read side is closed");
        },

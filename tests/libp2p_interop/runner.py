@@ -1526,6 +1526,9 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
             result = run_dial(
                 dialer_binary, dialer, scenario, peer_id, addr, work, transport=transport,
                 pnet_key_file=pnet_key_file, pnet_fingerprint=pnet_fingerprint,
+                payload="automatic_unregister" if (
+                    scenario == "rendezvous_register_discover" and (dialer, listener) == ("forge", "rust")
+                ) else None,
             )
         if pnet_profile:
             require_pnet_dial_evidence(result, dialer)
@@ -1534,6 +1537,12 @@ def run_pair_with_transport(dialer_binary: Path, dialer: str, listener_binary: P
                 raise RuntimeError("Go libp2p did not receive Forge's signed Identify peer record")
         if scenario == "rendezvous_register_discover":
             require_rendezvous_register_discover_evidence(result, dialer)
+            if (dialer, listener) == ("forge", "rust"):
+                from check_stage6_acceptance import validate_automatic_rendezvous_unregister
+                errors = validate_automatic_rendezvous_unregister(
+                    result, {"dialer": dialer, "listener": listener, "peer_id": peer_id})
+                if errors:
+                    raise RuntimeError("Forge automatic Rendezvous UNREGISTER: " + "; ".join(errors))
         if scenario == "rendezvous_lifecycle":
             require_rendezvous_lifecycle_evidence(result, dialer, listener)
         if scenario == "dht_provide_find_provider":

@@ -1539,10 +1539,48 @@ boost::asio::awaitable<void> yamux_close_flushes_pending_data_and_read_after_clo
    co_await outbound.async_close();
    auto received = co_await inbound.async_read();
    BOOST_CHECK_EQUAL_COLLECTIONS(received.begin(), received.end(), payload.begin(), payload.end());
-   BOOST_CHECK_THROW((void)co_await inbound.async_read(), forge::net::yamux::exceptions::closed);
+   BOOST_CHECK_EXCEPTION((void)co_await inbound.async_read(), forge::net::yamux::exceptions::closed,
+       [](const auto& error) {
+          return dynamic_cast<const forge::net::yamux::exceptions::end_of_stream*>(&error) &&
+              error.code().value() == 5 &&
+              forge::net::yamux::exceptions::code_of(error) == forge::net::yamux::exceptions::code::closed;
+       });
 
    co_await left.async_close();
    co_await right.async_close();
+}
+
+boost::asio::awaitable<void> yamux_remote_fin_does_not_mask_reset_or_session_loss() {
+   const auto executor = co_await boost::asio::this_coro::executor;
+   for (const auto reset : {false, true}) {
+      auto pair = make_stream_pair(executor);
+      auto left = forge::net::yamux::session{std::move(pair.left), forge::net::yamux::side::initiator};
+      auto right = forge::net::yamux::session{std::move(pair.right), forge::net::yamux::side::responder};
+      auto accept = spawn_result<forge::net::transport::stream>(executor, right.async_accept_stream());
+      auto outbound = co_await left.async_open_stream();
+      auto inbound = co_await take_result_for(accept, std::chrono::seconds{1});
+      co_await outbound.async_close();
+      auto fin = spawn_result<bytes>(executor, inbound.async_read());
+      BOOST_CHECK_THROW((void)co_await take_result_for(fin, std::chrono::seconds{1}),
+                        forge::net::yamux::exceptions::end_of_stream);
+      if (reset) { inbound.request_cancel(); }
+      else { right.cancel(); }
+      BOOST_CHECK_EXCEPTION((void)co_await inbound.async_read(), forge::exceptions::base,
+          [reset](const auto& error) {
+             const auto code = forge::net::yamux::exceptions::code_of(error);
+             return !dynamic_cast<const forge::net::yamux::exceptions::end_of_stream*>(&error) &&
+                 (reset ? code == forge::net::yamux::exceptions::code::stream_reset
+                        : code == forge::net::yamux::exceptions::code::canceled ||
+                          code == forge::net::yamux::exceptions::code::closed ||
+                          code == forge::net::yamux::exceptions::code::stream_reset);
+          });
+      for (auto* session : {&left, &right}) {
+         try { co_await session->async_close(); }
+         catch (const forge::net::yamux::exceptions::canceled&) {
+            if (reset) { throw; }
+         }
+      }
+   }
 }
 
 boost::asio::awaitable<void> yamux_limits_and_malformed_frames_are_typed() {
@@ -3294,6 +3332,11 @@ BOOST_AUTO_TEST_CASE(yamux_retains_chunk_lifetime_until_underlying_transport_dra
 BOOST_AUTO_TEST_CASE(yamux_close_flushes_and_read_after_close_is_rejected) {
    auto runtime = forge::asio::runtime{};
    forge::asio::blocking::run(runtime, yamux_close_flushes_pending_data_and_read_after_close_fails());
+}
+
+BOOST_AUTO_TEST_CASE(yamux_remote_fin_never_masks_reset_or_session_loss) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   forge::asio::blocking::run(runtime, yamux_remote_fin_does_not_mask_reset_or_session_loss());
 }
 
 BOOST_AUTO_TEST_CASE(yamux_rejects_limits_and_malformed_frames_with_typed_errors) {

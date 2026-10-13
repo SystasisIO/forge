@@ -29,6 +29,7 @@
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancel_after.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/post.hpp>
@@ -36,6 +37,8 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/system/system_error.hpp>
 
 #include "libp2p_identity.hxx"
@@ -47,6 +50,7 @@ import forge.asio.runtime;
 import forge.codec.hex;
 import forge.crypto.digest.sha256;
 import forge.crypto.pki.pem;
+import forge.exceptions;
 import forge.net.dns.types;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
@@ -1070,6 +1074,222 @@ std::size_t rendezvous_peer_registration_count(const forge::net::p2p::rendezvous
        [&](const forge::net::p2p::rendezvous::registration& registration) { return registration.peer == peer; });
 }
 
+forge::net::p2p::rendezvous::discover_response full_rendezvous_discover(
+    forge::asio::runtime& runtime, forge::net::p2p::node& observer, const forge::net::p2p::peer_id& point) {
+   auto exchange = [&observer, point]() -> boost::asio::awaitable<forge::net::p2p::rendezvous::discover_response> {
+      auto stream = co_await observer.async_open_protocol_stream(
+          point, forge::net::p2p::builtins::rendezvous,
+          {.allow_relay = false, .timeout = 5s, .allow_hole_punch = false});
+      auto response = forge::net::p2p::rendezvous::message{};
+      auto failure = std::exception_ptr{};
+      try {
+         // Always request the full namespace; a cookie could hide an unchanged control record.
+         co_await stream.async_write(forge::net::p2p::rendezvous::codec::encode({
+             .type = forge::net::p2p::rendezvous::message_type::discover,
+             .discover_value = forge::net::p2p::rendezvous::discover_request{
+                 .namespace_name = std::string{rendezvous_namespace}, .limit = 10, .cookie = {}}}));
+         response = forge::net::p2p::rendezvous::codec::decode(
+             wrap_length_delimited(co_await read_length_delimited(stream, 1024 * 1024)));
+         co_await stream.async_close();
+      } catch (...) { failure = std::current_exception(); }
+      if (failure) {
+         stream.request_cancel();
+         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+         try { co_await stream.async_close(); } catch (...) {}
+         std::rethrow_exception(failure);
+      }
+      if (response.type != forge::net::p2p::rendezvous::message_type::discover_response ||
+          !response.discover_response_value ||
+          response.discover_response_value->status_value != forge::net::p2p::rendezvous::status::ok) {
+         throw std::runtime_error{"automatic unregister observer expected an ok full DISCOVER response"};
+      }
+      co_return std::move(*response.discover_response_value);
+   };
+   const auto executor = boost::asio::make_strand(runtime.context());
+   auto completed = boost::asio::co_spawn(
+       executor, exchange(), boost::asio::cancel_after(5s, boost::asio::bind_executor(executor, boost::asio::use_future)));
+   return completed.get();
+}
+
+const forge::net::p2p::rendezvous::registration& checked_rendezvous_registration(
+    const forge::net::p2p::rendezvous::discover_response& response, const forge::net::p2p::peer_id& peer) {
+   if (rendezvous_peer_registration_count(response, peer) != 1) {
+      throw std::runtime_error{"automatic unregister observer expected exactly one registration for the peer"};
+   }
+   const auto found = std::ranges::find(response.registrations, peer, &forge::net::p2p::rendezvous::registration::peer);
+   if (found->namespace_name != rendezvous_namespace || found->ttl != 7'200s || found->signed_peer_record.empty()) {
+      throw std::runtime_error{"automatic unregister registration has the wrong namespace, TTL or signed record"};
+   }
+   return *found;
+}
+
+std::string automatic_rendezvous_unregister(
+    forge::asio::runtime& runtime, forge::net::p2p::node& observer, const forge::net::p2p::peer_id& point,
+    const forge::net::p2p::endpoint& remote, const forge::net::p2p::rendezvous::registration& control) {
+   const auto started = std::chrono::steady_clock::now();
+   const auto identity = generate_libp2p_identity();
+   if (identity.peer == observer.local_peer() || identity.peer == point || control.peer != observer.local_peer()) {
+      throw std::runtime_error{"automatic unregister requires distinct managed, control and point identities"};
+   }
+   if (remote.transport.protocol != forge::net::p2p::endpoint::protocol_kind::quic_v1 ||
+       (remote.peer && *remote.peer != point)) {
+      throw std::runtime_error{"automatic unregister requires the exact native QUIC Rust point"};
+   }
+   auto options = node_options({}, identity);
+   options.allow_insecure_test_mode = false;
+   options.capabilities.bits = forge::net::p2p::capabilities::direct_quic | forge::net::p2p::capabilities::rendezvous;
+   options.dht_profiles.clear();
+   options.relay_policy.client_enabled = false;
+   options.relay_policy.service_enabled = false;
+   options.relay_policy.auto_discovery_enabled = false;
+   options.path_policy.allow_relay = false;
+   options.path_policy.allow_hole_punch = false;
+   options.reachability_policy.client_v1_enabled = false;
+   options.reachability_policy.client_v2_enabled = false;
+   options.reachability_policy.ping_enabled = false;
+   options.limits.rendezvous.operating_role = forge::net::p2p::rendezvous::role::client;
+   options.limits.rendezvous.default_ttl = 7'200s;
+   auto& topology = options.limits.topology;
+   topology.operating_mode = forge::net::p2p::topology::mode::managed;
+   topology.peers = {.low = 1, .target = 1, .high = 3};
+   topology.dht_enabled = false;
+   topology.peer_exchange_enabled = false;
+   topology.refresh_interval = 60s;
+   topology.query_timeout = 5s;
+   topology.max_parallel_queries = 1;
+   topology.max_parallel_dials = 1;
+   topology.retry_jitter = 0;
+   topology.rendezvous_points = {{.endpoint = p2p_endpoint_for(remote, point),
+                                  .namespaces = {std::string{rendezvous_namespace}}}};
+   const auto policy = topology;
+   auto managed = forge::net::p2p::node{runtime, std::move(options)};
+   auto failures = std::make_shared<std::atomic_size_t>(0);
+   forge::exceptions::set_log_sink([failures](std::string_view message) {
+      if (message.starts_with("P2P topology rendezvous unregister failed")) {
+         failures->fetch_add(1);
+      }
+      std::cerr << message << '\n';
+   });
+   auto restore_sink = boost::scope::scope_exit{[] { forge::exceptions::set_log_sink({}); }};
+   auto joined_operations = std::vector<std::string>{};
+   auto refresh_joined = false;
+   auto stop_requested = false;
+   auto stop_joined = false;
+   auto full_discovers = std::size_t{};
+   auto before = forge::net::p2p::rendezvous::discover_response{};
+   auto after = forge::net::p2p::rendezvous::discover_response{};
+   auto point_peer = forge::net::p2p::peer_id{};
+   auto managed_record = forge::net::p2p::rendezvous::peer_record{};
+   auto failure = std::exception_ptr{};
+   try {
+      forge::asio::blocking::run(runtime, managed.async_listen(loopback_quic_endpoint()));
+      joined_operations.emplace_back("managed.async_listen");
+      static_cast<void>(forge::asio::blocking::run(runtime, managed.async_start()));
+      joined_operations.emplace_back("managed.async_start");
+      static_cast<void>(forge::asio::blocking::run(runtime, managed.async_refresh_discovery()));
+      refresh_joined = true;
+      joined_operations.emplace_back("managed.async_refresh_discovery");
+      const auto sessions = managed.diagnostics().sessions;
+      if (sessions.size() != 1 || sessions.front().remote_peer != point ||
+          sessions.front().identify_state != forge::net::p2p::identify::state::identified ||
+          sessions.front().authentication != forge::net::p2p::peer_authentication::quic_tls) {
+         throw std::runtime_error{"automatic unregister did not retain one authenticated Rust point session"};
+      }
+      point_peer = sessions.front().remote_peer;
+      ++full_discovers;
+      before = full_rendezvous_discover(runtime, observer, point_peer);
+      joined_operations.emplace_back("observer.full_discover.before");
+      if (before.registrations.size() != 2) {
+         throw std::runtime_error{"automatic unregister full DISCOVER must contain only managed and control peers"};
+      }
+      const auto& before_control = checked_rendezvous_registration(before, control.peer);
+      const auto& before_managed = checked_rendezvous_registration(before, managed.local_peer());
+      if (before_control.signed_peer_record != control.signed_peer_record) {
+         throw std::runtime_error{"automatic unregister changed the existing signed control registration"};
+      }
+      managed_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+          forge::net::p2p::signed_envelope::decode(before_managed.signed_peer_record), managed.local_peer());
+      const auto local = managed.local_endpoint();
+      if (!local || managed_record.peer != managed.local_peer() || managed_record.sequence == 0 ||
+          managed_record.endpoints.size() != 1 ||
+          (managed_record.endpoints.front().to_string() != local->to_multiaddr().to_string() &&
+           managed_record.endpoints.front().to_string() != p2p_endpoint_for(*local, managed.local_peer()).to_string())) {
+         throw std::runtime_error{"automatic unregister managed signed record has the wrong identity or endpoint"};
+      }
+      // Only the node's shutdown owns UNREGISTER; no raw write or donor-side ACK is used here.
+      managed.request_stop();
+      stop_requested = true;
+      joined_operations.emplace_back("managed.request_stop");
+      forge::asio::blocking::run(runtime, managed.async_stop());
+      stop_joined = true;
+      joined_operations.emplace_back("managed.async_stop");
+      ++full_discovers;
+      after = full_rendezvous_discover(runtime, observer, point_peer);
+      joined_operations.emplace_back("observer.full_discover.after");
+      if (after.registrations.size() != 1 || rendezvous_peer_registration_count(after, managed.local_peer()) != 0 ||
+          checked_rendezvous_registration(after, control.peer).signed_peer_record != control.signed_peer_record) {
+         throw std::runtime_error{"automatic unregister did not remove only the managed peer before TTL expiry"};
+      }
+   } catch (...) { failure = std::current_exception(); }
+   if (!stop_joined) {
+      managed.request_stop();
+      try { forge::asio::blocking::run(runtime, managed.async_stop()); }
+      catch (...) { if (!failure) { failure = std::current_exception(); } }
+   }
+   if (failure) { std::rethrow_exception(failure); }
+   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+   if (failures->load() != 0 || elapsed >= 60s) {
+      throw std::runtime_error{"automatic unregister logged a suppressed failure or exceeded its pre-TTL proof window"};
+   }
+   const auto control_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+       forge::net::p2p::signed_envelope::decode(control.signed_peer_record), control.peer);
+   const auto digest = [](const auto& registration) {
+      return forge::crypto::digest::sha256::hash(std::span<const std::uint8_t>{registration.signed_peer_record}).str();
+   };
+   const auto& before_control = checked_rendezvous_registration(before, control.peer);
+   const auto& before_managed = checked_rendezvous_registration(before, managed.local_peer());
+   const auto& after_control = checked_rendezvous_registration(after, control.peer);
+   const auto before_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+       forge::net::p2p::signed_envelope::decode(before_control.signed_peer_record), control.peer);
+   const auto after_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+       forge::net::p2p::signed_envelope::decode(after_control.signed_peer_record), control.peer);
+   if (before_record.sequence != control_record.sequence || after_record.sequence != control_record.sequence) {
+      throw std::runtime_error{"automatic unregister changed the signed control sequence"};
+   }
+   auto operations = std::string{"["};
+   for (const auto& operation : joined_operations) {
+      if (operations.size() != 1) { operations += ','; }
+      operations += '"' + json_escape(operation) + '"';
+   }
+   operations += ']';
+   return "\"local_peer_id\":\"" + json_escape(control.peer.to_string()) + "\",\"record_sha256\":\"" + digest(control) +
+       "\",\"automatic_unregister\":{\"source\":\"forge.node.topology.shutdown\",\"namespace\":\"" +
+       std::string{rendezvous_namespace} + "\",\"managed_peer_id\":\"" + json_escape(managed.local_peer().to_string()) +
+       "\",\"control_peer_id\":\"" + json_escape(control.peer.to_string()) + "\",\"point_peer_id\":\"" +
+       json_escape(point_peer.to_string()) + "\",\"policy\":{\"mode\":\"managed\",\"low\":" +
+       std::to_string(policy.peers.low) + ",\"target\":" + std::to_string(policy.peers.target) + ",\"high\":" +
+       std::to_string(policy.peers.high) + ",\"rendezvous_points\":" + std::to_string(policy.rendezvous_points.size()) +
+       ",\"dht_enabled\":" + (policy.dht_enabled ? "true" : "false") + ",\"peer_exchange_enabled\":" +
+       (policy.peer_exchange_enabled ? "true" : "false") + "},\"before\":{\"registration_count\":" +
+       std::to_string(before.registrations.size()) + ",\"managed_count\":" +
+       std::to_string(rendezvous_peer_registration_count(before, managed.local_peer())) + ",\"control_count\":" +
+       std::to_string(rendezvous_peer_registration_count(before, control.peer)) + ",\"managed_ttl_seconds\":" +
+       std::to_string(before_managed.ttl.count()) + ",\"managed_record_valid\":true,\"managed_record_sequence\":" +
+       std::to_string(managed_record.sequence) + ",\"managed_record_sha256\":\"" + digest(before_managed) +
+       "\",\"control_ttl_seconds\":" + std::to_string(before_control.ttl.count()) + ",\"control_record_sequence\":" +
+       std::to_string(before_record.sequence) + ",\"control_record_sha256\":\"" + digest(before_control) +
+       "\"},\"after\":{\"registration_count\":" + std::to_string(after.registrations.size()) + ",\"managed_count\":" +
+       std::to_string(rendezvous_peer_registration_count(after, managed.local_peer())) + ",\"control_count\":" +
+       std::to_string(rendezvous_peer_registration_count(after, control.peer)) + ",\"control_ttl_seconds\":" +
+       std::to_string(after_control.ttl.count()) + ",\"control_record_sequence\":" + std::to_string(after_record.sequence) +
+       ",\"control_record_sha256\":\"" + digest(after_control) + "\"},\"refresh_joined\":" +
+       (refresh_joined ? "true" : "false") + ",\"request_stop_called\":" + (stop_requested ? "true" : "false") +
+       ",\"async_stop_joined\":" + (stop_joined ? "true" : "false") + ",\"joined_operations\":" + operations +
+       ",\"full_discover_requests\":" + std::to_string(full_discovers) + ",\"discover_cookie_bytes\":0," +
+       "\"unregister_failure_count\":" + std::to_string(failures->load()) + ",\"elapsed_ms\":" +
+       std::to_string(elapsed.count()) + "}";
+}
+
 [[nodiscard]] bool
 persistence_contains(forge::asio::runtime& runtime,
                      const std::shared_ptr<forge::net::p2p::dht::record_store::persistence>& persistence,
@@ -1547,6 +1767,8 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
       if (sanitized.status_value != forge::net::p2p::rendezvous::status::ok || !sanitized.registrations.empty()) {
          throw std::runtime_error{"rendezvous high-level discovery did not filter the third-party loopback record"};
       }
+      const auto automatic = payload == "automatic_unregister"
+          ? "," + automatic_rendezvous_unregister(runtime, value, peer, remote, wire_registration) : std::string{};
       return "\"negotiated_protocol\":\"/rendezvous/1.0.0\",\"wire_registration_count\":1,"
              "\"signed_peer_record_valid\":true,\"matching_peer_record\":true,\"record_sequence\":" +
              std::to_string(wire_record.sequence) +
@@ -1554,7 +1776,7 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
              ",\"registered_ttl_seconds\":" + std::to_string(registration.ttl.count()) +
              ",\"discovered_ttl_seconds\":" + std::to_string(wire_registration.ttl.count()) +
              ",\"cookie_bytes\":" + std::to_string(wire.cookie.size()) +
-             ",\"sanitized_registration_count\":0,\"loopback_filtered\":true";
+             ",\"sanitized_registration_count\":0,\"loopback_filtered\":true" + automatic;
    }
    if (scenario == "rendezvous_lifecycle") {
       const auto local = value.local_endpoint();

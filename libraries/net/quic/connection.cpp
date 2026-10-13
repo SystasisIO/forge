@@ -51,6 +51,7 @@ namespace {
    case detail::engine_error_kind::connection_closed:
       return exceptions::code::connection_closed;
    case detail::engine_error_kind::stream_closed:
+   case detail::engine_error_kind::end_of_stream:
       return exceptions::code::stream_closed;
    case detail::engine_error_kind::stream_reset:
       return exceptions::code::stream_reset;

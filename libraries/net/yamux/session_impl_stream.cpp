@@ -162,10 +162,11 @@ boost::asio::awaitable<detail::bytes> session::impl::read_stream(const std::shar
          require_stream_owned_locked(state);
          if (!state->inbound.empty()) {
             has_data = true;
-         } else if (state->remote_fin) {
-            FORGE_THROW_EXCEPTION(exceptions::closed, "yamux stream closed by remote");
          } else {
             rethrow_terminal_locked();
+            if (state->remote_fin) {
+               FORGE_THROW_EXCEPTION(exceptions::end_of_stream, "yamux stream closed by remote");
+            }
          }
       }
 
