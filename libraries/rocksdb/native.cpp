@@ -3,6 +3,10 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdarg>
+#include <cstdint>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -13,6 +17,8 @@ module;
 #include <vector>
 
 #include <rocksdb/iterator.h>
+#include <rocksdb/env.h>
+#include <rocksdb/listener.h>
 #include <rocksdb/options.h>
 #include <rocksdb/slice.h>
 #include <rocksdb/status.h>
@@ -23,6 +29,7 @@ import forge.exceptions;
 import forge.rocksdb.exceptions;
 
 #include "details/native.hxx"
+#include "details/native_diagnostics.hxx"
 
 namespace forge::rocksdb::detail {
 
@@ -155,7 +162,12 @@ void throw_if_error(const ::rocksdb::Status& status, std::string_view context) {
    if (status.ok()) {
       return;
    }
+   native_diagnostics::process().record_result(status);
    throw_status(to_status_code(status), std::string{context} + ": " + status.ToString());
+}
+
+void drain_process_diagnostics() noexcept {
+   native_diagnostics::process().drain();
 }
 
 ::rocksdb::ReadOptions to_native_options(const read_options& options) {

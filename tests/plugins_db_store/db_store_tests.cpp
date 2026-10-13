@@ -18,10 +18,12 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -100,6 +102,7 @@ import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
 import forge.raw.raw;
+import forge.log.logger;
 
 #if FORGE_HAS_ROCKSDB
 import forge.db.rocksdb.driver;
@@ -115,6 +118,24 @@ namespace {
 namespace crypto_secrets = forge::plugins::crypto::secrets;
 namespace p2p_node = forge::plugins::net::p2p::node;
 namespace store_plugin = forge::plugins::db::store;
+
+class store_log_capture_sink final : public forge::sink {
+ public:
+   void log(const forge::log_record& record) override {
+      {
+         const auto lock = std::scoped_lock{mutex};
+         records.push_back(record);
+      }
+      if (probe) { probe(); }
+   }
+   std::mutex mutex;
+   std::vector<forge::log_record> records;
+   std::function<void()> probe;
+};
+
+boost::asio::awaitable<void> probe_store_status(forge::api::core::handle<store_plugin::api> api) {
+   static_cast<void>(co_await api->status());
+}
 
 struct by_id;
 struct by_name;
@@ -1893,6 +1914,80 @@ BOOST_AUTO_TEST_CASE(store_plugin_custom_driver_store_handle_reads_writes_flushe
    BOOST_TEST(driver->close_calls() == 0U);
    BOOST_CHECK_THROW(forge::asio::blocking::run(app->runtime(), handle.objects().find(decltype(account{}.id){42})),
                      store_plugin::exceptions::stopped);
+}
+
+BOOST_AUTO_TEST_CASE(store_plugin_logging_preserves_programmatic_ownership_and_reentrant_status) {
+   auto previous = forge::logger::get("forge.db.store");
+   auto route = forge::logger{"forge.db.store"};
+   auto captured = std::make_shared<store_log_capture_sink>();
+   route.set_log_level(forge::log_level::all);
+   route.add_sink(captured);
+   forge::logger::update("forge.db.store", route);
+   auto restore = boost::scope::scope_exit{[&] { forge::logger::update("forge.db.store", previous); }};
+   auto runtime = forge::asio::runtime{};
+   auto probe_runtime = forge::asio::runtime{{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto plugin = store_plugin::plugin{};
+   auto document = forge::config::core::document{};
+   forge::asio::blocking::run(runtime, plugin.configure(
+      forge::config::core::component_view{document, "plugins.db.store"}));
+   auto provider = forge::api::core::installer{apis};
+   forge::asio::blocking::run(runtime, plugin.provide(provider));
+   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   forge::asio::blocking::run(runtime, plugin.initialize(context));
+   auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
+   auto probes_ok = std::atomic_bool{true};
+   auto probes = std::atomic_uint{0};
+   captured->probe = [&] {
+      ++probes;
+      if (!forge::asio::blocking::run_for(probe_runtime, probe_store_status(api), std::chrono::seconds{1})) {
+         probes_ok.store(false);
+      }
+   };
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, api->add_store("logical.accounts", driver));
+   forge::asio::blocking::run(runtime, plugin.after_initialize());
+   forge::asio::blocking::run(runtime, plugin.startup());
+   forge::asio::blocking::run(runtime, plugin.shutdown());
+   const auto first_shutdown_records = captured->records.size();
+   forge::asio::blocking::run(runtime, plugin.shutdown());
+   BOOST_TEST(captured->records.size() == first_shutdown_records);
+   captured->probe = {};
+   BOOST_TEST(probes_ok.load());
+   BOOST_TEST(probes.load() >= 4U);
+   BOOST_TEST(driver->close_calls() == 0U);
+   auto registrations = std::size_t{0};
+   auto stopped = std::size_t{0};
+   for (const auto& record : captured->records) {
+      BOOST_TEST(record.logger == "forge.db.store");
+      auto event = std::string{};
+      auto ownership = std::string{};
+      auto store = std::string{};
+      auto backend = std::string{};
+      for (const auto& field : record.fields) {
+         if (field.key == "event") { event = field.value; }
+         if (field.key == "owns_driver") { ownership = field.value; }
+         if (field.key == "store") { store = field.value; }
+         if (field.key == "backend") { backend = field.value; }
+      }
+      if (event == "store.registered") {
+         ++registrations;
+         BOOST_TEST(ownership == "false");
+         BOOST_TEST(store == "logical.accounts");
+         BOOST_TEST(backend == "custom");
+         BOOST_CHECK(record.level == forge::log_level::debug);
+      }
+      if (event == "plugin.stopped") {
+         ++stopped;
+         BOOST_CHECK(record.level == forge::log_level::info);
+      }
+      BOOST_CHECK(record.level != forge::log_level::warn);
+   }
+   BOOST_TEST(registrations == 1U);
+   BOOST_TEST(stopped == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(store_plugin_object_handle_forwards_ranked_aggregates_and_snapshot_ranks) {

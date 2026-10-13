@@ -1118,6 +1118,53 @@ Forge observation counts are runtime counts, not fabricated discovery-address
 snapshots. Plugin configuration, cross-platform live support, scoped link-local
 live routing and full Stage 6 production support are not claimed by this matrix.
 
+## Operational Logging
+
+The implementation uses `forge/log/macros.hpp` and `forge.log.logger` only.
+`forge_log` is a private implementation dependency; no exporter, telemetry
+runtime or protocol dependency is introduced.
+
+Constant routes separate ownership and opt-in detail:
+
+- `forge.net.p2p`: INFO `lifecycle.ready/stopped/degraded/recovered` transitions.
+- `forge.net.p2p.connection`: DEBUG session admission/retirement and one
+  `identify.completed` per coalesced Identify leader; metadata/push application
+  is TRACE.
+- `forge.net.p2p.discovery`: bootstrap, topology/DHT refresh and provider owner
+  acquisition/release/removal/renewal. Repeated bootstrap/refresh failures use
+  the existing failure ordinals; saturated renewal streaks log only their first
+  failure and subsequent recovery.
+- `forge.net.p2p.relay`: INFO effective AutoNAT/AutoRelay permission transitions;
+  DEBUG reservation and DCUtR completion, with existing owner/attempt bounds.
+- `forge.net.p2p.pubsub`: DEBUG heartbeat-coalesced mesh maintenance and sampled
+  invalid/overload rejections; RPC size and validation outcomes are TRACE.
+
+These routes inherit application policy. An INFO application default is quiet
+on ordinary attempts; TRACE must be enabled explicitly. Rejection sampling
+uses powers of two from existing counters, not new per-peer maps or metrics.
+Shutdown/cancellation and ordinary not-found/conflict paths are not warnings.
+
+Fields contain only fixed event/source labels, local IDs, authenticated peer IDs,
+enum states, booleans, counts and durations. Endpoint strings, topics, message IDs, provider keys,
+Identify versions/documents, payloads, PSKs and opaque exception text are never
+passed to these logging calls. Existing diagnostic API values are unchanged.
+Owner state is snapshotted under its existing lock; sinks run after unlocking.
+Macro failure containment belongs to shared `forge_log`, not P2P wrappers.
+
+Donor patterns inspected: `go-libp2p/p2p/host/autorelay/autorelay.go`,
+`go-libp2p/p2p/protocol/identify/id.go`,
+`go-libp2p/p2p/net/swarm/{swarm.go,limiter.go,black_hole_detector.go}`;
+`rust-libp2p/protocols/{autonat,relay,dcutr,kad,gossipsub}/src`;
+Spring `plugins/net_plugin/net_plugin.cpp` and its `net_logger.hpp`.
+Accepted: owner-specific categories, transition checks, attempt context and
+TRACE hot paths. Rejected: donor raw-error/address/topic logging, custom macro
+facades and sink calls while an owner mutex is held.
+
+Focused capture/source checks live in `p2p_lifecycle_tests.cpp` and
+`gossipsub_validation_tests.cpp`: native lifecycle transitions, disabled routes,
+unlocked sink reentry, coalesced Identify, bounded failures and no content/error
+fields. They also support a coordinator-owned `FORGE_DISABLE_LOGGING` build.
+
 ## Typical Mistakes
 
 - Do not pass plaintext secrets through protocol IDs or peer metadata.

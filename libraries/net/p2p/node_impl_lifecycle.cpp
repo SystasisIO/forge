@@ -6,6 +6,7 @@ module;
 #include <boost/asio/ip/udp.hpp>
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -53,6 +54,7 @@ module forge.net.p2p.node;
 import :lifecycle_stop_listener;
 
 import forge.exceptions;
+import forge.log.logger;
 
 import forge.asio.gate;
 import forge.codec.hex;
@@ -403,8 +405,9 @@ void node::impl::initialize_mdns() {
               }
            },
            .error = [](std::exception_ptr failure) {
-              try { if (failure) { std::rethrow_exception(failure); } }
-              catch (...) { forge::exceptions::capture_and_log("P2P mDNS service failed"); }
+              if (failure) {
+                 dlog("forge.net.p2p.discovery", "P2P mDNS service failed", ("event", "mdns.service_failed"));
+              }
            },
        });
 }

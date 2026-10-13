@@ -298,4 +298,6 @@ target_link_libraries(
       forge_net_yamux
       forge_net_dns
       Boost::asio
+   PRIVATE
+      forge_log
 )

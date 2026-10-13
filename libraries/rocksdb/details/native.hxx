@@ -14,6 +14,7 @@ namespace detail {
 [[nodiscard]] ::rocksdb::CompressionType to_native_compression(compression_type value);
 [[nodiscard]] ::rocksdb::ColumnFamilyOptions to_native_options(const column_family_config& value);
 void throw_if_error(const ::rocksdb::Status& status, std::string_view context);
+void drain_process_diagnostics() noexcept;
 
 } // namespace detail
 

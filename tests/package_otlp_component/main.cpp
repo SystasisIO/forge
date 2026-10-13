@@ -1,3 +1,5 @@
+#include <string>
+
 import forge.otlp.options;
 
 int main() {

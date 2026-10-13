@@ -9,10 +9,55 @@ savepoint requirements.
 
 - Target: `forge_db_mdbx`
 - Package component: `db_mdbx`
-- Modules: `forge.db.mdbx.driver`, `forge.db.mdbx.exceptions`
+- Modules: `forge.db.mdbx.driver`, `forge.db.mdbx.exceptions`,
+  `forge.db.mdbx.diagnostics`
 - Dependencies: `forge_asio`, `forge_db_core`, `forge_exceptions`; libmdbx is
   private and vendored
 - Build option: `FORGE_ENABLE_MDBX=ON`
+
+## Logging Diagnostics
+
+The private `forge_log` dependency uses `forge.db.mdbx`. INFO covers successful
+environment open/explicit close and checkpoint creation. Native errors and
+DEBUG transaction outcome counts are buffered, not emitted by CRUD, savepoint,
+commit/rollback or low-level error helpers. Normal contention/not-found results
+are DEBUG. No payload, key, path or native message text is sent to Forge sinks.
+The DEBUG `environment.flush_request_completed` event means the flush request
+returned normally, not that a non-blocking poll made data durable. In particular,
+`async_flush(false)` may return normally when MDBX reports `MDBX_BUSY`; the
+event's `sync` field identifies the requested mode without claiming a flush.
+
+```cpp
+import forge.db.mdbx.diagnostics;
+
+forge::db::mdbx::diagnostics::claim_process();
+// Outside native transactions, owner mutexes, writer gates and affine callbacks:
+forge::db::mdbx::diagnostics::drain();
+```
+
+`claim_process()` permanently claims libmdbx's process-global debug callback;
+the first Forge environment open also claims it once. It preserves the native
+log level and debug flags. `installed()` reports that this claim occurred, not
+that an unrelated caller has refrained from replacing it. Embedders must agree
+on one owner and must not replace or restore callbacks while Forge MDBX is in
+use. The native API cannot return a previous callback, so no speculative
+restoration or per-store callback switching is performed.
+
+Callbacks only record fixed atomic severity counters/source line numbers,
+without formatting vendor arguments or attributing a global callback to a
+store. Delivery retains native WARN/ERROR/FATAL levels and uses `scope=process`.
+Automatic drains run after open or after explicit flush/checkpoint/close has
+returned from the affine lane and released the writer gate. Idle/destructor-only
+backends may retain counters until a later safe drain; no timer or worker is
+introduced. Typed error counters retain 32 distinct native codes per process;
+excess codes remain visible through an overflow count and latest code.
+
+Fatal callbacks additionally attempt one fixed, sanitized stderr notice through
+a system write, preserving `errno` and invoking no Forge sink. This is the sole
+emergency-output exception because native abort may prevent a later drain. The
+notice is best effort; no panic hook, termination or vendor assertion path is
+changed. In particular, a system assertion can still print its own fatal text;
+the debug callback cannot suppress that separate native panic path.
 
 ## Usage
 

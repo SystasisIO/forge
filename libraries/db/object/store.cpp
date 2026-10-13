@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -20,6 +21,7 @@ module;
 module forge.db.object.store;
 
 import forge.asio.gate;
+import forge.log.logger;
 import forge.db.core.driver;
 import forge.db.core.exceptions;
 import forge.db.object.exceptions;
@@ -67,14 +69,33 @@ boost::asio::awaitable<store> store::open(std::shared_ptr<forge::db::core::drive
       error = std::current_exception();
    }
    if (error) {
+      auto rolled_back = false;
       try {
          co_await active.rollback();
+         rolled_back = true;
       } catch (...) {
+      }
+      ticket.release();
+      if (rolled_back) {
+         try {
+            std::rethrow_exception(error);
+         } catch (const exceptions::invalid_header&) {
+            elog("forge.db.object", "object header rejected",
+                 ("event", "header.rejected")("reason", "invalid_header"));
+         } catch (const exceptions::incompatible_version&) {
+            elog("forge.db.object", "object header rejected",
+                 ("event", "header.rejected")("reason", "incompatible_version"));
+         } catch (...) {
+         }
       }
       std::rethrow_exception(error);
    }
 
    result.impl_->header_value = opened_header;
+   ticket.release();
+   dlog("forge.db.object", "object store initialized",
+        ("event", "store.initialized")("single_writer", runtime.writes == write_policy::single_writer)
+        ("transactional_ids", runtime.id_allocation == id_allocation_policy::transactional));
    co_return result;
 }
 

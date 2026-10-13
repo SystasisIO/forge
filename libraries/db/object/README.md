@@ -4,6 +4,17 @@
 object descriptors, primary and secondary index maintenance, object
 serialization, async transactions and stable read snapshots.
 
+## Logging
+
+The private `forge_log` dependency uses `forge.db.object`. DEBUG
+`store.initialized` identifies the selected writer/id policy; `changes.committed`
+reports the actual mutation count after an owned transaction has completed all
+Core hooks and released writer gates. Joined transactions committed through
+another owner do not duplicate that commit event. Header rejection emits only
+a constant reason after successful rollback and gate release. Keys, objects,
+family names and exception text are not logged. Backend physical outcomes
+remain backend-owned; no Object log is emitted while native writes are active.
+
 ## Stability
 
 The DB Object public C++ API is **Preview** in Forge 8.x. It may receive

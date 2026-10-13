@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <array>
@@ -46,6 +47,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -132,6 +135,9 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
    try { px = prepare_pubsub_prune_peers(); } catch (const std::bad_alloc&) { co_return; }
    auto gossip = std::map<peer_id, std::vector<pubsub::control::ihave>>{};
    auto retries = std::map<peer_id, std::vector<std::vector<std::uint8_t>>>{};
+   auto grafts = std::size_t{};
+   auto prunes = std::size_t{};
+   auto epoch = std::uint64_t{};
    {
       const auto lock = std::scoped_lock{mutex};
       if (stopped) {
@@ -176,14 +182,18 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
       const auto gossip_threshold = options.limits.pubsub.scoring ? options.limits.pubsub.scoring->thresholds.gossip_threshold : 0.0;
       const auto prune = [&](const peer_id& peer, const std::string& topic) {
          try {
-            return admit_pubsub_control_locked(make_pubsub_control_locked(peer, pubsub::topic{topic},
+            const auto admitted = admit_pubsub_control_locked(make_pubsub_control_locked(peer, pubsub::topic{topic},
                 detail::pubsub_control_queue::kind::prune, limits.prune_backoff, px), now);
+            if (admitted) { ++prunes; }
+            return admitted;
          } catch (const std::bad_alloc&) { return false; }
       };
       const auto graft = [&](const peer_id& peer, const std::string& topic) {
          try {
-            return admit_pubsub_control_locked(make_pubsub_control_locked(peer, pubsub::topic{topic},
+            const auto admitted = admit_pubsub_control_locked(make_pubsub_control_locked(peer, pubsub::topic{topic},
                 detail::pubsub_control_queue::kind::graft, std::chrono::seconds{}, {}), now);
+            if (admitted) { ++grafts; }
+            return admitted;
          } catch (const std::bad_alloc&) { return false; }
       };
       const auto candidates = [&](const std::string& topic, const std::set<peer_id>& excluded, double threshold,
@@ -368,8 +378,15 @@ boost::asio::awaitable<void> node::impl::pubsub_heartbeat_once() {
       // Capture gossip before advancing the insertion bin; new publications enter the next bin.
       // Donor enqueue/shift semantics permit one-shot IHAVE to finish after cache expiry.
       ++pubsub_value.epoch;
+      epoch = pubsub_value.epoch;
       pubsub_value.idontwant.heartbeat();
    }
+   if (grafts != 0 || prunes != 0) {
+      dlog("forge.net.p2p.pubsub", "P2P PubSub mesh maintenance admitted",
+           ("event", "pubsub.mesh_maintained")("epoch", epoch)("grafts", grafts)("prunes", prunes));
+   }
+   tlog("forge.net.p2p.pubsub", "P2P PubSub heartbeat completed",
+        ("event", "pubsub.heartbeat")("epoch", epoch)("gossip_peers", gossip.size())("retry_peers", retries.size()));
    auto controls = std::map<peer_id, pubsub::control>{};
    for (auto& [peer, items] : gossip) { controls[peer].have = std::move(items); }
    for (auto& [peer, ids] : retries) { controls[peer].want.push_back(pubsub::control::iwant{.message_ids = std::move(ids)}); }

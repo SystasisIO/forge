@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
 
@@ -16,6 +17,7 @@ module;
 module forge.db.blob.store;
 
 import forge.db.blob.exceptions;
+import forge.log.logger;
 import forge.db.core.exceptions;
 
 #include "details/store_impl.hxx"
@@ -36,7 +38,9 @@ store::store(std::shared_ptr<forge::db::core::driver> driver)
     : store(std::move(driver), config{}) {}
 
 store::store(std::shared_ptr<forge::db::core::driver> driver, config settings)
-    : impl_{std::make_shared<impl>(std::move(driver), std::move(settings))} {}
+    : impl_{std::make_shared<impl>(std::move(driver), std::move(settings))} {
+   dlog("forge.db.blob", "blob store initialized", ("event", "store.initialized"));
+}
 
 boost::asio::awaitable<transaction> store::begin_transaction() {
    auto active = co_await impl_->driver->begin_transaction();
@@ -105,6 +109,7 @@ boost::asio::awaitable<ref<digest>> store::put(std::vector<std::byte> payload) {
       co_await active.rollback();
       std::rethrow_exception(error);
    }
+   dlog("forge.db.blob", "blob committed", ("event", "blob.committed"));
    co_return value;
 }
 
@@ -122,6 +127,8 @@ boost::asio::awaitable<collect_result> store::collect_unreferenced(collect_optio
       co_await active.rollback();
       std::rethrow_exception(error);
    }
+   dlog("forge.db.blob", "unreferenced blob collection committed",
+        ("event", "collection.committed")("removed", result.removed)("limit", options.limit));
    co_return result;
 }
 

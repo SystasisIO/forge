@@ -5,6 +5,7 @@
 #include <coroutine>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 import forge.plugins.db.store.plugin;

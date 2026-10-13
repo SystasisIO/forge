@@ -11,6 +11,7 @@ module;
 module forge.db.mdbx.driver;
 
 import :error;
+import forge.db.mdbx.result_diagnostics;
 import forge.db.mdbx.exceptions;
 
 namespace forge::db::mdbx::detail {
@@ -27,6 +28,8 @@ void require_mdbx_success(int code, std::string_view operation) {
    if (mdbx_success(code)) {
       return;
    }
+
+   result_diagnostics::process().record_result(code);
 
    const auto message = std::string{operation} + " failed";
    auto native_buffer = std::array<char, 1024>{};

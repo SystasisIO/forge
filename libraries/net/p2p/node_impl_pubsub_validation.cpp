@@ -195,7 +195,8 @@ node::impl::pubsub_state::claim node::impl::claim_pubsub_message(const peer_id& 
       const auto capacity = options.limits.pubsub.limits.history_length * options.limits.pubsub.limits.max_messages;
       if (pubsub_value.cache.size() >= capacity) {
          ++metrics_value.backpressure_rejections;
-         return pubsub_state::claim{.status = pubsub_state::claim_status::backpressured};
+         return pubsub_state::claim{.status = pubsub_state::claim_status::backpressured,
+                                    .rejections = metrics_value.backpressure_rejections};
       }
       const auto generation = pubsub_value.next_validation_generation++;
       pubsub_value.cache.emplace(key, value);
@@ -209,7 +210,9 @@ node::impl::pubsub_state::claim node::impl::claim_pubsub_message(const peer_id& 
             throw;
          }
          try {
-            return pubsub_state::claim{.status = begin_validation(validation->second, 0), .generation = generation};
+            const auto status = begin_validation(validation->second, 0);
+            return pubsub_state::claim{.status = status, .generation = generation,
+                                       .rejections = metrics_value.backpressure_rejections};
          } catch (...) {
             pubsub_value.history.pop_back();
             pubsub_value.validations.erase(validation);
@@ -252,6 +255,7 @@ node::impl::pubsub_state::claim node::impl::claim_pubsub_message(const peer_id& 
       return pubsub_state::claim{
           .status = status,
           .generation = validation->second.generation,
+          .rejections = metrics_value.backpressure_rejections,
       };
    }
 

@@ -1,7 +1,9 @@
 add_library(
    forge_log STATIC
    record.cpp
+   thread_name_state.cpp
    logger.cpp
+   sink_delivery.cpp
    logger_config.cpp
 )
 forge_target_modules(forge_log log)

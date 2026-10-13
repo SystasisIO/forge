@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <array>
@@ -49,6 +50,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -242,6 +245,7 @@ bool node::impl::increment_pubsub_invalid(const std::shared_ptr<session_state>& 
     const std::optional<pubsub::topic>& subject, bool protocol_rejected) {
    auto close_offender = false;
    auto failure = std::exception_ptr{};
+   auto invalid_messages = std::uint64_t{};
    {
       const auto lock = std::scoped_lock{mutex};
       if (!pubsub_session_live_locked(session)) { return false; }
@@ -249,6 +253,7 @@ bool node::impl::increment_pubsub_invalid(const std::shared_ptr<session_state>& 
       const auto malformed_transition = subject ? resource_manager::transition_result::accepted :
           resources.record_malformed(resource_manager::scope{.peer = peer, .protocol = builtins::meshsub_v11});
       ++metrics_value.pubsub_invalid_messages;
+      invalid_messages = metrics_value.pubsub_invalid_messages;
       if (const auto score = pubsub_value.scores.find(peer); score != pubsub_value.scores.end()) {
          ++score->second.invalid_messages;
       }
@@ -289,6 +294,11 @@ bool node::impl::increment_pubsub_invalid(const std::shared_ptr<session_state>& 
       request_cancel_session(session);
    }
    if (failure) { std::rethrow_exception(failure); }
+   if (invalid_messages != 0 && (invalid_messages & (invalid_messages - 1)) == 0) {
+      dlog("forge.net.p2p.pubsub", "P2P PubSub invalid message rejected",
+           ("event", "pubsub.invalid_rejected")("session_id", session->id)("invalid_messages", invalid_messages)
+           ("protocol_rejected", protocol_rejected)("session_closed", close_offender));
+   }
    return true;
 }
 

@@ -1125,6 +1125,26 @@ while (auto state = co_await subscription.async_read()) {
   Kademlia server admission still requires verified Identify or a successful
   DHT exchange.
 
+## Operational Logging
+
+The plugin uses only `forge.plugins.net.p2p.node` for configuration commit,
+dependency binding, API publication/readiness and joined API shutdown. Those
+are plugin ownership events, not copies of node connection, discovery, relay
+or PubSub events. Configuration/dependency details are DEBUG; API readiness
+and terminal shutdown are sparse INFO transitions. An actual failed shutdown
+is ERROR without its exception text.
+
+Only counts, provider-presence booleans and terminal state are logged. The
+plugin never passes config DTOs, secret identifiers, identity material, PSKs,
+store names or topic contents to a sink. Sinks run outside the configuration
+mutex. Levels remain application-owned; `forge_log` is a private dependency,
+with no telemetry exporter dependency. Disabled logging does not alter the
+configuration or lifecycle result.
+
+`p2p_lifecycle_config_tests.cpp` captures the real configure path and checks
+counts-only fields, secret-identifier omission and disabled logging. Native
+protocol logs and their capture checks belong to `forge_net_p2p`.
+
 ## Common Mistakes
 
 - Creating a second node in a product plugin instead of requesting the shared

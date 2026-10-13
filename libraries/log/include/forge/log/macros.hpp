@@ -10,19 +10,27 @@
    FORGE_DETAIL_LOG_NAMED_I(LEVEL, LOGGER, MESSAGE, FORGE_DETAIL_LOG_JOIN(forge_log_route_, __COUNTER__))
 #define FORGE_DETAIL_LOG_NAMED_I(LEVEL, LOGGER, MESSAGE, ROUTE)                                                        \
    do {                                                                                                                \
-      auto ROUTE = ::forge::resolve_log_logger((LOGGER));                                                              \
-      if (ROUTE.is_enabled(::forge::log_level::LEVEL)) {                                                               \
-         ::forge::emit_log(ROUTE, ::forge::log_level::LEVEL, (MESSAGE), ::std::source_location::current());            \
+      try {                                                                                                            \
+         auto ROUTE = ::forge::resolve_log_logger((LOGGER));                                                           \
+         if (ROUTE.is_enabled(::forge::log_level::LEVEL)) {                                                            \
+            ::forge::emit_log(ROUTE, ::forge::log_level::LEVEL, (MESSAGE), ::std::source_location::current());         \
+         }                                                                                                             \
+      } catch (...) {                                                                                                  \
+         ::forge::report_log_failure();                                                                                 \
       }                                                                                                                \
    } while (0)
 #define FORGE_DETAIL_LOG_FIELDS(LEVEL, LOGGER, MESSAGE, FIELDS)                                                        \
    FORGE_DETAIL_LOG_FIELDS_I(LEVEL, LOGGER, MESSAGE, FIELDS, FORGE_DETAIL_LOG_JOIN(forge_log_route_, __COUNTER__))
 #define FORGE_DETAIL_LOG_FIELDS_I(LEVEL, LOGGER, MESSAGE, FIELDS, ROUTE)                                               \
    do {                                                                                                                \
-      auto ROUTE = ::forge::resolve_log_logger((LOGGER));                                                              \
-      if (ROUTE.is_enabled(::forge::log_level::LEVEL)) {                                                               \
-         ::forge::emit_log(ROUTE, ::forge::log_level::LEVEL, (MESSAGE), (::forge::log_field_builder {} FIELDS).take(), \
-                           ::std::source_location::current());                                                         \
+      try {                                                                                                            \
+         auto ROUTE = ::forge::resolve_log_logger((LOGGER));                                                           \
+         if (ROUTE.is_enabled(::forge::log_level::LEVEL)) {                                                            \
+            ::forge::emit_log(ROUTE, ::forge::log_level::LEVEL, (MESSAGE),                                              \
+                              (::forge::log_field_builder {} FIELDS).take(), ::std::source_location::current());       \
+         }                                                                                                             \
+      } catch (...) {                                                                                                  \
+         ::forge::report_log_failure();                                                                                 \
       }                                                                                                                \
    } while (0)
 #define FORGE_DETAIL_LOG_DISPATCH(LEVEL, ...)                                                                          \

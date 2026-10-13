@@ -2,6 +2,8 @@ module;
 #include <memory>
 #include <iostream>
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <chrono>
 #include <mutex>
 #include <optional>
@@ -20,6 +22,8 @@ import forge.log.logger_config;
 import forge.core.utility;
 import forge.variant.value;
 
+#include "details/sink_delivery.hxx"
+
 namespace forge {
 
 namespace {
@@ -28,18 +32,6 @@ std::string current_thread_id() {
    auto out = std::ostringstream{};
    out << std::this_thread::get_id();
    return out.str();
-}
-
-void deliver(const std::vector<std::shared_ptr<sink>>& sinks, const log_record& record) {
-   for (const auto& current_sink : sinks) {
-      try {
-         current_sink->log(record);
-      } catch (const std::exception& error) {
-         std::cerr << "ERROR: logger::log sink std::exception: " << error.what() << std::endl;
-      } catch (...) {
-         std::cerr << "ERROR: logger::log sink unknown exception" << std::endl;
-      }
-   }
 }
 
 } // namespace
@@ -131,7 +123,7 @@ void logger::log(log_record record) {
       }
    }
    record.message = interpolate_log_message(record.message, record.fields);
-   deliver(targets, record);
+   detail::sink_delivery::deliver(targets, record);
 }
 
 void logger::log(log_level level, std::string message, log_fields fields, std::source_location location) {
@@ -232,6 +224,15 @@ logger resolve_log_logger(const std::string& name) {
 }
 logger resolve_log_logger(const char* name) {
    return logger::get(name ? name : default_logger_name);
+}
+
+void report_log_failure() noexcept {
+   // Allocation-free, non-recursive and bounded even when the sink repeatedly
+   // fails. Exception text can contain secrets and must not reach this path.
+   static auto reported = std::atomic_flag{};
+   if (!reported.test_and_set(std::memory_order_relaxed)) {
+      static_cast<void>(std::fputs("Forge logging failed; records may be lost\n", stderr));
+   }
 }
 
 void emit_log(logger& route, log_level level, std::string message, std::source_location location) {

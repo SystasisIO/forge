@@ -1,5 +1,7 @@
 module;
 
+#include <forge/log/macros.hpp>
+
 #include <boost/asio/awaitable.hpp>
 
 #include <exception>
@@ -9,7 +11,9 @@ module;
 module forge.db.revision.store;
 
 import forge.db.core.record;
+import forge.log.logger;
 import forge.db.object.system;
+import forge.db.revision.exceptions;
 
 #include "details/store_impl.hxx"
 
@@ -22,7 +26,14 @@ boost::asio::awaitable<store>
 store::open(std::shared_ptr<forge::db::core::driver> driver,
             forge::db::object::store objects) {
    auto implementation = std::make_shared<impl>(std::move(driver), std::move(objects));
-   co_await implementation->initialize();
+   try {
+      co_await implementation->initialize();
+   } catch (const exceptions::corrupt_state&) {
+      elog("forge.db.revision", "revision initialization rejected",
+           ("event", "initialization.rejected")("reason", "corrupt_state"));
+      throw;
+   }
+   dlog("forge.db.revision", "revision store initialized", ("event", "store.initialized"));
    co_return store{std::move(implementation)};
 }
 

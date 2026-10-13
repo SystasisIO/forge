@@ -4,6 +4,7 @@
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>

@@ -171,6 +171,10 @@ bool transaction_participant_impl::finalized() const noexcept {
    return finalized_;
 }
 
+std::size_t transaction_participant_impl::committed_mutation_count() const noexcept {
+   return committed_mutation_count_;
+}
+
 bool transaction_participant_impl::add_precommit_observer(std::shared_ptr<precommit_observer> value) {
    if (finalized_ || preparing_commit_) {
       FORGE_THROW_EXCEPTION(exceptions::transaction_closed, "db object transaction is closed");
@@ -222,6 +226,7 @@ boost::asio::awaitable<void> transaction_participant_impl::after_rollback() {
 boost::asio::awaitable<void> transaction_participant_impl::after_commit() {
    finalized_ = true;
    auto committed_changes = std::move(changes_);
+   committed_mutation_count_ = committed_changes.mutations.size();
    observed_change_set_.reset();
    allocation_seals_.clear();
    savepoints_.clear();

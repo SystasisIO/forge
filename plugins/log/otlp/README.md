@@ -131,7 +131,7 @@ Each header has exactly one source:
 
 Supplying neither source, both sources, or only one half of a secret reference
 is an `invalid_config` error. A secret reference is resolved once during plugin
-startup through the local `forge.plugins.crypto.secrets` API. Its configured
+`after_initialize()` through the local `forge.plugins.crypto.secrets` API. Its configured
 purpose must be allowed by that plugin. Missing Secrets support, an unknown
 secret, or denied purpose stops OTLP startup with a typed error that names only
 the header, secret id and purpose; secret bytes are never placed in diagnostics,
@@ -187,6 +187,28 @@ auto metrics = co_await logs->metrics();
 queue/export counters from the underlying `forge_otlp` exporter.
 
 ## Boundaries
+
+### Application Lifecycle Order
+
+Register OTLP before the plugins whose initialization/shutdown logs must be
+exported, for example OTLP, Secrets, DB Store, then P2P. The existing application
+registry preserves independent root registration order and honors dependencies.
+OTLP attaches its sink in `after_initialize()`, after every plugin's
+`initialize()`. This covers the subsequent DB Store open in `after_initialize()`
+and P2P startup. Header resolution, optional crash capture and crash resend also
+occur in that phase. `startup()` is idempotent and does not attach a second sink.
+
+Shutdown runs in reverse order: producers finish before OTLP flush/shutdown.
+OTLP `request_stop()` does not close log admission. Application-added dependency
+edges must not require an explicitly disabled OTLP plugin. DB/P2P library and
+canonical plugin descriptors deliberately do not depend on telemetry export.
+
+This is not capture of all process startup: configuration, earlier initialize
+events and the application shell's final stopped event remain local unless the
+application installs an exporter outside the plugin lifecycle. There is no second
+bootstrap queue. An unavailable collector does not block DB/P2P operations;
+bounded queue/retry/shutdown may drop records, reported by exporter metrics.
+Keep a local sink when those best-effort export guarantees are insufficient.
 
 - Logs only in this plugin; metrics and traces are future separate plugins.
 - `forge_log` owns logger names, macros and sink dispatch.

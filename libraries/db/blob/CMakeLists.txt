@@ -33,4 +33,6 @@ target_link_libraries(
       forge_db_ids
       forge_raw
       forge_variant
+   PRIVATE
+      forge_log
 )

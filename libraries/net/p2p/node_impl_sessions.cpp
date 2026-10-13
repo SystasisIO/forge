@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <boost/scope/scope_exit.hpp>
 
 #include <algorithm>
@@ -49,6 +50,8 @@ module;
 #include <boost/compat/move_only_function.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -349,6 +352,11 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
    auto pruned_ids = std::vector<std::uint64_t>{};
    auto staged_session_id = std::optional<std::uint64_t>{};
    auto registry_failure = std::exception_ptr{};
+   auto admitted_sessions = std::size_t{};
+   auto admitted_peer = std::string_view{};
+   auto admitted_id = std::uint64_t{};
+   auto admitted_path = path::kind::direct;
+   auto authenticated = false;
    try {
       refresh_connection_scores();
       const auto network_score = [&] {
@@ -452,6 +460,13 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
          metrics_value.active_sessions = sessions.size();
          metrics_value.sessions_pruned += pruned_ids.size();
          metrics_value.sessions_closed += pruned_ids.size();
+         admitted_sessions = sessions.size();
+         // Identity/path are immutable after native admission; the shared session
+         // pins this view without allocating diagnostic state under the mutex.
+         admitted_peer = session->info.remote_peer.value;
+         admitted_id = session->id;
+         admitted_path = session->info.path;
+         authenticated = session->authentication != peer_authentication::unverified;
       }
    } catch (...) {
       {
@@ -527,6 +542,11 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
    // Publish only admitted native authentication facts, never listener/config
    // intent. This also completes a TCP wave whose outbound socket failed early.
    if (paths) { paths->notify_direct(session->info.remote_peer, session->info.path, session->authentication); }
+   dlog("forge.net.p2p.connection", "P2P session admitted",
+        ("event", "connection.admitted")("session_id", admitted_id)("direction", static_cast<int>(direction))
+        ("peer_id", authenticated ? std::string{admitted_peer} : std::string{})("authenticated", authenticated)
+        ("path", static_cast<int>(admitted_path))("active_sessions", admitted_sessions)
+        ("pruned_sessions", pruned_ids.size()));
    lifecycle_wakeup->notify();
    start_autorelay();
    refresh_relay_publication();
@@ -566,6 +586,8 @@ void node::impl::forget_session(const peer_id& peer) {
    for (const auto& session : removed_sessions) {
       launch_pruned_session_teardown(session);
       identify_service.forget(session->id);
+      dlog("forge.net.p2p.connection", "P2P session retired",
+           ("event", "connection.retired")("session_id", session->id));
    }
 }
 
@@ -601,6 +623,8 @@ void node::impl::forget_session(const std::shared_ptr<node::impl::session_state>
    if (removed) {
       launch_pruned_session_teardown(session);
       identify_service.forget(session->id);
+      dlog("forge.net.p2p.connection", "P2P session retired",
+           ("event", "connection.retired")("session_id", session->id));
    }
 }
 

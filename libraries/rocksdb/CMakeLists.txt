@@ -1,6 +1,7 @@
 add_library(
    forge_rocksdb STATIC
    native.cpp
+   native_diagnostics.cpp
    snapshot_impl.cpp
    store.cpp
    store_impl.cpp
@@ -18,6 +19,7 @@ target_link_libraries(
       forge_exceptions
       forge_schema
    PRIVATE
+      forge_log
       RocksDB::rocksdb
 )
 

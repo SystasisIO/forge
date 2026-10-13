@@ -174,6 +174,14 @@ add_executable(
    log/log_disabled_tests.cpp
 )
 target_link_libraries(test_forge_log forge_log Boost::included_unit_test_framework)
+add_executable(test_forge_log_shutdown log/shutdown_helper.cpp)
+target_link_libraries(test_forge_log_shutdown forge_log)
+add_dependencies(test_forge_log test_forge_log_shutdown)
+add_test(NAME test_forge_log_shutdown
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/log/check_shutdown.py
+      $<TARGET_FILE:test_forge_log_shutdown>
+)
+set_tests_properties(test_forge_log_shutdown PROPERTIES TIMEOUT 15)
 add_test(NAME test_forge_log COMMAND test_forge_log WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -181,9 +189,9 @@ add_executable(
    unit/main.cpp
    otlp/otlp_tests.cpp
 )
-target_link_libraries(test_forge_otlp forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_otlp forge_otlp Boost::included_unit_test_framework)
 add_executable(forge_otlp_crash_helper otlp/crash_helper.cpp)
-target_link_libraries(forge_otlp_crash_helper forge)
+target_link_libraries(forge_otlp_crash_helper forge_otlp)
 add_dependencies(test_forge_otlp forge_otlp_crash_helper)
 target_compile_definitions(test_forge_otlp PRIVATE FORGE_OTLP_CRASH_HELPER="$<TARGET_FILE:forge_otlp_crash_helper>")
 add_test(NAME test_forge_otlp COMMAND test_forge_otlp WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -451,7 +459,7 @@ add_executable(
    unit/main.cpp
    db_core/db_tests.cpp
 )
-target_link_libraries(test_forge_db_core forge_db_core forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_db_core forge_db_core forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_db_core COMMAND test_forge_db_core WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -467,7 +475,7 @@ add_executable(
    unit/main.cpp
    db_object/db_object_tests.cpp
 )
-target_link_libraries(test_forge_db_object forge_db_object forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_db_object forge_db_object forge_chain_protocol Boost::included_unit_test_framework)
 target_compile_definitions(test_forge_db_object PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
 if(FORGE_HAS_ROCKSDB)
    target_link_libraries(test_forge_db_object forge_db_rocksdb)
@@ -480,6 +488,8 @@ if(FORGE_HAS_MDBX)
       db_mdbx/mdbx_crash_tests.cpp
       db_mdbx/mdbx_tests.cpp
       db_mdbx/mdbx_layers_tests.cpp
+      db_mdbx/logging_tests.cpp
+      db_mdbx/native_diagnostics_tests.cpp
       auth/auth_mdbx_integration_tests.cpp
    )
    add_executable(
@@ -500,9 +510,12 @@ if(FORGE_HAS_MDBX)
       forge_db_blob
       forge_db_revision
       forge_auth_pairing
+      forge_log
+      mdbx-internal
       Boost::included_unit_test_framework
    )
    add_test(NAME test_forge_db_mdbx COMMAND test_forge_db_mdbx WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+   target_include_directories(test_forge_db_mdbx PRIVATE "${PROJECT_SOURCE_DIR}/vendor/libmdbx")
 
    add_executable(
       test_forge_db_authenticated
@@ -658,7 +671,7 @@ add_executable(
    unit/main.cpp
    db_blob/db_blob_tests.cpp
 )
-target_link_libraries(test_forge_db_blob forge_db_blob forge_db_object forge_db_core forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_db_blob forge_db_blob forge_db_object forge_db_core Boost::included_unit_test_framework)
 add_test(NAME test_forge_db_blob COMMAND test_forge_db_blob WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -672,7 +685,6 @@ target_link_libraries(
    forge_db_blob
    forge_db_object
    forge_db_core
-   forge
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_db_revision COMMAND test_forge_db_revision WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -683,7 +695,7 @@ if(FORGE_HAS_ROCKSDB)
       unit/main.cpp
       db_rocksdb/rocksdb_tests.cpp
    )
-   target_link_libraries(test_forge_db_rocksdb forge_db_rocksdb forge_rocksdb forge_db_core forge Boost::included_unit_test_framework)
+   target_link_libraries(test_forge_db_rocksdb forge_db_rocksdb forge_rocksdb forge_db_core forge_asio Boost::included_unit_test_framework)
    add_test(NAME test_forge_db_rocksdb COMMAND test_forge_db_rocksdb WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 endif()
 
@@ -1167,11 +1179,21 @@ target_link_libraries(
    forge_api_transport
    forge_plugins_chain_signer
    forge_net_p2p
+   forge_log
    Boost::included_unit_test_framework
 )
 target_compile_definitions(test_forge_quic_p2p PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
 add_test(NAME test_forge_quic_p2p COMMAND test_forge_quic_p2p WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_quic_p2p PROPERTIES TIMEOUT 300)
+
+add_executable(test_forge_p2p_lifecycle
+   unit/main.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+   quic_p2p/p2p_lifecycle_tests.cpp
+)
+target_link_libraries(test_forge_p2p_lifecycle forge_net_p2p forge_log Boost::included_unit_test_framework)
+add_test(NAME test_forge_p2p_lifecycle COMMAND test_forge_p2p_lifecycle WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_p2p_lifecycle PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_p2p_pubsub_codec
@@ -1209,7 +1231,7 @@ add_executable(
    quic_p2p/gossipsub_outbound_tests.cpp
    quic_p2p/gossipsub_outbound_tests.hxx
 )
-target_link_libraries(test_forge_p2p_pubsub_router forge_net_p2p Boost::included_unit_test_framework)
+target_link_libraries(test_forge_p2p_pubsub_router forge_net_p2p forge_log Boost::included_unit_test_framework)
 if(UNIX)
    target_compile_definitions(test_forge_quic_p2p PRIVATE
       FORGE_GOSSIPSUB_TEST_EXECUTABLE="$<TARGET_FILE:test_forge_quic_p2p>")
@@ -1282,6 +1304,7 @@ endif()
 add_executable(
    test_forge_p2p_autorelay
    unit/main.cpp
+   fixtures/local_dns_server.cpp
    quic_p2p/libp2p_identity_fixture.cpp
    quic_p2p/autorelay_manager_fixture.cpp
    quic_p2p/autorelay_manager_tests.cpp
@@ -1879,6 +1902,7 @@ target_link_libraries(
    test_forge_plugins
    forge_app
    forge_codec_yaml
+   forge_codec_json
    forge_api_http
    forge_api_p2p
    forge_api_transport
@@ -1888,9 +1912,15 @@ target_link_libraries(
    forge_plugins_crypto_secrets
    forge_plugins_net_http_server
    forge_plugins_log_otlp
+   forge_plugins_db_store
    forge_plugins_net_p2p_node
    forge_plugins_net_p2p_resolver
+   forge_log
    Boost::included_unit_test_framework
+)
+target_compile_definitions(test_forge_plugins PRIVATE
+   FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>
+   FORGE_HAS_MDBX=$<BOOL:${FORGE_HAS_MDBX}>
 )
 add_test(NAME test_forge_plugins COMMAND test_forge_plugins WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
@@ -1985,8 +2015,10 @@ if(FORGE_HAS_ROCKSDB)
       test_forge_rocksdb
       unit/main.cpp
       rocksdb/rocksdb_tests.cpp
+      rocksdb/logging_tests.cpp
+      rocksdb/native_diagnostics_tests.cpp
    )
-   target_link_libraries(test_forge_rocksdb forge_rocksdb forge Boost::included_unit_test_framework)
+   target_link_libraries(test_forge_rocksdb forge_rocksdb forge_log RocksDB::rocksdb Boost::included_unit_test_framework)
    add_test(NAME test_forge_rocksdb COMMAND test_forge_rocksdb WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 else()

@@ -1,6 +1,7 @@
 module;
 
 #include <boost/test/unit_test.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -42,6 +43,7 @@ import forge.asio.runtime;
 import forge.crypto.asymmetric;
 import forge.crypto.pki.pem;
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.p2p.diagnostics;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
@@ -711,6 +713,21 @@ void reject_remains_terminal_during_history_window() {
 }
 
 void validation_queue_limit_retries_excess_without_penalizing_peer() {
+   struct capture_sink final : forge::sink {
+      std::mutex mutex;
+      std::vector<forge::log_record> records;
+      void log(const forge::log_record& record) override {
+         const auto lock = std::scoped_lock{mutex};
+         records.push_back(record);
+      }
+   };
+   auto capture = std::make_shared<capture_sink>();
+   auto previous = forge::logger::get("forge.net.p2p.pubsub");
+   auto route = forge::logger{"forge.net.p2p.pubsub"};
+   route.set_log_level(forge::log_level::all);
+   route.add_sink(capture);
+   forge::logger::update("forge.net.p2p.pubsub", route);
+   auto restore = boost::scope::scope_exit{[&] { forge::logger::update("forge.net.p2p.pubsub", previous); }};
    auto state = pubsub_router_fixture{};
    auto config = native_options(state.topic);
    config.limits.max_validation_queue = 1;
@@ -759,6 +776,37 @@ void validation_queue_limit_retries_excess_without_penalizing_peer() {
    second_shutdown.join();
    first_shutdown.join();
    BOOST_TEST(receiver.metrics().stopped);
+   const auto lock = std::scoped_lock{capture->mutex};
+   auto overloaded = 0U;
+   auto committed_logs = 0U;
+   for (const auto& record : capture->records) {
+      const auto event = std::ranges::find(record.fields, std::string{"event"}, &forge::log_field::key);
+      BOOST_REQUIRE(event != record.fields.end());
+      if (event->value == "pubsub.overloaded") {
+         ++overloaded;
+         const auto count = std::ranges::find(record.fields, std::string{"rejections"}, &forge::log_field::key);
+         BOOST_REQUIRE(count != record.fields.end());
+         const auto ordinal = std::stoull(count->value);
+         BOOST_TEST(ordinal != 0U);
+         BOOST_TEST((ordinal & (ordinal - 1)) == 0U);
+         BOOST_TEST(record.level.value == forge::log_level::debug);
+      }
+      if (event->value == "pubsub.validation_committed") { ++committed_logs; }
+      for (const auto& field : record.fields) {
+         BOOST_TEST(field.key != "topic");
+         BOOST_TEST(field.key != "data");
+         BOOST_TEST(field.key != "message_id");
+         BOOST_TEST(field.key != "payload");
+      }
+      BOOST_TEST(forge::format_json_log_record(record).find(state.topic.value) == std::string::npos);
+   }
+#ifndef FORGE_DISABLE_LOGGING
+   BOOST_TEST(overloaded >= 1U);
+   BOOST_TEST(committed_logs >= 2U);
+   BOOST_TEST(overloaded <= receiver.metrics().backpressure_rejections);
+#else
+   BOOST_TEST(capture->records.empty());
+#endif
 }
 
 } // namespace forge::tests::p2p::gossipsub_validation_tests

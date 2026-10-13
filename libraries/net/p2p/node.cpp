@@ -3,6 +3,7 @@ module;
 #include "details/rendezvous_time.hxx"
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -47,6 +48,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -1143,7 +1146,9 @@ void node::stop() {
              terminal.release();
              if (failure) {
                 try { std::rethrow_exception(failure); }
-                catch (...) { forge::exceptions::capture_and_log("P2P path shutdown failed"); }
+                catch (...) {
+                   elog("forge.net.p2p", "P2P path shutdown failed", ("event", "lifecycle.path_shutdown_failed"));
+                }
              }
           });
    } catch (...) {
