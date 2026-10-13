@@ -14,7 +14,6 @@ import forge.app.application_shell;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
-import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.compute;
 import forge.asio.runtime;
@@ -135,10 +134,9 @@ BOOST_AUTO_TEST_CASE(wallet_provider_source_connects_configured_names_in_depende
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto compute = forge::asio::compute::pool{{.worker_threads = 2}};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto installer = forge::api::core::installer{apis};
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events, nullptr, {}, compute.get_executor()};
+   auto context = forge::app::plugin_context{scheduler, apis, events, nullptr, {}, compute.get_executor()};
    for (auto& value : plugins) {
       run(runtime, value->provide(installer));
    }

@@ -37,7 +37,7 @@ import forge.api.core.registry;
 import forge.api.core.types;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
+import forge.app.plugin_lifecycle;
 import forge.asio.notification;
 import forge.asio.exceptions;
 import forge.asio.gate;
@@ -318,9 +318,8 @@ struct network_fixture {
    forge::asio::runtime runtime{forge::asio::runtime_options{.worker_threads = 4}};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
    np::plugin node;
    std::shared_ptr<np::pubsub_api> api;
 
@@ -398,6 +397,31 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_contract_opt_in_and_required_handlers) {
    f.run(node.provide(provider));
    BOOST_CHECK(apis.describe(np::pubsub_api::ref()) != nullptr);
    BOOST_CHECK(apis.describe({.id = {"forge.plugins.net.p2p.node.pubsub"}, .major = 2}) == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_pubsub_retained_api_obeys_starting_and_common_stop_before_backend_hook) {
+   auto f = fixture{};
+   auto lifecycle = forge::app::plugin_lifecycle{};
+   auto service = std::make_shared<np::detail::pubsub_service>(lifecycle, f.source->operations());
+   auto initialize = f.run(lifecycle.begin(forge::app::lifecycle_operation::initialize));
+   service->initialize(f.settings, f.native);
+   BOOST_CHECK(!initialize.complete());
+   auto startup = f.run(lifecycle.begin(forge::app::lifecycle_operation::startup));
+   const auto retained = service->interface();
+   BOOST_CHECK_THROW(static_cast<void>(retained->snapshot()), facade::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW(f.run(retained->publish({"not-running"}, {1})), facade::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW(f.run(retained->enable_partial({"not-running"}, accepting(), callbacks())),
+                     facade::exceptions::plugin_not_initialized);
+
+   // Close common admission before the backend stop hook updates its local resource state.
+   BOOST_CHECK(lifecycle.request_stop());
+   lifecycle.complete_stop();
+   BOOST_CHECK_THROW(static_cast<void>(retained->snapshot()), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(f.run(retained->publish({"stopped"}, {1})), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(f.run(retained->subscribe({"stopped"}, accepting())), p2p::exceptions::canceled);
+   BOOST_TEST(f.source->enable_calls.load() == 0U);
+   BOOST_CHECK(static_cast<bool>(startup.complete()));
+   f.run(np::detail::pubsub_service::shutdown_owned(service));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_partial_independent_owners_aggregate_and_exact_tokens) {

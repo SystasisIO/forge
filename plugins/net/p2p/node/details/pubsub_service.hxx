@@ -2,14 +2,17 @@
 
 #include "topic_state.hxx"
 #include "pubsub_operations.hxx"
+#include "shutdown_attempt.hxx"
 
 namespace forge::plugins::net::p2p::node::detail {
 
 struct pubsub_service : public std::enable_shared_from_this<pubsub_service> {
+   const forge::app::plugin_lifecycle lifecycle;
    pubsub_config settings;
    const pubsub_operations operations;
 
-   explicit pubsub_service(pubsub_operations operations = pubsub_operations{});
+   explicit pubsub_service(forge::app::plugin_lifecycle lifecycle,
+                            pubsub_operations operations = pubsub_operations{});
    [[nodiscard]] std::shared_ptr<pubsub_api> interface();
    std::shared_ptr<forge::net::p2p::node> source;
    std::map<std::string, std::shared_ptr<topic_state>> topics;
@@ -30,11 +33,10 @@ struct pubsub_service : public std::enable_shared_from_this<pubsub_service> {
    mutable std::mutex mutex;
    bool initialized = false;
    bool stopping = false;
-   bool shutdown_running = false;
-   bool shutdown_done = false;
-   std::exception_ptr shutdown_error;
+   std::shared_ptr<shutdown_attempt> shutdown;
 
-   [[nodiscard]] std::shared_ptr<forge::net::p2p::node> require_node_locked() const;
+   [[nodiscard]] std::shared_ptr<forge::net::p2p::node> require_node_locked(bool cleanup = false) const;
+   void admit_operation(const std::function<void()>& install) const;
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> begin_operation();
    void finish_operation() noexcept;
    void finish_topic_operation(const std::shared_ptr<topic_state>& topic,

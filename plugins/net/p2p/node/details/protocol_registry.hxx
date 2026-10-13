@@ -14,7 +14,7 @@ namespace forge::plugins::net::p2p::node::detail {
 
 class protocol_registry final : public std::enable_shared_from_this<protocol_registry> {
  public:
-   explicit protocol_registry(std::size_t max_slots);
+   protocol_registry(std::size_t max_slots, forge::app::plugin_lifecycle lifecycle);
    ~protocol_registry();
    [[nodiscard]] forge::api::p2p::publication publish(forge::api::p2p::api_binding binding);
    [[nodiscard]] protocol_registration register_raw(forge::net::p2p::protocol_id protocol,
@@ -32,6 +32,7 @@ class protocol_registry final : public std::enable_shared_from_this<protocol_reg
  private:
    struct slot_record {
       std::shared_ptr<protocol_slot> slot;
+      std::shared_ptr<protocol_slot::generation> pending;
       bool attaching = false;
       bool closing = false;
    };
@@ -49,6 +50,7 @@ class protocol_registry final : public std::enable_shared_from_this<protocol_reg
    void retire_generation(const api_publication_generation* generation) noexcept;
    void prune_generations_locked() noexcept;
 
+   const forge::app::plugin_lifecycle lifecycle_;
    mutable std::mutex mutex_;
    std::list<slot_record> slots_;
    std::list<generation_record> generations_;
@@ -62,7 +64,8 @@ class protocol_registry final : public std::enable_shared_from_this<protocol_reg
    std::size_t max_slots_;
 };
 
-[[nodiscard]] std::shared_ptr<protocol_registry> make_protocol_registry(std::size_t max_slots);
+[[nodiscard]] std::shared_ptr<protocol_registry> make_protocol_registry(
+   std::size_t max_slots, forge::app::plugin_lifecycle lifecycle);
 [[nodiscard]] forge::api::p2p::publication
 publish_api_publication(const std::shared_ptr<protocol_registry>& registry,
                         forge::api::p2p::api_binding binding);

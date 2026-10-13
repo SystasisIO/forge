@@ -30,8 +30,9 @@ import forge.api.core.handle;
 import forge.api.core.registry;
 import forge.api.core.types;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin_context;
-import forge.app.signals;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
@@ -173,9 +174,8 @@ struct plugin_environment {
    forge::asio::runtime runtime{};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
 
    ~plugin_environment() {
       run(scheduler.shutdown());
@@ -187,6 +187,20 @@ struct plugin_environment {
       return joined(result);
    }
 };
+
+void check_repeated_config(plugin_environment& environment, node_plugin::plugin& node,
+                           const forge::config::core::document& document) {
+   const auto before = node.lifecycle().snapshot();
+   BOOST_CHECK_THROW(environment.run(node.configure({document, "plugins.net.p2p.node"})),
+                     forge::app::exceptions::invalid_state);
+   const auto after = node.lifecycle().snapshot();
+   BOOST_CHECK(after.phase == before.phase);
+   BOOST_TEST(after.epoch == before.epoch);
+   BOOST_TEST(after.generation == before.generation);
+   BOOST_TEST(after.completed_operations == before.completed_operations);
+   BOOST_TEST(after.admission_open == before.admission_open);
+   BOOST_TEST(after.failure.has_value() == before.failure.has_value());
+}
 
 p2p::peer_id test_peer(std::uint8_t seed) {
    return p2p::make_peer_id({.type = p2p::public_key::type::ed25519,
@@ -457,7 +471,7 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_canceled_read_keeps_the_issued_subscript
    BOOST_TEST(!independent.active());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_host_event_api_live_diagnostics_bounds_are_atomic_with_frozen_node_config) {
+BOOST_AUTO_TEST_CASE(p2p_host_event_api_diagnostics_bounds_stay_frozen_with_independent_read_overrides) {
    auto fixture = host_fixture{true};
    fixture.start();
    fixture.seed_authenticated_peers();
@@ -469,28 +483,32 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_live_diagnostics_bounds_are_atomic_with_
    auto invalid = fixture.config;
    invalid.set("plugins.net.p2p.node.diagnostics.max-peers", 9U);
    invalid.set("plugins.net.p2p.node.diagnostics.max-sessions", 0U);
-   BOOST_CHECK_THROW(fixture.environment.run(fixture.node.configure({invalid, "plugins.net.p2p.node"})),
-                     node_plugin::exceptions::invalid_config);
+   {
+      auto fresh = node_plugin::plugin{};
+      BOOST_CHECK_THROW(fixture.environment.run(fresh.configure({invalid, "plugins.net.p2p.node"})),
+                        node_plugin::exceptions::invalid_config);
+   }
+   check_repeated_config(fixture.environment, fixture.node, invalid);
    BOOST_TEST(reads->snapshot().peers.size() == 7U);
 
    auto mixed = fixture.config;
    mixed.set("plugins.net.p2p.node.diagnostics.max-peers", 9U);
    mixed.set("plugins.net.p2p.node.peer-id", test_peer(74).value);
-   BOOST_CHECK_THROW(fixture.environment.run(fixture.node.configure({mixed, "plugins.net.p2p.node"})),
-                     node_plugin::exceptions::route_conflict);
+   check_repeated_config(fixture.environment, fixture.node, mixed);
    BOOST_TEST(reads->snapshot().peers.size() == 7U);
    BOOST_CHECK(reads->network().local_peer == captured.network.local_peer);
 
    fixture.config.set("plugins.net.p2p.node.diagnostics.max-peers", 9U);
-   fixture.environment.run(fixture.node.configure({fixture.config, "plugins.net.p2p.node"}));
-   BOOST_TEST(reads->snapshot().peers.size() == 9U);
+   check_repeated_config(fixture.environment, fixture.node, fixture.config);
+   BOOST_TEST(reads->snapshot().peers.size() == 7U);
+   BOOST_TEST(reads->snapshot({.max_peers = 9}).peers.size() == 9U);
    BOOST_TEST(reads->snapshot({.max_peers = 3}).peers.size() == 3U);
    BOOST_TEST(captured.peers.size() == 7U);
    BOOST_CHECK(reads->network().local_peer == captured.network.local_peer);
    BOOST_CHECK(fixture.facade()->reachability_status().phase == p2p::lifecycle_phase::maintenance);
 }
 
-BOOST_AUTO_TEST_CASE(p2p_host_event_api_native_reads_race_diagnostics_only_reconfiguration) {
+BOOST_AUTO_TEST_CASE(p2p_host_event_api_native_reads_race_rejected_reconfiguration) {
    auto fixture = host_fixture{true};
    fixture.start();
    fixture.seed_authenticated_peers();
@@ -516,12 +534,12 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_native_reads_race_diagnostics_only_recon
    reader.start();
    for (auto index = 0; index != 16; ++index) {
       fixture.config.set("plugins.net.p2p.node.diagnostics.max-peers", index % 2 == 0 ? 9U : 7U);
-      fixture.environment.run(fixture.node.configure({fixture.config, "plugins.net.p2p.node"}));
+      check_repeated_config(fixture.environment, fixture.node, fixture.config);
    }
    const auto observed = reader.finish();
    BOOST_REQUIRE_EQUAL(observed.configured.size(), 64U);
    for (const auto size : observed.configured) {
-      BOOST_TEST((size == 7U || size == 9U));
+      BOOST_TEST(size == 7U);
    }
    BOOST_TEST(observed.explicit_bounds);
    BOOST_TEST(observed.native_empty_state);
@@ -597,12 +615,19 @@ BOOST_AUTO_TEST_CASE(p2p_host_event_api_stop_before_initialize_cannot_reopen_adm
    const auto events = environment.apis.get<node_plugin::events_api>(node_plugin::events_api::ref());
    const auto reads = environment.apis.get<node_plugin::diagnostics_api>(node_plugin::diagnostics_api::ref());
    node.request_stop();
-   BOOST_CHECK_THROW(environment.run(node.initialize(environment.context)), node_plugin::exceptions::route_conflict);
-   environment.run(node.startup());
+   BOOST_CHECK_THROW(environment.run(node.initialize(environment.context)), forge::app::exceptions::invalid_state);
+   BOOST_CHECK_THROW(environment.run(node.startup()), forge::app::exceptions::invalid_state);
+   const auto stopped = node.lifecycle().snapshot();
+   BOOST_CHECK(stopped.phase == forge::app::lifecycle_phase::stopping);
+   BOOST_TEST(stopped.stop_requested);
+   BOOST_TEST(!stopped.admission_open);
+   BOOST_TEST(!stopped.completed(forge::app::lifecycle_operation::initialize));
+   BOOST_TEST(!stopped.completed(forge::app::lifecycle_operation::startup));
    BOOST_CHECK_THROW((void)events->reachability_status(), p2p::exceptions::canceled);
    BOOST_CHECK_THROW((void)events->host_events(), p2p::exceptions::canceled);
    BOOST_CHECK_THROW((void)reads->snapshot(), node_plugin::exceptions::plugin_not_initialized);
    environment.run(node.shutdown());
+   BOOST_CHECK(node.lifecycle().snapshot().phase == forge::app::lifecycle_phase::stopped);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_host_event_api_issued_subscription_survives_registry_and_facade_release) {

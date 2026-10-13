@@ -3,6 +3,8 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <memory>
 #include <map>
 #include <string>
 #include <string_view>
@@ -23,6 +25,24 @@ import forge.plugins.crypto.secrets.types;
 #include "details/plugin_impl.hxx"
 
 namespace forge::plugins::crypto::secrets {
+plugin::impl::impl(forge::app::plugin_lifecycle value)
+    : lifecycle{std::move(value)}, secrets{std::make_shared<const std::map<std::string, loaded_secret>>()} {}
+
+std::shared_ptr<const std::map<std::string, loaded_secret>> plugin::impl::require_active() const {
+   const auto state = lifecycle.snapshot();
+   if (state.stop_requested || state.phase == forge::app::lifecycle_phase::created ||
+       state.phase == forge::app::lifecycle_phase::configured) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "Secrets plugin admission is closed");
+   }
+   auto current = std::shared_ptr<const std::map<std::string, loaded_secret>>{};
+   if (!lifecycle.try_admit(state.generation, [&] {
+      current = std::atomic_load_explicit(&secrets, std::memory_order_acquire);
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "Secrets plugin admission is closed");
+   }
+   return current;
+}
+
 namespace {
 
 [[nodiscard]] bool contains_purpose(const std::vector<std::string>& allowed, std::string_view purpose) {
@@ -118,9 +138,10 @@ template <typename Secret>
 } // namespace
 
 snapshot plugin::impl::status(query) const {
+   const auto current = std::atomic_load_explicit(&secrets, std::memory_order_acquire);
    auto summaries = std::vector<secret_summary>{};
-   summaries.reserve(secrets.size());
-   for (const auto& [ignored, secret] : secrets) {
+   summaries.reserve(current->size());
+   for (const auto& [ignored, secret] : *current) {
       summaries.push_back(secret_summary{
          .id = secret.id,
          .kind = secret.kind,
@@ -130,14 +151,15 @@ snapshot plugin::impl::status(query) const {
       });
    }
    return snapshot{
-      .configured_secrets = static_cast<std::uint64_t>(secrets.size()),
-      .stopping = stopping,
+      .configured_secrets = static_cast<std::uint64_t>(current->size()),
+      .stopping = lifecycle.snapshot().stop_requested,
       .secrets = std::move(summaries),
    };
 }
 
 get_result plugin::impl::get_bytes(get_request value) const {
-   const auto& secret = find_secret(secrets, value.secret_id);
+   const auto current = require_active();
+   const auto& secret = find_secret(*current, value.secret_id);
    require_allowed(secret, value.purpose, operation::get_bytes);
    if (!secret.allow_raw_export) {
       FORGE_THROW_EXCEPTION(exceptions::operation_denied, "raw secret export is disabled",
@@ -150,7 +172,8 @@ get_result plugin::impl::get_bytes(get_request value) const {
 }
 
 derive_result plugin::impl::derive_hkdf_sha256(derive_request value) const {
-   const auto& secret = find_secret(secrets, value.secret_id);
+   const auto current = require_active();
+   const auto& secret = find_secret(*current, value.secret_id);
    require_allowed(secret, value.purpose, operation::derive_hkdf_sha256);
    try {
       auto output = forge::crypto::symmetric::kdf::derive_hkdf_sha256(
@@ -169,7 +192,8 @@ derive_result plugin::impl::derive_hkdf_sha256(derive_request value) const {
 }
 
 aead_encrypt_result plugin::impl::encrypt_aes_gcm(aead_encrypt_request value) const {
-   const auto& secret = find_secret(secrets, value.secret_id);
+   const auto current = require_active();
+   const auto& secret = find_secret(*current, value.secret_id);
    require_allowed(secret, value.purpose, operation::encrypt_aes_gcm);
    require_size(value.plaintext.size(), secret.max_plaintext_bytes, "plaintext");
    require_size(value.aad.size(), secret.max_aad_bytes, "AAD");
@@ -199,7 +223,8 @@ aead_encrypt_result plugin::impl::encrypt_aes_gcm(aead_encrypt_request value) co
 }
 
 aead_decrypt_result plugin::impl::decrypt_aes_gcm(aead_decrypt_request value) const {
-   const auto& secret = find_secret(secrets, value.secret_id);
+   const auto current = require_active();
+   const auto& secret = find_secret(*current, value.secret_id);
    require_allowed(secret, value.purpose, operation::decrypt_aes_gcm);
    require_size(value.ciphertext.size(), secret.max_ciphertext_bytes, "ciphertext");
    require_size(value.ciphertext.size(), secret.max_plaintext_bytes, "plaintext");

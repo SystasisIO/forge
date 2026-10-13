@@ -7,10 +7,12 @@
 
 namespace forge::plugins::db::store {
 struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
+   explicit impl(forge::app::plugin_lifecycle lifecycle);
+   const forge::app::plugin_lifecycle lifecycle;
    mutable std::mutex mutex;
    config settings;
    std::unordered_map<std::string, std::shared_ptr<managed_store>> stores;
-   std::atomic<phase> current = phase::registered;
+   std::atomic<phase> current = phase::collecting;
    bool enabled = true;
    bool shutdown_completed = false;
 

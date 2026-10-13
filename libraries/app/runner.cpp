@@ -1,5 +1,8 @@
 module;
 
+#include "details/lifecycle_log.hxx"
+#include "details/shutdown_state.hxx"
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -22,12 +25,39 @@ module forge.app.runner;
 
 import forge.asio.blocking;
 import forge.app.exceptions;
+import forge.app.plugin_lifecycle;
 import forge.app.application;
 import forge.app.application_shell;
 import forge.config.core.document;
 
+#include "details/shutdown_owner.hxx"
+
 namespace forge::app {
 namespace {
+
+using detail::shutdown_owner;
+using detail::shutdown_state;
+
+void log_runner(application_shell& app, const char* event, const char* operation,
+                detail::lifecycle_log_level level, std::exception_ptr error = {},
+                bool has_exit_code = false, int exit_code = 0) noexcept {
+   try {
+      const auto state = app.lifecycle().snapshot();
+      detail::emit_lifecycle_log({.logger = "forge.app.runner",
+                                 .event = event,
+                                 .operation = operation,
+                                 .level = level,
+                                 .phase = static_cast<int>(state.phase),
+                                 .generation = state.generation,
+                                 .epoch = state.epoch,
+                                 .stop_requested = state.stop_requested,
+                                 .error = error,
+                                 .canceled_event = "runner.canceled",
+                                 .exit_code = exit_code,
+                                 .has_exit_code = has_exit_code});
+   } catch (...) {
+   }
+}
 
 boost::asio::awaitable<void> wait_for_os_signal(application_shell& app, const run_options& options) {
    auto signals = boost::asio::signal_set{app.runtime().context()};
@@ -41,23 +71,10 @@ boost::asio::awaitable<void> wait_for_os_signal(application_shell& app, const ru
    auto error = boost::system::error_code{};
    co_await signals.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
    if (error) {
-      throw exceptions::startup_failed{"application signal wait failed: " + error.message()};
+      throw exceptions::startup_failed{"application signal wait failed"};
    }
+   log_runner(app, "runner.signal", "wait_for_stop", detail::lifecycle_log_level::debug);
 }
-
-struct shutdown_state {
-   std::mutex mutex;
-   std::condition_variable ready;
-   bool done = false;
-   bool timed_out = false;
-   std::exception_ptr error;
-};
-
-struct shutdown_owner {
-   explicit shutdown_owner(std::unique_ptr<application_shell> input) : app{std::move(input)} {}
-
-   std::unique_ptr<application_shell> app;
-};
 
 void keep_owner_until_shutdown_finishes(std::shared_ptr<shutdown_state> state, std::shared_ptr<shutdown_owner> owner) {
    if (!owner) {
@@ -150,7 +167,7 @@ bool run_shutdown_until_timeout(application_shell& app, std::chrono::millisecond
 void shutdown_with_timeout(application_shell& app, std::chrono::milliseconds timeout,
                            bool allow_async_shutdown_tail, std::shared_ptr<shutdown_owner> owner = {}) {
    app.request_stop();
-   if (app.state() == application_state::stopped) {
+   if (app.state() == lifecycle_phase::stopped) {
       return;
    }
    if (timeout.count() <= 0) {
@@ -166,25 +183,32 @@ int run_application_impl(application_shell& app, const forge::config::core::docu
                          std::shared_ptr<shutdown_owner> owner) {
    auto exit_code = 0;
    auto failure = std::exception_ptr{};
+   auto stage = "configure";
+   log_runner(app, "runner.start", "run", detail::lifecycle_log_level::info);
 
    try {
       app.configure(document);
+      stage = "startup";
       forge::asio::blocking::run(app.runtime(), app.startup());
+      stage = "wait_for_stop";
       if (options.wait_for_stop) {
          forge::asio::blocking::run(app.runtime(), options.wait_for_stop(app));
       } else if (options.handle_sigint || options.handle_sigterm) {
          forge::asio::blocking::run(app.runtime(), wait_for_os_signal(app, options));
       } else {
+         stage = "foreground";
          exit_code = app.run();
       }
    } catch (...) {
       failure = std::current_exception();
+      log_runner(app, "runner.failed", stage, detail::lifecycle_log_level::error, failure);
    }
 
    try {
       const auto allow_async_shutdown_tail = static_cast<bool>(owner);
       shutdown_with_timeout(app, options.shutdown_timeout, allow_async_shutdown_tail, std::move(owner));
    } catch (...) {
+      log_runner(app, "runner.failed", "shutdown", detail::lifecycle_log_level::error, std::current_exception());
       if (!failure) {
          throw;
       }
@@ -193,6 +217,7 @@ int run_application_impl(application_shell& app, const forge::config::core::docu
    if (failure) {
       std::rethrow_exception(failure);
    }
+   log_runner(app, "runner.exit", "run", detail::lifecycle_log_level::info, {}, true, exit_code);
    return exit_code;
 }
 

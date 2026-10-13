@@ -79,7 +79,7 @@ namespace {
 
 } // namespace
 
-plugin::impl::impl() = default;
+plugin::impl::impl(forge::app::plugin_lifecycle state) : lifecycle{std::move(state)} {}
 
 plugin::impl::~impl() {
    request_stop_publications();
@@ -90,28 +90,32 @@ response query_resolver_protocol(const std::shared_ptr<plugin::impl>& owner, con
       FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin owner has expired");
    }
 
-   {
-      auto lock = std::scoped_lock{owner->mutex};
-      if (owner->stopping) {
-         FORGE_THROW_EXCEPTION(exceptions::remote_stopped, "P2P API resolver plugin is stopping");
-      }
-      if (!owner->initialized) {
-         FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin is not initialized");
-      }
-   }
+   static_cast<void>(owner->require_p2p());
 
    return owner->query_local(request);
 }
 
 std::shared_ptr<forge::plugins::net::p2p::node::api> plugin::impl::require_p2p() const {
-   const auto lock = std::scoped_lock{mutex};
-   if (stopping) {
+   const auto state = lifecycle.snapshot();
+   if (state.stop_requested) {
       FORGE_THROW_EXCEPTION(exceptions::remote_stopped, "P2P API resolver plugin is stopping");
    }
-   if (!initialized || !p2p) {
+   if (state.phase != forge::app::lifecycle_phase::initialized &&
+       state.phase != forge::app::lifecycle_phase::starting &&
+       state.phase != forge::app::lifecycle_phase::started) {
       FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin is not initialized");
    }
-   return p2p;
+   auto current = std::shared_ptr<forge::plugins::net::p2p::node::api>{};
+   if (!lifecycle.try_admit(state.generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      current = p2p;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::remote_stopped, "P2P API resolver plugin is stopping");
+   }
+   if (!current) {
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin is not initialized");
+   }
+   return current;
 }
 
 std::chrono::milliseconds plugin::impl::query_deadline(resolve_options value) const {
@@ -213,11 +217,7 @@ plugin::impl::add_local(forge::api::core::binding_plan plan, forge::net::p2p::pr
          publications, *p2p_api, std::move(plan), std::move(route), std::move(options.transport),
          std::move(projected), settings.max_apis_per_peer);
 
-      auto stopping_now = false;
-      {
-         const auto lock = std::scoped_lock{mutex};
-         stopping_now = stopping || !initialized;
-      }
+      const auto stopping_now = lifecycle.snapshot().stop_requested;
       if (stopping_now) {
          publication.close();
          FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin is stopping");
@@ -357,17 +357,13 @@ std::optional<entry> plugin::impl::select_compatible(const std::vector<entry>& e
 void plugin::impl::install_protocol(const std::shared_ptr<forge::plugins::net::p2p::node::api>& p2p_api) {
    auto plan = make_resolver_protocol_plan(protocol_registry, weak_from_this());
    auto publication = p2p_api->publish_api(std::move(plan), protocol, resolver_transport);
-   auto stopping_now = false;
-   {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
       const auto lock = std::scoped_lock{mutex};
-      stopping_now = stopping;
-      if (!stopping_now) {
-         resolver_protocol_publication = std::move(publication);
-      }
-   }
-   if (stopping_now) {
+      resolver_protocol_publication = std::move(publication);
+   })) {
       publication.close();
-      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin is stopping");
+      FORGE_THROW_EXCEPTION(exceptions::remote_stopped, "P2P API resolver protocol installation was stopped");
    }
 }
 
@@ -375,7 +371,6 @@ void plugin::impl::request_stop_publications() noexcept {
    auto publications = std::shared_ptr<detail::publication_catalog>{};
    {
       const auto lock = std::scoped_lock{mutex};
-      stopping = true;
       publications = local_publications;
    }
    resolver_protocol_publication.close();
@@ -406,10 +401,10 @@ boost::asio::awaitable<void> plugin::impl::shutdown_publications() {
       }
    }
 
-   protocol_registry.clear();
    if (failure) {
       std::rethrow_exception(failure);
    }
+   protocol_registry.clear();
 }
 
 boost::asio::awaitable<resolution>
@@ -471,53 +466,83 @@ boost::asio::awaitable<std::vector<entry>> plugin::impl::query_remote_apis(forge
 }
 
 void plugin::impl::register_managed(const std::shared_ptr<detail::managed_remote_invoker>& value) {
-   auto lock = std::scoped_lock{mutex};
-   managed_remotes.erase(
-       std::remove_if(managed_remotes.begin(), managed_remotes.end(), [](const auto& item) { return item.expired(); }),
-       managed_remotes.end());
-   if (stopping || !initialized) {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (!p2p) {
+         FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "managed remote owner is not initialized");
+      }
+      managed_remotes.erase(
+          std::remove_if(managed_remotes.begin(), managed_remotes.end(), [](const auto& item) { return item.expired(); }),
+          managed_remotes.end());
+      if (managed_remotes.size() >= settings.max_managed_remotes) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_remote, "managed remote capacity is exhausted");
+      }
+      managed_remotes.push_back(value);
+   })) {
       FORGE_THROW_EXCEPTION(exceptions::remote_stopped, "managed remote owner is not running");
    }
-   if (managed_remotes.size() >= settings.max_managed_remotes) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_remote, "managed remote capacity is exhausted");
-   }
-   managed_remotes.push_back(value);
 }
 
 void plugin::impl::request_stop_managed() noexcept {
-   auto values = std::vector<std::shared_ptr<detail::managed_remote_invoker>>{};
-   {
-      auto lock = std::scoped_lock{mutex};
-      stopping = true;
-      for (auto& value : managed_remotes) {
-         if (auto owned = value.lock()) {
-            values.push_back(std::move(owned));
-         }
+   // Common admission is already closed, so the registration list cannot grow.
+   for (auto index = std::size_t{0};; ++index) {
+      auto value = std::weak_ptr<detail::managed_remote_invoker>{};
+      {
+         const auto lock = std::scoped_lock{mutex};
+         if (index == managed_remotes.size()) { break; }
+         value = managed_remotes[index];
       }
+      if (auto owned = value.lock()) { owned->request_stop(); }
    }
-   for (const auto& value : values) {
+   for (auto index = std::size_t{0};; ++index) {
+      auto value = std::shared_ptr<detail::managed_remote_invoker>{};
+      {
+         const auto lock = std::scoped_lock{mutex};
+         if (index == closing_remotes.size()) { break; }
+         value = closing_remotes[index];
+      }
       value->request_stop();
    }
 }
 
 boost::asio::awaitable<void> plugin::impl::shutdown_managed() {
+   auto registered = std::vector<std::weak_ptr<detail::managed_remote_invoker>>{};
+   auto pending = std::vector<std::shared_ptr<detail::managed_remote_invoker>>{};
    auto values = std::vector<std::shared_ptr<detail::managed_remote_invoker>>{};
    {
-      auto lock = std::scoped_lock{mutex};
-      stopping = true;
-      for (auto& value : managed_remotes) {
-         if (auto owned = value.lock()) {
-            values.push_back(std::move(owned));
-         }
+      const auto lock = std::scoped_lock{mutex};
+      registered = managed_remotes;
+   }
+   pending.reserve(registered.size());
+   for (const auto& value : registered) {
+      if (auto owned = value.lock()) { pending.push_back(std::move(owned)); }
+   }
+   {
+      const auto lock = std::scoped_lock{mutex};
+      if (!registered.empty()) {
+         closing_remotes.swap(pending);
+         managed_remotes.clear();
       }
-      managed_remotes.clear();
+      values = closing_remotes;
    }
+   for (const auto& value : values) { value->request_stop(); }
+   auto failure = std::exception_ptr{};
    for (const auto& value : values) {
-      value->request_stop();
+      auto closed = false;
+      try {
+         co_await value->async_stop();
+         closed = true;
+      } catch (...) {
+         if (!failure) { failure = std::current_exception(); }
+      }
+      if (closed) {
+         const auto lock = std::scoped_lock{mutex};
+         // Every owner is pinned by values while compacting the pending batch.
+         std::erase(closing_remotes, value);
+      }
    }
-   for (const auto& value : values) {
-      co_await value->async_stop();
-   }
+   if (failure) { std::rethrow_exception(failure); }
 }
 
 } // namespace forge::plugins::net::p2p::resolver

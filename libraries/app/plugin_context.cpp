@@ -1,7 +1,5 @@
 module;
 
-#include <optional>
-#include <string>
 #include <utility>
 
 module forge.app.plugin_context;
@@ -19,22 +17,22 @@ forge::api::core::registry& default_api_registry() {
 } // namespace
 
 plugin_context::plugin_context(forge::asio::task::scheduler& scheduler, forge::api::core::registry& apis,
-                               service_view services, signal_bus& signals, event_bus& events,
-                               diagnostics_store* diagnostics, config_view config,
+                               service_view services, event_journal& events,
+                               const diagnostics_store* diagnostics, application_environment environment,
                                forge::asio::compute::executor compute)
-    : scheduler_{&scheduler}, compute_{std::move(compute)}, apis_{&apis}, services_{services}, signals_{&signals},
-      events_{&events}, diagnostics_{diagnostics}, config_{std::move(config)} {}
+    : scheduler_{&scheduler}, compute_{std::move(compute)}, apis_{&apis}, services_{services},
+      events_{&events}, diagnostics_{diagnostics}, environment_{std::move(environment)} {}
 
 plugin_context::plugin_context(forge::asio::task::scheduler& scheduler, forge::api::core::registry& apis,
-                               signal_bus& signals, event_bus& events, diagnostics_store* diagnostics,
-                               config_view config, forge::asio::compute::executor compute)
-    : plugin_context{scheduler, apis, service_view{}, signals, events, diagnostics, std::move(config),
+                               event_journal& events, const diagnostics_store* diagnostics,
+                               application_environment environment, forge::asio::compute::executor compute)
+    : plugin_context{scheduler, apis, service_view{}, events, diagnostics, std::move(environment),
                      std::move(compute)} {}
 
-plugin_context::plugin_context(forge::asio::task::scheduler& scheduler, signal_bus& signals, event_bus& events,
-                               diagnostics_store* diagnostics, config_view config,
+plugin_context::plugin_context(forge::asio::task::scheduler& scheduler, event_journal& events,
+                               const diagnostics_store* diagnostics, application_environment environment,
                                forge::asio::compute::executor compute)
-    : plugin_context{scheduler, default_api_registry(), signals, events, diagnostics, std::move(config),
+    : plugin_context{scheduler, default_api_registry(), events, diagnostics, std::move(environment),
                      std::move(compute)} {}
 
 forge::asio::task::scheduler& plugin_context::scheduler() noexcept {
@@ -60,28 +58,16 @@ service_view plugin_context::services() const noexcept {
    return services_;
 }
 
-signal_bus& plugin_context::signals() noexcept {
-   return *signals_;
-}
-
-event_bus& plugin_context::events() noexcept {
+event_journal& plugin_context::events() noexcept {
    return *events_;
 }
 
-diagnostics_store* plugin_context::diagnostics() noexcept {
+const diagnostics_store* plugin_context::diagnostics() const noexcept {
    return diagnostics_;
 }
 
-const config_view& plugin_context::config() const noexcept {
-   return config_;
-}
-
-std::optional<std::string> plugin_context::config_value(const std::string& key) const {
-   const auto iterator = config_.find(key);
-   if (iterator == config_.end()) {
-      return std::nullopt;
-   }
-   return iterator->second;
+const application_environment& plugin_context::environment() const noexcept {
+   return environment_;
 }
 
 } // namespace forge::app

@@ -26,7 +26,7 @@ import forge.plugins.crypto.secrets.types;
 
 namespace forge::plugins::crypto::secrets {
 
-plugin::plugin() : impl_{std::make_shared<impl>()} {}
+plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
 
 plugin::~plugin() = default;
 
@@ -49,31 +49,27 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.crypto.secrets");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    apply_config(*impl_, view);
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context&) {
-   impl_->stopping = false;
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context&) {
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    co_return;
 }
 
-void plugin::request_stop() noexcept {
-   impl_->stopping = true;
-}
+void plugin::on_request_stop() noexcept {}
 
-boost::asio::awaitable<void> plugin::shutdown() {
-   impl_->stopping = true;
+boost::asio::awaitable<void> plugin::on_shutdown() {
    co_return;
 }
 

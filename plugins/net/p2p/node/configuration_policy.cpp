@@ -284,7 +284,7 @@ std::vector<forge::net::p2p::endpoint> parse_endpoint_list(const std::vector<std
 void apply_config(plugin::impl& state, const config& config) {
    const auto previous = state.configuration_snapshot();
    detail::validate_pubsub_config(config.pubsub);
-   if (state.phase.load(std::memory_order_acquire) != lifecycle_phase::idle) {
+   if (state.lifecycle.snapshot().phase == forge::app::lifecycle_phase::started) {
       state.commit_diagnostics_configuration(previous, config);
       return;
    }

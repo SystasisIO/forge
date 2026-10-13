@@ -36,7 +36,10 @@ plugin::api_impl::add_store(std::string name,
 }
 
 boost::asio::awaitable<store_handle> plugin::api_impl::store(std::string name) {
-   (void)owner_->require_store(name);
+   const auto generation = owner_->lifecycle.snapshot().generation;
+   if (!owner_->lifecycle.try_admit(generation, [&] { (void)owner_->require_store(name); })) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "db store handle admission is closed");
+   }
    co_return store_handle{std::make_shared<store_handle_state_impl>(owner_, std::move(name))};
 }
 

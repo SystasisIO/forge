@@ -1,9 +1,15 @@
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include <chrono>
+#include <exception>
+#include <future>
 #include <string>
 #include <string_view>
+#include <utility>
 
-import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.config.core.document;
 import forge.plugins.net.http.server.plugin;
@@ -15,22 +21,32 @@ import forge.plugins.net.p2p.resolver.exceptions;
 
 namespace {
 
+void run(forge::asio::runtime& runtime, boost::asio::awaitable<void> operation) {
+   auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(std::chrono::seconds{5}) != std::future_status::ready) { std::terminate(); }
+   result.get();
+}
+
 template <typename Plugin, typename Error> void check_identity(std::string_view leaf) {
-   auto plugin = Plugin{};
    const auto section = "plugins.net." + std::string{leaf};
-   BOOST_TEST(plugin.id().value == "forge." + section);
-   const auto descriptor = plugin.describe_config();
-   BOOST_REQUIRE(descriptor);
-   BOOST_TEST(descriptor->section == section);
    auto runtime = forge::asio::runtime{{.worker_threads = 2}};
    for (const auto mixed : {false, true}) {
+      auto plugin = Plugin{};
+      auto cleanup = boost::scope::scope_exit{[&] {
+         try { run(runtime, plugin.shutdown()); }
+         catch (...) { BOOST_ERROR("retired-config identity owner cleanup failed"); }
+      }};
+      BOOST_TEST(plugin.id().value == "forge." + section);
+      const auto descriptor = plugin.describe_config();
+      BOOST_REQUIRE(descriptor);
+      BOOST_TEST(descriptor->section == section);
       forge::config::core::document settings;
       settings.set("plugins." + std::string{leaf} + ".enabled", false);
       if (mixed) {
          settings.set(section + ".enabled", true);
       }
       BOOST_CHECK_EXCEPTION(
-          forge::asio::blocking::run(runtime, plugin.configure({settings, section})), Error, [](const Error& error) {
+          run(runtime, plugin.configure({settings, section})), Error, [](const Error& error) {
              return std::string_view{error.what()}.find("retired plugin configuration") != std::string_view::npos;
           });
    }
@@ -51,10 +67,14 @@ BOOST_AUTO_TEST_CASE(p2p_node_rejects_retired_standalone_pubsub_and_diagnostics_
    for (const auto family : {"plugins.p2p.", "plugins.net.p2p."}) {
       for (const auto role : {"pubsub", "diagnostics"}) {
          auto plugin = node::plugin{};
+         auto cleanup = boost::scope::scope_exit{[&] {
+            try { run(runtime, plugin.shutdown()); }
+            catch (...) { BOOST_ERROR("retired standalone section owner cleanup failed"); }
+         }};
          forge::config::core::document settings;
          settings.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
          settings.set(std::string{family} + role + ".enabled", false);
-         BOOST_CHECK_THROW(forge::asio::blocking::run(runtime,
+         BOOST_CHECK_THROW(run(runtime,
              plugin.configure({settings, "plugins.net.p2p.node"})), node::exceptions::invalid_config);
       }
    }

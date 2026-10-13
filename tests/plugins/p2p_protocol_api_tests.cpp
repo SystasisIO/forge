@@ -28,8 +28,9 @@ import forge.api.core.types;
 import forge.api.p2p.publication;
 import forge.api.transport.connection;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin_context;
-import forge.app.signals;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
@@ -52,6 +53,7 @@ import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
+import forge.plugins.net.p2p.node.pubsub_api;
 
 namespace {
 namespace p2p = forge::net::p2p;
@@ -69,9 +71,11 @@ template<class T> T joined(std::future<T>& value) {
 
 class identity_source final : public secrets::api {
  public:
+   bool reject_reads = false;
    forge::tests::p2p::identity_fixture identity = forge::tests::p2p::make_identity_fixture("raw-plugin");
    boost::asio::awaitable<secrets::snapshot> status(secrets::query) override { co_return secrets::snapshot{.configured_secrets = 2}; }
    boost::asio::awaitable<secrets::get_result> get_bytes(secrets::get_request request) override {
+      if (reject_reads) { throw std::runtime_error{"raw fixture identity read failed"}; }
       const auto* bytes = request.secret_id == "raw/cert" ? &identity.certificate_pem
           : request.secret_id == "raw/key" ? &identity.private_key_pem : nullptr;
       if (!bytes) { throw std::invalid_argument{"unknown raw fixture secret"}; }
@@ -92,15 +96,16 @@ struct fixture {
    forge::asio::runtime runtime{};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
    np::plugin node;
+   std::shared_ptr<identity_source> identity = std::make_shared<identity_source>();
    std::shared_ptr<np::protocol_api> raw;
    std::shared_ptr<np::api> api;
    forge::config::core::document configuration;
 
-   explicit fixture(std::optional<p2p::endpoint> bootstrap = {}, unsigned limit = 32) {
+   explicit fixture(std::optional<p2p::endpoint> bootstrap = {}, unsigned limit = 32, bool pubsub = false,
+                    std::function<void(forge::config::core::document&)> prepare_configuration = {}) {
       auto& config = configuration;
       config.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
       config.set("plugins.net.p2p.node.identity.certificate-secret", "raw/cert");
@@ -108,12 +113,14 @@ struct fixture {
       config.set("plugins.net.p2p.node.topology.mode", "static-only");
       config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{"/ip4/127.0.0.1/tcp/0"});
       config.set("plugins.net.p2p.node.max-protocol-handlers", static_cast<std::uint64_t>(limit));
+      config.set("plugins.net.p2p.node.pubsub.enabled", pubsub);
       if (bootstrap) {
          config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{bootstrap->to_string()});
          config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
       }
+      if (prepare_configuration) { prepare_configuration(config); }
       run(node.configure({config, "plugins.net.p2p.node"}));
-      apis.install<secrets::api>(secrets::api::describe(), std::make_shared<identity_source>());
+      apis.install<secrets::api>(secrets::api::describe(), identity);
       auto installer = forge::api::core::installer{apis};
       run(node.provide(installer));
       run(node.initialize(context));
@@ -134,6 +141,20 @@ struct fixture {
       return api->publish_api(forge::api::core::binding().serve(apis).build(), std::move(protocol));
    }
 };
+
+void check_repeated_config(fixture& owner, const forge::config::core::document& document) {
+   const auto before = owner.node.lifecycle().snapshot();
+   BOOST_REQUIRE(before.completed(forge::app::lifecycle_operation::configure));
+   BOOST_CHECK_THROW(owner.run(owner.node.configure({document, "plugins.net.p2p.node"})),
+                     forge::app::exceptions::invalid_state);
+   const auto after = owner.node.lifecycle().snapshot();
+   BOOST_CHECK(after.phase == before.phase);
+   BOOST_TEST(after.epoch == before.epoch);
+   BOOST_TEST(after.generation == before.generation);
+   BOOST_TEST(after.completed_operations == before.completed_operations);
+   BOOST_TEST(after.admission_open == before.admission_open);
+   BOOST_TEST(after.failure.has_value() == before.failure.has_value());
+}
 
 p2p::node::protocol_handler noop() {
    return [](p2p::node::incoming_protocol_stream) -> boost::asio::awaitable<void> { co_return; };
@@ -189,6 +210,27 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_contract_and_exact_generation_ownership) {
    auto last = first.raw->register_protocol(name, noop());
    moved.close();
    BOOST_TEST(last.active());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_failed_startup_closes_contribution_admission) {
+   fixture f{std::nullopt, 32, true};
+   auto previous = f.raw->register_protocol({"/raw/before-failure/1"}, noop());
+   auto pubsub = f.apis.get<np::pubsub_api>(np::pubsub_api::ref()).shared();
+   f.identity->reject_reads = true;
+   BOOST_CHECK_THROW(f.run(f.node.startup()), std::runtime_error);
+   const auto state = f.node.lifecycle().snapshot();
+   BOOST_CHECK(state.failure.has_value());
+   BOOST_CHECK(!state.stop_requested);
+   BOOST_CHECK(!state.admission_open);
+   BOOST_CHECK_THROW(static_cast<void>(f.raw->register_protocol({"/raw/after-failure/1"}, noop())),
+                     np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(static_cast<void>(f.raw->replace_protocol(previous, {"/raw/before-failure/1"}, noop())),
+                     np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(static_cast<void>(f.publish({"/api/after-failure/1"})), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(f.run(pubsub->publish({"after-failure"}, {1})), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(pubsub->snapshot()), p2p::exceptions::canceled);
+   previous.close();
+   BOOST_CHECK(!previous.active());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_protocol_raw_api_collision_both_orders_and_concurrency) {
@@ -281,44 +323,50 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_prestart_close_live_replacement_and_admitted_s
    first.request_cancel(); second.request_cancel();
 }
 
-BOOST_AUTO_TEST_CASE(p2p_protocol_all_configured_dht_names_are_reserved_and_reconfigure_replaces_snapshot) {
-   fixture f;
+BOOST_AUTO_TEST_CASE(p2p_protocol_configured_dht_names_stay_reserved_and_fresh_owners_use_new_settings) {
    using value = forge::config::core::value;
-   auto config = forge::config::core::document{};
-   config.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
-   config.set("plugins.net.p2p.node.dht.profiles", value::array_type{
-       value{value::object_type{{"kind", "custom"}, {"mode", "client"}, {"protocol", "/raw/dht/client/1"},
-                               {"peers", true}, {"providers", false}, {"values", false}}},
-       value{value::object_type{{"kind", "custom"}, {"mode", "server"}, {"protocol", "/raw/dht/server/1"},
-                               {"peers", true}, {"providers", false}, {"values", false}}},
-   });
+   fixture f{std::nullopt, 32, false, [](auto& config) {
+      config.set("plugins.net.p2p.node.dht.profiles", value::array_type{
+          value{value::object_type{{"kind", "custom"}, {"mode", "client"}, {"protocol", "/raw/dht/client/1"},
+                                  {"peers", true}, {"providers", false}, {"values", false}}},
+          value{value::object_type{{"kind", "custom"}, {"mode", "server"}, {"protocol", "/raw/dht/server/1"},
+                                  {"peers", true}, {"providers", false}, {"values", false}}},
+      });
+   }};
    // Client-only and provider/value-disabled profiles still own their whole name.
-   f.run(f.node.configure({config, "plugins.net.p2p.node"}));
-   f.run(f.node.configure({config, "plugins.net.p2p.node"}));
+   check_repeated_config(f, f.configuration);
    for (const auto& protocol : {"/raw/dht/client/1", "/raw/dht/server/1"}) {
       BOOST_CHECK_THROW((void)f.raw->register_protocol({protocol}, noop()), np::exceptions::route_conflict);
       BOOST_CHECK_THROW((void)f.publish({protocol}), np::exceptions::route_conflict);
    }
-   config.set("plugins.net.p2p.node.dht.profiles", value::array_type{});
-   f.run(f.node.configure({config, "plugins.net.p2p.node"}));
-   auto freed = f.raw->register_protocol({"/raw/dht/client/1"}, noop());
-   BOOST_TEST(freed.active());
+   auto cleared = f.configuration;
+   cleared.set("plugins.net.p2p.node.dht.profiles", value::array_type{});
+   check_repeated_config(f, cleared);
+   for (const auto& protocol : {"/raw/dht/client/1", "/raw/dht/server/1"}) {
+      BOOST_CHECK_THROW((void)f.raw->register_protocol({protocol}, noop()), np::exceptions::route_conflict);
+      BOOST_CHECK_THROW((void)f.publish({protocol}), np::exceptions::route_conflict);
+   }
+   fixture fresh{std::nullopt, 32, false, [cleared](auto& config) { config = cleared; }};
+   auto freed_client = fresh.raw->register_protocol({"/raw/dht/client/1"}, noop());
+   auto freed_server = fresh.raw->register_protocol({"/raw/dht/server/1"}, noop());
+   BOOST_TEST(freed_client.active());
+   BOOST_TEST(freed_server.active());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_protocol_rejected_dht_collision_preserves_configuration_and_live_raw_route) {
-   fixture server;
+BOOST_AUTO_TEST_CASE(p2p_protocol_fresh_dht_collision_and_repeated_input_preserve_the_live_raw_route) {
    using value = forge::config::core::value;
    const auto original_dht = p2p::protocol_id{"/raw/config/original-dht/1"};
    const auto candidate_dht = p2p::protocol_id{"/raw/config/rejected-dht/1"};
    const auto raw_name = p2p::protocol_id{"/raw/config/echo/1"};
-   auto good = server.configuration;
-   good.set("plugins.net.p2p.node.dht.profiles", value::array_type{custom_dht(original_dht)});
-   good.set("plugins.net.p2p.node.max-sessions", std::uint64_t{7});
-   good.set("plugins.net.p2p.node.topology.peers.low", std::uint64_t{1});
-   good.set("plugins.net.p2p.node.topology.peers.target", std::uint64_t{2});
-   good.set("plugins.net.p2p.node.topology.peers.high", std::uint64_t{3});
-   good.set("plugins.net.p2p.node.peer-exchange.enabled", false);
-   server.run(server.node.configure({good, "plugins.net.p2p.node"}));
+   fixture server{std::nullopt, 32, false, [original_dht](auto& config) {
+      config.set("plugins.net.p2p.node.dht.profiles", value::array_type{custom_dht(original_dht)});
+      config.set("plugins.net.p2p.node.max-sessions", std::uint64_t{7});
+      config.set("plugins.net.p2p.node.topology.peers.low", std::uint64_t{1});
+      config.set("plugins.net.p2p.node.topology.peers.target", std::uint64_t{2});
+      config.set("plugins.net.p2p.node.topology.peers.high", std::uint64_t{3});
+      config.set("plugins.net.p2p.node.peer-exchange.enabled", false);
+   }};
+   const auto good = server.configuration;
    auto raw = server.raw->register_protocol(raw_name, echo(23));
 
    auto rejected = good;
@@ -335,8 +383,24 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_rejected_dht_collision_preserves_configuration
    rejected.set("plugins.net.p2p.node.api.deadline-ms", std::uint64_t{25});
    rejected.set("plugins.net.p2p.node.max-inflight-per-peer", std::uint64_t{1});
    rejected.set("plugins.net.p2p.node.peer-store.schema-policy", "reject");
-   BOOST_CHECK_THROW(server.run(server.node.configure({rejected, "plugins.net.p2p.node"})),
-                     np::exceptions::route_conflict);
+   {
+      // A fresh input still reaches the actual DHT/raw claim collision validator.
+      auto probe = np::plugin{};
+      auto registry = forge::api::core::registry{};
+      auto installer = forge::api::core::installer{registry};
+      auto cleanup = boost::scope::scope_exit{[&] {
+         try { server.run(probe.shutdown()); }
+         catch (const std::exception& error) { BOOST_ERROR("DHT collision probe cleanup: " << error.what()); }
+         catch (...) { BOOST_ERROR("DHT collision probe cleanup: non-standard exception"); }
+      }};
+      server.run(probe.provide(installer));
+      auto protocols = registry.get<np::protocol_api>(np::protocol_api::ref());
+      auto claimed = protocols->register_protocol(raw_name, noop());
+      BOOST_REQUIRE(claimed.active());
+      BOOST_CHECK_THROW(server.run(probe.configure({rejected, "plugins.net.p2p.node"})),
+                        np::exceptions::route_conflict);
+   }
+   check_repeated_config(server, rejected);
    BOOST_TEST(raw.active());
    BOOST_CHECK_THROW((void)server.raw->register_protocol(original_dht, noop()), np::exceptions::route_conflict);
    BOOST_CHECK_THROW((void)server.publish(original_dht), np::exceptions::route_conflict);
@@ -375,14 +439,14 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_rejected_dht_collision_preserves_configuration
    stream.request_cancel();
 }
 
-BOOST_AUTO_TEST_CASE(p2p_protocol_invalid_config_after_dht_candidate_preserves_reservations_and_quota) {
-   fixture f{{}, 2};
+BOOST_AUTO_TEST_CASE(p2p_protocol_invalid_fresh_input_and_repeated_config_preserve_reservations_and_quota) {
    using value = forge::config::core::value;
    const auto original_dht = p2p::protocol_id{"/raw/config/retained-dht/1"};
    const auto candidate_dht = p2p::protocol_id{"/raw/config/uncommitted-dht/1"};
+   fixture f{std::nullopt, 2, false, [original_dht](auto& config) {
+      config.set("plugins.net.p2p.node.dht.profiles", value::array_type{custom_dht(original_dht)});
+   }};
    auto good = f.configuration;
-   good.set("plugins.net.p2p.node.dht.profiles", value::array_type{custom_dht(original_dht)});
-   f.run(f.node.configure({good, "plugins.net.p2p.node"}));
    auto raw = f.raw->register_protocol({"/raw/config/retained/1"}, noop());
 
    auto rejected = good;
@@ -390,7 +454,16 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_invalid_config_after_dht_candidate_preserves_r
    rejected.set("plugins.net.p2p.node.max-protocol-handlers", std::uint64_t{4});
    // This validation follows DHT/policy parsing, but must precede all publication.
    rejected.set("plugins.net.p2p.node.identity.private-key-secret", "");
-   BOOST_CHECK_THROW(f.run(f.node.configure({rejected, "plugins.net.p2p.node"})), np::exceptions::invalid_config);
+   {
+      auto probe = np::plugin{};
+      auto cleanup = boost::scope::scope_exit{[&] {
+         try { f.run(probe.shutdown()); }
+         catch (const std::exception& error) { BOOST_ERROR("invalid config probe cleanup: " << error.what()); }
+         catch (...) { BOOST_ERROR("invalid config probe cleanup: non-standard exception"); }
+      }};
+      BOOST_CHECK_THROW(f.run(probe.configure({rejected, "plugins.net.p2p.node"})), np::exceptions::invalid_config);
+   }
+   check_repeated_config(f, rejected);
    BOOST_TEST(raw.active());
    BOOST_CHECK_THROW((void)f.raw->register_protocol(original_dht, noop()), np::exceptions::route_conflict);
    auto second = f.raw->register_protocol(candidate_dht, noop());
@@ -406,12 +479,16 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_invalid_config_after_dht_candidate_preserves_r
    BOOST_REQUIRE_EQUAL(snapshot.dht_profiles.size(), 1U);
    BOOST_TEST(snapshot.dht_profiles.front().protocol.value == original_dht.value);
    BOOST_TEST(raw.active());
-   // Live diagnostics updates allow an unchanged frozen node policy, not a
-   // new protocol quota or another native configuration change.
-   BOOST_CHECK_NO_THROW(f.run(f.node.configure({good, "plugins.net.p2p.node"})));
+   // Even identical input is one-shot; neither it nor a changed quota replaces the live policy.
+   check_repeated_config(f, good);
    good.set("plugins.net.p2p.node.max-protocol-handlers", std::uint64_t{4});
-   BOOST_CHECK_THROW(f.run(f.node.configure({good, "plugins.net.p2p.node"})), np::exceptions::route_conflict);
+   check_repeated_config(f, good);
    BOOST_TEST(raw.active());
+   auto live_second = f.raw->register_protocol(candidate_dht, noop());
+   BOOST_TEST(live_second.active());
+   BOOST_CHECK_THROW((void)f.raw->register_protocol({"/raw/config/live-over-quota/1"}, noop()),
+                     np::exceptions::route_conflict);
+   BOOST_CHECK_THROW((void)f.publish({"/raw/config/live-over-quota/1"}), np::exceptions::route_conflict);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_protocol_capture_retirement_reenters_outside_registry_and_configuration_locks) {

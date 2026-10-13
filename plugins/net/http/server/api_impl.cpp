@@ -29,10 +29,18 @@ namespace forge::plugins::net::http::server {
 plugin::api_impl::api_impl(std::shared_ptr<plugin::impl> impl) : impl_{std::move(impl)} {}
 
 const forge::api::core::registry& plugin::api_impl::registry() const {
-   if (impl_->apis == nullptr) {
+   const auto generation = impl_->lifecycle.snapshot().generation;
+   auto apis = static_cast<const forge::api::core::registry*>(nullptr);
+   if (!impl_->lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      apis = impl_->apis;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
+   }
+   if (apis == nullptr) {
       FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP server plugin is not initialized");
    }
-   return *impl_->apis;
+   return *apis;
 }
 
 boost::asio::awaitable<void> plugin::api_impl::publish(std::unique_ptr<binding_spec> binding, publish_options options) {

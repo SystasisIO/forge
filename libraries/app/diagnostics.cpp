@@ -1,62 +1,64 @@
 module;
 
+#include <map>
 #include <mutex>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
 module forge.app.diagnostics;
 
+#include "details/diagnostics_store_impl.hxx"
+
 namespace forge::app {
 
-struct diagnostics_store::impl {
-   mutable std::mutex mutex;
-   lifecycle_state state = lifecycle_state::created;
-   std::string last_transition;
-   std::string last_error;
-   std::vector<plugin_diagnostics> plugins;
-};
-
 diagnostics_store::diagnostics_store() : impl_{std::make_shared<impl>()} {}
-
 diagnostics_store::~diagnostics_store() = default;
 
-void diagnostics_store::set_application_state(lifecycle_state state, std::string transition, std::string error) {
-   const auto lock = std::scoped_lock{impl_->mutex};
-   impl_->state = state;
-   impl_->last_transition = std::move(transition);
-   impl_->last_error = std::move(error);
-}
-
-void diagnostics_store::set_plugin_state(std::string id, std::string version, lifecycle_state state,
-                                         std::string transition, std::string error) {
-   const auto lock = std::scoped_lock{impl_->mutex};
-   for (auto& plugin : impl_->plugins) {
-      if (plugin.id == id) {
-         plugin.version = std::move(version);
-         plugin.state = state;
-         plugin.last_transition = std::move(transition);
-         plugin.last_error = std::move(error);
-         return;
-      }
-   }
-   impl_->plugins.push_back(plugin_diagnostics{
-       .id = std::move(id),
-       .version = std::move(version),
-       .state = state,
-       .last_transition = std::move(transition),
-       .last_error = std::move(error),
-   });
-}
-
-application_diagnostics_snapshot diagnostics_store::snapshot(const event_bus& events) const {
-   auto out = application_diagnostics_snapshot{};
+void diagnostics_store::bind_application(lifecycle_observer lifecycle) {
+   auto replacement = std::optional{std::move(lifecycle)};
    {
       const auto lock = std::scoped_lock{impl_->mutex};
-      out.state = impl_->state;
-      out.last_transition = impl_->last_transition;
-      out.last_error = impl_->last_error;
-      out.plugins = impl_->plugins;
+      impl_->application.swap(replacement);
+   }
+}
+
+void diagnostics_store::bind_plugin(std::string id, std::string version, lifecycle_observer lifecycle) {
+   auto replacement = std::make_pair(std::move(version), std::move(lifecycle));
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      const auto found = impl_->plugins.find(id);
+      if (found == impl_->plugins.end()) {
+         impl_->plugins.emplace(std::move(id), std::move(replacement));
+      } else {
+         found->second.swap(replacement);
+      }
+   }
+}
+
+void diagnostics_store::clear_plugins() {
+   auto retired = decltype(impl_->plugins){};
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      impl_->plugins.swap(retired);
+   }
+}
+
+application_diagnostics_snapshot diagnostics_store::snapshot(const event_journal& events) const {
+   auto application = std::optional<lifecycle_observer>{};
+   auto plugins = decltype(impl_->plugins){};
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      application = impl_->application;
+      plugins = impl_->plugins;
+   }
+   auto out = application_diagnostics_snapshot{};
+   if (application) {
+      out.lifecycle = application->snapshot();
+   }
+   for (const auto& [id, observed] : plugins) {
+      out.plugins.push_back({id, observed.first, observed.second.snapshot()});
    }
    out.events = events.metrics();
    out.critical_events = events.critical_events();

@@ -638,7 +638,14 @@ context_snapshot_ptr context_provider::snapshot() const noexcept {
 void context_provider::replace(context_options replacement) {
    auto erase_replacement = context_options_eraser{replacement};
    auto next = make_context(std::move(replacement));
-   std::atomic_store_explicit(&current_, std::move(next), std::memory_order_release);
+   const auto retired = exchange(std::move(next));
+}
+
+context_snapshot_ptr context_provider::exchange(context_snapshot_ptr prepared) {
+   if (!prepared) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "TLS context replacement must not be null");
+   }
+   return std::atomic_exchange_explicit(&current_, std::move(prepared), std::memory_order_acq_rel);
 }
 
 } // namespace forge::net::tls

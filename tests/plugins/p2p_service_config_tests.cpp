@@ -2,6 +2,7 @@ module;
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <algorithm>
 #include <array>
@@ -17,16 +18,24 @@ module;
 #include <utility>
 #include <vector>
 
+#include "../quic_p2p/libp2p_identity_fixture.hxx"
+
 module forge.plugins.net.p2p.node.plugin;
 
 import forge.api.core.registry;
+import forge.app.events;
+import forge.app.exceptions;
+import forge.app.plugin_context;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
+import forge.asio.task;
 import forge.codec.yaml;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.document;
 import forge.config.core.value;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.identity;
 import forge.net.p2p.mdns_policy;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
@@ -154,6 +163,17 @@ void configure(forge::asio::runtime& runtime, np::plugin& plugin, const forge::c
    run(runtime, plugin.configure({document, std::string{section}}));
 }
 
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto plugin = np::plugin{};
+   auto failure = std::exception_ptr{};
+   try { configure(runtime, plugin, document); }
+   catch (...) { failure = std::current_exception(); }
+   // Failed input closes admission too. Each validation probe owns and joins
+   // its real cleanup before the next independent candidate is exercised.
+   run(runtime, plugin.shutdown());
+   if (failure) { std::rethrow_exception(failure); }
+}
+
 forge::config::core::document yaml_candidate(std::string_view text) {
    const auto parsed = forge::codec::yaml::read_document(text);
    BOOST_REQUIRE(parsed.ok());
@@ -170,7 +190,6 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_defaults_and_every_numeric_patch_are_ind
    check_settings(defaults, p2p::node::options{});
    BOOST_TEST(defaults.relay_policy.max_candidates_per_refresh == 4U);
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& field : numbers) {
       BOOST_TEST_CONTEXT(field.path) {
          auto document = valid_document();
@@ -183,14 +202,13 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_defaults_and_every_numeric_patch_are_ind
             if (&other != &field) { BOOST_TEST(other.read(actual) == other.read(defaults)); }
          }
          for (const auto& flag : flags) { BOOST_TEST(flag.read(actual) == flag.read(defaults)); }
-         BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       }
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_service_config_boolean_sparse_false_and_removal_preserve_native_defaults) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto defaults = mapped({});
    for (const auto& field : flags) {
       for (const auto enabled : {false, true}) {
@@ -203,7 +221,7 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_boolean_sparse_false_and_removal_preserv
                if (&other != &field) { BOOST_TEST(other.read(actual) == other.read(defaults)); }
             }
             for (const auto& number : numbers) { BOOST_TEST(number.read(actual) == number.read(defaults)); }
-            BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+            BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
          }
       }
    }
@@ -223,7 +241,7 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_boolean_sparse_false_and_removal_preserv
    BOOST_TEST(changed.mdns.max_peers == 11U);
    BOOST_TEST(changed.limits.relay.max_service_requests == 17U);
    check_settings(mapped(decode(valid_document())), defaults);
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, valid_document()));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, valid_document()));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_service_config_checked_native_counts_durations_and_uint64_bytes) {
@@ -250,23 +268,22 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_checked_native_counts_durations_and_uint
 
 BOOST_AUTO_TEST_CASE(p2p_service_config_zero_bad_scalar_and_unknown_yaml_reject_before_native_execution) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto valid = valid_document();
-   configure(runtime, plugin, valid);
+   configure_fresh(runtime, valid);
    for (const auto& field : numbers) {
       for (const auto& invalid : {value{std::uint64_t{0}}, value{std::int64_t{-1}}, value{1.5},
                                   value{"18446744073709551616"}, value{true}}) {
          BOOST_TEST_CONTEXT(field.path) {
             auto document = valid;
             document.set(std::string{section} + "." + field.path, invalid);
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
       }
    }
    for (const auto& flag : flags) {
       auto document = valid;
       document.set(std::string{section} + "." + flag.path, value::array_type{});
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    }
    for (const auto* text : {
             "reachabilty: {}\n", "reachability: null\n", "reachability: []\n",
@@ -277,14 +294,13 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_zero_bad_scalar_and_unknown_yaml_reject_
             "relay: {max-candidates-per-refresh: 2}\n", "relay: {service-enabled: true}\n",
             "relay: {max-duration-ms: 1.5}\n", "relay: {require-reservation: false}\n"}) {
       BOOST_TEST_CONTEXT(text) {
-         BOOST_CHECK_THROW(configure(runtime, plugin, yaml_candidate(text)), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, yaml_candidate(text)), np::exceptions::invalid_config);
       }
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_service_config_native_compound_bounds_and_duration_units_are_authoritative) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& [path, number] : std::array{
             std::pair{"reachability.timeout-ms", std::uint64_t{86'400'001}},
             std::pair{"reachability.refresh-interval-ms", std::uint64_t{86'400'001}},
@@ -314,16 +330,16 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_native_compound_bounds_and_duration_unit
       BOOST_TEST_CONTEXT(path << "=" << number) {
          auto document = valid_document();
          document.set(std::string{section} + "." + path, number);
-         BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
       }
    }
    for (const auto* text : {
             "mdns: {enabled: true, ipv4-enabled: false, ipv6-enabled: false}\n",
             "mdns: {enabled: true}\ntopology: {mode: static-only}\n",
             "relay: {max-reservations: 1, target-reservations: 2}\n"}) {
-      BOOST_CHECK_THROW(configure(runtime, plugin, yaml_candidate(text)), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, yaml_candidate(text)), np::exceptions::invalid_config);
    }
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, yaml_candidate(
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, yaml_candidate(
        "reachability: {timeout-ms: 86400000, observation-ttl-ms: 86400000}\n"
        "mdns: {record-ttl-seconds: 2, query-interval-ms: 1000, max-packet-size: 512}\n"
        "relay: {max-candidates: 1, target-reservations: 1, max-parallel-reservations: 1, max-duration-ms: 1000}\n")));
@@ -331,7 +347,6 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_native_compound_bounds_and_duration_unit
 
 BOOST_AUTO_TEST_CASE(p2p_service_config_mdns_upper_bounds_are_checked_before_provider_binding) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& [path, maximum] : std::array{
             std::pair{"mdns.max-interfaces", std::uint64_t{256}},
             std::pair{"mdns.max-pending-packets", std::uint64_t{1024}},
@@ -342,9 +357,9 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_mdns_upper_bounds_are_checked_before_pro
             auto document = valid_document();
             document.set(std::string{section} + ".mdns.enabled", enabled);
             document.set(std::string{section} + "." + path, maximum);
-            BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+            BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
             document.set(std::string{section} + "." + path, maximum + 1);
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
       }
    }
@@ -386,6 +401,10 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_existing_relay_paths_remain_single_autho
 BOOST_AUTO_TEST_CASE(p2p_service_config_unbound_providers_and_stop_freeze_without_native_service_start) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto plugin = np::plugin{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try { run(runtime, plugin.shutdown()); }
+      catch (...) { BOOST_ERROR("stopped service owner cleanup failed"); }
+   }};
    auto document = yaml_candidate(
        "reachability: {service-v1-enabled: true, service-v2-enabled: true, max-event-subscribers: 3}\n"
        "mdns: {enabled: true, ipv6-enabled: false}\nrelay: {server-enabled: true, target-reservations: 3}\n");
@@ -402,7 +421,118 @@ BOOST_AUTO_TEST_CASE(p2p_service_config_unbound_providers_and_stop_freeze_withou
       auto candidate = document;
       candidate.set(std::string{section} + "." + path, std::uint64_t{1000});
       candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict);
+      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), forge::app::exceptions::invalid_state);
+      BOOST_CHECK_THROW(static_cast<void>(host->local_endpoint()), np::exceptions::plugin_not_initialized);
+      BOOST_CHECK_THROW(static_cast<void>(diagnostics->snapshot()), np::exceptions::plugin_not_initialized);
    }
    run(runtime, plugin.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_service_config_one_shot_rejections_preserve_original_live_node_across_policy_groups) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
+   auto plugin = np::plugin{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try { run(runtime, plugin.shutdown()); }
+      catch (...) { BOOST_ERROR("one-shot policy owner cleanup failed"); }
+      try { run(runtime, scheduler.shutdown()); }
+      catch (...) { BOOST_ERROR("one-shot policy scheduler cleanup failed"); }
+      runtime.stop();
+   }};
+   const auto identity = forge::tests::p2p::make_identity_fixture("one-shot-policy-owner");
+   const auto peer = p2p::make_peer_id_from_certificate_pem(identity.certificate_pem);
+   auto original = valid_document();
+   original.set(std::string{section} + ".allow-insecure-test-mode", true);
+   original.set(std::string{section} + ".peer-id", peer.value);
+   original.set(std::string{section} + ".peer-store.store", "");
+   original.set(std::string{section} + ".identity.certificate-secret", "");
+   original.set(std::string{section} + ".identity.private-key-secret", "");
+   original.set(std::string{section} + ".topology.mode", "static-only");
+   original.set(std::string{section} + ".reachability.client-v1-enabled", false);
+   original.set(std::string{section} + ".reachability.client-v2-enabled", false);
+   original.set(std::string{section} + ".reachability.service-v1-enabled", false);
+   original.set(std::string{section} + ".reachability.service-v2-enabled", false);
+   original.set(std::string{section} + ".reachability.ping-enabled", false);
+   original.set(std::string{section} + ".relay.client-enabled", false);
+   original.set(std::string{section} + ".relay.auto-discovery-enabled", false);
+   original.set(std::string{section} + ".dial.black-holes.udp-enabled", false);
+   original.set(std::string{section} + ".dial.black-holes.ipv6-enabled", false);
+   configure(runtime, plugin, original);
+
+   auto candidates = std::vector<std::pair<const char*, forge::config::core::document>>{};
+   auto host = original;
+   const auto replacement = forge::tests::p2p::make_identity_fixture("one-shot-rejected-owner");
+   host.set(std::string{section} + ".peer-id", p2p::make_peer_id_from_certificate_pem(replacement.certificate_pem).value);
+   host.set(std::string{section} + ".identify.agent-version", "rejected-agent");
+   candidates.emplace_back("host", std::move(host));
+   auto transport = original;
+   transport.set(std::string{section} + ".listen", value::array_type{value{"/ip4/127.0.0.1/tcp/0"}});
+   transport.set(std::string{section} + ".tcp.security", "noise");
+   transport.set(std::string{section} + ".quic.max-connections", std::uint64_t{17});
+   candidates.emplace_back("transport", std::move(transport));
+   auto dial = original;
+   dial.set(std::string{section} + ".dial.black-holes.udp-enabled", true);
+   dial.set(std::string{section} + ".dial.black-holes.ipv6-enabled", true);
+   dial.set(std::string{section} + ".path.max-direct-endpoints", std::uint64_t{19});
+   candidates.emplace_back("dial", std::move(dial));
+   auto service = original;
+   service.set(std::string{section} + ".reachability.service-v1-enabled", true);
+   service.set(std::string{section} + ".reachability.service-v2-enabled", true);
+   service.set(std::string{section} + ".relay.client-enabled", true);
+   service.set(std::string{section} + ".relay.auto-discovery-enabled", true);
+   candidates.emplace_back("service", std::move(service));
+   auto private_network = original;
+   private_network.set(std::string{section} + ".listen", value::array_type{value{"/ip4/127.0.0.1/tcp/0"}});
+   private_network.set(std::string{section} + ".path.policy", "direct-only");
+   private_network.set(std::string{section} + ".private-network.psk-secret", "unbound/rejected-psk");
+   candidates.emplace_back("private-network", std::move(private_network));
+
+   const auto accepted = plugin.lifecycle().snapshot();
+   for (const auto& [name, candidate] : candidates) {
+      BOOST_TEST_CONTEXT(name) {
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, candidate));
+         BOOST_CHECK_THROW(configure(runtime, plugin, candidate), forge::app::exceptions::invalid_state);
+         const auto unchanged = plugin.lifecycle().snapshot();
+         BOOST_TEST(unchanged.epoch == accepted.epoch);
+         BOOST_TEST(unchanged.generation == accepted.generation);
+         BOOST_CHECK(!unchanged.failure);
+      }
+   }
+   auto installer = forge::api::core::installer{apis};
+   run(runtime, plugin.provide(installer));
+   run(runtime, plugin.initialize(context));
+   // No Secrets or Store API is installed. Startup must still use the original
+   // in-memory, no-secret, no-listener input rather than any rejected candidate.
+   run(runtime, plugin.startup());
+   const auto api = apis.get<np::api>(np::api::ref()).shared();
+   const auto diagnostics = apis.get<np::diagnostics_api>(np::diagnostics_api::ref()).shared();
+   const auto check_live = [&] {
+      BOOST_CHECK(api->local_peer() == peer);
+      BOOST_CHECK(api->network_info().started);
+      BOOST_CHECK(api->local_endpoints().empty());
+      const auto snapshot = diagnostics->snapshot();
+      BOOST_CHECK(snapshot.network.local_peer == peer);
+      BOOST_CHECK(!snapshot.network.stopped);
+      BOOST_CHECK(snapshot.network.local_endpoints.empty());
+      BOOST_CHECK(!snapshot.black_holes.udp.enabled);
+      BOOST_CHECK(!snapshot.black_holes.ipv6.enabled);
+      BOOST_CHECK(!snapshot.reachability.service_v1_enabled);
+      BOOST_CHECK(!snapshot.reachability.service_v2_enabled);
+      BOOST_CHECK(snapshot.reachability.internet_egress_allowed);
+      BOOST_CHECK(!snapshot.autorelay.enabled);
+   };
+   check_live();
+   for (const auto& [name, candidate] : candidates) {
+      BOOST_TEST_CONTEXT(name) {
+         BOOST_CHECK_THROW(configure(runtime, plugin, candidate), forge::app::exceptions::invalid_state);
+         check_live();
+         BOOST_CHECK(plugin.lifecycle().snapshot().phase == forge::app::lifecycle_phase::started);
+         BOOST_CHECK(!plugin.lifecycle().snapshot().failure);
+      }
+   }
+   run(runtime, plugin.shutdown());
+   BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), np::exceptions::plugin_not_initialized);
 }

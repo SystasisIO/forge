@@ -62,7 +62,7 @@ boost::asio::awaitable<message> plugin::pubsub_api_impl::publish_owned(
     std::vector<std::uint8_t> data, publish_options options) {
    auto source = std::shared_ptr<forge::net::p2p::node>{};
    auto sign = false;
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       source = self->require_node_locked();
       self->ensure_topic_allowed_locked(subject);
@@ -72,7 +72,7 @@ boost::asio::awaitable<message> plugin::pubsub_api_impl::publish_owned(
       }
       sign = options.sign.value_or(self->settings.sign_publishes);
       ++self->active_operations;
-   }
+   });
    auto completed = boost::scope::scope_exit{[&] { self->finish_operation(); }};
    auto published = co_await self->operations.publish(source,
        std::move(subject), std::move(data), forge::net::p2p::pubsub::publish_options{.sign = sign});

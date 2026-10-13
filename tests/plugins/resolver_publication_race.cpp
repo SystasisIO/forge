@@ -211,22 +211,22 @@ std::string resolver_publication_race_node_plugin::version() const {
 }
 
 boost::asio::awaitable<void>
-resolver_publication_race_node_plugin::provide(forge::api::core::provider& provider) {
+resolver_publication_race_node_plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<forge::plugins::net::p2p::node::api>(std::make_shared<resolver_publication_race_node>(barrier_));
    co_return;
 }
 
 boost::asio::awaitable<void>
-resolver_publication_race_node_plugin::initialize(forge::app::plugin_context& context) {
+resolver_publication_race_node_plugin::on_initialize(forge::app::plugin_context& context) {
    barrier_->bind_owner_executor(context.scheduler().runtime_context().context().get_executor());
    co_return;
 }
 
-boost::asio::awaitable<void> resolver_publication_race_node_plugin::startup() {
+boost::asio::awaitable<void> resolver_publication_race_node_plugin::on_startup() {
    co_return;
 }
 
-boost::asio::awaitable<void> resolver_publication_race_node_plugin::shutdown() {
+boost::asio::awaitable<void> resolver_publication_race_node_plugin::on_shutdown() {
    co_return;
 }
 

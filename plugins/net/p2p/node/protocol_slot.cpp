@@ -23,7 +23,8 @@ import forge.net.p2p.stream;
 #include "details/api_publication_generation.hxx"
 
 namespace forge::plugins::net::p2p::node::detail {
-protocol_slot::protocol_slot(forge::net::p2p::protocol_id protocol) : protocol_{std::move(protocol)} {}
+protocol_slot::protocol_slot(forge::net::p2p::protocol_id protocol, forge::app::plugin_lifecycle lifecycle)
+    : protocol_{std::move(protocol)}, lifecycle_{std::move(lifecycle)} {}
 const forge::net::p2p::protocol_id& protocol_slot::protocol() const noexcept { return protocol_; }
 std::shared_ptr<protocol_slot::generation> protocol_slot::current() const noexcept {
    return std::atomic_load_explicit(&current_, std::memory_order_seq_cst);
@@ -32,18 +33,22 @@ std::shared_ptr<protocol_slot::generation> protocol_slot::replace(std::shared_pt
    return std::atomic_exchange_explicit(&current_, std::move(next), std::memory_order_seq_cst);
 }
 
+std::shared_ptr<protocol_slot::generation> protocol_slot::admit() const {
+   const auto generation = lifecycle_.snapshot().generation;
+   auto owner = std::shared_ptr<protocol_slot::generation>{};
+   static_cast<void>(lifecycle_.try_admit(generation, [&] { owner = current(); }));
+   return owner;
+}
+
 void protocol_slot::attach(const std::shared_ptr<const protocol_operations>& operations) {
-   auto admitted = std::shared_ptr<generation>{};
    const auto lock = std::scoped_lock{mutex_};
-   if (operations_) { return; }
-   admitted = current();
-   if (!admitted) { return; }
+   if (retired_ || operations_) { return; }
    // The owner is retained before the fallible call: Identify Push may throw
    // after installing the handler. Only a normal unregister confirms absence.
    operations_ = operations;
    operations->install(protocol_, [weak = weak_from_this()](auto stream) {
       const auto slot = weak.lock();
-      return accept(slot ? slot->current() : nullptr, std::move(stream));
+      return accept(slot ? slot->admit() : nullptr, std::move(stream));
    });
 }
 
@@ -51,6 +56,9 @@ void protocol_slot::detach() {
    auto retired = std::shared_ptr<const protocol_operations>{};
    {
       const auto lock = std::scoped_lock{mutex_};
+      // Retirement is terminal even if attach has not started or remove throws.
+      // Failed removal still retains operations_ for the next detach attempt.
+      retired_ = true;
       if (!operations_) { return; }
       static_cast<void>(operations_->remove(protocol_));
       retired = std::move(operations_);

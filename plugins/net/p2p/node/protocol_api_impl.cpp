@@ -52,12 +52,10 @@ plugin::protocol_api_impl::protocol_api_impl(std::shared_ptr<plugin::impl> owner
 
 protocol_registration plugin::protocol_api_impl::register_protocol(forge::net::p2p::protocol_id protocol,
     forge::net::p2p::node::protocol_handler handler) {
-   if (owner_->stop_requested.load()) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed"); }
    return owner_->protocols->register_raw(std::move(protocol), std::move(handler));
 }
 protocol_registration plugin::protocol_api_impl::replace_protocol(const protocol_registration& registration,
     forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) {
-   if (owner_->stop_requested.load()) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed"); }
    return owner_->protocols->register_raw(std::move(protocol), std::move(handler), &registration);
 }
 boost::asio::awaitable<forge::net::p2p::stream> plugin::protocol_api_impl::open(forge::net::p2p::peer_id peer,

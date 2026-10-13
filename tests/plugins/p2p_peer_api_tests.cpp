@@ -28,7 +28,6 @@
 import forge.api.core.registry;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.document;
@@ -88,9 +87,8 @@ struct fixture {
    forge::asio::runtime runtime{};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
    np::plugin node;
    std::shared_ptr<np::api> api;
    std::shared_ptr<np::diagnostics_api> diagnostics;

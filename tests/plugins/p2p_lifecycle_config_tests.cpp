@@ -24,8 +24,9 @@ module forge.plugins.net.p2p.node.plugin;
 
 import forge.api.core.registry;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin_context;
-import forge.app.signals;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.log.logger;
@@ -160,6 +161,24 @@ void configure(forge::asio::runtime& runtime, np::plugin& plugin, const forge::c
    run(runtime, plugin.configure({document, std::string{section}}));
 }
 
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto owner = np::plugin{};
+   configure(runtime, owner, document);
+}
+
+void check_repeated_config(forge::asio::runtime& runtime, np::plugin& plugin,
+                           const forge::config::core::document& document) {
+   const auto before = plugin.lifecycle().snapshot();
+   BOOST_CHECK_THROW(configure(runtime, plugin, document), forge::app::exceptions::invalid_state);
+   const auto after = plugin.lifecycle().snapshot();
+   BOOST_CHECK(after.phase == before.phase);
+   BOOST_TEST(after.epoch == before.epoch);
+   BOOST_TEST(after.generation == before.generation);
+   BOOST_TEST(after.completed_operations == before.completed_operations);
+   BOOST_TEST(after.admission_open == before.admission_open);
+   BOOST_TEST(after.failure.has_value() == before.failure.has_value());
+}
+
 forge::config::core::document yaml_candidate(std::string_view text) {
    const auto parsed = forge::codec::yaml::read_document(text);
    BOOST_REQUIRE(parsed.ok());
@@ -210,7 +229,8 @@ BOOST_AUTO_TEST_CASE(p2p_logging_plugin_configuration_is_count_only_and_optional
    }
 #endif
    route.set_enabled(false);
-   configure(runtime, plugin, document);
+   check_repeated_config(runtime, plugin, document);
+   configure_fresh(runtime, document);
    const auto lock = std::scoped_lock{capture->mutex};
 #ifndef FORGE_DISABLE_LOGGING
    BOOST_TEST(capture->records.size() == 1U);
@@ -223,7 +243,6 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_defaults_and_every_numeric_patch_are_i
    const auto defaults = mapped({});
    const auto native = p2p::node::options{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& field : numbers) {
       BOOST_TEST_CONTEXT(field.path) {
          BOOST_TEST(field.read(defaults) == field.read(native));
@@ -234,7 +253,7 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_defaults_and_every_numeric_patch_are_i
          for (const auto& other : numbers) {
             if (&other != &field) { BOOST_TEST(other.read(actual) == other.read(defaults)); }
          }
-         BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       }
    }
    BOOST_TEST(defaults.lifecycle.bootstrap_retry_jitter == native.lifecycle.bootstrap_retry_jitter);
@@ -317,12 +336,14 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_raw_dnsaddr_bootstrap_and_four_key_mig
       BOOST_TEST_CONTEXT(key) {
          auto candidate = document;
          candidate.set(std::string{section} + "." + key, setting);
-         BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
+         check_repeated_config(runtime, plugin, candidate);
       }
    }
    auto malformed = document;
    malformed.set(std::string{section} + ".bootstrap", value::array_type{"not-a-multiaddr"});
-   BOOST_CHECK_THROW(configure(runtime, plugin, malformed), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, malformed), np::exceptions::invalid_config);
+   check_repeated_config(runtime, plugin, malformed);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_checked_ms_seconds_counts_and_native_pex_wire_bounds) {
@@ -351,26 +372,24 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_checked_ms_seconds_counts_and_native_p
       BOOST_TEST(native_size == (std::numeric_limits<std::size_t>::max)());
    }
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto* field : {"peer-exchange.max-message-size", "peer-exchange.max-records"}) {
       auto document = valid_document();
       const auto boundary = static_cast<std::uint64_t>((std::numeric_limits<std::uint32_t>::max)());
       document.set(std::string{section} + "." + field, boundary);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       document.set(std::string{section} + "." + field, boundary + 1);
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_invalid_numbers_jitter_and_compound_candidates_are_typed) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& field : numbers) {
       for (const auto& bad : std::array{value{std::uint64_t{0}}, value{std::int64_t{-1}}, value{1.5}}) {
          BOOST_TEST_CONTEXT(field.path) {
             auto document = valid_document();
             document.set(std::string{section} + "." + field.path, bad);
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
       }
    }
@@ -379,7 +398,7 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_invalid_numbers_jitter_and_compound_ca
                             (std::numeric_limits<double>::infinity)(), -(std::numeric_limits<double>::infinity)()}) {
          auto document = valid_document();
          document.set(std::string{section} + "." + field, bad);
-         BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
       }
       for (const auto good : {0.0, 0.20}) {
          auto document = valid_document();
@@ -387,7 +406,7 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_invalid_numbers_jitter_and_compound_ca
          const auto actual = mapped(decode(document));
          BOOST_TEST((std::string_view{field}.starts_with("bootstrap") ? actual.lifecycle.bootstrap_retry_jitter :
                      actual.limits.topology.retry_jitter) == good);
-         BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
       }
    }
    for (const auto* text : {
@@ -403,7 +422,7 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_invalid_numbers_jitter_and_compound_ca
             "rendezvous: {default-ttl-seconds: 7199}\n",
             "rendezvous: {default-ttl-seconds: 259201}\n",
             "path: {max-direct-endpoints: 101}\n"}) {
-      BOOST_CHECK_THROW(configure(runtime, plugin, yaml_candidate(text)), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, yaml_candidate(text)), np::exceptions::invalid_config);
    }
    auto invalid = np::config{};
    invalid.bootstrap_policy.requirement = static_cast<np::bootstrap_requirement>(255);
@@ -421,19 +440,18 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_invalid_numbers_jitter_and_compound_ca
 
 BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_strict_unknown_yaml_and_existing_themed_paths) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto* text : {
             "bootstrap-policy: {max-paralell: 4}\n", "topolgy: {}\n", "topology: {peers: {lo: 1}}\n",
             "rendezvous: {require-signed-peer-record: false}\n", "peer-exchange: {queue: 4}\n",
             "path: {max-direct-endpoint: 4}\n",
             "identity: {certificate-secret: unbound/cert, private-key-secret: unbound/key, inline-key: nope}\n",
             "peer-store: {store: unbound-store, policy: reject}\n", "bootstrap-policy: []\n"}) {
-      BOOST_CHECK_THROW(configure(runtime, plugin, yaml_candidate(text)), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, yaml_candidate(text)), np::exceptions::invalid_config);
    }
    for (const auto* policy : {"direct-only", "direct-preferred", "relay-only"}) {
       auto document = valid_document();
       document.set(std::string{section} + ".path.policy", policy);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
    }
    auto document = valid_document();
    document.set(std::string{section} + ".enabled", true);
@@ -443,16 +461,15 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_strict_unknown_yaml_and_existing_theme
    const auto actual = mapped(decode(document));
    BOOST_CHECK(actual.limits.topology.operating_mode == p2p::topology::mode::static_only);
    BOOST_TEST(!actual.limits.topology.peer_exchange_enabled);
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_listenerless_candidate_rollback_and_group_freeze) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    auto plugin = np::plugin{};
    auto cleanup = boost::scope::scope_exit{[&] {
       plugin.request_stop();
@@ -479,14 +496,16 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_listenerless_candidate_rollback_and_gr
    rejected.set(std::string{section} + ".topology.peers.target", std::uint64_t{90});
    rejected.set(std::string{section} + ".topology.peers.high", std::uint64_t{110});
    rejected.set(std::string{section} + ".bootstrap-policy.retry-initial-delay-ms", std::uint64_t{30001});
-   BOOST_CHECK_THROW(configure(runtime, plugin, rejected), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, rejected), np::exceptions::invalid_config);
+   check_repeated_config(runtime, plugin, rejected);
    for (const auto ttl : {std::uint64_t{7199}, std::uint64_t{259201}}) {
       auto invalid_ttl = document;
       invalid_ttl.set(std::string{section} + ".topology.peers.low", std::uint64_t{70});
       invalid_ttl.set(std::string{section} + ".topology.peers.target", std::uint64_t{90});
       invalid_ttl.set(std::string{section} + ".topology.peers.high", std::uint64_t{110});
       invalid_ttl.set(std::string{section} + ".rendezvous.default-ttl-seconds", ttl);
-      BOOST_CHECK_THROW(configure(runtime, plugin, invalid_ttl), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, invalid_ttl), np::exceptions::invalid_config);
+      check_repeated_config(runtime, plugin, invalid_ttl);
    }
    for (const auto& [path, maximum] : std::array{
             std::pair{"mdns.max-interfaces", std::uint64_t{256}},
@@ -498,13 +517,14 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_listenerless_candidate_rollback_and_gr
       invalid_mdns.set(std::string{section} + ".topology.peers.target", std::uint64_t{90});
       invalid_mdns.set(std::string{section} + ".topology.peers.high", std::uint64_t{110});
       invalid_mdns.set(std::string{section} + "." + path, maximum + 1);
-      BOOST_CHECK_THROW(configure(runtime, plugin, invalid_mdns), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, invalid_mdns), np::exceptions::invalid_config);
+      check_repeated_config(runtime, plugin, invalid_mdns);
    }
    auto installer = forge::api::core::installer{apis};
    run(runtime, plugin.provide(installer));
    run(runtime, plugin.initialize(context));
    run(runtime, plugin.after_initialize());
-   run(runtime, plugin.startup()); // No successful configure after the rejected candidate.
+   run(runtime, plugin.startup()); // Repeated input never replaces the original configuration.
    const auto host = apis.get<np::api>(np::api::ref()).shared();
    const auto diagnostics = apis.get<np::diagnostics_api>(np::diagnostics_api::ref()).shared();
    BOOST_TEST(host->local_endpoints().empty());
@@ -524,11 +544,12 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_listenerless_candidate_rollback_and_gr
       auto candidate = document;
       candidate.set(std::string{section} + "." + path, setting);
       candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-      BOOST_TEST_CONTEXT(path) { BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict); }
+      BOOST_TEST_CONTEXT(path) { check_repeated_config(runtime, plugin, candidate); }
       BOOST_TEST(diagnostics->snapshot().topology.low_watermark == 7U);
    }
    plugin.request_stop();
-   BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::route_conflict);
+   check_repeated_config(runtime, plugin, document);
+   BOOST_CHECK_THROW(run(runtime, plugin.startup()), forge::app::exceptions::invalid_state);
    run(runtime, plugin.shutdown());
-   BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::route_conflict);
+   check_repeated_config(runtime, plugin, document);
 }

@@ -1,5 +1,19 @@
 # DB Store Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Common lifecycle is not DB readiness. Private composition states
+`collecting/opening/ready/closed` describe physical layers; per-store
+`opened/started`, driver ownership and cleanup completion remain backend state.
+Shared stop rejects new store handles and registration. Retained handles and
+existing flush paths remain available for dependent persistence cleanup until
+physical close. This preserved drain policy is not general post-stop admission.
+
 ## Logging
 
 `forge.db.store` owns plugin composition/ownership events, not native DB

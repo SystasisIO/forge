@@ -132,12 +132,26 @@ forge::config::core::document valid_document() {
    return document;
 }
 
+template<class T> T run(forge::asio::runtime& runtime, boost::asio::awaitable<T> operation) {
+   auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(5s) != std::future_status::ready) { std::terminate(); }
+   return result.get();
+}
+
 void configure(forge::asio::runtime& runtime, np::plugin& plugin,
                const forge::config::core::document& document) {
-   auto result = boost::asio::co_spawn(runtime.context(),
-       plugin.configure({document, std::string{section}}), boost::asio::use_future);
-   if (result.wait_for(5s) != std::future_status::ready) { std::terminate(); }
-   result.get();
+   run(runtime, plugin.configure({document, std::string{section}}));
+}
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto plugin = np::plugin{};
+   auto failure = std::exception_ptr{};
+   try { configure(runtime, plugin, document); }
+   catch (...) { failure = std::current_exception(); }
+   // Failed input closes admission too. Each validation probe owns and joins
+   // its real cleanup before the next independent candidate is exercised.
+   run(runtime, plugin.shutdown());
+   if (failure) { std::rethrow_exception(failure); }
 }
 } // namespace
 
@@ -197,23 +211,22 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_sparse_overrides_keep_derived_watermark_ver
 
 BOOST_AUTO_TEST_CASE(p2p_host_config_all_fields_reject_bad_numbers_and_native_zero_before_commit) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto valid = valid_document();
-   configure(runtime, plugin, valid);
+   configure_fresh(runtime, valid);
    for (const auto& field : fields) {
       BOOST_TEST_CONTEXT(field.path) {
          const auto path = std::string{section} + "." + field.path;
          for (const auto& invalid : {value{std::int64_t{-1}}, value{1.5}, value{"18446744073709551616"}}) {
             auto document = valid;
             document.set(path, invalid);
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
          auto document = valid;
          document.set(path, std::uint64_t{0});
          if (field.zero_valid) {
-            BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+            BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
          } else {
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
       }
    }
