@@ -18,10 +18,12 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <future>
@@ -232,10 +234,57 @@ boost::beast::http::request<boost::beast::http::string_body> upgrade_request(std
    return value;
 }
 
-boost::asio::awaitable<void> settle_writes(std::chrono::milliseconds duration) {
+template <typename Ready>
+boost::asio::awaitable<bool> wait_for_connection_metrics(forge::net::websocket::connection::ptr connection,
+                                                        Ready ready) {
    auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
-   timer.expires_after(duration);
-   co_await timer.async_wait(boost::asio::use_awaitable);
+   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+   for (;;) {
+      const auto metrics = connection->metrics();
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline || metrics.failed_writes != 0U || metrics.close_count != 0U) {
+         co_return false;
+      }
+      if (ready(metrics, now)) {
+         co_return true;
+      }
+      timer.expires_at(std::min(deadline, now + std::chrono::milliseconds{5}));
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   }
+}
+
+struct write_backpressure_observation {
+   forge::net::websocket::connection_metrics before;
+   forge::net::websocket::connection_metrics stalled;
+};
+
+boost::asio::awaitable<std::optional<write_backpressure_observation>>
+wait_for_write_backpressure(forge::net::websocket::connection::ptr connection,
+                            std::uint64_t minimum_received_messages = 0) {
+   auto before = std::optional<forge::net::websocket::connection_metrics>{};
+   auto stable_since = std::chrono::steady_clock::time_point{};
+   auto observation = std::optional<write_backpressure_observation>{};
+   const auto ready = co_await wait_for_connection_metrics(std::move(connection),
+      [&](const forge::net::websocket::connection_metrics& metrics, std::chrono::steady_clock::time_point now) {
+         if (metrics.queued_writes == 0U || metrics.received_messages < minimum_received_messages) {
+            before.reset();
+            return false;
+         }
+         // Restart the original observation window whenever native writes make progress.
+         if (!before || metrics.sent_messages != before->sent_messages) {
+            before = metrics;
+            stable_since = now;
+         }
+         if (now - stable_since < std::chrono::milliseconds{100}) {
+            return false;
+         }
+         observation = write_backpressure_observation{*before, metrics};
+         return true;
+      });
+   if (!ready) {
+      co_return std::nullopt;
+   }
+   co_return observation;
 }
 
 void check_websocket_backpressure(bool revoke) {
@@ -325,11 +374,15 @@ void check_websocket_backpressure(bool revoke) {
    auto server_socket = accepted.get();
    BOOST_REQUIRE(started.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
    // No read loop: the peer remains connected and cannot relieve native write backpressure.
-   forge::asio::blocking::run(runtime, settle_writes(std::chrono::milliseconds{200}));
-   const auto before = server_socket->metrics();
+   auto observation = forge::asio::blocking::run(runtime, wait_for_write_backpressure(server_socket, 3U));
+   const auto latest = server_socket->metrics();
+   BOOST_REQUIRE_MESSAGE(observation.has_value(),
+      "WebSocket did not reach pending-write backpressure: queued=" << latest.queued_writes
+      << ", sent=" << latest.sent_messages << ", received=" << latest.received_messages
+      << ", failed=" << latest.failed_writes << ", closed=" << latest.close_count);
+   const auto before = observation->before;
+   const auto stalled = observation->stalled;
    BOOST_REQUIRE(before.queued_writes > 0U);
-   forge::asio::blocking::run(runtime, settle_writes(std::chrono::milliseconds{100}));
-   const auto stalled = server_socket->metrics();
    BOOST_REQUIRE(stalled.queued_writes > 0U);
    BOOST_REQUIRE(stalled.sent_messages == before.sent_messages);
    BOOST_REQUIRE(!implementation->handler_exited.load());
@@ -979,11 +1032,15 @@ BOOST_AUTO_TEST_CASE(websocket_pending_write_close_cancel_joins_native_callback)
    auto connection = accepted.get();
    auto writing = boost::asio::co_spawn(observer, connection->send_binary(std::string(512U * 1024U, 'x')),
                                         boost::asio::use_future);
-   forge::asio::blocking::run(runtime, settle_writes(std::chrono::milliseconds{100}));
-   const auto before = connection->metrics();
+   auto observation = forge::asio::blocking::run(runtime, wait_for_write_backpressure(connection));
+   const auto latest = connection->metrics();
+   BOOST_REQUIRE_MESSAGE(observation.has_value(),
+      "WebSocket write did not remain pending: queued=" << latest.queued_writes
+      << ", sent=" << latest.sent_messages << ", failed=" << latest.failed_writes
+      << ", closed=" << latest.close_count);
+   const auto before = observation->before;
+   const auto stalled = observation->stalled;
    BOOST_REQUIRE(before.queued_writes == 1U);
-   forge::asio::blocking::run(runtime, settle_writes(std::chrono::milliseconds{100}));
-   const auto stalled = connection->metrics();
    BOOST_REQUIRE(stalled.queued_writes == 1U);
    BOOST_REQUIRE(stalled.sent_messages == before.sent_messages);
    BOOST_REQUIRE(writing.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
@@ -997,7 +1054,10 @@ BOOST_AUTO_TEST_CASE(websocket_pending_write_close_cancel_joins_native_callback)
       co_return std::pair{failed, connection->metrics()};
    };
    auto closing = boost::asio::co_spawn(observer, close(), boost::asio::use_future);
-   forge::asio::blocking::run(runtime, settle_writes(std::chrono::milliseconds{50}));
+   BOOST_REQUIRE(forge::asio::blocking::run(runtime, wait_for_connection_metrics(connection,
+      [](const forge::net::websocket::connection_metrics& metrics, std::chrono::steady_clock::time_point) {
+         return metrics.queued_writes == 2U;
+      })));
    BOOST_REQUIRE(connection->metrics().queued_writes == 2U);
    BOOST_REQUIRE(closing.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
 
