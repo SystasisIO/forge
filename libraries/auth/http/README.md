@@ -17,8 +17,8 @@ Public modules:
 `extract_session_evidence` accepts explicitly supplied HTTP header values; it
 does not own a router or transport facade. It requires one session cookie,
 rejects duplicate Cookie, Origin and CSRF evidence, and requires CSRF evidence
-for mutating methods. `authorize` validates a caller-loaded session and pairing
-credential, exact Origin policy, a non-empty approved scope and double-submit
+for mutating methods. `authorize` validates a caller-loaded session and neutral
+`forge::auth::credential::record`, exact Origin policy, a non-empty approved scope and double-submit
 CSRF evidence. Safe `GET`, `HEAD` and `OPTIONS` requests may omit Origin;
 mutating methods require it. Unknown methods and wildcard origins are rejected.
 Origins are canonical serialized `http` or `https` origins: they have an
@@ -36,5 +36,12 @@ This leaf has no persistence, routes, plugin, product-role, audit or rate-limit
 dependency. Callers load records, choose allowed origins and integrate product
 rate limiting/audit outside this library.
 
-Dependencies: `forge_auth_session`, `forge_net_http` (private `Boost.URL`
+Authentication source expiry/freshness and durable identity bindings remain
+caller-owned; these cookie helpers are not an OAuth callback or verifier.
+No pairing dependency is required for configured or external-identity sessions.
+See [Auth Credential](../credential/README.md) for the source-only migration;
+cookie/Origin/CSRF behavior and session error categories remain unchanged.
+
+Dependencies: `forge_auth_credential`, `forge_auth_session`, `forge_crypto_core`,
+`forge_exceptions`, `forge_net_http` (private `Boost.URL`
 parser backend).

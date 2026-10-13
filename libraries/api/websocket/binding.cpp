@@ -3,18 +3,29 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/this_coro.hpp>
 
 #include <coroutine>
+#include <chrono>
 #include <limits>
+#include <exception>
+#include <optional>
 #include <utility>
 
 module forge.api.websocket.binding;
 
 import forge.api.core.exceptions;
 import forge.api.core.types;
+import forge.api.auth.authenticated_caller;
+import forge.api.auth.authenticated_subject;
 import forge.api.stream.server;
 import forge.api.websocket.stream;
 import forge.net.websocket.exceptions;
+import forge.net.http.exceptions;
+import forge.net.http.route_context;
+import forge.net.http.types;
 
 namespace forge::api::websocket {
 namespace {
@@ -67,14 +78,46 @@ void validate_plan(const forge::api::core::binding_plan& plan,
    return static_cast<std::uint32_t>(value);
 }
 
+boost::asio::awaitable<void> serve_connection(
+   forge::net::websocket::connection::ptr socket,
+   forge::net::transport::stream stream,
+   forge::api::core::binding_plan plan,
+   forge::api::stream::options options,
+   forge::api::core::trusted_invocation trusted) {
+   co_await socket->ping();
+   co_await forge::api::stream::serve_stream(
+      std::move(stream), std::move(plan), std::move(options), {}, std::move(trusted));
+}
+
 boost::asio::awaitable<void> accept_connection(
    forge::net::websocket::connection::ptr socket,
    forge::net::transport::stream stream,
    forge::api::core::binding_plan plan,
-   forge::api::stream::options options) {
-   co_await socket->ping();
-   co_await forge::api::stream::serve_stream(
-      std::move(stream), std::move(plan), std::move(options));
+   forge::api::stream::options options,
+   forge::api::core::invocation_context context = {}) {
+   auto error = std::exception_ptr{};
+   try {
+      if (const auto* subject = context.trusted.find<forge::api::auth::authenticated_subject>()) {
+         if (!subject->token()) {
+            throw forge::api::core::exceptions::invocation_denied{"WebSocket subject is unavailable"};
+         }
+         const auto until = subject->token()->valid_until();
+         if (!context.lifetime.expires_at || until < *context.lifetime.expires_at) {
+            context.lifetime.expires_at = until;
+         }
+      }
+      co_await forge::api::core::enforce_invocation(
+         serve_connection(socket, std::move(stream), std::move(plan), std::move(options), context.trusted),
+         context);
+   } catch (...) {
+      error = std::current_exception();
+   }
+   // serve_stream cancellation tears down its session and all active calls.
+   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+   co_await socket->close();
+   if (error) {
+      std::rethrow_exception(error);
+   }
 }
 
 } // namespace
@@ -98,12 +141,76 @@ api_binding::api_binding(forge::api::core::binding_plan plan,
 
 boost::asio::awaitable<void>
 api_binding::accept(forge::net::websocket::connection::ptr connection) const {
+   return accept(std::move(connection), {});
+}
+
+boost::asio::awaitable<void>
+api_binding::accept(forge::net::websocket::connection::ptr connection,
+                     forge::api::core::invocation_context context) const {
    auto socket = connection;
    auto stream = as_transport_stream(std::move(connection),
                                      options_.max_frame_size,
                                      options_.max_buffered_bytes);
    return accept_connection(std::move(socket), std::move(stream), plan_,
-                            options_);
+                            options_, std::move(context));
+}
+
+forge::net::http::websocket_upgrade_handler api_binding::guarded(invocation_provider provider) const {
+   if (!provider) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
+                            "guarded WebSocket API requires an invocation provider");
+   }
+   return [binding = *this, provider = std::move(provider)](forge::net::http::route_context& route)
+      -> boost::asio::awaitable<forge::net::http::websocket_upgrade_result> {
+      auto context = forge::api::core::invocation_context{};
+      auto rejection = std::optional<forge::net::http::status>{};
+      try {
+         context = co_await provider(route);
+         const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+         if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+            throw forge::api::core::exceptions::cancelled{"WebSocket admission was cancelled"};
+         }
+         auto transport = forge::api::core::trusted_invocation_builder{};
+         if (route.client_certificate_fingerprint) {
+            transport.set(forge::api::auth::authenticated_caller{
+               forge::api::auth::caller_source::tls_certificate, *route.client_certificate_fingerprint});
+         }
+         context.trusted = std::move(transport).merge(context.trusted).build();
+         if (const auto* subject = context.trusted.find<forge::api::auth::authenticated_subject>()) {
+            if (!subject->token() || !subject->token()->valid_at(std::chrono::system_clock::now())) {
+               throw forge::api::core::exceptions::invocation_denied{"WebSocket subject is unavailable"};
+            }
+            const auto until = subject->token()->valid_until();
+            if (!context.lifetime.expires_at || until < *context.lifetime.expires_at) {
+               context.lifetime.expires_at = until;
+            }
+         } else {
+            throw forge::api::core::exceptions::invocation_denied{"WebSocket subject is unavailable"};
+         }
+         context.lifetime.bind_expiry();
+      } catch (const forge::api::core::exceptions::invocation_denied&) {
+         rejection = forge::net::http::status::forbidden;
+      } catch (const forge::api::core::exceptions::server_supplied_unavailable&) {
+         rejection = forge::net::http::status::forbidden;
+      } catch (const forge::net::http::exceptions::unauthorized&) {
+         rejection = forge::net::http::status::unauthorized;
+      } catch (const forge::net::http::exceptions::forbidden&) {
+         rejection = forge::net::http::status::forbidden;
+      } catch (...) {
+         rejection = forge::net::http::status::service_unavailable;
+      }
+      if (rejection) {
+         co_return forge::net::http::websocket_upgrade_result{
+            .rejection = forge::net::http::make_text_response(route.request, *rejection, "WebSocket admission denied"),
+         };
+      }
+      co_return forge::net::http::websocket_upgrade_result{
+         .session = [binding, context = std::move(context)](forge::net::websocket::connection::ptr socket)
+            -> boost::asio::awaitable<void> {
+            co_await binding.accept(std::move(socket), context);
+         },
+      };
+   };
 }
 
 boost::asio::awaitable<forge::api::websocket::connection>

@@ -52,6 +52,8 @@ class connection final : public std::enable_shared_from_this<connection> {
    boost::asio::awaitable<void> send(std::string message);
    boost::asio::awaitable<void> send_binary(std::string message);
    boost::asio::awaitable<void> close();
+   // Abort native I/O without a close handshake; close() joins an active write's completion.
+   void cancel();
    boost::asio::awaitable<void> ping(std::string payload = {});
    [[nodiscard]] connection_metrics metrics() const;
 

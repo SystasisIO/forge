@@ -724,6 +724,11 @@ add_executable(test_forge_crypto_core unit/main.cpp crypto/test_core.cpp)
 target_link_libraries(test_forge_crypto_core forge_crypto_core Boost::included_unit_test_framework)
 add_test(NAME test_forge_crypto_core COMMAND test_forge_crypto_core WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_executable(test_forge_auth_credential unit/main.cpp auth/credential_tests.cpp auth/credential_legacy_writer_tests.cpp)
+target_link_libraries(test_forge_auth_credential
+   forge_auth_credential forge_auth_pairing forge_auth_session forge_codec_hex Boost::included_unit_test_framework)
+add_test(NAME test_forge_auth_credential COMMAND test_forge_auth_credential WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
 add_executable(test_forge_auth_pairing unit/main.cpp auth/pairing_tests.cpp)
 target_link_libraries(test_forge_auth_pairing forge_auth_pairing Boost::included_unit_test_framework)
 add_test(NAME test_forge_auth_pairing COMMAND test_forge_auth_pairing WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -735,6 +740,19 @@ add_test(NAME test_forge_auth_session COMMAND test_forge_auth_session WORKING_DI
 add_executable(test_forge_auth_http unit/main.cpp auth/http_auth_tests.cpp)
 target_link_libraries(test_forge_auth_http forge_auth_http Boost::included_unit_test_framework)
 add_test(NAME test_forge_auth_http COMMAND test_forge_auth_http WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_auth_token_verifier unit/main.cpp auth/token_verifier_tests.cpp)
+target_link_libraries(test_forge_auth_token_verifier forge_auth_oauth2 Boost::included_unit_test_framework)
+add_test(NAME test_forge_auth_token_verifier COMMAND test_forge_auth_token_verifier WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+if(TARGET forge_auth_liboauth2)
+   add_subdirectory(auth/liboauth2_qualification)
+   add_executable(test_forge_auth_liboauth2 unit/main.cpp auth/liboauth2_tests.cpp)
+   target_link_libraries(test_forge_auth_liboauth2
+      forge_auth_liboauth2 forge_net_http forge_net_tls oauth2-internal Boost::included_unit_test_framework)
+   add_test(NAME test_forge_auth_liboauth2 COMMAND test_forge_auth_liboauth2 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+   set_tests_properties(test_forge_auth_liboauth2 PROPERTIES TIMEOUT 180)
+endif()
 
 add_executable(test_forge_client_auth unit/main.cpp auth/client_auth_tests.cpp)
 target_link_libraries(
@@ -1120,6 +1138,15 @@ add_executable(
 )
 target_link_libraries(test_forge_http_websocket forge Boost::included_unit_test_framework)
 add_test(NAME test_forge_http_websocket COMMAND test_forge_http_websocket WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_http_client_preparation unit/main.cpp http_websocket/client_preparation_tests.cpp)
+target_link_libraries(test_forge_http_client_preparation forge_api_http forge_net_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_client_preparation COMMAND test_forge_http_client_preparation WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_api_trusted_subject unit/main.cpp http_websocket/trusted_subject_tests.cpp)
+target_link_libraries(test_forge_api_trusted_subject
+   forge_api_auth forge_api_http forge_api_websocket forge_auth_oauth2 Boost::included_unit_test_framework)
+add_test(NAME test_forge_api_trusted_subject COMMAND test_forge_api_trusted_subject WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
    test_forge_quic_p2p
@@ -2552,6 +2579,17 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
+   test_forge_package_auth_credential_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_auth_credential_component
+      ${CMAKE_BINARY_DIR}/forge-package-auth-credential-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_auth_credential_component
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
    test_forge_package_auth_pairing_component
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -3567,6 +3605,17 @@ add_test(
 )
 set_tests_properties(test_forge_package_crypto_core_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
+   NAME test_forge_package_auth_credential_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_auth_credential_component
+      ${CMAKE_BINARY_DIR}/forge-package-auth-credential-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_auth_credential_component
+)
+set_tests_properties(test_forge_package_auth_credential_component PROPERTIES DEPENDS test_forge_package_install)
+add_test(
    NAME test_forge_package_auth_pairing_component
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -4293,3 +4342,55 @@ add_test(
       -P ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_crypto_signer_removed/expect_configure_failure.cmake
 )
 set_tests_properties(test_forge_package_plugins_crypto_signer_removed PROPERTIES DEPENDS test_forge_package_install)
+add_custom_target(
+   test_forge_package_auth_oauth2_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_auth_oauth2_component
+      ${CMAKE_BINARY_DIR}/forge-package-auth-oauth2-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_auth_oauth2_component
+   DEPENDS test_forge_package_install
+)
+add_test(
+   NAME test_forge_package_auth_oauth2_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_auth_oauth2_component
+      ${CMAKE_BINARY_DIR}/forge-package-auth-oauth2-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_auth_oauth2_component
+)
+set_tests_properties(test_forge_package_auth_oauth2_component PROPERTIES DEPENDS test_forge_package_install)
+
+option(FORGE_BUILD_AUTH_LIVE_TESTS "Build opt-in native authentication acceptance drivers" OFF)
+if(FORGE_BUILD_AUTH_LIVE_TESTS)
+   add_subdirectory(auth/live)
+endif()
+
+if(TARGET forge_auth_liboauth2)
+   add_custom_target(
+      test_forge_package_auth_liboauth2_component
+      COMMAND ${CMAKE_CTEST_COMMAND}
+         --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_auth_liboauth2_component
+         ${CMAKE_BINARY_DIR}/forge-package-auth-liboauth2-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_auth_liboauth2_component
+      DEPENDS test_forge_package_install
+   )
+   add_test(
+      NAME test_forge_package_auth_liboauth2_component
+      COMMAND ${CMAKE_CTEST_COMMAND}
+         --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_auth_liboauth2_component
+         ${CMAKE_BINARY_DIR}/forge-package-auth-liboauth2-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_auth_liboauth2_component
+   )
+   set_tests_properties(test_forge_package_auth_liboauth2_component PROPERTIES DEPENDS test_forge_package_install)
+endif()

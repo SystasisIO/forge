@@ -6,6 +6,27 @@ permissively licensed code used by FORGE. See PROVENANCE.md for source-lineage
 classification and compatibility-only donor boundaries.
 
 
+liboauth2 Resource Verification Backend
+---------------------------------------
+
+Vendored under `vendor/liboauth2` from the SystasisIO fork of OpenIDC/liboauth2,
+based on upstream 2.4.0, commit `85da4346435aec77f2ff11b529f2c1e8e5033c44`.
+The submodule records the exact patched revision. Local changes add bounded
+HTTP controls and per-call error results; they do not replace OAuth or JOSE.
+
+Copyright (C) 2018-2026 ZmartZone Holding B.V.
+Distributed under the Apache License 2.0. The complete upstream license is
+preserved at `vendor/liboauth2/LICENSE` and installed under
+`share/doc/Forge/liboauth2` when this optional host backend is built.
+
+Its separately supplied dependencies retain their own licenses: Jansson
+2.14.1 (MIT, including notices for separately attributed source files), CJOSE
+0.6.2.8 (MIT), libcurl (curl license), PCRE2 (BSD-3-Clause), and OpenSSL 3
+(Apache-2.0). This notice does not replace those dependency distributions'
+complete notices. Apache/NGINX bindings and optional Redis/memcache adapters
+are not included in the Forge target.
+
+
 AppAuth For iOS And macOS
 -------------------------
 

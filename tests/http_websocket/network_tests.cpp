@@ -10023,7 +10023,6 @@ BOOST_AUTO_TEST_CASE(websocket_guarded_tls_prefetched_frame_and_explicit_close) 
    BOOST_REQUIRE(wait_for_http_test([&] { return closed->load(); }));
    forge::asio::blocking::run(runtime, server.async_stop());
 }
-
 BOOST_AUTO_TEST_CASE(websocket_close_drains_already_queued_writes) {
    constexpr auto write_count = std::size_t{16};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

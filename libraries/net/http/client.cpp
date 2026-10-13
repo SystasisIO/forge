@@ -12,15 +12,28 @@ module;
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include <boost/asio/as_tuple.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/url.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.http.client;
 
 import forge.net.http.exceptions;
+import forge.asio.exceptions;
 
 namespace forge::net::http {
 namespace {
@@ -109,6 +122,35 @@ void validate_provider_header(const header_entry& header) {
    return options;
 }
 
+void bind_preparation_origin(request& request_value, const base_url& endpoint) {
+   const auto target = request_value.target();
+   if (!(request_value.method() == method::options && target == "*") &&
+       (!boost::urls::parse_origin_form(target) || target.starts_with("//"))) {
+      FORGE_THROW_EXCEPTION(exceptions::bad_request, "Async HTTP preparation requires an origin-form target");
+   }
+   const auto authority = endpoint.host + ":" + endpoint.port;
+   const auto default_port = endpoint.secure() ? "443" : "80";
+   auto host_count = std::size_t{};
+   for (const auto& header : request_value.headers()) {
+      if (header_name_equal(header.name, "Host")) {
+         ++host_count;
+         if (host_count > 1U || (!header_name_equal(header.text, authority) &&
+                                 !(endpoint.port == default_port && header_name_equal(header.text, endpoint.host)))) {
+            FORGE_THROW_EXCEPTION(exceptions::bad_request, "HTTP request Host does not match the preparation origin");
+         }
+      }
+   }
+   if (host_count == 0U) {
+      request_value.set(field::host, authority);
+   }
+}
+
+boost::asio::awaitable<std::vector<header_entry>> invoke_async_provider(const async_request_header_provider& provider,
+                                                                        const request& request_value,
+                                                                        request_preparation_context context) {
+   co_return co_await provider(request_value, std::move(context));
+}
+
 request make_request(method method_value, const base_url& endpoint, std::string_view path, std::string body = {},
                      std::string_view content_type = {}) {
    auto request_value = request{};
@@ -164,6 +206,9 @@ client::client(forge::asio::runtime& runtime, base_url endpoint, client_options 
                   {.tls_context_provider = resolve_tls_context(endpoint_, options_),
                    .tls_stream_options = make_tls_stream_options(endpoint_, options_),
                    .tls_peer_validation = make_tls_peer_validation(endpoint_, options_)}) {
+   if (options_.header_provider && options_.async_header_provider) {
+      FORGE_THROW_EXCEPTION(exceptions::bad_request, "HTTP client cannot configure both header providers");
+   }
    if (options_.max_provider_headers > max_client_provider_headers ||
        options_.max_provider_header_bytes > max_client_provider_header_bytes || options_.max_provider_headers == 0U ||
        options_.max_provider_header_bytes == 0U) {
@@ -182,41 +227,25 @@ client::~client() = default;
 
 boost::asio::awaitable<response> client::async_request(forge::net::http::request request_value,
                                                        request_options options) {
-   const auto started = std::chrono::steady_clock::now();
-   auto prepared = apply_provider_headers(std::move(request_value));
-   if (options_.header_provider) {
-      options = remaining_request_options(options, started);
-   }
+   auto prepared = co_await prepare_request(std::move(request_value), options);
    co_return co_await connection_.async_request(std::move(prepared), options);
 }
 
 boost::asio::awaitable<response> client::async_streaming_request(forge::net::http::request request_value,
                                                                  body_reader body, request_options options) {
-   const auto started = std::chrono::steady_clock::now();
-   auto prepared = apply_provider_headers(std::move(request_value));
-   if (options_.header_provider) {
-      options = remaining_request_options(options, started);
-   }
+   auto prepared = co_await prepare_request(std::move(request_value), options);
    co_return co_await connection_.async_streaming_request(std::move(prepared), std::move(body), options);
 }
 
 boost::asio::awaitable<response_stream> client::async_stream_request(forge::net::http::request request_value,
                                                                      request_options options) {
-   const auto started = std::chrono::steady_clock::now();
-   auto prepared = apply_provider_headers(std::move(request_value));
-   if (options_.header_provider) {
-      options = remaining_request_options(options, started);
-   }
+   auto prepared = co_await prepare_request(std::move(request_value), options);
    co_return co_await connection_.async_stream_request(std::move(prepared), options);
 }
 
 boost::asio::awaitable<response_stream> client::async_stream_request(forge::net::http::request request_value,
                                                                      body_reader body, request_options options) {
-   const auto started = std::chrono::steady_clock::now();
-   auto prepared = apply_provider_headers(std::move(request_value));
-   if (options_.header_provider) {
-      options = remaining_request_options(options, started);
-   }
+   auto prepared = co_await prepare_request(std::move(request_value), options);
    co_return co_await connection_.async_stream_request(std::move(prepared), std::move(body), options);
 }
 
@@ -241,6 +270,81 @@ std::string client::make_target(std::string_view path) const {
 
 connection_metrics client::metrics() const {
    return connection_.metrics();
+}
+
+boost::asio::awaitable<request> client::prepare_request(request request_value, request_options& options) const {
+   namespace asio = boost::asio;
+   const auto started = std::chrono::steady_clock::now();
+   if (!options_.async_header_provider) {
+      auto prepared = apply_provider_headers(std::move(request_value));
+      if (options_.header_provider) {
+         options = remaining_request_options(options, started);
+      }
+      co_return prepared;
+   }
+
+   const auto cancellation = co_await asio::this_coro::cancellation_state;
+   const auto require_active = [&cancellation] {
+      if (cancellation.cancelled() != asio::cancellation_type::none) {
+         throw forge::asio::exceptions::canceled{"HTTP request preparation was canceled"};
+      }
+   };
+   require_active();
+   if (options.timeout <= std::chrono::milliseconds::zero()) {
+      throw exceptions::gateway_timeout{"HTTP request preparation exceeded the request deadline"};
+   }
+   const auto maximum = std::chrono::steady_clock::time_point::max();
+   const auto maximum_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(maximum - started);
+   const auto relative_deadline = options.timeout >= maximum_timeout ? maximum : started + options.timeout;
+   const auto deadline = std::min(relative_deadline, options.deadline.value_or(maximum));
+   if (std::chrono::steady_clock::now() >= deadline) {
+      throw exceptions::gateway_timeout{"HTTP request preparation exceeded the request deadline"};
+   }
+   bind_preparation_origin(request_value, endpoint_);
+   auto timer = asio::steady_timer{co_await asio::this_coro::executor, deadline};
+
+   try {
+      using namespace asio::experimental::awaitable_operators;
+      // as_tuple makes provider failures complete the race too, rather than waiting for a successful timer.
+      // Asio joins the canceled branch: neither the request nor its provider outlives this preparation.
+      auto outcome =
+          co_await (asio::co_spawn(timer.get_executor(),
+                                   invoke_async_provider(options_.async_header_provider, request_value,
+                                                         {.origin = endpoint_.origin(), .deadline = deadline}),
+                                   asio::as_tuple(asio::use_awaitable)) ||
+                    timer.async_wait(asio::as_tuple(asio::use_awaitable)));
+      require_active();
+      if (outcome.index() != 0U || std::chrono::steady_clock::now() >= deadline) {
+         throw exceptions::gateway_timeout{"HTTP request preparation exceeded the request deadline"};
+      }
+      auto [failure, headers] = std::get<0>(std::move(outcome));
+      if (failure) {
+         std::rethrow_exception(failure);
+      }
+      validate_provider_headers(headers, request_value.headers(), options_.max_provider_headers,
+                                options_.max_provider_header_bytes);
+      for (const auto& header : headers) {
+         request_value.insert(header.name, header.text);
+      }
+      require_active();
+      options.deadline = deadline;
+      options.timeout =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+      if (options.timeout <= std::chrono::milliseconds::zero()) {
+         throw exceptions::gateway_timeout{"HTTP request preparation exceeded the request deadline"};
+      }
+      co_return request_value;
+   } catch (const forge::exceptions::base&) {
+      throw;
+   } catch (const boost::system::system_error& error) {
+      if (error.code() == asio::error::operation_aborted) {
+         throw forge::asio::exceptions::canceled{"HTTP request preparation was canceled"};
+      }
+      FORGE_THROW_EXCEPTION(exceptions::internal, "Async HTTP header provider failed");
+   } catch (...) {
+      // Provider diagnostics can contain credentials. Never attach their text to transport errors.
+      FORGE_THROW_EXCEPTION(exceptions::internal, "Async HTTP header provider failed");
+   }
 }
 
 request client::apply_provider_headers(request request_value) const {

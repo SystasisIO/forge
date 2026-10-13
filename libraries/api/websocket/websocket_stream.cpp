@@ -6,8 +6,6 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -223,7 +221,7 @@ boost::asio::awaitable<void> websocket_stream::async_close() {
 
 void websocket_stream::cancel() {
    close_state(make_cancelled_error());
-   schedule_socket_close();
+   connection_->cancel();
 }
 
 boost::asio::awaitable<void>
@@ -358,34 +356,6 @@ void websocket_stream::close_state(std::exception_ptr failure) noexcept {
    wake(std::move(read_waiters));
    wake(std::move(inbound_waiters));
    wake(std::move(outbound_waiters));
-}
-
-void websocket_stream::schedule_socket_close() noexcept {
-   auto executor = std::optional<boost::asio::any_io_executor>{};
-   auto connection = forge::net::websocket::connection::ptr{};
-   {
-      const auto lock = std::scoped_lock{mutex_};
-      if (close_scheduled_ || !executor_ || !connection_) {
-         return;
-      }
-      close_scheduled_ = true;
-      executor = executor_;
-      connection = connection_;
-   }
-   try {
-      boost::asio::co_spawn(
-         *executor,
-         [connection = std::move(connection)]() -> boost::asio::awaitable<void> {
-            try {
-               co_await connection->close();
-            } catch (...) {
-               // Cancellation has already made the transport terminal.
-            }
-         },
-         boost::asio::detached);
-   } catch (...) {
-      // Cancellation remains best effort from the synchronous transport API.
-   }
 }
 
 void websocket_stream::wake(

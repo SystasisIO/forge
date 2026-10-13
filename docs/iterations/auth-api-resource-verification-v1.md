@@ -1,7 +1,7 @@
 # Auth/API Resource Verification
 
 Date: 2026-10-13.
-Status: blocked at F0 qualification; no resource-token verifier is delivered.
+Status: implementation in progress; maintained fork qualified, integration pending.
 Branch: `auth-api-resource-verification-v1`.
 Starting development commit: `411644237490a63a52d1f810336673367c962651`.
 
@@ -13,12 +13,16 @@ Sol reviewers and reproduced by eight standalone macOS cases. See the
 [qualification report](../donors/auth-liboauth2-qualification.md) for exact
 dependency provenance, observed results and remaining NOT_RUN coverage.
 
-Only the execution note, qualification report and standalone test fixture have
-been added. Production Forge sources, vendor pins and package exports remain
-unchanged. No partial authentication implementation has been pushed to `dev`,
-and Gate's Forge pin has not been changed. The next decision is an upstream
-dependency fix or a separately approved backend candidate, followed by F0
-qualification again. Neither choice has been silently substituted for the plan.
+The user approved a maintained `SystasisIO/liboauth2` fork under `vendor/`.
+Its `resource-verification-controls` branch starts at the exact qualified
+upstream commit. The patch adds public transport controls and per-call failure
+evidence, rather than replacing HTTP, JOSE or OAuth inside Forge. The published
+fork commit `ec0059e8de6b4a8e7fed4e5d605bad3d46f035f5` passed 86 focused
+qualification cases on both macOS and Linux, plus 135 upstream-derived Check
+tests on Linux. See the [fork report](../donors/auth-liboauth2-fork-qualification.md).
+The original upstream failure report remains historical evidence, not a passing
+test manifest for the fork. No partial authentication implementation has been
+pushed to `dev`, and Gate's Forge pin has not been changed.
 
 ## Scope
 
@@ -30,8 +34,11 @@ and product principals remain distinct.
 
 This iteration does not implement an identity provider, browser login service,
 product authorization, a signer, WASM execution or a second session engine.
-Client-side asynchronous token acquisition before outbound requests is a
-separate follow-up, not a claim made by this server-side delivery.
+Client-side asynchronous token acquisition before outbound requests (F4a) is
+part of the original approved plan and this delivery. Generic workload token
+exchange (F4b) remains outside the supported first delivery; it requires a
+separately qualified STS profile. Existing projected-file acquisition is not
+evidence of workload exchange.
 
 ## Required Order
 
@@ -45,15 +52,19 @@ separate follow-up, not a claim made by this server-side delivery.
 5. Integrate existing WebSocket admission rather than creating a second guard;
    reject unauthenticated upgrades before HTTP 101 and enforce finite trust
    lifetime for long-lived calls.
-6. Run focused tests, package consumers and independent review cycles. Integrate
+6. Add asynchronous outbound request preparation without Auth imports in the
+   HTTP transport, preserving deadlines, cancellation and no mutation replay.
+7. Run focused tests, package consumers and independent review cycles. Integrate
    only accepted work into current development and then update the consuming
    product's exact dependency pin.
 
 ## Backend Acceptance
 
-The candidate is OpenIDC `liboauth2` 2.4.0 at
-`85da4346435aec77f2ff11b529f2c1e8e5033c44`. This is a qualification input,
-not an approved vendor pin.
+The upstream baseline is OpenIDC `liboauth2` 2.4.0 at
+`85da4346435aec77f2ff11b529f2c1e8e5033c44`. The qualified fork commit is
+`ec0059e8de6b4a8e7fed4e5d605bad3d46f035f5`. Qualification covers the explicit
+bounded verification profile with vendor decision caching disabled, not all
+upstream configurations or complete application acceptance.
 
 Qualification must establish the following using supported upstream APIs:
 
@@ -93,6 +104,14 @@ backend selection. Do not weaken acceptance to complete the adapter.
 
 ## Acceptance And Delivery
 
+Current pre-integration evidence: the real adapter's 17 cases pass on macOS
+(3.82 seconds) and Linux (3.76 seconds). Both use the same frozen source.
+Credential/session regressions, six installed Auth package consumers and
+bounded outbound-request preparation also passed focused macOS checks.
+HTTP/WebSocket shutdown repairs and native positive login acceptance remain
+open. All affected checks must run again after integration with current `dev`;
+these scoped results are not permission to merge an incomplete branch.
+
 Credential migration is a scoped public source break, not a wire/storage reset.
 Document the mechanical consumer migration and preserve enum and field order
 with legacy-writer fixtures. Do not retain old namespace aliases.
@@ -105,7 +124,7 @@ isolation; expiry/revocation and shutdown; and installed package boundaries.
 Use one coordinator-owned generated build at a time with Homebrew LLVM, Ninja
 and `-j4`. Record platform tests that were not run as `NOT_RUN`. Do not delete
 other tasks' builds, sources or data. Remove this iteration's generated build
-after validation.
+after validation and the authorized integration into `dev`.
 
 The final delivery requires two independent clean review verdicts and a fresh
 development ancestry check. No force push, release/tag or unrelated product

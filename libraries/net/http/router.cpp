@@ -513,7 +513,9 @@ boost::asio::awaitable<stream_response> router::handle_stream(stream_request& re
              static_cast<bool>(result->body) && is_stream_pass_through(head, stream_state) && head.body().empty();
          clear_stream_pass_through(head);
          if (!preserve_stream_body) {
-            co_return stream_response::buffered(std::move(head));
+            result->head = std::move(head);
+            result->body = {};
+            co_return std::move(*result);
          }
          if (result->body) {
             restore_stream_transfer_framing(head, framing);

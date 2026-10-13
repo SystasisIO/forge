@@ -55,6 +55,8 @@ struct core_error_descriptor {
       return {"resource_exhausted", status::resource_exhausted, true};
    case exceptions::code::server_supplied_unavailable:
       return {"server_supplied_unavailable", status::failed_precondition, false};
+   case exceptions::code::invocation_denied:
+      return {"invocation_denied", status::permission_denied, false};
    }
    return {"internal", status::internal, false};
 }
@@ -154,6 +156,8 @@ void raise_remote_error(const error_payload& payload, const method_descriptor* m
          throw exceptions::resource_exhausted{message, fields};
       case exceptions::code::server_supplied_unavailable:
          throw exceptions::server_supplied_unavailable{message, fields};
+      case exceptions::code::invocation_denied:
+         throw exceptions::invocation_denied{message, fields};
       }
    }
 

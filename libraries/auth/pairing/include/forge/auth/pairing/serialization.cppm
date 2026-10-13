@@ -8,6 +8,7 @@ module;
 
 export module forge.auth.pairing.serialization;
 
+export import forge.auth.credential.serialization;
 export import forge.auth.pairing.types;
 
 import forge.raw.codec;
@@ -72,21 +73,6 @@ template <typename Stream> void unpack_pending_state(Stream& stream, pending_sta
    }
 }
 
-template <typename Stream> void unpack_credential_state(Stream& stream, credential_state& value) {
-   auto encoded = std::uint8_t{};
-   forge::raw::unpack(stream, encoded);
-   switch (encoded) {
-   case static_cast<std::uint8_t>(credential_state::active):
-      value = credential_state::active;
-      return;
-   case static_cast<std::uint8_t>(credential_state::revoked):
-      value = credential_state::revoked;
-      return;
-   default:
-      throw_invalid_raw<Stream>("pairing credential state is invalid");
-   }
-}
-
 template <typename Stream> void validate_time_range(const bootstrap_record& value) {
    if (value.expires_at <= value.created_at) {
       throw_invalid_raw<Stream>("pairing bootstrap timestamps are invalid");
@@ -101,13 +87,6 @@ template <typename Stream> void validate_time_range(const pending_request& value
    }
 }
 
-template <typename Stream> void validate_time_range(const credential& value) {
-   if (value.updated_at < value.issued_at || (value.revoked_at.has_value() && (*value.revoked_at < value.issued_at ||
-                                                                               *value.revoked_at > value.updated_at))) {
-      throw_invalid_raw<Stream>("pairing credential timestamps are invalid");
-   }
-}
-
 } // namespace detail
 
 template <typename Stream> void raw_pack(Stream& stream, const token_digest& value) {
@@ -116,24 +95,6 @@ template <typename Stream> void raw_pack(Stream& stream, const token_digest& val
 
 template <typename Stream> void raw_unpack(Stream& stream, token_digest& value) {
    forge::raw::unpack(stream, value.value);
-}
-
-template <typename Stream> void raw_pack(Stream& stream, const credential_id& value) {
-   forge::raw::pack(stream, value.value);
-}
-
-template <typename Stream> void raw_unpack(Stream& stream, credential_id& value) {
-   forge::raw::unpack(stream, value.value);
-}
-
-template <typename Stream> void raw_pack(Stream& stream, const credential_binding& value) {
-   forge::raw::pack(stream, value.id);
-   forge::raw::pack(stream, value.generation);
-}
-
-template <typename Stream> void raw_unpack(Stream& stream, credential_binding& value) {
-   forge::raw::unpack(stream, value.id);
-   forge::raw::unpack(stream, value.generation);
 }
 
 template <typename Stream> void raw_pack(Stream& stream, const bootstrap_record& value) {
@@ -180,29 +141,6 @@ template <typename Stream> void raw_unpack(Stream& stream, pending_request& valu
    detail::validate_time_range<Stream>(value);
 }
 
-template <typename Stream> void raw_pack(Stream& stream, const credential& value) {
-   forge::raw::pack(stream, value.id);
-   forge::raw::pack(stream, value.identity);
-   forge::raw::pack(stream, value.scopes);
-   forge::raw::pack(stream, value.generation);
-   detail::pack_time_point(stream, value.issued_at);
-   detail::pack_time_point(stream, value.updated_at);
-   forge::raw::pack(stream, static_cast<std::uint8_t>(value.state));
-   detail::pack_optional_time_point(stream, value.revoked_at);
-}
-
-template <typename Stream> void raw_unpack(Stream& stream, credential& value) {
-   forge::raw::unpack(stream, value.id);
-   forge::raw::unpack(stream, value.identity);
-   forge::raw::unpack(stream, value.scopes);
-   forge::raw::unpack(stream, value.generation);
-   detail::unpack_time_point(stream, value.issued_at);
-   detail::unpack_time_point(stream, value.updated_at);
-   detail::unpack_credential_state(stream, value.state);
-   detail::unpack_optional_time_point(stream, value.revoked_at);
-   detail::validate_time_range<Stream>(value);
-}
-
 } // namespace forge::auth::pairing
 
 export namespace forge::raw {
@@ -220,17 +158,10 @@ template <typename T> struct pairing_codec_traits {
 template <>
 struct codec_traits<forge::auth::pairing::token_digest> : pairing_codec_traits<forge::auth::pairing::token_digest> {};
 template <>
-struct codec_traits<forge::auth::pairing::credential_id> : pairing_codec_traits<forge::auth::pairing::credential_id> {};
-template <>
-struct codec_traits<forge::auth::pairing::credential_binding>
-    : pairing_codec_traits<forge::auth::pairing::credential_binding> {};
-template <>
 struct codec_traits<forge::auth::pairing::bootstrap_record>
     : pairing_codec_traits<forge::auth::pairing::bootstrap_record> {};
 template <>
 struct codec_traits<forge::auth::pairing::pending_request>
     : pairing_codec_traits<forge::auth::pairing::pending_request> {};
-template <>
-struct codec_traits<forge::auth::pairing::credential> : pairing_codec_traits<forge::auth::pairing::credential> {};
 
 } // namespace forge::raw

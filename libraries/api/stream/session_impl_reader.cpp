@@ -7,7 +7,6 @@ module;
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 
@@ -302,12 +301,7 @@ boost::asio::awaitable<void> session::impl::handle_request(forge::api::core::fra
    if (settings.deadline.count() > 0) {
       start_deadline(call, settings.deadline);
    }
-   boost::asio::co_spawn(
-       *strand,
-       [self = shared_from_this(), value = std::move(value), call]() mutable -> boost::asio::awaitable<void> {
-          co_await self->run_remote_call(std::move(value), call);
-       },
-       boost::asio::bind_cancellation_slot(call->handler_cancel.slot(), boost::asio::detached));
+   spawn_task(run_remote_call(std::move(value), call), call->handler_cancel.slot());
    start_outbound_pump(call);
    co_return;
 }

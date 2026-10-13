@@ -11,6 +11,10 @@ module forge.net.http.stream;
 
 namespace forge::net::http {
 
+stream_response::body_source stream_response::body_source::with_callback(callback_type callback) const {
+   return body_source{std::move(callback), request_body_marker_};
+}
+
 streaming_response streaming_response::from_source(streaming_response_options options) {
    auto result = streaming_response{};
    result.head_.version(11);

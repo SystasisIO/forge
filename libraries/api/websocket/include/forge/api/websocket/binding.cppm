@@ -5,14 +5,18 @@ module;
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <utility>
 
 export module forge.api.websocket.binding;
 
 export import forge.api.core.binding;
+export import forge.api.core.invocation_context;
 export import forge.api.stream.options;
 export import forge.api.websocket.connection;
 export import forge.net.websocket.connection;
+export import forge.net.http.router;
+export import forge.net.http.route_context;
 
 export namespace forge::api::websocket {
 
@@ -20,6 +24,9 @@ struct api_backpressure_options {
    std::size_t max_inflight = 128;
    std::uint64_t max_buffered_bytes = 16U * 1024U * 1024U;
 };
+
+using invocation_provider = std::function<boost::asio::awaitable<forge::api::core::invocation_context>(
+   const forge::net::http::route_context&)>;
 
 [[nodiscard]] forge::api::core::capability_set binding_capabilities() noexcept;
 
@@ -30,6 +37,9 @@ class api_binding {
 
    boost::asio::awaitable<void>
    accept(forge::net::websocket::connection::ptr connection) const;
+   boost::asio::awaitable<void>
+   accept(forge::net::websocket::connection::ptr connection, forge::api::core::invocation_context context) const;
+   [[nodiscard]] forge::net::http::websocket_upgrade_handler guarded(invocation_provider provider) const;
    boost::asio::awaitable<forge::api::websocket::connection>
    connect(forge::net::websocket::connection::ptr connection) const;
 

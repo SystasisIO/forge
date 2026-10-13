@@ -21,11 +21,11 @@ template <typename Exception, typename Function> [[nodiscard]] bool rejects_raw(
 }
 
 int main() {
-   namespace pairing = forge::auth::pairing;
+   namespace credentials = forge::auth::credential;
    namespace session = forge::auth::session;
 
    const auto now = session::time_point{std::chrono::seconds{1}};
-   const auto credential = pairing::credential{
+   const auto credential = credentials::record{
        .id = {.value = "credential-consumer"},
        .identity = "consumer",
        .scopes = {"session.read"},

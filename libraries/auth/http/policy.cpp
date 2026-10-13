@@ -300,7 +300,7 @@ session_evidence extract_session_evidence(const browser_request_evidence& reques
 
 forge::auth::session::principal authorize(const session_evidence& evidence,
                                           const forge::auth::session::session_record& session,
-                                          const forge::auth::pairing::credential& credential,
+                                          const forge::auth::credential::record& credential,
                                           const authorization_options& options) {
    return translate_unexpected([&] {
       const auto kind = classify_method(evidence.method);

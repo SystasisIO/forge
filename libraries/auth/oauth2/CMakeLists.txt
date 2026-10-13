@@ -3,6 +3,9 @@ add_library(
    access_token.cpp
    interactive_authorizer.cpp
    token_provider.cpp
+   token_verifier.cpp
+   verification_policy.cpp
+   verified_token.cpp
 )
 forge_target_modules_at(forge_auth_oauth2 auth/oauth2)
 

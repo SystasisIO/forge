@@ -5,6 +5,27 @@ license by itself; see `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES`.
 
 Audit date: 2026-08-10.
 
+## Resource Token Verification
+
+The optional host target `forge_auth_liboauth2` uses the SystasisIO/liboauth2
+fork, pinned by `vendor/liboauth2`, on top of OpenIDC/liboauth2 2.4.0 commit
+`85da4346435aec77f2ff11b529f2c1e8e5033c44`. The maintained patch is commit
+`ec0059e8de6b4a8e7fed4e5d605bad3d46f035f5` on `resource-verification-controls`.
+The fork adds public per-call
+failure classification and bounded HTTP controls needed by resource servers.
+Forge must not reconstruct failures from vendor log messages or implement a
+second JOSE/HTTP engine. The original upstream qualification report remains
+historical evidence, not an approval of the patched backend.
+
+The dependency qualification uses Jansson 2.14.1 commit
+`ed5cae4ed0621ef409510f94270c9f8f263736d0` and CJOSE 0.6.2.8 commit
+`e787ace6a203d483038a793fd58f958a2f9b48c1`. They are package dependencies,
+not copied Forge modules. See `THIRD_PARTY_LICENSES` for their distinct
+license boundaries. CJOSE 0.6.2.5 is deliberately excluded after review of
+upstream advisory [GHSA-f6wf-pqg3-6wqq](https://github.com/OpenIDC/cjose/security/advisories/GHSA-f6wf-pqg3-6wqq).
+Although the resource profile uses signed tokens rather than JWE encryption,
+the qualified dependency must carry the upstream fix.
+
 ## Forge Contract SDK
 
 `guest` is Forge's native C++23 smart-contract toolchain assembly. Release

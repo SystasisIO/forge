@@ -16,15 +16,15 @@ import forge.crypto.core.secret_string;
 import forge.raw.exceptions;
 import forge.raw.raw;
 
-namespace pairing = forge::auth::pairing;
+namespace credentials = forge::auth::credential;
 namespace session = forge::auth::session;
 
 namespace {
 
 const auto test_now = session::time_point{std::chrono::seconds{1'700'000'000}};
 
-[[nodiscard]] pairing::credential credential(std::string id = "credential-a", std::uint64_t generation = 1,
-                                             pairing::scope_set scopes = {"session.read", "session.write"}) {
+[[nodiscard]] credentials::record credential(std::string id = "credential-a", std::uint64_t generation = 1,
+                                             credentials::scope_set scopes = {"session.read", "session.write"}) {
    return {
        .id = {.value = std::move(id)},
        .identity = "owner-a",
@@ -75,14 +75,64 @@ template <typename Value> constexpr bool exposes_csrf_secret = requires(Value va
 
 BOOST_AUTO_TEST_SUITE(auth_session)
 
+BOOST_AUTO_TEST_CASE(configured_and_external_bindings_use_one_neutral_session_lifecycle) {
+   // External identity verification/provisioning is caller-owned, not simulated pairing.
+   for (const auto& id : {std::string{"configured-binding"}, std::string{"external-identity-binding"}}) {
+      auto owner = credential(id);
+      owner.identity = "provisioned-subject";
+      credentials::validate_record(owner);
+      const auto issuance = session::issue_session(owner, options_at());
+      const auto grant = session::issue_device_grant(owner, grant_options_at());
+      const auto now = test_now + std::chrono::seconds{1};
+      const auto subject = session::validate_session(issuance.record, issuance.session_token, owner, now);
+      BOOST_CHECK(subject.credential_id == owner.id);
+      BOOST_TEST(subject.identity == owner.identity);
+      BOOST_CHECK(session::validate_device_grant(grant.record, grant.token, owner, now) ==
+                   (credentials::binding{.id = owner.id, .generation = owner.generation}));
+      credentials::rotate_downscope(owner, {"session.read"}, now);
+      require_exception<session::exceptions::credential_mismatch>([&] {
+         return session::validate_session(issuance.record, issuance.session_token, owner, now);
+      });
+      require_exception<session::exceptions::credential_mismatch>([&] {
+         return session::validate_device_grant(grant.record, grant.token, owner, now);
+      });
+      const auto replacement = session::issue_session(owner, options_at(now));
+      credentials::revoke(owner, now + std::chrono::seconds{1});
+      require_exception<session::exceptions::credential_revoked>([&] {
+         return session::validate_session(replacement.record, replacement.session_token, owner,
+                                           now + std::chrono::seconds{1});
+      });
+   }
+}
+
+BOOST_AUTO_TEST_CASE(neutral_validation_keeps_session_boundary_error_categories) {
+   auto owner = credential();
+   owner.id.value.clear();
+   require_exception<session::exceptions::invalid_state>([&] { return session::issue_session(owner, options_at()); });
+   owner = credential();
+   owner.identity.clear();
+   require_exception<session::exceptions::invalid_state>([&] { return session::issue_session(owner, options_at()); });
+   owner = credential();
+   owner.scopes = {"session.write", "session.read"};
+   require_exception<session::exceptions::invalid_state>([&] { return session::issue_session(owner, options_at()); });
+   owner = credential();
+   owner.state = static_cast<credentials::state>(0xffU);
+   require_exception<session::exceptions::invalid_state>([&] { return session::issue_session(owner, options_at()); });
+   owner = credential();
+   owner.state = credentials::state::revoked;
+   require_exception<session::exceptions::credential_revoked>([&] {
+      return session::issue_session(owner, options_at());
+   });
+}
+
 BOOST_AUTO_TEST_CASE(issue_generates_independent_digest_only_canonical_secrets) {
    static_assert(!exposes_session_token<session::session_record>);
    static_assert(!exposes_csrf_secret<session::session_record>);
    static_assert(std::is_same_v<decltype(&session::issue_session),
-                                session::session_issuance (*)(const pairing::credential&, session::session_options)>);
+                                session::session_issuance (*)(const credentials::record&, session::session_options)>);
    static_assert(std::is_same_v<decltype(&session::validate_issuance), void (*)(const session::session_issuance&)>);
    static_assert(std::is_same_v<decltype(&session::rotate_session),
-                                session::session_issuance (*)(session::session_record&, const pairing::credential&,
+                                session::session_issuance (*)(session::session_record&, const credentials::record&,
                                                               session::session_options)>);
 
    const auto owner = credential();
@@ -101,7 +151,7 @@ BOOST_AUTO_TEST_CASE(issue_generates_independent_digest_only_canonical_secrets) 
    BOOST_TEST(first.record.credential_id.value == "credential-a");
    BOOST_TEST(first.record.credential_generation == 1U);
    BOOST_TEST(first.record.identity == "owner-a");
-   BOOST_TEST(first.record.scopes == pairing::scope_set({"session.read", "session.write"}),
+   BOOST_TEST(first.record.scopes == credentials::scope_set({"session.read", "session.write"}),
               boost::test_tools::per_element());
 }
 
@@ -175,7 +225,7 @@ BOOST_AUTO_TEST_CASE(validation_returns_principal_and_enforces_credential_bindin
    BOOST_TEST(value.credential_id.value == "credential-a");
    BOOST_TEST(value.credential_generation == 1U);
    BOOST_TEST(value.identity == "owner-a");
-   BOOST_TEST(value.scopes == pairing::scope_set({"session.read", "session.write"}), boost::test_tools::per_element());
+   BOOST_TEST(value.scopes == credentials::scope_set({"session.read", "session.write"}), boost::test_tools::per_element());
 
    auto generation_changed = owner;
    ++generation_changed.generation;
@@ -184,7 +234,7 @@ BOOST_AUTO_TEST_CASE(validation_returns_principal_and_enforces_credential_bindin
        [&] { return session::validate_session(issuance.record, issuance.session_token, generation_changed, now); });
 
    auto revoked = owner;
-   revoked.state = pairing::credential_state::revoked;
+   revoked.state = credentials::state::revoked;
    revoked.updated_at = now;
    revoked.revoked_at = now;
    require_exception<session::exceptions::credential_revoked>(
@@ -402,7 +452,7 @@ BOOST_AUTO_TEST_CASE(device_grant_is_credential_bound_and_does_not_issue_a_sessi
    });
 
    auto revoked = owner;
-   revoked.state = pairing::credential_state::revoked;
+   revoked.state = credentials::state::revoked;
    revoked.updated_at = test_now + std::chrono::seconds{1};
    revoked.revoked_at = revoked.updated_at;
    require_exception<session::exceptions::credential_revoked>([&] {

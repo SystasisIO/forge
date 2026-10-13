@@ -23,6 +23,9 @@ import forge.net.http.types;
 export namespace forge::net::http {
 
 struct stream_response {
+   using send_guard_type = std::function<boost::asio::awaitable<void>(
+       boost::asio::awaitable<void>, std::function<void()>)>;
+
    class body_source {
     public:
       using callback_type = std::function<boost::asio::awaitable<std::optional<body_chunk>>()>;
@@ -45,6 +48,8 @@ struct stream_response {
          co_return co_await callback_();
       }
 
+      [[nodiscard]] body_source with_callback(callback_type callback) const;
+
     private:
       friend class streaming_response;
       friend struct stream_request;
@@ -59,6 +64,8 @@ struct stream_response {
 
    response head;
    body_source body;
+   // Wraps the complete send. The callback aborts socket I/O; the guard must join the operation.
+   send_guard_type send_guard;
 
    [[nodiscard]] static stream_response buffered(response response_value) {
       return stream_response{.head = std::move(response_value), .body = {}};

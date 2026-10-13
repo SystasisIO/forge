@@ -1,5 +1,28 @@
 # forge_api_core
 
+## Trusted Invocation Lifetime
+
+`forge.api.core.invocation_context` composes the existing immutable
+`trusted_invocation` with `invocation_lifetime`. `trusted_invocation_builder::merge`
+rejects every duplicate type, even equal values, and leaves the builder unchanged
+on failure. Never use a replace/last-wins merge for authenticated transport values.
+
+Bindings call `bind_expiry()` once at admission. It freezes a monotonic expiry
+ceiling; copying or later extending the wall-clock value cannot extend that
+ceiling. `recheck_interval` and `recheck_timeout` must be positive, representable
+timer durations when a recheck hook is set, and zero otherwise. The hook receives
+the immutable trusted context, not request storage, and returns current validity.
+Failure, timeout and expiry fail closed as `exceptions::invocation_denied`.
+
+`enforce_invocation(operation, context, on_denied)` races the operation against
+expiry/recheck using the existing Asio coroutine composition. It cancels and joins
+both branches before returning, with no detached watcher. The optional callback
+fails stream endpoints to release blocked queues. Normal completion or caller
+cancellation never invokes the denial callback. An inactive lifetime adds no
+watcher. Operations and recheck hooks must cooperate with cancellation and honor
+their own finite upstream timeouts; this is not physical preemption of blocking
+work. Core owns no identity verifier, issuer policy or product authorization.
+
 `forge_api_core` is the neutral typed contract layer for local plugin-to-plugin calls
 and API-over-transport bindings. It does not own HTTP, WebSocket, QUIC, P2P or
 application lifecycle. It owns the contract vocabulary: API identity/version,

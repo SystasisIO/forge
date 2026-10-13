@@ -1,0 +1,49 @@
+name: forge-auth-live
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0@sha256:27b3230fbabb8c9ff3c66c864cf09dcd8a41aca82e5100679d109ef0eeb05741
+    pull_policy: never
+    command:
+      - start-dev
+      - --import-realm
+      - --spi-events-listener--jboss-logging--success-level=info
+    environment:
+      KC_DB: dev-file
+      KC_CACHE: local
+      KC_HOSTNAME: https://localhost:18443
+      KC_HOSTNAME_STRICT: "true"
+      KC_HTTP_ENABLED: "false"
+      KC_HTTPS_PORT: "8443"
+      KC_HTTPS_CERTIFICATE_FILE: /run/forge-auth-live/tls/server.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /run/forge-auth-live/tls/server.key
+      KC_LOG_LEVEL: info
+    ports:
+      - "127.0.0.1:18443:8443"
+    volumes:
+      - data:/opt/keycloak/data
+      - type: bind
+        source: ${FORGE_AUTH_LIVE_DIR:?Set FORGE_AUTH_LIVE_DIR to the generated fixture directory}/tls
+        target: /run/forge-auth-live/tls
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${FORGE_AUTH_LIVE_DIR:?Set FORGE_AUTH_LIVE_DIR to the generated fixture directory}/import/forge-live-realm.json
+        target: /opt/keycloak/data/import/forge-live-realm.json
+        read_only: true
+        bind:
+          create_host_path: false
+    stop_grace_period: 30s
+    mem_limit: 1g
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+volumes:
+  data: {}

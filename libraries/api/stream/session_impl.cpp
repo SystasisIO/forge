@@ -4,11 +4,11 @@ module;
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -205,17 +205,37 @@ void session::impl::initialize_on_strand(const strand_type& executor) {
    };
    enqueue_control(std::move(hello));
    writer_running = true;
-   boost::asio::co_spawn(
-       executor, [self = shared_from_this()]() -> boost::asio::awaitable<void> { co_await self->writer_loop(); },
-       boost::asio::detached);
+   spawn_task(writer_loop());
    reader_running = true;
-   boost::asio::co_spawn(
-       executor, [self = shared_from_this()]() -> boost::asio::awaitable<void> { co_await self->reader_loop(); },
-       boost::asio::detached);
-   boost::asio::co_spawn(
-       executor, [self = shared_from_this()]() -> boost::asio::awaitable<void> { co_await self->idle_watchdog(); },
-       boost::asio::detached);
+   spawn_task(reader_loop());
+   spawn_task(idle_watchdog());
    touch_activity();
+}
+
+void session::impl::spawn_task(boost::asio::awaitable<void> operation,
+                                boost::asio::cancellation_slot cancellation) {
+   ++pending_tasks;
+   try {
+      boost::asio::co_spawn(*strand, std::move(operation), boost::asio::bind_cancellation_slot(
+         cancellation, [self = shared_from_this()](std::exception_ptr error) {
+            --self->pending_tasks;
+            if (error) {
+               self->fail_session(std::move(error));
+               self->stop_transport();
+            }
+            self->wake_session();
+         }));
+   } catch (...) {
+      --pending_tasks;
+      throw;
+   }
+}
+
+boost::asio::awaitable<void> session::impl::wait_for_tasks() {
+   while (pending_tasks != 0) {
+      const auto observed = session_wake.epoch();
+      static_cast<void>(co_await session_wake.async_wait(observed));
+   }
 }
 
 void session::impl::negotiate_hello(const forge::api::core::session_hello& peer) {
@@ -457,6 +477,11 @@ void session::impl::fail_session(std::exception_ptr error) noexcept {
    for (const auto& call : active_calls) {
       call->error = failure;
       call->done = true;
+      try {
+         call->deadline.cancel();
+      } catch (...) {
+         // Session failure remains authoritative during timer cancellation.
+      }
       if (call->handler_running) {
          try {
             call->handler_cancel.emit(boost::asio::cancellation_type::all);

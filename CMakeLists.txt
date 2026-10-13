@@ -25,6 +25,7 @@ option(FORGE_ENABLE_ROCKSDB "Build RocksDB-backed optional FORGE features when R
 option(FORGE_ENABLE_MDBX "Build the vendored MDBX-backed FORGE database driver" ON)
 option(FORGE_ENABLE_TOOLING "Build optional Forge Contract Tooling host libraries" OFF)
 option(FORGE_ENABLE_S3 "Build the optional AWS SDK-backed S3 client" OFF)
+option(FORGE_ENABLE_LIBOAUTH2 "Build the resource-token verification backend" OFF)
 set(FORGE_ENABLE_OIDC_AGENT "AUTO" CACHE STRING "Build the oidc-agent authentication backend: AUTO, ON or OFF")
 set_property(CACHE FORGE_ENABLE_OIDC_AGENT PROPERTY STRINGS AUTO ON OFF)
 if(NOT FORGE_ENABLE_OIDC_AGENT MATCHES "^(AUTO|ON|OFF)$")
@@ -51,6 +52,7 @@ if(FORGE_BUILD_PROFILE STREQUAL "contract-sdk-host")
    set(FORGE_ENABLE_TUI OFF CACHE BOOL "Build Forge terminal UI library" FORCE)
    set(FORGE_ENABLE_LIBP2P_INTEROP OFF CACHE BOOL "Run libp2p interoperability tests" FORCE)
    set(FORGE_ENABLE_OIDC_AGENT OFF CACHE STRING "Build the oidc-agent authentication backend" FORCE)
+   set(FORGE_ENABLE_LIBOAUTH2 OFF CACHE BOOL "Build the resource-token verification backend" FORCE)
 endif()
 
 if(FORGE_CONTRACT_SDK_HOST_PROFILE)
@@ -125,6 +127,10 @@ if(FORGE_CONTRACT_SDK_HOST_PROFILE)
 else()
    find_package(OpenSSL 3 REQUIRED COMPONENTS SSL Crypto)
    find_package(Ngtcp2 REQUIRED)
+endif()
+
+if(FORGE_ENABLE_LIBOAUTH2)
+   include(ForgeOAuth2)
 endif()
 
 if(APPLE AND NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
@@ -378,6 +384,8 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/p2p/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/pnet/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/oauth2/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/credential/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/liboauth2/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/workload/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/appauth/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/oidc_agent/include"
@@ -869,6 +877,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_net_tls
       forge_net_http
       forge_auth_pairing
+      forge_auth_credential
       forge_auth_oauth2
       forge_auth_workload
       forge_auth_session
@@ -902,6 +911,9 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    endif()
    if(TARGET forge_auth_oidc_agent)
       list(APPEND FORGE_LEAF_TARGETS forge_auth_oidc_agent)
+   endif()
+   if(TARGET forge_auth_liboauth2)
+      list(APPEND FORGE_LEAF_TARGETS forge_auth_liboauth2)
    endif()
 endif()
 
@@ -1024,6 +1036,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       auth_oauth2
       auth_workload
       auth_pairing
+      auth_credential
       auth_session
       auth_http
       app
@@ -1051,6 +1064,9 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    endif()
    if(TARGET forge_auth_oidc_agent)
       list(APPEND FORGE_BUILT_COMPONENTS auth_oidc_agent)
+   endif()
+   if(TARGET forge_auth_liboauth2)
+      list(APPEND FORGE_BUILT_COMPONENTS auth_liboauth2)
    endif()
 endif()
 if(TARGET forge_rocksdb)
@@ -1119,6 +1135,9 @@ install(
 set(FORGE_INTERNAL_TARGETS secp256k1-internal secp256k1 bn256 bls12-381 softfloat)
 if(TARGET appauth-internal)
    list(APPEND FORGE_INTERNAL_TARGETS appauth-internal)
+endif()
+if(TARGET oauth2-internal)
+   list(APPEND FORGE_INTERNAL_TARGETS oauth2-internal)
 endif()
 if(TARGET mdbx-internal)
    list(APPEND FORGE_INTERNAL_TARGETS mdbx-internal)
@@ -1204,6 +1223,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/net/pnet/include/forge
       libraries/crypto/bls/signer/include/forge
       libraries/auth/oauth2/include/forge
+      libraries/auth/credential/include/forge
       libraries/auth/workload/include/forge
       libraries/auth/pairing/include/forge
       libraries/auth/session/include/forge
@@ -1224,6 +1244,9 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    endif()
    if(TARGET forge_auth_oidc_agent)
       list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/auth/oidc_agent/include/forge)
+   endif()
+   if(TARGET forge_auth_liboauth2)
+      list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/auth/liboauth2/include/forge)
    endif()
 endif()
 if(TARGET forge_net_s3)
@@ -1373,6 +1396,15 @@ if(TARGET appauth-internal)
    install(
       FILES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/appauth/LICENSE"
       DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge/AppAuth"
+      COMPONENT dev
+      EXCLUDE_FROM_ALL
+   )
+endif()
+
+if(TARGET oauth2-internal)
+   install(
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liboauth2/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge/liboauth2"
       COMPONENT dev
       EXCLUDE_FROM_ALL
    )

@@ -1,6 +1,7 @@
 module;
 
 #include <cstddef>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -27,6 +28,14 @@ inline constexpr std::size_t max_client_provider_header_bytes = 64U * 1024U;
 
 using request_header_provider = std::function<std::vector<header_entry>(const request&)>;
 
+struct request_preparation_context {
+   std::string origin;
+   std::chrono::steady_clock::time_point deadline;
+};
+
+using async_request_header_provider =
+    std::function<boost::asio::awaitable<std::vector<header_entry>>(const request&, request_preparation_context)>;
+
 struct client_options {
    std::shared_ptr<tls::context_provider> tls_context_provider;
    std::string hostname;
@@ -37,6 +46,9 @@ struct client_options {
    request_header_provider header_provider;
    std::size_t max_provider_headers = 16U;
    std::size_t max_provider_header_bytes = 8U * 1024U;
+   // Mutually exclusive with header_provider. Runs on the caller's executor with Asio cancellation.
+   // The request reference is valid until completion; providers must settle promptly on cancellation.
+   async_request_header_provider async_header_provider;
 };
 
 void validate_provider_headers(std::span<const header_entry> headers,
@@ -69,6 +81,7 @@ class client {
    [[nodiscard]] connection_metrics metrics() const;
 
  private:
+   boost::asio::awaitable<request> prepare_request(request request_value, request_options& options) const;
    [[nodiscard]] request apply_provider_headers(request request_value) const;
 
    base_url endpoint_;

@@ -32,15 +32,24 @@ auto binding = forge::api::websocket::api()
    })
    .build();
 
-router.websocket("/api", [binding = std::move(binding), &runtime](
-   forge::net::websocket::connection::ptr socket) mutable {
-   boost::asio::co_spawn(runtime.context(), binding.accept(std::move(socket)),
-                         boost::asio::detached);
-});
+router.websocket_guarded("/api", binding.guarded(admit_websocket_route));
 ```
 
-`accept()` runs until the API session closes. The HTTP Upgrade, TLS and
-authentication policy remain with the WebSocket owner.
+`guarded(provider)` adapts the existing HTTP `websocket_guarded` seam. The async
+provider returns `forge::api::core::invocation_context` and owns credential,
+Origin/CSRF and product policy. An absent/invalid subject is rejected before 101.
+TLS caller composition rejects duplicate trusted types. The accepted callback
+captures owned immutable context, never the request or raw bearer, and passes it
+to the existing `serve_stream` session. Do not also register an ordinary WebSocket
+route at the protected path. Provider denial responses contain no backend text.
+
+Expiry is bounded by the subject's `valid_until()`. A positive recheck interval
+and timeout allow earlier revoke; expiry/revoke cancel the session and active calls,
+then close the socket. This affects transport admission, not the fate of previously
+accepted product work. Cancellation must be cooperative; blocking hooks are not
+supported. The old `accept(socket)` remains for transport-only owners, while
+`accept(socket, context)` supports explicit trusted admission. Both reuse one wire-v2
+session implementation; required subjects cannot be supplied by client frames.
 
 ## Client
 

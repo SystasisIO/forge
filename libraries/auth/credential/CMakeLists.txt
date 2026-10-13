@@ -1,0 +1,5 @@
+add_library(forge_auth_credential STATIC record.cpp)
+forge_target_modules_at(forge_auth_credential auth/credential)
+
+target_include_directories(forge_auth_credential PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
+target_link_libraries(forge_auth_credential PUBLIC forge_exceptions forge_raw)

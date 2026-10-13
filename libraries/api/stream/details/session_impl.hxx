@@ -148,10 +148,10 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
                                                               const forge::api::core::method_descriptor* descriptor,
                                                               forge::api::core::pinned_binding_plan selection);
    boost::asio::awaitable<void> run_remote_call(forge::api::core::frame request,
-                                                const std::shared_ptr<call_state>& call);
-   boost::asio::awaitable<void> pump_outbound(const std::shared_ptr<call_state>& call);
+                                                std::shared_ptr<call_state> call);
+   boost::asio::awaitable<void> pump_outbound(std::shared_ptr<call_state> call);
    void start_outbound_pump(const std::shared_ptr<call_state>& call);
-   boost::asio::awaitable<void> pump_inbound(const std::shared_ptr<call_state>& call);
+   boost::asio::awaitable<void> pump_inbound(std::shared_ptr<call_state> call);
    void start_inbound_pump(const std::shared_ptr<call_state>& call);
    void finish_unstarted_pumps(const std::shared_ptr<call_state>& call) noexcept;
    boost::asio::awaitable<void> wait_for_credit(const std::shared_ptr<call_state>& call, std::size_t item_bytes);
@@ -160,6 +160,7 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    boost::asio::awaitable<void> wait_for_terminal(const std::shared_ptr<call_state>& call);
    boost::asio::awaitable<void> wait_for_outbound_pump(const std::shared_ptr<call_state>& call);
    void start_deadline(const std::shared_ptr<call_state>& call, std::chrono::milliseconds value);
+   boost::asio::awaitable<void> wait_deadline(std::shared_ptr<call_state> call);
    void cancel_call(const std::shared_ptr<call_state>& call, std::exception_ptr error, bool notify_peer);
    void discard_inbound(const std::shared_ptr<call_state>& call) noexcept;
    void finish_call(const std::shared_ptr<call_state>& call);
@@ -174,6 +175,8 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
 
    boost::asio::awaitable<void> async_serve_on_strand();
    boost::asio::awaitable<void> async_close_on_strand();
+   void spawn_task(boost::asio::awaitable<void> operation, boost::asio::cancellation_slot cancellation = {});
+   boost::asio::awaitable<void> wait_for_tasks();
    void fail_session(std::exception_ptr error) noexcept;
    void stop_transport() noexcept;
    [[nodiscard]] bool writer_idle() const noexcept;
@@ -197,6 +200,7 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    std::uint64_t outbound_buffered_items = 0;
    std::uint64_t outbound_buffered_bytes = 0;
    std::size_t control_burst = 0;
+   std::size_t pending_tasks = 0;
    std::exception_ptr failure;
    mutable std::mutex executor_mutex;
    std::optional<strand_type> strand;

@@ -9,7 +9,7 @@ module;
 
 export module forge.auth.session.serialization;
 
-export import forge.auth.pairing.serialization;
+export import forge.auth.credential.serialization;
 export import forge.auth.session.types;
 
 import forge.raw.codec;

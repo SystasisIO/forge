@@ -628,6 +628,103 @@ def check_http_cookie_asset_boundaries(root: Path, errors: list[str]) -> None:
          errors.append(f"docs/iterations/forge-native-admin-foundation-v1.md: HTTP cookie migration is incomplete ({token})")
 
 
+def check_auth_credential_boundaries(root: Path, errors: list[str]) -> None:
+   leaf = root / "libraries" / "auth" / "credential"
+   include = leaf / "include" / "forge" / "auth" / "credential"
+   required = (
+      leaf / "CMakeLists.txt", leaf / "README.md", leaf / "record.cpp",
+      include / "record.cppm", include / "exceptions.cppm", include / "serialization.cppm",
+      root / "tests" / "auth" / "credential_tests.cpp",
+      root / "tests" / "auth" / "credential_legacy_writer_tests.cpp",
+      root / "tests" / "package_auth_credential_component" / "CMakeLists.txt",
+      root / "tests" / "package_auth_credential_component" / "main.cpp",
+   )
+   missing = [path for path in required if not path.exists()]
+   for path in missing:
+      errors.append(f"{path.relative_to(root)}: forge_auth_credential ownership file is required")
+   if missing:
+      return
+
+   family_cmake = (leaf.parent / "CMakeLists.txt").read_text(errors="ignore")
+   if "add_subdirectory(credential)" not in family_cmake:
+      errors.append("libraries/auth/CMakeLists.txt: auth family must register credential leaf")
+   leaf_cmake = (leaf / "CMakeLists.txt").read_text(errors="ignore")
+   for token in ("add_library(forge_auth_credential STATIC record.cpp)",
+                 "forge_target_modules_at(forge_auth_credential auth/credential)", "forge_exceptions", "forge_raw"):
+      if token not in leaf_cmake:
+         errors.append(f"libraries/auth/credential/CMakeLists.txt: credential target is missing {token}")
+   if re.search(r"\bforge_auth\b|\bforge_auth_(?!credential\b)\w+|\bforge_crypto_\w+", leaf_cmake):
+      errors.append("libraries/auth/credential/CMakeLists.txt: credential must not depend on auth issuers, sessions or crypto")
+
+   record_module = (include / "record.cppm").read_text(errors="ignore")
+   for token in ("export module forge.auth.credential.record", "export namespace forge::auth::credential",
+                 "struct id", "struct binding", "enum class state", "struct record", "using scope_set",
+                 "active = 0", "revoked = 1", "BOOST_DESCRIBE_ENUM(state, active, revoked)",
+                 "validate_id", "validate_identity", "validate_scopes", "canonicalize_scopes",
+                 "validate_record", "validate_active", "rotate_downscope", "revoke"):
+      if token not in record_module:
+         errors.append(f"libraries/auth/credential/include/forge/auth/credential/record.cppm: credential contract is missing {token}")
+   record_match = re.search(r"struct record \{(.*?)\n\};", record_module, re.DOTALL)
+   expected_fields = ("id", "identity", "scopes", "generation", "issued_at", "updated_at", "state", "revoked_at")
+   actual_fields = re.findall(r"^\s*[\w:<>]+\s+(\w+)(?:\s*\{[^;]*\}|\s+=\s*[^;]*)?\s*;", record_match.group(1), re.MULTILINE) if record_match else []
+   if tuple(actual_fields) != expected_fields:
+      errors.append("libraries/auth/credential/include/forge/auth/credential/record.cppm: persisted record fields/order must not change")
+
+   record_source = (leaf / "record.cpp").read_text(errors="ignore")
+   for token in ("validate_id(value.id)", "validate_identity(value.identity)", "validate_scopes(value.scopes)",
+                 "value.generation == 0", "invalid revocation time", "credential record has an unknown state",
+                 "value.updated_at < value.issued_at",
+                 "now < value.updated_at", "credential rotation cannot escalate scopes",
+                 "credential rotation must reduce scopes", "exceptions::generation_exhausted",
+                 "++value.generation", "value.state = state::revoked", "value.revoked_at = now"):
+      if token not in record_source:
+         errors.append(f"libraries/auth/credential/record.cpp: credential security invariant is missing {token}")
+   serialization = (include / "serialization.cppm").read_text(errors="ignore")
+   for token in ("export module forge.auth.credential.serialization", "forge.auth.credential.record",
+                 "codec_traits<forge::auth::credential::id>", "codec_traits<forge::auth::credential::binding>",
+                 "codec_traits<forge::auth::credential::record>", "static_cast<std::uint8_t>(value.state)",
+                 "std::chrono::nanoseconds", "pack_optional_time_point", "unpack_credential_state"):
+      if token not in serialization:
+         errors.append(f"libraries/auth/credential/include/forge/auth/credential/serialization.cppm: Raw compatibility invariant is missing {token}")
+   for path in source_files(root, (str(leaf.relative_to(root)),)):
+      source = path.read_text(errors="ignore")
+      for forbidden in ("forge.auth.pairing", "forge.auth.session", "forge.auth.oauth2", "forge.crypto", "forge.db", "forge.net", "forge.plugins"):
+         if forbidden in source:
+            errors.append(f"{path.relative_to(root)}: neutral credential dependency is forbidden ({forbidden})")
+      if re.search(r"\b(?:bootstrap_record|pending_request|pending_issuance|token_issuance)\b", source):
+         errors.append(f"{path.relative_to(root)}: bootstrap/pending/token issuance belongs to pairing, not credential")
+
+   # Pairing consumes the sole neutral model; aliases and parallel records are not a migration path.
+   names = r"(?:credential(?:_id|_binding|_state)?|scope_set|id|binding|state|record)"
+   for path in (leaf.parent / "pairing" / "include").rglob("*.cppm"):
+      source = path.read_text(errors="ignore")
+      if (re.search(rf"^\s*(?:struct|class|enum\s+class|using)\s+{names}\b", source, re.MULTILINE) or
+          re.search(rf"\btypedef\b[^;]*\b{names}\s*;", source) or
+          re.search(r"\busing\s+(?:namespace\s+)?forge::auth::credential\b", source)):
+         errors.append(f"{path.relative_to(root)}: pairing must not own or alias neutral credential types")
+      if re.search(r"\b(?:canonicalize_scopes|rotate_credential_downscope|revoke_credential|rotate_downscope|revoke)\s*\(", source):
+         errors.append(f"{path.relative_to(root)}: common credential transitions belong only to credential")
+
+   root_cmake = (root / "CMakeLists.txt").read_text(errors="ignore")
+   for token in ("forge_auth_credential", "auth_credential", "libraries/auth/credential/include/forge"):
+      if token not in root_cmake:
+         errors.append(f"CMakeLists.txt: credential registration is incomplete ({token})")
+   package_config = (root / "cmake" / "ForgeConfig.cmake.in").read_text(errors="ignore")
+   package_match = re.search(r'elseif\("\$\{component\}" STREQUAL "auth_credential"\)(.*?)(?=\s*elseif|\s*endif)', package_config, re.DOTALL)
+   dependencies = set(re.findall(r"_forge_add_component\((\w+)\)", package_match.group(1))) if package_match else set()
+   if dependencies != {"exceptions", "raw"}:
+      errors.append("cmake/ForgeConfig.cmake.in: auth_credential closure must be exactly exceptions/raw, without pairing/session/crypto")
+   tests_cmake = (root / "tests" / "CMakeLists.txt").read_text(errors="ignore")
+   for token in ("test_forge_auth_credential", "auth/credential_tests.cpp", "auth/credential_legacy_writer_tests.cpp"):
+      if token not in tests_cmake:
+         errors.append(f"tests/CMakeLists.txt: credential regression registration is incomplete ({token})")
+   legacy_fixture = (root / "tests" / "auth" / "credential_legacy_writer_tests.cpp").read_text(errors="ignore")
+   for token in ("legacy_credential_writer", "legacy_pending_writer", "legacy_session_writer", "legacy_device_writer",
+                 "active_golden", "revoked_golden", "require_legacy_bytes", "variant_enum_values_keep_the_legacy_strings_and_raw_variant_bytes"):
+      if token not in legacy_fixture:
+         errors.append(f"tests/auth/credential_legacy_writer_tests.cpp: legacy writer coverage is missing ({token})")
+
+
 def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
    family = root / "libraries" / "auth"
    leaf = family / "pairing"
@@ -657,6 +754,7 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
    for token in (
       "add_library(forge_auth_pairing STATIC pairing.cpp)",
       "forge_target_modules_at(forge_auth_pairing auth/pairing)",
+      "forge_auth_credential",
       "forge_codec_base64",
       "forge_crypto_core",
       "forge_crypto_digest",
@@ -687,11 +785,11 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
       "pending_issuance",
       "pre_session_digest",
       "pre_session_consumed",
-      "credential_binding",
+      "forge::auth::credential::binding",
       "approved_credential",
-      "credential_id",
+      "forge::auth::credential::id",
       "approval_options",
-      "credential",
+      "forge::auth::credential::scope_set",
       "trusted, non-decreasing wall-clock",
    ):
       if token not in types_module:
@@ -713,11 +811,10 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
       "identify_pre_session",
       "validate_pre_session",
       "consume_approved_pre_session",
-      "credential_binding",
+      "forge::auth::credential::binding",
       "approve_pending",
       "approval_options",
-      "rotate_credential_downscope",
-      "revoke_credential",
+      "forge::auth::credential::record",
    ):
       if token not in pairing_module:
          errors.append(f"libraries/auth/pairing/include/forge/auth/pairing/pairing.cppm: pairing transition is missing {token}")
@@ -732,7 +829,6 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
       "bootstrap creation",
       "pending request creation",
       "out-of-range resolution time",
-      "invalid revocation time",
       "bootstrap.consumed = true",
       "pre_session_digest",
       "pre_session_consumed",
@@ -744,7 +840,10 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
       "require_pre_session_lifecycle",
       "require_credential_id",
       "scope_baseline",
-      "credential rotation cannot escalate scopes",
+      "forge::auth::credential::validate_id",
+      "forge::auth::credential::validate_identity",
+      "forge::auth::credential::validate_scopes",
+      "forge::auth::credential::canonicalize_scopes",
    ):
       if token not in pairing_source:
          errors.append(f"libraries/auth/pairing/pairing.cpp: pairing security invariant is missing {token}")
@@ -764,8 +863,8 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
        supersede_source.find("auto result = pending_issuance") > supersede_source.find("pending.state = pending_state::superseded") or
        "return result;" not in supersede_source):
       errors.append("libraries/auth/pairing/pairing.cpp: supersede must construct its pre-session issuance before mutating pending")
-   approved_consume_source = pairing_source.partition("credential_binding consume_approved_pre_session")[2].partition(
-      "credential approve_pending")[0]
+   approved_consume_source = pairing_source.partition("forge::auth::credential::binding consume_approved_pre_session")[2].partition(
+      "forge::auth::credential::record approve_pending")[0]
    if ("require_pending_record" not in approved_consume_source or
        "verify_token(pending.pre_session_digest, pre_session_token)" not in approved_consume_source or
        "require_pre_session_lifecycle" not in approved_consume_source or
@@ -778,7 +877,7 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
       errors.append("libraries/auth/pairing/pairing.cpp: approved pre-session exchange must validate before consuming")
 
    pre_session_validation = pairing_source.partition("void validate_pre_session")[2].partition(
-      "credential_binding consume_approved_pre_session")[0]
+      "forge::auth::credential::binding consume_approved_pre_session")[0]
    if ("require_pending_record" not in pre_session_validation or
        "verify_token(pending.pre_session_digest, pre_session_token)" not in pre_session_validation or
        "require_pre_session_lifecycle" not in pre_session_validation or
@@ -788,7 +887,7 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
        pre_session_validation.find("require_pre_session_lifecycle")):
       errors.append("libraries/auth/pairing/pairing.cpp: pre-session validation must verify the token before lifecycle")
 
-   approval_source = pairing_source.partition("credential approve_pending")[2].partition("void reject_pending")[0]
+   approval_source = pairing_source.partition("forge::auth::credential::record approve_pending")[2].partition("void reject_pending")[0]
    if ("pending.approved_credential.emplace" not in approval_source or
        "auto approved_pending = pending;" not in approval_source or
        "pending = std::move(approved_pending);" not in approval_source or
@@ -810,7 +909,7 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
          errors.append(f"libraries/auth/pairing/pairing.cpp: pending binding invariant is missing ({token})")
 
    pre_session_lifecycle = pairing_source.partition("void require_pre_session_lifecycle")[2].partition(
-      "void require_credential_record")[0]
+      "decode_canonical_token")[0]
    for token in (
       "now < pending.created_at",
       "pending.pre_session_consumed",
@@ -842,6 +941,7 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
    for token in (
       "auth_pairing",
       'elseif("${component}" STREQUAL "auth_pairing")',
+      "_forge_add_component(auth_credential)",
       "_forge_add_component(codec_base64)",
       "_forge_add_component(crypto_core)",
       "_forge_add_component(crypto_digest)",
@@ -867,7 +967,7 @@ def check_auth_pairing_boundaries(root: Path, errors: list[str]) -> None:
 
    package_consumer = (root / "tests" / "package_auth_pairing_component" / "main.cpp").read_text(errors="ignore")
    for token in ("import forge.auth.pairing.exceptions;", "import forge.auth.pairing.pairing;", "consume_bootstrap",
-                 "identify_pre_session", "consume_approved_pre_session", "credential_binding"):
+                 "identify_pre_session", "consume_approved_pre_session", "credentials::record"):
       if token not in package_consumer:
          errors.append(f"tests/package_auth_pairing_component/main.cpp: direct pairing package import is missing ({token})")
 
@@ -898,7 +998,7 @@ def check_auth_session_boundaries(root: Path, errors: list[str]) -> None:
    for token in (
       "add_library(forge_auth_session STATIC session.cpp)",
       "forge_target_modules_at(forge_auth_session auth/session)",
-      "forge_auth_pairing",
+      "forge_auth_credential",
       "forge_codec_base64",
       "forge_crypto_core",
       "forge_crypto_digest",
@@ -924,7 +1024,7 @@ def check_auth_session_boundaries(root: Path, errors: list[str]) -> None:
    types_module = (leaf / "include" / "forge" / "auth" / "session" / "types.cppm").read_text(errors="ignore")
    for token in (
       "export module forge.auth.session.types",
-      "forge.auth.pairing.types",
+      "forge.auth.credential.record",
       "trusted, non-decreasing wall-clock",
       "session_record",
       "session_issuance",
@@ -975,6 +1075,12 @@ def check_auth_session_boundaries(root: Path, errors: list[str]) -> None:
       errors.append("libraries/auth/session/include/forge/auth/session/session.cppm: issue/rotate must not accept caller-selected secrets")
 
    session_source = (leaf / "session.cpp").read_text(errors="ignore")
+   for path in source_files(root, (str(leaf.relative_to(root)),)):
+      source = path.read_text(errors="ignore")
+      if "forge.auth.pairing" in source or "forge::auth::pairing" in source:
+         errors.append(f"{path.relative_to(root)}: sessions must not import or use pairing")
+   if re.search(r"\bforge_auth_pairing\b", leaf_cmake):
+      errors.append("libraries/auth/session/CMakeLists.txt: session must depend on credential, not pairing")
    for token in (
       "random_bytes(secret_bytes)",
       "padding::omit",
@@ -1046,9 +1152,10 @@ def check_auth_session_boundaries(root: Path, errors: list[str]) -> None:
       errors.append("README.md: forge_auth_session library registry entry is missing")
 
    package_config = (root / "cmake" / "ForgeConfig.cmake.in").read_text(errors="ignore")
-   if ('elseif("${component}" STREQUAL "auth_session")\n         _forge_add_component(auth_pairing)' not in package_config or
-       "auth_session" not in package_config):
-      errors.append("cmake/ForgeConfig.cmake.in: auth_session package registration is incomplete")
+   package_match = re.search(r'elseif\("\$\{component\}" STREQUAL "auth_session"\)(.*?)(?=\s*elseif|\s*endif)', package_config, re.DOTALL)
+   dependencies = set(re.findall(r"_forge_add_component\((\w+)\)", package_match.group(1))) if package_match else set()
+   if dependencies != {"auth_credential", "codec_base64", "crypto_core", "crypto_digest", "exceptions", "raw"}:
+      errors.append("cmake/ForgeConfig.cmake.in: auth_session closure must use credential and its own codecs/crypto/raw, not pairing")
 
    session_tests = (root / "tests" / "auth" / "session_tests.cpp").read_text(errors="ignore")
    for token in (
@@ -2548,6 +2655,7 @@ def main() -> int:
    check_aggregates(root, errors)
    check_tls_context_ownership(root, errors)
    check_http_cookie_asset_boundaries(root, errors)
+   check_auth_credential_boundaries(root, errors)
    check_auth_pairing_boundaries(root, errors)
    check_auth_session_boundaries(root, errors)
    check_auth_http_boundaries(root, errors)

@@ -3,6 +3,7 @@ add_library(
    binding.cpp
    body_stream_endpoint.cpp
    endpoint_body_source.cpp
+   invocation_body_source.cpp
    openapi.cpp
    server_stream_state.cpp
    stream_frame_decoder.cpp

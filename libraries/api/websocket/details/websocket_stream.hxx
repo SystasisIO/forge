@@ -34,7 +34,6 @@ class websocket_stream final
    void release_outbound(std::size_t bytes) noexcept;
    void remember_executor(boost::asio::any_io_executor executor);
    void close_state(std::exception_ptr failure) noexcept;
-   void schedule_socket_close() noexcept;
 
    static void wake(std::vector<std::weak_ptr<timer>> waiters) noexcept;
 
@@ -52,7 +51,6 @@ class websocket_stream final
    std::optional<boost::asio::any_io_executor> executor_;
    std::exception_ptr failure_;
    bool closed_ = false;
-   bool close_scheduled_ = false;
 };
 
 } // namespace forge::api::websocket::detail

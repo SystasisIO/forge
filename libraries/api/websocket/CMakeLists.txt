@@ -13,9 +13,11 @@ target_link_libraries(
    forge_api_websocket PUBLIC
       forge_exceptions
       forge_api_core
+      forge_api_auth
       forge_api_stream
       forge_api_transport
       forge_net_websocket
+      forge_net_http
       forge_net_transport
       Boost::asio
 )

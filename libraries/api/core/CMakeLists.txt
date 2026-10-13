@@ -8,6 +8,7 @@ add_library(
    dispatcher.cpp
    descriptor.cpp
    error_projection.cpp
+   invocation_context.cpp
    registry.cpp
    stream_reader.cpp
    stream_state.cpp
@@ -23,4 +24,5 @@ target_link_libraries(
       forge_raw
       forge_reflect
       Boost::headers
+      Boost::asio
 )

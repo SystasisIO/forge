@@ -29,6 +29,19 @@ import forge.net.websocket.connection;
 export namespace forge::net::http {
 
 using websocket_route_handler = std::function<void(std::shared_ptr<forge::net::websocket::connection>)>;
+using websocket_session_handler =
+    std::function<boost::asio::awaitable<void>(std::shared_ptr<forge::net::websocket::connection>)>;
+
+struct websocket_upgrade_result {
+   websocket_route_handler handler;
+   std::optional<response> rejection;
+   // The server cancels and joins this session before completing shutdown.
+   websocket_session_handler session;
+};
+
+// Runs before the handshake and may reject it. The accepted callback captures
+// verified application context without exposing credentials to a connection.
+using websocket_upgrade_handler = std::function<boost::asio::awaitable<websocket_upgrade_result>(route_context&)>;
 
 struct websocket_upgrade_result {
    websocket_route_handler handler;

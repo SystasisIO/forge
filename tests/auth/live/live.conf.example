@@ -1,0 +1,7 @@
+# Public configuration only. Generate one fresh UUID and retain it for all phases.
+issuer=https://issuer.example/realms/forge-live
+client=forge-live-native
+scopes=openid,profile,offline_access
+minimum-validity=10
+timeout=180
+# Supply --run-id UUID --account live-UUID --flow authorize|acquire|resume|refresh|invalidate.

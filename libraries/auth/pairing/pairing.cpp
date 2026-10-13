@@ -2,12 +2,9 @@ module;
 
 #include <forge/exceptions/macros.hpp>
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
-#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -36,7 +33,7 @@ struct token_issuance {
    forge::crypto::core::secret_string token;
 };
 
-static_assert(std::is_nothrow_move_constructible_v<credential_binding>);
+static_assert(std::is_nothrow_move_constructible_v<forge::auth::credential::binding>);
 static_assert(std::is_nothrow_move_assignable_v<pending_request>);
 
 [[nodiscard]] std::span<const std::uint8_t> byte_view(std::string_view value) {
@@ -58,31 +55,44 @@ static_assert(std::is_nothrow_move_assignable_v<pending_request>);
    };
 }
 
-void require_identity(std::string_view identity) {
-   if (identity.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::identity_invalid, "pairing identity must not be empty");
-   }
-}
-
-void require_credential_id(const credential_id& id) {
-   if (id.value.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::credential_id_invalid, "credential ID must not be empty");
-   }
-}
-
-void require_canonical_scopes(const scope_set& scopes) {
-   if (scopes.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "pairing scopes must not be empty");
-   }
-   for (const auto& scope : scopes) {
-      if (scope.empty()) {
-         FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "pairing scope must not be empty");
+template <typename Function> decltype(auto) translate_credential_validation(Function&& function) {
+   try {
+      return std::forward<Function>(function)();
+   } catch (const forge::exceptions::base& error) {
+      const auto code = forge::auth::credential::exceptions::code_of(error);
+      if (!code.has_value()) {
+         throw;
+      }
+      switch (*code) {
+      case forge::auth::credential::exceptions::code::credential_id_invalid:
+         FORGE_THROW_EXCEPTION(exceptions::credential_id_invalid, "credential ID must not be empty");
+      case forge::auth::credential::exceptions::code::identity_invalid:
+         FORGE_THROW_EXCEPTION(exceptions::identity_invalid, "pairing identity must not be empty");
+      case forge::auth::credential::exceptions::code::scope_invalid:
+         FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "pairing scopes must be canonical and non-empty");
+      default:
+         throw;
       }
    }
-   if (!std::is_sorted(scopes.begin(), scopes.end()) ||
-       std::adjacent_find(scopes.begin(), scopes.end()) != scopes.end()) {
-      FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "pairing scopes must be canonical");
-   }
+}
+
+void require_identity(std::string_view identity) {
+   translate_credential_validation([&] { forge::auth::credential::validate_identity(identity); });
+}
+
+void require_credential_id(const forge::auth::credential::id& id) {
+   translate_credential_validation([&] { forge::auth::credential::validate_id(id); });
+}
+
+void require_canonical_scopes(const forge::auth::credential::scope_set& scopes) {
+   translate_credential_validation([&] { forge::auth::credential::validate_scopes(scopes); });
+}
+
+[[nodiscard]] forge::auth::credential::scope_set
+canonicalize_request_scopes(forge::auth::credential::scope_set scopes) {
+   return translate_credential_validation([&] {
+      return forge::auth::credential::canonicalize_scopes(std::move(scopes));
+   });
 }
 
 void require_future_expiry(time_point now, time_point expires_at, std::string_view subject) {
@@ -90,10 +100,6 @@ void require_future_expiry(time_point now, time_point expires_at, std::string_vi
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "pairing expiry must be after now",
                             forge::exceptions::ctx("subject", subject));
    }
-}
-
-[[nodiscard]] bool scopes_subset_of(const scope_set& requested, const scope_set& baseline) {
-   return std::includes(baseline.begin(), baseline.end(), requested.begin(), requested.end());
 }
 
 void require_bootstrap_record(const bootstrap_record& bootstrap) {
@@ -108,7 +114,7 @@ void require_pending_record(const pending_request& pending) {
    require_canonical_scopes(pending.scope_baseline);
    require_canonical_scopes(pending.requested_scopes);
    if (pending.pre_session_digest.value.empty() ||
-       !scopes_subset_of(pending.requested_scopes, pending.scope_baseline) ||
+       !forge::auth::credential::scopes_subset_of(pending.requested_scopes, pending.scope_baseline) ||
        pending.expires_at <= pending.created_at) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_state, "pending pairing record is invalid");
    }
@@ -168,36 +174,6 @@ void require_pre_session_lifecycle(const pending_request& pending, time_point no
    }
 }
 
-void require_credential_record(const credential& value) {
-   require_credential_id(value.id);
-   require_identity(value.identity);
-   require_canonical_scopes(value.scopes);
-   if (value.generation == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "credential record is invalid");
-   }
-   if (value.state == credential_state::active && value.revoked_at.has_value()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "active credential has a revocation time");
-   }
-   if (value.state == credential_state::revoked) {
-      if (!value.revoked_at.has_value()) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_state, "revoked credential has no revocation time");
-      }
-      if (*value.revoked_at != value.updated_at || *value.revoked_at < value.issued_at) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_state, "revoked credential has an invalid revocation time");
-      }
-   }
-   if (value.updated_at < value.issued_at) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "credential record update precedes issuance");
-   }
-}
-
-void require_active_credential(credential& value, time_point now) {
-   require_credential_record(value);
-   if (now < value.updated_at || value.state != credential_state::active) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "credential is not active");
-   }
-}
-
 [[nodiscard]] forge::crypto::core::secret_bytes
 decode_canonical_token(const forge::crypto::core::secret_string& token) {
    if (token.size() != bootstrap_token_characters) {
@@ -253,21 +229,9 @@ void verify_token(const token_digest& expected, const forge::crypto::core::secre
 
 } // namespace
 
-scope_set canonicalize_scopes(scope_set scopes) {
-   for (const auto& scope : scopes) {
-      if (scope.empty()) {
-         FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "pairing scope must not be empty");
-      }
-   }
-   std::ranges::sort(scopes);
-   scopes.erase(std::unique(scopes.begin(), scopes.end()), scopes.end());
-   require_canonical_scopes(scopes);
-   return scopes;
-}
-
 bootstrap_issuance begin_bootstrap(bootstrap_options options) {
    require_future_expiry(options.now, options.expires_at, "bootstrap");
-   auto baseline = canonicalize_scopes(std::move(options.scope_baseline));
+   auto baseline = canonicalize_request_scopes(std::move(options.scope_baseline));
    auto issuance = issue_token();
 
    return {
@@ -307,8 +271,8 @@ pending_issuance consume_bootstrap(bootstrap_record& bootstrap, const forge::cry
    }
    require_future_expiry(options.now, options.request_expires_at, "pending request");
    require_identity(request.identity);
-   auto requested_scopes = canonicalize_scopes(std::move(request.requested_scopes));
-   if (!scopes_subset_of(requested_scopes, bootstrap.scope_baseline)) {
+   auto requested_scopes = canonicalize_request_scopes(std::move(request.requested_scopes));
+   if (!forge::auth::credential::scopes_subset_of(requested_scopes, bootstrap.scope_baseline)) {
       FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "requested scopes exceed the bootstrap baseline");
    }
 
@@ -332,8 +296,8 @@ pending_issuance consume_bootstrap(bootstrap_record& bootstrap, const forge::cry
 pending_issuance supersede_pending(pending_request& pending, pairing_request replacement, time_point now) {
    require_pending(pending, now);
    require_identity(replacement.identity);
-   auto requested_scopes = canonicalize_scopes(std::move(replacement.requested_scopes));
-   if (!scopes_subset_of(requested_scopes, pending.scope_baseline)) {
+   auto requested_scopes = canonicalize_request_scopes(std::move(replacement.requested_scopes));
+   if (!forge::auth::credential::scopes_subset_of(requested_scopes, pending.scope_baseline)) {
       FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "requested scopes exceed the bootstrap baseline");
    }
    if (replacement.identity == pending.identity && requested_scopes == pending.requested_scopes) {
@@ -369,7 +333,7 @@ void validate_pre_session(const pending_request& pending, const forge::crypto::c
    require_pre_session_lifecycle(pending, now);
 }
 
-credential_binding consume_approved_pre_session(pending_request& pending,
+forge::auth::credential::binding consume_approved_pre_session(pending_request& pending,
                                                 const forge::crypto::core::secret_string& pre_session_token,
                                                 time_point now) {
    require_pending_record(pending);
@@ -383,10 +347,10 @@ credential_binding consume_approved_pre_session(pending_request& pending,
    return result;
 }
 
-credential approve_pending(pending_request& pending, approval_options options) {
+forge::auth::credential::record approve_pending(pending_request& pending, approval_options options) {
    require_pending(pending, options.now);
    require_credential_id(options.id);
-   auto result = credential{
+   auto result = forge::auth::credential::record{
        .id = std::move(options.id),
        .identity = pending.identity,
        .scopes = pending.requested_scopes,
@@ -394,7 +358,7 @@ credential approve_pending(pending_request& pending, approval_options options) {
        .issued_at = options.now,
        .updated_at = options.now,
    };
-   auto binding = credential_binding{
+   auto binding = forge::auth::credential::binding{
        .id = result.id,
        .generation = result.generation,
    };
@@ -410,31 +374,6 @@ void reject_pending(pending_request& pending, time_point now) {
    require_pending(pending, now);
    pending.state = pending_state::rejected;
    pending.resolved_at = now;
-}
-
-void rotate_credential_downscope(credential& value, scope_set scopes, time_point now) {
-   require_active_credential(value, now);
-   scopes = canonicalize_scopes(std::move(scopes));
-   if (!scopes_subset_of(scopes, value.scopes)) {
-      FORGE_THROW_EXCEPTION(exceptions::scope_invalid, "credential rotation cannot escalate scopes");
-   }
-   if (scopes == value.scopes) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "credential rotation must reduce scopes");
-   }
-   if (value.generation == std::numeric_limits<std::uint64_t>::max()) {
-      FORGE_THROW_EXCEPTION(exceptions::generation_exhausted, "credential generation is exhausted");
-   }
-
-   value.scopes = std::move(scopes);
-   ++value.generation;
-   value.updated_at = now;
-}
-
-void revoke_credential(credential& value, time_point now) {
-   require_active_credential(value, now);
-   value.state = credential_state::revoked;
-   value.updated_at = now;
-   value.revoked_at = now;
 }
 
 } // namespace forge::auth::pairing

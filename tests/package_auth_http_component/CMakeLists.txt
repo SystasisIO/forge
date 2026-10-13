@@ -8,5 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Forge CONFIG REQUIRED COMPONENTS auth_http)
 
+get_target_property(session_links Forge::forge_auth_session INTERFACE_LINK_LIBRARIES)
+if("${session_links}" MATCHES "forge_auth_pairing")
+   message(FATAL_ERROR "HTTP session authorization must not require pairing")
+endif()
+
 add_executable(forge_package_auth_http_component main.cpp)
 target_link_libraries(forge_package_auth_http_component PRIVATE Forge::forge_auth_http)

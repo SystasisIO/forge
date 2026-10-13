@@ -1,4 +1,8 @@
 add_subdirectory(oauth2)
+add_subdirectory(credential)
+if(FORGE_ENABLE_LIBOAUTH2)
+   add_subdirectory(liboauth2)
+endif()
 add_subdirectory(workload)
 add_subdirectory(appauth)
 add_subdirectory(oidc_agent)

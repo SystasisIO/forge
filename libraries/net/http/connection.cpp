@@ -66,10 +66,13 @@ using transport_deadline = std::chrono::steady_clock::time_point;
    return std::make_shared<tls::context_provider>(make_https_client_context_options());
 }
 
-transport_deadline make_deadline(std::chrono::milliseconds timeout) noexcept {
+transport_deadline make_deadline(const request_options& options) noexcept {
    const auto now = std::chrono::steady_clock::now();
-   const auto remaining = transport_deadline::max() - now;
-   return timeout >= remaining ? transport_deadline::max() : now + timeout;
+   const auto maximum = transport_deadline::max();
+   const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(maximum - now);
+   const auto relative = options.timeout <= std::chrono::milliseconds::zero() ? now
+                         : options.timeout >= remaining ? maximum : now + options.timeout;
+   return std::min(relative, options.deadline.value_or(maximum));
 }
 
 bool deadline_expired(transport_deadline deadline) noexcept {
@@ -1258,7 +1261,7 @@ boost::asio::awaitable<response> connection::async_request(forge::net::http::req
       operation = std::make_shared<impl::queued_request>(implementation->runtime.context());
       operation->request_value = std::move(request_value);
       operation->options = options;
-      operation->deadline = make_deadline(options.timeout);
+      operation->deadline = make_deadline(options);
       operation->completion_timer.expires_at(operation->deadline);
 
       co_await asio::this_coro::reset_cancellation_state(
@@ -1309,7 +1312,7 @@ boost::asio::awaitable<response> connection::async_request(forge::net::http::req
 boost::asio::awaitable<response> connection::async_streaming_request(forge::net::http::request request_value,
                                                                      body_reader body, request_options options) try {
    auto implementation = impl_;
-   const auto deadline = make_deadline(options.timeout);
+   const auto deadline = make_deadline(options);
    co_await asio::dispatch(implementation->strand, use_awaitable);
    co_return co_await implementation->streaming_request(std::move(request_value), std::move(body), deadline);
 } catch (const forge::exceptions::base&) {
@@ -1325,7 +1328,7 @@ boost::asio::awaitable<response> connection::async_streaming_request(forge::net:
 boost::asio::awaitable<response_stream> connection::async_stream_request(forge::net::http::request request_value,
                                                                          request_options options) try {
    auto implementation = impl_;
-   const auto deadline = make_deadline(options.timeout);
+   const auto deadline = make_deadline(options);
    co_await asio::dispatch(implementation->strand, use_awaitable);
    co_return co_await implementation->retrying_stream_request(std::move(request_value), deadline, options);
 } catch (const forge::exceptions::base&) {
@@ -1342,7 +1345,7 @@ boost::asio::awaitable<response_stream> connection::async_stream_request(forge::
                                                                          body_reader body,
                                                                          request_options options) try {
    auto implementation = impl_;
-   const auto deadline = make_deadline(options.timeout);
+   const auto deadline = make_deadline(options);
    co_await asio::dispatch(implementation->strand, use_awaitable);
    co_return co_await implementation->stream_request(std::move(request_value), std::move(body), deadline);
 } catch (const forge::exceptions::base&) {

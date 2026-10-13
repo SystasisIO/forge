@@ -16,6 +16,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -30,6 +31,7 @@ module;
 
 module forge.net.websocket.connection;
 
+import forge.asio.notification;
 import forge.exceptions;
 import forge.net.tls.context;
 import forge.net.websocket.exceptions;
@@ -65,15 +67,12 @@ using tls_stream = beast_websocket::stream<tls_input_stream>;
 using stream_variant = std::variant<plain_stream, tls_stream>;
 
 struct completion_state {
-   explicit completion_state(asio::any_io_executor executor)
-       : timer(std::move(executor), (std::chrono::steady_clock::time_point::max)()) {}
-
    void complete() {
       {
          const auto lock = std::scoped_lock{mutex};
          completed = true;
       }
-      timer.cancel();
+      ready.notify();
    }
 
    void complete_error(std::exception_ptr error_value) {
@@ -82,7 +81,7 @@ struct completion_state {
          error = std::move(error_value);
          completed = true;
       }
-      timer.cancel();
+      ready.notify();
    }
 
    bool is_completed() const {
@@ -97,17 +96,19 @@ struct completion_state {
       }
    }
 
-   asio::steady_timer timer;
+   forge::asio::notification ready;
    mutable std::mutex mutex;
    std::exception_ptr error;
    bool completed = false;
 };
 
 asio::awaitable<void> wait_completion(const std::shared_ptr<completion_state>& completion) {
-   while (!completion->is_completed()) {
-      auto error = boost::system::error_code{};
-      co_await completion->timer.async_wait(asio::redirect_error(use_awaitable, error));
-      static_cast<void>(error);
+   for (;;) {
+      const auto observed = completion->ready.epoch();
+      if (completion->is_completed()) {
+         break;
+      }
+      static_cast<void>(co_await completion->ready.async_wait(observed));
    }
    completion->rethrow_if_failed();
 }
@@ -146,11 +147,48 @@ struct connection::impl {
          writes.pop_front();
       }
       writing = false;
+      if (cancellation_error) {
+         closed = true;
+      }
       for (const auto& waiter : close_waiters) {
          waiter->complete_error(error);
       }
       close_waiters.clear();
       refresh_queue_depth();
+   }
+
+   void cancel() {
+      if (cancellation_error || closed) {
+         return;
+      }
+      cancellation_error = std::make_exception_ptr(exceptions::closed{"WebSocket connection was canceled"});
+      closing = true;
+      message_handler_ready.cancel();
+      std::visit([](auto& stream_value) {
+         auto& socket = beast::get_lowest_layer(stream_value).socket();
+         auto ignored = boost::system::error_code{};
+         socket.cancel(ignored);
+         socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+         socket.close(ignored);
+      }, stream);
+      record_close();
+
+      // The active operation owns a native buffer and still pops the front in its completion callback.
+      if (writing) {
+         while (writes.size() > 1U) {
+            auto& pending = writes.back();
+            if (pending->close) {
+               // A queued close is also a native-write join, not just an outbound item to discard.
+               close_waiters.push_back(std::move(pending->completion));
+            } else {
+               pending->completion->complete_error(cancellation_error);
+            }
+            writes.pop_back();
+         }
+         refresh_queue_depth();
+      } else {
+         complete_pending_with_error(cancellation_error);
+      }
    }
 
    void start_write(connection& owner) {
@@ -170,9 +208,9 @@ struct connection::impl {
                                                                 writes.pop_front();
                                                                 writing = false;
                                                                 closed = true;
-                                                                if (error) {
-                                                                   auto failure = std::make_exception_ptr(
-                                                                       boost::system::system_error{error});
+                                                                if (error || cancellation_error) {
+                                                                   auto failure = cancellation_error ? cancellation_error :
+                                                                       std::make_exception_ptr(boost::system::system_error{error});
                                                                    operation->completion->complete_error(failure);
                                                                    complete_pending_with_error(failure);
                                                                    return;
@@ -193,9 +231,9 @@ struct connection::impl {
                                                             [this, self, operation](boost::system::error_code error) {
                                                                writes.pop_front();
                                                                writing = false;
-                                                               if (error) {
-                                                                  auto failure = std::make_exception_ptr(
-                                                                      boost::system::system_error{error});
+                                                               if (error || cancellation_error) {
+                                                                  auto failure = cancellation_error ? cancellation_error :
+                                                                      std::make_exception_ptr(boost::system::system_error{error});
                                                                   operation->completion->complete_error(failure);
                                                                   complete_pending_with_error(failure);
                                                                   return;
@@ -214,12 +252,12 @@ struct connection::impl {
                                         static_cast<void>(bytes);
                                         writes.pop_front();
                                         writing = false;
-                                        if (error) {
-                                           operation->completion->complete_error(
-                                               std::make_exception_ptr(boost::system::system_error{error}));
+                                        if (error || cancellation_error) {
+                                           auto failure = cancellation_error ? cancellation_error :
+                                               std::make_exception_ptr(boost::system::system_error{error});
+                                           operation->completion->complete_error(failure);
                                            record_failed_write();
-                                           complete_pending_with_error(
-                                               std::make_exception_ptr(boost::system::system_error{error}));
+                                           complete_pending_with_error(failure);
                                            return;
                                         }
 
@@ -318,6 +356,7 @@ struct connection::impl {
    std::vector<std::shared_ptr<completion_state>> close_waiters;
    mutable std::mutex metrics_mutex;
    connection_metrics current_metrics{};
+   std::exception_ptr cancellation_error;
    bool writing = false;
    bool closing = false;
    bool closed = false;
@@ -375,7 +414,7 @@ boost::asio::awaitable<void> connection::send_binary(std::string message) {
 }
 
 boost::asio::awaitable<void> connection::send_message(std::string message, bool binary) {
-   auto completion = std::make_shared<completion_state>(impl_->executor());
+   auto completion = std::make_shared<completion_state>();
    asio::post(
        impl_->executor(), [self = shared_from_this(), message = std::move(message), binary, completion]() mutable {
           if (self->impl_->closing) {
@@ -394,7 +433,7 @@ boost::asio::awaitable<void> connection::send_message(std::string message, bool 
 }
 
 boost::asio::awaitable<void> connection::close() {
-   auto completion = std::make_shared<completion_state>(impl_->executor());
+   auto completion = std::make_shared<completion_state>();
    asio::post(impl_->executor(), [self = shared_from_this(), completion]() {
       if (self->impl_->closed) {
          completion->complete();
@@ -417,8 +456,12 @@ boost::asio::awaitable<void> connection::close() {
    co_await wait_completion(completion);
 }
 
+void connection::cancel() {
+   asio::dispatch(impl_->executor(), [self = shared_from_this()] { self->impl_->cancel(); });
+}
+
 boost::asio::awaitable<void> connection::ping(std::string payload) {
-   auto completion = std::make_shared<completion_state>(impl_->executor());
+   auto completion = std::make_shared<completion_state>();
    asio::post(impl_->executor(), [self = shared_from_this(), payload = std::move(payload), completion]() {
       if (self->impl_->closing) {
          completion->complete_error(std::make_exception_ptr(exceptions::closed{"websocket connection is closing"}));

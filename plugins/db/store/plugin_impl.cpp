@@ -282,7 +282,8 @@ boost::asio::awaitable<void> plugin::impl::open() {
    const auto owned_count = static_cast<std::size_t>(
        std::ranges::count_if(pending, [](const auto& item) { return item.owns_driver; }));
    dlog("forge.db.store", "store composition ready",
-        ("event", "composition.ready")("stores", pending.size())("owned_drivers", owned_count));
+        ("event", "composition.ready")("stores", pending.size())
+        ("owned_drivers", static_cast<std::uint64_t>(owned_count)));
    co_return;
 }
 

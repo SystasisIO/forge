@@ -72,6 +72,9 @@ class trusted_invocation_builder {
 
    [[nodiscard]] trusted_invocation build() &&;
 
+   trusted_invocation_builder& merge(const trusted_invocation& value) &;
+   trusted_invocation_builder&& merge(const trusted_invocation& value) &&;
+
  private:
    void insert(std::type_index type, std::shared_ptr<const void> value);
 

@@ -8,7 +8,7 @@ module;
 
 export module forge.auth.session.types;
 
-export import forge.auth.pairing.types;
+export import forge.auth.credential.record;
 export import forge.crypto.core.secret_string;
 export import forge.crypto.digest.sha256;
 
@@ -32,10 +32,10 @@ enum class session_state {
 struct session_record {
    forge::crypto::digest::sha256 session_digest;
    forge::crypto::digest::sha256 csrf_digest;
-   forge::auth::pairing::credential_id credential_id;
+   forge::auth::credential::id credential_id;
    std::uint64_t credential_generation = 0;
    std::string identity;
-   forge::auth::pairing::scope_set scopes;
+   forge::auth::credential::scope_set scopes;
    time_point created_at{};
    time_point last_activity_at{};
    time_point idle_expires_at{};
@@ -54,10 +54,10 @@ struct session_issuance {
 };
 
 struct principal {
-   forge::auth::pairing::credential_id credential_id;
+   forge::auth::credential::id credential_id;
    std::uint64_t credential_generation = 0;
    std::string identity;
-   forge::auth::pairing::scope_set scopes;
+   forge::auth::credential::scope_set scopes;
 
    bool operator==(const principal&) const = default;
 };
@@ -76,7 +76,7 @@ enum class device_grant_state {
 
 struct device_grant_record {
    forge::crypto::digest::sha256 token_digest;
-   forge::auth::pairing::credential_id credential_id;
+   forge::auth::credential::id credential_id;
    std::uint64_t credential_generation = 0;
    std::uint64_t rotation_generation = 0;
    time_point issued_at{};

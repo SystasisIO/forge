@@ -30,6 +30,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
@@ -38,6 +39,7 @@ module;
 #include <boost/asio/ssl/stream_base.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -533,14 +535,14 @@ class server_session final : public server_session_base, public std::enable_shar
  public:
    server_session(forge::asio::runtime& runtime, Stream stream, server_config config, server_handler handler,
                   std::shared_ptr<router> router_value, forge::net::tls::context_snapshot_ptr tls_snapshot = {})
-       : runtime_{runtime}, stream_(std::move(stream)), config_(std::move(config)),
+       : runtime_{runtime}, stream_(std::move(stream)), executor_(stream_.get_executor()), config_(std::move(config)),
          buffer_(request_buffer_limit(config_)),
          run_completion_(stream_.get_executor(), (std::chrono::steady_clock::time_point::max)()),
          handler_(std::move(handler)), router_(std::move(router_value)), tls_snapshot_(std::move(tls_snapshot)) {}
 
    void cancel() override {
       auto self = this->shared_from_this();
-      asio::dispatch(stream_.get_executor(), [self] { self->cancel_on_executor(); });
+      asio::dispatch(executor_, [self] { self->cancel_on_executor(); });
    }
 
    void cancel_after_runtime_stopped() override {
@@ -550,7 +552,7 @@ class server_session final : public server_session_base, public std::enable_shar
    awaitable<void> async_cancel() override {
       auto self = this->shared_from_this();
       static_cast<void>(self);
-      co_await asio::dispatch(stream_.get_executor(), use_awaitable);
+      co_await asio::dispatch(executor_, use_awaitable);
       cancel_on_executor();
       while (!run_completed_) {
          auto [error] = co_await run_completion_.async_wait(asio::as_tuple(use_awaitable));
@@ -574,7 +576,11 @@ class server_session final : public server_session_base, public std::enable_shar
    }
 
    [[nodiscard]] asio::any_io_executor executor() noexcept {
-      return stream_.get_executor();
+      return executor_;
+   }
+
+   [[nodiscard]] asio::cancellation_slot cancellation_slot() noexcept {
+      return run_cancellation_.slot();
    }
 
  private:
@@ -862,6 +868,9 @@ class server_session final : public server_session_base, public std::enable_shar
       };
       auto clear_owner_stop = boost::scope::scope_exit{[this] { owner_stop_ = {}; }};
       auto self = this->shared_from_this();
+      auto error = std::exception_ptr{};
+      auto monitor_started = false;
+      auto owner_started = false;
       try {
          // The outer-stream monitor observes disconnects while user work runs; it must not inherit a socket I/O
          // deadline.
@@ -870,42 +879,46 @@ class server_session final : public server_session_base, public std::enable_shar
                         [self = std::move(self), state](std::exception_ptr error) mutable {
                            state->complete_monitor(std::move(error));
                         });
+         monitor_started = true;
          asio::co_spawn(stream_.get_executor(), std::move(operation),
                         asio::bind_cancellation_slot(state->owner_cancellation.slot(),
                                                      [state](std::exception_ptr error, Result response_value) mutable {
                                                         state->complete_owner(std::move(error),
                                                                               std::move(response_value));
                                                      }));
+         owner_started = true;
 
          co_await wait_for_completion(state->owner_completion, state->owner_done);
          state->read_ownership->stop_monitor();
          co_await wait_for_completion(state->monitor_completion, state->monitor_done);
 
-         if (state->disconnected) {
-            co_return std::nullopt;
-         }
-         if (state->owner_error) {
-            std::rethrow_exception(state->owner_error);
-         }
-         if (!state->owner_response.has_value()) {
-            FORGE_THROW_EXCEPTION(exceptions::internal, "HTTP owner handler completed without a response");
-         }
-         co_return std::move(state->owner_response);
-      } catch (const forge::exceptions::base&) {
-         state->read_ownership->stop_monitor();
-         throw;
-      } catch (const boost::system::system_error& error) {
-         state->read_ownership->stop_monitor();
-         FORGE_THROW_EXCEPTION(exceptions::internal, "HTTP owner handler failed",
-                               forge::exceptions::ctx("reason", error.what()));
-      } catch (const std::exception& error) {
-         state->read_ownership->stop_monitor();
-         FORGE_THROW_EXCEPTION(exceptions::internal, "HTTP owner handler failed",
-                               forge::exceptions::ctx("reason", error.what()));
       } catch (...) {
-         state->read_ownership->stop_monitor();
-         FORGE_THROW_EXCEPTION(exceptions::internal, "HTTP owner handler failed");
+         error = std::current_exception();
       }
+      if (error) {
+         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
+         state->mark_disconnected();
+         state->read_ownership->stop_monitor();
+         if (owner_started) {
+            co_await wait_for_completion(state->owner_completion, state->owner_done);
+         }
+         if (monitor_started) {
+            co_await wait_for_completion(state->monitor_completion, state->monitor_done);
+         }
+      }
+      if (error) {
+         std::rethrow_exception(error);
+      }
+      if (state->disconnected) {
+         co_return std::nullopt;
+      }
+      if (state->owner_error) {
+         std::rethrow_exception(state->owner_error);
+      }
+      if (!state->owner_response.has_value()) {
+         FORGE_THROW_EXCEPTION(exceptions::internal, "HTTP owner handler completed without a response");
+      }
+      co_return std::move(state->owner_response);
    }
 
    awaitable<bool> handle_and_write_stream(stream_request request_value,
@@ -940,6 +953,17 @@ class server_session final : public server_session_base, public std::enable_shar
    }
 
    awaitable<void> write_stream_response(stream_response& response_value) {
+      auto operation = send_stream_response(response_value);
+      if (response_value.send_guard) {
+         co_await response_value.send_guard(std::move(operation), [self = this->shared_from_this()] {
+            self->close_http_socket();
+         });
+      } else {
+         co_await std::move(operation);
+      }
+   }
+
+   awaitable<void> send_stream_response(stream_response& response_value) {
       if (!response_value.body) {
          co_await write_response(response_value.head);
          co_return;
@@ -1039,12 +1063,13 @@ class server_session final : public server_session_base, public std::enable_shar
       }
 
       auto handler = router_->match_websocket(context);
+      auto session = websocket_session_handler{};
       if (auto guard = router_->match_websocket_guarded(context)) {
          auto result = websocket_upgrade_result{};
          try {
             auto ownership = std::make_shared<request_read_ownership>(stream_.get_executor());
             auto admitted = co_await handle_owned_operation((*guard)(context), std::move(ownership));
-            if (!admitted) {
+            if (!admitted || stopping_) {
                co_return true;
             }
             result = std::move(*admitted);
@@ -1052,10 +1077,13 @@ class server_session final : public server_session_base, public std::enable_shar
             result.rejection =
                 make_text_response(context.request, status::service_unavailable, "WebSocket admission failed");
          }
-         if (result.rejection || !result.handler) {
-            auto rejected = result.rejection
-                                ? std::move(*result.rejection)
-                                : make_text_response(context.request, status::forbidden, "WebSocket admission denied");
+         if (stopping_) {
+            co_return true;
+         }
+         if (result.rejection || (!result.handler && !result.session) || (result.handler && result.session)) {
+            auto rejected = result.rejection ? std::move(*result.rejection)
+                                              : make_text_response(context.request, status::forbidden,
+                                                                   "WebSocket admission denied");
             rejected.version(context.request.version());
             rejected.keep_alive(false);
             rejected.prepare_payload();
@@ -1063,8 +1091,9 @@ class server_session final : public server_session_base, public std::enable_shar
             co_return true;
          }
          handler = std::move(result.handler);
+         session = std::move(result.session);
       }
-      if (!handler.has_value()) {
+      if (!session && (!handler.has_value() || !*handler)) {
          co_return false;
       }
 
@@ -1074,12 +1103,28 @@ class server_session final : public server_session_base, public std::enable_shar
       } else {
          connection = forge::net::websocket::connection::create(std::move(stream_));
       }
+      upgraded_ = true;
       auto websocket_request = to_websocket_request(request_value);
       auto buffered_input = beast::buffers_to_string(buffer_.data());
       buffer_.consume(buffer_.size());
       co_await connection->accept(websocket_request, std::move(buffered_input));
-      (*handler)(connection);
-      connection->start_read_loop();
+      if (session) {
+         connection->start_read_loop();
+         auto error = std::exception_ptr{};
+         try {
+            co_await session(connection);
+         } catch (...) {
+            error = std::current_exception();
+         }
+         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
+         co_await connection->close();
+         if (error) {
+            std::rethrow_exception(error);
+         }
+      } else {
+         (*handler)(connection);
+         connection->start_read_loop();
+      }
       co_return true;
    }
 
@@ -1088,6 +1133,13 @@ class server_session final : public server_session_base, public std::enable_shar
       if (owner_stop_) {
          owner_stop_();
       }
+      run_cancellation_.emit(asio::cancellation_type::all);
+      if (!upgraded_) {
+         close_http_socket();
+      }
+   }
+
+   void close_http_socket() {
       auto ignored = boost::system::error_code{};
       stream_socket(stream_).cancel(ignored);
       stream_socket(stream_).shutdown(tcp::socket::shutdown_both, ignored);
@@ -1096,6 +1148,7 @@ class server_session final : public server_session_base, public std::enable_shar
 
    forge::asio::runtime& runtime_;
    Stream stream_;
+   asio::any_io_executor executor_;
    server_config config_;
    beast::flat_buffer buffer_;
    asio::steady_timer run_completion_;
@@ -1103,8 +1156,10 @@ class server_session final : public server_session_base, public std::enable_shar
    std::shared_ptr<router> router_;
    forge::net::tls::context_snapshot_ptr tls_snapshot_;
    std::function<void()> owner_stop_;
+   asio::cancellation_signal run_cancellation_;
    bool run_completed_ = false;
    bool stopping_ = false;
+   bool upgraded_ = false;
 };
 
 } // namespace detail
@@ -1147,14 +1202,15 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
             auto client = std::make_shared<detail::server_session<beast::tcp_stream>>(
                 runtime, beast::tcp_stream{std::move(socket)}, config, handler, router_value);
             remember_session(client);
-            asio::co_spawn(session_strand, client->run(), [client](std::exception_ptr error) {
+            asio::co_spawn(session_strand, client->run(), asio::bind_cancellation_slot(
+                client->cancellation_slot(), [client](std::exception_ptr error) {
                if (error) {
                   try {
                      std::rethrow_exception(error);
                   } catch (const std::exception&) {
                   }
                }
-            });
+            }));
             continue;
          }
 
@@ -1215,14 +1271,15 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
       detail::lowest_stream(*stream).expires_never();
       auto client = std::make_shared<detail::server_session<forge::net::tls::beast_tls_stream>>(
           runtime, std::move(*stream), config, handler, router_value, std::move(snapshot));
-      asio::co_spawn(client->executor(), client->run(), [client](std::exception_ptr run_error) {
+      asio::co_spawn(client->executor(), client->run(), asio::bind_cancellation_slot(
+          client->cancellation_slot(), [client](std::exception_ptr run_error) {
          if (run_error) {
             try {
                std::rethrow_exception(run_error);
             } catch (const std::exception&) {
             }
          }
-      });
+      }));
       co_return client;
    }
 

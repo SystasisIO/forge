@@ -32,6 +32,7 @@ import forge.exceptions;
 
 namespace auth_mdbx_tests {
 
+namespace credentials = forge::auth::credential;
 namespace pairing = forge::auth::pairing;
 
 struct by_auth_id;
@@ -40,8 +41,8 @@ struct by_audit_id;
 struct auth_record : forge::db::object::object<auth_record, 253, 1> {
    std::string record_type;
    std::string identity;
-   pairing::scope_set scopes;
-   pairing::scope_set scope_baseline;
+   credentials::scope_set scopes;
+   credentials::scope_set scope_baseline;
    forge::crypto::digest::sha256 digest;
    std::int64_t created_at = 0;
    std::int64_t expires_at = 0;
@@ -85,6 +86,7 @@ FORGE_DB_OBJECT(auth_mdbx_tests::audit_index)
 
 namespace {
 
+namespace credentials = forge::auth::credential;
 namespace pairing = forge::auth::pairing;
 using auth_mdbx_tests::audit_record;
 using auth_mdbx_tests::auth_record;
@@ -177,7 +179,7 @@ constexpr auto test_now = pairing::time_point{std::chrono::seconds{1'700'000'000
        .pre_session_consumed = value.pre_session_consumed,
    };
    if (!value.credential_id.empty()) {
-      result.approved_credential = pairing::credential_binding{
+      result.approved_credential = credentials::binding{
           .id = {.value = value.credential_id},
           .generation = value.generation,
       };
@@ -185,7 +187,7 @@ constexpr auto test_now = pairing::time_point{std::chrono::seconds{1'700'000'000
    return result;
 }
 
-[[nodiscard]] auth_record store_credential(auth_record::id_t id, const pairing::credential& value) {
+[[nodiscard]] auth_record store_credential(auth_record::id_t id, const credentials::record& value) {
    auto result = auth_record{};
    result.id = id;
    result.record_type = "credential";
@@ -200,7 +202,7 @@ constexpr auto test_now = pairing::time_point{std::chrono::seconds{1'700'000'000
    return result;
 }
 
-[[nodiscard]] pairing::credential load_credential(const auth_record& value) {
+[[nodiscard]] credentials::record load_credential(const auth_record& value) {
    BOOST_REQUIRE_EQUAL(value.record_type, "credential");
    return {
        .id = {.value = value.credential_id},
@@ -209,7 +211,7 @@ constexpr auto test_now = pairing::time_point{std::chrono::seconds{1'700'000'000
        .generation = value.generation,
        .issued_at = decode_time(value.created_at),
        .updated_at = decode_time(value.updated_at),
-       .state = static_cast<pairing::credential_state>(value.state),
+       .state = static_cast<credentials::state>(value.state),
        .revoked_at = decode_time(value.resolved_at),
    };
 }
@@ -336,7 +338,7 @@ boost::asio::awaitable<bool> rotate_once(forge::db::object::store objects, std::
    try {
       auto stored = co_await transaction.get(rotating_credential_id);
       auto credential = load_credential(stored);
-      pairing::rotate_credential_downscope(credential, {"admin.read"}, test_now + std::chrono::seconds{4});
+      credentials::rotate_downscope(credential, {"admin.read"}, test_now + std::chrono::seconds{4});
       co_await transaction.replace(store_credential(rotating_credential_id, credential));
       co_await transaction.insert(make_audit(rotate_audit_id, "rotate", credential.id.value, credential.generation));
       co_await transaction.commit();
@@ -347,7 +349,7 @@ boost::asio::awaitable<bool> rotate_once(forge::db::object::store objects, std::
       co_return true;
    }
    co_await rollback_safely(transaction);
-   if (is_exception<pairing::exceptions::invalid_state>(error)) {
+   if (is_exception<credentials::exceptions::invalid_state>(error)) {
       co_return false;
    }
    std::rethrow_exception(error);
@@ -359,7 +361,7 @@ boost::asio::awaitable<void> rotate_with_colliding_audit(forge::db::object::stor
    try {
       auto stored = co_await transaction.get(rollback_credential_id);
       auto credential = load_credential(stored);
-      pairing::rotate_credential_downscope(credential, {"admin.read"}, test_now + std::chrono::seconds{5});
+      credentials::rotate_downscope(credential, {"admin.read"}, test_now + std::chrono::seconds{5});
       co_await transaction.replace(store_credential(rollback_credential_id, credential));
       co_await transaction.insert(
           make_audit(rollback_audit_id, "rollback-collision", credential.id.value, credential.generation));
@@ -407,7 +409,7 @@ BOOST_AUTO_TEST_CASE(concurrent_pairing_transitions_commit_state_and_audit_atomi
                                    .request_expires_at = test_now + std::chrono::minutes{2},
                                    .pending_count = 0,
                                    .max_pending_requests = 4});
-   const auto rotating = pairing::credential{
+   const auto rotating = credentials::record{
        .id = {.value = "rotating-credential"},
        .identity = "rotation-owner",
        .scopes = {"admin.read", "admin.write"},
@@ -415,7 +417,7 @@ BOOST_AUTO_TEST_CASE(concurrent_pairing_transitions_commit_state_and_audit_atomi
        .issued_at = test_now,
        .updated_at = test_now,
    };
-   const auto rollback = pairing::credential{
+   const auto rollback = credentials::record{
        .id = {.value = "rollback-credential"},
        .identity = "rollback-owner",
        .scopes = {"admin.read", "admin.write"},
@@ -468,7 +470,7 @@ BOOST_AUTO_TEST_CASE(concurrent_pairing_transitions_commit_state_and_audit_atomi
       BOOST_CHECK_EQUAL(approved.approved_credential->generation, 1U);
       const auto rotated = load_credential(co_await objects->get(rotating_credential_id));
       BOOST_CHECK_EQUAL(rotated.generation, 2U);
-      BOOST_CHECK(rotated.scopes == pairing::scope_set{"admin.read"});
+      BOOST_CHECK(rotated.scopes == credentials::scope_set{"admin.read"});
       const auto rolled_back = load_credential(co_await objects->get(rollback_credential_id));
       BOOST_CHECK(rolled_back == rollback);
       const auto consume_audit = co_await objects->get(consume_audit_id);

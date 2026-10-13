@@ -4,6 +4,7 @@ module;
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 
@@ -24,6 +25,7 @@ import forge.api.core.binding;
 import forge.api.core.exceptions;
 import forge.api.core.stream_reader;
 import forge.api.core.types;
+import forge.api.auth.authenticated_subject;
 import forge.api.http.client_response;
 import forge.net.http.body;
 import forge.net.http.client;
@@ -38,6 +40,7 @@ import forge.raw.raw;
 #include "details/body_stream_endpoint.hxx"
 #include "details/endpoint_body_source.hxx"
 #include "details/server_stream_state.hxx"
+#include "details/invocation_body_source.hxx"
 
 namespace forge::api::http::detail {
 namespace {
@@ -124,6 +127,29 @@ forge::api::core::trusted_invocation trusted_invocation_for(const forge::net::ht
        .build();
 }
 
+boost::asio::awaitable<forge::api::core::invocation_context>
+provide_invocation(invocation_provider provider, const route_context& context,
+                   const forge::api::core::method_descriptor& method) {
+   auto admitted = provider ? co_await provider(context, method) : forge::api::core::invocation_context{};
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::cancelled, "HTTP admission was cancelled");
+   }
+   admitted.trusted = forge::api::core::trusted_invocation_builder{}
+                         .merge(trusted_invocation_for(context)).merge(admitted.trusted).build();
+   if (const auto* subject = admitted.trusted.find<forge::api::auth::authenticated_subject>()) {
+      if (subject->token() == nullptr) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::invocation_denied, "HTTP subject is unavailable");
+      }
+      const auto until = subject->token()->valid_until();
+      if (!admitted.lifetime.expires_at || until < *admitted.lifetime.expires_at) {
+         admitted.lifetime.expires_at = until;
+      }
+   }
+   admitted.lifetime.bind_expiry();
+   co_return admitted;
+}
+
 void validate_live_stream_headers(const forge::net::http::request& request,
                                   forge::api::core::method_kind kind) {
    if (kind == forge::api::core::method_kind::bidirectional_stream) {
@@ -145,15 +171,16 @@ boost::asio::awaitable<forge::net::http::stream_response>
 make_live_server_stream_response(forge::api::core::pinned_binding_plan plan, forge::api::core::frame request,
                                  forge::net::http::stream_request& http_request,
                                  forge::net::http::status success_status,
-                                 forge::api::core::trusted_invocation trusted) {
+                                 forge::api::core::trusted_invocation trusted,
+                                 forge::api::core::invocation_lifetime lifetime) {
    const auto executor = co_await boost::asio::this_coro::executor;
    auto state = std::make_shared<server_stream_state>(
        executor, std::move(plan), std::move(request), std::move(trusted), stream_limits.max_frame_bytes,
-       stream_limits.max_item_bytes, stream_limits.initial_window_items, stream_limits.initial_window_bytes);
-   state->start();
-   auto lifetime = std::shared_ptr<void>{
+       stream_limits.max_item_bytes, stream_limits.initial_window_items, stream_limits.initial_window_bytes,
+       std::move(lifetime));
+   auto body_lifetime = std::shared_ptr<void>{
       state.get(),
-      [state = std::move(state)](void*) noexcept { state->cancel(); }};
+      [state](void*) noexcept { state->cancel(); }};
 
    auto head = forge::net::http::response{success_status, http_request.context.request.version()};
    head.keep_alive(http_request.context.request.keep_alive());
@@ -161,11 +188,27 @@ make_live_server_stream_response(forge::api::core::pinned_binding_plan plan, for
    co_return forge::net::http::stream_response{
       .head = std::move(head),
       .body = http_request.response_body(
-         [lifetime = std::move(lifetime)]() -> boost::asio::awaitable<
+         [lifetime = std::move(body_lifetime)]() -> boost::asio::awaitable<
             std::optional<forge::net::http::body_chunk>> {
             auto* state = static_cast<server_stream_state*>(lifetime.get());
             co_return co_await state->async_next();
          }),
+      .send_guard = [state](boost::asio::awaitable<void> operation, std::function<void()>)
+         -> boost::asio::awaitable<void> {
+         auto error = std::exception_ptr{};
+         try {
+            state->start();
+            co_await std::move(operation);
+         } catch (...) {
+            error = std::current_exception();
+         }
+         // Disable cancellation before the co_await: Asio can reject it before async_drain starts.
+         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+         co_await state->async_drain();
+         if (error) {
+            std::rethrow_exception(error);
+         }
+      },
    };
 }
 
@@ -173,11 +216,36 @@ boost::asio::awaitable<forge::api::core::frame>
 dispatch_live_client_stream(forge::api::core::pinned_binding_plan plan, forge::api::core::frame request,
                             forge::net::http::body_reader body,
                             std::function<void(const forge::api::core::bytes&, forge::raw::unpack_limits)> decoder,
-                            forge::api::core::trusted_invocation trusted) {
+                            forge::api::core::trusted_invocation trusted,
+                            forge::api::core::invocation_lifetime lifetime) {
    auto input = std::make_shared<body_stream_endpoint>(
       std::move(body), forge::api::core::stream_direction::input, std::move(decoder),
       stream_limits.max_frame_bytes, stream_limits.max_item_bytes, false);
-   co_return co_await plan.dispatch_stream_contextual(std::move(request), std::move(input), {}, std::move(trusted));
+   auto admitted = forge::api::core::invocation_context{trusted, std::move(lifetime)};
+   co_return co_await forge::api::core::enforce_invocation(
+      plan.dispatch_stream_contextual(std::move(request), input, {}, std::move(trusted)), std::move(admitted),
+      [input](std::exception_ptr error) { input->fail(std::move(error)); });
+}
+
+stream_response protect_response_body(stream_response response, forge::api::core::invocation_context context,
+                                       body_reader request_body) {
+   context.lifetime.bind_expiry();
+   if (context.lifetime.active()) {
+      auto state = std::make_shared<invocation_body_source>(response.body, std::move(context),
+         [body = std::move(request_body)]() mutable { body.cancel(); });
+      if (response.body) {
+         response.body = response.body.with_callback([state]()
+            -> boost::asio::awaitable<std::optional<body_chunk>> { co_return co_await state->async_read(); });
+      }
+      response.send_guard = [state, inner = std::move(response.send_guard)](
+         boost::asio::awaitable<void> operation, std::function<void()> abort) -> boost::asio::awaitable<void> {
+         if (inner) {
+            operation = inner(std::move(operation), abort);
+         }
+         co_await state->async_send(std::move(operation), std::move(abort));
+      };
+   }
+   return response;
 }
 
 forge::net::http::response

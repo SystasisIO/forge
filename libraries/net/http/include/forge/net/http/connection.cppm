@@ -3,6 +3,7 @@ module;
 #include <chrono>
 #include <memory>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include <boost/asio/awaitable.hpp>
@@ -22,6 +23,8 @@ struct request_options {
    bool retry_idempotent = false;
    std::uint32_t max_retries = 0;
    std::chrono::milliseconds retry_backoff{50};
+   // If set, transport uses the earlier of this absolute deadline and timeout.
+   std::optional<std::chrono::steady_clock::time_point> deadline;
 };
 
 struct connection_metrics {

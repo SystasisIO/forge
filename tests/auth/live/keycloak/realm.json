@@ -1,0 +1,66 @@
+{
+  "realm": "forge-live",
+  "enabled": true,
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "accessTokenLifespan": 30,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 3600,
+  "offlineSessionIdleTimeout": 1800,
+  "offlineSessionMaxLifespanEnabled": true,
+  "offlineSessionMaxLifespan": 3600,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "oauth2DeviceCodeLifespan": 300,
+  "oauth2DevicePollingInterval": 5,
+  "eventsEnabled": true,
+  "eventsExpiration": 3600,
+  "eventsListeners": ["jboss-logging"],
+  "enabledEventTypes": [
+    "LOGIN", "LOGIN_ERROR", "CODE_TO_TOKEN", "CODE_TO_TOKEN_ERROR",
+    "OAUTH2_DEVICE_AUTH", "OAUTH2_DEVICE_AUTH_ERROR",
+    "OAUTH2_DEVICE_CODE_TO_TOKEN", "OAUTH2_DEVICE_CODE_TO_TOKEN_ERROR",
+    "REFRESH_TOKEN", "REFRESH_TOKEN_ERROR"
+  ],
+  "adminEventsEnabled": false,
+  "clients": [
+    {
+      "clientId": "forge-desktop",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://127.0.0.1/", "http://[::1]/"],
+      "webOrigins": [],
+      "defaultClientScopes": ["profile"],
+      "optionalClientScopes": ["offline_access"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "use.refresh.tokens": "true"
+      }
+    },
+    {
+      "clientId": "forge-device",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["profile"],
+      "optionalClientScopes": ["offline_access"],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "use.refresh.tokens": "true"
+      }
+    }
+  ],
+  "users": []
+}

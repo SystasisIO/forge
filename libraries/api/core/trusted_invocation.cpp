@@ -55,4 +55,28 @@ trusted_invocation trusted_invocation_builder::build() && {
    return trusted_invocation{std::move(value)};
 }
 
+trusted_invocation_builder& trusted_invocation_builder::merge(const trusted_invocation& value) & {
+   if (!value.state_) {
+      return *this;
+   }
+   if (!state_) {
+      state_ = std::make_unique<detail::trusted_invocation_state>();
+   }
+   for (const auto& [type, item] : value.state_->values_) {
+      if (state_->values_.contains(type)) {
+         FORGE_THROW_EXCEPTION(exceptions::protocol_error, "conflicting trusted invocation value");
+      }
+   }
+   // Publish only a complete composition, including on allocation failure.
+   auto merged = std::make_unique<detail::trusted_invocation_state>(*state_);
+   merged->values_.insert(value.state_->values_.begin(), value.state_->values_.end());
+   state_ = std::move(merged);
+   return *this;
+}
+
+trusted_invocation_builder&& trusted_invocation_builder::merge(const trusted_invocation& value) && {
+   merge(value);
+   return std::move(*this);
+}
+
 } // namespace forge::api::core

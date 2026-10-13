@@ -15,7 +15,7 @@ module;
 
 module forge.auth.session.session;
 
-import forge.auth.pairing.types;
+import forge.auth.credential.record;
 import forge.codec.base64;
 import forge.crypto.core.constant_time;
 import forge.crypto.core.random;
@@ -54,46 +54,41 @@ enum class time_input {
    };
 }
 
-void require_identity(std::string_view identity) {
-   if (identity.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "session identity must not be empty");
-   }
-}
-
-void require_credential_id(const forge::auth::pairing::credential_id& id) {
-   if (id.value.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "session credential ID must not be empty");
-   }
-}
-
-void require_canonical_scopes(const forge::auth::pairing::scope_set& scopes) {
-   if (scopes.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "session scopes must not be empty");
-   }
-   for (const auto& scope : scopes) {
-      if (scope.empty()) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_state, "session scope must not be empty");
+template <typename Function> void validate_credential_fields(Function&& function) {
+   try {
+      std::forward<Function>(function)();
+   } catch (const forge::exceptions::base& error) {
+      if (!forge::auth::credential::exceptions::code_of(error).has_value()) {
+         throw;
       }
-   }
-   if (!std::is_sorted(scopes.begin(), scopes.end()) ||
-       std::adjacent_find(scopes.begin(), scopes.end()) != scopes.end()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "session scopes must be canonical");
+      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "session credential fields are invalid");
    }
 }
 
-void require_active_credential(const forge::auth::pairing::credential& credential, time_point now) {
+void require_identity(std::string_view identity) {
+   validate_credential_fields([&] { forge::auth::credential::validate_identity(identity); });
+}
+
+void require_credential_id(const forge::auth::credential::id& id) {
+   validate_credential_fields([&] { forge::auth::credential::validate_id(id); });
+}
+
+void require_canonical_scopes(const forge::auth::credential::scope_set& scopes) {
+   validate_credential_fields([&] { forge::auth::credential::validate_scopes(scopes); });
+}
+
+void require_active_credential(const forge::auth::credential::record& credential, time_point now) {
    require_credential_id(credential.id);
    require_identity(credential.identity);
    require_canonical_scopes(credential.scopes);
    if (credential.generation == 0 || credential.updated_at < credential.issued_at || now < credential.updated_at) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_state, "credential record is invalid for session");
    }
-   if (credential.state == forge::auth::pairing::credential_state::revoked) {
+   if (credential.state == forge::auth::credential::state::revoked) {
       FORGE_THROW_EXCEPTION(exceptions::credential_revoked, "credential is revoked");
    }
-   if (credential.state != forge::auth::pairing::credential_state::active || credential.revoked_at.has_value()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_state, "credential record is invalid for session");
-   }
+   // Keep the existing session-specific revoked/time error precedence.
+   validate_credential_fields([&] { forge::auth::credential::validate_active(credential, now); });
 }
 
 [[noreturn]] void throw_invalid_time(time_input input) {
@@ -189,7 +184,7 @@ void require_active_session(const session_record& record, time_point now) {
    }
 }
 
-void require_matching_credential(const session_record& record, const forge::auth::pairing::credential& credential,
+void require_matching_credential(const session_record& record, const forge::auth::credential::record& credential,
                                  time_point now) {
    require_active_credential(credential, now);
    if (record.credential_id != credential.id || record.credential_generation != credential.generation) {
@@ -203,7 +198,7 @@ void require_matching_credential(const session_record& record, const forge::auth
    }
 }
 
-void require_matching_credential(const device_grant_record& record, const forge::auth::pairing::credential& credential,
+void require_matching_credential(const device_grant_record& record, const forge::auth::credential::record& credential,
                                  time_point now) {
    require_active_credential(credential, now);
    if (record.credential_id != credential.id || record.credential_generation != credential.generation) {
@@ -308,7 +303,7 @@ void require_device_grant_lifecycle(const device_grant_record& record, time_poin
 
 } // namespace
 
-session_issuance issue_session(const forge::auth::pairing::credential& credential, session_options options) {
+session_issuance issue_session(const forge::auth::credential::record& credential, session_options options) {
    const auto initial_idle_expires_at =
        canonical_idle_expiry(options.now, options.absolute_expires_at, options.idle_timeout, time_input::options);
    require_active_credential(credential, options.now);
@@ -359,7 +354,7 @@ forge::crypto::digest::sha256 identify_session_token(const forge::crypto::core::
 }
 
 principal validate_session(const session_record& record, const forge::crypto::core::secret_string& session_token,
-                           const forge::auth::pairing::credential& credential, time_point now) {
+                           const forge::auth::credential::record& credential, time_point now) {
    require_active_session(record, now);
    const auto actual = identify_session_token(session_token);
    if (!forge::crypto::core::constant_time_equal(record.session_digest.to_uint8_span(), actual.to_uint8_span())) {
@@ -388,7 +383,7 @@ void renew_idle(session_record& record, time_point now) {
    record.idle_expires_at = next_idle_expires_at;
 }
 
-session_issuance rotate_session(session_record& record, const forge::auth::pairing::credential& credential,
+session_issuance rotate_session(session_record& record, const forge::auth::credential::record& credential,
                                 session_options options) {
    static_cast<void>(
        canonical_idle_expiry(options.now, options.absolute_expires_at, options.idle_timeout, time_input::options));
@@ -410,7 +405,7 @@ void revoke_session(session_record& record, time_point now) {
    logout_session(record, now);
 }
 
-device_grant_issuance issue_device_grant(const forge::auth::pairing::credential& credential,
+device_grant_issuance issue_device_grant(const forge::auth::credential::record& credential,
                                          device_grant_options options) {
    const auto idle_expires_at =
        canonical_idle_expiry(options.now, options.absolute_expires_at, options.idle_timeout, time_input::options);
@@ -448,9 +443,9 @@ forge::crypto::digest::sha256 identify_device_grant_token(const forge::crypto::c
    return identify_secret(token, false);
 }
 
-forge::auth::pairing::credential_binding validate_device_grant(const device_grant_record& record,
+forge::auth::credential::binding validate_device_grant(const device_grant_record& record,
                                                                const forge::crypto::core::secret_string& token,
-                                                               const forge::auth::pairing::credential& credential,
+                                                               const forge::auth::credential::record& credential,
                                                                time_point now) {
    require_device_grant_record(record);
    verify_secret(token, record.token_digest, false);
@@ -460,7 +455,7 @@ forge::auth::pairing::credential_binding validate_device_grant(const device_gran
 }
 
 device_grant_issuance rotate_device_grant(device_grant_record& record, const forge::crypto::core::secret_string& token,
-                                          const forge::auth::pairing::credential& credential, time_point now) {
+                                          const forge::auth::credential::record& credential, time_point now) {
    static_cast<void>(validate_device_grant(record, token, credential, now));
    if (record.rotation_generation == std::numeric_limits<std::uint64_t>::max()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_state, "device grant rotation generation is exhausted");
@@ -495,7 +490,7 @@ device_grant_issuance rotate_device_grant(device_grant_record& record, const for
 }
 
 device_grant_refresh refresh_device_grant(device_grant_record& record, const forge::crypto::core::secret_string& token,
-                                          const forge::auth::pairing::credential& credential, session_options options) {
+                                          const forge::auth::credential::record& credential, session_options options) {
    static_cast<void>(validate_device_grant(record, token, credential, options.now));
    if (options.absolute_expires_at > record.absolute_expires_at) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options,

@@ -8,7 +8,6 @@ module;
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -314,7 +313,7 @@ boost::asio::awaitable<void> session::impl::wait_for_outbound_capacity(const std
    }
 }
 
-boost::asio::awaitable<void> session::impl::pump_outbound(const std::shared_ptr<call_state>& call) {
+boost::asio::awaitable<void> session::impl::pump_outbound(std::shared_ptr<call_state> call) {
    const auto drains_after_terminal = [&] {
       return call->local_origin && call->terminal && call->terminal->kind == forge::api::core::frame_kind::response;
    };
@@ -409,10 +408,7 @@ void session::impl::start_outbound_pump(const std::shared_ptr<call_state>& call)
    }
    call->outbound->pump_started = true;
    try {
-      boost::asio::co_spawn(
-          *strand,
-          [self = shared_from_this(), call]() -> boost::asio::awaitable<void> { co_await self->pump_outbound(call); },
-          boost::asio::detached);
+      spawn_task(pump_outbound(call));
    } catch (...) {
       call->outbound->pump_started = false;
       throw;
@@ -425,10 +421,7 @@ void session::impl::start_inbound_pump(const std::shared_ptr<call_state>& call) 
    }
    call->inbound->pump_started = true;
    try {
-      boost::asio::co_spawn(
-          *strand,
-          [self = shared_from_this(), call]() -> boost::asio::awaitable<void> { co_await self->pump_inbound(call); },
-          boost::asio::detached);
+      spawn_task(pump_inbound(call));
    } catch (...) {
       call->inbound->pump_started = false;
       throw;
@@ -444,7 +437,7 @@ void session::impl::finish_unstarted_pumps(const std::shared_ptr<call_state>& ca
    }
 }
 
-boost::asio::awaitable<void> session::impl::pump_inbound(const std::shared_ptr<call_state>& call) {
+boost::asio::awaitable<void> session::impl::pump_inbound(std::shared_ptr<call_state> call) {
    try {
       while (call->inbound) {
          auto& flow = *call->inbound;
@@ -497,7 +490,7 @@ boost::asio::awaitable<void> session::impl::wait_for_outbound_pump(const std::sh
 }
 
 boost::asio::awaitable<void> session::impl::run_remote_call(forge::api::core::frame request,
-                                                            const std::shared_ptr<call_state>& call) {
+                                                            std::shared_ptr<call_state> call) {
    try {
       auto response = forge::api::core::frame{};
       if (!dispatcher || !call->selection) {
@@ -544,16 +537,15 @@ boost::asio::awaitable<void> session::impl::run_remote_call(forge::api::core::fr
 
 void session::impl::start_deadline(const std::shared_ptr<call_state>& call, std::chrono::milliseconds value) {
    call->deadline.expires_after(value);
-   boost::asio::co_spawn(
-       *strand,
-       [self = shared_from_this(), call]() -> boost::asio::awaitable<void> {
-          auto error = boost::system::error_code{};
-          co_await call->deadline.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
-          if (!error && !call->done) {
-             self->cancel_call(call, deadline_call_error(call->id.value), call->request_written || !call->local_origin);
-          }
-       },
-       boost::asio::detached);
+   spawn_task(wait_deadline(call));
+}
+
+boost::asio::awaitable<void> session::impl::wait_deadline(std::shared_ptr<call_state> call) {
+   auto error = boost::system::error_code{};
+   co_await call->deadline.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
+   if (!error && !call->done) {
+      cancel_call(call, deadline_call_error(call->id.value), call->request_written || !call->local_origin);
+   }
 }
 
 void session::impl::cancel_call(const std::shared_ptr<call_state>& call, std::exception_ptr error, bool notify_peer) {
@@ -813,29 +805,43 @@ void session::impl::replenish_inbound_credit() {
 }
 
 boost::asio::awaitable<void> session::impl::async_serve_on_strand() {
-   if (!plan) {
-      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "API stream session has no binding plan");
-   }
-   co_await ensure_handshake_on_strand();
-   while (!closed.load(std::memory_order_acquire)) {
-      const auto observed = session_wake.epoch();
-      if (failure) {
-         std::rethrow_exception(failure);
+   auto error = std::exception_ptr{};
+   try {
+      if (!plan) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "API stream session has no binding plan");
       }
-      static_cast<void>(co_await session_wake.async_wait(observed));
+      co_await ensure_handshake_on_strand();
+      while (!closed.load(std::memory_order_acquire)) {
+         const auto observed = session_wake.epoch();
+         if (failure) {
+            std::rethrow_exception(failure);
+         }
+         static_cast<void>(co_await session_wake.async_wait(observed));
+      }
+   } catch (...) {
+      error = std::current_exception();
    }
-   if (failure) {
-      std::rethrow_exception(failure);
+   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+   if (error) {
+      fail_session(error);
+   }
+   stop_transport();
+   // Clearing calls is not a dependency drain: spawned handlers and pumps still own their frames.
+   co_await wait_for_tasks();
+   if (error || failure) {
+      std::rethrow_exception(error ? error : failure);
    }
 }
 
 boost::asio::awaitable<void> session::impl::async_close_on_strand() {
+   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    if (closed.load(std::memory_order_acquire)) {
+      stop_transport();
+      co_await wait_for_tasks();
       co_return;
    }
    accepting = false;
    closing = true;
-   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    const auto grace =
        peer_hello_received ? std::chrono::milliseconds{negotiated_limits.shutdown_grace_ms} : settings.disconnect_grace;
    const auto grace_deadline = timer::clock_type::now() + grace;
@@ -863,10 +869,8 @@ boost::asio::awaitable<void> session::impl::async_close_on_strand() {
    } catch (...) {
       // Local close remains deterministic even if the peer already closed.
    }
-   closed.store(true, std::memory_order_release);
-   wake_writer();
-   wake_session();
-   stream.cancel();
+   stop_transport();
+   co_await wait_for_tasks();
 }
 
 } // namespace forge::api::stream

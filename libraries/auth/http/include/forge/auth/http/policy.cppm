@@ -18,7 +18,7 @@ export namespace forge::auth::http {
 
 [[nodiscard]] forge::auth::session::principal authorize(const session_evidence& evidence,
                                                         const forge::auth::session::session_record& session,
-                                                        const forge::auth::pairing::credential& credential,
+                                                        const forge::auth::credential::record& credential,
                                                         const authorization_options& options);
 
 [[nodiscard]] forge::net::http::set_cookie

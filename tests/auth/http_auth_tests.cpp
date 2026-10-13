@@ -12,7 +12,7 @@ import forge.auth.http.exceptions;
 import forge.auth.http.policy;
 import forge.auth.session.exceptions;
 import forge.auth.session.session;
-import forge.auth.pairing.pairing;
+import forge.auth.credential.record;
 import forge.crypto.core.secret_string;
 import forge.exceptions;
 import forge.net.http.cookie;
@@ -20,7 +20,7 @@ import forge.net.http.exceptions;
 import forge.net.http.types;
 
 namespace auth_http = forge::auth::http;
-namespace pairing = forge::auth::pairing;
+namespace credentials = forge::auth::credential;
 namespace session = forge::auth::session;
 namespace net_http = forge::net::http;
 
@@ -28,7 +28,7 @@ namespace {
 
 const auto test_now = session::time_point{std::chrono::seconds{1'700'000'000}};
 
-[[nodiscard]] pairing::credential credential(pairing::scope_set scopes = {"admin.read"}) {
+[[nodiscard]] credentials::record credential(credentials::scope_set scopes = {"admin.read"}) {
    return {
        .id = {.value = "credential-owner"},
        .identity = "owner-device",
@@ -39,7 +39,7 @@ const auto test_now = session::time_point{std::chrono::seconds{1'700'000'000}};
    };
 }
 
-[[nodiscard]] session::session_issuance issue_session(const pairing::credential& owner = credential()) {
+[[nodiscard]] session::session_issuance issue_session(const credentials::record& owner = credential()) {
    return session::issue_session(owner, {
                                             .now = test_now,
                                             .absolute_expires_at = test_now + std::chrono::minutes{10},
@@ -221,7 +221,7 @@ BOOST_AUTO_TEST_CASE(authorization_propagates_session_binding_and_rejects_csrf_o
        auth_http::authorize(rotated_safe, rotated.record, owner, authorize_at("admin.read", rotated_now)));
 
    auto revoked = owner;
-   revoked.state = pairing::credential_state::revoked;
+   revoked.state = credentials::state::revoked;
    revoked.updated_at = test_now + std::chrono::seconds{2};
    revoked.revoked_at = revoked.updated_at;
    require_exception<session::exceptions::credential_revoked>([&] {
@@ -240,21 +240,15 @@ BOOST_AUTO_TEST_CASE(authorization_propagates_session_binding_and_rejects_csrf_o
 BOOST_AUTO_TEST_CASE(cookie_policy_preserves_repeated_set_cookie_and_clears_browser_state) {
    const auto owner = credential();
    const auto issuance = issue_session(owner);
-   auto bootstrap = pairing::begin_bootstrap(
-       {.now = test_now, .expires_at = test_now + std::chrono::minutes{2}, .scope_baseline = {"admin.read"}});
-   const auto pending = pairing::consume_bootstrap(bootstrap.record, bootstrap.token,
-                                                   {.identity = "owner-device", .requested_scopes = {"admin.read"}},
-                                                   {.now = test_now + std::chrono::seconds{1},
-                                                    .request_expires_at = test_now + std::chrono::minutes{1},
-                                                    .max_pending_requests = 1});
+   const auto pre_session_token = issue_session(owner).session_token;
    const auto policy = auth_http::cookie_policy{};
    auto response = net_http::response{net_http::status::ok, 11};
-   auth_http::append_pre_session_cookie(response, pending.pre_session_token, policy);
-   auth_http::append_approved_session_cookies(response, pending.pre_session_token, issuance, policy);
+   auth_http::append_pre_session_cookie(response, pre_session_token, policy);
+   auth_http::append_approved_session_cookies(response, pre_session_token, issuance, policy);
 
    BOOST_TEST(count_headers(response, "Set-Cookie") == 4U);
-   BOOST_CHECK(pending.pre_session_token.view() != issuance.session_token.view());
-   BOOST_CHECK(pending.pre_session_token.view() != issuance.csrf_secret.view());
+   BOOST_CHECK(pre_session_token.view() != issuance.session_token.view());
+   BOOST_CHECK(pre_session_token.view() != issuance.csrf_secret.view());
    BOOST_CHECK(issuance.session_token.view() != issuance.csrf_secret.view());
    const auto headers = response.headers();
    const auto session_cookie = net_http::parse_set_cookie_header(headers[1].text);

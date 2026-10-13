@@ -71,6 +71,44 @@ the request timeout budget before transport work begins.
 `validate_provider_headers` exposes that exact policy for components that must
 reject a resolved provider result during startup instead of on the first request.
 
+For asynchronous credential acquisition, configure `async_header_provider`
+instead of `header_provider`. Its signature is
+`awaitable<vector<header_entry>>(const request&, request_preparation_context)`.
+The context owns the exact transport `origin` (including the effective port)
+and an absolute steady-clock `deadline`. The read-only request contains the
+final method, target, existing headers and Host. Async preparation accepts
+origin-form targets (or `OPTIONS *`), rejects duplicate/mismatched Host headers,
+and supplies the endpoint authority when Host is absent. It does not let a
+provider authorize one origin while sending an absolute target to another.
+Both providers use the same header collision/framing/size validation; setting
+both is a configuration error, not an implicit ordering or override policy.
+
+Unary, streaming upload, streaming download and upload/download requests share
+this preparation before enqueue/open/body consumption. Acquisition runs on the
+caller's Asio executor, inherits cancellation, and consumes the same timeout
+budget as transport and response-body reads. The deadline timer cancels the
+provider; cancellation/deadline are checked again after completion, so a late
+credential cannot initiate network I/O. Asio joins the canceled branch rather
+than detaching it: providers must be nonblocking and settle promptly when
+canceled. A provider that deliberately ignores cancellation can delay completion
+until it settles, but cannot send after the deadline/cancellation. The request
+reference must not be retained beyond provider completion, and concurrent calls
+require a concurrency-safe provider.
+
+`request_options::deadline` optionally supplies a caller-owned absolute
+steady-clock deadline. Preparation/transport use the earlier of it and
+`timeout`; the effective absolute deadline is preserved through the connection
+queue, retries and streamed response body, not restarted after acquisition.
+
+Auth/token-provider composition belongs to the consumer, once per client, not
+to each API method. HTTP client preparation imports neither Auth nor API; the
+existing server router still uses API Core's canonical error payload. The new
+preparation and lifetime hooks add no Auth/API dependency to the transport.
+The client does not follow redirects, refresh on 401, or replay on timeout. Existing
+explicit idempotent transport-reset retries are unchanged; mutations with an
+uncertain outcome need application-owned operation-ID/status recovery. Never
+log credentials, provider output or secret-bearing exception diagnostics.
+
 `forge::net::http::server` can instead receive a shared
 `forge::net::tls::context_provider`. Listener mode is fixed when the server
 starts: a TLS listener completes a TLS 1.3 server handshake before parsing any
@@ -657,6 +695,64 @@ router.websocket("/events", [](std::shared_ptr<forge::net::websocket::connection
 });
 ```
 
+For a server-owned session, use `websocket_guarded` and return
+`websocket_upgrade_result::session`, not a callback that spawns detached work:
+
+```cpp
+import forge.net.http.router;
+import forge.net.websocket.connection;
+
+router.websocket_guarded("/events", [](forge::net::http::route_context&)
+   -> boost::asio::awaitable<forge::net::http::websocket_upgrade_result> {
+   co_return forge::net::http::websocket_upgrade_result{
+      .session = [](std::shared_ptr<forge::net::websocket::connection> socket)
+         -> boost::asio::awaitable<void> {
+         co_await socket->send("ready");
+      },
+   };
+});
+```
+
+The admission coroutine runs before `101` and inherits disconnect/shutdown
+cancellation. Rejection cannot fall through to an ordinary route. An accepted
+result selects exactly one of `handler` and `session`; the former preserves the
+caller-owned callback contract. For `session`, the server starts WebSocket reads,
+awaits the handler, closes the connection and only then completes the HTTP session.
+Shutdown cancels and joins that same coroutine, including its cooperative cleanup.
+The session must join any application children before returning, even by exception.
+Keep registries, producers and other nonowning dependencies alive until
+`server.async_stop()` completes, before stopping the shared runtime.
+WebSocket transport `connection::cancel()` aborts pending native I/O without a
+close handshake; `connection::close()` remains graceful for normal completion
+and joins an active write's completion after cancellation. Session owners must
+abort before draining a blocked writer: queueing a graceful close behind that
+writer cannot stop a connected peer that never reads. The transport does not
+decide when application policy requires this abort.
+
+### Own The Complete Response Send
+
+`stream_response::send_guard` is a neutral awaitable lifetime hook. It receives
+the complete send operation and an `abort` callback that cancels and closes the
+HTTP socket on its executor. The operation includes response headers, body-source
+waits, every socket write and the final chunk/trailer, including buffered responses
+returned by a stream route. The server awaits the guard exactly once; a body source
+alone cannot govern a write stalled by a slow client.
+Middleware response projection preserves this hook even when it replaces a stream
+body with buffered output; it does not silently detach the response's owner.
+
+The owner supplies policy through this hook and must await/join the operation on
+success, failure and cancellation. If policy ends, call `abort` before waiting for
+cleanup so pending socket I/O cannot continue sending. Do not retain the operation
+or abort callback after guard completion, or start a detached watchdog, per-chunk
+timer framework or independent runtime. API bindings use their existing canonical
+invocation guard here; the transport owns no subject, expiry or revocation policy
+and these hook declarations import neither Auth nor API.
+
+After response headers, abort the send rather than sending a second HTTP status.
+Bytes already accepted by the kernel or delivered to the peer cannot be retracted;
+aborting prevents further application writes and leaves a partial response, never
+a successful end-of-body after a lifetime failure.
+
 ## Backpressure And Failure Model
 
 Client requests are serialized through a per-connection queue. Retry behavior is
@@ -691,6 +787,8 @@ limits/timeouts apply while chunks are read.
   origin and `target` for per-request paths.
 - Do not put WebSocket server lifecycle in a separate `websocket::server`; v1
   upgrade starts from the HTTP server/router.
+- Do not detach a server-owned upgraded session or protect only body production
+  while leaving its socket writes outside the lifetime guard.
 - Do not log headers or bodies containing credentials without redaction.
 - Do not put authentication policy in `forge_net_http`; middleware can call a consumer
   auth service, but the policy owner is outside this library.
@@ -700,3 +798,19 @@ limits/timeouts apply while chunks are read.
 `test_forge_http_websocket` covers base URL and target parsing, async router and
 middleware behavior, stream request/response bodies, typed HTTP API mapping,
 client/server roundtrip, reconnects and WebSocket upgrade.
+
+`test_forge_api_trusted_subject` exercises the neutral lifecycle hooks through an
+API-layer fixture: live upgraded-session shutdown, pre-101 admission cancellation,
+slow socket writes interrupted by expiry/revocation, and active-handler cleanup
+joined before session completion. It also leaves a WebSocket peer connected but
+nonreading to check that revocation and shutdown abort a stalled native write
+and join the active handler before completing. These are loopback regressions, not evidence
+of a production identity provider or external verifier backend.
+
+`test_forge_http_client_preparation` covers the generic async provider against
+real loopback HTTP: all four request shapes, typed proxy composition and stream
+preparation failures, shared header validation, exact origin metadata,
+nonblocking acquisition on one worker, cooperative timeout, late cancellation
+and late timeout, acquisition/transport/body deadline accounting, and no
+redirect forwarding or 401/timeout replay. These transport fixtures do not
+prove live AppAuth/oidc-agent login, refresh or workload token exchange.

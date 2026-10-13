@@ -22,6 +22,7 @@ template <typename Exception, typename Function> [[nodiscard]] bool rejects_raw(
 }
 
 int main() {
+   namespace credentials = forge::auth::credential;
    namespace pairing = forge::auth::pairing;
 
    const auto now = pairing::time_point{std::chrono::seconds{1}};
@@ -49,13 +50,13 @@ int main() {
    const auto pending_round_trip =
        forge::raw::unpack_exact<pairing::pending_request>(std::span<const std::uint8_t>{forge::raw::pack(pending)});
    const auto credential_round_trip =
-       forge::raw::unpack_exact<pairing::credential>(std::span<const std::uint8_t>{forge::raw::pack(credential)});
+       forge::raw::unpack_exact<credentials::record>(std::span<const std::uint8_t>{forge::raw::pack(credential)});
    auto invalid_bootstrap = issuance.record;
    invalid_bootstrap.expires_at = invalid_bootstrap.created_at;
    auto invalid_pending = pending;
    invalid_pending.state = static_cast<pairing::pending_state>(0xffU);
    auto invalid_credential = credential;
-   invalid_credential.state = static_cast<pairing::credential_state>(0xffU);
+   invalid_credential.state = static_cast<credentials::state>(0xffU);
    const auto invalid_bootstrap_rejected = rejects_raw<forge::raw::exceptions::codec_error>([&] {
       static_cast<void>(forge::raw::unpack_exact<pairing::bootstrap_record>(
           std::span<const std::uint8_t>{forge::raw::pack(invalid_bootstrap)}));
@@ -65,7 +66,7 @@ int main() {
           std::span<const std::uint8_t>{forge::raw::pack(invalid_pending)}));
    });
    const auto invalid_credential_rejected = rejects_raw<forge::raw::exceptions::codec_error>([&] {
-      static_cast<void>(forge::raw::unpack_exact<pairing::credential>(
+      static_cast<void>(forge::raw::unpack_exact<credentials::record>(
           std::span<const std::uint8_t>{forge::raw::pack(invalid_credential)}));
    });
 

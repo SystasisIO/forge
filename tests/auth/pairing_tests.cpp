@@ -16,13 +16,14 @@ import forge.auth.pairing.pairing;
 import forge.codec.base64;
 import forge.crypto.core.secret_string;
 
+namespace credentials = forge::auth::credential;
 namespace pairing = forge::auth::pairing;
 
 namespace {
 
 const auto test_now = pairing::time_point{std::chrono::seconds{1'700'000'000}};
 
-[[nodiscard]] pairing::bootstrap_issuance issue(pairing::scope_set scopes = {"pair.read", "pair.write"}) {
+[[nodiscard]] pairing::bootstrap_issuance issue(credentials::scope_set scopes = {"pair.read", "pair.write"}) {
    return pairing::begin_bootstrap({
        .now = test_now,
        .expires_at = test_now + std::chrono::minutes{5},
@@ -61,7 +62,7 @@ BOOST_AUTO_TEST_SUITE(auth_pairing)
 
 BOOST_AUTO_TEST_CASE(public_states_are_described_for_network_projections) {
    static_assert(boost::describe::has_describe_enumerators<pairing::pending_state>::value);
-   static_assert(boost::describe::has_describe_enumerators<pairing::credential_state>::value);
+   static_assert(boost::describe::has_describe_enumerators<credentials::state>::value);
 }
 
 BOOST_AUTO_TEST_CASE(bootstrap_uses_random_base64url_secret_and_persists_only_a_digest) {
@@ -90,7 +91,7 @@ BOOST_AUTO_TEST_CASE(bootstrap_uses_random_base64url_secret_and_persists_only_a_
    BOOST_TEST(decoded.size() == 32U);
    BOOST_TEST(canonical_round_trip);
    BOOST_TEST(!issuance.record.digest.value.empty());
-   BOOST_TEST(issuance.record.scope_baseline == pairing::scope_set({"pair.read", "pair.write"}),
+   BOOST_TEST(issuance.record.scope_baseline == credentials::scope_set({"pair.read", "pair.write"}),
               boost::test_tools::per_element());
    BOOST_TEST(!issuance.record.consumed);
 }
@@ -258,7 +259,7 @@ BOOST_AUTO_TEST_CASE(approved_pre_session_exchanges_once_and_rejected_or_expired
    const auto credential = pairing::approve_pending(approved.record, approve_at());
    BOOST_TEST(credential.id.value == "credential-test");
    BOOST_REQUIRE(approved.record.approved_credential.has_value());
-   const auto expected_binding = pairing::credential_binding{.id = credential.id, .generation = credential.generation};
+   const auto expected_binding = credentials::binding{.id = credential.id, .generation = credential.generation};
    BOOST_CHECK(*approved.record.approved_credential == expected_binding);
    const auto approved_wrong_token_before = approved.record;
    require_exception<pairing::exceptions::token_invalid>(
@@ -368,7 +369,7 @@ BOOST_AUTO_TEST_CASE(malformed_persisted_terminal_timestamps_are_rejected_withou
    auto upper_pending = std::move(upper_pending_issuance.record);
    upper_pending.state = pairing::pending_state::approved;
    upper_pending.resolved_at = upper_pending.expires_at;
-   upper_pending.approved_credential = pairing::credential_binding{
+   upper_pending.approved_credential = credentials::binding{
        .id = {.value = "credential-upper"},
        .generation = 1,
    };
@@ -398,7 +399,7 @@ BOOST_AUTO_TEST_CASE(malformed_persisted_terminal_timestamps_are_rejected_withou
        pairing::consume_bootstrap(pending_with_binding_issuance.record, pending_with_binding_issuance.token,
                                   {.identity = "device-binding", .requested_scopes = {"pair.read"}}, consume_at());
    pending_with_binding.record.approved_credential =
-       pairing::credential_binding{.id = {.value = "credential-binding"}, .generation = 1};
+       credentials::binding{.id = {.value = "credential-binding"}, .generation = 1};
    const auto pending_with_binding_before = pending_with_binding.record;
    require_exception<pairing::exceptions::invalid_state>([&] {
       return pairing::supersede_pending(pending_with_binding.record,
@@ -413,7 +414,7 @@ BOOST_AUTO_TEST_CASE(malformed_persisted_terminal_timestamps_are_rejected_withou
        {.identity = "device-rejected-binding", .requested_scopes = {"pair.read"}}, consume_at());
    pairing::reject_pending(rejected_with_binding.record, test_now + std::chrono::seconds{2});
    rejected_with_binding.record.approved_credential =
-       pairing::credential_binding{.id = {.value = "credential-rejected-binding"}, .generation = 1};
+       credentials::binding{.id = {.value = "credential-rejected-binding"}, .generation = 1};
    const auto rejected_with_binding_before = rejected_with_binding.record;
    require_exception<pairing::exceptions::invalid_state>([&] {
       pairing::validate_pre_session(rejected_with_binding.record, rejected_with_binding.pre_session_token,
@@ -429,7 +430,7 @@ BOOST_AUTO_TEST_CASE(malformed_persisted_terminal_timestamps_are_rejected_withou
        superseded_with_binding.record, {.identity = "device-superseded-binding-2", .requested_scopes = {"pair.read"}},
        test_now + std::chrono::seconds{2}));
    superseded_with_binding.record.approved_credential =
-       pairing::credential_binding{.id = {.value = "credential-superseded-binding"}, .generation = 1};
+       credentials::binding{.id = {.value = "credential-superseded-binding"}, .generation = 1};
    const auto superseded_with_binding_before = superseded_with_binding.record;
    require_exception<pairing::exceptions::invalid_state>([&] {
       pairing::validate_pre_session(superseded_with_binding.record, superseded_with_binding.pre_session_token,
@@ -437,33 +438,33 @@ BOOST_AUTO_TEST_CASE(malformed_persisted_terminal_timestamps_are_rejected_withou
    });
    BOOST_CHECK(superseded_with_binding.record == superseded_with_binding_before);
 
-   auto revoked_mismatch = pairing::credential{
+   auto revoked_mismatch = credentials::record{
        .id = {.value = "credential-mismatch"},
        .identity = "owner-a",
        .scopes = {"pair.read", "pair.write"},
        .issued_at = test_now,
        .updated_at = test_now + std::chrono::seconds{2},
-       .state = pairing::credential_state::revoked,
+       .state = credentials::state::revoked,
        .revoked_at = test_now + std::chrono::seconds{1},
    };
    const auto revoked_mismatch_before = revoked_mismatch;
-   require_exception<pairing::exceptions::invalid_state>([&] {
-      pairing::rotate_credential_downscope(revoked_mismatch, {"pair.read"}, test_now + std::chrono::seconds{3});
+   require_exception<credentials::exceptions::invalid_state>([&] {
+      credentials::rotate_downscope(revoked_mismatch, {"pair.read"}, test_now + std::chrono::seconds{3});
    });
    BOOST_CHECK(revoked_mismatch == revoked_mismatch_before);
 
-   auto revoked_before_issue = pairing::credential{
+   auto revoked_before_issue = credentials::record{
        .id = {.value = "credential-before-issue"},
        .identity = "owner-b",
        .scopes = {"pair.read", "pair.write"},
        .issued_at = test_now,
        .updated_at = test_now - std::chrono::seconds{1},
-       .state = pairing::credential_state::revoked,
+       .state = credentials::state::revoked,
        .revoked_at = test_now - std::chrono::seconds{1},
    };
    const auto revoked_before_issue_before = revoked_before_issue;
-   require_exception<pairing::exceptions::invalid_state>([&] {
-      pairing::rotate_credential_downscope(revoked_before_issue, {"pair.read"}, test_now + std::chrono::seconds{1});
+   require_exception<credentials::exceptions::invalid_state>([&] {
+      credentials::rotate_downscope(revoked_before_issue, {"pair.read"}, test_now + std::chrono::seconds{1});
    });
    BOOST_CHECK(revoked_before_issue == revoked_before_issue_before);
 }
@@ -475,7 +476,7 @@ BOOST_AUTO_TEST_CASE(pending_transitions_canonicalize_scopes_and_require_explici
        {.identity = "device-a", .requested_scopes = {"pair.write", "pair.read", "pair.read"}}, consume_at());
    auto pending = std::move(pending_issuance.record);
 
-   BOOST_TEST(pending.requested_scopes == pairing::scope_set({"pair.read", "pair.write"}),
+   BOOST_TEST(pending.requested_scopes == credentials::scope_set({"pair.read", "pair.write"}),
               boost::test_tools::per_element());
    require_exception<pairing::exceptions::scope_invalid>([&] {
       return pairing::supersede_pending(pending, {.identity = "device-b", .requested_scopes = {"pair.admin"}},
@@ -532,22 +533,22 @@ BOOST_AUTO_TEST_CASE(approval_rotation_and_revocation_are_terminal_and_cannot_es
                                       approve_at("credential-rejected", test_now + std::chrono::seconds{3}));
    });
 
-   pairing::rotate_credential_downscope(credential, {"pair.read"}, test_now + std::chrono::seconds{3});
+   credentials::rotate_downscope(credential, {"pair.read"}, test_now + std::chrono::seconds{3});
    BOOST_TEST(credential.generation == 2U);
-   BOOST_TEST(credential.scopes == pairing::scope_set({"pair.read"}), boost::test_tools::per_element());
-   require_exception<pairing::exceptions::invalid_state>(
-       [&] { pairing::rotate_credential_downscope(credential, {"pair.read"}, test_now + std::chrono::seconds{4}); });
-   require_exception<pairing::exceptions::scope_invalid>([&] {
-      pairing::rotate_credential_downscope(credential, {"pair.read", "pair.write"}, test_now + std::chrono::seconds{4});
+   BOOST_TEST(credential.scopes == credentials::scope_set({"pair.read"}), boost::test_tools::per_element());
+   require_exception<credentials::exceptions::invalid_state>(
+       [&] { credentials::rotate_downscope(credential, {"pair.read"}, test_now + std::chrono::seconds{4}); });
+   require_exception<credentials::exceptions::scope_invalid>([&] {
+      credentials::rotate_downscope(credential, {"pair.read", "pair.write"}, test_now + std::chrono::seconds{4});
    });
 
-   pairing::revoke_credential(credential, test_now + std::chrono::seconds{4});
-   BOOST_CHECK(credential.state == pairing::credential_state::revoked);
+   credentials::revoke(credential, test_now + std::chrono::seconds{4});
+   BOOST_CHECK(credential.state == credentials::state::revoked);
    BOOST_REQUIRE(credential.revoked_at.has_value());
-   require_exception<pairing::exceptions::invalid_state>(
-       [&] { pairing::revoke_credential(credential, test_now + std::chrono::seconds{5}); });
+   require_exception<credentials::exceptions::invalid_state>(
+       [&] { credentials::revoke(credential, test_now + std::chrono::seconds{5}); });
 
-   auto exhausted = pairing::credential{
+   auto exhausted = credentials::record{
        .id = {.value = "credential-owner-b"},
        .identity = "owner-b",
        .scopes = {"pair.read", "pair.write"},
@@ -555,13 +556,13 @@ BOOST_AUTO_TEST_CASE(approval_rotation_and_revocation_are_terminal_and_cannot_es
        .issued_at = test_now,
        .updated_at = test_now,
    };
-   require_exception<pairing::exceptions::generation_exhausted>(
-       [&] { pairing::rotate_credential_downscope(exhausted, {"pair.read"}, test_now + std::chrono::seconds{1}); });
+   require_exception<credentials::exceptions::generation_exhausted>(
+       [&] { credentials::rotate_downscope(exhausted, {"pair.read"}, test_now + std::chrono::seconds{1}); });
 }
 
 BOOST_AUTO_TEST_CASE(invalid_identity_scope_and_expiry_inputs_have_typed_failures) {
-   require_exception<pairing::exceptions::scope_invalid>(
-       [] { return pairing::canonicalize_scopes({"pair.read", ""}); });
+   require_exception<credentials::exceptions::scope_invalid>(
+       [] { return credentials::canonicalize_scopes({"pair.read", ""}); });
    require_exception<pairing::exceptions::invalid_options>([] {
       return pairing::begin_bootstrap({
           .now = test_now,

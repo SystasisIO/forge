@@ -5,11 +5,11 @@ import forge.auth.http.policy;
 
 int main() {
    namespace auth_http = forge::auth::http;
-   namespace pairing = forge::auth::pairing;
+   namespace credentials = forge::auth::credential;
    namespace session = forge::auth::session;
 
    const auto now = session::time_point{std::chrono::seconds{1}};
-   const auto credential = pairing::credential{
+   const auto credential = credentials::record{
        .id = {.value = "credential-consumer"},
        .identity = "consumer",
        .scopes = {"admin.read"},

@@ -1,5 +1,31 @@
 # forge_api_http
 
+## Server Admission
+
+Call `binding_builder::invocation(provider)` before registering/binding routes.
+The async provider receives the selected route context and canonical method
+descriptor, before domain dispatch, stream-open or streaming request-body reads.
+It returns `forge::api::core::invocation_context`. Choose resource policy from
+trusted route configuration; do not promote headers/JSON into verified subjects.
+
+The binding composes provider values with the verified TLS caller and rejects any
+duplicate type. Required server-supplied values are still reset/applied by the
+existing descriptor mechanism. Subject validity bounds admission and stream
+lifetime, including buffered output after the method finishes. A persistent
+response-body recheck schedule prevents fast chunks from postponing revocation.
+After response headers, denial cancels the body/transport instead of inventing a
+new HTTP status. Provider policy owns credential ambiguity, Origin/CSRF and product
+permissions. Capture only safe owned references in recheck hooks, not the HTTP
+request or bearer; provider completion checks caller cancellation before dispatch.
+
+```cpp
+auto routes = forge::api::http::binding()
+   .use(plan)
+   .invocation(admit_selected_route)
+   .bind<resource_api>()
+   .build();
+```
+
 `forge_api_http` binds `FORGE_API(...)` contracts to native HTTP routes. It sits
 above `forge_net_http` and `forge_api_core`: the lower layer owns HTTP mechanics, while
 this library owns typed request/response mapping, codec dispatch and typed
@@ -104,6 +130,62 @@ auto http_binding = forge::api::http::binding()
 
 auto remote = co_await forge::api::http::remote<catalog_api>(client);
 ```
+
+### Compose Asynchronous Credentials Once
+
+Every typed unary, body-stream and live API stream call uses the configured
+`forge::net::http::client` preparation. Do not wrap each API method, block inside
+the synchronous `header_provider`, or add a second owner of `Authorization`.
+Composition may import an acquisition backend; the HTTP substrate does not.
+For example, with an already configured `token_provider`, trusted issuer/resource
+profile and HTTPS endpoint:
+
+```cpp
+#include <boost/asio/awaitable.hpp>
+#include <chrono>
+#include <string>
+#include <utility>
+#include <vector>
+
+import forge.auth.oauth2.token_provider;
+import forge.net.http.client;
+import forge.api.http.proxy;
+
+auto options = forge::net::http::client_options{
+   .async_header_provider =
+      [tokens, token_profile, expected_issuer, allowed_origin = endpoint.origin()]
+      (const forge::net::http::request&, forge::net::http::request_preparation_context context)
+         -> boost::asio::awaitable<std::vector<forge::net::http::header_entry>> {
+         if (context.origin != allowed_origin) {
+            throw forge::auth::oauth2::exceptions::invalid_request{"Unexpected resource origin"};
+         }
+         auto token = co_await tokens->async_access_token(token_profile);
+         const auto& metadata = token.metadata();
+         if (metadata.issuer != expected_issuer || !metadata.expires_at ||
+             *metadata.expires_at <= std::chrono::system_clock::now()) {
+            throw forge::auth::oauth2::exceptions::token_unavailable{"Acquired token does not match the profile"};
+         }
+         co_return std::vector<forge::net::http::header_entry>{
+            {"Authorization", "Bearer " + std::string{token.secret().view()}}};
+      },
+};
+auto client = forge::net::http::client{runtime, endpoint, std::move(options)};
+auto remote = co_await forge::api::http::remote<catalog_api>(client);
+```
+
+`tokens` is a configured acquisition provider, not a server token verifier;
+`token_profile` is a fixed `forge::auth::oauth2::token_request` with the intended
+scopes/audience/minimum validity. AppAuth requires it to match its configured
+profile. Providers must support cancellation and the selected resource profile;
+an audience parameter alone is not evidence that an IdP issues that audience.
+The request/context are also available for narrower resource selection outside
+the net layer. Never pass a projected workload assertion as an access token.
+
+Acquisition, send and stream reads consume one HTTP request deadline. Provider
+failures reject before network I/O; late cancellation cannot open an HTTP
+request. The client does not follow redirects or refresh-and-replay after 401
+or timeout. Use a new explicit call with an updated credential, and recover
+uncertain mutations through an application operation ID/status query.
 
 ### Select XML For A DTO Route
 
