@@ -51,6 +51,13 @@ Rebuild native consumers: public option/value layouts have gained members,
 including `abi_serialization_limits`, `route_options` and `publish_options`.
 Do not mix old compiled consumers with new library binaries.
 
+## Native plugin integration
+
+P2P node and resolver lifecycle modules import only the types required by their
+public declarations. Private resolver helpers live in their owning implementation
+headers. This reduces the imported compiler state for applications composing many
+plugins, without changing plugin APIs, configuration or runtime behavior.
+
 ## Optional S3 client
 
 `FORGE_ENABLE_S3=ON` builds the Preview `net_s3` component using AWS SDK for C++

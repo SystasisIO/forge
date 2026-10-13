@@ -23,6 +23,8 @@ class resolver_protocol
 
 namespace forge::plugins::net::p2p::resolver {
 
+[[nodiscard]] response query_resolver_protocol(const std::shared_ptr<plugin::impl>& owner, const query& request);
+
 [[nodiscard]] forge::api::core::binding_plan make_resolver_protocol_plan(forge::api::core::registry& registry,
                                                                          std::weak_ptr<plugin::impl> owner);
 

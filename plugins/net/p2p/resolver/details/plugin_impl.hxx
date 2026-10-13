@@ -1,12 +1,7 @@
 #pragma once
 
 #include "cache_record.hxx"
-
-namespace forge::plugins::net::p2p::resolver::detail {
-
-class publication_catalog;
-
-} // namespace forge::plugins::net::p2p::resolver::detail
+#include "publication_catalog.hxx"
 
 namespace forge::plugins::net::p2p::resolver {
 
@@ -62,7 +57,5 @@ struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
    void request_stop_managed() noexcept;
    boost::asio::awaitable<void> shutdown_managed();
 };
-
-[[nodiscard]] response query_resolver_protocol(const std::shared_ptr<plugin::impl>& owner, const query& request);
 
 } // namespace forge::plugins::net::p2p::resolver
