@@ -70,5 +70,6 @@ the process working directory. The base is normalized once before use.
 - Independent review and correction on the final source revision before dev merge.
 - Only task-owned, inactive builds are removed after delivery.
 
-This document is an implementation contract, not a claim that the gates have
-already passed. Acceptance evidence is recorded separately.
+This document is the implementation contract. The scoped results and remaining
+evidence boundaries are recorded in the
+[acceptance receipt](forge-app-lifecycle-v1-acceptance.md).

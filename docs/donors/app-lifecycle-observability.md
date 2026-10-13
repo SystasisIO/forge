@@ -1,7 +1,9 @@
 # App Lifecycle Observability
 
-Status: donor inspection and unvalidated implementation, 2026-10-14. This note is
-not evidence of passing builds, runtime tests or production acceptance.
+Status: implemented and locally validated, 2026-10-14. The scoped build, runtime,
+package, sanitizer and review results are recorded in the
+[acceptance receipt](../iterations/forge-app-lifecycle-v1-acceptance.md).
+This donor note alone is not evidence of production readiness.
 
 ## Inspected Revisions
 
@@ -87,7 +89,7 @@ Rejected for Forge:
 - Creating another logger/scheduler, OTLP owner, generic event bus or lifecycle
   state table. Normal Forge sink routing remains the only logging mechanism.
 
-## Proposed Taxonomy
+## Implemented Taxonomy
 
 Use existing `tlog/dlog/ilog/wlog/elog` macros. Stable event names and canonical
 operation/phase values are structured fields; prose messages are constant.
@@ -197,7 +199,7 @@ prove neither network delivery nor commercial/production readiness.
 
 ## Acceptance Gates
 
-Required before treating the proposal as implemented/accepted:
+The following requirements are exercised by the scoped acceptance suite:
 
 1. Capture-sink tests see exactly one App completion per actual operation under
    concurrent joined startup/shutdown and no duplicate runtime/shell records.
@@ -214,13 +216,11 @@ Required before treating the proposal as implemented/accepted:
 7. Static inspection finds only Forge macros at App boundaries, no exception
    text/config dump/second state table, and exact private helper pairing.
 
-Related source regressions already written (execution not claimed here):
-[plugin lifecycle tests](../../tests/app/plugin_lifecycle_tests.cpp), including
+The [plugin lifecycle tests](../../tests/app/plugin_lifecycle_tests.cpp) cover
 terminal observer completion racing both stop-token and Asio cancellation,
-coalesced shutdown errors/retry and throwing sink isolation. Additional App/
-runner capture tests and the coordinator's integration run are still required.
-The [App observability tests](../../tests/app/app_observability_tests.cpp) now
-cover normal run, joined operations, late stopped startup, secret omission,
-cleanup error/retry, throwing/reentrant sinks, standalone runtime and daemon dry
-modes. These tests are written but were not executed by this implementation
-agent; integration execution remains the coordinator's gate.
+coalesced shutdown errors/retry and throwing sink isolation. The
+[App observability tests](../../tests/app/app_observability_tests.cpp) cover normal
+run, joined operations, late stopped startup, secret omission, cleanup error/retry,
+throwing/reentrant sinks, standalone runtime and daemon dry modes. The coordinator
+executed these suites in the native, ASan and TSan runs listed in the acceptance
+receipt; reviewers independently checked source ownership and evidence boundaries.
