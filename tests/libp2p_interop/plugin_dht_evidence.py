@@ -41,16 +41,16 @@ def _remote_socket(value, peer):
     return listener_socket(value, peer, True) if isinstance(value, str) and "/p2p/" in value else socket(value, True)
 
 
-def _plugin_header(payload, spec, actor):
+def _plugin_header(payload, spec, actor, *, final=True):
     require(isinstance(payload, dict) and type(payload.get("schema_version")) is int
             and payload["schema_version"] == 1 and payload.get("implementation") == "forge"
             and payload.get("role") == ("listener" if actor == "server" else "dialer")
             and payload.get("scenario") == spec.scenario and payload.get("status") == "ok"
-            and payload.get("final") is True and payload.get("errors") == [] and "error" not in payload,
-            "official DHT receipt is failed, relabeled or not final")
+            and payload.get("final") is final and payload.get("errors") == [] and "error" not in payload,
+            "official DHT receipt is failed, relabeled or in the wrong completion phase")
     lifecycle = payload.get("lifecycle", {})
     require(set(lifecycle) == {"plugins_joined", "scheduler_joined"}
-            and all(lifecycle[key] is True for key in lifecycle), "both official plugin owners must join")
+            and all(lifecycle[key] is final for key in lifecycle), "official plugin owner phase differs")
     require(isinstance(payload.get("current_phase"), str) and payload["current_phase"], "missing actual fixture phase")
     node = accepted_configuration(payload, spec, "listener" if actor == "server" else "dialer", "")
     require(node.get("dht") == {"profiles": [{"kind": "amino-v1", "mode": "server"}]},
@@ -80,10 +80,10 @@ def _session(session, local, remote, address, direction):
     return session
 
 
-def _diagnostics(payload, actor):
+def _diagnostics(payload, actor, *, phase="before-stop"):
     state = payload.get("diagnostics", {})
     profile = state.get("profile", {})
-    require(state.get("source") == "node.diagnostics-api.snapshot" and state.get("phase") == "before-stop"
+    require(state.get("source") == "node.diagnostics-api.snapshot" and state.get("phase") == phase
             and profile.get("protocol") == AMINO and profile.get("kind") == "amino-v1"
             and profile.get("mode") == "server" and profile.get("values") is True,
             "missing actual before-stop Amino diagnostics (not a post-join state proof)")
@@ -96,8 +96,9 @@ def _diagnostics(payload, actor):
     for key in ("dht_queries", "dht_responses", "handshakes_completed", "sessions_opened", "active_sessions",
                 "protocol_streams_opened", "protocol_streams_accepted"):
         require(counter(state.get(key)), "invalid actual DHT/session diagnostic counter")
-    require(counter(state["handshakes_completed"], 1), "no actual authenticated service ingress/egress")
-    if actor == "server":
+    if phase == "before-stop":
+        require(counter(state["handshakes_completed"], 1), "no actual authenticated service ingress/egress")
+    if actor == "server" and phase == "before-stop":
         # These native metrics count inbound service RPCs, not outbound API
         # replies. Outbound proof is the API's accepted/responses/quorum result.
         require(counter(state["dht_queries"], 2) and counter(state["dht_responses"], 2),
@@ -105,7 +106,47 @@ def _diagnostics(payload, actor):
     return state
 
 
-def validate_operation(payload, spec, actor, peer, address):
+def _completion(payload, implementation, *, final):
+    value = payload.get("dht_completion")
+    require(payload.get("final") is final and isinstance(value, dict)
+            and set(value) == {"source", "mode", "phase", "stop_observed", "owner_joined"}
+            and value["source"] == implementation + "-fixture.dht-completion-barrier.v1"
+            and value["mode"] == "stop-file" and value["phase"] == ("joined" if final else "await_stop")
+            and value["stop_observed"] is final and value["owner_joined"] is final,
+        "DHT fixture completion is missing, failed or in the wrong owner phase")
+    if final and implementation == "rust":
+        lifecycle = payload.get("fixture_task_lifecycle", {})
+        require(lifecycle.get("fixture_owned_tasks_joined") is True and lifecycle.get("errors") == []
+                and lifecycle.get("overflow") is False, "Rust DHT fixture tasks did not join successfully")
+
+
+def validate_completion_witness(payload, spec, actor, peer, address):
+    require(spec.completion_barrier(actor) and isinstance(payload, dict)
+            and payload.get("status") == "operation_observed", "missing isolated donor DHT operation witness")
+    _completion(payload, spec.implementation(actor), final=False)
+    return validate_operation({**payload, "status": "ok"}, spec, actor, peer, address, witness=True)
+
+
+def server_session_receipt(payload, spec, actor, witness, peer, address):
+    """Only real running-server observations; donor and server IDs have separate namespaces."""
+    local = validate_completion_witness(witness, spec, actor, peer, address)
+    require(_plugin_header(payload, spec, "server", final=False) == peer, "running DHT server identity changed")
+    state = _diagnostics(payload, "server", phase="running")
+    service = payload.get("service", {})
+    require(service.get("source") == "official-node.native-dht-service-and-diagnostics-api"
+            and service.get("operation") == "serve" and service.get("profile") == AMINO
+            and service.get("record_observation") == "not-queried", "server witness is not its actual native service")
+    sessions = service.get("sessions")
+    require(isinstance(sessions, list) and len(sessions) <= 64, "missing bounded server session observations")
+    matches = [s for s in sessions if isinstance(s, dict) and s.get("remote_peer_id") == local]
+    if not matches:
+        return None
+    require(len(matches) == 1, "ambiguous actual server session for " + actor)
+    require(counter(state["handshakes_completed"], 1), "session observation has no actual handshake")
+    return _session(matches[0], peer, local, listener_socket(address, peer, True), "inbound")
+
+
+def validate_operation(payload, spec, actor, peer, address, *, witness=False):
     """Validate an isolated operation before starting the next process, or raise."""
     require(actor in ("writer", "reader"), "only writer/reader may perform a value operation")
     expected_mode = "put_only" if actor == "writer" else "get_only"
@@ -158,6 +199,8 @@ def validate_operation(payload, spec, actor, peer, address):
     if implementation == "go":
         require(payload.get("connection_witness_source") == "go-libp2p.network.Conn",
                 "Go DHT witness is not sourced from the actual native connection")
+    if spec.completion_barrier(actor) and not witness:
+        _completion(payload, implementation, final=True)
     # Donor code checks GetValue against the same golden internally, but does
     # not export actual bytes/hash. Never synthesize a donor hash or count/quorum.
     return local
@@ -197,10 +240,16 @@ def validate_case(record, spec):
                     "server snapshot was relabeled as a value or persistence proof")
             sessions = service.get("sessions")
             require(isinstance(sessions, list) and len(sessions) <= 64, "missing bounded actual server session observations")
+            require(isinstance(record.get("server_session_receipts"), dict)
+                    and set(record["server_session_receipts"]) == {"writer", "reader"},
+                    "both exact pre-stop server observations are required")
             for actor, local in locals_by_actor.items():
                 matches = [s for s in sessions if isinstance(s, dict) and s.get("remote_peer_id") == local]
                 require(len(matches) == 1, "actual identified server session for " + actor + " is missing/ambiguous")
                 _session(matches[0], peer, local, numeric, "inbound")
+                receipt = record.get("server_session_receipts", {}).get(actor)
+                _session(receipt, peer, local, numeric, "inbound")
+                require(receipt == matches[0], "pre-stop server observation differs from its final owned capture")
         else:
             require(isinstance(server, dict) and server.get("implementation") == spec.donor
                     and server.get("role") == "listener" and server.get("scenario") == spec.scenario
@@ -209,6 +258,9 @@ def validate_case(record, spec):
             # evidence. Acceptance rests on the new, isolated remote GET.
         expected = ("server_started", "server_ready", "writer_started", "writer_joined",
                     "reader_started", "reader_joined", "server_joined")
+        if spec.forge_role == "server":
+            expected = ("server_started", "server_ready", "writer_started", "writer_server_session_observed",
+                        "writer_joined", "reader_started", "reader_server_session_observed", "reader_joined", "server_joined")
         timeline = record.get("timeline", [])
         require(record.get("timeline_source") == "runner.process_lifecycle"
                 and [entry.get("event") for entry in timeline] == list(expected), "owned W-join-before-fresh-R ordering missing")
@@ -216,9 +268,19 @@ def validate_case(record, spec):
             require(counter(entry.get("monotonic_ns"))
                     and entry.get("pid") == endpoints[event.split("_")[0]]["process"]["pid"], "timeline owner/time differs")
         times = [entry["monotonic_ns"] for entry in timeline]
-        require(times == sorted(times) and times[3] < times[4]
+        by_event = {entry["event"]: entry for entry in timeline}
+        if spec.forge_role == "server":
+            for actor in ("writer", "reader"):
+                observed = by_event[actor + "_server_session_observed"]
+                session = record["server_session_receipts"][actor]
+                require(counter(observed.get("session_id"), 1) and observed.get("session_id") == session["session_id"]
+                        and observed.get("remote_peer_id") == locals_by_actor[actor]
+                        and observed["monotonic_ns"] < by_event[actor + "_joined"]["monotonic_ns"],
+                        "server session receipt did not precede exact actor join")
+        require(times == sorted(times) and by_event["writer_joined"]["monotonic_ns"] < by_event["reader_started"]["monotonic_ns"]
                 and record.get("operation_budget_seconds") == CASE_SECONDS
-                and times[5] - times[0] <= CASE_SECONDS * 10**9, "operation ordering or overall budget violated")
+                and by_event["reader_joined"]["monotonic_ns"] - times[0] <= CASE_SECONDS * 10**9,
+                "operation ordering or overall budget violated")
         return []
     except (ValueError, TypeError, KeyError, AttributeError, IndexError) as error:
         return ["plugin-dht evidence: " + str(error)]
@@ -274,6 +336,14 @@ def validate_terminal_sources(record, binary_paths, artifact_root):
             require(endpoint.get("result_file") == str(paths[0][1]), "inline result was rebound to another actor")
             if actor == "server":
                 paths.append(("--ready-file", work / "server.ready.json", process["ready"]))
+            elif spec.completion_barrier(actor):
+                ready = process.get("ready", {})
+                validate_completion_witness(ready, spec, actor, record["peer_id"], record["listen_address"])
+                paths.append(("--ready-file", work / (actor + ".ready.json"), ready))
+                final = endpoint["result"]
+                require(all(final.get(key) == value for key, value in ready.items()
+                            if key not in ("status", "final", "dht_completion")),
+                        "final DHT operation changed its held witness facts")
             else:
                 require(process.get("ready") == {}, "writer/reader substituted another process's readiness")
             for flag, path, inline in paths:

@@ -44,6 +44,9 @@ class Case:
         return (self.donor if self.forge_role == "client" else "forge") if actor == "server" \
             else ("forge" if self.forge_role == "client" else self.donor)
 
+    def completion_barrier(self, actor):
+        return self.forge_role == "server" and actor in ("writer", "reader")
+
 
 def case_specs(backend):
     if backend not in BACKENDS:
@@ -69,7 +72,26 @@ def command(spec, actor, binary, work, *, peer="", address=""):
             raise ValueError("isolated DHT operation needs its sole server target")
         argv += ["--peer-id", peer, "--addr", address,
                  "--payload", "put_only" if actor == "writer" else "get_only"]
+        if spec.completion_barrier(actor):
+            argv += ["--dht-completion-barrier", "stop-file", "--ready-file",
+                     str(prefix.with_suffix(".ready.json"))]
     return argv
+
+
+def _wait_server_session(spec, actor, owners, work, witness, peer, address, *, deadline):
+    from plugin_dht_evidence import server_session_receipt
+    while time.monotonic() < deadline:
+        # Even an already-published witness cannot excuse a premature owner exit.
+        for name in ("server", actor):
+            if owners[name].process.poll() is not None:
+                raise RuntimeError("DHT " + name + " exited before server session receipt")
+        path = work / "server.json"
+        if path.exists():
+            session = server_session_receipt(load_json(path), spec, actor, witness, peer, address)
+            if session is not None:
+                return session
+        time.sleep(0.005)
+    raise TimeoutError("DHT exact identified server session receipt deadline expired for " + actor)
 
 
 def run_case(spec, binaries, root, *, command_attempt):
@@ -81,6 +103,7 @@ def run_case(spec, binaries, root, *, command_attempt):
     deadline = time.monotonic() + CASE_SECONDS
     timeline = []
     owners = {}
+    server_receipts = {}
 
     def remaining(limit=20):
         budget = min(limit, deadline - time.monotonic())
@@ -88,8 +111,8 @@ def run_case(spec, binaries, root, *, command_attempt):
             raise TimeoutError("configured DHT overall operation deadline expired")
         return budget
 
-    def mark(event, owner):
-        timeline.append({"event": event, "pid": owner.process.pid, "monotonic_ns": time.monotonic_ns()})
+    def mark(event, owner, **facts):
+        timeline.append({"event": event, "pid": owner.process.pid, "monotonic_ns": time.monotonic_ns(), **facts})
 
     def spawn(actor, **target):
         budget = remaining()
@@ -121,6 +144,25 @@ def run_case(spec, binaries, root, *, command_attempt):
             raise RuntimeError("DHT owned cleanup failed: " + "; ".join(errors))
         mark(actor + "_joined", owner)
 
+    def complete_operation(actor):
+        if spec.completion_barrier(actor):
+            from plugin_dht_evidence import validate_completion_witness
+            path = work / (actor + ".ready.json")
+            _wait_result(path, owners[actor], {"operation_observed"}, timeout=remaining())
+            witness = load_json(path)
+            validate_completion_witness(witness, spec, actor, peer, address)
+            owners[actor].ready = witness
+            session = _wait_server_session(spec, actor, owners, work, witness, peer, address,
+                                           deadline=min(deadline, time.monotonic() + remaining()))
+            server_receipts[actor] = session
+            mark(actor + "_server_session_observed", owners[actor],
+                 session_id=session["session_id"], remote_peer_id=session["remote_peer_id"])
+        else:
+            wait(actor, {"ok"})
+        join(actor)
+        from plugin_dht_evidence import validate_operation
+        validate_operation(load_json(work / (actor + ".json")), spec, actor, peer, address)
+
     server = spawn("server")
     ready_path = work / "server.ready.json"
     _wait_result(ready_path, server, {"ready"}, timeout=remaining())
@@ -132,18 +174,13 @@ def run_case(spec, binaries, root, *, command_attempt):
     mark("server_ready", server)
 
     spawn("writer", peer=peer, address=address)
-    wait("writer", {"ok"})
-    join("writer")
-    from plugin_dht_evidence import validate_operation
-    validate_operation(load_json(work / "writer.json"), spec, "writer", peer, address)
+    complete_operation("writer")
     # The writer is already joined. This independent process gets neither its
     # address nor its store; GET has only the still-running server as a seed.
     if server.process.poll() is not None:
         raise RuntimeError("DHT server exited before the fresh remote reader")
     spawn("reader", peer=peer, address=address)
-    wait("reader", {"ok"})
-    join("reader")
-    validate_operation(load_json(work / "reader.json"), spec, "reader", peer, address)
+    complete_operation("reader")
     remaining()
     join("server")
 
@@ -156,5 +193,6 @@ def run_case(spec, binaries, root, *, command_attempt):
     return {"suite": "plugin-dht", "scenario_id": spec.scenario_id, "spec": asdict(spec),
             "peer_id": peer, "listen_address": address, "endpoints": endpoints,
             "timeline_source": "runner.process_lifecycle", "timeline": timeline,
+            "server_session_receipts": server_receipts,
             "operation_budget_seconds": CASE_SECONDS, "owned_processes": scope.evidence(),
             "attempts": list(scope.attempts)}

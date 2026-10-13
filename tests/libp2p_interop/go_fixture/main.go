@@ -88,6 +88,7 @@ type options struct {
 	echoBarrier     string
 	echoListener    string
 	echoWitness     string
+	dhtBarrier      string
 }
 
 func parseArgs() (options, error) {
@@ -129,6 +130,11 @@ func parseArgs() (options, error) {
 			out.echoListener = value
 		case "--echo-witness-file":
 			out.echoWitness = value
+		case "--dht-completion-barrier":
+			if value != "stop-file" || out.dhtBarrier != "" {
+				return options{}, fmt.Errorf("--dht-completion-barrier requires one stop-file value")
+			}
+			out.dhtBarrier = value
 		case "--ready-file":
 			out.readyFile = value
 		case "--stop-file":
@@ -195,6 +201,9 @@ func parseArgs() (options, error) {
 		return options{}, err
 	}
 	if err := validateEchoListenerCompletion(out); err != nil {
+		return options{}, err
+	}
+	if err := validateDHTCompletionBarrier(out); err != nil {
 		return options{}, err
 	}
 	return out, nil
@@ -1154,7 +1163,13 @@ func dial(opts options) (err error) {
 	var result map[string]any
 	var proofTarget upgradeTarget
 	var completion echoCompletionBarrier
+	var dhtCompletion dhtCompletionBarrier
+	var dhtConnection network.Conn
 	defer func() {
+		if opts.dhtBarrier != "" {
+			err = dhtCompletion.finish(opts, result, err, h.Close)
+			return
+		}
 		if opts.echoBarrier != "" {
 			err = completion.finish(opts, result, err, h.Close)
 			return
@@ -1396,6 +1411,7 @@ func dial(opts options) (err error) {
 			return fmt.Errorf("DHT value operation has no authenticated server connection")
 		}
 		connection := connections[0]
+		dhtConnection = connection
 		if connection.IsClosed() || connection.LocalPeer() != h.ID() || connection.RemotePeer() != info.ID ||
 			connection.RemoteMultiaddr() == nil || connection.ID() == "" {
 			return fmt.Errorf("DHT value operation lacks a live expected-peer connection witness")
@@ -1472,6 +1488,11 @@ func dial(opts options) (err error) {
 	}
 	if opts.echoBarrier != "" {
 		return completion.wait(ctx, opts, result)
+	}
+	if opts.dhtBarrier != "" {
+		return dhtCompletion.wait(ctx, opts, result, func() bool {
+			return dhtConnection != nil && !dhtConnection.IsClosed()
+		})
 	}
 	if h.upgrades != nil && upgradeProofProtocol(opts.scenario) != "" {
 		return nil

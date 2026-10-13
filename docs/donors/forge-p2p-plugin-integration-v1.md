@@ -578,3 +578,29 @@ submission after the server decodes the complete request. Native correctness,
 focused regressions and fresh live validation remain pending. No donor patch,
 new ACK, retry or relaxed acceptance is part of this candidate; the original
 Rust whole-host QUIC shutdown limitation remains `NOT_PROVEN`.
+
+### Configured DHT Fixture Completion Candidate
+
+The clean `aa4ac034a06b464347ef9d5c2a4db75ffd09fbb8` configured DHT
+matrix recorded 13/16 PASS. The retained failures are MDBX PK/Forge-server/Rust
+(reader receipt), RocksDB PK/Forge-server/Go (writer receipt), and RocksDB
+IPNS/Forge-server/Rust (reader receipt). PUT/GET and graceful owned joins
+succeeded, but native counters cannot establish the missing identified session.
+The artifacts do not distinguish Identify completion between snapshots from
+closure before server-side Identify completion; neither is accepted as proof.
+
+Inspected fixture paths are `go_fixture/main.go` (single value operation followed
+by deferred host close), `rust_fixture/main.rs` (single value operation followed
+by Swarm drop and the existing task-owner join), `plugin_dht_cases.py` (writer
+join before fresh reader), and `forge_plugin_interop_fixture_dht.cpp` (bounded
+capture of live identified sessions through the official diagnostics API).
+The corrective candidate changes only fixture synchronization: opt-in
+`--dht-completion-barrier stop-file` retains the same Go host or polled Rust
+Swarm after the actual operation until the runner observes the exact owned
+Forge server's inbound identified QUIC session and permits stop. Server session
+IDs are not equated with donor connection IDs. Immutable pre-stop witnesses and
+final post-join receipts have distinct phases; hold and cleanup failures remain
+terminal failures. Legacy/raw cases and native protocol/library code are unchanged.
+No retry, replacement connection, extra value operation or synthesized transport
+evidence is an accepted pattern. New unit regressions and fixture-lock updates
+are pending coordinator validation; no corrected live PASS is claimed.

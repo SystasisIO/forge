@@ -1163,6 +1163,27 @@ gates pass, describe this as test integration with an evolving stack.
   Full Yamux passed 20 consecutive runs after its error-worker observation
   barrier was fixed. Earlier failed native/test-barrier results remain retained;
   these dirty-candidate checks do not replace clean-head configured acceptance.
+- The configured DHT run at clean source head
+  `aa4ac034a06b464347ef9d5c2a4db75ffd09fbb8` recorded 13/16 PASS.
+  MDBX PK/Rust and RocksDB IPNS/Rust lacked the reader's actual identified
+  server-session receipt; RocksDB PK/Go lacked the writer's. All three retained
+  successful isolated PUT/GET results, two authenticated/opened sessions, three
+  native DHT replies and graceful process joins. The failed log and raw artifacts
+  are retained; counters do not replace the missing per-peer Identify proof.
+  Donor dialers exited immediately after the operation, whereas the configured
+  listener captured only live identified sessions in periodic snapshots.
+- The next fixture-only candidate adds an opt-in DHT completion barrier for
+  isolated `put_only`/`get_only` donor dialers. Go keeps the same host alive;
+  Rust continues polling the same Swarm. An immutable operation witness is not
+  terminal success. Before requesting stop, the runner requires the owned Forge
+  server's actual identified inbound QUIC session for the exact actor peer and
+  server socket, within the remaining 40-second case budget. Writer join still
+  precedes the fresh reader. Final receipts, exact argv/PID, owned joins and
+  post-join captures remain independently checked. Missing/mismatched evidence,
+  invalid JSON, premature owner exit, hold timeout or cleanup failure fail closed.
+  No donor-library/protocol patch, extra dial/PUT/GET or retry is added. New
+  regressions and lock hashes are authored; builds, tests and a fresh live matrix
+  remain pending. The retained three FAIL results are not replaced by this patch.
 - These focused results do not complete Stage 7.
   The final configured matrices and independent validators, installed-package
   checks and clean exact-head acceptance remain pending. Rust's original

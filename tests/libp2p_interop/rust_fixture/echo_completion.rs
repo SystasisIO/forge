@@ -36,7 +36,7 @@ pub(crate) struct Barrier {
     progress: Arc<Mutex<Progress>>,
 }
 
-fn fresh(path: &Path) -> Result<()> {
+pub(crate) fn fresh(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
@@ -44,7 +44,7 @@ fn fresh(path: &Path) -> Result<()> {
     }
 }
 
-fn resolved(path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolved(path: &Path) -> Result<PathBuf> {
     let name = path
         .file_name()
         .ok_or("echo completion requires nonempty file paths")?;
@@ -55,13 +55,13 @@ fn resolved(path: &Path) -> Result<PathBuf> {
     Ok(fs::canonicalize(parent)?.join(name))
 }
 
-fn temporary(path: &Path) -> PathBuf {
+pub(crate) fn temporary(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".tmp");
     PathBuf::from(name)
 }
 
-fn write_receipt(path: &Path, value: &Value) -> Result<()> {
+pub(crate) fn write_receipt(path: &Path, value: &Value) -> Result<()> {
     fresh(path)?;
     let temporary = temporary(path);
     let mut file = OpenOptions::new()

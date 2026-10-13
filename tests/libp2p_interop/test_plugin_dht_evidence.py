@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 from plugin_dht_cases import CASE_SECONDS, Case, case_specs, command
-from plugin_dht_evidence import AMINO, golden_record, validate_case, validate_terminal_sources
+from plugin_dht_evidence import (AMINO, golden_record, validate_case,
+                                 validate_completion_witness, validate_terminal_sources)
 
 BINARY_PATHS = {implementation: Path("/fixture/" + implementation) for implementation in ("forge", "go", "rust")}
 
@@ -86,6 +87,12 @@ def synthetic_record(spec, root):
                 "value_bytes": golden_record(spec.scenario)["value_bytes"]}
             if implementation == "go":
                 payload["connection_witness_source"] = "go-libp2p.network.Conn"
+            if spec.completion_barrier(actor):
+                payload["final"] = True
+                payload["dht_completion"] = {"source": implementation + "-fixture.dht-completion-barrier.v1",
+                    "mode": "stop-file", "phase": "joined", "stop_observed": True, "owner_joined": True}
+                if implementation == "rust":
+                    payload["fixture_task_lifecycle"] = {"fixture_owned_tasks_joined": True, "errors": [], "overflow": False}
         argv = command(spec, actor, BINARY_PATHS[implementation], work, peer=peer, address=target)
         process = {"pid": 100 + index, "command": argv, "log_file": str(work / (actor + ".log")),
             "ready": ready if actor == "server" else {}, "terminal_status": {"exit_code": 0, "termination": "graceful"},
@@ -96,6 +103,13 @@ def synthetic_record(spec, root):
         entries = [("--result-file", work / (actor + ".json"), payload)]
         if actor == "server":
             entries.append(("--ready-file", work / "server.ready.json", ready))
+        elif spec.completion_barrier(actor):
+            witness = deepcopy(payload)
+            witness.pop("fixture_task_lifecycle", None)
+            witness.update(status="operation_observed", final=False)
+            witness["dht_completion"].update(phase="await_stop", stop_observed=False, owner_joined=False)
+            process["ready"] = witness
+            entries.append(("--ready-file", work / (actor + ".ready.json"), witness))
         for flag, path, data in entries:
             captured = work / (actor + ".log." + flag[2:] + ".json")
             path.write_text(json.dumps(data))
@@ -107,10 +121,20 @@ def synthetic_record(spec, root):
             "requested_log_file": process["log_file"], "log_file": process["log_file"], "timeout_seconds": 20,
             "pid": process["pid"], "exit_code": 0, "terminal_status": process["terminal_status"], "outputs": process["outputs"]})
     events = ("server_started", "server_ready", "writer_started", "writer_joined", "reader_started", "reader_joined", "server_joined")
+    receipts = {}
+    if spec.forge_role == "server":
+        events = ("server_started", "server_ready", "writer_started", "writer_server_session_observed", "writer_joined",
+                  "reader_started", "reader_server_session_observed", "reader_joined", "server_joined")
+        receipts = {actor: session(actor, True) for actor in ("writer", "reader")}
+    timeline = [{"event": event, "pid": endpoints[event.split("_")[0]]["process"]["pid"], "monotonic_ns": index + 1}
+                for index, event in enumerate(events)]
+    for entry in timeline:
+        if entry["event"].endswith("_server_session_observed"):
+            actual = receipts[entry["event"].split("_")[0]]
+            entry.update(session_id=actual["session_id"], remote_peer_id=actual["remote_peer_id"])
     return {"suite": "plugin-dht", "scenario_id": spec.scenario_id, "spec": vars(spec), "peer_id": peer,
         "listen_address": target, "endpoints": endpoints, "timeline_source": "runner.process_lifecycle",
-        "timeline": [{"event": event, "pid": endpoints[event.split("_")[0]]["process"]["pid"], "monotonic_ns": index + 1}
-                     for index, event in enumerate(events)], "operation_budget_seconds": CASE_SECONDS,
+        "timeline": timeline, "server_session_receipts": receipts, "operation_budget_seconds": CASE_SECONDS,
         "owned_processes": [endpoint["process"] for endpoint in endpoints.values()], "attempts": attempts}
 
 
@@ -228,6 +252,73 @@ class EvidenceTests(unittest.TestCase):
                             r["endpoints"][actor]["result"].update({field: bad}), record, spec)
                 self.assertRejected(lambda r, actor=actor:
                     r["endpoints"][actor]["result"].update(connection_witness_source="requested-dial-argument"), record, spec)
+
+    def test_completion_stop_join_receipt_and_observation_order_are_strict(self):
+        for donor in ("go", "rust"):
+            spec = Case("mdbx", "dht_pk_put_get", donor, "server")
+            with tempfile.TemporaryDirectory() as directory:
+                record = synthetic_record(spec, Path(directory).resolve())
+                for actor in ("writer", "reader"):
+                    for field, bad in (("stop_observed", False), ("owner_joined", False),
+                                       ("stop_observed", 0), ("stop_observed", 1),
+                                       ("owner_joined", 0), ("owner_joined", 1),
+                                       ("phase", "await_stop"), ("source", "requested-config")):
+                        self.assertRejected(lambda r, actor=actor, field=field, bad=bad:
+                            r["endpoints"][actor]["result"]["dht_completion"].update({field: bad}), record, spec)
+                    self.assertRejected(lambda r, actor=actor: r["server_session_receipts"].pop(actor), record, spec)
+                    self.assertRejected(lambda r, actor=actor: r["server_session_receipts"][actor].update(session_id=99), record, spec)
+                    self.assertRejected(lambda r, actor=actor: r["endpoints"][actor]["result"].update(status="error"), record, spec)
+                self.assertRejected(lambda r: r["timeline"][3].update(monotonic_ns=r["timeline"][4]["monotonic_ns"]), record, spec)
+                self.assertRejected(lambda r: r["timeline"][6].update(remote_peer_id="writer-peer"), record, spec)
+                if donor == "rust":
+                    self.assertRejected(lambda r: r["endpoints"]["writer"]["result"]["fixture_task_lifecycle"].update(
+                        fixture_owned_tasks_joined=False), record, spec)
+
+    def test_interim_witness_cannot_substitute_terminal_or_wrong_actor(self):
+        spec = Case("rocksdb", "dht_ipns_put_get", "rust", "server")
+        with tempfile.TemporaryDirectory() as directory:
+            record = synthetic_record(spec, Path(directory).resolve())
+            ready = record["endpoints"]["writer"]["process"]["ready"]
+            peer, address = record["peer_id"], record["listen_address"]
+            self.assertEqual(validate_completion_witness(ready, spec, "writer", peer, address), ready["local_peer_id"])
+            with self.assertRaises(ValueError):
+                validate_completion_witness(ready, spec, "reader", peer, address)
+            self.assertRejected(lambda r: r["endpoints"]["writer"].update(result=deepcopy(ready)), record, spec)
+            for field, bad in (("status", "ok"), ("final", True)):
+                invalid = deepcopy(ready)
+                invalid[field] = bad
+                with self.assertRaises(ValueError):
+                    validate_completion_witness(invalid, spec, "writer", peer, address)
+            for field in ("stop_observed", "owner_joined"):
+                for bad in (0, 1):
+                    invalid = deepcopy(ready)
+                    invalid["dht_completion"][field] = bad
+                    with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                        validate_completion_witness(invalid, spec, "writer", peer, address)
+            for change in (lambda c: c.update(extra="unowned"), lambda c: c.pop("mode")):
+                invalid = deepcopy(ready)
+                change(invalid["dht_completion"])
+                with self.assertRaises(ValueError):
+                    validate_completion_witness(invalid, spec, "writer", peer, address)
+
+    def test_terminal_sources_bind_both_immutable_witnesses_and_final_facts(self):
+        spec = Case("mdbx", "dht_pk_put_get", "go", "server")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            record = synthetic_record(spec, root)
+            self.assertEqual(validate_terminal_sources(record, BINARY_PATHS, root), [])
+            for actor in ("writer", "reader"):
+                broken = deepcopy(record)
+                broken["endpoints"][actor]["process"]["outputs"] = [capture for capture in
+                    broken["endpoints"][actor]["process"]["outputs"] if capture["argument"] != "--ready-file"]
+                self.assertTrue(validate_terminal_sources(broken, BINARY_PATHS, root))
+                broken = deepcopy(record)
+                broken["endpoints"][actor]["result"]["connection_id"] = "replacement-connection"
+                self.assertTrue(validate_terminal_sources(broken, BINARY_PATHS, root))
+                broken = deepcopy(record)
+                other = "reader" if actor == "writer" else "writer"
+                broken["endpoints"][actor]["process"]["ready"] = record["endpoints"][other]["process"]["ready"]
+                self.assertTrue(validate_terminal_sources(broken, BINARY_PATHS, root))
 
 
 class SourceTests(unittest.TestCase):

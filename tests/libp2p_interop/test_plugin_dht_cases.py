@@ -2,10 +2,11 @@
 
 from pathlib import Path
 import tempfile
+from copy import deepcopy
 import unittest
 from unittest.mock import Mock, patch
 
-from plugin_dht_cases import Case, case_specs, command, run_case
+from plugin_dht_cases import Case, _wait_server_session, case_specs, command, run_case
 from process_lifecycle import enter_scope, exit_scope
 
 
@@ -46,6 +47,7 @@ class RegistrationTests(unittest.TestCase):
                     self.assertNotIn("--pnet-key-file", options)
                     self.assertNotIn("--requested-count", options)
                     self.assertNotIn("--allow-insecure-test-mode", options)
+                    self.assertEqual("--dht-completion-barrier" in options, spec.completion_barrier(actor))
                     if actor == "server":
                         self.assertEqual(argv[1], "listen")
                         self.assertNotIn("--payload", options)
@@ -65,7 +67,7 @@ class RegistrationTests(unittest.TestCase):
 
 
 class OwnershipTests(unittest.TestCase):
-    def exercise(self, spec, *, failed_join=False, failed_put=False):
+    def exercise(self, spec, *, failed_join=False, failed_put=False, failed_hold=False):
         scope, token = enter_scope()
         sequence = []
         owners = {}
@@ -114,14 +116,29 @@ class OwnershipTests(unittest.TestCase):
                 raise ValueError("injected failed remote PUT")
             return actor + "-peer"
 
+        def witness(payload, actual_spec, actor, peer, address):
+            self.assertFalse(owners[actor].closed)
+            sequence.append("witness-" + actor)
+            return actor + "-peer"
+
+        def server_receipt(actual_spec, actor, actual_owners, work, payload, peer, address, *, deadline):
+            self.assertIs(actual_owners[actor], owners[actor])
+            self.assertFalse(owners[actor].closed)
+            sequence.append("server-receipt-" + actor)
+            if failed_hold:
+                raise TimeoutError("injected absent server session")
+            return {"session_id": 7 if actor == "writer" else 8, "remote_peer_id": actor + "-peer"}
+
         try:
             with tempfile.TemporaryDirectory() as directory, \
                     patch("plugin_dht_cases.spawn_owned", side_effect=spawn), \
                     patch("plugin_dht_cases.load_json", side_effect=load), \
                     patch("plugin_dht_cases._wait_result"), \
+                    patch("plugin_dht_cases._wait_server_session", side_effect=server_receipt), \
+                    patch("plugin_dht_evidence.validate_completion_witness", side_effect=witness), \
                     patch("plugin_dht_evidence.validate_operation", side_effect=operation):
-                if failed_join or failed_put:
-                    with self.assertRaises((RuntimeError, ValueError)):
+                if failed_join or failed_put or failed_hold:
+                    with self.assertRaises((RuntimeError, ValueError, TimeoutError)):
                         run_case(spec, {name: Path("/" + name) for name in ("forge", "go", "rust")},
                                  Path(directory), command_attempt=attempt)
                 else:
@@ -140,6 +157,11 @@ class OwnershipTests(unittest.TestCase):
             self.assertLess(sequence.index("join-reader"), sequence.index("join-server"))
             self.assertEqual(len(record["owned_processes"]), 3)
             self.assertTrue(all(owner.closed for owner in owners.values()))
+            if role == "server":
+                for actor in ("writer", "reader"):
+                    self.assertLess(sequence.index("witness-" + actor), sequence.index("server-receipt-" + actor))
+                    self.assertLess(sequence.index("server-receipt-" + actor), sequence.index("stop-" + actor))
+                self.assertEqual(set(record["server_session_receipts"]), {"writer", "reader"})
 
     def test_failed_publication_or_join_never_spawns_reader_and_all_owners_close(self):
         for failed_join, failed_put in ((True, False), (False, True)):
@@ -148,6 +170,89 @@ class OwnershipTests(unittest.TestCase):
             self.assertNotIn("spawn-reader", sequence)
             self.assertEqual(set(owners), {"server", "writer"})
             self.assertTrue(all(owner.closed for owner in owners.values()))
+
+    def test_failed_server_receipt_never_spawns_reader_or_retries(self):
+        sequence, _, owners = self.exercise(Case("mdbx", "dht_pk_put_get", "go", "server"), failed_hold=True)
+        self.assertNotIn("spawn-reader", sequence)
+        self.assertEqual(sequence.count("spawn-writer"), 1)
+        self.assertEqual(set(owners), {"server", "writer"})
+        self.assertTrue(all(owner.closed for owner in owners.values()))
+
+
+class ServerReceiptTests(unittest.TestCase):
+    def setUp(self):
+        from test_plugin_dht_evidence import synthetic_record
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.spec = Case("mdbx", "dht_pk_put_get", "go", "server")
+        self.record = synthetic_record(self.spec, self.root)
+        self.work = Path(self.record["endpoints"]["server"]["result_file"]).parent
+        self.payload = deepcopy(self.record["endpoints"]["server"]["result"])
+        self.payload.update(final=False, lifecycle={"plugins_joined": False, "scheduler_joined": False})
+        self.payload["diagnostics"]["phase"] = "running"
+        self.witness = self.record["endpoints"]["writer"]["process"]["ready"]
+        self.witness["connection_id"] = "donor-native-opaque-id"
+        self.owners = {actor: Mock() for actor in ("server", "writer")}
+        for owner in self.owners.values():
+            owner.process.poll.return_value = None
+
+    def wait(self, payloads=None):
+        payloads = [self.payload] if payloads is None else payloads
+        with patch("plugin_dht_cases.load_json", side_effect=payloads), \
+                patch("plugin_dht_cases.time.monotonic", side_effect=[0, 1, 2, 3, 4]), \
+                patch("plugin_dht_cases.time.sleep"):
+            return _wait_server_session(self.spec, "writer", self.owners, self.work, self.witness,
+                                        self.record["peer_id"], self.record["listen_address"], deadline=3)
+
+    def test_delayed_actual_receipt_requires_same_peer_socket_not_donor_connection_id(self):
+        missing = deepcopy(self.payload)
+        missing["service"]["sessions"] = []
+        missing["diagnostics"]["handshakes_completed"] = 0
+        actual = self.wait([missing, self.payload])
+        self.assertEqual(actual, self.record["server_session_receipts"]["writer"])
+        self.assertNotEqual(str(actual["session_id"]), self.witness["connection_id"])
+
+    def test_missing_or_wrong_actor_receipt_times_out_without_stop(self):
+        for sessions in ([], [self.payload["service"]["sessions"][1]]):
+            with self.subTest(sessions=sessions):
+                payload = deepcopy(self.payload)
+                payload["service"]["sessions"] = sessions
+                with self.assertRaises(TimeoutError):
+                    self.wait([payload] * 3)
+        self.owners["writer"].request_stop.assert_not_called()
+
+    def test_server_failure_and_identity_transport_socket_mismatch_fail_closed(self):
+        for field, bad in (("remote_address", "/ip4/127.0.0.1/udp/0/quic-v1"), ("authentication", "noise"),
+                           ("local_peer_id", "foreign-server"), ("direction", "outbound"),
+                           ("local_address", "/ip4/127.0.0.1/udp/1/quic-v1"), ("identify_state", "identifying")):
+            with self.subTest(field=field):
+                payload = deepcopy(self.payload)
+                payload["service"]["sessions"][0][field] = bad
+                with self.assertRaises(ValueError):
+                    self.wait([payload])
+        payload = deepcopy(self.payload)
+        payload["status"] = "error"
+        with self.assertRaises(ValueError):
+            self.wait([payload])
+
+    def test_either_owner_exit_rejects_even_an_already_present_receipt(self):
+        for actor in ("server", "writer"):
+            self.owners[actor].process.poll.return_value = 0
+            with self.assertRaises(RuntimeError):
+                self.wait()
+            self.owners[actor].process.poll.return_value = None
+
+    def test_empty_malformed_and_duplicate_json_fail_without_retry(self):
+        from plugin_node_evidence import load_json
+        path = self.work / "server.json"
+        for content in ("", "{", "{}", '{"status":"ok","status":"error"}'):
+            path.write_text(content)
+            with patch("plugin_dht_cases.load_json", side_effect=load_json), \
+                    patch("plugin_dht_cases.time.monotonic", return_value=0):
+                with self.assertRaises((ValueError, RuntimeError)):
+                    _wait_server_session(self.spec, "writer", self.owners, self.work, self.witness,
+                                         self.record["peer_id"], self.record["listen_address"], deadline=3)
 
 
 class RunnerBoundaryTests(unittest.TestCase):
