@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <mdbx.h>
 
 #include <boost/asio/awaitable.hpp>
@@ -25,6 +26,8 @@ import forge.asio.gate;
 import forge.db.core.driver;
 import forge.db.core.record;
 import forge.db.mdbx.exceptions;
+import forge.db.mdbx.diagnostics;
+import forge.log.logger;
 
 #include "details/driver_impl.hxx"
 #include "details/environment.hxx"
@@ -126,6 +129,9 @@ driver::open_managed(config value,
                             "MDBX requires a valid affine executor");
    }
 
+   const auto families = value.families.size();
+   const auto durable_sync = value.durability_mode == durability::durable_sync;
+
    auto opened = co_await executor.execute(
       {.name = "mdbx-open"},
       [value = std::move(value)]() mutable {
@@ -135,6 +141,9 @@ driver::open_managed(config value,
    auto impl = std::make_shared<detail::driver_impl>(
       std::move(executor), std::move(opened.first), opened.second,
       std::move(lane));
+   diagnostics::drain();
+   ilog("forge.db.mdbx", "environment opened",
+        ("event", "environment.opened")("families", families)("durable_sync", durable_sync));
    co_return std::shared_ptr<driver>{new driver{std::move(impl)}};
 }
 

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstddef>
+#include <map>
+
 namespace forge::net::p2p::detail {
 
 class pubsub_outbound_budget {
  public:
-   [[nodiscard]] bool reserve(const peer_id& peer, std::size_t bytes, std::size_t limit) noexcept;
+   [[nodiscard]] bool reserve(const peer_id& peer, std::size_t bytes, std::size_t limit);
    void release(const peer_id& peer, std::size_t bytes) noexcept;
    void clear() noexcept;
 

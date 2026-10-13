@@ -8,8 +8,6 @@ module;
 
 export module forge.plugins.chain.signer.plugin;
 
-export import forge.plugins.chain.signer.descriptor;
-
 import forge.api.core.binding;
 import forge.api.core.connection;
 import forge.api.core.descriptor;
@@ -28,6 +26,8 @@ export namespace forge::plugins::chain::signer {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor(plugin_options value = {});
+
    explicit plugin(plugin_options value = {});
    ~plugin() override;
 
@@ -52,7 +52,5 @@ class plugin final : public forge::app::plugin {
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor(plugin_options value = {});
 
 } // namespace forge::plugins::chain::signer

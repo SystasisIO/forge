@@ -41,6 +41,7 @@ class transaction_participant_impl final : public forge::db::core::transaction_p
    [[nodiscard]] change_set& changes() noexcept;
    [[nodiscard]] const change_set& changes() const noexcept;
    [[nodiscard]] bool finalized() const noexcept;
+   [[nodiscard]] std::size_t committed_mutation_count() const noexcept;
    [[nodiscard]] bool add_precommit_observer(std::shared_ptr<precommit_observer> value);
    boost::asio::awaitable<void> run_precommit_observers();
 
@@ -71,6 +72,7 @@ class transaction_participant_impl final : public forge::db::core::transaction_p
    bool preparing_commit_ = false;
    bool backend_writes_ = false;
    bool reuse_rolled_back_ids_ = false;
+   std::size_t committed_mutation_count_ = 0;
 };
 
 } // namespace forge::db::object::detail

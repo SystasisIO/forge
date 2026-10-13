@@ -20,11 +20,13 @@ import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
 import forge.asio.task;
+import forge.multiformats.multiaddr;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.protocol;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.resolver.plugin;
 
@@ -131,6 +133,33 @@ forge::plugins::net::p2p::node::info resolver_publication_race_node::network_inf
    return {.local_peer = local_peer(), .local_endpoints = {}, .started = true};
 }
 
+boost::asio::awaitable<forge::net::p2p::node::session_info>
+resolver_publication_race_node::connect(forge::net::p2p::endpoint, forge::net::p2p::node::connect_options) {
+   throw std::logic_error{"resolver publication fixture does not connect"};
+   co_return forge::net::p2p::node::session_info{};
+}
+boost::asio::awaitable<forge::net::p2p::node::session_info>
+resolver_publication_race_node::connect(forge::multiformats::multiaddr, forge::net::p2p::node::connect_options) {
+   throw std::logic_error{"resolver publication fixture does not connect"};
+   co_return forge::net::p2p::node::session_info{};
+}
+boost::asio::awaitable<std::chrono::milliseconds>
+resolver_publication_race_node::ping(forge::net::p2p::peer_id, forge::net::p2p::node::open_options) {
+   throw std::logic_error{"resolver publication fixture does not ping"};
+   co_return std::chrono::milliseconds{};
+}
+bool resolver_publication_race_node::is_peer_protected(const forge::net::p2p::peer_id&) const {
+   throw std::logic_error{"resolver publication fixture has no native protection"};
+}
+forge::plugins::net::p2p::node::peer_contribution
+resolver_publication_race_node::protect_peer(forge::net::p2p::peer_id) {
+   throw std::logic_error{"resolver publication fixture has no native protection"};
+}
+forge::plugins::net::p2p::node::peer_contribution
+resolver_publication_race_node::tag_peer(forge::net::p2p::peer_id, std::int64_t) {
+   throw std::logic_error{"resolver publication fixture has no native tags"};
+}
+
 forge::api::p2p::publication
 resolver_publication_race_node::publish_api(forge::api::core::binding_plan plan,
                                             forge::net::p2p::protocol_id protocol) {
@@ -156,12 +185,6 @@ resolver_publication_race_node::publish_api(forge::api::core::binding_plan plan,
          co_return;
       },
       [] { return true; });
-}
-
-void resolver_publication_race_node::publish_protocol(forge::net::p2p::protocol_id protocol,
-                                                       forge::net::p2p::node::protocol_handler handler) {
-   static_cast<void>(protocol);
-   static_cast<void>(handler);
 }
 
 boost::asio::awaitable<forge::api::transport::connection>
@@ -217,7 +240,7 @@ void resolver_publication_race_application::on_register_plugins(forge::app::plug
        .id = {.value = "forge.plugins.net.p2p.node"},
        .factory = [barrier = barrier_] { return std::make_unique<resolver_publication_race_node_plugin>(barrier); },
    });
-   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
 }
 
 } // namespace forge::tests::plugins

@@ -1,13 +1,17 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -40,7 +44,10 @@ import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.document;
 import forge.config.core.value;
+import forge.codec.json;
 import forge.crypto.core.types;
+import forge.db.core.driver;
+import forge.db.core.record;
 import forge.net.http.route_context;
 import forge.net.http.server;
 import forge.net.http.types;
@@ -54,6 +61,8 @@ import forge.plugins.log.otlp.api;
 import forge.plugins.log.otlp.exceptions;
 import forge.plugins.log.otlp.plugin;
 import forge.plugins.log.otlp.types;
+import forge.plugins.db.store.api;
+import forge.plugins.db.store.plugin;
 import forge.variant.value;
 import forge.schema.object;
 
@@ -79,11 +88,40 @@ struct collected_request {
    std::string body;
 };
 
+std::size_t exported_event_count(const std::vector<collected_request>& requests,
+                                 std::string_view logger, std::string_view event) {
+   auto count = std::size_t{};
+   for (const auto& request : requests) {
+      const auto parsed = forge::codec::json::read_value(request.body);
+      BOOST_REQUIRE(parsed.ok());
+      for (const auto& resource : parsed.value.get_object()["resourceLogs"].get_array()) {
+         for (const auto& scope : resource.get_object()["scopeLogs"].get_array()) {
+            for (const auto& record : scope.get_object()["logRecords"].get_array()) {
+               auto matching_logger = false;
+               auto matching_event = false;
+               for (const auto& attribute : record.get_object()["attributes"].get_array()) {
+                  const auto& item = attribute.get_object();
+                  const auto key = item["key"].as_string();
+                  if (key == "logger") {
+                     matching_logger = item["value"].get_object()["stringValue"].as_string() == logger;
+                  } else if (key == "event") {
+                     matching_event = item["value"].get_object()["stringValue"].as_string() == event;
+                  }
+               }
+               count += matching_logger && matching_event;
+            }
+         }
+      }
+   }
+   return count;
+}
+
 class fake_collector {
  public:
-   explicit fake_collector(forge::asio::runtime& runtime)
+   explicit fake_collector(forge::asio::runtime& runtime, bool unavailable = false)
        : server_(runtime, {.bind_address = "127.0.0.1", .port = 0},
-                 [this](forge::net::http::route_context& context) { return handle(context); }) {
+                 [this](forge::net::http::route_context& context) { return handle(context); }),
+         unavailable_{unavailable} {
       server_.start();
       for (auto attempt = 0; attempt != 100; ++attempt) {
          if (server_.port() != 0) {
@@ -132,7 +170,9 @@ class fake_collector {
       }
       ready_.notify_all();
 
-      auto response = forge::net::http::response{forge::net::http::status::ok, context.request.version()};
+      auto response = forge::net::http::response{
+          unavailable_ ? forge::net::http::status::service_unavailable : forge::net::http::status::ok,
+          context.request.version()};
       response.set(forge::net::http::field::content_type, "application/json");
       response.body() = "{}";
       response.prepare_payload();
@@ -140,6 +180,7 @@ class fake_collector {
    }
 
    forge::net::http::server server_;
+   bool unavailable_;
    mutable std::mutex mutex_;
    mutable std::condition_variable ready_;
    std::vector<collected_request> requests_;
@@ -212,11 +253,16 @@ struct plugin_harness {
       provider.install<crypto_secrets::api>(std::move(api));
    }
 
-   void provide_and_start() {
+   void provide_and_initialize() {
       auto provider = forge::api::core::installer{apis};
       forge::asio::blocking::run(runtime, plugin.provide(provider));
       auto context = forge::app::plugin_context{scheduler, apis, signals, events, &diagnostics};
       forge::asio::blocking::run(runtime, plugin.initialize(context));
+   }
+
+   void provide_and_start() {
+      provide_and_initialize();
+      forge::asio::blocking::run(runtime, plugin.after_initialize());
       forge::asio::blocking::run(runtime, plugin.startup());
    }
 
@@ -228,7 +274,15 @@ struct plugin_harness {
 class shell_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(log_otlp::descriptor());
+      registry.register_plugin(log_otlp::plugin::descriptor());
+   }
+};
+
+class db_shell_application final : public forge::app::application_shell {
+ protected:
+   void on_register_plugins(forge::app::plugin_registry& registry) override {
+      registry.register_plugin(log_otlp::plugin::descriptor());
+      registry.register_plugin(forge::plugins::db::store::plugin::descriptor());
    }
 };
 
@@ -409,6 +463,212 @@ BOOST_AUTO_TEST_CASE(log_otlp_exports_default_and_named_logger_routes) {
 
    harness.shutdown();
 }
+
+BOOST_AUTO_TEST_CASE(log_otlp_captures_after_initialize_and_stop_without_duplicate_attachment) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   auto harness = plugin_harness{};
+   auto collector = fake_collector{harness.runtime};
+   harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.lifecycle")}));
+   harness.provide_and_initialize();
+   forge::asio::blocking::run(harness.runtime, harness.plugin.after_initialize());
+   ilog("plugin.lifecycle", "fixture after_initialize");
+   forge::asio::blocking::run(harness.runtime, harness.plugin.after_initialize());
+   forge::asio::blocking::run(harness.runtime, harness.plugin.startup());
+   harness.plugin.request_stop();
+   ilog("plugin.lifecycle", "fixture producer shutdown");
+   auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
+   forge::asio::blocking::run(harness.runtime, api->flush());
+   const auto metrics = forge::asio::blocking::run(harness.runtime, api->metrics());
+   BOOST_TEST(metrics.enqueued_records == 2U);
+   BOOST_TEST(metrics.exported_records == 2U);
+   harness.shutdown();
+   ilog("plugin.lifecycle", "fixture detached");
+   const auto requests = collector.requests();
+   const auto body = std::accumulate(requests.begin(), requests.end(), std::string{},
+                                     [](std::string out, const auto& request) { return out + request.body; });
+   expect_contains(body, "fixture after_initialize");
+   expect_contains(body, "fixture producer shutdown");
+   BOOST_TEST(body.find("fixture detached") == std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_direct_startup_retains_compatibility_without_phase_barrier) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   auto harness = plugin_harness{};
+   auto collector = fake_collector{harness.runtime};
+   harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.direct")}));
+   harness.provide_and_initialize();
+   forge::asio::blocking::run(harness.runtime, harness.plugin.startup());
+   forge::asio::blocking::run(harness.runtime, harness.plugin.startup());
+   ilog("plugin.direct", "direct startup", ("event", "fixture.direct"));
+   harness.shutdown();
+   BOOST_TEST(exported_event_count(collector.requests(), "plugin.direct", "fixture.direct") == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(log_otlp_failure_after_attachment_detaches_and_can_restart) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   const auto path = std::filesystem::temp_directory_path() /
+       ("forge-otlp-crash-path-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+   auto cleanup = boost::scope::scope_exit{[&] { std::filesystem::remove_all(path); }};
+   { auto file = std::ofstream{path}; file << "not a directory"; }
+   auto harness = plugin_harness{};
+   auto collector = fake_collector{harness.runtime};
+   auto document = plugin_config(collector.endpoint(), {logger_route("plugin.rollback")});
+   document.set("plugins.log.otlp.crash-spool.enabled", true);
+   document.set("plugins.log.otlp.crash-spool.directory", (path / "spool").string());
+   harness.configure(document);
+   harness.provide_and_initialize();
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, harness.plugin.after_initialize()),
+                     log_otlp::exceptions::startup_failed);
+   auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, api->metrics()),
+                     log_otlp::exceptions::exporter_unavailable);
+   ilog("plugin.rollback", "must stay local", ("event", "fixture.failed"));
+   document.set("plugins.log.otlp.crash-spool.enabled", false);
+   harness.configure(document);
+   forge::asio::blocking::run(harness.runtime, harness.plugin.after_initialize());
+   ilog("plugin.rollback", "restarted", ("event", "fixture.restarted"));
+   harness.shutdown();
+   BOOST_TEST(exported_event_count(collector.requests(), "plugin.rollback", "fixture.failed") == 0U);
+   BOOST_TEST(exported_event_count(collector.requests(), "plugin.rollback", "fixture.restarted") == 1U);
+}
+
+#if defined(__unix__) || defined(__APPLE__)
+BOOST_AUTO_TEST_CASE(log_otlp_resend_failure_restores_installed_crash_capture) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   const auto path = std::filesystem::temp_directory_path() /
+       ("forge-otlp-resend-failure-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+   auto cleanup = boost::scope::scope_exit{[&] { std::filesystem::remove_all(path); }};
+   std::filesystem::create_directories(path);
+   std::filesystem::permissions(path, std::filesystem::perms::owner_all,
+                                std::filesystem::perm_options::replace);
+   const auto malformed = path / "crash-malformed.spool";
+   { auto file = std::ofstream{malformed}; file << "invalid record"; }
+   const auto blocked_quarantine = path / "crash-malformed.spool.bad";
+   std::filesystem::create_directory(blocked_quarantine);
+   auto harness = plugin_harness{};
+   auto collector = fake_collector{harness.runtime};
+   auto document = plugin_config(collector.endpoint(), {logger_route("plugin.resend")});
+   document.set("plugins.log.otlp.crash-spool.enabled", true);
+   document.set("plugins.log.otlp.crash-spool.directory", path.string());
+   harness.configure(document);
+   harness.provide_and_initialize();
+   const auto previous_terminate = std::get_terminate();
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, harness.plugin.after_initialize()),
+                     log_otlp::exceptions::startup_failed);
+   BOOST_CHECK(std::get_terminate() == previous_terminate);
+   auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, api->metrics()),
+                     log_otlp::exceptions::exporter_unavailable);
+   std::filesystem::remove(blocked_quarantine);
+   forge::asio::blocking::run(harness.runtime, harness.plugin.after_initialize());
+   ilog("plugin.resend", "restarted", ("event", "fixture.restarted"));
+   harness.shutdown();
+   BOOST_CHECK(std::get_terminate() == previous_terminate);
+   BOOST_TEST(exported_event_count(collector.requests(), "plugin.resend", "fixture.restarted") == 1U);
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(log_otlp_application_exports_database_open_and_shutdown) {
+   const auto backends = std::vector<std::string>{
+#if FORGE_HAS_MDBX
+       "mdbx",
+#endif
+#if FORGE_HAS_ROCKSDB
+       "rocksdb",
+#endif
+   };
+   for (const auto& backend : backends) {
+      for (const auto unavailable : {false, true}) {
+         BOOST_TEST_CONTEXT(backend) {
+            BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+            auto application = db_shell_application{};
+            auto collector = fake_collector{application.runtime(), unavailable};
+            const auto path = std::filesystem::temp_directory_path() /
+                              ("forge-otlp-db-" + backend + "-" +
+                               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            auto cleanup = boost::scope::scope_exit{[&] { std::filesystem::remove_all(path); }};
+            auto document = plugin_config(
+                collector.endpoint(), {logger_route("forge.db.store"), logger_route("forge.db." + backend, "debug")});
+            using value = forge::config::core::value;
+            document.set("plugins.log.otlp.enabled", true);
+            document.set("plugins.db.store.enabled", true);
+            document.set(
+                "plugins.db.store.stores",
+                value::array_type{value{value::object_type{{"name", value{"logging-fixture"}},
+                                                           {"driver", value{backend}},
+                                                           {"object", value{value::object_type{}}},
+                                                           {"families", value{value::array_type{value{"audit"}}}},
+                                                           {"path", value{path.string()}}}}});
+            application.configure(document);
+            forge::asio::blocking::run(application.runtime(), application.startup());
+            auto stores = application.apis().get<forge::plugins::db::store::api>(forge::plugins::db::store::api::ref());
+            auto store = forge::asio::blocking::run(application.runtime(), stores->store("logging-fixture"));
+            auto transaction = forge::asio::blocking::run(application.runtime(), store.begin_transaction());
+            const auto family = forge::db::core::family{"audit"};
+            const auto key = forge::db::core::record_key{{std::byte{0x31}}};
+            const auto payload = std::vector<std::byte>{std::byte{0x73}, std::byte{0x65}};
+            forge::asio::blocking::run(application.runtime(), transaction.db_transaction().put(family, key, payload));
+            forge::asio::blocking::run(application.runtime(), transaction.commit());
+            auto telemetry = application.apis().get<log_otlp::api>(log_otlp::api::ref());
+            forge::asio::blocking::run(application.runtime(), telemetry->flush());
+            const auto metrics = forge::asio::blocking::run(application.runtime(), telemetry->metrics());
+            if (unavailable) {
+               BOOST_TEST(metrics.failed_records > 0U);
+            }
+            auto verify = forge::asio::blocking::run(application.runtime(), store.begin_transaction());
+            const auto actual =
+                forge::asio::blocking::run(application.runtime(), verify.db_transaction().get(family, key));
+            BOOST_REQUIRE(actual.has_value());
+            BOOST_CHECK(*actual == payload);
+            forge::asio::blocking::run(application.runtime(), verify.rollback());
+            forge::asio::blocking::run(application.runtime(), application.shutdown());
+            BOOST_REQUIRE(collector.wait_for_requests(1));
+            const auto requests = collector.requests();
+            const auto body = std::accumulate(requests.begin(), requests.end(), std::string{},
+                                              [](std::string out, const auto& request) { return out + request.body; });
+            expect_contains(body, "forge.db." + backend);
+            expect_contains(body, "forge.db.store");
+            expect_contains(body, "plugin.started");
+            expect_contains(body, "plugin.stopped");
+            const auto driver_route = "forge.db." + backend;
+            const auto opened = backend == "mdbx" ? "environment.opened" : "store.opened";
+            const auto closed = backend == "mdbx" ? "environment.closed" : "store.closed";
+            BOOST_TEST(exported_event_count(requests, driver_route, opened) == 1U);
+            BOOST_TEST(exported_event_count(requests, driver_route, closed) == 1U);
+            BOOST_TEST(body.find(path.string()) == std::string::npos);
+         }
+      }
+   }
+}
+
+#if FORGE_HAS_MDBX
+BOOST_AUTO_TEST_CASE(log_otlp_application_rolls_back_exporter_after_database_open_failure) {
+   BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+   auto application = db_shell_application{};
+   auto collector = fake_collector{application.runtime()};
+   const auto path = std::filesystem::temp_directory_path() /
+       ("forge-otlp-db-failure-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+   auto cleanup = boost::scope::scope_exit{[&] { std::filesystem::remove_all(path); }};
+   { auto file = std::ofstream{path}; file << "not a directory"; }
+   auto document = plugin_config(collector.endpoint(), {logger_route("forge.db.store")});
+   using value = forge::config::core::value;
+   document.set("plugins.log.otlp.enabled", true);
+   document.set("plugins.db.store.enabled", true);
+   document.set("plugins.db.store.stores", value::array_type{value{value::object_type{
+       {"name", value{"failure-fixture"}}, {"driver", value{"mdbx"}},
+       {"object", value{value::object_type{}}}, {"path", value{(path / "db").string()}}}}});
+   application.configure(document);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(application.runtime(), application.startup()), std::exception);
+   auto telemetry = application.apis().get<log_otlp::api>(log_otlp::api::ref());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(application.runtime(), telemetry->metrics()),
+                     log_otlp::exceptions::exporter_unavailable);
+   const auto requests = collector.requests();
+   BOOST_TEST(exported_event_count(requests, "forge.db.store", "composition.failed") == 1U);
+   for (const auto& request : requests) {
+      BOOST_TEST(request.body.find(path.string()) == std::string::npos);
+   }
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(log_otlp_macros_redact_nested_schema_values_before_interpolation_and_export_once) {
    BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));

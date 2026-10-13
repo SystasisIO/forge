@@ -118,7 +118,7 @@ BOOST_AUTO_TEST_CASE(wallet_provider_source_connects_configured_names_in_depende
       resolved_names.emplace_back(name);
       return apis.get<wallet_plugin::provider_source>(wallet_plugin::provider_source::ref())->get(std::string{name});
    };
-   auto signer = signer_plugin::descriptor(options);
+   auto signer = signer_plugin::plugin::descriptor(options);
    signer.enabled_by_default = true;
    signer.dependencies.push_back({"forge.plugins.crypto.wallet"});
    auto wallet = wallet_plugin::plugin::descriptor(

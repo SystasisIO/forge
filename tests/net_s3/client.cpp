@@ -1,4 +1,6 @@
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -23,6 +25,12 @@
 #include <string>
 #include <vector>
 #include <utility>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 import forge.asio.compute;
 import forge.net.s3.client;
@@ -149,6 +157,7 @@ struct endpoint : std::enable_shared_from_this<endpoint> {
    bool bad_range = false;
    bool part_started = false;
    std::function<void()> on_part;
+   std::function<void()> on_abort;
    std::function<void()> on_request;
    bool huge_control = false;
    bool bad_checksum = false;
@@ -233,6 +242,9 @@ struct endpoint : std::enable_shared_from_this<endpoint> {
          } else if (query.find("uploadId=") != std::string::npos) {
             if (request.method() == http::verb::delete_) {
                ++self->aborts;
+               if (self->on_abort) {
+                  self->on_abort();
+               }
                if (self->fail_abort) {
                   error(http::status::internal_server_error, "InternalError");
                } else {
@@ -384,6 +396,34 @@ asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::co
                                                   "filesystem failure was not typed with its numeric status");
                                        });
    require(server->mutations == mutations_before, "invalid file source reached a mutation request");
+#ifndef _WIN32
+   {
+      const auto fifo = directory / "upload-fifo";
+      require(::mkfifo(fifo.c_str(), 0600) == 0, "FIFO fixture could not be created");
+      auto fifo_client = s3::client{workers.get_executor(), config};
+      auto exceeded = std::make_shared<std::atomic_bool>(false);
+      auto rescue = std::shared_ptr<int>{new int{-1}, [](int* descriptor) {
+                                            if (*descriptor >= 0) {
+                                               ::close(*descriptor);
+                                            }
+                                            delete descriptor;
+                                         }};
+      auto watchdog = asio::steady_timer{co_await asio::this_coro::executor};
+      watchdog.expires_after(std::chrono::seconds{1});
+      watchdog.async_wait([exceeded, rescue, fifo](boost::system::error_code error) {
+         if (!error) {
+            exceeded->store(true);
+            // Release an old blocking FIFO open so failure remains bounded during test teardown.
+            *rescue = ::open(fifo.c_str(), O_RDWR | O_NONBLOCK);
+         }
+      });
+      co_await expect<s3::exceptions::io>([&] { return fifo_client.put(target, fifo); });
+      co_await fifo_client.shutdown();
+      watchdog.cancel();
+      require(!exceeded->load(), "nonregular file rejection or shutdown exceeded its bound");
+      require(server->mutations == mutations_before, "FIFO upload reached a mutation request");
+   }
+#endif
    const auto multipart = co_await client.put(multi_target, source);
    require(multipart.size == large_size && server->uploads.size() == 2, "automatic multipart is wrong");
    auto read = s3::read_options{};
@@ -429,8 +469,43 @@ asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::co
                   "failed cleanup replaced the original multipart failure or its recovery evidence");
        });
    require(server->aborts == aborted_before + 2, "failed multipart cleanup was retried");
+   {
+      auto recovering = s3::client{workers.get_executor(), config};
+      const auto executor = co_await asio::this_coro::executor;
+      auto cancellation = std::make_shared<asio::cancellation_signal>();
+      auto completed = std::make_shared<asio::steady_timer>(executor);
+      completed->expires_after(std::chrono::seconds{3});
+      auto done = std::make_shared<std::atomic_bool>(false);
+      auto failure = std::make_shared<std::exception_ptr>();
+      const auto aborts_before_cancel = server->aborts;
+      server->on_abort = [cancellation] { cancellation->emit(asio::cancellation_type::all); };
+      asio::co_spawn(executor, recovering.put(multi_target, source),
+                     asio::bind_cancellation_slot(cancellation->slot(),
+                                                  [completed, done, failure](std::exception_ptr error, s3::metadata) {
+                                                     *failure = std::move(error);
+                                                     done->store(true);
+                                                     completed->cancel();
+                                                  }));
+      boost::system::error_code ignored;
+      co_await completed->async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+      require(done->load() && *failure, "multipart cancellation did not complete within its bound");
+      server->on_abort = {};
+      try {
+         std::rethrow_exception(*failure);
+      } catch (const s3::exceptions::unknown_outcome& error) {
+         check_error(error);
+         require(frame_has(error, "upload_id", "fixture-upload") && frame_has(error, "bucket", "bucket") &&
+                     frame_has(error, "key", "multipart") && frame_has(error, "cleanup_attempted", "true") &&
+                     frame_has(error, "cleanup_confirmed", "false") &&
+                     frame_has(error, "completion_attempted", "false"),
+                 "caller cancellation lost the known multipart identity or failed-cleanup evidence");
+      }
+      co_await recovering.shutdown();
+      require(server->aborts == aborts_before_cancel + 1, "canceled multipart retried failed cleanup");
+   }
    server->fail_abort = false;
    server->fail_part = false;
+   const auto aborts_before_completion = server->aborts;
    server->lose_completion_response = true;
    co_await expect<s3::exceptions::unknown_outcome>(
        [&] { return client.put(multi_target, source); },
@@ -439,7 +514,7 @@ asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::co
                       frame_has(error, "completion_attempted", "true"),
                   "unconfirmed completion lost its reconciliation evidence");
        });
-   require(server->aborts == aborted_before + 2 && server->objects["/bucket/multipart"].size() == large_size,
+   require(server->aborts == aborts_before_completion && server->objects["/bucket/multipart"].size() == large_size,
            "client aborted a multipart upload after possible completion");
    server->lose_completion_response = false;
    const auto unknown_before = server->unknowns;

@@ -53,6 +53,22 @@ import forge.net.transport.session;
 #include "details/peer_failure.hxx"
 
 namespace forge::net::p2p::detail {
+
+dial_scheduler::policy dial_scheduler_policy(const address_resolution::policy& resolution,
+                                              const dialing::policy& direct, bool private_network) {
+   auto black_holes = direct.black_holes;
+   if (private_network) {
+      // Private networks are direct-TCP-only, but IPv6 reachability detection remains useful.
+      black_holes.udp_enabled = false;
+   }
+   return dial_scheduler::policy{
+       .resolution = resolution,
+       .ranker = direct.ranker,
+       .black_holes = std::move(black_holes),
+       .max_concurrent_attempts = direct.max_concurrent_attempts,
+   };
+}
+
 namespace {
 
 constexpr auto max_concurrent_attempts = std::size_t{4};

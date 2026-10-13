@@ -39,7 +39,12 @@ forge_add_contract(
 
 forge_add_contract(
    guestmacro
-   SOURCES guest_macro_contract.cpp
+   SOURCES guest_macro_contract.cpp asset_source_compat.cpp
+   DISPATCH_SOURCE guest_macro_contract.cpp
+   COMPILE_CHECKS wire_aliases.cpp
+   COMPILE_DEFINITIONS
+      CONSUMER_DECLARATION_VALUE=42
+      "CONSUMER_DECLARATION_TEXT=\"quoted \\\"value\\\" with space\""
 )
 
 forge_add_contract(
@@ -62,6 +67,17 @@ forge_add_contract(
 forge_add_contract(
    allocatortst
    SOURCES allocator_contract.cpp
+)
+
+forge_add_contract(
+   donorcompat
+   SOURCES donor_compatibility.cpp
+)
+
+forge_add_contract(
+   dispatchshdw
+   SOURCES dispatch_shadow.cpp dispatch_shadow_helper.cpp
+   DISPATCH_SOURCE dispatch_shadow.cpp
 )
 
 forge_add_contract(
@@ -150,6 +166,9 @@ forge_add_contract(
    SOURCE_ROOT "${_surface_source_root}"
    SOURCES surface_contract.cpp
    COMPILE_CHECKS ${_surface_staged_sources}
+   COMPILE_DEFINITIONS
+      CONSUMER_DECLARATION_VALUE=42
+      "CONSUMER_DECLARATION_TEXT=\"quoted \\\"value\\\" with space\""
 )
 
 forge_add_contract(

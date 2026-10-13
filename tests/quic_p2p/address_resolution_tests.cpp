@@ -20,7 +20,9 @@ module;
 #include <vector>
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
 
@@ -415,6 +417,32 @@ BOOST_AUTO_TEST_CASE(p2p_dns_address_expansion_maps_synchronous_resolver_failure
 
    BOOST_CHECK_THROW(expand(runtime, resolver, "/dns/synchronous-failure.test/tcp/4001"),
                      p2p::exceptions::internal);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dns_address_expansion_maps_asio_abort_but_not_other_system_errors_to_canceled) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto error : {boost::asio::error::operation_aborted, boost::asio::error::connection_reset}) {
+      auto resolver = p2p::detail::dns_address_expander{{}, {
+          .resolve_addresses = [error](std::string, dns::address_family, dns::query_options, std::stop_token)
+              -> boost::asio::awaitable<dns::address_response> {
+             throw boost::system::system_error{error};
+             co_return dns::address_response{};
+          },
+          .resolve_txt = [error](std::string, dns::query_options, std::stop_token)
+              -> boost::asio::awaitable<dns::text_response> {
+             throw boost::system::system_error{error};
+             co_return dns::text_response{};
+          }}};
+      for (const auto* address : {"/dns4/abort.test/tcp/4001", "/dns6/abort.test/tcp/4001", "/dnsaddr/abort.test"}) {
+         BOOST_TEST_CONTEXT(address << "/" << error) {
+            if (error == boost::asio::error::operation_aborted) {
+               BOOST_CHECK_THROW(expand(runtime, resolver, address), p2p::exceptions::canceled);
+            } else {
+               BOOST_CHECK_THROW(expand(runtime, resolver, address), p2p::exceptions::internal);
+            }
+         }
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dnsaddr_expansion_preserves_suffix_and_filters_expected_peer) {

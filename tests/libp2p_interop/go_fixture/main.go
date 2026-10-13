@@ -85,6 +85,10 @@ type options struct {
 	pnetCorrelation string
 	relayTTL        int
 	probeFile       string
+	echoBarrier     string
+	echoListener    string
+	echoWitness     string
+	dhtBarrier      string
 }
 
 func parseArgs() (options, error) {
@@ -120,6 +124,17 @@ func parseArgs() (options, error) {
 			out.relayTTL = n
 		case "--probe-file":
 			out.probeFile = value
+		case "--echo-completion-barrier":
+			out.echoBarrier = value
+		case "--echo-listener-completion":
+			out.echoListener = value
+		case "--echo-witness-file":
+			out.echoWitness = value
+		case "--dht-completion-barrier":
+			if value != "stop-file" || out.dhtBarrier != "" {
+				return options{}, fmt.Errorf("--dht-completion-barrier requires one stop-file value")
+			}
+			out.dhtBarrier = value
 		case "--ready-file":
 			out.readyFile = value
 		case "--stop-file":
@@ -181,6 +196,15 @@ func parseArgs() (options, error) {
 	}
 	if out.expected == 0 {
 		out.expected = 1
+	}
+	if err := validateEchoCompletionBarrier(out); err != nil {
+		return options{}, err
+	}
+	if err := validateEchoListenerCompletion(out); err != nil {
+		return options{}, err
+	}
+	if err := validateDHTCompletionBarrier(out); err != nil {
+		return options{}, err
 	}
 	return out, nil
 }
@@ -748,7 +772,15 @@ func listen(opts options) (err error) {
 	if err != nil {
 		return err
 	}
+	var orderly *echoListenerCompletion
+	if opts.echoListener != "" {
+		orderly = installEchoListenerCompletion(h.Host)
+	}
 	defer func() {
+		if orderly != nil {
+			err = orderly.finish(opts, err, h.Close)
+			return
+		}
 		err = errors.Join(err, h.Close())
 		if h.upgrades != nil && opts.resultFile != "" && upgradeProofProtocol(opts.scenario) != "" {
 			proof, proofErr := h.upgrades.finish(upgradeProofProtocol(opts.scenario), "", network.DirInbound)
@@ -803,6 +835,11 @@ func listen(opts options) (err error) {
 	recordReported := false
 	pnetReported := false
 	for {
+		if orderly != nil {
+			if err := orderly.publish(opts); err != nil {
+				return err
+			}
+		}
 		if !pnetReported && opts.scenario == "pnet" && h.pnet != nil && h.pnet.established.Load() > 0 {
 			result := map[string]any{
 				"implementation": "go",
@@ -1037,7 +1074,12 @@ func openEchoProtocol(ctx context.Context, h host.Host, peer peer.ID, payload []
 	if err != nil {
 		return protocolExchange{}, err
 	}
-	defer stream.Close()
+	retained := false
+	defer func() {
+		if !retained {
+			stream.Close()
+		}
+	}()
 	binding.attach(stream)
 	result := protocolExchange{connection: stream.Conn(), streamID: stream.ID(), protocol: stream.Protocol(), target: binding.target()}
 	if err := writeFrame(stream, payload); err != nil {
@@ -1054,6 +1096,7 @@ func openEchoProtocol(ctx context.Context, h host.Host, peer peer.ID, payload []
 	}
 	result.bytes = len(echoed)
 	binding.complete(stream)
+	retained = retainEchoCompletionStream(ctx, stream)
 	return result, nil
 }
 
@@ -1119,7 +1162,18 @@ func dial(opts options) (err error) {
 	}
 	var result map[string]any
 	var proofTarget upgradeTarget
+	var completion echoCompletionBarrier
+	var dhtCompletion dhtCompletionBarrier
+	var dhtConnection network.Conn
 	defer func() {
+		if opts.dhtBarrier != "" {
+			err = dhtCompletion.finish(opts, result, err, h.Close)
+			return
+		}
+		if opts.echoBarrier != "" {
+			err = completion.finish(opts, result, err, h.Close)
+			return
+		}
 		if closeErr := h.Close(); closeErr != nil {
 			if err != nil {
 				err = fmt.Errorf("%w; dialer cleanup failed: %v", err, closeErr)
@@ -1175,6 +1229,7 @@ func dial(opts options) (err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	ctx = completion.bind(ctx, opts)
 
 	if err := h.Connect(ctx, *info); err != nil {
 		if opts.scenario == "pnet" && opts.pnetControl != "" {
@@ -1351,6 +1406,22 @@ func dial(opts options) (err error) {
 		}
 		result["network_proof"] = proof
 	case "dht_pk_put_get", "dht_ipns_put_get":
+		connections := h.Network().ConnsToPeer(info.ID)
+		if len(connections) == 0 {
+			return fmt.Errorf("DHT value operation has no authenticated server connection")
+		}
+		connection := connections[0]
+		dhtConnection = connection
+		if connection.IsClosed() || connection.LocalPeer() != h.ID() || connection.RemotePeer() != info.ID ||
+			connection.RemoteMultiaddr() == nil || connection.ID() == "" {
+			return fmt.Errorf("DHT value operation lacks a live expected-peer connection witness")
+		}
+		// Initial authenticated routing connection, not per-RPC negotiation or a cached-value receipt.
+		result["connection_witness_source"] = "go-libp2p.network.Conn"
+		result["local_peer_id"] = connection.LocalPeer().String()
+		result["authenticated_remote_peer_id"] = connection.RemotePeer().String()
+		result["connection_remote_addr"] = connection.RemoteMultiaddr().String()
+		result["connection_id"] = connection.ID()
 		key, expected, err := dhtValueFixture(opts.scenario)
 		if err != nil {
 			return err
@@ -1414,6 +1485,14 @@ func dial(opts options) (err error) {
 		result["expected_error"] = expected
 	default:
 		return fmt.Errorf("unknown scenario %s", opts.scenario)
+	}
+	if opts.echoBarrier != "" {
+		return completion.wait(ctx, opts, result)
+	}
+	if opts.dhtBarrier != "" {
+		return dhtCompletion.wait(ctx, opts, result, func() bool {
+			return dhtConnection != nil && !dhtConnection.IsClosed()
+		})
 	}
 	if h.upgrades != nil && upgradeProofProtocol(opts.scenario) != "" {
 		return nil
@@ -1576,6 +1655,17 @@ func parsePathArgs(argv []string) (map[string]string, error) {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "pubsub-live" {
+		args, err := parsePubsubScoringArgs(os.Args[2:])
+		if err == nil {
+			err = runPubsubScoringLive(args)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "coordinated-live" {
 		args, err := parseCoordinatedArgs(os.Args[2:])
 		if err == nil {

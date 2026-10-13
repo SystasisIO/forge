@@ -1437,8 +1437,8 @@ def check_contract_tooling_boundaries(root: Path, files: list[Path], errors: lis
 
 
 def check_net_plugin_families(root: Path, errors: list[str]) -> None:
-   leaves = ("http/server", "p2p/node", "p2p/resolver", "p2p/diagnostics", "p2p/pubsub")
-   for retired in ("http", "p2p"):
+   leaves = ("http/server", "p2p/node", "p2p/resolver")
+   for retired in ("http", "p2p", "net/p2p/diagnostics", "net/p2p/pubsub"):
       if (root / "plugins" / retired).exists():
          errors.append(f"plugins/{retired}: retired network plugin family")
    for leaf in leaves:
@@ -1457,8 +1457,26 @@ def check_net_plugin_families(root: Path, errors: list[str]) -> None:
          errors.append(f"plugins/{family}: grouping may only add leaf subdirectories")
    retired_identity = re.compile(
       r"forge[.]plugins[.](?:http|p2p)[.]|forge::plugins::(?:http|p2p)::|"
-      r"forge_plugins_(?:http|p2p)_|forge/plugins/(?:http|p2p)/"
+      r"forge_plugins_(?:http|p2p)_|forge/plugins/(?:http|p2p)/|"
+      r"forge[.]plugins[.]net[.]p2p[.](?:pubsub|diagnostics)[.]|"
+      r"forge::plugins::net::p2p::(?:pubsub|diagnostics)::|"
+      r"\b(?:forge_)?plugins_net_p2p_(?:pubsub|diagnostics)\b|"
+      r"forge/plugins/net/p2p/(?:pubsub|diagnostics)/|"
+      r"forge[.]plugins[.]net[.]p2p[.]node[.](?:pubsub_source|diagnostics_source|host_event_source|"
+      r"pubsub_exceptions|diagnostics_exceptions|pubsub_types|diagnostics_types|resource_config)\b"
    )
+   node_include = root / "plugins/net/p2p/node/include/forge/plugins/net/p2p/node"
+   check_node_plugin_public_modules(root, node_include, errors)
+   for role in ("pubsub_api", "diagnostics_api", "events_api"):
+      interface = node_include / f"{role}.cppm"
+      if not interface.is_file() or not re.search(rf"\bclass\s+{role}\b", interface.read_text()):
+         errors.append(f"{interface.relative_to(root)}: missing focused node consumer contract")
+   main_api = node_include / "api.cppm"
+   if main_api.is_file() and re.search(
+      r"\bclass\s+(?:pubsub_api|diagnostics_api|events_api|pubsub_source|diagnostics_source|host_event_source)\b",
+      main_api.read_text(),
+   ):
+      errors.append(f"{main_api.relative_to(root)}: node api.cppm may only own the main api contract")
    candidates = source_files(root, SCAN_ROOTS)
    candidates += [root / "CMakeLists.txt", root / "cmake/ForgeConfig.cmake.in"]
    candidates += sorted((root / "plugins").rglob("CMakeLists.txt"))
@@ -1467,6 +1485,95 @@ def check_net_plugin_families(root: Path, errors: list[str]) -> None:
       for line_number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
          if retired_identity.search(line):
             errors.append(f"{path.relative_to(root)}:{line_number}: retired network plugin identity")
+
+
+def check_metadata_order(root: Path, path: Path, errors: list[str]) -> None:
+   source = path.read_text()
+   # Preserve line numbers while excluding comments and string literals.
+   source = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"',
+                   lambda match: re.sub(r"[^\n]", " ", match.group()), source)
+   def is_schema_rules(name: str, position: int) -> bool:
+      if name == "forge::schema::rules":
+         return True
+      if name != "rules":
+         return False
+      scopes: list[str] = []
+      for token in re.finditer(r"\bnamespace\s+([A-Za-z_]\w*(?:::\w+)*)\s*\{|[{}]", source[:position]):
+         if token.group(1):
+            scopes.append(token.group(1))
+         elif token.group() == "{":
+            scopes.append("")
+         elif scopes:
+            scopes.pop()
+      return "::".join(scope for scope in scopes if scope) == "forge::schema"
+
+   metadata_pattern = re.compile(
+      r"^\s*(?:BOOST_DESCRIBE_(?:STRUCT|ENUM)|FORGE_(?:DECLARE_SERIALIZATION|EXPORT_API|DECLARE_EXCEPTION\w*))\s*\("
+      r"|^\s*(?:export\s+)?template\s*<\s*>\s*struct\s+((?:forge::schema::)?rules)\s*<",
+      re.MULTILINE,
+   )
+   metadata = next((match for match in metadata_pattern.finditer(source)
+                    if match.group(1) is None or is_schema_rules(match.group(1), match.start())), None)
+   if metadata is None:
+      return
+   declaration = re.compile(
+      r"^\s*(?:export\s+)?(?:template\s*<[^;{}]*>\s*)?"
+      r"(?:class|struct|enum(?:\s+class)?)\s+([A-Za-z_][A-Za-z0-9_:]*)",
+      re.MULTILINE,
+   )
+   for match in declaration.finditer(source, metadata.start()):
+      if is_schema_rules(match.group(1), match.start()):
+         continue
+      line = source.count("\n", 0, match.start()) + 1
+      errors.append(f"{path.relative_to(root)}:{line}: ordinary types must precede the final metadata block")
+
+
+def check_node_plugin_public_modules(root: Path, include: Path, errors: list[str]) -> None:
+   for name in ("config", "types", "exceptions"):
+      path = include / f"{name}.cppm"
+      if not path.is_file() or f"export module forge.plugins.net.p2p.node.{name};" not in path.read_text():
+         errors.append(f"{path.relative_to(root)}: missing canonical node {name} module")
+   category_count = 0
+   for path in sorted(include.glob("*.cppm")):
+      source = path.read_text()
+      check_metadata_order(root, path, errors)
+      if path.stem.endswith(("_types", "_config", "_exceptions")):
+         errors.append(f"{path.relative_to(root)}: node values belong to canonical types/config/exceptions modules")
+      categories = len(re.findall(r"^\s*FORGE_DECLARE_EXCEPTION_CATEGORY\s*\(", source, re.MULTILINE))
+      category_count += categories
+      if categories and path.name != "exceptions.cppm":
+         errors.append(f"{path.relative_to(root)}: node error category belongs to exceptions.cppm")
+      if re.search(r"^\s*(?:export\s+)?(?:class|struct)\s+\w+_exceptions\b", source, re.MULTILINE):
+         errors.append(f"{path.relative_to(root)}: node must use one exceptions set")
+   if category_count != 1:
+      errors.append(f"{include.relative_to(root)}: node must declare exactly one exception category")
+   exceptions = include / "exceptions.cppm"
+   if exceptions.is_file() and not re.search(
+      r'FORGE_DECLARE_EXCEPTION_CATEGORY\s*\(\s*exceptions::code\s*,\s*"forge\.plugins\.net\.p2p\.node"\s*\)',
+      exceptions.read_text(),
+   ):
+      errors.append(f"{exceptions.relative_to(root)}: node exceptions must use the canonical plugin category")
+   types = include / "types.cppm"
+   if types.is_file():
+      source = types.read_text()
+      if re.search(r"\bimport\s+forge\.(?:schema\.|plugins\.net\.p2p\.node\.config\s*;)", source):
+         errors.append(f"{types.relative_to(root)}: consumer types must not import configuration/schema")
+      if re.search(r"^\s*(?:export\s+)?(?:class|struct)\s+(?:\w+_)?config\b", source, re.MULTILINE):
+         errors.append(f"{types.relative_to(root)}: declarative settings belong to config.cppm")
+
+
+def check_plugin_descriptor_ownership(root: Path, errors: list[str]) -> None:
+   for path in sorted((root / "plugins").rglob("descriptor.cpp*")):
+      errors.append(f"{path.relative_to(root)}: descriptor-only units are forbidden; use plugin::descriptor()")
+   for path in sorted((root / "plugins").rglob("plugin.cppm")):
+      source = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"', "", path.read_text())
+      if re.search(r"\bdefault_descriptor\s*\(", source):
+         errors.append(f"{path.relative_to(root)}: default_descriptor is forbidden; use plugin::descriptor()")
+      if re.search(
+         r"^\s*(?:export\s+)?(?:\[\[nodiscard\]\]\s*)?forge::app::plugin_descriptor\s+descriptor\s*\(",
+         source, re.MULTILINE,
+      ):
+         errors.append(f"{path.relative_to(root)}: descriptor must be a static plugin member")
 
 
 def check_plugin_impl_ownership(root: Path, errors: list[str]) -> None:
@@ -2450,6 +2557,7 @@ def main() -> int:
    check_vm_wasm_interpret_identities(root, files, errors)
    check_contract_tooling_boundaries(root, files, errors)
    check_plugin_impl_ownership(root, errors)
+   check_plugin_descriptor_ownership(root, errors)
    check_net_plugin_families(root, errors)
    check_chain_savanna_boundaries(root, errors)
    check_bls_value_ownership(root, files, errors)

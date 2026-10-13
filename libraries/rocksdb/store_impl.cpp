@@ -1,8 +1,13 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdarg>
+#include <cstdint>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -14,20 +19,26 @@ module;
 #include <vector>
 
 #include <rocksdb/db.h>
+#include <rocksdb/env.h>
+#include <rocksdb/listener.h>
 #include <rocksdb/options.h>
 #include <rocksdb/utilities/transaction_db.h>
 
 module forge.rocksdb.store;
 
 import forge.exceptions;
+import forge.log.logger;
 import forge.rocksdb.exceptions;
 
 #include "details/native.hxx"
+#include "details/native_diagnostics.hxx"
 #include "details/store_impl.hxx"
 
 namespace forge::rocksdb {
 
-store::impl::impl(config value) : settings{std::move(value)} {
+store::impl::impl(config value)
+    : settings{std::move(value)}, diagnostics{std::make_shared<detail::native_diagnostics>()} {
+   static_cast<void>(detail::native_diagnostics::process());
    if (settings.path.empty()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "RocksDB path must not be empty");
    }
@@ -75,9 +86,12 @@ store::impl::impl(config value) : settings{std::move(value)} {
    auto db_options = ::rocksdb::DBOptions{};
    db_options.create_if_missing = settings.create_if_missing;
    db_options.create_missing_column_families = settings.create_missing_column_families;
+   db_options.info_log = diagnostics;
+   db_options.listeners.push_back(diagnostics);
 
    std::vector<std::string> existing_names;
    const auto list_status = ::rocksdb::DB::ListColumnFamilies(db_options, path.string(), &existing_names);
+   diagnostics->drain();
    if (list_status.ok()) {
       for (const auto& name : existing_names) {
          if (std::find(names.begin(), names.end(), name) == names.end()) {
@@ -104,12 +118,15 @@ store::impl::impl(config value) : settings{std::move(value)} {
       descriptors,
       &opened_handles,
       &opened_db);
+   diagnostics->drain();
    detail::throw_if_error(open_status, "failed to open RocksDB TransactionDB store");
 
    db.reset(opened_db);
    for (std::size_t index = 0; index < names.size(); ++index) {
       handles.emplace(names[index], opened_handles[index]);
    }
+   ilog("forge.db.rocksdb", "store opened",
+        ("event", "store.opened")("families", handles.size()));
 }
 
 store::impl::~impl() {
@@ -119,6 +136,9 @@ store::impl::~impl() {
          static_cast<void>(db->DestroyColumnFamilyHandle(handle));
       }
    }
+   db.reset();
+   drain_diagnostics();
+   ilog("forge.db.rocksdb", "store closed", ("event", "store.closed"));
 }
 
 ::rocksdb::ColumnFamilyHandle* store::impl::require_handle(const family& column_family) const {
@@ -129,6 +149,25 @@ store::impl::~impl() {
                             forge::exceptions::ctx("family", column_family.name));
    }
    return iterator->second;
+}
+
+void store::impl::drain_diagnostics() const noexcept {
+   if (diagnostics->idle()) {
+      diagnostics->drain();
+      detail::drain_process_diagnostics();
+   }
+}
+
+void store::impl::acquire_transaction() const noexcept {
+   diagnostics->acquire_transaction();
+}
+
+void store::impl::release_transaction() const noexcept {
+   diagnostics->release_transaction();
+}
+
+void store::impl::record_commit(bool committed) const noexcept {
+   diagnostics->record_commit(committed);
 }
 
 } // namespace forge::rocksdb

@@ -3,7 +3,10 @@
 `forge_guest_runtime` is the freestanding wasm32 runtime used by Forge
 contracts. It supplies the CDT-derived allocator, C memory/string primitives,
 global new/delete, guest-local `errno`, libc++ abort glue and `memory.grow`
-integration.
+integration. It also supplies a pinned CDT musl C-library subset for ctype,
+numeric parsing, formatting, classic locale, time formatting and real exit
+callback registration. libc++ itself owns regex, locale facets and C++ ABI
+pure-virtual termination; the runtime does not replace these algorithms.
 
 The allocator supports aligned allocation, reuse, coalescing, `calloc` and
 `realloc`. Allocation failures terminate through the canonical contract check
@@ -14,6 +17,16 @@ they do not compile allocator or C runtime sources again. Private
 `details/*.hxx` contain declarations only and are not installed. There is no
 fake public module because the external C ABI comes from generated sysroot
 headers.
+
+Only deterministic `C`/`POSIX` locales are supported. Unsupported names fail
+closed; the empty name selects `C` without consulting a host environment.
+The locale adapter owns selection and guest-local errno only. Pinned musl owns
+the inspected C-locale conversion algorithms and LIFO exit-handler registry.
+`exit` explicitly drains that registry; `_Exit` and the host `eosio_exit` do not.
+Normal `apply` return does not drain global destructors. VM initialization
+discards globals and guest memory before each invocation and reruns startup,
+including after normal return, a trap or a host exit. See `PROVENANCE.md` for
+the exact donor files and deviations.
 
 Allocator fragmentation, alignment, reuse, growth and exhaustion are exercised
 by guest contracts and then executed through `forge.vm.wasm.interpret`. Oversized

@@ -9,7 +9,6 @@ module;
 export module forge.plugins.db.store.plugin;
 
 export import forge.plugins.db.store.api;
-export import forge.plugins.db.store.descriptor;
 
 import forge.api.core.binding;
 import forge.app.plugin;
@@ -21,6 +20,8 @@ export namespace forge::plugins::db::store {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -44,7 +45,5 @@ class plugin final : public forge::app::plugin {
    class store_handle_state_impl;
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::db::store

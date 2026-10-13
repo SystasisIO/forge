@@ -232,6 +232,9 @@ class dht::routing_table {
                                               dht::profile_capabilities capabilities,
                                               std::vector<dht::value_policy> value_policies = {},
                                               dht::options limits = {});
+// Checks declared protocol, capabilities and limits before application value
+// policies are supplied. A usable profile must still pass validate().
+void validate_declaration(const dht::profile& profile);
 void validate(const dht::profile& profile);
 [[nodiscard]] const dht::value_policy* value_policy_for(const dht::profile& profile,
                                                         std::span<const std::uint8_t> key) noexcept;

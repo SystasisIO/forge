@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -51,6 +52,17 @@ from coordinated_acceptance import (
     validate_suite as validate_coordinated_suite,
 )
 from coordinated_evidence import REUSE_RUNNER_IDS
+from pubsub_acceptance import (
+    SCENARIOS as PUBSUB_SCENARIOS,
+    is_record as is_pubsub_record,
+    validate_suite as validate_pubsub_suite,
+)
+from pubsub_extension_acceptance import (
+    SCENARIOS as PUBSUB_EXTENSION_SCENARIOS,
+    EVIDENCE_CONTRACTS as PUBSUB_EXTENSION_EVIDENCE_CONTRACTS,
+    is_record as is_pubsub_extension_record,
+    validate_suite as validate_pubsub_extension_suite,
+)
 
 from provenance import (
     FIXTURE_DONOR_DIRECTORIES,
@@ -105,13 +117,15 @@ ARTIFACT_SCHEMA = {
 }
 
 CANONICAL_RUNNER = Path("tests/libp2p_interop/runner.py")
-ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated")
+ACCEPTANCE_SUITES = ("stage6", "autonat", "mdns", "autorelay", "private-profile", "inline-muxer", "path", "coordinated", "pubsub-scoring", "pubsub-extensions")
 FOCUSED_SCENARIOS = {
     "autonat": AUTONAT_SCENARIOS, "mdns": MDNS_SCENARIOS, "autorelay": AUTORELAY_SCENARIOS,
     "private-profile": PRIVATE_OWNERS,
     "inline-muxer": {name: owner for name, owner in PRIVATE_PROFILE_SCENARIOS.items() if name not in PRIVATE_OWNERS},
     "path": {PATH_SCENARIO_ID: PATH_OWNER_ID},
     "coordinated": {value[0]: COORDINATED_OWNER_ID for value in COORDINATED_PROFILES.values()},
+    "pubsub-scoring": PUBSUB_SCENARIOS,
+    "pubsub-extensions": PUBSUB_EXTENSION_SCENARIOS,
 }
 DIRECTIONS = {"forge_to_go", "go_to_forge", "forge_to_rust", "rust_to_forge"}
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -315,6 +329,8 @@ def required_scenarios(
                 if registration == "registered" and evidence_contract not in (
                     set(EVIDENCE_CONTRACT_VALIDATORS) | AUTONAT_EVIDENCE_CONTRACTS | MDNS_EVIDENCE_CONTRACTS
                     | AUTORELAY_EVIDENCE_CONTRACTS | {PATH_EVIDENCE_CONTRACT} | COORDINATED_EVIDENCE_CONTRACTS
+                    | {evidence_contract_for(name) for name in PUBSUB_SCENARIOS}
+                    | PUBSUB_EXTENSION_EVIDENCE_CONTRACTS
                 ):
                     errors.append(
                         f"manifest {capability_id}/{scenario_id}: registered scenario has no executable validator"
@@ -614,6 +630,52 @@ def validate_execution_provenance(value: object, expected_head: str,
     return paths, errors
 
 
+def validate_quic_observer_provenance(value, inputs, paths):
+    """A separate read-only copy cannot masquerade as the original Rust binary."""
+    from rust_quic_observer import fixture_source_provenance, verify_observer_copy, verify_original_export
+    from pubsub_evidence import require
+    receipt = value.get("rust_quic_observer") if isinstance(value, dict) else None
+    if receipt is None:
+        return ["PubSub acceptance lacks explicit Rust QUIC observer provenance"]
+    try:
+        build = inputs["build_dir"]
+        observer_root = build / "quic-observer"
+        require(isinstance(receipt, dict) and "binary" in receipt and "commands" in receipt,
+                "invalid observer receipt")
+        verify_original_export(build / "fixture-deps", inputs["donors_root"] / "rust-libp2p")
+        verify_observer_copy({key: facts for key, facts in receipt.items() if key not in {"binary", "commands"}},
+                             build / "fixture-deps", observer_root)
+        cargo = value["tools"]["cargo"]["path"]
+        expected = [{"command": [cargo, *arguments, "--frozen", "--features", "quic-cause-observer"],
+                     "cwd": str(observer_root / "rust_fixture"),
+                     "environment": {"CARGO_NET_OFFLINE": "true", "RUSTUP_OFFLINE": "true"}}
+                    for arguments in (["test"], ["build", "--release"])]
+        require(receipt["commands"] == expected, "observer Cargo commands/features changed")
+        binary = receipt["binary"]
+        path = observer_root / "rust_fixture/target/release/forge-libp2p-rust-fixture"
+        require(set(binary) == {"path", "sha256"} and binary["path"] == str(path)
+                and path.is_file() and sha256_file(path) == binary["sha256"]
+                and path != paths.get("rust"), "observer binary/hash aliases original Rust")
+        source = inputs["source_dir"] / "rust_fixture"
+        copied = observer_root / "rust_fixture"
+        expected_sources = {file.relative_to(source) for file in source.rglob("*")
+                            if file.is_file() and "target" not in file.relative_to(source).parts}
+        actual_sources = set()
+        for directory, children, files in os.walk(copied):
+            children[:] = [name for name in children if name != "target"]
+            require(not any((Path(directory) / name).is_symlink() for name in children),
+                    "observer fixture has a symlinked source directory")
+            actual_sources.update((Path(directory) / name).relative_to(copied) for name in files)
+        names = sorted(str(path) for path in expected_sources)
+        require(actual_sources == expected_sources
+                and fixture_source_provenance(source, names) == fixture_source_provenance(copied, names),
+                "observer fixture source differs from locked original source")
+        paths["rust-quic-observer"] = path
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        return [f"Rust QUIC observer provenance: {error}"]
+    return []
+
+
 def raw_evidence_paths(value: object) -> set[Path]:
     paths: set[Path] = set()
     if isinstance(value, dict):
@@ -642,8 +704,10 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
     declarations: dict[Path, list[dict]] = {}
     non_stdout: set[Path] = set()
     stores: set[Path] = set()
+    from pubsub_quic_proof import original_stdout_owners
+    diagnostic_owners = original_stdout_owners(artifacts, root, binaries)
 
-    def visit(value, process=False, isolated=False):
+    def visit(value, process=False, isolated=False, configured_autonat_root=False):
         if isinstance(value, list):
             for nested in value:
                 visit(nested, process, isolated)
@@ -660,7 +724,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                     options, errors = command_options(native, native[1])
                     valid_command = (not errors and native[1] in {"listen", "dial", "destination", "dial-relay", "topology",
                                                                "autorelay-destination", "autorelay-service",
-                                                               "autorelay-relay", "autorelay-observe", "path-live", "coordinated-live"}
+                                                               "autorelay-relay", "autorelay-observe", "path-live", "coordinated-live", "pubsub-live"}
                                      and absolute_path(native[0]) in binaries.values())
                     for flag in ("--ready-file", "--result-file", "--stop-file", "--store-dir"):
                         path = path_within(options.get(flag), root)
@@ -677,27 +741,38 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                         non_stdout.add(path)
                 # `processes` is either a list or a map of role -> process.
                 child_process = key in {"owned_processes", "processes", "attempts", "listener_process", "process"}
-                visit(nested, child_process or (process and "log_file" not in value), isolated)
+                child_isolated = isolated or (configured_autonat_root and key == "native"
+                    and isinstance(nested, dict) and nested.get("suite") == "autonat")
+                visit(nested, child_process or (process and "log_file" not in value), child_isolated)
 
     for record in artifacts:
-        visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns", "path", "coordinated"))
+        # Only known raw roots and the exact configured AutoNAT -> native edge
+        # own namespace context; nested suite labels cannot grant it.
+        suite = record.get("suite") if isinstance(record, dict) else None
+        visit(record, isolated=suite in ("autonat", "mdns", "path", "coordinated"),
+              configured_autonat_root=suite == "plugin-autonat")
 
-    def clean(view):
+    def clean(view, path):
         terminal = view.get("terminal_status")
+        original = diagnostic_owners.get(path)
+        code = original["returncode"] if original is not None else 0
         return (type(view.get("pid")) is int and view["pid"] > 0
-                and terminal == {"exit_code": 0, "termination": "graceful"}
-                and type(terminal["exit_code"]) is int)
+                and terminal == {"exit_code": code, "termination": "graceful"}
+                and type(terminal["exit_code"]) is int
+                and (original is None or (view["pid"] == original["pid"]
+                     and view["command"] == original["command"])))
 
     verified: set[Path] = set()
     for path, views in declarations.items():
-        owner = next((view for view in views if clean(view)), None)
+        owner = next((view for view in views if clean(view, path)), None)
         if owner is None or path in non_stdout or any(path.is_relative_to(store) for store in stores):
             continue
         if any(
             view["command"] != owner["command"]
             or ("pid" in view and (type(view["pid"]) is not int or view["pid"] != owner["pid"]))
-            or ("terminal_status" in view and not clean(view))
-            or ("exit_code" in view and (type(view["exit_code"]) is not int or view["exit_code"] != 0))
+            or ("terminal_status" in view and not clean(view, path))
+            or ("exit_code" in view and (type(view["exit_code"]) is not int
+                                        or view["exit_code"] != owner["terminal_status"]["exit_code"]))
             or ("requested_log_file" in view and path_within(view["requested_log_file"], root) != path)
             or failure_text(view) or view.get("spawn_error") or view.get("cleanup_errors")
             for view in views
@@ -787,9 +862,9 @@ def validate_all_result_evidence(artifacts: list[object], indexed_evidence: dict
     for index, record in enumerate(artifacts):
         if not isinstance(record, dict):
             continue
-        if is_autorelay_record(record):
-            # PR9 echoes wrap snapshots rather than flattening result_file
-            # payloads. Its suite validator binds every final owned output.
+        if is_autorelay_record(record) or is_pubsub_record(record) or is_pubsub_extension_record(record):
+            # These suite validators bind their wrapped final owned outputs;
+            # they are not flattened result_file payloads.
             continue
         for result in raw_result_payloads(record):
             result_path = path_within(result["result_file"], artifact_root)
@@ -1708,7 +1783,61 @@ def validate_kademlia_evidence(result: dict, record: dict, _listener: Optional[d
     return validate_provider_evidence(result, listener_peer if isinstance(listener_peer, str) else None)
 
 
-def validate_rendezvous_evidence(result: dict, _record: dict, _listener: Optional[dict]) -> list[str]:
+def validate_automatic_rendezvous_unregister(result: dict, record: dict) -> list[str]:
+    """Only Forge-to-Rust adds node-owned shutdown proof to the existing wire case."""
+    if (record.get("dialer"), record.get("listener")) != ("forge", "rust"):
+        return []
+    proof = result.get("automatic_unregister")
+    if not isinstance(proof, dict):
+        return ["Rendezvous evidence lacks automatic_unregister from the managed Forge node"]
+    policy, before, after = (proof.get(field) for field in ("policy", "before", "after"))
+    if not all(isinstance(value, dict) for value in (policy, before, after)):
+        return ["Rendezvous automatic_unregister lacks policy and full before/after snapshots"]
+    errors = []
+    managed, control, point = (proof.get(field) for field in ("managed_peer_id", "control_peer_id", "point_peer_id"))
+    if (not all(isinstance(peer, str) and peer for peer in (managed, control, point))
+            or len({managed, control, point}) != 3
+            or control != result.get("local_peer_id") or point != record.get("peer_id")):
+        errors.append("Rendezvous automatic_unregister has mixed or unbound managed/control/point identities")
+    if (result.get("implementation") != "forge" or proof.get("source") != "forge.node.topology.shutdown"
+            or proof.get("namespace") != "forge.discovery" or policy.get("mode") != "managed"
+            or policy.get("dht_enabled") is not False or policy.get("peer_exchange_enabled") is not False):
+        errors.append("Rendezvous automatic_unregister lacks the isolated managed-node ownership contract")
+    expected_integers = (
+        (policy, "low", 1), (policy, "target", 1), (policy, "high", 3), (policy, "rendezvous_points", 1),
+        (result, "wire_registration_count", 1), (result, "record_address_count", 1),
+        (result, "registered_ttl_seconds", 7200), (result, "discovered_ttl_seconds", 7200),
+        (before, "registration_count", 2), (before, "managed_count", 1), (before, "control_count", 1),
+        (before, "managed_ttl_seconds", 7200), (before, "control_ttl_seconds", 7200),
+        (after, "registration_count", 1), (after, "managed_count", 0), (after, "control_count", 1),
+        (after, "control_ttl_seconds", 7200), (proof, "full_discover_requests", 2),
+        (proof, "discover_cookie_bytes", 0), (proof, "unregister_failure_count", 0),
+        (result, "sanitized_registration_count", 0),
+    )
+    if any(type(owner.get(field)) is not int or owner[field] != expected
+           for owner, field, expected in expected_integers):
+        errors.append("Rendezvous automatic_unregister lacks exact 2-to-1 full snapshots, TTL7200 or zero failures")
+    if (before.get("managed_record_valid") is not True or not positive_integer(before.get("managed_record_sequence"))
+            or not sha256_value(before.get("managed_record_sha256")) or result.get("loopback_filtered") is not True):
+        errors.append("Rendezvous automatic_unregister lacks a valid signed managed record and existing filter proof")
+    sequence, digest = result.get("record_sequence"), result.get("record_sha256")
+    if (not positive_integer(sequence) or not sha256_value(digest)
+            or any(type(snapshot.get("control_record_sequence")) is not int
+                   or snapshot["control_record_sequence"] != sequence
+                   or snapshot.get("control_record_sha256") != digest for snapshot in (before, after))):
+        errors.append("Rendezvous automatic_unregister changed or failed to bind the original signed control record")
+    operations = [
+        "managed.async_listen", "managed.async_start", "managed.async_refresh_discovery",
+        "observer.full_discover.before", "managed.request_stop", "managed.async_stop", "observer.full_discover.after",
+    ]
+    elapsed = proof.get("elapsed_ms")
+    if (any(proof.get(field) is not True for field in ("refresh_joined", "request_stop_called", "async_stop_joined"))
+            or proof.get("joined_operations") != operations or type(elapsed) is not int or not 0 <= elapsed < 60_000):
+        errors.append("Rendezvous automatic_unregister lacks ordered joined refresh/stop and an immediate pre-TTL observation")
+    return errors
+
+
+def validate_rendezvous_evidence(result: dict, record: dict, _listener: Optional[dict]) -> list[str]:
     if (
         result.get("negotiated_protocol") == "/rendezvous/1.0.0"
         and positive_integer(result.get("wire_registration_count"))
@@ -1720,7 +1849,7 @@ def validate_rendezvous_evidence(result: dict, _record: dict, _listener: Optiona
         and positive_integer(result.get("discovered_ttl_seconds"))
         and positive_integer(result.get("cookie_bytes"))
     ):
-        return []
+        return validate_automatic_rendezvous_unregister(result, record)
     return ["Rendezvous evidence lacks the register/discover wire record proof"]
 
 
@@ -2014,6 +2143,11 @@ def validate_successful_raw_record(
         if expected_evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS and (
                 options.get("--addr") != record.get("addr") or options.get("--peer-id") != record.get("peer_id")):
             errors.append("private/inline dial argv differs from the exact observed peer/endpoint")
+        if (expected_evidence_contract == evidence_contract_for("rendezvous_rust")
+                and (record.get("dialer"), record.get("listener")) == ("forge", "rust")
+                and (options.get("--payload") != "automatic_unregister"
+                     or options.get("--peer-id") != record.get("peer_id") or options.get("--addr") != record.get("addr"))):
+            errors.append("automatic Rendezvous UNREGISTER dial argv lacks its selector or exact Rust point")
         log_file = attempt.get("log_file")
         if not isinstance(log_file, str):
             errors.append("raw runner command attempt lacks a log file")
@@ -2255,6 +2389,9 @@ def validate(
     )
     errors.extend(input_errors)
     errors.extend(validate_donor_provenance(root, artifact.get("fixture_provenance"), inputs))
+    if suite in {"pubsub-scoring", "pubsub-extensions"} or isinstance(artifact.get("fixture_provenance"), dict) \
+            and "rust_quic_observer" in artifact["fixture_provenance"]:
+        errors.extend(validate_quic_observer_provenance(artifact.get("fixture_provenance"), inputs, binary_paths))
     errors.extend(validate_runner_argv(
         root, artifact.get("runner_argv"), manifest_path, inputs, binary_paths, suite
     ))
@@ -2271,8 +2408,11 @@ def validate(
     autorelay_records = [record for record in artifacts if is_autorelay_record(record)]
     path_records = [record for record in artifacts if is_path_record(record)]
     coordinated_records = [record for record in artifacts if is_coordinated_record(record)]
+    pubsub_records = [record for record in artifacts if is_pubsub_record(record)]
+    pubsub_extension_records = [record for record in artifacts if is_pubsub_extension_record(record)]
     base_records = [record for record in artifacts if not is_autorelay_record(record) and not is_path_record(record)
-                    and not is_coordinated_record(record)
+                    and not is_coordinated_record(record) and not is_pubsub_record(record)
+                    and not is_pubsub_extension_record(record)
                     and (not isinstance(record, dict) or record.get("suite") not in ("autonat", "mdns"))]
     autonat_required = {key: value for key, value in required.items() if key[1] in AUTONAT_SCENARIOS}
     mdns_required = {key: value for key, value in required.items() if key[1] in MDNS_SCENARIOS}
@@ -2280,9 +2420,12 @@ def validate(
     path_required = {key: value for key, value in required.items() if key[1] == PATH_SCENARIO_ID}
     coordinated_required = {key: value for key, value in required.items()
                             if key[1] in FOCUSED_SCENARIOS["coordinated"]}
+    pubsub_required = {key: value for key, value in required.items() if key[1] in PUBSUB_SCENARIOS}
+    pubsub_extension_required = {key: value for key, value in required.items() if key[1] in PUBSUB_EXTENSION_SCENARIOS}
     base_required = {key: value for key, value in required.items()
                      if key[1] not in (set(AUTONAT_SCENARIOS) | set(MDNS_SCENARIOS) | set(AUTORELAY_SCENARIOS)
-                                       | {PATH_SCENARIO_ID} | set(FOCUSED_SCENARIOS["coordinated"]))}
+                                       | {PATH_SCENARIO_ID} | set(FOCUSED_SCENARIOS["coordinated"]) | set(PUBSUB_SCENARIOS)
+                                       | set(PUBSUB_EXTENSION_SCENARIOS))}
     indexed_evidence, evidence_errors = validate_evidence_index(
         artifact_path, artifact_root, artifacts, artifact.get("evidence_index"), binary_paths
     )
@@ -2290,6 +2433,51 @@ def validate(
     errors.extend(validate_all_result_evidence(artifacts, indexed_evidence, artifact_root))
 
     used_evidence: set[Path] = set()
+    def load_pubsub_json(value):
+        path = path_within(value, artifact_root)
+        if path is None or path not in indexed_evidence or path.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError("PubSub output absent from verified bounded evidence index")
+        # The suite owns the exact permitted original/companion scope. Hashes
+        # and immutable JSON binding apply equally to diagnostic originals.
+        payload = load_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError("PubSub raw output must be a JSON object")
+        return payload
+
+    if suite == "pubsub-scoring" or pubsub_required or pubsub_records:
+        for record in pubsub_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("PubSub cases reuse raw process evidence")
+            used_evidence.update(paths)
+        key_path = (root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key").resolve()
+        fingerprint, fingerprint_errors = pnet_fingerprint_for_launcher_key(str(key_path), artifact_root)
+        errors.extend(fingerprint_errors)
+        errors.extend(validate_pubsub_suite(pubsub_records, pubsub_required, artifact_root, binary_paths,
+            load_pubsub_json, pnet_key_file=key_path, pnet_fingerprint=fingerprint))
+    if suite == "pubsub-scoring":
+        if base_records or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records or pubsub_extension_records:
+            errors.append("focused PubSub suite contains unrelated records")
+        return errors, True
+    if pubsub_records and suite != "stage6":
+        errors.append("unrelated focused suite contains PubSub records")
+    if suite == "pubsub-extensions" or pubsub_extension_required or pubsub_extension_records:
+        for record in pubsub_extension_records:
+            paths = {path.resolve() for path in raw_evidence_paths(record)}
+            if paths & used_evidence:
+                errors.append("extension cases reuse raw process evidence")
+            used_evidence.update(paths)
+        key_path = (root / CANONICAL_RUNNER.parent / "fixtures/pnet/swarm.key").resolve()
+        fingerprint, fingerprint_errors = pnet_fingerprint_for_launcher_key(str(key_path), artifact_root)
+        errors.extend(fingerprint_errors)
+        errors.extend(validate_pubsub_extension_suite(pubsub_extension_records, pubsub_extension_required,
+            artifact_root, binary_paths, load_pubsub_json, pnet_key_file=key_path, pnet_fingerprint=fingerprint))
+    if suite == "pubsub-extensions":
+        if base_records or autonat_records or mdns_records or autorelay_records or path_records or coordinated_records or pubsub_records:
+            errors.append("focused extensions suite contains unrelated records")
+        return errors, True
+    if pubsub_extension_records and suite != "stage6":
+        errors.append("unrelated focused suite contains extension records")
     if suite == "coordinated" or coordinated_required or coordinated_records:
         def load_coordinated_json(value):
             path = path_within(value, artifact_root)
@@ -2474,7 +2662,7 @@ def validate(
         errors.append(f"focused {suite} suite must cover every record exactly once without unrelated records")
     return errors, any(
         status == ARTIFACT_SCHEMA["limited_status"] for _, status, _, _, _, _, _ in required.values()
-    )
+    ) or bool(pubsub_extension_records)
 
 
 CURRENT_FIXTURES = {
@@ -2622,11 +2810,31 @@ def semantic_fixture(scenario_id: str) -> tuple[dict, dict, Optional[dict]]:
     elif scenario_id == "kademlia_amino":
         result["network_proof"] = semantic_provider_network_proof()
     elif scenario_id == "rendezvous_rust":
+        record["listener"] = "rust"
         result.update({
             "negotiated_protocol": "/rendezvous/1.0.0", "wire_registration_count": 1,
             "signed_peer_record_valid": True, "matching_peer_record": True,
-            "record_sequence": 1, "record_address_count": 1, "registered_ttl_seconds": 60,
-            "discovered_ttl_seconds": 60, "cookie_bytes": 8,
+            "record_sequence": 1, "record_address_count": 1, "registered_ttl_seconds": 7200,
+            "discovered_ttl_seconds": 7200, "cookie_bytes": 8,
+            "sanitized_registration_count": 0, "loopback_filtered": True,
+            "local_peer_id": "control-peer", "record_sha256": "1" * 64,
+            "automatic_unregister": {
+                "source": "forge.node.topology.shutdown", "namespace": "forge.discovery",
+                "managed_peer_id": "managed-peer", "control_peer_id": "control-peer", "point_peer_id": "listener-peer",
+                "policy": {"mode": "managed", "low": 1, "target": 1, "high": 3, "rendezvous_points": 1,
+                           "dht_enabled": False, "peer_exchange_enabled": False},
+                "before": {"registration_count": 2, "managed_count": 1, "control_count": 1,
+                           "managed_ttl_seconds": 7200, "managed_record_valid": True,
+                           "managed_record_sequence": 2, "managed_record_sha256": "2" * 64,
+                           "control_ttl_seconds": 7200, "control_record_sequence": 1, "control_record_sha256": "1" * 64},
+                "after": {"registration_count": 1, "managed_count": 0, "control_count": 1,
+                          "control_ttl_seconds": 7200, "control_record_sequence": 1, "control_record_sha256": "1" * 64},
+                "refresh_joined": True, "request_stop_called": True, "async_stop_joined": True,
+                "joined_operations": ["managed.async_listen", "managed.async_start", "managed.async_refresh_discovery",
+                                      "observer.full_discover.before", "managed.request_stop", "managed.async_stop",
+                                      "observer.full_discover.after"],
+                "full_discover_requests": 2, "discover_cookie_bytes": 0, "unregister_failure_count": 0, "elapsed_ms": 250,
+            },
         })
     elif scenario_id == "pnet":
         result.update({
@@ -2938,6 +3146,7 @@ def self_test() -> int:
             "negotiated_protocol", "wire_registration_count", "signed_peer_record_valid",
             "matching_peer_record", "record_sequence", "record_address_count",
             "registered_ttl_seconds", "discovered_ttl_seconds", "cookie_bytes",
+            "automatic_unregister", "local_peer_id", "record_sha256",
         ),
         "pnet": (
             "pnet_enabled", "negotiated_pnet", "pnet_fingerprint", "identify_observed",
@@ -2952,6 +3161,72 @@ def self_test() -> int:
             if not validator(result, record, listener):
                 print(f"self-test failed: {scenario_id} accepted without {field}", file=sys.stderr)
                 return 1
+    unregister_mutations = (
+        (("automatic_unregister",), None), (("automatic_unregister",), {}),
+        (("automatic_unregister", "policy"), None),
+        (("automatic_unregister", "before"), None),
+        (("automatic_unregister", "after"), None),
+        (("automatic_unregister", "source"), "raw.unregister"),
+        (("automatic_unregister", "namespace"), "another.namespace"),
+        (("automatic_unregister", "managed_peer_id"), "control-peer"),
+        (("automatic_unregister", "managed_peer_id"), "listener-peer"),
+        (("automatic_unregister", "managed_peer_id"), []),
+        (("automatic_unregister", "control_peer_id"), "managed-peer"),
+        (("automatic_unregister", "point_peer_id"), "wrong-point"),
+        (("local_peer_id",), "wrong-control"), (("record_sha256",), "3" * 64),
+        (("automatic_unregister", "policy", "mode"), "static_only"),
+        (("automatic_unregister", "policy", "low"), 2),
+        (("automatic_unregister", "policy", "target"), 2),
+        (("automatic_unregister", "policy", "high"), 4),
+        (("automatic_unregister", "policy", "rendezvous_points"), 2),
+        (("automatic_unregister", "policy", "dht_enabled"), True),
+        (("automatic_unregister", "policy", "peer_exchange_enabled"), True),
+        (("automatic_unregister", "before", "registration_count"), 3),
+        (("automatic_unregister", "before", "managed_count"), 0),
+        (("automatic_unregister", "before", "managed_count"), True),
+        (("automatic_unregister", "before", "control_count"), 0),
+        (("automatic_unregister", "before", "managed_ttl_seconds"), 1),
+        (("automatic_unregister", "before", "control_ttl_seconds"), 1),
+        (("automatic_unregister", "before", "managed_record_valid"), False),
+        (("automatic_unregister", "before", "managed_record_sequence"), 0),
+        (("automatic_unregister", "before", "managed_record_sha256"), "not-a-digest"),
+        (("automatic_unregister", "before", "control_record_sequence"), 2),
+        (("automatic_unregister", "before", "control_record_sha256"), "3" * 64),
+        (("automatic_unregister", "after", "registration_count"), 2),
+        (("automatic_unregister", "after", "managed_count"), 1),
+        (("automatic_unregister", "after", "control_count"), 0),
+        (("automatic_unregister", "after", "control_ttl_seconds"), 1),
+        (("automatic_unregister", "after", "control_record_sequence"), 2),
+        (("automatic_unregister", "after", "control_record_sha256"), "3" * 64),
+        (("automatic_unregister", "refresh_joined"), False),
+        (("automatic_unregister", "request_stop_called"), False),
+        (("automatic_unregister", "async_stop_joined"), False),
+        (("automatic_unregister", "joined_operations"), ["managed.async_stop"]),
+        (("automatic_unregister", "full_discover_requests"), 3),
+        (("automatic_unregister", "discover_cookie_bytes"), 8),
+        (("automatic_unregister", "unregister_failure_count"), 1),
+        (("automatic_unregister", "unregister_failure_count"), False),
+        (("automatic_unregister", "elapsed_ms"), 60_000),
+        (("automatic_unregister", "elapsed_ms"), -1),
+        (("automatic_unregister", "elapsed_ms"), True),
+    )
+    for path, value in unregister_mutations:
+        result, record, listener = semantic_fixture("rendezvous_rust")
+        owner = result
+        for field in path[:-1]:
+            owner = owner[field]
+        owner[path[-1]] = value
+        if not validate_rendezvous_evidence(result, record, listener):
+            print(f"self-test failed: automatic Rendezvous UNREGISTER accepted mutation {path}", file=sys.stderr)
+            return 1
+    result, record, listener = semantic_fixture("rendezvous_rust")
+    result["implementation"] = "rust"
+    record.update({"dialer": "rust", "listener": "forge"})
+    for field in ("automatic_unregister", "local_peer_id", "record_sha256"):
+        result.pop(field)
+    if validate_rendezvous_evidence(result, record, listener):
+        print("self-test failed: reverse Rust-to-Forge Rendezvous proof now requires automatic unregister", file=sys.stderr)
+        return 1
     result, record, listener = semantic_fixture("pnet")
     result["implementation"] = "rust"
     listener["implementation"] = "rust"

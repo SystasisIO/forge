@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -18,6 +19,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,6 +37,8 @@ module;
 #include <boost/compat/move_only_function.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -393,6 +397,8 @@ node::impl::request_relay_reservation(const peer_id& relay_peer, relay::reservat
    refresh_relay_publication();
    start_autorelay();
    notify_autorelay_changed();
+   dlog("forge.net.p2p.relay", "P2P relay reservation committed",
+        ("event", "relay.reservation_committed")("reservation_id", result->id)("automatic", automatic));
    co_return std::move(*result);
 }
 

@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -56,6 +57,23 @@ BOOST_AUTO_TEST_CASE(varint_rejects_overlong_zero_payload_before_shift) try {
                          [](const auto& error) { return std::string{error.what()}.find("overflows") != std::string::npos; });
 }
 FORGE_LOG_AND_RETHROW();
+
+BOOST_AUTO_TEST_CASE(varint_encoded_size_matches_canonical_uint64_boundaries) {
+   using forge::multiformats::varint_encode;
+   using forge::multiformats::varint_encoded_size;
+   static_assert(noexcept(varint_encoded_size(0)));
+   BOOST_CHECK_EQUAL(varint_encoded_size(0), 1U);
+   BOOST_CHECK_EQUAL(varint_encoded_size(1), 1U);
+   for (auto bits = 7U; bits < 64U; bits += 7U) {
+      const auto boundary = std::uint64_t{1} << bits;
+      for (const auto value : {boundary - 1, boundary, boundary + 1}) {
+         BOOST_CHECK_EQUAL(varint_encoded_size(value), varint_encode(value).size());
+      }
+   }
+   const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+   BOOST_CHECK_EQUAL(varint_encoded_size(maximum), 10U);
+   BOOST_CHECK_EQUAL(varint_encoded_size(maximum), varint_encode(maximum).size());
+}
 
 BOOST_AUTO_TEST_CASE(multicodec_constants_match_libp2p_foundation_codes) try {
    using enum forge::multiformats::multicodec_code;

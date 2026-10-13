@@ -3,6 +3,7 @@ module;
 #include "details/rendezvous_time.hxx"
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -20,6 +21,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,6 +48,8 @@ module;
 #include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -286,6 +290,8 @@ diagnostics_relays(std::span<const peer_store::relay_record> records, std::size_
        .duplicates = impl.metrics_value.pubsub_duplicates,
        .invalid_messages = impl.metrics_value.pubsub_invalid_messages,
        .control_messages = impl.metrics_value.pubsub_control_messages,
+       .trace_failures = impl.pubsub_value.trace_failures.load(std::memory_order_relaxed),
+       .application_score_failures = impl.pubsub_value.application_score_failures.load(std::memory_order_relaxed),
    };
 }
 
@@ -299,6 +305,7 @@ exchange_rendezvous(const auto& self, const peer_id& peer, rendezvous::message r
    deadline.arm([&stream] noexcept { stream.request_cancel(); });
    try {
       co_await stream.async_write(rendezvous::codec::encode(request, self->options.limits.rendezvous));
+      co_await stream.async_close_write();
       auto buffer = std::vector<std::uint8_t>{};
       auto response = rendezvous::codec::decode(
           co_await async_read_length_delimited(stream, buffer, self->options.limits.rendezvous.max_message_size),
@@ -502,7 +509,7 @@ node::impl::exchange_rendezvous(const peer_id& peer, rendezvous::message request
 }
 
 node::node(forge::asio::runtime& runtime, node::options options) {
-   normalize_legacy_discovery(options);
+   normalize_legacy_discovery(options.limits.discovery, options.limits.topology);
    validate(options);
    // Relay roles are policy-owned; advertised capability bits are derived facts.
    constexpr auto relay_service_bits = capabilities::relay | capabilities::relay_reservation;
@@ -1139,7 +1146,9 @@ void node::stop() {
              terminal.release();
              if (failure) {
                 try { std::rethrow_exception(failure); }
-                catch (...) { forge::exceptions::capture_and_log("P2P path shutdown failed"); }
+                catch (...) {
+                   elog("forge.net.p2p", "P2P path shutdown failed", ("event", "lifecycle.path_shutdown_failed"));
+                }
              }
           });
    } catch (...) {

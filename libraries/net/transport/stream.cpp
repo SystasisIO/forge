@@ -134,14 +134,14 @@ boost::asio::awaitable<void> stream::async_write(std::span<const std::uint8_t> b
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_chunk(chunk{bytes});
+   return impl_->model->async_write_chunk(chunk{bytes});
 }
 
 boost::asio::awaitable<void> stream::async_write(chunk bytes) {
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_chunk(std::move(bytes));
+   return impl_->model->async_write_chunk(std::move(bytes));
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read() {
@@ -163,14 +163,14 @@ boost::asio::awaitable<void> stream::async_write_frame(std::span<const std::uint
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_frame_chunk(chunk{bytes});
+   return impl_->model->async_write_frame_chunk(chunk{bytes});
 }
 
 boost::asio::awaitable<void> stream::async_write_frame(chunk bytes) {
    if (!impl_ || !impl_->model) {
       FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
    }
-   co_await impl_->model->async_write_frame_chunk(std::move(bytes));
+   return impl_->model->async_write_frame_chunk(std::move(bytes));
 }
 
 boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read_frame() {
@@ -203,6 +203,17 @@ boost::asio::awaitable<chunk> stream::async_read_frame_chunk(frame_options optio
       }
       impl_->buffer.append(view, options);
    }
+}
+
+boost::asio::awaitable<void> stream::async_close_write() {
+   if (!impl_ || !impl_->model) {
+      FORGE_THROW_EXCEPTION(exceptions::closed, "invalid transport stream");
+   }
+   auto state = impl_;
+   if (state->close_started.load(std::memory_order_acquire)) {
+      FORGE_THROW_EXCEPTION(exceptions::closed, "transport stream terminal close has started");
+   }
+   co_await state->model->async_close_write();
 }
 
 boost::asio::awaitable<void> stream::async_close() {
@@ -285,6 +296,11 @@ boost::asio::awaitable<void> detail::stream_concept::async_write_frame_chunk(chu
 
 boost::asio::awaitable<chunk> detail::stream_concept::async_read_chunk() {
    co_return chunk{co_await async_read()};
+}
+
+boost::asio::awaitable<void> detail::stream_concept::async_close_write() {
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "transport model does not support write half-close");
+   co_return;
 }
 
 } // namespace forge::net::transport

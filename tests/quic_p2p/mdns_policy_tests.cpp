@@ -1,6 +1,9 @@
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
+#include <array>
+#include <cstddef>
+#include <utility>
 
 import forge.net.p2p.exceptions;
 import forge.net.p2p.mdns_policy;
@@ -50,6 +53,23 @@ BOOST_AUTO_TEST_CASE(resource_bounds_must_be_non_zero) {
    expect_zero_rejected([](auto& value) { value.max_pending_packets = 0; });
    expect_zero_rejected([](auto& value) { value.max_packet_size = 0; });
    expect_zero_rejected([](auto& value) { value.max_records_per_packet = 0; });
+}
+
+BOOST_AUTO_TEST_CASE(service_resource_bounds_are_inclusive_even_when_disabled) {
+   for (const auto& [field, maximum] : std::array{
+            std::pair{&p2p::mdns_policy::max_interfaces, std::size_t{256}},
+            std::pair{&p2p::mdns_policy::max_pending_packets, std::size_t{1024}},
+            std::pair{&p2p::mdns_policy::max_records_per_packet, std::size_t{1024}},
+            std::pair{&p2p::mdns_policy::max_addresses_per_peer, std::size_t{64}}}) {
+      for (const auto enabled : {false, true}) {
+         auto policy = p2p::mdns_policy{};
+         policy.enabled = enabled;
+         policy.*field = maximum;
+         BOOST_CHECK_NO_THROW(p2p::validate(policy));
+         policy.*field = maximum + 1;
+         check_invalid(policy);
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(packet_size_bounds_are_inclusive) {

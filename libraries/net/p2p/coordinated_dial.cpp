@@ -3,6 +3,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>

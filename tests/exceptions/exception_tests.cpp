@@ -43,11 +43,12 @@ struct retry_details {
 
 class busy : public forge::exceptions::coded_exception<code, code::busy> {
  public:
-   busy(retry_details data, std::string message, forge::exceptions::fields context,
-        std::source_location location)
+   busy(retry_details data, std::string message, forge::exceptions::fields context, std::source_location location)
        : coded_exception(std::move(message), std::move(context), location), _data(std::move(data)) {}
 
-   const retry_details& data() const noexcept { return _data; }
+   const retry_details& data() const noexcept {
+      return _data;
+   }
 
  private:
    retry_details _data;
@@ -136,8 +137,8 @@ BOOST_AUTO_TEST_CASE(typed_data_throw_preserves_move_only_data_and_call_site) {
    unsigned evaluations = 0;
    auto data = [&] {
       ++evaluations;
-      return test_product_exceptions::retry_details{
-         std::chrono::milliseconds{250}, std::make_unique<std::string>("private operation data")};
+      return test_product_exceptions::retry_details{std::chrono::milliseconds{250},
+                                                    std::make_unique<std::string>("private operation data")};
    };
 
    try {

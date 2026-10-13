@@ -4,8 +4,11 @@ module;
 #include <forge/api/core/macros.hpp>
 
 #include <optional>
+#include <chrono>
+#include <cstdint>
 #include <utility>
 #include <vector>
+#include <stop_token>
 
 export module forge.plugins.net.p2p.node.api;
 
@@ -27,9 +30,12 @@ import forge.api.transport.server;
 import forge.net.p2p.identity;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.protocol;
 import forge.net.p2p.node;
+import forge.multiformats.multiaddr;
+import forge.plugins.net.p2p.node.peer_contribution;
 import forge.plugins.net.p2p.node.types;
 
 export namespace forge::plugins::net::p2p::node {
@@ -43,12 +49,23 @@ class api : public forge::api::core::contract<api> {
    [[nodiscard]] virtual std::vector<forge::net::p2p::endpoint> local_endpoints() const = 0;
    [[nodiscard]] virtual info network_info() const = 0;
 
+   virtual boost::asio::awaitable<forge::net::p2p::node::session_info>
+   connect(forge::net::p2p::endpoint endpoint, forge::net::p2p::node::connect_options options = {}) = 0;
+   virtual boost::asio::awaitable<forge::net::p2p::node::session_info>
+   connect(forge::multiformats::multiaddr address, forge::net::p2p::node::connect_options options = {}) = 0;
+   virtual boost::asio::awaitable<std::chrono::milliseconds>
+   ping(forge::net::p2p::peer_id peer, forge::net::p2p::node::open_options options = {}) = 0;
+   [[nodiscard]] virtual bool is_peer_protected(const forge::net::p2p::peer_id& peer) const = 0;
+   // Each token removes only its own nonempty native key, including after stop.
+   // Both signs are bounded separately so every token close order is safe.
+   [[nodiscard]] virtual peer_contribution protect_peer(forge::net::p2p::peer_id peer) = 0;
+   [[nodiscard]] virtual peer_contribution tag_peer(forge::net::p2p::peer_id peer, std::int64_t value) = 0;
+
    [[nodiscard]] virtual forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol) = 0;
    [[nodiscard]] virtual forge::api::p2p::publication
    publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol,
                forge::api::transport::options options) = 0;
-   virtual void publish_protocol(forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) = 0;
 
    virtual boost::asio::awaitable<forge::api::transport::connection>
    open_api_connection(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol, remote_options options = {}) = 0;
@@ -56,38 +73,18 @@ class api : public forge::api::core::contract<api> {
    template <typename Interface>
    boost::asio::awaitable<forge::api::core::handle<Interface>>
    remote(forge::net::p2p::peer_id peer, forge::net::p2p::protocol_id protocol, remote_options options = {}) {
-      auto connection = co_await open_api_connection(std::move(peer), std::move(protocol), options);
+      return remote_owned<Interface>(open_api_connection(std::move(peer), std::move(protocol), options));
+   }
+
+ private:
+   template <typename Interface>
+   static boost::asio::awaitable<forge::api::core::handle<Interface>>
+   remote_owned(boost::asio::awaitable<forge::api::transport::connection> operation) {
+      auto connection = co_await std::move(operation);
       co_return co_await connection.template get_remote_api<Interface>();
    }
 };
 
-class diagnostics_source : public forge::api::core::contract<diagnostics_source> {
- public:
-   virtual ~diagnostics_source() = default;
-
-   [[nodiscard]] virtual forge::net::p2p::diagnostics::snapshot
-   snapshot(forge::net::p2p::diagnostics::options options = {}) const = 0;
-};
-
-class pubsub_source : public forge::api::core::contract<pubsub_source> {
- public:
-   virtual ~pubsub_source() = default;
-
-   virtual void enable(forge::net::p2p::pubsub::options options) = 0;
-   [[nodiscard]] virtual forge::net::p2p::peer_id local_peer() const = 0;
-   virtual boost::asio::awaitable<forge::net::p2p::pubsub::message>
-   async_publish_message(forge::net::p2p::pubsub::topic subject, std::vector<std::uint8_t> data,
-                         forge::net::p2p::pubsub::publish_options options) = 0;
-   virtual boost::asio::awaitable<forge::net::p2p::pubsub::subscription>
-   async_join_topic(forge::net::p2p::pubsub::topic subject, forge::net::p2p::pubsub::handler handler) = 0;
-   virtual boost::asio::awaitable<void> async_leave_topic(forge::net::p2p::pubsub::topic subject) = 0;
-   [[nodiscard]] virtual forge::net::p2p::pubsub::snapshot snapshot() const = 0;
-};
-
 } // namespace forge::plugins::net::p2p::node
 
-FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.node", 2, 0))
-FORGE_EXPORT_API(::forge::plugins::net::p2p::node::diagnostics_source,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.diagnostics_source", 2, 0))
-FORGE_EXPORT_API(::forge::plugins::net::p2p::node::pubsub_source,
-                 FORGE_API_CONTRACT("forge.plugins.net.p2p.node.pubsub_source", 1, 0))
+FORGE_EXPORT_API(::forge::plugins::net::p2p::node::api, FORGE_API_CONTRACT("forge.plugins.net.p2p.node", 3, 0))

@@ -33,7 +33,8 @@ std::string resource_service_id(const protocol_id& protocol, bool dht_profile) {
    if (protocol == builtins::rendezvous) {
       return "p2p.rendezvous";
    }
-   if (protocol == builtins::meshsub_v10 || protocol == builtins::meshsub_v11) {
+   if (protocol == builtins::meshsub_v10 || protocol == builtins::meshsub_v11 ||
+       protocol == builtins::meshsub_v12 || protocol == builtins::meshsub_v13) {
       return "p2p.gossipsub";
    }
    if (protocol == builtins::peer_exchange) {

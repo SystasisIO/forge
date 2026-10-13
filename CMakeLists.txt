@@ -103,23 +103,21 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
 endif()
 find_package(Boost 1.90 REQUIRED CONFIG COMPONENTS ${_forge_boost_components})
 find_package(ZLIB REQUIRED)
-if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
-   find_package(boost_stacktrace_basic CONFIG QUIET)
-   check_cxx_source_compiles(
-      "#include <stacktrace>
-      #ifndef __cpp_lib_stacktrace
-      #error no std stacktrace feature macro
-      #endif
-      int main() { auto trace = std::stacktrace::current(); return static_cast<int>(trace.size()); }"
-      FORGE_HAS_STD_STACKTRACE
-   )
-   if(FORGE_HAS_STD_STACKTRACE)
-      message(STATUS "FORGE log stacktrace backend: std::stacktrace")
-   elseif(TARGET Boost::stacktrace_basic)
-      message(STATUS "FORGE log stacktrace backend: Boost::stacktrace_basic")
-   else()
-      message(STATUS "FORGE log stacktrace backend: unavailable")
-   endif()
+find_package(boost_stacktrace_basic CONFIG QUIET)
+check_cxx_source_compiles(
+   "#include <stacktrace>
+   #ifndef __cpp_lib_stacktrace
+   #error no std stacktrace feature macro
+   #endif
+   int main() { auto trace = std::stacktrace::current(); return static_cast<int>(trace.size()); }"
+   FORGE_HAS_STD_STACKTRACE
+)
+if(FORGE_HAS_STD_STACKTRACE)
+   message(STATUS "FORGE log stacktrace backend: std::stacktrace")
+elseif(TARGET Boost::stacktrace_basic)
+   message(STATUS "FORGE log stacktrace backend: Boost::stacktrace_basic")
+else()
+   message(STATUS "FORGE log stacktrace backend: unavailable")
 endif()
 
 if(FORGE_CONTRACT_SDK_HOST_PROFILE)
@@ -405,8 +403,6 @@ set(FORGE_PLUGINS_CHAIN_SIGNER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/
 set(FORGE_PLUGINS_CRYPTO_SECRETS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/crypto/secrets/include")
 set(FORGE_PLUGINS_NET_P2P_NODE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/node/include")
 set(FORGE_PLUGINS_NET_P2P_RESOLVER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/resolver/include")
-set(FORGE_PLUGINS_NET_P2P_DIAGNOSTICS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/diagnostics/include")
-set(FORGE_PLUGINS_NET_P2P_PUBSUB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/pubsub/include")
 set(FORGE_PLUGINS_NET_HTTP_SERVER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/http/server/include")
 set(FORGE_PLUGINS_LOG_OTLP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/log/otlp/include")
 set(FORGE_PLUGINS_DB_STORE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/db/store/include")
@@ -768,6 +764,7 @@ add_subdirectory(libraries/codec/hex)
 add_subdirectory(libraries/reflect)
 add_subdirectory(libraries/schema)
 add_subdirectory(libraries/variant)
+add_subdirectory(libraries/log)
 add_subdirectory(libraries/raw)
 add_subdirectory(libraries/compression)
 add_subdirectory(libraries/chain)
@@ -788,6 +785,7 @@ set(
    forge_reflect
    forge_schema
    forge_variant
+   forge_log
    forge_raw
    forge_compression
    forge_chain_core
@@ -831,7 +829,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    add_subdirectory(libraries/codec/yaml)
    add_subdirectory(libraries/codec/xml)
    add_subdirectory(libraries/api)
-   add_subdirectory(libraries/log)
    add_subdirectory(libraries/multiformats)
    add_subdirectory(libraries/otlp)
    if(FORGE_HAS_ROCKSDB)
@@ -867,7 +864,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_api_quic
       forge_api_websocket
       forge_api_p2p
-      forge_log
       forge_otlp
       forge_multiformats
       forge_net_tls
@@ -896,8 +892,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_crypto_wallet
       forge_plugins_net_p2p_node
       forge_plugins_net_p2p_resolver
-      forge_plugins_net_p2p_diagnostics
-      forge_plugins_net_p2p_pubsub
       forge_plugins_net_http_server
       forge_plugins_log_otlp
       forge_plugins_db_store
@@ -967,6 +961,7 @@ set(
    reflect
    schema
    variant
+   log
    raw
    db_ids
    compression
@@ -1018,7 +1013,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       api_quic
       api_websocket
       api_p2p
-      log
       otlp
       multiformats
       net_transport
@@ -1047,8 +1041,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       plugins_crypto_wallet
       plugins_net_p2p_node
       plugins_net_p2p_resolver
-      plugins_net_p2p_diagnostics
-      plugins_net_p2p_pubsub
       plugins_net_http_server
       plugins_log_otlp
       plugins_db_store
@@ -1151,6 +1143,7 @@ set(
    libraries/reflect/include/forge
    libraries/schema/include/forge
    libraries/variant/include/forge
+   libraries/log/include/forge
    libraries/raw/include/forge
    libraries/db/ids/include/forge
    libraries/compression/include/forge
@@ -1197,7 +1190,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/api/quic/include/forge
       libraries/api/websocket/include/forge
       libraries/api/p2p/include/forge
-      libraries/log/include/forge
       libraries/otlp/include/forge
       libraries/multiformats/include/forge
       libraries/net/http/include/forge
@@ -1223,8 +1215,6 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       plugins/crypto/secrets/include/forge
       plugins/net/p2p/node/include/forge
       plugins/net/p2p/resolver/include/forge
-      plugins/net/p2p/diagnostics/include/forge
-      plugins/net/p2p/pubsub/include/forge
       plugins/net/http/server/include/forge
       plugins/log/otlp/include/forge
       plugins/db/store/include/forge
@@ -1238,6 +1228,20 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
 endif()
 if(TARGET forge_net_s3)
    list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/net/s3/include/forge)
+endif()
+
+if(FORGE_CONTRACT_SDK_HOST_PROFILE)
+   if(NOT TARGET Forge::forge_log
+      OR NOT "forge_log" IN_LIST FORGE_LEAF_TARGETS
+      OR NOT "log" IN_LIST FORGE_BUILT_COMPONENTS
+      OR NOT "libraries/log/include/forge" IN_LIST FORGE_INSTALL_INCLUDE_DIRS)
+      message(FATAL_ERROR "contract-sdk-host requires the built and exported Forge logging component")
+   endif()
+   foreach(_forge_full_only_target forge_otlp forge_net_http forge_net_p2p forge_app)
+      if(TARGET ${_forge_full_only_target})
+         message(FATAL_ERROR "contract-sdk-host logging must not enable ${_forge_full_only_target}")
+      endif()
+   endforeach()
 endif()
 install(
    DIRECTORY ${FORGE_INSTALL_INCLUDE_DIRS}

@@ -6,8 +6,6 @@ module;
 #include <boost/stacktrace.hpp>
 #endif
 
-#define BOOST_DLL_USE_STD_FS
-#include <boost/dll/runtime_symbol_info.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +27,8 @@ import forge.core.string;
 import forge.log.exceptions;
 import forge.variant.format;
 import forge.variant.value;
+
+#include "details/thread_name_state.hxx"
 
 namespace {
 
@@ -74,10 +74,8 @@ class locked_file {
 
 namespace forge {
 
-static thread_local std::string thread_name;
-
 void set_thread_name(const std::string& name) {
-   thread_name = name;
+   detail::thread_name_state::set(name);
 #if defined(__linux__) || defined(__FreeBSD__)
    pthread_setname_np(pthread_self(), name.c_str());
 #elif defined(__APPLE__)
@@ -86,14 +84,7 @@ void set_thread_name(const std::string& name) {
 }
 
 const std::string& get_thread_name() {
-   if (thread_name.empty()) {
-      try {
-         thread_name = boost::dll::program_location().filename().generic_string();
-      } catch (...) {
-         thread_name = "unknown";
-      }
-   }
-   return thread_name;
+   return detail::thread_name_state::get();
 }
 
 void to_variant(log_level e, variant& v) {

@@ -3,6 +3,7 @@ module;
 #include "details/rendezvous_time.hxx"
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <array>
 #include <atomic>
@@ -22,6 +23,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -49,6 +51,8 @@ module;
 
 module forge.net.p2p.node;
 
+import forge.log.logger;
+
 import :lifecycle_stop_listener;
 
 import forge.asio.gate;
@@ -67,8 +71,11 @@ import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.net.transport.session;
 import forge.net.transport.stream;
+import forge.net.transport.exceptions;
 import forge.net.yamux.session;
+import forge.net.yamux.exceptions;
 
+#include "details/certified_peer_record.hxx"
 #include "details/cancellation_latch.hxx"
 #include "details/owner_cancellation.hxx"
 #include "details/lifecycle_wakeup.hxx"
@@ -310,6 +317,7 @@ boost::asio::awaitable<void> node::impl::async_close_topology_sessions(std::vect
       std::sort(session_ids.begin(), session_ids.end());
       session_ids.erase(std::unique(session_ids.begin(), session_ids.end()), session_ids.end());
       removed.reserve(session_ids.size());
+      disconnect_pubsub_sessions_locked(session_ids, std::chrono::steady_clock::now());
       for (const auto id : session_ids) {
          const auto found = sessions.find(id);
          if (found == sessions.end()) {
@@ -324,12 +332,14 @@ boost::asio::awaitable<void> node::impl::async_close_topology_sessions(std::vect
          }
       }
       for (const auto& session : removed) {
-         const auto peer = session->info.remote_peer;
+         const auto& peer = session->info.remote_peer;
          const auto still_connected = std::ranges::any_of(
              sessions, [&](const auto& item) { return item.second->info.remote_peer == peer && !item.second->closed; });
          if (!still_connected) {
             erase_inbound_relay_reservation_locked(peer);
             forget_pubsub_peer_locked(peer);
+         } else {
+            forget_pubsub_endpoint_locked(*session);
          }
       }
       metrics_value.active_sessions = sessions.size();
@@ -514,11 +524,7 @@ detail::topology_manager::callbacks::rendezvous_local_record node::impl::topolog
    }
 
    const auto identify_envelope = signed_envelope::decode(snapshot.document.signed_peer_record);
-   identify_envelope.verify("libp2p-peer-record", local);
-   const auto identify_record = rendezvous::codec::decode_peer_record(identify_envelope.payload);
-   if (identify_record.peer != local) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_identity, "local Identify peer record peer id mismatch");
-   }
+   const auto identify_record = detail::certified_peer_record::open(identify_envelope, local);
    out.signed_peer_record = rendezvous::codec::seal_peer_record(
                                 rendezvous::peer_record{
                                     .peer = local,
@@ -643,6 +649,7 @@ node::impl::exchange_topology_rendezvous(const std::shared_ptr<session_state>& s
                                       "P2P topology rendezvous operation canceled during stream open");
              }
              co_await stream->async_write(rendezvous::codec::encode(request, options.limits.rendezvous));
+             co_await stream->async_close_write();
              auto buffer = std::vector<std::uint8_t>{};
              response.emplace(rendezvous::codec::decode(
                  co_await async_read_length_delimited(*stream, buffer, options.limits.rendezvous.max_message_size),
@@ -800,17 +807,34 @@ boost::asio::awaitable<void> node::impl::async_unregister_topology_rendezvous(st
                 FORGE_THROW_EXCEPTION(exceptions::canceled,
                                       "P2P topology rendezvous unregister canceled during stream open");
              }
-             co_await stream->async_write(rendezvous::codec::encode(
-                 rendezvous::message{
-                     .type = rendezvous::message_type::unregister_peer,
-                     .unregister_value =
-                         rendezvous::unregister_request{
-                             .namespace_name = std::move(namespace_name),
-                             .peer = local,
-                         },
-                 },
-                 options.limits.rendezvous));
-             co_await stream->async_close();
+             try {
+                co_await stream->async_write(rendezvous::codec::encode(
+                   rendezvous::message{
+                      .type = rendezvous::message_type::unregister_peer,
+                      .unregister_value = rendezvous::unregister_request{
+                         .namespace_name = std::move(namespace_name),
+                         .peer = local,
+                      },
+                   },
+                   options.limits.rendezvous));
+                co_await stream->async_close_write();
+                // UNREGISTER has no ACK: retain the stream/resource owner until remote FIN.
+                auto remote_fin = false;
+                try {
+                   static_cast<void>(co_await stream->async_read());
+                } catch (const forge::net::yamux::exceptions::end_of_stream&) {
+                   remote_fin = true;
+                } catch (const forge::net::transport::exceptions::end_of_stream&) {
+                   remote_fin = true;
+                }
+                if (!remote_fin) {
+                   FORGE_THROW_EXCEPTION(exceptions::protocol_error, "rendezvous unregister returned unexpected data");
+                }
+                co_await stream->async_close();
+             } catch (...) {
+                stream->request_cancel();
+                throw;
+             }
           });
       if (!deadline.finish()) {
          throw_operation_timeout("P2P topology rendezvous unregister");
@@ -934,7 +958,8 @@ node::impl::async_collect_topology_peer_exchange(std::shared_ptr<cancellation_la
                          node_stopped = self->stopped || self->peer_exchange_admission_closed;
                       }
                       if (!node_stopped && p2p_code(error) != exceptions::code::canceled) {
-                         forge::exceptions::capture_and_log("P2P topology peer exchange query failed");
+                         tlog("forge.net.p2p.discovery", "P2P topology peer exchange query failed",
+                              ("event", "peer_exchange.query_failed")("code", static_cast<int>(p2p_code(error))));
                       }
                       co_return;
                    } catch (...) {
@@ -945,7 +970,8 @@ node::impl::async_collect_topology_peer_exchange(std::shared_ptr<cancellation_la
                          node_stopped = self->stopped || self->peer_exchange_admission_closed;
                       }
                       if (!node_stopped) {
-                         forge::exceptions::capture_and_log("P2P topology peer exchange query failed");
+                         tlog("forge.net.p2p.discovery", "P2P topology peer exchange query failed",
+                              ("event", "peer_exchange.query_failed"));
                       }
                       co_return;
                    }

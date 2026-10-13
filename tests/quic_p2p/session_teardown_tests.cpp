@@ -14,6 +14,7 @@ module;
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <atomic>
@@ -34,6 +35,7 @@ module;
 module forge.net.p2p.node;
 
 import forge.asio.blocking;
+import forge.asio.gate;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.crypto.asymmetric;
@@ -48,6 +50,7 @@ import forge.net.transport.session;
 #include "../../libraries/net/p2p/details/session_lifecycle.hxx"
 #include "../../libraries/net/p2p/details/session_retirement.hxx"
 #include "../../libraries/net/p2p/details/session_teardown.hxx"
+#include "gossipsub_test_shutdown.hxx"
 
 namespace forge::net::p2p {
 namespace {
@@ -511,41 +514,105 @@ BOOST_AUTO_TEST_CASE(p2p_session_teardown_waits_for_tracked_background_operation
 }
 
 BOOST_AUTO_TEST_CASE(p2p_session_teardown_cancels_tracked_background_operation) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
-   auto teardown = detail::session_teardown{runtime.context().get_executor()};
-   auto blocked =
-       std::make_shared<boost::asio::steady_timer>(runtime.context(), boost::asio::steady_timer::time_point::max());
-   auto cancel_called = std::atomic_size_t{0};
-   auto operation_started = std::atomic_bool{false};
-   auto tracked = teardown.track([blocked, &cancel_called] {
-      cancel_called.fetch_add(1, std::memory_order_release);
-      blocked->cancel();
-   });
-   BOOST_REQUIRE(tracked.active());
+   for (auto order = 0U; order != 2U; ++order) {
+      const auto stop_before_run = order == 1U;
+      BOOST_TEST_CONTEXT("stop_before_coroutine_run=" << stop_before_run) {
+         auto context = boost::asio::io_context{};
+         auto teardown = detail::session_teardown{context.get_executor()};
+         auto blocked = std::make_shared<forge::asio::gate>();
+         auto release_tracking = std::make_shared<forge::asio::notification>();
+         auto cancel_called = std::size_t{};
+         auto operation_started = false;
+         auto cancel_observed = false;
+         auto tracking_released = false;
+         auto held = forge::asio::gate::ticket{};
+         auto acquired = std::future<forge::asio::gate::ticket>{};
+         auto operation = std::future<void>{};
+         auto stopped = std::future<void>{};
+         const auto drain = [&]() noexcept {
+            teardown.start({});
+            blocked->close();
+            release_tracking->notify();
+            try {
+               if (context.stopped()) { context.restart(); }
+               context.run_for(std::chrono::seconds{2});
+            } catch (...) {
+               forge::tests::p2p::gossipsub_test_shutdown::fail_closed();
+            }
+            if ((acquired.valid() && acquired.wait_for(std::chrono::seconds{0}) != std::future_status::ready) ||
+                (operation.valid() && operation.wait_for(std::chrono::seconds{0}) != std::future_status::ready) ||
+                (stopped.valid() && stopped.wait_for(std::chrono::seconds{0}) != std::future_status::ready)) {
+               forge::tests::p2p::gossipsub_test_shutdown::fail_closed();
+            }
+         };
+         // Even a failed assertion must settle coroutines before destroying their captured locals.
+         auto terminal_guard = boost::scope::scope_exit{drain};
 
-   auto operation = boost::asio::co_spawn(
-       runtime.context(),
-       [blocked, &operation_started, tracked = std::move(tracked)]() mutable -> boost::asio::awaitable<void> {
-          auto error = boost::system::error_code{};
-          operation_started.store(true, std::memory_order_release);
-          co_await blocked->async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
-          tracked.release();
-       },
-       boost::asio::use_future);
+         acquired = boost::asio::co_spawn(context, blocked->acquire(), boost::asio::use_future);
+         context.poll();
+         BOOST_REQUIRE(acquired.wait_for(std::chrono::seconds{0}) == std::future_status::ready);
+         held = acquired.get();
+         BOOST_REQUIRE(held.active());
+         context.restart();
+         auto tracked = teardown.track([blocked, &cancel_called] {
+            ++cancel_called;
+            blocked->close();
+         });
+         BOOST_REQUIRE(tracked.active());
+         operation = boost::asio::co_spawn(
+             context,
+             [blocked, release_tracking, &operation_started, &cancel_observed, &tracking_released,
+              tracked = std::move(tracked)]() mutable -> boost::asio::awaitable<void> {
+                operation_started = true;
+                try {
+                   auto ticket = co_await blocked->acquire();
+                } catch (const forge::asio::exceptions::rejected&) {
+                   cancel_observed = true;
+                }
+                co_await release_tracking->async_wait(0);
+                tracked.release();
+                tracking_released = true;
+             },
+             boost::asio::use_future);
+         if (!stop_before_run) {
+            // Draining ready handlers with the first gate ticket held leaves acquire actually queued.
+            context.poll();
+         }
+         const auto started_before_stop = operation_started;
+         const auto canceled_before_stop = cancel_observed;
+         const auto pending_before_stop = operation.wait_for(std::chrono::seconds{0}) == std::future_status::timeout;
+         teardown.start({});
+         const auto started_when_stop_returned = operation_started;
+         stopped = boost::asio::co_spawn(context, teardown.wait(), boost::asio::use_future);
+         context.poll();
+         const auto cancellation_reached_operation = cancel_observed;
+         const auto operation_pending_until_release =
+             operation.wait_for(std::chrono::seconds{0}) == std::future_status::timeout;
+         const auto teardown_pending_until_release =
+             stopped.wait_for(std::chrono::seconds{0}) == std::future_status::timeout;
+         const auto released_before_barrier = tracking_released;
+         const auto first_cancel_count = cancel_called;
+         teardown.start({});
+         const auto repeated_cancel_count = cancel_called;
 
-   const auto operation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-   while (!operation_started.load(std::memory_order_acquire)) {
-      BOOST_REQUIRE(std::chrono::steady_clock::now() < operation_deadline);
-      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+         drain();
+         BOOST_CHECK_NO_THROW(operation.get());
+         BOOST_CHECK_NO_THROW(stopped.get());
+         BOOST_TEST(started_before_stop == !stop_before_run);
+         BOOST_TEST(started_when_stop_returned == started_before_stop);
+         BOOST_TEST(!canceled_before_stop);
+         BOOST_TEST(pending_before_stop);
+         BOOST_TEST(cancellation_reached_operation);
+         BOOST_TEST(operation_pending_until_release);
+         BOOST_TEST(teardown_pending_until_release);
+         BOOST_TEST(!released_before_barrier);
+         BOOST_TEST(tracking_released);
+         BOOST_TEST(blocked->closed());
+         BOOST_TEST(first_cancel_count == 1U);
+         BOOST_TEST(repeated_cancel_count == 1U);
+         BOOST_TEST(cancel_called == 1U);
+      }
    }
-   teardown.start({});
-   auto stopped = boost::asio::co_spawn(runtime.context(), teardown.wait(), boost::asio::use_future);
-
-   BOOST_REQUIRE(stopped.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
-   stopped.get();
-   BOOST_REQUIRE(operation.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
-   operation.get();
-   BOOST_TEST(cancel_called.load(std::memory_order_acquire) == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_noexcept_cancel_request_preserves_session_until_graceful_teardown) {

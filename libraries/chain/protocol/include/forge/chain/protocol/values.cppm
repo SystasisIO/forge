@@ -140,7 +140,8 @@ struct permission_level {
 struct symbol_code {
    std::uint64_t value = 0;
 
-   constexpr explicit symbol_code(std::uint64_t raw_value = 0) : value(raw_value) {}
+   constexpr symbol_code() = default;
+   constexpr explicit symbol_code(std::uint64_t raw_value) : value(raw_value) {}
    constexpr explicit symbol_code(std::string_view text) : value(encode_symbol_code(text)) {}
 
    [[nodiscard]] static symbol_code from_string(std::string_view text);
@@ -258,6 +259,8 @@ struct asset {
    friend bool operator==(const asset& left, const asset& right);
    friend std::strong_ordering operator<=>(const asset& left, const asset& right);
 };
+
+[[nodiscard]] std::string to_string(const asset& value);
 
 struct extended_symbol {
    ::forge::chain::protocol::symbol symbol{};

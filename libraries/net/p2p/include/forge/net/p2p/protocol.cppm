@@ -56,6 +56,8 @@ inline const protocol_id kad_dht{.value = "/ipfs/kad/1.0.0"};
 inline const protocol_id rendezvous{.value = "/rendezvous/1.0.0"};
 inline const protocol_id meshsub_v11{.value = "/meshsub/1.1.0"};
 inline const protocol_id meshsub_v10{.value = "/meshsub/1.0.0"};
+inline const protocol_id meshsub_v12{.value = "/meshsub/1.2.0"};
+inline const protocol_id meshsub_v13{.value = "/meshsub/1.3.0"};
 } // namespace builtins
 
 } // namespace forge::net::p2p

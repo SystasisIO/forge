@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_state.hpp>
@@ -22,6 +23,8 @@ module;
 #include <vector>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import forge.asio.exceptions;
 import forge.asio.gate;
@@ -292,6 +295,8 @@ dht_provider_registry::async_acquire(protocol_id protocol, dht::key key, dht::qu
          admission_pending = false;
       }
       changed_->notify();
+      dlog("forge.net.p2p.discovery", "P2P DHT provider ownership acquired",
+           ("event", "dht.provider_acquired")("owner_id", owner->id)("quorum", query.quorum));
       co_return lease{owner};
    } catch (...) {
       failure = std::current_exception();
@@ -393,6 +398,8 @@ void dht_provider_registry::request_release_owner(const std::shared_ptr<owner_st
          finish_owner(owner, {});
       }
       changed_->notify();
+      dlog("forge.net.p2p.discovery", "P2P DHT provider ownership release requested",
+           ("event", "dht.provider_release_requested")("owner_id", owner->id)("shared_release", complete_now));
    } catch (...) {
       finish_owner(owner, std::current_exception());
    }
@@ -549,6 +556,7 @@ void dht_provider_registry::finish_entry(const std::shared_ptr<entry>& value, st
    try {
       auto owners = std::vector<std::shared_ptr<owner_state>>{};
       auto retain_for_retry = false;
+      auto removed = false;
       {
          const auto lock = std::scoped_lock{mutex_};
          const auto found = entries_.find(value->registration);
@@ -576,9 +584,17 @@ void dht_provider_registry::finish_entry(const std::shared_ptr<entry>& value, st
          const auto found = entries_.find(value->registration);
          if (found != entries_.end() && found->second == value) {
             entries_.erase(found);
+            removed = true;
          }
       }
       changed_->notify();
+      if (retain_for_retry) {
+         dlog("forge.net.p2p.discovery", "P2P DHT provider retained for removal retry",
+              ("event", "dht.provider_removal_failed")("owners", owners.size())("retained_for_retry", true));
+      } else if (removed) {
+         dlog("forge.net.p2p.discovery", "P2P DHT provider removal completed",
+              ("event", "dht.provider_removed")("owners", owners.size())("retained_for_retry", false));
+      }
    } catch (...) {
       changed_->notify();
    }
@@ -710,9 +726,12 @@ boost::asio::awaitable<void> dht_provider_registry::async_run(std::shared_ptr<en
             failure = std::current_exception();
          }
          const auto retry_started = std::chrono::steady_clock::now();
-
+         auto failures = std::uint32_t{};
+         auto recovered = false;
+         auto stopped = false;
          {
             const auto lock = std::scoped_lock{mutex_};
+            recovered = !failure && value->publish_failures != 0;
             value->observed_endpoint_generation = attempt_generation;
             if (failure) {
                value->publish_failures = std::min<std::uint32_t>(value->publish_failures + 1U, 10U);
@@ -723,6 +742,16 @@ boost::asio::awaitable<void> dht_provider_registry::async_run(std::shared_ptr<en
                value->last_successful_publication = stamped_at;
                value->next_republish = renewal_deadline(*value, stamped_at);
             }
+            failures = value->publish_failures;
+            stopped = sealed_ || value->stop_requested;
+         }
+         if (!stopped && (failures == 1 || recovered)) {
+            dlog("forge.net.p2p.discovery", "P2P DHT provider renewal changed",
+                 ("event", recovered ? "dht.provider_renewal_recovered" : "dht.provider_renewal_failed")
+                 ("endpoint_generation", attempt_generation)("quorum", query.quorum)("failures", failures));
+         } else if (!stopped && !failure) {
+            tlog("forge.net.p2p.discovery", "P2P DHT provider renewed",
+                 ("event", "dht.provider_renewed")("endpoint_generation", attempt_generation)("quorum", query.quorum));
          }
       }
    } catch (...) {

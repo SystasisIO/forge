@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -13,6 +14,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,6 +25,8 @@ module;
 #include <vector>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import forge.asio.notification;
 import forge.crypto.digest.sha256;
@@ -305,8 +309,13 @@ boost::asio::awaitable<void> dht_routing_refresh::async_refresh_profile(profile_
          }
       }
 
+      auto generation = std::uint64_t{};
+      auto failures = std::uint32_t{};
+      auto recovered = false;
+      auto stopping = false;
       {
          auto lock = std::scoped_lock{mutex_};
+         recovered = !failed && state.failures != 0;
          ++state.generation;
          if (failed) {
             state.failures = std::min<std::uint32_t>(state.failures + 1U, 7U);
@@ -316,6 +325,18 @@ boost::asio::awaitable<void> dht_routing_refresh::async_refresh_profile(profile_
             state.next_attempt = saturating_deadline(time_.now(), regular_delay(state));
          }
          state.in_flight = false;
+         generation = state.generation;
+         failures = state.failures;
+         stopping = stopped_;
+      }
+      if (!stopping && (failures == 1 || recovered)) {
+         dlog("forge.net.p2p.discovery", "P2P DHT routing maintenance changed",
+              ("event", recovered ? "dht.refresh_recovered" : "dht.refresh_failed")
+              ("generation", generation)("buckets", plan.size())("failures", failures));
+      } else if (!stopping) {
+         tlog("forge.net.p2p.discovery", "P2P DHT routing refresh completed",
+              ("event", "dht.refresh_completed")("generation", generation)("buckets", plan.size())
+              ("failed", failed));
       }
    } catch (...) {
       publish_status(state, false);

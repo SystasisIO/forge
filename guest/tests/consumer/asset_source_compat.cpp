@@ -1,6 +1,10 @@
 #include <eosio/asset.hpp>
+#include <string_view>
 
 import forge.chain.protocol.values;
+
+static_assert(CONSUMER_DECLARATION_VALUE == 42);
+static_assert(std::string_view{CONSUMER_DECLARATION_TEXT} == "quoted \"value\" with space");
 
 namespace {
 

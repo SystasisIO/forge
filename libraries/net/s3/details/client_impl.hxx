@@ -13,11 +13,22 @@ struct client::impl : std::enable_shared_from_this<client::impl> {
       bool mutating;
       std::atomic<bool> started{false};
       std::atomic<bool> response_exceeded{false};
+      mutable std::mutex recovery_mutex;
+      std::optional<multipart> recovery_session;
+      bool cleanup_attempted = false;
+      bool cleanup_finished = false;
+      bool cleanup_confirmed = false;
+      bool completion_attempted = false;
 
       activity(std::shared_ptr<impl> owner, request_options options, bool mutating);
       ~activity();
       [[nodiscard]] bool interrupted() const noexcept;
       void check() const;
+      void remember(const multipart& session);
+      void begin_cleanup();
+      void finish_cleanup(bool confirmed);
+      void begin_completion();
+      void append_recovery(forge::exceptions::base& error) const;
    };
 
    impl(asio::compute::executor executor, config options);
@@ -66,11 +77,16 @@ struct client::impl : std::enable_shared_from_this<client::impl> {
             co_return co_await std::move(*submitted).wait();
          }
       } catch (const asio::exceptions::canceled&) {
-         if (mutating && call->started.load()) {
-            FORGE_THROW_EXCEPTION(exceptions::unknown_outcome,
-                                  "S3 mutation was interrupted; reconcile the object or upload before retry");
+         try {
+            if (mutating && call->started.load()) {
+               FORGE_THROW_EXCEPTION(exceptions::unknown_outcome,
+                                     "S3 mutation was interrupted; reconcile the object or upload before retry");
+            }
+            FORGE_THROW_EXCEPTION(exceptions::canceled, "S3 operation was canceled before a confirmed result");
+         } catch (forge::exceptions::base& error) {
+            call->append_recovery(error);
+            throw;
          }
-         FORGE_THROW_EXCEPTION(exceptions::canceled, "S3 operation was canceled before a confirmed result");
       } catch (const asio::exceptions::rejected&) {
          FORGE_THROW_EXCEPTION(exceptions::stopped, "S3 blocking executor is stopped");
       }

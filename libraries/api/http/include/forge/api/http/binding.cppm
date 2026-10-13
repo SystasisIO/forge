@@ -1429,8 +1429,7 @@ class binding_builder {
             require_request_content_type(context.request, options.request_body_codec);
             bind_body_value(request, context.request.body(), options.request_body_codec);
          }
-      } else if constexpr (!detail::request_needs_stream_v<Request> &&
-                           !detail::request_has_http_parameter_v<Request>) {
+      } else if constexpr (!detail::request_needs_stream_v<Request> && !detail::request_has_http_parameter_v<Request>) {
          if (has_body) {
             require_request_content_type(context.request, options.request_body_codec);
             request = decode_request_body<Request>(context.request.body(), options.request_body_codec);
@@ -1526,10 +1525,10 @@ class binding_builder {
    }
 
    [[nodiscard]] static response render_error_response(const request& request_value, status status_code,
-                                                        const forge::api::core::error_payload& payload,
-                                                        const route_options& options,
-                                                        const std::shared_ptr<endpoint_state>& endpoint,
-                                                        const forge::exceptions::base* cause) {
+                                                       const forge::api::core::error_payload& payload,
+                                                       const route_options& options,
+                                                       const std::shared_ptr<endpoint_state>& endpoint,
+                                                       const forge::exceptions::base* cause) {
       auto output = std::optional<response>{};
       if (options.error_renderer) {
          try {
@@ -1540,9 +1539,9 @@ class binding_builder {
          }
       }
       if (!output) {
-         output = make_text_response(request_value, status_code,
-                                     encode_error_payload(payload, options.error_body_codec),
-                                     std::string{detail::content_type(options.error_body_codec)});
+         output =
+             make_text_response(request_value, status_code, encode_error_payload(payload, options.error_body_codec),
+                                std::string{detail::content_type(options.error_body_codec)});
       }
       merge_endpoint_headers(*output, endpoint);
       apply_cache_policy(*output, options);
@@ -2012,13 +2011,15 @@ class binding_builder {
                   }
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "unsupported_media_type",
-                                                              error.message(), status::unsupported_media_type,
-                                                              options, {}, &error));
+                                                              error.message(), status::unsupported_media_type, options,
+                                                              {}, &error));
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "not_acceptable",
-                                                              error.message(), status::not_acceptable, options, {}, &error));
+                                                              error.message(), status::not_acceptable, options, {},
+                                                              &error));
                } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return buffered(make_validation_response(request_value.context.request, error.message(), options, {}, &error));
+                  co_return buffered(
+                      make_validation_response(request_value.context.request, error.message(), options, {}, &error));
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
                   co_return buffered(make_error_response(request_value.context.request, payload, options, {}, &error));
@@ -2096,18 +2097,19 @@ class binding_builder {
                   }
                } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "unsupported_media_type",
-                                                              error.message(), status::unsupported_media_type,
-                                                              options, endpoint, &error));
+                                                              error.message(), status::unsupported_media_type, options,
+                                                              endpoint, &error));
                } catch (const forge::net::http::exceptions::not_acceptable& error) {
                   co_return buffered(make_http_error_response(request_value.context.request, "not_acceptable",
                                                               error.message(), status::not_acceptable, options,
                                                               endpoint, &error));
                } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return buffered(
-                      make_validation_response(request_value.context.request, error.message(), options, endpoint, &error));
+                  co_return buffered(make_validation_response(request_value.context.request, error.message(), options,
+                                                              endpoint, &error));
                } catch (const forge::exceptions::base& error) {
                   const auto payload = forge::api::core::project_error(method_descriptor, error);
-                  co_return buffered(make_error_response(request_value.context.request, payload, options, endpoint, &error));
+                  co_return buffered(
+                      make_error_response(request_value.context.request, payload, options, endpoint, &error));
                } catch (...) {
                   if (!options.error_renderer) {
                      throw;

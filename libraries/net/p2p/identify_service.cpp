@@ -1,5 +1,7 @@
 module;
 
+#include <forge/log/macros.hpp>
+
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -20,6 +22,7 @@ module;
 module forge.net.p2p.node;
 
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identify;
 
@@ -93,6 +96,11 @@ boost::asio::awaitable<identify_service::outcome> identify_service::async_identi
          result.state = identify::state::failed;
          result.error = "unknown P2P Identify failure";
       }
+      // Only the coalesced leader emits; cached results and waiters do not duplicate it.
+      dlog("forge.net.p2p.connection", "P2P Identify attempt completed",
+           ("event", "identify.completed")("session_id", session_id)("state", static_cast<int>(result.state))
+           ("protocols", result.document ? result.document->protocols.size() : 0U)
+           ("addresses", result.document ? result.document->listen_endpoints.size() : 0U));
       complete(current, std::move(result));
    }
 

@@ -103,7 +103,7 @@ namespace {
 [[noreturn]] void rethrow_tcp_as_p2p(const forge::exceptions::base& error) {
    const auto code = forge::net::tcp::exceptions::code_of(error);
    if (code) {
-      FORGE_THROW_CODE(map_tcp_error(*code), error.what());
+      forge::exceptions::throw_code(map_tcp_error(*code), error.message(), error.context(), error.location());
    }
    throw;
 }

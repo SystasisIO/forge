@@ -685,7 +685,7 @@ class http_tls_server_application final : public forge::app::application_shell {
           .id = {.value = "forge.plugins.crypto.secrets"},
           .factory = [state = state_] { return std::make_unique<http_tls_secrets_plugin>(state); },
       });
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
    }
 
  private:
@@ -724,7 +724,7 @@ class http_server_application final : public forge::app::application_shell {
 
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
       if (middleware_) {
          registry.register_plugin(forge::app::plugin_descriptor{
              .id = forge::app::plugin_id{.value = "http-middleware"},
@@ -758,7 +758,7 @@ class http_assets_server_application final : public forge::app::application_shel
 
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-cache-publisher"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
@@ -787,7 +787,7 @@ class http_stream_server_application final : public forge::app::application_shel
 
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-middleware"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
@@ -816,7 +816,7 @@ class http_empty_server_application final : public forge::app::application_shell
 
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "http-middleware"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
@@ -841,7 +841,7 @@ class http_empty_server_application final : public forge::app::application_shell
 class duplicate_http_server_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "duplicate-http-cache-publisher"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},
@@ -858,7 +858,7 @@ class duplicate_http_server_application final : public forge::app::application_s
 class late_http_server_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(http_server::descriptor());
+      registry.register_plugin(http_server::plugin::descriptor());
       registry.register_plugin(forge::app::plugin_descriptor{
           .id = forge::app::plugin_id{.value = "late-http-publisher"},
           .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.http.server"}},

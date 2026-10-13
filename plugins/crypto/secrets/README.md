@@ -21,8 +21,7 @@ source loading policy, then delegates cryptographic primitives to
 
 Public modules:
 
-- `forge.plugins.crypto.secrets.plugin`
-- `forge.plugins.crypto.secrets.descriptor`
+- `forge.plugins.crypto.secrets.plugin` owns `plugin::descriptor()` and the canonical factory.
 - `forge.plugins.crypto.secrets.api`
 - `forge.plugins.crypto.secrets.types`
 - `forge.plugins.crypto.secrets.exceptions`
@@ -89,7 +88,7 @@ Register the descriptor with the application shell and acquire the typed API
 from the plugin context:
 
 ```cpp
-registry.register_plugin(forge::plugins::crypto::secrets::descriptor());
+registry.register_plugin(forge::plugins::crypto::secrets::plugin::descriptor());
 ```
 
 ```cpp

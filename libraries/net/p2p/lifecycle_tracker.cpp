@@ -1,5 +1,7 @@
 module;
 
+#include <forge/log/macros.hpp>
+
 #include <atomic>
 #include <algorithm>
 #include <chrono>
@@ -20,6 +22,7 @@ module forge.net.p2p.node;
 import :lifecycle_stop_listener;
 
 import forge.asio.notification;
+import forge.log.logger;
 import forge.net.p2p.lifecycle;
 
 #include "details/lifecycle_tracker.hxx"
@@ -262,14 +265,19 @@ boost::asio::awaitable<void> lifecycle_tracker::wait() const {
 void lifecycle_tracker::finish_stop() noexcept {
    try {
       auto stop_source = std::shared_ptr<lifecycle_stop_source>{};
+      auto transitioned = false;
       {
          const auto lock = std::scoped_lock{state_->mutex};
+         transitioned = state_->phase != lifecycle_phase::stopped;
          state_->stop_requested = true;
          state_->phase = lifecycle_phase::stopped;
          stop_source = state_->stop_source;
       }
       stop_source->request_stop();
       state_->changed->notify();
+      if (transitioned) {
+         ilog("forge.net.p2p", "P2P node stopped", ("event", "lifecycle.stopped"));
+      }
    } catch (...) {
       // Final teardown must remain noexcept.
    }

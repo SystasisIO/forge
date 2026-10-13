@@ -1,15 +1,22 @@
 module;
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <forge/db/object/macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
+#include <future>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -24,6 +31,7 @@ module;
 
 module forge.plugins.net.p2p.node.plugin;
 
+import forge.api.core.registry;
 import forge.app.application_builder;
 import forge.app.application_shell;
 import forge.asio.blocking;
@@ -39,15 +47,20 @@ import forge.db.object.transaction;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
+import forge.net.p2p.diagnostics;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
+import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
 import forge.net.p2p.rendezvous;
+import forge.net.p2p.stream;
 import forge.plugins.crypto.secrets.plugin;
 import forge.plugins.db.store.api;
 import forge.plugins.db.store.plugin;
+import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.diagnostics_api;
 
 #include "details/object_dht_record_store_adapter.hxx"
 #include "details/object_peer_state_adapter.hxx"
@@ -141,7 +154,7 @@ struct root_guard {
    auto builder = forge::app::application_builder{};
    builder.name("p2p-peer-state-persistence-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "p2p-peer-state-test"})
-       .plugin(store_plugin::descriptor());
+       .plugin(store_plugin::plugin::descriptor());
    auto app = std::move(builder).build();
    app->configure(document);
    forge::asio::blocking::run(app->runtime(), app->startup());
@@ -152,9 +165,9 @@ struct root_guard {
    auto builder = forge::app::application_builder{};
    builder.name("p2p-peer-state-maintenance-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "p2p-maintenance-test"})
-       .plugin(store_plugin::descriptor())
-       .plugin(secrets_plugin::descriptor())
-       .plugin(p2p_node::descriptor());
+       .plugin(store_plugin::plugin::descriptor())
+       .plugin(secrets_plugin::plugin::descriptor())
+       .plugin(p2p_node::plugin::descriptor());
    auto app = std::move(builder).build();
    app->configure(document);
    return app;
@@ -562,6 +575,91 @@ void check_object_peer_state_clears_terminal_hydration_cursor(std::string driver
 
    forge::asio::blocking::run(app->runtime(), state.async_close());
    forge::asio::blocking::run(app->runtime(), app->shutdown());
+}
+
+void check_object_dht_bounded_requests(std::string driver, const std::filesystem::path& path) {
+   auto run = []<class T>(forge::app::application_shell& app, boost::asio::awaitable<T> operation) -> T {
+      auto result = boost::asio::co_spawn(app.runtime().context(), std::move(operation), boost::asio::use_future);
+      if (result.wait_for(std::chrono::seconds{10}) != std::future_status::ready) {
+         std::cerr << "ObjectDB DHT bounded-request fixture did not join its operation\n";
+         std::terminate();
+      }
+      return result.get();
+   };
+   const auto profile = p2p::protocol_id{"/forge/test/dht/bounded/1"};
+   auto limits = p2p::dht::record_store::options{};
+   limits.hydration_page_limit = 2;
+   limits.prune_page_limit = 1;
+   // Direct backend requests are not operational admission: quotas remain native-owned.
+   limits.max_values = 1;
+   limits.max_total_bytes = 1;
+   BOOST_CHECK_NO_THROW(p2p_node::object_dht_record_store_adapter::validate_options(profile, limits));
+   for (const auto field : std::array{&p2p::dht::record_store::options::hydration_page_limit,
+                                     &p2p::dht::record_store::options::prune_page_limit}) {
+      auto invalid = limits;
+      invalid.*field = 0;
+      BOOST_CHECK_THROW(p2p_node::object_dht_record_store_adapter::validate_options(profile, invalid),
+                        p2p::exceptions::invalid_options);
+      invalid.*field = static_cast<std::size_t>(forge::db::core::max_page_limit) + 1;
+      BOOST_CHECK_THROW(p2p_node::object_dht_record_store_adapter::validate_options(profile, invalid),
+                        p2p::exceptions::invalid_options);
+   }
+
+   auto builder = forge::app::application_builder{};
+   builder.name("p2p-dht-bounded-requests-test")
+       .runtime(forge::asio::runtime_options{.worker_threads = 1})
+       .plugin(store_plugin::plugin::descriptor());
+   auto app = std::move(builder).build();
+   std::shared_ptr<p2p::peer_store::persistence> peer_persistence;
+   std::shared_ptr<p2p::dht::record_store::persistence> persistence;
+   auto cleanup = boost::scope::scope_exit{[&] {
+      if (persistence) {
+         try { run(*app, persistence->async_close()); }
+         catch (...) { BOOST_ERROR("bounded-request DHT adapter cleanup failed"); }
+      }
+      if (peer_persistence) {
+         try { run(*app, peer_persistence->async_close()); }
+         catch (...) { BOOST_ERROR("bounded-request peer adapter cleanup failed"); }
+      }
+      app->request_stop();
+      try { run(*app, app->shutdown()); }
+      catch (...) { BOOST_ERROR("bounded-request application cleanup failed"); }
+   }};
+   app->configure(document_for(std::move(driver), path));
+   run(*app, app->startup());
+   auto stores = app->apis().get<store_plugin::api>(store_plugin::api::ref());
+   auto handle = run(*app, stores->store(std::string{peer_store_name}));
+   p2p_state_schema::register_objects(handle);
+   peer_persistence = run(*app, p2p_node::object_peer_state_adapter::async_open(stores.operator->(), handle, {}, false));
+   persistence = run(*app, p2p_node::object_dht_record_store_adapter::async_open(stores.operator->(), handle, profile, limits));
+
+   const auto now = std::chrono::system_clock::now();
+   auto batch = p2p::dht::record_store::mutation_batch{};
+   for (const auto key : {'a', 'b'}) {
+      batch.value_upserts.push_back({
+          .record = {.key_value = {.bytes = {'/', static_cast<std::uint8_t>(key)}}, .value = {1}},
+          .expires_at = now - std::chrono::seconds{1},
+      });
+   }
+   BOOST_TEST(run(*app, persistence->async_apply(std::move(batch))).durability_confirmed);
+   for (const auto limit : {std::size_t{0}, std::size_t{3}}) {
+      BOOST_CHECK_THROW(run(*app, persistence->async_hydrate({.limit = limit})), p2p::exceptions::invalid_options);
+   }
+   for (const auto limit : {std::size_t{0}, std::size_t{2}}) {
+      BOOST_CHECK_THROW(run(*app, persistence->async_prune_expired(now, limit)), p2p::exceptions::invalid_options);
+   }
+   const auto unchanged = run(*app, persistence->async_hydrate({.limit = 2}));
+   BOOST_REQUIRE_EQUAL(unchanged.values.size(), 2U);
+   const auto first = run(*app, persistence->async_prune_expired(now, 1));
+   BOOST_REQUIRE_EQUAL(first.values.size(), 1U);
+   BOOST_TEST(first.may_have_more);
+   BOOST_TEST(first.durability.durability_confirmed);
+   const auto second = run(*app, persistence->async_prune_expired(now, 1));
+   BOOST_REQUIRE_EQUAL(second.values.size(), 1U);
+   BOOST_TEST(!second.may_have_more);
+   BOOST_TEST(second.durability.durability_confirmed);
+   BOOST_TEST(first.values.front().bytes != second.values.front().bytes);
+   BOOST_TEST(run(*app, persistence->async_hydrate({.limit = 2})).values.empty());
 }
 
 void check_object_dht_record_persistence(std::string driver, const std::filesystem::path& path) {
@@ -981,11 +1079,89 @@ void check_plugin_startup_rolls_back_open_peer_state(std::string driver, const s
    forge::asio::blocking::run(reopened->runtime(), reopened->shutdown());
 }
 
+void check_plugin_authenticated_peer_api(std::string driver, const std::filesystem::path& path) {
+   using namespace std::chrono_literals;
+   auto run = []<class T>(forge::app::application_shell& app, boost::asio::awaitable<T> operation) -> T {
+      auto result = boost::asio::co_spawn(app.runtime().context(), std::move(operation), boost::asio::use_future);
+      if (result.wait_for(10s) != std::future_status::ready) {
+         std::cerr << "authenticated peer API fixture did not join its native operation\n";
+         std::terminate();
+      }
+      return result.get();
+   };
+   std::array<std::unique_ptr<forge::app::application_shell>, 3> apps;
+   auto cleanup = boost::scope::scope_exit{[&] {
+      for (auto& app : apps) {
+         if (app) { app->request_stop(); }
+      }
+      for (auto it = apps.rbegin(); it != apps.rend(); ++it) {
+         if (!*it) { continue; }
+         try {
+            run(**it, (*it)->shutdown());
+         } catch (const std::exception& error) {
+            std::cerr << "authenticated peer API shutdown failed: " << error.what() << '\n';
+            std::terminate();
+         }
+         it->reset();
+      }
+   }};
+   std::array<std::shared_ptr<p2p_node::api>, 3> apis;
+   std::array<std::shared_ptr<p2p_node::diagnostics_api>, 3> diagnostics;
+   for (std::size_t i = 0; i < apps.size(); ++i) {
+      const auto identity = forge::tests::p2p::make_identity_fixture("peer-api-authenticated");
+      auto document = p2p_document_for(driver, path / std::to_string(i), identity);
+      document.set("plugins.net.p2p.node.allow-insecure-test-mode", false);
+      document.set("plugins.net.p2p.node.topology.mode", "static-only");
+      document.set("plugins.net.p2p.node.listen",
+                   forge::config::core::value::array_type{"/ip4/127.0.0.1/tcp/0"});
+      apps[i] = build_p2p_app(std::move(document));
+      run(*apps[i], apps[i]->startup());
+      apis[i] = apps[i]->apis().get<p2p_node::api>(
+          {.id = {"forge.plugins.net.p2p.node"}, .major = 3}).shared();
+      diagnostics[i] = apps[i]->apis().get<p2p_node::diagnostics_api>(
+          {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1}).shared();
+   }
+   const auto& server = apis[0];
+   const auto& client = apis[1];
+   const auto& mismatch = apis[2];
+   BOOST_REQUIRE(server->local_endpoint());
+   const auto endpoint = *server->local_endpoint();
+   const auto peer = server->local_peer();
+   BOOST_REQUIRE(client->local_peer() != peer);
+   BOOST_REQUIRE(mismatch->local_peer() != peer);
+   BOOST_REQUIRE(mismatch->local_peer() != client->local_peer());
+   const auto connected = run(*apps[1], client->connect(endpoint,
+       {.expected_peer = peer, .allow_relay = false, .timeout = 5s}));
+   BOOST_CHECK(connected.remote_peer == peer);
+   const auto again = run(*apps[1], client->connect(endpoint.to_multiaddr(),
+       {.expected_peer = peer, .allow_relay = false, .timeout = 5s}));
+   BOOST_CHECK(again.remote_peer == peer);
+   BOOST_TEST(run(*apps[1], client->ping(peer, {.allow_relay = false, .timeout = 5s})).count() >= 0);
+   const auto state = diagnostics[1]->snapshot();
+   BOOST_CHECK(std::ranges::any_of(state.sessions, [&](const auto& session) {
+      return session.id == connected.id && session.remote_peer == peer && !session.closed &&
+             session.authentication == p2p::peer_authentication::libp2p_tls && session.muxer.value == "/yamux/1.0.0";
+   }));
+   auto unbound = endpoint;
+   unbound.peer.reset();
+   BOOST_CHECK_EXCEPTION(run(*apps[2], mismatch->connect(unbound,
+       {.expected_peer = client->local_peer(), .allow_relay = false, .timeout = 5s})),
+       forge::exceptions::base, [](const auto& error) {
+          return p2p::exceptions::is(error, p2p::exceptions::code::peer_verification_failed);
+       });
+   BOOST_TEST(diagnostics[2]->snapshot().connections.active_sessions == 0U);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(p2p_peer_state_persistence_test_suite)
 
 #if FORGE_HAS_MDBX
+BOOST_AUTO_TEST_CASE(p2p_plugin_mdbx_authenticated_peer_api_rejects_wrong_identity) {
+   auto root = root_guard{};
+   check_plugin_authenticated_peer_api("mdbx", root.root / "mdbx-peer-api");
+}
+
 BOOST_AUTO_TEST_CASE(p2p_peer_state_mdbx_preserves_eviction_and_sequence_state) {
    auto root = root_guard{};
    const auto path = root.root / "mdbx";
@@ -1037,6 +1213,11 @@ BOOST_AUTO_TEST_CASE(p2p_dht_record_state_mdbx_reopens_prunes_and_isolates_profi
    check_object_dht_record_persistence("mdbx", root.root / "mdbx-dht-records");
 }
 
+BOOST_AUTO_TEST_CASE(p2p_dht_record_state_mdbx_enforces_configured_request_bounds) {
+   auto root = root_guard{};
+   check_object_dht_bounded_requests("mdbx", root.root / "mdbx-dht-bounded");
+}
+
 BOOST_AUTO_TEST_CASE(p2p_state_mdbx_rejects_or_resets_v1_v2_and_missing_markers) {
    auto root = root_guard{};
    check_object_p2p_state_incompatible_and_missing_marker_policy("mdbx", root.root / "mdbx-schema-policy");
@@ -1044,6 +1225,11 @@ BOOST_AUTO_TEST_CASE(p2p_state_mdbx_rejects_or_resets_v1_v2_and_missing_markers)
 #endif
 
 #if FORGE_HAS_ROCKSDB
+BOOST_AUTO_TEST_CASE(p2p_plugin_rocksdb_authenticated_peer_api_rejects_wrong_identity) {
+   auto root = root_guard{};
+   check_plugin_authenticated_peer_api("rocksdb", root.root / "rocksdb-peer-api");
+}
+
 BOOST_AUTO_TEST_CASE(p2p_peer_state_rocksdb_preserves_eviction_and_sequence_state) {
    auto root = root_guard{};
    const auto path = root.root / "rocksdb";
@@ -1093,6 +1279,11 @@ BOOST_AUTO_TEST_CASE(p2p_peer_state_rocksdb_clears_terminal_hydration_cursor) {
 BOOST_AUTO_TEST_CASE(p2p_dht_record_state_rocksdb_reopens_prunes_and_isolates_profiles) {
    auto root = root_guard{};
    check_object_dht_record_persistence("rocksdb", root.root / "rocksdb-dht-records");
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dht_record_state_rocksdb_enforces_configured_request_bounds) {
+   auto root = root_guard{};
+   check_object_dht_bounded_requests("rocksdb", root.root / "rocksdb-dht-bounded");
 }
 
 BOOST_AUTO_TEST_CASE(p2p_state_rocksdb_rejects_or_resets_v1_v2_and_missing_markers) {

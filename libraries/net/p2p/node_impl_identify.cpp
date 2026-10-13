@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <array>
@@ -18,6 +19,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -45,6 +47,8 @@ module;
 
 module forge.net.p2p.node;
 
+import forge.log.logger;
+
 import :lifecycle_stop_listener;
 
 import forge.exceptions;
@@ -71,6 +75,7 @@ import forge.net.quic.exceptions;
 import forge.net.yamux.exceptions;
 import forge.net.yamux.session;
 
+#include "details/certified_peer_record.hxx"
 #include "details/host_addresses.hxx"
 #include "details/lifecycle_wakeup.hxx"
 #include "details/node_impl.hxx"
@@ -78,32 +83,6 @@ import forge.net.yamux.session;
 
 namespace forge::net::p2p {
 namespace {
-
-constexpr auto identify_peer_record_domain = std::string_view{"libp2p-peer-record"};
-constexpr auto identify_peer_record_payload_type = std::array<std::uint8_t, 2>{0x03, 0x01};
-
-[[nodiscard]] signed_envelope seal_identify_peer_record(const rendezvous::peer_record& value, const public_key& key,
-                                                        const forge::crypto::asymmetric::private_key& private_key) {
-   const auto payload = rendezvous::codec::encode_peer_record(value);
-   return signed_envelope::seal(key, private_key, identify_peer_record_domain, identify_peer_record_payload_type,
-                                payload);
-}
-
-[[nodiscard]] rendezvous::peer_record open_identify_peer_record(const signed_envelope& envelope,
-                                                                std::optional<peer_id> expected_signer) {
-   if (std::ranges::equal(envelope.payload_type, identify_peer_record_payload_type)) {
-      envelope.verify(identify_peer_record_domain, expected_signer);
-      auto out = rendezvous::codec::decode_peer_record(envelope.payload);
-      if (out.peer != envelope.signer()) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_identity, "Identify signed peer record peer id mismatch");
-      }
-      return out;
-   }
-   if (envelope.payload_type == rendezvous::codec::peer_record_payload_type()) {
-      return rendezvous::codec::open_peer_record(envelope, std::move(expected_signer));
-   }
-   FORGE_THROW_EXCEPTION(exceptions::codec_error, "Identify signed peer record has unsupported payload type");
-}
 
 boost::asio::awaitable<identify::document>
 read_identify_document(auto& self, forge::net::p2p::stream& stream,
@@ -166,7 +145,10 @@ boost::asio::awaitable<identify::document> exchange_identify(auto self, auto ses
    auto cancellation = std::make_shared<boost::asio::cancellation_signal>();
    auto timed_out = std::make_shared<std::atomic_bool>(false);
    auto timer = std::make_shared<boost::asio::steady_timer>(strand);
-   timer->expires_after(self->options.identify.timeout);
+   const auto now = std::chrono::steady_clock::now();
+   const auto delay = std::chrono::duration_cast<std::chrono::steady_clock::duration>(self->options.identify.timeout);
+   const auto maximum = std::chrono::steady_clock::time_point::max();
+   timer->expires_at(now >= maximum - delay ? maximum : now + delay);
    timer->async_wait([cancellation, timed_out](const boost::system::error_code& error) {
       if (error) {
          return;
@@ -222,9 +204,9 @@ verified_peer_record(const peer_id& peer, const identify::document& document,
    if (document.signed_peer_record.empty()) {
       return std::nullopt;
    }
-   auto record = open_identify_peer_record(signed_envelope::decode(document.signed_peer_record), peer);
+   auto record = detail::certified_peer_record::open(signed_envelope::decode(document.signed_peer_record), peer);
    if (previous && !previous->signed_peer_record.empty()) {
-      const auto known = open_identify_peer_record(signed_envelope::decode(previous->signed_peer_record), peer);
+      const auto known = detail::certified_peer_record::open(signed_envelope::decode(previous->signed_peer_record), peer);
       if (record.sequence < known.sequence) {
          FORGE_THROW_EXCEPTION(exceptions::peer_verification_failed, "Identify signed peer record sequence regressed");
       }
@@ -292,7 +274,7 @@ local_identify_document_locked(const auto& self,
       auto signing_key = std::optional<public_key>{};
       if (self.identity.private_key && !self.identity.public_key.empty()) {
          signing_key = decode_public_key(self.identity.public_key);
-         auto envelope = seal_identify_peer_record(
+         auto envelope = detail::certified_peer_record::seal(
              rendezvous::peer_record{
                  .peer = self.local,
                  .endpoints = document.listen_endpoints,
@@ -312,8 +294,8 @@ local_identify_document_locked(const auto& self,
             document.signed_peer_record =
                 signed_envelope{
                     .key = *signing_key,
-                    .payload_type = std::vector<std::uint8_t>{identify_peer_record_payload_type.begin(),
-                                                              identify_peer_record_payload_type.end()},
+                    .payload_type = std::vector<std::uint8_t>{detail::certified_peer_record::payload_type.begin(),
+                                                              detail::certified_peer_record::payload_type.end()},
                     .payload = payload,
                     .signature = std::vector<std::uint8_t>(signature_size),
                 }
@@ -337,7 +319,7 @@ local_identify_document_locked(const auto& self,
          document.listen_endpoints.assign(all_endpoints.begin(),
                                           all_endpoints.begin() + static_cast<std::ptrdiff_t>(lower));
          if (signing_key) {
-            document.signed_peer_record = seal_identify_peer_record(
+            document.signed_peer_record = detail::certified_peer_record::seal(
                                               rendezvous::peer_record{
                                                   .peer = self.local,
                                                   .endpoints = document.listen_endpoints,
@@ -693,6 +675,7 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
    };
    auto launch = false;
    auto verified_dht_server = false;
+   auto certified_record_accepted = false;
    {
       auto lock = std::scoped_lock{mutex};
       const auto found = sessions.find(session->id);
@@ -729,6 +712,7 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
          }
       }
       if (certified) {
+         certified_record_accepted = true;
          update.signed_peer_record = document.signed_peer_record;
          update.signed_endpoints = validated_identify_addresses(certified->endpoints, peer, context);
       } else if (!received_push || !document.listen_endpoints.empty()) {
@@ -770,6 +754,11 @@ void node::impl::learn_from_identify(const std::shared_ptr<session_state>& sessi
          launch = schedule_identify_push_locked();
       }
    }
+   tlog("forge.net.p2p.connection", "P2P Identify metadata applied",
+        ("event", received_push ? "identify.push_applied" : "identify.metadata_applied")
+        ("session_id", session->id)("protocols", document.protocols.size())
+        ("addresses", document.listen_endpoints.size())("certified_record", certified_record_accepted)
+        ("dht_server", verified_dht_server));
    observe_address(session, document);
    notify_reachability_changed();
    refresh_relay_publication();
@@ -895,7 +884,7 @@ node::impl::identify_peer_for_discovery(const peer_id& peer, discovery::source s
    }
    auto forwarded_record = record->signed_peer_record;
    if (!forwarded_record.empty()) {
-      const auto certified = open_identify_peer_record(signed_envelope::decode(forwarded_record), peer);
+      const auto certified = detail::certified_peer_record::open(signed_envelope::decode(forwarded_record), peer);
       if (std::ranges::any_of(certified.endpoints, [](const auto& address) {
              return host_addresses::has_interface_zone(address);
           })) {

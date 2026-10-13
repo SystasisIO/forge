@@ -47,8 +47,8 @@ struct from_static_variant {
 
    template <typename T> void operator()(const T& v) const {
       if constexpr (std::is_arithmetic_v<T>) {
-         // Scalar constructors preserve the value's exact dynamic kind. The
-         // free scalar overload set can otherwise narrow bool or be ambiguous.
+         // The constructor normalizes arithmetic types independently of the
+         // platform's fixed-width aliases and preserves their dynamic kind.
          var = variant{v};
       } else {
          to_variant(v, var);

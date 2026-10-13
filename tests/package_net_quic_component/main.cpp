@@ -9,6 +9,11 @@ import forge.net.quic.endpoint;
 import forge.net.quic.listener;
 import forge.net.quic.options;
 import forge.net.quic.transport;
+import forge.net.quic.stream;
+
+static_assert(requires(forge::net::quic::stream& stream) {
+   { stream.async_close_write() } -> std::same_as<boost::asio::awaitable<void>>;
+});
 
 static_assert(std::is_constructible_v<forge::net::quic::connector, forge::asio::runtime&,
                                     forge::net::quic::listener&, forge::net::quic::endpoint>);

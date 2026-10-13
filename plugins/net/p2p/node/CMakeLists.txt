@@ -1,27 +1,75 @@
 add_library(
    forge_plugins_net_p2p_node STATIC
-      descriptor.cpp
       plugin.cpp
       api_impl.cpp
+      api_impl_peers.cpp
+      peer_contribution.cpp
+      peer_contributions.cpp
+      dht_api_impl.cpp
+      configuration_api_impl.cpp
+      configuration_snapshot.cpp
       api_publication_generation.cpp
-      api_publication_slot.cpp
-      api_publication_registry.cpp
-      plugin_diagnostics_source_adapter.cpp
-      plugin_pubsub_source_adapter.cpp
+      protocol_registration.cpp
+      protocol_api_impl.cpp
+      protocol_slot.cpp
+      protocol_operations.cpp
+      protocol_registry.cpp
+      plugin_diagnostics_api_impl.cpp
+      plugin_events_api_impl.cpp
+      plugin_pubsub_api_impl.cpp
+      plugin_pubsub_api_impl_topics.cpp
+      plugin_pubsub_api_impl_partial.cpp
+      plugin_pubsub_api_impl_partial_operations.cpp
+      pubsub_service.cpp
+      pubsub_service_lifecycle.cpp
+      pubsub_service_partial.cpp
+      pubsub_operations.cpp
+      pubsub_policy.cpp
+      pubsub_policy_scoring.cpp
+      project_message.cpp
+      diagnostics_policy.cpp
+      resource_policy.cpp
       config.cpp
+      config_pubsub.cpp
+      config_services.cpp
+      configuration_policy.cpp
+      configuration_policy_host.cpp
+      configuration_policy_lifecycle.cpp
+      configuration_policy_services.cpp
       plugin_impl.cpp
+      plugin_impl_configuration.cpp
       object_dht_record_store_adapter.cpp
       object_peer_state_adapter.cpp
       p2p_state_schema.cpp
       details/lifecycle_phase.hxx
+      details/shutdown_attempt.hxx
+      details/dht_api_impl.hxx
+      details/configuration_api_impl.hxx
+      details/configuration_policy.hxx
+      details/parsed_policy.hxx
+      details/configuration_snapshot.hxx
       details/object_dht_record_store_adapter.hxx
       details/object_peer_state_adapter.hxx
       details/p2p_state_schema.hxx
-      details/plugin_diagnostics_source_adapter.hxx
-      details/plugin_pubsub_source_adapter.hxx
+      details/plugin_diagnostics_api_impl.hxx
+      details/plugin_events_api_impl.hxx
+      details/plugin_pubsub_api_impl.hxx
+      details/pubsub_service.hxx
+      details/pubsub_operations.hxx
+      details/pubsub_policy.hxx
+      details/topic_state.hxx
+      details/handler_record.hxx
+      details/partial_record.hxx
+      details/project_message.hxx
+      details/diagnostics_policy.hxx
+      details/resource_policy.hxx
       details/api_publication_generation.hxx
-      details/api_publication_slot.hxx
-      details/api_publication_registry.hxx
+      details/protocol_api_impl.hxx
+      details/protocol_registration_state.hxx
+      details/protocol_slot.hxx
+      details/protocol_operations.hxx
+      details/protocol_registry.hxx
+      details/peer_contributions.hxx
 )
 forge_target_modules_at(forge_plugins_net_p2p_node plugins/net/p2p/node)
 
@@ -42,6 +90,7 @@ target_link_libraries(
       forge_net_p2p
       forge_config_core
       forge_schema
+      forge_raw
       forge_asio
       forge_exceptions
       Boost::asio
@@ -49,4 +98,5 @@ target_link_libraries(
       forge_plugins_crypto_secrets
    PRIVATE
       forge_api_stream
+      forge_log
 )

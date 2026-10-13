@@ -2,6 +2,7 @@ module;
 
 #include <boost/test/unit_test.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <forge/api/core/macros.hpp>
 #include <forge/exceptions/macros.hpp>
 
@@ -18,6 +19,7 @@ module;
 #include <exception>
 #include <future>
 #include <initializer_list>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -147,6 +149,7 @@ import forge.multiformats.multibase;
 import forge.multiformats.multiaddr;
 
 #include "../../libraries/net/p2p/details/connection_manager.hxx"
+#include "gossipsub_test_shutdown.hxx"
 
 namespace forge::net::p2p::detail {
 void fail_next_connection_manager_prepare_for_test(node& owner);
@@ -1045,13 +1048,25 @@ node::options dht_options_for(const test_identity& identity, dht::profile profil
    return out;
 }
 
+void bind_dht_records(node::options& options, const protocol_id& protocol,
+                      std::shared_ptr<dht::record_store::persistence> persistence) {
+   auto configured = options.dht_records.find(protocol);
+   if (configured == options.dht_records.end()) {
+      const auto profile = std::ranges::find(options.dht_profiles, protocol, &dht::profile::protocol);
+      BOOST_REQUIRE(profile != options.dht_profiles.end());
+      configured = options.dht_records.emplace(protocol, dht::record_store::options_for(*profile)).first;
+   }
+   configured->second.persistence = std::move(persistence);
+}
+
 node::options authenticated_options(node::options options, bool automatic_discovery = false) {
    options.allow_insecure_test_mode = false;
    options.peer_state.persistence = peer_store::make_memory_persistence();
    options.relay_policy.auto_discovery_enabled = automatic_discovery;
    for (const auto& profile : options.dht_profiles) {
-      if (!options.dht_record_persistence.contains(profile.protocol)) {
-         options.dht_record_persistence.emplace(profile.protocol, dht::record_store::make_memory_persistence());
+      const auto configured = options.dht_records.find(profile.protocol);
+      if (configured == options.dht_records.end() || !configured->second.persistence) {
+         bind_dht_records(options, profile.protocol, dht::record_store::make_memory_persistence());
       }
    }
    return options;
@@ -1065,18 +1080,10 @@ public_key test_rsa_public_key() {
    };
 }
 
-node::options pubsub_options_for(capability_set capabilities = capability_set{.bits = capabilities::direct_quic |
-                                                                                      capabilities::pubsub}) {
-   const auto key = test_rsa_public_key();
-   auto out = options_for(make_peer_id(key), capabilities);
-   out.public_key = encode_public_key(key);
-   return out;
-}
-
 node::options pubsub_options_for(const test_certificate_identity& identity,
                                  capability_set capabilities = capability_set{.bits = capabilities::direct_quic |
                                                                                       capabilities::pubsub}) {
-   return options_for(identity, capabilities);
+   return authenticated_options(options_for(identity, capabilities));
 }
 
 void register_echo(node& value) {
@@ -1138,6 +1145,57 @@ std::optional<forge::tests::dns::bytes> hidden_dns_response(const std::uint8_t* 
                             : std::vector<forge::tests::dns::response_answer>{};
    return forge::tests::dns::make_response(request, *question, answers);
 }
+
+class dht_fixture_dns final {
+ public:
+   dht_fixture_dns()
+       : requests_(std::make_shared<request_log>()),
+         server_([requests = requests_](const std::uint8_t* request,
+                                        std::size_t size) -> std::optional<forge::tests::dns::bytes> {
+            const auto question = forge::tests::dns::parse_question(request, size);
+            if (!question) {
+               throw std::runtime_error{"DHT fixture received a malformed DNS request"};
+            }
+            {
+               const auto lock = std::scoped_lock{requests->mutex};
+               requests->questions.push_back(*question);
+            }
+            // Synthetic advertised names are discovery evidence, not live dial targets.
+            return forge::tests::dns::make_failure_response(request, *question, 3);
+         }) {}
+
+   ~dht_fixture_dns() {
+      try {
+         server_.close();
+         const auto lock = std::scoped_lock{requests_->mutex};
+         if (requests_->questions.empty()) {
+            BOOST_TEST_MESSAGE("DHT fixture DNS: no requests");
+         }
+         for (const auto& question : requests_->questions) {
+            BOOST_TEST_MESSAGE("DHT fixture DNS NXDOMAIN name=" << question.name << " type=" << question.type);
+         }
+      } catch (const std::exception& error) {
+         BOOST_ERROR("DHT fixture DNS cleanup failed: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("DHT fixture DNS cleanup failed with a non-standard exception");
+      }
+   }
+
+   void configure(std::initializer_list<node::options*> options) const {
+      for (auto* value : options) {
+         value->dns_resolver.nameservers = {{.address = "127.0.0.1", .port = server_.port()}};
+      }
+   }
+
+ private:
+   struct request_log {
+      std::mutex mutex;
+      std::vector<forge::tests::dns::parsed_question> questions;
+   };
+
+   std::shared_ptr<request_log> requests_;
+   forge::tests::dns::local_dns_server server_;
+};
 
 endpoint listen_quic_with_advertised_dns4(node& value, forge::asio::runtime& runtime) {
    forge::asio::blocking::run(runtime, value.async_listen(make_quic_endpoint(0, "0.0.0.0")));
@@ -4281,7 +4339,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_response_uses_response_stream_provenance) 
    const auto server_identity = make_test_certificate_identity("dht-discovery-server");
    const auto client_identity = make_test_certificate_identity("dht-discovery-client");
    auto server_options = dht_options_for(server_identity, server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, provider_persistence);
+   bind_dht_records(server_options, server_profile.protocol, provider_persistence);
    auto client_options = dht_options_for(client_identity, amino_v1());
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -4328,7 +4386,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_add_provider_preserves_identity_and_continues_rpc_s
    const auto server_profile = custom_test_dht_profile(dht::mode::server, profile_limits);
    auto server_options = dht_options_for(peer(226), server_profile);
    auto server_store = std::make_shared<tracking_dht_record_store_persistence>();
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_store);
+   bind_dht_records(server_options, server_profile.protocol, server_store);
    auto client_options = dht_options_for(peer(227), custom_test_dht_profile(dht::mode::client, profile_limits));
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -4408,7 +4466,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_add_provider_retains_identity_when_address_is_filte
    const auto server_profile = amino_v1(dht::mode::server);
    auto server_options = dht_options_for(peer(236), server_profile);
    auto server_store = std::make_shared<tracking_dht_record_store_persistence>();
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_store);
+   bind_dht_records(server_options, server_profile.protocol, server_store);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(237), amino_v1())};
    const auto server_endpoint = listen(server, runtime);
@@ -4605,7 +4663,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_large_stored_value_is_omitted_without_resetting_str
    static_cast<void>(forge::asio::blocking::run(runtime, persistence->async_apply(std::move(batch))));
 
    auto server_options = dht_options_for(peer(235), server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, persistence);
+   bind_dht_records(server_options, server_profile.protocol, persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(236), client_profile)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -4644,7 +4702,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_oversized_put_echo_is_rejected_before_durable_mutat
    const auto client_profile = custom_test_value_dht_profile(dht::mode::client, limits);
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto server_options = dht_options_for(peer(239), server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, persistence);
+   bind_dht_records(server_options, server_profile.protocol, persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(240), client_profile)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -4712,7 +4770,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_response_incrementally_truncates_to_wire_b
    seed_dht_provider_records(runtime, server_profile, persistence, std::move(providers));
 
    auto server_options = dht_options_for(peer(237), server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, persistence);
+   bind_dht_records(server_options, server_profile.protocol, persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(238), client_profile)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -4950,21 +5008,43 @@ BOOST_AUTO_TEST_CASE(p2p_direct_tcp_nodes_prefer_tls_yamux_and_echo_frames) {
 BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_retains_source_root_for_public_and_private_tcp) {
    for (const auto private_profile : {false, true}) {
       BOOST_TEST_CONTEXT("private profile=" << private_profile) {
+         auto dns_server = forge::tests::dns::local_dns_server{hidden_dns_response};
+         auto dns_cleanup = boost::scope::scope_exit{[&] {
+            try { dns_server.close(); }
+            catch (const std::exception& error) { BOOST_ERROR("source-root DNS cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("source-root DNS cleanup failed with a non-standard exception"); }
+         }};
          auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
          const auto server_identity = make_test_identity();
          const auto client_identity = make_test_identity();
          auto server_options = private_profile ? private_network_options_for(server_identity) : options_for(server_identity);
          auto client_options = private_profile ? private_network_options_for(client_identity) : options_for(client_identity);
+         server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+         client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
          auto gater = std::make_shared<recording_connection_gater>();
          client_options.connection_gater = gater;
          client_options.limits.resources.max_dial_attempts = 1;
          client_options.limits.resources.max_dial_attempts_per_peer = 1;
          auto server = node{runtime, std::move(server_options)};
          auto client = node{runtime, std::move(client_options)};
+         auto cleanup = boost::scope::scope_exit{[&] {
+            for (auto* owner : {&client, &server}) {
+               try {
+                  auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+                  if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                     std::cerr << "source-root node cleanup did not join\n";
+                     std::terminate();
+                  }
+                  stopped.get();
+               }
+               catch (const std::exception& error) { BOOST_ERROR("source-root node cleanup failed: " << error.what()); }
+               catch (...) { BOOST_ERROR("source-root node cleanup failed with a non-standard exception"); }
+            }
+         }};
          register_echo(server);
          const auto listening = listen_tcp(server, runtime);
          const auto root = forge::multiformats::multiaddr::parse(
-             "/dns4/localhost/tcp/" + std::to_string(listening.transport.port) + "/p2p/" + server.local_peer().to_string());
+             "/dns4/hidden.test/tcp/" + std::to_string(listening.transport.port) + "/p2p/" + server.local_peer().to_string());
          // Identify also advertises the source root, so no numeric address is
          // independently learned from the remote node during this assertion.
          server.set_advertised_endpoints({parse_endpoint(root.to_string())});
@@ -5004,27 +5084,117 @@ BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_retains_source_root_for_public_and_pri
          BOOST_TEST(client.diagnostics().resources.active_dials == 0U);
          BOOST_TEST(client.diagnostics().resources.system.file_descriptors == 0U);
          forge::asio::blocking::run(runtime, server.async_stop());
+         cleanup.set_active(false);
       }
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_holds_one_logical_permit_and_stop_releases_it) {
+   auto dns_server = forge::tests::dns::local_dns_server{hidden_dns_response};
+   auto dns_cleanup = boost::scope::scope_exit{[&] {
+      try { dns_server.close(); }
+      catch (const std::exception& error) { BOOST_ERROR("dial-permit DNS cleanup failed: " << error.what()); }
+      catch (...) { BOOST_ERROR("dial-permit DNS cleanup failed with a non-standard exception"); }
+   }};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto options = options_for(make_test_identity());
+   options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
    options.limits.resources.max_dial_attempts = 1;
    options.limits.resources.max_dial_attempts_per_peer = 1;
    auto client = node{runtime, std::move(options)};
    auto accepted = std::make_shared<std::promise<void>>();
    auto accepted_future = accepted->get_future();
-   const auto stalled = start_stalling_tcp_peer(runtime, std::chrono::seconds{5}, accepted);
+   // Own the stalled peer through completion, including setup failures before accept.
+   const auto strand = boost::asio::make_strand(runtime.context());
+   auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(
+       strand, boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 0});
+   const auto stalled = make_tcp_endpoint(acceptor->local_endpoint().port());
+   auto cancellation = boost::asio::cancellation_signal{};
+   const auto serve = [acceptor, accepted]() -> boost::asio::awaitable<void> {
+      auto close_acceptor = boost::scope::scope_exit{[&] {
+         auto ignored = boost::system::error_code{};
+         acceptor->close(ignored);
+      }};
+      auto socket = boost::asio::ip::tcp::socket{co_await boost::asio::this_coro::executor};
+      co_await acceptor->async_accept(socket, boost::asio::use_awaitable);
+      accepted->set_value();
+      auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+      timer.expires_after(std::chrono::seconds{5});
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   };
+   auto stalled_done = boost::asio::co_spawn(
+       strand, serve(), boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   auto pending = std::future<node::session_info>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try {
+         auto stopped = boost::asio::co_spawn(runtime.context(), client.async_stop(), boost::asio::use_future);
+         if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+            std::cerr << "dial-permit client cleanup did not join\n";
+            std::terminate();
+         }
+         stopped.get();
+      }
+      catch (const std::exception& error) { BOOST_ERROR("dial-permit client cleanup failed: " << error.what()); }
+      catch (...) { BOOST_ERROR("dial-permit client cleanup failed with a non-standard exception"); }
+      if (pending.valid()) {
+         if (pending.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+            std::cerr << "dial-permit connect did not join after node stop\n";
+            std::terminate();
+         }
+         try {
+            (void)pending.get();
+            BOOST_ERROR("dial-permit connect unexpectedly succeeded during failed-case cleanup");
+         } catch (const std::exception& error) {
+            std::cerr << "dial-permit pending connect during cleanup: " << error.what() << '\n';
+         } catch (...) {
+            BOOST_ERROR("dial-permit pending connect failed with a non-standard exception");
+         }
+      }
+      auto cancel_posted = std::promise<void>{};
+      auto cancel_done = cancel_posted.get_future();
+      boost::asio::post(strand, [&] {
+         cancellation.emit(boost::asio::cancellation_type::all);
+         cancel_posted.set_value();
+      });
+      if (cancel_done.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+         std::cerr << "dial-permit stalled TCP cancellation callback did not join\n";
+         std::terminate();
+      }
+      cancel_done.get();
+      if (stalled_done.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+         std::cerr << "dial-permit stalled TCP peer did not join after cancellation\n";
+         std::terminate();
+      }
+      try { stalled_done.get(); }
+      catch (const boost::system::system_error& error) {
+         BOOST_CHECK_MESSAGE(error.code() == boost::asio::error::operation_aborted,
+                             "stalled TCP peer failed: " << error.what());
+      } catch (const std::exception& error) {
+         BOOST_ERROR("stalled TCP peer failed: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("stalled TCP peer failed with a non-standard exception");
+      }
+   }};
    const auto root = forge::multiformats::multiaddr::parse(
-       "/dns4/localhost/tcp/" + std::to_string(stalled.transport.port) + "/p2p/" + peer(248).to_string());
+       "/dns4/hidden.test/tcp/" + std::to_string(stalled.transport.port) + "/p2p/" + peer(248).to_string());
    const auto connect_options = node::connect_options{
        .allow_relay = false, .timeout = std::chrono::seconds{10},
        .direct_attempt_timeout = std::chrono::seconds{5}, .max_direct_endpoints = 1};
-   auto pending = boost::asio::co_spawn(runtime.context(), client.async_connect(root, connect_options),
-                                      boost::asio::use_future);
-   BOOST_REQUIRE(accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   pending = boost::asio::co_spawn(runtime.context(), client.async_connect(root, connect_options),
+                                   boost::asio::use_future);
+   const auto accepted_in_time = accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+   if (!accepted_in_time && pending.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+      try {
+         (void)pending.get();
+         BOOST_ERROR("DNS connect succeeded without the fixture TCP accept");
+      } catch (const std::exception& error) {
+         BOOST_ERROR("DNS connect failed before fixture TCP accept: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("DNS connect failed before fixture TCP accept with a non-standard exception");
+      }
+   }
+   BOOST_REQUIRE_MESSAGE(accepted_in_time, "fixture TCP accept did not complete within two seconds");
+   accepted_future.get();
    BOOST_TEST(client.diagnostics().resources.active_dials == 1U);
    BOOST_TEST(client.diagnostics().resources.system.outbound_connections == 1U);
    BOOST_CHECK_EXCEPTION(
@@ -11454,7 +11624,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_value_reports_remaining_record_ttl) {
 
    auto reader_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto reader_options = dht_options_for(reader_identity, client_profile);
-   reader_options.dht_record_persistence.emplace(client_profile.protocol, reader_persistence);
+   bind_dht_records(reader_options, client_profile.protocol, reader_persistence);
    auto reader = node{runtime, std::move(reader_options)};
    forge::asio::blocking::run(runtime, reader.async_hydrate_peer_state());
    verify_dht_server(runtime, reader, server, server_endpoint, content_swarm_value_test_dht);
@@ -11498,10 +11668,10 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_value_propagates_local_persistence_failures) {
    static_cast<void>(forge::asio::blocking::run(runtime, server_persistence->async_apply(std::move(seed))));
 
    auto server_options = dht_options_for(server_identity, server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_persistence);
+   bind_dht_records(server_options, server_profile.protocol, server_persistence);
    auto client_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto client_options = dht_options_for(client_identity, client_profile);
-   client_options.dht_record_persistence.emplace(client_profile.protocol, client_persistence);
+   bind_dht_records(client_options, client_profile.protocol, client_persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -11583,9 +11753,9 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_value_skips_rejected_record_and_reaches_quorum)
    static_cast<void>(forge::asio::blocking::run(runtime, valid_persistence->async_apply(std::move(valid_seed))));
 
    auto invalid_options = dht_options_for(*invalid_identity, invalid_server_profile);
-   invalid_options.dht_record_persistence.emplace(invalid_server_profile.protocol, invalid_persistence);
+   bind_dht_records(invalid_options, invalid_server_profile.protocol, invalid_persistence);
    auto valid_options = dht_options_for(*valid_identity, valid_server_profile);
-   valid_options.dht_record_persistence.emplace(valid_server_profile.protocol, valid_persistence);
+   bind_dht_records(valid_options, valid_server_profile.protocol, valid_persistence);
    auto invalid_server = node{runtime, std::move(invalid_options)};
    auto valid_server = node{runtime, std::move(valid_options)};
    auto client = node{runtime, dht_options_for(client_identity, client_profile)};
@@ -11741,6 +11911,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_find_node_returns_exact_peer_store_and_self_before_
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream) {
+   auto dns = dht_fixture_dns{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    const auto server_identity = make_test_certificate_identity("dht-node-server");
    const auto client_identity = make_test_certificate_identity("dht-node-client");
@@ -11748,7 +11919,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream
    const auto provider_identity = make_test_certificate_identity("dht-node-provider");
    auto server_options = dht_options_for(server_identity, amino_v1(dht::mode::server));
    auto server_persistence = std::make_shared<tracking_dht_record_store_persistence>();
-   server_options.dht_record_persistence.emplace(builtins::kad_dht, server_persistence);
+   bind_dht_records(server_options, builtins::kad_dht, server_persistence);
    auto client_options = dht_options_for(client_identity, amino_v1());
    auto target_options = dht_options_for(target_identity, amino_v1(dht::mode::server));
    auto provider_endpoint = make_dns_tcp_endpoint(4121, "provider.example.com");
@@ -11756,7 +11927,8 @@ BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream
    auto provider_options = dht_options_for(provider_identity, amino_v1());
    provider_options.advertised_endpoints.push_back(provider_endpoint);
    auto provider_persistence = std::make_shared<tracking_dht_record_store_persistence>();
-   provider_options.dht_record_persistence.emplace(builtins::kad_dht, provider_persistence);
+   bind_dht_records(provider_options, builtins::kad_dht, provider_persistence);
+   dns.configure({&server_options, &client_options, &target_options, &provider_options});
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
    auto target_node = node{runtime, std::move(target_options)};
@@ -11839,9 +12011,9 @@ BOOST_AUTO_TEST_CASE(p2p_dht_local_provider_publication_bounds_advertised_endpoi
    auto server_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto server_options = dht_options_for(server_identity, server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_persistence);
+   bind_dht_records(server_options, server_profile.protocol, server_persistence);
    auto provider_options = dht_options_for(provider_identity, provider_profile);
-   provider_options.dht_record_persistence.emplace(provider_profile.protocol, provider_persistence);
+   bind_dht_records(provider_options, provider_profile.protocol, provider_persistence);
    for (const auto port : {4'211, 4'212}) {
       auto advertised = make_dns_tcp_endpoint(port, "bounded-provider.example.com");
       advertised.peer = provider_identity.peer;
@@ -11886,7 +12058,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provide_requires_quorum_and_rolls_back_local_record
    auto server = node{runtime, dht_options_for(server_identity, server_profile)};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, provider_profile);
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_node = node{runtime, std::move(provider_options)};
    const auto server_endpoint = listen(server, runtime);
    static_cast<void>(listen(provider_node, runtime));
@@ -11916,8 +12088,8 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provide_replicates_to_all_closest_peers_after_quoru
    auto second_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto first_options = dht_options_for(first_identity, custom_test_dht_profile(dht::mode::server));
    auto second_options = dht_options_for(second_identity, custom_test_dht_profile(dht::mode::server));
-   first_options.dht_record_persistence.emplace(content_swarm_test_dht, first_persistence);
-   second_options.dht_record_persistence.emplace(content_swarm_test_dht, second_persistence);
+   bind_dht_records(first_options, content_swarm_test_dht, first_persistence);
+   bind_dht_records(second_options, content_swarm_test_dht, second_persistence);
    auto provider_options = dht_options_for(
        provider_identity, custom_test_dht_profile(dht::mode::client, dht::options{.replication = 2, .alpha = 1}));
    auto advertised = make_dns_tcp_endpoint(4'194, "dht-fanout-provider.example.com");
@@ -11969,7 +12141,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_providers_does_not_persist_third_party_claim) {
    auto client_options = dht_options_for(client_identity, client_profile);
    auto client_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    client_persistence->reject_provider_upserts = true;
-   client_options.dht_record_persistence.emplace(content_swarm_test_dht, client_persistence);
+   bind_dht_records(client_options, content_swarm_test_dht, client_persistence);
    auto provider_options = dht_options_for(provider_identity, client_profile);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -12062,6 +12234,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_iterative_lookup_walks_many_peer_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_iterative_provider_lookup_and_provide_reach_closest_peers) {
+   auto dns = dht_fixture_dns{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    const auto seed_identity = make_test_certificate_identity("dht-provider-seed");
    const auto hop_identity = make_test_certificate_identity("dht-provider-hop");
@@ -12078,6 +12251,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_iterative_provider_lookup_and_provide_reach_closest
    provider_endpoint.peer = provider_identity.peer;
    auto provider_options = dht_options_for(provider_identity, client_profile);
    provider_options.advertised_endpoints.push_back(provider_endpoint);
+   dns.configure({&seed_options, &hop_options, &client_options, &provider_options});
 
    auto seed = node{runtime, std::move(seed_options)};
    auto hop = node{runtime, std::move(hop_options)};
@@ -13048,145 +13222,6 @@ BOOST_AUTO_TEST_CASE(p2p_topology_rendezvous_requires_exact_identify_protocol) {
    forge::asio::blocking::run(runtime, server.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_nodes_deliver_signed_publish_over_negotiated_stream) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   subscriber_options.explicit_peer_id = peer(150);
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   auto received = std::make_shared<std::promise<std::vector<std::uint8_t>>>();
-   auto future = received->get_future();
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(
-                    pubsub::topic{.value = "forge.pubsub"},
-                    [received](pubsub::event event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-                       received->set_value(event.value.data);
-                       co_return pubsub::validation_result::accept;
-                    }));
-
-   const auto published = forge::asio::blocking::run(
-       runtime, publisher.async_publish(pubsub::topic{.value = "forge.pubsub"},
-                                        std::vector<std::uint8_t>{'p', 'u', 'b', 's', 'u', 'b'}));
-   BOOST_TEST(!published.signature.empty());
-
-   if (future.wait_for(std::chrono::milliseconds{5'000}) != std::future_status::ready) {
-      const auto metrics = subscriber.metrics();
-      BOOST_FAIL("pubsub delivery did not finish; received="
-                 << metrics.pubsub_messages_received << " delivered=" << metrics.pubsub_messages_delivered
-                 << " invalid=" << metrics.pubsub_invalid_messages << " duplicates=" << metrics.pubsub_duplicates
-                 << " rejected=" << metrics.protocol_rejections);
-   }
-   BOOST_TEST(future.get() == std::vector<std::uint8_t>({'p', 'u', 'b', 's', 'u', 'b'}),
-              boost::test_tools::per_element());
-   BOOST_TEST(publisher.pubsub_snapshot().messages_published >= 1U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered >= 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_singleflights_connection_and_serializes_first_concurrent_publishes) {
-   constexpr auto publish_count = std::size_t{24};
-   constexpr auto payload_size = std::size_t{64 * 1024};
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 8}};
-   const auto publisher_identity = make_test_identity();
-   const auto subscriber_identity = make_test_identity();
-   const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   auto publisher = node{runtime, options_for(publisher_identity, pubsub_capabilities)};
-   auto subscriber = node{runtime, options_for(subscriber_identity, pubsub_capabilities)};
-   const auto subscriber_endpoint = listen_tcp(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   struct delivery_state {
-      std::mutex mutex;
-      std::condition_variable ready;
-      std::set<std::vector<std::uint8_t>> values;
-   };
-   auto delivered = std::make_shared<delivery_state>();
-   const auto subject = pubsub::topic{.value = "forge.pubsub.concurrent"};
-   forge::asio::blocking::run(
-       runtime,
-       subscriber.async_subscribe(
-           subject, [delivered](pubsub::event event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-              if (!event.value.data.empty()) {
-                 {
-                    auto lock = std::scoped_lock{delivered->mutex};
-                    delivered->values.insert(event.value.data);
-                 }
-                 delivered->ready.notify_all();
-              }
-              co_return pubsub::validation_result::accept;
-           }));
-   auto publishes = std::vector<std::future<pubsub::message>>{};
-   publishes.reserve(publish_count);
-   auto ready = std::make_shared<std::atomic_size_t>();
-   auto start = std::make_shared<std::atomic_bool>();
-   for (auto index = std::size_t{}; index < publish_count; ++index) {
-      auto payload = std::vector<std::uint8_t>(payload_size, static_cast<std::uint8_t>(index + 1U));
-      publishes.push_back(boost::asio::co_spawn(
-          runtime.context(),
-          [&publisher, subject, payload = std::move(payload), ready,
-           start]() mutable -> boost::asio::awaitable<pubsub::message> {
-             ready->fetch_add(1U, std::memory_order_release);
-             while (!start->load(std::memory_order_acquire)) {
-                co_await boost::asio::post(boost::asio::use_awaitable);
-             }
-             co_return co_await publisher.async_publish(subject, std::move(payload));
-          },
-          boost::asio::use_future));
-   }
-   const auto start_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-   while (ready->load(std::memory_order_acquire) != publish_count &&
-          std::chrono::steady_clock::now() < start_deadline) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{1}, "concurrent GossipSub start barrier");
-   }
-   BOOST_REQUIRE_EQUAL(ready->load(std::memory_order_acquire), publish_count);
-   start->store(true, std::memory_order_release);
-   for (auto& publish : publishes) {
-      BOOST_REQUIRE_MESSAGE(publish.wait_for(std::chrono::seconds{10}) == std::future_status::ready,
-                            "concurrent GossipSub publish did not finish");
-      try {
-         static_cast<void>(publish.get());
-      } catch (const forge::exceptions::base& error) {
-         const auto publisher_metrics = publisher.metrics();
-         const auto subscriber_metrics = subscriber.metrics();
-         BOOST_FAIL("concurrent GossipSub publish failed: "
-                    << error.what() << "; publisher sessions=" << publisher_metrics.active_sessions << " closed="
-                    << publisher_metrics.sessions_closed << " pruned=" << publisher_metrics.sessions_pruned
-                    << " connection_rejections=" << publisher_metrics.connection_rejections << " direct_failures="
-                    << publisher_metrics.direct_failures << " invalid=" << publisher_metrics.pubsub_invalid_messages
-                    << " protocol_rejections=" << publisher_metrics.protocol_rejections
-                    << " handshakes_failed=" << publisher_metrics.handshakes_failed << "; subscriber sessions="
-                    << subscriber_metrics.active_sessions << " closed=" << subscriber_metrics.sessions_closed
-                    << " invalid=" << subscriber_metrics.pubsub_invalid_messages
-                    << " protocol_rejections=" << subscriber_metrics.protocol_rejections);
-      }
-   }
-   {
-      auto lock = std::unique_lock{delivered->mutex};
-      BOOST_REQUIRE(delivered->ready.wait_for(lock, std::chrono::seconds{10},
-                                              [&] { return delivered->values.size() == publish_count; }));
-      for (auto index = std::size_t{}; index < publish_count; ++index) {
-         const auto expected = std::vector<std::uint8_t>(payload_size, static_cast<std::uint8_t>(index + 1U));
-         BOOST_TEST(delivered->values.contains(expected));
-      }
-   }
-   BOOST_TEST(publisher.metrics().active_sessions == 1U);
-   BOOST_TEST(publisher.metrics().sessions_opened == 1U);
-   BOOST_TEST(subscriber.metrics().active_sessions == 1U);
-   BOOST_TEST(publisher.metrics().pubsub_invalid_messages == 0U);
-   BOOST_TEST(subscriber.metrics().pubsub_invalid_messages == 0U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
-
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_connection_singleflight_reclaims_transient_peer_gates_after_waiters) {
    constexpr auto peer_count = std::size_t{200};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
@@ -13417,25 +13452,32 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_non_owner_session_close_keeps_cached_stream_g
    const auto subscriber_identity = make_test_certificate_identity("pubsub-generation-subscriber");
    const auto pressure_identity = make_test_certificate_identity("pubsub-generation-pressure");
    const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   auto publisher_options = options_for(publisher_identity, pubsub_capabilities);
+   struct delivery_state {
+      std::mutex mutex;
+      std::condition_variable ready;
+      std::size_t count = 0;
+      std::vector<std::tuple<std::uint64_t, std::uint64_t, std::int64_t>> writes;
+   };
+   auto delivered = std::make_shared<delivery_state>();
+   auto publisher_options = authenticated_options(options_for(publisher_identity, pubsub_capabilities));
+   publisher_options.limits.pubsub.tracer = [delivered, remote = subscriber_identity.peer](const pubsub::trace_event& event) {
+      if (event.kind != pubsub::trace_kind::rpc_write || event.peer != remote ||
+          pubsub::codec::decode(event.framed_rpc).messages.empty()) { return; }
+      const auto lock = std::scoped_lock{delivered->mutex};
+      delivered->writes.emplace_back(event.session_id, event.generation, event.stream_id);
+   };
    set_resource_session_limits(publisher_options, 2, (std::numeric_limits<std::size_t>::max)(), 2, 2,
                                session_admission_headroom::one_session);
    publisher_options.limits.session_low_watermark = 1;
    publisher_options.limits.session_grace_period = std::chrono::milliseconds{0};
    auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, options_for(subscriber_identity, pubsub_capabilities)};
-   auto pressure = node{runtime, options_for(pressure_identity)};
+   auto subscriber = node{runtime, authenticated_options(options_for(subscriber_identity, pubsub_capabilities))};
+   auto pressure = node{runtime, authenticated_options(options_for(pressure_identity))};
    const auto publisher_endpoint = listen(publisher, runtime);
    const auto subscriber_endpoint = listen(subscriber, runtime);
    const auto pressure_endpoint = listen(pressure, runtime);
    publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint, pubsub_capabilities);
 
-   struct delivery_state {
-      std::mutex mutex;
-      std::condition_variable ready;
-      std::size_t count = 0;
-   };
-   auto delivered = std::make_shared<delivery_state>();
    const auto subject = pubsub::topic{.value = "forge.pubsub.session-generation"};
    forge::asio::blocking::run(
        runtime, subscriber.async_subscribe(
@@ -13469,8 +13511,11 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_non_owner_session_close_keeps_cached_stream_g
       auto lock = std::unique_lock{delivered->mutex};
       BOOST_REQUIRE(delivered->ready.wait_for(lock, std::chrono::seconds{5}, [&] { return delivered->count == 1U; }));
    }
-   const auto opened_streams = publisher.metrics().protocol_streams_opened;
-   BOOST_REQUIRE(opened_streams >= 1U);
+   {
+      const auto lock = std::scoped_lock{delivered->mutex};
+      BOOST_REQUIRE_EQUAL(delivered->writes.size(), 1U);
+      BOOST_TEST(std::get<0>(delivered->writes.front()) == owner_session_id);
+   }
 
    forge::asio::blocking::run(
        runtime,
@@ -13489,7 +13534,12 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_non_owner_session_close_keeps_cached_stream_g
       auto lock = std::unique_lock{delivered->mutex};
       BOOST_REQUIRE(delivered->ready.wait_for(lock, std::chrono::seconds{5}, [&] { return delivered->count == 2U; }));
    }
-   BOOST_TEST(publisher.metrics().protocol_streams_opened == opened_streams);
+   {
+      const auto lock = std::scoped_lock{delivered->mutex};
+      BOOST_REQUIRE_EQUAL(delivered->writes.size(), 2U);
+      // Authenticated sessions also open Identify streams; compare the actual GossipSub owner, not all protocols.
+      BOOST_CHECK(delivered->writes.front() == delivered->writes.back());
+   }
    BOOST_TEST(publisher.metrics().pubsub_invalid_messages == 0U);
 
    forge::asio::blocking::run(runtime, publisher.async_stop());
@@ -13497,145 +13547,10 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_non_owner_session_close_keeps_cached_stream_g
    forge::asio::blocking::run(runtime, pressure.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_dead_outbound_generation_detaches_mesh_and_reannounces_before_graft) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   const auto publisher_identity = make_test_certificate_identity("pubsub-outbound-generation-publisher");
-   const auto subscriber_identity = make_test_certificate_identity("pubsub-outbound-generation-subscriber");
-   auto publisher_options = pubsub_options_for(publisher_identity);
-   publisher_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   auto subscriber_options = pubsub_options_for(subscriber_identity);
-   subscriber_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   subscriber_options.limits.pubsub.limits.max_data_size = 4;
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.outbound-generation"};
-   const auto accept = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-      co_return pubsub::validation_result::accept;
-   };
-   forge::asio::blocking::run(runtime, publisher.async_subscribe(subject, accept));
-   forge::asio::blocking::run(runtime, subscriber.async_subscribe(subject, accept));
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_connect(subscriber_endpoint, node::connect_options{.expected_peer = subscriber.local_peer()}));
-
-   auto inbound = forge::asio::blocking::run(
-       runtime, subscriber.async_open_protocol_stream(publisher.local_peer(), builtins::meshsub_v11));
-   const auto subscribe_and_graft = pubsub::codec::encode(pubsub::rpc{
-       .subscriptions = {pubsub::subscription{.subscribe = true, .subject = subject}},
-       .control_value = pubsub::control{.grafts = {pubsub::control::graft{.subject = subject}}},
-   });
-   forge::asio::blocking::run(runtime, inbound.async_write(subscribe_and_graft));
-   for (auto poll = 0;
-        poll < 200 && (publisher.pubsub_snapshot().peers != 1U || publisher.pubsub_snapshot().mesh_edges != 1U);
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub explicit inbound generation");
-   }
-   BOOST_REQUIRE(publisher.pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(publisher.pubsub_snapshot().mesh_edges == 1U);
-   const auto active_sessions = publisher.metrics().active_sessions;
-   BOOST_REQUIRE(active_sessions > 0U);
-
-   forge::asio::blocking::run(runtime,
-                              publisher.async_publish(subject, std::vector<std::uint8_t>(8, std::uint8_t{0x41U})));
-   for (auto poll = 0; poll < 200 && subscriber.metrics().protocol_rejections < 1U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub G1 remote reset");
-   }
-   BOOST_REQUIRE(subscriber.metrics().protocol_rejections >= 1U);
-   const auto g1_streams = publisher.metrics().protocol_streams_opened;
-
-   for (auto attempt = 0; attempt < 50 && publisher.metrics().protocol_streams_opened <= g1_streams; ++attempt) {
-      try {
-         static_cast<void>(forge::asio::blocking::run(
-             runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{static_cast<std::uint8_t>(attempt)})));
-      } catch (const forge::exceptions::base&) {
-      }
-      if (publisher.metrics().protocol_streams_opened <= g1_streams) {
-         wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub G1 reset propagation");
-      }
-   }
-   BOOST_REQUIRE(publisher.metrics().protocol_streams_opened > g1_streams);
-   BOOST_REQUIRE(publisher.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_REQUIRE(publisher.pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(subscriber.pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(publisher.metrics().active_sessions == active_sessions);
-   const auto g2_streams = publisher.metrics().protocol_streams_opened;
-
-   forge::asio::blocking::run(runtime,
-                              publisher.async_publish(subject, std::vector<std::uint8_t>(8, std::uint8_t{0x42U})));
-   for (auto poll = 0; poll < 400 && subscriber.metrics().protocol_rejections < 2U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub G2 remote reset");
-   }
-   BOOST_REQUIRE(subscriber.metrics().protocol_rejections >= 2U);
-   for (auto attempt = 0; attempt < 50 && publisher.metrics().protocol_streams_opened <= g2_streams; ++attempt) {
-      try {
-         static_cast<void>(forge::asio::blocking::run(
-             runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{static_cast<std::uint8_t>(attempt)})));
-      } catch (const forge::exceptions::base&) {
-      }
-      if (publisher.metrics().protocol_streams_opened <= g2_streams) {
-         wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub failed G2 cleanup");
-      }
-   }
-   BOOST_REQUIRE(publisher.metrics().protocol_streams_opened > g2_streams);
-   BOOST_REQUIRE(publisher.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_REQUIRE(publisher.pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(publisher.metrics().active_sessions == active_sessions);
-
-   forge::asio::blocking::run(runtime, inbound.async_close());
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_rejects_publish_after_cached_stream_shutdown) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   const auto publisher_identity = make_test_identity();
-   const auto subscriber_identity = make_test_identity();
-   const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   auto publisher = node{runtime, options_for(publisher_identity, pubsub_capabilities)};
-   auto subscriber = node{runtime, options_for(subscriber_identity, pubsub_capabilities)};
-   const auto subscriber_endpoint = listen_tcp(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint, pubsub_capabilities);
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.shutdown"};
-   auto delivered = std::make_shared<std::promise<void>>();
-   auto delivery = delivered->get_future();
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(
-                    subject, [delivered](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-                       delivered->set_value();
-                       co_return pubsub::validation_result::accept;
-                    }));
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_connect(subscriber_endpoint, node::connect_options{.expected_peer = subscriber.local_peer()}));
-   forge::asio::blocking::run(runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{0x42U}));
-   BOOST_REQUIRE(delivery.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   BOOST_TEST(publisher.metrics().stopped);
-   try {
-      static_cast<void>(
-          forge::asio::blocking::run(runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{0x43U})));
-      BOOST_FAIL("GossipSub publish should reject after clean shutdown");
-   } catch (const forge::exceptions::base& error) {
-      BOOST_REQUIRE(forge::net::p2p::exceptions::code_of(error).has_value());
-      BOOST_TEST(static_cast<int>(*forge::net::p2p::exceptions::code_of(error)) ==
-                 static_cast<int>(exceptions::code::closed));
-   }
-
-   const auto close_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-   while (subscriber.metrics().active_sessions != 0U) {
-      BOOST_REQUIRE(std::chrono::steady_clock::now() < close_deadline);
-      wait_on_runtime(runtime, std::chrono::milliseconds{1}, "orderly GossipSub session close");
-   }
-   BOOST_TEST(subscriber.metrics().pubsub_invalid_messages == 0U);
-
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
+   extern void gossipsub_outbound_cached_shutdown_regression();
+   gossipsub_outbound_cached_shutdown_regression();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_separates_immediate_source_from_signed_author) {
@@ -13682,140 +13597,7 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_separates_immediate_source_from_signed_author
    forge::asio::blocking::run(runtime, subscriber.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_retry_is_redelivered_after_bounded_cooldown) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   publisher_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.explicit_peer_id = peer(153);
-   for (auto* options : {&publisher_options, &subscriber_options}) {
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
-      options->limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{40};
-      options->limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{80};
-      options->limits.pubsub.limits.history_gossip = 1;
-   }
 
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   (void)listen(publisher, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.retry"};
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-
-   auto attempts = std::make_shared<std::atomic_uint64_t>(0);
-   auto first_attempt = std::make_shared<std::promise<void>>();
-   auto first_attempt_future = first_attempt->get_future();
-   auto accepted = std::make_shared<std::promise<void>>();
-   auto accepted_future = accepted->get_future();
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(
-                    subject,
-                    [attempts, first_attempt,
-                     accepted](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-                       const auto attempt = attempts->fetch_add(1, std::memory_order_relaxed);
-                       if (attempt == 0) {
-                          first_attempt->set_value();
-                          auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
-                          timer.expires_after(std::chrono::milliseconds{25});
-                          boost::system::error_code ec;
-                          co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-                          co_return pubsub::validation_result::retry;
-                       }
-                       if (attempt == 1) {
-                          accepted->set_value();
-                       }
-                       co_return pubsub::validation_result::accept;
-                    }));
-
-   (void)forge::asio::blocking::run(runtime,
-                                    publisher.async_publish(subject, std::vector<std::uint8_t>{'r', 'e', 't', 'r', 'y'},
-                                                            pubsub::publish_options{.sign = false}));
-   BOOST_REQUIRE(first_attempt_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   first_attempt_future.get();
-   const auto noise_subject = pubsub::topic{.value = "forge.pubsub.retry.noise"};
-   for (auto value = std::uint8_t{}; value < 8; ++value) {
-      (void)forge::asio::blocking::run(runtime, publisher.async_publish(noise_subject, std::vector<std::uint8_t>{value},
-                                                                        pubsub::publish_options{.sign = false}));
-   }
-
-   if (accepted_future.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
-      const auto snapshot = subscriber.pubsub_snapshot();
-      BOOST_FAIL("retryable PubSub message was not redelivered; attempts="
-                 << attempts->load(std::memory_order_relaxed) << " received=" << snapshot.messages_received
-                 << " delivered=" << snapshot.messages_delivered << " duplicates=" << snapshot.duplicates
-                 << " controls=" << snapshot.control_messages);
-   }
-   accepted_future.get();
-   wait_on_runtime(runtime, std::chrono::milliseconds{50}, "post-redelivery accounting");
-
-   BOOST_TEST(attempts->load(std::memory_order_relaxed) == 2U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered == 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_ignore_remains_terminal_during_history_window) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   publisher_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   for (auto* options : {&publisher_options, &subscriber_options}) {
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
-      options->limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{40};
-   }
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   (void)listen(publisher, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.ignore"};
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-   auto attempts = std::make_shared<std::atomic_uint64_t>(0);
-   auto ignored = std::make_shared<std::promise<void>>();
-   auto ignored_future = ignored->get_future();
-   forge::asio::blocking::run(
-       runtime,
-       subscriber.async_subscribe(
-           subject, [attempts, ignored](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-              if (attempts->fetch_add(1, std::memory_order_relaxed) == 0) {
-                 ignored->set_value();
-              }
-              co_return pubsub::validation_result::ignore;
-           }));
-
-   (void)forge::asio::blocking::run(
-       runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{'i', 'g', 'n', 'o', 'r', 'e'},
-                                        pubsub::publish_options{.sign = false}));
-   BOOST_REQUIRE(ignored_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   ignored_future.get();
-   wait_on_runtime(runtime, std::chrono::milliseconds{250}, "terminal ignore window");
-
-   BOOST_TEST(attempts->load(std::memory_order_relaxed) == 1U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered == 0U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_retry_rejects_signed_equivocation_for_same_message_id) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
@@ -13950,87 +13732,6 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_retry_accepts_equivalent_signed_envelope_with
    forge::asio::blocking::run(runtime, subscriber.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_in_progress_validation_is_not_replaced_after_cache_pressure) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
-   const auto first_transport_identity = make_test_certificate_identity("pubsub-validation-first-transport");
-   const auto competing_transport_identity = make_test_certificate_identity("pubsub-validation-competing-transport");
-   const auto subscriber_identity = make_test_certificate_identity("pubsub-validation-pressure-subscriber");
-   auto first_options = pubsub_options_for(first_transport_identity);
-   auto competing_options = pubsub_options_for(competing_transport_identity);
-   auto subscriber_options = pubsub_options_for(subscriber_identity);
-   subscriber_options.limits.pubsub.limits.history_length = 1;
-   subscriber_options.limits.pubsub.limits.max_messages = 1;
-
-   auto first_transport = node{runtime, std::move(first_options)};
-   auto competing_transport = node{runtime, std::move(competing_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   first_transport.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                          capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   competing_transport.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                              capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.validation.pressure"};
-   auto first_entered = std::make_shared<std::promise<void>>();
-   auto first_entered_future = first_entered->get_future();
-   auto second_payloads = std::make_shared<std::atomic_uint64_t>(0);
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(
-                    subject,
-                    [first_entered, second_payloads](
-                        pubsub::event event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-                       if (event.value.data == std::vector<std::uint8_t>{'f', 'i', 'r', 's', 't'}) {
-                          first_entered->set_value();
-                          auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
-                          timer.expires_after(std::chrono::milliseconds{300});
-                          co_await timer.async_wait(boost::asio::use_awaitable);
-                       } else if (event.value.data == std::vector<std::uint8_t>{'s', 'e', 'c', 'o', 'n', 'd'}) {
-                          second_payloads->fetch_add(1, std::memory_order_relaxed);
-                       }
-                       co_return pubsub::validation_result::accept;
-                    }));
-
-   const auto author = make_test_identity();
-   auto first = pubsub::message{
-       .data = std::vector<std::uint8_t>{'f', 'i', 'r', 's', 't'},
-       .seqno = std::vector<std::uint8_t>{0, 0, 0, 0, 0, 0, 0, 19},
-       .subject = subject,
-   };
-   pubsub::codec::sign_message(first, author.private_key);
-   auto second = first;
-   second.data = std::vector<std::uint8_t>{'s', 'e', 'c', 'o', 'n', 'd'};
-   pubsub::codec::sign_message(second, author.private_key);
-   auto filler = pubsub::message{
-       .data = std::vector<std::uint8_t>{'f', 'i', 'l', 'l', 'e', 'r'},
-       .seqno = std::vector<std::uint8_t>{0, 0, 0, 0, 0, 0, 0, 20},
-       .subject = subject,
-   };
-   pubsub::codec::sign_message(filler, author.private_key);
-
-   auto first_stream = forge::asio::blocking::run(
-       runtime, first_transport.async_open_protocol_stream(subscriber.local_peer(), builtins::meshsub_v11));
-   auto competing_stream = forge::asio::blocking::run(
-       runtime, competing_transport.async_open_protocol_stream(subscriber.local_peer(), builtins::meshsub_v11));
-   forge::asio::blocking::run(runtime, first_stream.async_write(pubsub::codec::encode(
-                                           pubsub::rpc{.messages = std::vector<pubsub::message>{first}})));
-   BOOST_REQUIRE(first_entered_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   first_entered_future.get();
-   forge::asio::blocking::run(runtime, competing_stream.async_write(pubsub::codec::encode(
-                                           pubsub::rpc{.messages = std::vector<pubsub::message>{filler}})));
-   forge::asio::blocking::run(runtime, competing_stream.async_write(pubsub::codec::encode(
-                                           pubsub::rpc{.messages = std::vector<pubsub::message>{second}})));
-   wait_on_runtime(runtime, std::chrono::milliseconds{500}, "in-progress validation completion");
-
-   BOOST_TEST(second_payloads->load(std::memory_order_relaxed) == 0U);
-   BOOST_TEST(subscriber.metrics().pubsub_invalid_messages >= 1U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered == 2U);
-
-   forge::asio::blocking::run(runtime, first_stream.async_close());
-   forge::asio::blocking::run(runtime, competing_stream.async_close());
-   forge::asio::blocking::run(runtime, first_transport.async_stop());
-   forge::asio::blocking::run(runtime, competing_transport.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_proactive_redelivery_stops_after_backpressure_budget) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
@@ -14118,348 +13819,23 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_proactive_redelivery_stops_after_backpressure
    forge::asio::blocking::run(runtime, subscriber.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_retry_source_is_not_replaced_by_foreign_ihave) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
-   const auto publisher_identity = make_test_certificate_identity("pubsub-retry-source-publisher");
-   const auto subscriber_identity = make_test_certificate_identity("pubsub-retry-source-subscriber");
-   const auto attacker_identity = make_test_certificate_identity("pubsub-retry-source-attacker");
-   auto publisher_options = pubsub_options_for(publisher_identity);
-   auto subscriber_options = pubsub_options_for(subscriber_identity);
-   auto attacker_options = pubsub_options_for(attacker_identity);
-   publisher_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   attacker_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{500};
-   subscriber_options.limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{100};
-   subscriber_options.limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{100};
-   subscriber_options.limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{100};
-   subscriber_options.limits.pubsub.limits.max_validation_requests = 2;
 
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   auto attacker = node{runtime, std::move(attacker_options)};
-   (void)listen(publisher, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   (void)listen(attacker, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   attacker.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                   capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
 
-   const auto subject = pubsub::topic{.value = "forge.pubsub.retry.source"};
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
 
-   auto attempts = std::make_shared<std::atomic_uint64_t>(0);
-   auto ignored = std::make_shared<std::promise<void>>();
-   auto ignored_future = ignored->get_future();
-   auto accepted = std::make_shared<std::promise<peer_id>>();
-   auto accepted_future = accepted->get_future();
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(subject,
-                                           [attempts, ignored, accepted](pubsub::event event) mutable
-                                               -> boost::asio::awaitable<pubsub::validation_result> {
-                                              const auto attempt = attempts->fetch_add(1, std::memory_order_relaxed);
-                                              if (attempt == 0) {
-                                                 ignored->set_value();
-                                                 co_return pubsub::validation_result::retry;
-                                              }
-                                              if (attempt == 1) {
-                                                 accepted->set_value(event.source);
-                                              }
-                                              co_return pubsub::validation_result::accept;
-                                           }));
-
-   const auto published = forge::asio::blocking::run(
-       runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{'s', 'o', 'u', 'r', 'c', 'e'},
-                                        pubsub::publish_options{.sign = false}));
-   BOOST_REQUIRE(ignored_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   ignored_future.get();
-   wait_on_runtime(runtime, std::chrono::milliseconds{120}, "foreign IHAVE injection window");
-
-   auto attacker_stream = forge::asio::blocking::run(
-       runtime, attacker.async_open_protocol_stream(subscriber.local_peer(), builtins::meshsub_v11));
-   forge::asio::blocking::run(
-       runtime,
-       attacker_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-           .control_value =
-               pubsub::control{
-                   .have = std::vector<pubsub::control::ihave>{pubsub::control::ihave{
-                       .subject = subject,
-                       .message_ids = std::vector<std::vector<std::uint8_t>>{pubsub::codec::message_id(published)}}},
-               },
-       })));
-
-   BOOST_REQUIRE(accepted_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   BOOST_TEST(accepted_future.get().to_string() == publisher.local_peer().to_string());
-   BOOST_TEST(attempts->load(std::memory_order_relaxed) == 2U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered == 1U);
-
-   forge::asio::blocking::run(runtime, attacker_stream.async_close());
-   forge::asio::blocking::run(runtime, attacker.async_stop());
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_retry_stops_after_max_attempts_without_duplicate_history) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   publisher_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.explicit_peer_id = peer(155);
-   for (auto* options : {&publisher_options, &subscriber_options}) {
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
-      options->limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{40};
-      options->limits.pubsub.limits.max_validation_attempts = 3;
-   }
-   subscriber_options.limits.pubsub.limits.history_length = 1;
-   subscriber_options.limits.pubsub.limits.max_messages = 1;
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   (void)listen(publisher, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.retry.limit"};
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-
-   auto attempts = std::make_shared<std::atomic_uint64_t>(0);
-   auto exhausted = std::make_shared<std::promise<void>>();
-   auto exhausted_future = exhausted->get_future();
-   forge::asio::blocking::run(
-       runtime,
-       subscriber.async_subscribe(
-           subject, [attempts, exhausted](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-              if (attempts->fetch_add(1, std::memory_order_relaxed) == 2) {
-                 exhausted->set_value();
-              }
-              co_return pubsub::validation_result::retry;
-           }));
-
-   (void)forge::asio::blocking::run(runtime,
-                                    publisher.async_publish(subject, std::vector<std::uint8_t>{'l', 'i', 'm', 'i', 't'},
-                                                            pubsub::publish_options{.sign = false}));
-   BOOST_REQUIRE(exhausted_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   exhausted_future.get();
-   wait_on_runtime(runtime, std::chrono::milliseconds{250}, "terminal retry limit window");
-
-   const auto snapshot = subscriber.pubsub_snapshot();
-   BOOST_TEST(attempts->load(std::memory_order_relaxed) == 3U);
-   BOOST_TEST(snapshot.messages_delivered == 0U);
-   BOOST_TEST(snapshot.cached_messages == 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_unavailable_source_stops_retry_requests_after_limit) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   publisher_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.explicit_peer_id = peer(156);
-   for (auto* options : {&publisher_options, &subscriber_options}) {
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
-      options->limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{100};
-      options->limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{100};
-   }
-   publisher_options.limits.pubsub.limits.history_length = 1;
-   publisher_options.limits.pubsub.limits.max_messages = 1;
-   subscriber_options.limits.pubsub.limits.max_validation_requests = 2;
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   (void)listen(publisher, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.retry.unavailable"};
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-
-   auto attempts = std::make_shared<std::atomic_uint64_t>(0);
-   auto ignored = std::make_shared<std::promise<void>>();
-   auto ignored_future = ignored->get_future();
-   forge::asio::blocking::run(
-       runtime,
-       subscriber.async_subscribe(
-           subject, [attempts, ignored](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-              if (attempts->fetch_add(1, std::memory_order_relaxed) == 0) {
-                 ignored->set_value();
-              }
-              co_return pubsub::validation_result::retry;
-           }));
-
-   (void)forge::asio::blocking::run(
-       runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{'u', 'n', 'a', 'v', 'a', 'i', 'l'},
-                                        pubsub::publish_options{.sign = false}));
-   BOOST_REQUIRE(ignored_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   ignored_future.get();
-   wait_on_runtime(runtime, std::chrono::milliseconds{25}, "initial ignore completion");
-
-   const auto noise_subject = pubsub::topic{.value = "forge.pubsub.retry.eviction"};
-   (void)forge::asio::blocking::run(runtime, publisher.async_publish(noise_subject, std::vector<std::uint8_t>{0xff},
-                                                                     pubsub::publish_options{.sign = false}));
-   const auto control_before = publisher.pubsub_snapshot().control_messages;
-   for (auto poll = 0; poll < 100 && publisher.pubsub_snapshot().control_messages < control_before + 2; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{20}, "bounded unavailable-source retry");
-   }
-   const auto control_at_limit = publisher.pubsub_snapshot().control_messages;
-   BOOST_REQUIRE(control_at_limit >= control_before + 2);
-
-   wait_on_runtime(runtime, std::chrono::milliseconds{350}, "post-request-limit window");
-   BOOST_TEST(publisher.pubsub_snapshot().control_messages == control_at_limit);
-   BOOST_TEST(attempts->load(std::memory_order_relaxed) == 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_reject_remains_terminal_during_history_window) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   publisher_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   subscriber_options.explicit_peer_id = peer(154);
-   for (auto* options : {&publisher_options, &subscriber_options}) {
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
-      options->limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-      options->limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{30};
-      options->limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{60};
-   }
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   (void)listen(publisher, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.pubsub.reject"};
-   forge::asio::blocking::run(
-       runtime,
-       publisher.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-
-   auto attempts = std::make_shared<std::atomic_uint64_t>(0);
-   auto rejected = std::make_shared<std::promise<void>>();
-   auto rejected_future = rejected->get_future();
-   forge::asio::blocking::run(
-       runtime,
-       subscriber.async_subscribe(
-           subject, [attempts, rejected](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-              const auto attempt = attempts->fetch_add(1, std::memory_order_relaxed);
-              if (attempt == 0) {
-                 rejected->set_value();
-              }
-              co_return pubsub::validation_result::reject;
-           }));
-
-   (void)forge::asio::blocking::run(
-       runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{'r', 'e', 'j', 'e', 'c', 't'},
-                                        pubsub::publish_options{.sign = false}));
-   BOOST_REQUIRE(rejected_future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   rejected_future.get();
-   wait_on_runtime(runtime, std::chrono::milliseconds{250}, "terminal rejection gossip window");
-
-   BOOST_TEST(attempts->load(std::memory_order_relaxed) == 1U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered == 0U);
-   BOOST_TEST(subscriber.pubsub_snapshot().invalid_messages >= 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_forwards_between_subscribed_peers) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
-   auto publisher_options = pubsub_options_for();
-   auto hub_options = pubsub_options_for();
-   auto subscriber_options = pubsub_options_for();
-   hub_options.explicit_peer_id = peer(151);
-   subscriber_options.explicit_peer_id = peer(152);
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto hub = node{runtime, std::move(hub_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   const auto hub_endpoint = listen(hub, runtime);
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-
-   publisher.peers().learn_endpoint(hub.local_peer(), hub_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   subscriber.peers().learn_endpoint(hub.local_peer(), hub_endpoint,
-                                     capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   hub.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                              capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.mesh"};
-   forge::asio::blocking::run(
-       runtime, hub.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-   auto received = std::make_shared<std::promise<std::vector<std::uint8_t>>>();
-   auto future = received->get_future();
-   forge::asio::blocking::run(
-       runtime,
-       subscriber.async_subscribe(
-           subject, [received](pubsub::event event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-              received->set_value(event.value.data);
-              co_return pubsub::validation_result::accept;
-           }));
-   for (auto poll = 0; poll < 200 && hub.pubsub_snapshot().mesh_edges == 0U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub heartbeat GRAFT");
-   }
-   BOOST_REQUIRE(hub.pubsub_snapshot().mesh_edges >= 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_publish(subject, std::vector<std::uint8_t>{'m', 'e', 's', 'h'}));
-
-   if (future.wait_for(std::chrono::milliseconds{5'000}) != std::future_status::ready) {
-      const auto hub_metrics = hub.metrics();
-      const auto subscriber_metrics = subscriber.metrics();
-      BOOST_FAIL("pubsub forwarding did not finish; hub_received="
-                 << hub_metrics.pubsub_messages_received << " hub_delivered=" << hub_metrics.pubsub_messages_delivered
-                 << " subscriber_received=" << subscriber_metrics.pubsub_messages_received
-                 << " subscriber_delivered=" << subscriber_metrics.pubsub_messages_delivered
-                 << " subscriber_invalid=" << subscriber_metrics.pubsub_invalid_messages);
-   }
-   BOOST_TEST(future.get() == std::vector<std::uint8_t>({'m', 'e', 's', 'h'}), boost::test_tools::per_element());
-   for (auto poll = 0; poll < 200 && subscriber.pubsub_snapshot().messages_delivered == 0U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub delivery accounting");
-   }
-   BOOST_TEST(hub.pubsub_snapshot().mesh_edges >= 1U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered >= 1U);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, hub.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
+   extern void gossipsub_outbound_forwarding_regression();
+   gossipsub_outbound_forwarding_regression();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_subscription_is_idempotent_and_does_not_create_mesh_edge) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for();
+   const auto server_identity = make_test_certificate_identity("pubsub-idempotent-server");
+   const auto client_identity = make_test_certificate_identity("pubsub-idempotent-client");
+   auto server_options = pubsub_options_for(server_identity);
    server_options.limits.resources.protocol.max_streams = 1;
    server_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   auto client_options = pubsub_options_for();
-   client_options.explicit_peer_id = peer(219);
+   auto client_options = pubsub_options_for(client_identity);
 
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -14530,496 +13906,48 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_subscription_is_idempotent_and_does_not_creat
    forge::asio::blocking::run(runtime, server.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_graft_at_topic_subscription_cap_sends_prune_without_state_or_subscribe_loop) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
-   auto server_options = pubsub_options_for(make_test_certificate_identity("graft-capacity-server"));
-   server_options.limits.pubsub.limits.max_peers_per_topic = 1;
-   server_options.limits.pubsub.limits.prune_backoff = std::chrono::seconds{1};
-   server_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   server_options.limits.resources.max_malformed_messages_per_peer = 1;
-   auto occupying_options = pubsub_options_for(make_test_certificate_identity("graft-capacity-occupying"));
-   occupying_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   auto rejected_options = pubsub_options_for(make_test_certificate_identity("graft-capacity-rejected"));
-   rejected_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-
-   auto server = node{runtime, std::move(server_options)};
-   auto occupying = node{runtime, std::move(occupying_options)};
-   auto rejected = node{runtime, std::move(rejected_options)};
-   register_echo(server);
-   const auto server_endpoint = listen(server, runtime);
-   const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   occupying.peers().learn_endpoint(server.local_peer(), server_endpoint, pubsub_capabilities);
-   rejected.peers().learn_endpoint(server.local_peer(), server_endpoint, pubsub_capabilities);
-
-   const auto subject = pubsub::topic{.value = "forge.graft.capacity"};
-   const auto warmup_subject = pubsub::topic{.value = "forge.graft.capacity.warmup"};
-   const auto accept = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-      co_return pubsub::validation_result::accept;
-   };
-   forge::asio::blocking::run(runtime, server.async_subscribe(subject, accept));
-
-   auto occupying_stream = forge::asio::blocking::run(
-       runtime, occupying.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   auto rejected_stream = forge::asio::blocking::run(
-       runtime, rejected.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   forge::asio::blocking::run(runtime,
-                              rejected_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                  .subscriptions = {pubsub::subscription{.subscribe = true, .subject = warmup_subject}},
-                              })));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().peers != 1U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub PRUNE outbound warmup subscription");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 1U);
-
-   const auto warmup_messages_before = rejected.pubsub_snapshot().messages_received;
-   static_cast<void>(
-       forge::asio::blocking::run(runtime, server.async_publish(warmup_subject, std::vector<std::uint8_t>{0x37U})));
-   for (auto poll = 0; poll < 200 && rejected.pubsub_snapshot().messages_received == warmup_messages_before; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub PRUNE outbound warmup delivery");
-   }
-   BOOST_REQUIRE(rejected.pubsub_snapshot().messages_received == warmup_messages_before + 1U);
-
-   forge::asio::blocking::run(runtime,
-                              occupying_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                  .subscriptions = {pubsub::subscription{.subscribe = true, .subject = subject}},
-                              })));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().peers != 2U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub topic capacity fill");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 2U);
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 0U);
-
-   const auto before_capacity_subscribe = server.metrics();
-   const auto peers_before_capacity_subscribe = server.pubsub_snapshot().peers;
-   forge::asio::blocking::run(runtime,
-                              rejected_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                  .subscriptions = {pubsub::subscription{.subscribe = true, .subject = subject}},
-                              })));
-   for (auto poll = 0;
-        poll < 200 && server.metrics().backpressure_rejections == before_capacity_subscribe.backpressure_rejections;
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub capacity SUBSCRIBE rejection");
-   }
-   BOOST_REQUIRE(server.metrics().backpressure_rejections == before_capacity_subscribe.backpressure_rejections + 1U);
-   BOOST_TEST(server.metrics().protocol_rejections == before_capacity_subscribe.protocol_rejections + 1U);
-   BOOST_TEST(server.metrics().pubsub_invalid_messages == before_capacity_subscribe.pubsub_invalid_messages);
-   BOOST_TEST(server.metrics().active_sessions == before_capacity_subscribe.active_sessions);
-   BOOST_TEST(server.pubsub_snapshot().peers == peers_before_capacity_subscribe);
-
-   const auto server_before = server.pubsub_snapshot();
-   const auto rejected_before = rejected.pubsub_snapshot();
-   const auto server_metrics_before = server.metrics();
-   const auto server_streams_before = server.metrics().protocol_streams_opened;
-   BOOST_REQUIRE(rejected_before.mesh_edges == 0U);
-   forge::asio::blocking::run(runtime, rejected_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                           .control_value =
-                                               pubsub::control{
-                                                   .grafts = {pubsub::control::graft{.subject = subject}},
-                                               },
-                                       })));
-   for (auto poll = 0; poll < 200 && rejected.pubsub_snapshot().control_messages == rejected_before.control_messages;
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub capacity PRUNE delivery");
-   }
-   wait_on_runtime(runtime, std::chrono::milliseconds{25}, "GossipSub capacity PRUNE stability");
-
-   const auto server_after = server.pubsub_snapshot();
-   const auto rejected_after = rejected.pubsub_snapshot();
-   BOOST_REQUIRE(rejected_after.control_messages == rejected_before.control_messages + 1U);
-   BOOST_TEST(server_after.control_messages == server_before.control_messages + 1U);
-   BOOST_TEST(server_after.peers == server_before.peers);
-   BOOST_TEST(server_after.mesh_edges == 0U);
-   BOOST_TEST(rejected_after.peers == rejected_before.peers);
-   BOOST_TEST(rejected_after.mesh_edges == 0U);
-   BOOST_TEST(server.metrics().protocol_streams_opened == server_streams_before);
-   BOOST_TEST(server.metrics().pubsub_invalid_messages == server_metrics_before.pubsub_invalid_messages);
-   BOOST_TEST(server.metrics().backpressure_rejections == server_metrics_before.backpressure_rejections + 1U);
-   BOOST_TEST(server.metrics().active_sessions == server_metrics_before.active_sessions);
-
-   forge::asio::blocking::run(runtime, rejected_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                           .control_value =
-                                               pubsub::control{
-                                                   .grafts = {pubsub::control::graft{.subject = subject}},
-                                               },
-                                       })));
-   for (auto poll = 0; poll < 200 && rejected.pubsub_snapshot().control_messages == rejected_after.control_messages;
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub backoff violation PRUNE delivery");
-   }
-   wait_on_runtime(runtime, std::chrono::milliseconds{25}, "GossipSub backoff violation PRUNE stability");
-   BOOST_REQUIRE(rejected.pubsub_snapshot().control_messages == rejected_after.control_messages + 1U);
-   BOOST_TEST(server.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_TEST(server.metrics().pubsub_invalid_messages == server_metrics_before.pubsub_invalid_messages + 1U);
-   BOOST_TEST(server.metrics().active_sessions == server_metrics_before.active_sessions);
-
-   auto echo = forge::asio::blocking::run(
-       runtime, rejected.async_open_protocol_stream(server.local_peer(), builtins::echo,
-                                                    node::open_options{.allow_relay = false}));
-   const auto echo_payload = std::vector<std::uint8_t>{'l', 'i', 'v', 'e'};
-   forge::asio::blocking::run(runtime, echo.async_write_frame(echo_payload));
-   BOOST_TEST(forge::asio::blocking::run(runtime, echo.async_read_frame()) == echo_payload,
-              boost::test_tools::per_element());
-   forge::asio::blocking::run(runtime, echo.async_close());
-
-   forge::asio::blocking::run(runtime,
-                              occupying_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                  .subscriptions = {pubsub::subscription{.subscribe = false, .subject = subject}},
-                              })));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().peers != 1U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub topic capacity release");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 1U);
-   wait_on_runtime(runtime, std::chrono::milliseconds{1'100}, "GossipSub local PRUNE backoff expiry");
-   const auto control_after_violation = rejected.pubsub_snapshot().control_messages;
-   forge::asio::blocking::run(runtime, rejected_stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                           .control_value =
-                                               pubsub::control{
-                                                   .grafts = {pubsub::control::graft{.subject = subject}},
-                                               },
-                                       })));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().mesh_edges == 0U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub post-backoff GRAFT admission");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 1U);
-   BOOST_TEST(rejected.pubsub_snapshot().control_messages == control_after_violation);
-
-   forge::asio::blocking::run(runtime, occupying_stream.async_close());
-   forge::asio::blocking::run(runtime, rejected_stream.async_close());
-   forge::asio::blocking::run(runtime, occupying.async_stop());
-   forge::asio::blocking::run(runtime, rejected.async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_received_prune_blocks_immediate_graft_until_backoff_expiry) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for(make_test_certificate_identity("remote-prune-graft-server"));
-   auto client_options = pubsub_options_for(make_test_certificate_identity("remote-prune-graft-client"));
-   for (auto* options : {&server_options, &client_options}) {
-      options->limits.pubsub.limits.prune_backoff = std::chrono::seconds{1};
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   }
-
-   auto server = node{runtime, std::move(server_options)};
-   auto client = node{runtime, std::move(client_options)};
-   const auto server_endpoint = listen(server, runtime);
-   client.peers().learn_endpoint(server.local_peer(), server_endpoint,
-                                 capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.graft.remote-prune"};
-   const auto warmup_subject = pubsub::topic{.value = "forge.graft.remote-prune.warmup"};
-   forge::asio::blocking::run(
-       runtime, server.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-          co_return pubsub::validation_result::accept;
-       }));
-   auto stream = forge::asio::blocking::run(
-       runtime, client.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   forge::asio::blocking::run(runtime,
-                              stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                  .subscriptions = {pubsub::subscription{.subscribe = true, .subject = warmup_subject}},
-                              })));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().peers != 1U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub remote PRUNE stream warmup");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 1U);
-   const auto client_messages_before = client.pubsub_snapshot().messages_received;
-   static_cast<void>(
-       forge::asio::blocking::run(runtime, server.async_publish(warmup_subject, std::vector<std::uint8_t>{0x42U})));
-   for (auto poll = 0; poll < 200 && client.pubsub_snapshot().messages_received == client_messages_before; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub remote PRUNE reverse stream warmup");
-   }
-   BOOST_REQUIRE(client.pubsub_snapshot().messages_received == client_messages_before + 1U);
-
-   const auto server_control_before_prune = server.pubsub_snapshot().control_messages;
-   forge::asio::blocking::run(runtime, stream.async_write(pubsub::codec::encode(pubsub::rpc{
-                                           .control_value =
-                                               pubsub::control{
-                                                   .prunes = {pubsub::control::prune{
-                                                       .subject = subject,
-                                                       .backoff = std::chrono::seconds{1},
-                                                   }},
-                                               },
-                                       })));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().control_messages == server_control_before_prune; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub remote PRUNE receipt");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().control_messages == server_control_before_prune + 1U);
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 0U);
-
-   const auto server_before_graft = server.pubsub_snapshot();
-   const auto client_before_graft = client.pubsub_snapshot();
-   const auto metrics_before_graft = server.metrics();
-   const auto streams_before_graft = server.metrics().protocol_streams_opened;
-   const auto graft = pubsub::codec::encode(pubsub::rpc{
-       .control_value = pubsub::control{.grafts = {pubsub::control::graft{.subject = subject}}},
-   });
-   forge::asio::blocking::run(runtime, stream.async_write(graft));
-   for (auto poll = 0; poll < 200 && client.pubsub_snapshot().control_messages == client_before_graft.control_messages;
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub remote-backoff PRUNE delivery");
-   }
-
-   const auto server_after_rejection = server.pubsub_snapshot();
-   const auto client_after_rejection = client.pubsub_snapshot();
-   BOOST_REQUIRE(client_after_rejection.control_messages == client_before_graft.control_messages + 1U);
-   BOOST_TEST(server_after_rejection.control_messages == server_before_graft.control_messages + 1U);
-   BOOST_TEST(server_after_rejection.peers == server_before_graft.peers);
-   BOOST_TEST(server_after_rejection.mesh_edges == 0U);
-   BOOST_TEST(client_after_rejection.peers == client_before_graft.peers);
-   BOOST_TEST(client_after_rejection.mesh_edges == client_before_graft.mesh_edges);
-   BOOST_TEST(server.metrics().pubsub_invalid_messages == metrics_before_graft.pubsub_invalid_messages + 1U);
-   BOOST_TEST(server.metrics().protocol_rejections == metrics_before_graft.protocol_rejections + 1U);
-   BOOST_TEST(server.metrics().protocol_streams_opened == streams_before_graft);
-
-   wait_on_runtime(runtime, std::chrono::milliseconds{1'100}, "GossipSub unified PRUNE backoff expiry");
-   const auto server_control_after_expiry = server.pubsub_snapshot().control_messages;
-   const auto client_control_after_expiry = client.pubsub_snapshot().control_messages;
-   forge::asio::blocking::run(runtime, stream.async_write(graft));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().mesh_edges == 0U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub post-remote-backoff GRAFT admission");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 1U);
-   BOOST_TEST(server.pubsub_snapshot().control_messages == server_control_after_expiry + 1U);
-   BOOST_TEST(client.pubsub_snapshot().control_messages == client_control_after_expiry);
-   BOOST_TEST(server.metrics().protocol_streams_opened == streams_before_graft);
-
-   forge::asio::blocking::run(runtime, stream.async_close());
-   forge::asio::blocking::run(runtime, client.async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_unsubscribe_sends_leave_and_enforces_backoff_until_expiry) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for(make_test_certificate_identity("unsubscribe-leave-server"));
-   auto client_options = pubsub_options_for(make_test_certificate_identity("unsubscribe-leave-client"));
-   for (auto* options : {&server_options, &client_options}) {
-      options->limits.pubsub.limits.unsubscribe_backoff = std::chrono::seconds{1};
-      options->limits.pubsub.limits.prune_backoff = std::chrono::seconds{1};
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::seconds{60};
-   }
-
-   auto server = node{runtime, std::move(server_options)};
-   auto client = node{runtime, std::move(client_options)};
-   const auto server_endpoint = listen(server, runtime);
-   client.peers().learn_endpoint(server.local_peer(), server_endpoint,
-                                 capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   const auto subject = pubsub::topic{.value = "forge.unsubscribe.leave"};
-   const auto accept = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-      co_return pubsub::validation_result::accept;
-   };
-   forge::asio::blocking::run(runtime, server.async_subscribe(subject, accept));
-   auto stream = forge::asio::blocking::run(
-       runtime, client.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   const auto subscribe_and_graft = pubsub::codec::encode(pubsub::rpc{
-       .subscriptions = {pubsub::subscription{.subscribe = true, .subject = subject}},
-       .control_value = pubsub::control{.grafts = {pubsub::control::graft{.subject = subject}}},
-   });
-   forge::asio::blocking::run(runtime, stream.async_write(subscribe_and_graft));
-   for (auto poll = 0;
-        poll < 200 && (server.pubsub_snapshot().peers != 1U || server.pubsub_snapshot().mesh_edges != 1U); ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub unsubscribe mesh setup");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 1U);
-
-   const auto client_messages_before = client.pubsub_snapshot().messages_received;
-   static_cast<void>(
-       forge::asio::blocking::run(runtime, server.async_publish(subject, std::vector<std::uint8_t>{0x4cU})));
-   for (auto poll = 0; poll < 200 && (client.pubsub_snapshot().messages_received == client_messages_before ||
-                                      client.pubsub_snapshot().peers != 1U);
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub unsubscribe reverse stream warmup");
-   }
-   BOOST_REQUIRE(client.pubsub_snapshot().messages_received == client_messages_before + 1U);
-   BOOST_REQUIRE(client.pubsub_snapshot().peers == 1U);
-
-   const auto client_before_leave = client.pubsub_snapshot();
-   const auto server_streams_before_leave = server.metrics().protocol_streams_opened;
-   const auto client_streams_before_leave = client.metrics().protocol_streams_opened;
-   forge::asio::blocking::run(runtime, server.async_unsubscribe(subject));
-   for (auto poll = 0;
-        poll < 200 && (client.pubsub_snapshot().peers != 0U ||
-                       client.pubsub_snapshot().control_messages == client_before_leave.control_messages);
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub unsubscribe LEAVE delivery");
-   }
-   const auto client_after_leave = client.pubsub_snapshot();
-   BOOST_REQUIRE(client_after_leave.peers == 0U);
-   BOOST_REQUIRE(client_after_leave.control_messages == client_before_leave.control_messages + 1U);
-   BOOST_TEST(client_after_leave.mesh_edges == 0U);
-   BOOST_TEST(server.pubsub_snapshot().topics == 0U);
-   BOOST_TEST(server.pubsub_snapshot().peers == 1U);
-   BOOST_TEST(server.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_TEST(server.metrics().protocol_streams_opened == server_streams_before_leave);
-   BOOST_TEST(client.metrics().protocol_streams_opened == client_streams_before_leave);
-
-   forge::asio::blocking::run(runtime, server.async_subscribe(subject, accept));
-   for (auto poll = 0; poll < 200 && client.pubsub_snapshot().peers != 1U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub post-unsubscribe resubscribe delivery");
-   }
-   BOOST_REQUIRE(client.pubsub_snapshot().peers == 1U);
-   const auto server_before_reentry = server.pubsub_snapshot();
-   const auto client_before_reentry = client.pubsub_snapshot();
-   const auto server_metrics_before_reentry = server.metrics();
-   const auto graft = pubsub::codec::encode(pubsub::rpc{
-       .control_value = pubsub::control{.grafts = {pubsub::control::graft{.subject = subject}}},
-   });
-   forge::asio::blocking::run(runtime, stream.async_write(graft));
-   for (auto poll = 0;
-        poll < 200 && client.pubsub_snapshot().control_messages == client_before_reentry.control_messages; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub unsubscribe-backoff PRUNE delivery");
-   }
-   BOOST_REQUIRE(client.pubsub_snapshot().control_messages == client_before_reentry.control_messages + 1U);
-   BOOST_TEST(server.pubsub_snapshot().control_messages == server_before_reentry.control_messages + 1U);
-   BOOST_TEST(server.pubsub_snapshot().peers == 1U);
-   BOOST_TEST(server.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_TEST(server.metrics().pubsub_invalid_messages == server_metrics_before_reentry.pubsub_invalid_messages + 1U);
-   BOOST_TEST(server.metrics().protocol_streams_opened == server_streams_before_leave);
-   BOOST_TEST(client.metrics().protocol_streams_opened == client_streams_before_leave);
-
-   wait_on_runtime(runtime, std::chrono::milliseconds{1'100}, "GossipSub unsubscribe backoff expiry");
-   const auto server_control_after_expiry = server.pubsub_snapshot().control_messages;
-   const auto client_control_after_expiry = client.pubsub_snapshot().control_messages;
-   forge::asio::blocking::run(runtime, stream.async_write(graft));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().mesh_edges == 0U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub post-unsubscribe-backoff GRAFT admission");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 1U);
-   BOOST_TEST(server.pubsub_snapshot().control_messages == server_control_after_expiry + 1U);
-   BOOST_TEST(client.pubsub_snapshot().control_messages == client_control_after_expiry);
-   BOOST_TEST(server.metrics().protocol_streams_opened == server_streams_before_leave);
-   BOOST_TEST(client.metrics().protocol_streams_opened == client_streams_before_leave);
-
-   forge::asio::blocking::run(runtime, stream.async_close());
-   forge::asio::blocking::run(runtime, client.async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_heartbeat_obeys_sent_and_received_prune_backoff_until_expiry) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
-   auto server_options = pubsub_options_for(make_test_certificate_identity("heartbeat-backoff-server"));
-   server_options.limits.pubsub.limits.mesh_n = 1;
-   server_options.limits.pubsub.limits.mesh_n_low = 1;
-   server_options.limits.pubsub.limits.mesh_n_high = 1;
-   server_options.limits.pubsub.limits.prune_backoff = std::chrono::seconds{1};
-   server_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{2'000};
-   server_options.limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{400};
-   auto first_options = pubsub_options_for(make_test_certificate_identity("heartbeat-backoff-first"));
-   auto second_options = pubsub_options_for(make_test_certificate_identity("heartbeat-backoff-second"));
-   for (auto* options : {&first_options, &second_options}) {
-      options->limits.pubsub.limits.prune_backoff = std::chrono::seconds{1};
-      options->limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{2'050};
-      options->limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{50};
-   }
-
-   auto server = node{runtime, std::move(server_options)};
-   auto first = node{runtime, std::move(first_options)};
-   auto second = node{runtime, std::move(second_options)};
-   const auto server_endpoint = listen(server, runtime);
-   (void)listen(first, runtime);
-   (void)listen(second, runtime);
-   const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   first.peers().learn_endpoint(server.local_peer(), server_endpoint, pubsub_capabilities);
-   second.peers().learn_endpoint(server.local_peer(), server_endpoint, pubsub_capabilities);
-
-   const auto subject = pubsub::topic{.value = "forge.graft.heartbeat-backoff"};
-   const auto accept = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-      co_return pubsub::validation_result::accept;
-   };
-   forge::asio::blocking::run(runtime, server.async_subscribe(subject, accept));
-   forge::asio::blocking::run(runtime, first.async_subscribe(subject, accept));
-   forge::asio::blocking::run(runtime, second.async_subscribe(subject, accept));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().peers != 2U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub heartbeat backoff subscriptions");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 2U);
-
-   auto first_stream = forge::asio::blocking::run(
-       runtime, first.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   auto second_stream = forge::asio::blocking::run(
-       runtime, second.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   const auto graft = pubsub::codec::encode(pubsub::rpc{
-       .control_value = pubsub::control{.grafts = {pubsub::control::graft{.subject = subject}}},
-   });
-   forge::asio::blocking::run(runtime, first_stream.async_write(graft));
-   forge::asio::blocking::run(runtime, second_stream.async_write(graft));
-   for (auto poll = 0; poll < 200 && server.pubsub_snapshot().mesh_edges != 2U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub heartbeat oversubscription setup");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 2U);
-
-   const auto first_is_pruned = first.local_peer() > second.local_peer();
-   auto* pruned = first_is_pruned ? &first : &second;
-   auto* retained = first_is_pruned ? &second : &first;
-   auto* pruned_stream = first_is_pruned ? &first_stream : &second_stream;
-   auto* retained_stream = first_is_pruned ? &second_stream : &first_stream;
-   const auto pruned_control_before = pruned->pubsub_snapshot().control_messages;
-   for (auto poll = 0; poll < 600 && pruned->pubsub_snapshot().control_messages == pruned_control_before; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub heartbeat PRUNE delivery");
-   }
-   BOOST_REQUIRE(pruned->pubsub_snapshot().control_messages == pruned_control_before + 1U);
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 1U);
-   BOOST_REQUIRE(pruned->pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(pruned->pubsub_snapshot().mesh_edges == 0U);
-
-   const auto sessions_before_cleanup = server.metrics().active_sessions;
-   BOOST_REQUIRE(sessions_before_cleanup >= 2U);
-   forge::asio::blocking::run(runtime, retained_stream->async_close());
-   forge::asio::blocking::run(runtime, retained->async_stop());
-   for (auto poll = 0;
-        poll < 400 && (server.pubsub_snapshot().peers != 1U || server.pubsub_snapshot().mesh_edges != 0U ||
-                       server.metrics().active_sessions >= sessions_before_cleanup);
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub retained peer cleanup");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().peers == 1U);
-   BOOST_REQUIRE(server.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_REQUIRE(server.metrics().active_sessions + 1U == sessions_before_cleanup);
-
-   const auto server_control_during_backoff = server.pubsub_snapshot().control_messages;
-   const auto pruned_control_during_backoff = pruned->pubsub_snapshot().control_messages;
-   const auto invalid_before_backoff = server.pubsub_snapshot().invalid_messages;
-
-   wait_on_runtime(runtime, std::chrono::milliseconds{300}, "GossipSub remote PRUNE backoff heartbeat ticks");
-   BOOST_TEST(server.pubsub_snapshot().control_messages == server_control_during_backoff);
-   BOOST_TEST(pruned->pubsub_snapshot().control_messages == pruned_control_during_backoff);
-   BOOST_TEST(server.pubsub_snapshot().mesh_edges == 0U);
-   BOOST_TEST(pruned->pubsub_snapshot().mesh_edges == 0U);
-   BOOST_TEST(server.pubsub_snapshot().invalid_messages == invalid_before_backoff);
-
-   for (auto poll = 0; poll < 400 && server.pubsub_snapshot().control_messages == server_control_during_backoff;
-        ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub remote PRUNE backoff expiry");
-   }
-   BOOST_REQUIRE(server.pubsub_snapshot().control_messages == server_control_during_backoff + 1U);
-   BOOST_REQUIRE(pruned->pubsub_snapshot().control_messages == pruned_control_during_backoff);
-   BOOST_TEST(server.pubsub_snapshot().peers == 1U);
-   BOOST_TEST(pruned->pubsub_snapshot().peers == 1U);
-   BOOST_TEST(server.pubsub_snapshot().mesh_edges == 1U);
-   BOOST_TEST(pruned->pubsub_snapshot().mesh_edges == 1U);
-   BOOST_TEST(server.pubsub_snapshot().invalid_messages == invalid_before_backoff);
-
-   forge::asio::blocking::run(runtime, pruned_stream->async_close());
-   forge::asio::blocking::run(runtime, pruned->async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_heartbeat_does_not_graft_unsubscribed_sessions) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for();
+   const auto server_identity = make_test_certificate_identity("pubsub-unsubscribed-heartbeat-server");
+   const auto client_identity = make_test_certificate_identity("pubsub-unsubscribed-heartbeat-client");
+   const auto read = std::make_shared<std::atomic_bool>(false);
+   const auto incoming_id = std::make_shared<std::atomic_int64_t>(-1);
+   auto server_options = pubsub_options_for(server_identity);
    server_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
    server_options.limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-   auto client_options = pubsub_options_for();
-   client_options.explicit_peer_id = peer(220);
+   server_options.limits.pubsub.tracer = [read, incoming_id](const pubsub::trace_event& event) {
+      if (event.kind == pubsub::trace_kind::rpc_read && event.stream_id == incoming_id->load()) {
+         read->store(true);
+      }
+   };
+   auto client_options = pubsub_options_for(client_identity);
 
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
+   auto shutdown = forge::tests::p2p::gossipsub_test_shutdown{runtime, client, server};
    const auto server_endpoint = listen(server, runtime);
    client.peers().learn_endpoint(server.local_peer(), server_endpoint,
                                  capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
 
    auto stream = forge::asio::blocking::run(
        runtime, client.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
+   BOOST_CHECK(stream.authentication() == peer_authentication::quic_tls);
+   incoming_id->store(stream.id());
+   forge::asio::blocking::run(runtime, stream.async_write(pubsub::codec::encode(pubsub::rpc{})));
+   for (auto poll = 0; poll < 100 && !read->load(); ++poll) {
+      wait_on_runtime(runtime, std::chrono::milliseconds{5}, "GossipSub authenticated unsubscribed stream admission");
+   }
+   BOOST_REQUIRE(read->load());
+   const auto scores = server.pubsub_scores();
+   BOOST_REQUIRE(scores.connected_peers == 1U);
+   BOOST_REQUIRE(std::ranges::any_of(scores.peers, [&](const auto& scored) {
+      return scored.peer == client.local_peer() && scored.connected;
+   }));
+   BOOST_REQUIRE(std::ranges::any_of(server.diagnostics().sessions, [&](const auto& session) {
+      return session.remote_peer == client.local_peer() && !session.closed &&
+          session.authentication == peer_authentication::quic_tls;
+   }));
    const auto subject = pubsub::topic{.value = "forge.subscription.absent"};
    forge::asio::blocking::run(
        runtime, server.async_subscribe(subject, [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
@@ -15031,17 +13959,17 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_heartbeat_does_not_graft_unsubscribed_session
    BOOST_TEST(server.pubsub_snapshot().mesh_edges == 0U);
 
    forge::asio::blocking::run(runtime, stream.async_close());
-   forge::asio::blocking::run(runtime, client.async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
+   shutdown.join();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_graft_records_subscription_through_heartbeat) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for();
+   const auto server_identity = make_test_certificate_identity("pubsub-graft-heartbeat-server");
+   const auto client_identity = make_test_certificate_identity("pubsub-graft-heartbeat-client");
+   auto server_options = pubsub_options_for(server_identity);
    server_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
    server_options.limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-   auto client_options = pubsub_options_for();
-   client_options.explicit_peer_id = peer(225);
+   auto client_options = pubsub_options_for(client_identity);
 
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -15092,11 +14020,12 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_graft_records_subscription_through_heartbeat)
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_protocol_stream_close_preserves_peer_state_until_session_disconnect) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for();
+   const auto server_identity = make_test_certificate_identity("pubsub-stream-retention-server");
+   const auto client_identity = make_test_certificate_identity("pubsub-stream-retention-client");
+   auto server_options = pubsub_options_for(server_identity);
    server_options.limits.pubsub.limits.heartbeat_initial_delay = std::chrono::milliseconds{10};
    server_options.limits.pubsub.limits.heartbeat_interval = std::chrono::milliseconds{20};
-   auto client_options = pubsub_options_for();
-   client_options.explicit_peer_id = peer(221);
+   auto client_options = pubsub_options_for(client_identity);
 
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -15165,266 +14094,20 @@ BOOST_AUTO_TEST_CASE(p2p_gossipsub_protocol_stream_close_preserves_peer_state_un
    forge::asio::blocking::run(runtime, server.async_stop());
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_control_spam_is_penalized_without_stopping_node) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for();
-   server_options.limits.pubsub.limits.max_ihave_per_peer = 1;
-   server_options.limits.pubsub.limits.max_iwant_per_peer = 1;
-   server_options.limits.pubsub.limits.max_graft_per_peer = 1;
-   auto client_options = pubsub_options_for();
-   client_options.explicit_peer_id = peer(160);
-
-   auto server = node{runtime, std::move(server_options)};
-   auto client = node{runtime, std::move(client_options)};
-   const auto server_endpoint = listen(server, runtime);
-   client.peers().learn_endpoint(server.local_peer(), server_endpoint,
-                                 capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   forge::asio::blocking::run(
-       runtime, server.async_subscribe(pubsub::topic{.value = "forge.spam"},
-                                       [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-                                          co_return pubsub::validation_result::accept;
-                                       }));
-
-   auto stream = forge::asio::blocking::run(
-       runtime, client.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-   const auto id = std::vector<std::uint8_t>{'i', 'd'};
-   auto spam =
-       pubsub::rpc{
-           .control_value =
-               pubsub::control{
-                   .have =
-                       std::vector<pubsub::control::ihave>{
-                           pubsub::control::ihave{.subject = pubsub::topic{.value = "forge.spam"},
-                                                  .message_ids = std::vector<std::vector<std::uint8_t>>{id}},
-                           pubsub::control::ihave{.subject = pubsub::topic{.value = "forge.spam"},
-                                                  .message_ids = std::vector<std::vector<std::uint8_t>>{id}}},
-                   .want =
-                       std::vector<pubsub::control::iwant>{
-                           pubsub::control::iwant{.message_ids = std::vector<std::vector<std::uint8_t>>{id}},
-                           pubsub::control::iwant{.message_ids = std::vector<std::vector<std::uint8_t>>{id}}},
-                   .grafts =
-                       std::vector<pubsub::control::graft>{
-                           pubsub::control::graft{.subject = pubsub::topic{.value = "forge.spam"}},
-                           pubsub::control::graft{.subject = pubsub::topic{.value = "forge.spam"}}},
-               },
-       };
-   forge::asio::blocking::run(runtime, stream.async_write(pubsub::codec::encode(spam)));
-   wait_on_runtime(runtime, std::chrono::milliseconds{250}, "gossipsub spam accounting");
-
-   BOOST_TEST(server.metrics().pubsub_invalid_messages >= 1U);
-   BOOST_TEST(server.metrics().protocol_rejections >= 1U);
-   BOOST_TEST(!server.metrics().stopped);
-
-   forge::asio::blocking::run(runtime, stream.async_close());
-   forge::asio::blocking::run(runtime, client.async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
-}
-
-BOOST_AUTO_TEST_CASE(p2p_abusive_peer_crossing_malformed_threshold_closes_only_offender_session) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto server_options = pubsub_options_for();
-   server_options.limits.resources.max_malformed_messages_per_peer = 1;
-   set_resource_session_limits(server_options, 2, 2, (std::numeric_limits<std::size_t>::max)(),
-                               (std::numeric_limits<std::size_t>::max)());
-   server_options.limits.session_low_watermark = 2;
-   server_options.limits.pubsub.limits.max_ihave_per_peer = 1;
-   auto bad_options = pubsub_options_for();
-   bad_options.explicit_peer_id = peer(248);
-   auto good_options = pubsub_options_for();
-   good_options.explicit_peer_id = peer(249);
-
-   auto server = node{runtime, std::move(server_options)};
-   auto bad = node{runtime, std::move(bad_options)};
-   auto good = node{runtime, std::move(good_options)};
-   register_echo(server);
-
-   const auto server_endpoint = listen(server, runtime);
-   bad.peers().learn_endpoint(server.local_peer(), server_endpoint,
-                              capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   good.peers().learn_endpoint(server.local_peer(), server_endpoint,
-                               capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   (void)forge::asio::blocking::run(
-       runtime, bad.async_connect(server_endpoint, node::connect_options{.expected_peer = server.local_peer()}));
-   (void)forge::asio::blocking::run(
-       runtime, good.async_connect(server_endpoint, node::connect_options{.expected_peer = server.local_peer()}));
-
-   const auto id = std::vector<std::uint8_t>{'i', 'd'};
-   auto spam = pubsub::rpc{
-       .control_value =
-           pubsub::control{
-               .have =
-                   std::vector<pubsub::control::ihave>{
-                       pubsub::control::ihave{.subject = pubsub::topic{.value = "forge.abuse"},
-                                              .message_ids = std::vector<std::vector<std::uint8_t>>{id}},
-                       pubsub::control::ihave{.subject = pubsub::topic{.value = "forge.abuse"},
-                                              .message_ids = std::vector<std::vector<std::uint8_t>>{id}}},
-           },
-   };
-   for (auto index = 0; index != 2; ++index) {
-      auto stream = forge::asio::blocking::run(
-          runtime, bad.async_open_protocol_stream(server.local_peer(), builtins::meshsub_v11));
-      forge::asio::blocking::run(runtime, stream.async_write(pubsub::codec::encode(spam)));
-      wait_on_runtime(runtime, std::chrono::milliseconds{150}, "gossipsub abuse accounting");
-   }
-
-   BOOST_TEST(server.metrics().pubsub_invalid_messages >= 2U);
-   BOOST_TEST(server.metrics().sessions_closed >= 1U);
-   BOOST_TEST(server.metrics().connection_rejections >= 1U);
-   const auto after_eviction = server.diagnostics();
-   BOOST_TEST(after_eviction.connections.retained_identify_attempts <= after_eviction.connections.active_sessions);
-
-   auto stream =
-       forge::asio::blocking::run(runtime, good.async_open_protocol_stream(server.local_peer(), builtins::echo,
-                                                                           node::open_options{.allow_relay = false}));
-   const auto payload = std::vector<std::uint8_t>{'g', 'o', 'o', 'd'};
-   forge::asio::blocking::run(runtime, stream.async_write_frame(payload));
-   const auto reply = forge::asio::blocking::run(runtime, stream.async_read_frame());
-   BOOST_TEST(reply == payload, boost::test_tools::per_element());
-
-   forge::asio::blocking::run(runtime, good.async_stop());
-   forge::asio::blocking::run(runtime, bad.async_stop());
-   forge::asio::blocking::run(runtime, server.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_outbound_byte_limit_rejects_publish_without_stopping_node) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   auto publisher_options = pubsub_options_for();
-   publisher_options.limits.pubsub.limits.max_outbound_queue_bytes = 8;
-   auto subscriber_options = pubsub_options_for();
-   subscriber_options.explicit_peer_id = peer(161);
-
-   auto publisher = node{runtime, std::move(publisher_options)};
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                    capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(pubsub::topic{.value = "forge.limit"},
-                                           [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
-                                              co_return pubsub::validation_result::accept;
-                                           }));
-
-   BOOST_CHECK_THROW((void)forge::asio::blocking::run(
-                         runtime, publisher.async_publish(pubsub::topic{.value = "forge.limit"},
-                                                          std::vector<std::uint8_t>{'o', 'v', 'e', 'r'})),
-                     forge::exceptions::base);
-   BOOST_TEST(publisher.metrics().backpressure_rejections >= 1U);
-   BOOST_TEST(!publisher.metrics().stopped);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
+   extern void gossipsub_outbound_quota_rejection_regression();
+   gossipsub_outbound_quota_rejection_regression();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_outbound_byte_limit_counts_blocked_active_publication_per_peer) {
-   constexpr auto queue_limit = std::size_t{128 * 1024};
-   constexpr auto payload_size = std::size_t{96 * 1024};
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   const auto publisher_identity = make_test_identity();
-   const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   auto publisher_options = options_for(publisher_identity, pubsub_capabilities);
-   publisher_options.limits.pubsub.limits.max_outbound_queue_bytes = queue_limit;
-   auto publisher = node{runtime, std::move(publisher_options)};
-
-   auto accepted = std::make_shared<std::promise<void>>();
-   auto accepted_future = accepted->get_future();
-   const auto stalled_endpoint = start_stalling_tcp_peer(runtime, std::chrono::seconds{5}, accepted);
-   const auto stalled_peer = peer(162);
-   publisher.peers().learn_endpoint(stalled_peer, stalled_endpoint, pubsub_capabilities);
-   const auto failures_before = publisher.peers().find(stalled_peer)->failures;
-   const auto subject = pubsub::topic{.value = "forge.limit.aggregate"};
-   auto first = boost::asio::co_spawn(runtime.context(),
-                                      publisher.async_publish(subject, std::vector<std::uint8_t>(payload_size, 0x31U)),
-                                      boost::asio::use_future);
-   BOOST_REQUIRE(accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
-
-   try {
-      static_cast<void>(forge::asio::blocking::run(
-          runtime, publisher.async_publish(subject, std::vector<std::uint8_t>(payload_size, 0x32U))));
-      BOOST_FAIL("aggregate GossipSub outbound byte limit should reject the queued publication");
-   } catch (const forge::exceptions::base& error) {
-      BOOST_REQUIRE(forge::net::p2p::exceptions::code_of(error).has_value());
-      BOOST_TEST(static_cast<int>(*forge::net::p2p::exceptions::code_of(error)) ==
-                 static_cast<int>(exceptions::code::backpressure_rejected));
-   }
-   BOOST_TEST(publisher.metrics().backpressure_rejections >= 1U);
-   BOOST_REQUIRE(publisher.peers().find(stalled_peer).has_value());
-   BOOST_TEST(publisher.peers().find(stalled_peer)->failures == failures_before);
-   const auto metrics_before_stop = publisher.metrics();
-   const auto peer_before_stop = publisher.peers().find(stalled_peer);
-   BOOST_REQUIRE(peer_before_stop.has_value());
-   BOOST_REQUIRE(!peer_before_stop->endpoints.empty());
-   const auto endpoint_failures_before_stop = peer_before_stop->endpoints.front().failures;
-   const auto endpoint_backoff_before_stop = peer_before_stop->endpoints.front().backoff_until;
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   BOOST_REQUIRE(first.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
-   BOOST_CHECK_THROW(static_cast<void>(first.get()), forge::exceptions::base);
-   const auto metrics_after_stop = publisher.metrics();
-   const auto peer_after_stop = publisher.peers().find(stalled_peer);
-   BOOST_REQUIRE(peer_after_stop.has_value());
-   BOOST_REQUIRE(!peer_after_stop->endpoints.empty());
-   BOOST_TEST(peer_after_stop->failures == failures_before);
-   BOOST_TEST(peer_after_stop->endpoints.front().failures == endpoint_failures_before_stop);
-   const auto backoff_unchanged_during_stop =
-       peer_after_stop->endpoints.front().backoff_until == endpoint_backoff_before_stop;
-   BOOST_TEST(backoff_unchanged_during_stop);
-   BOOST_TEST(metrics_after_stop.direct_failures == metrics_before_stop.direct_failures);
-   wait_on_runtime(runtime, std::chrono::milliseconds{100}, "post-stop GossipSub dial drain");
-   const auto peer_after_drain = publisher.peers().find(stalled_peer);
-   BOOST_REQUIRE(peer_after_drain.has_value());
-   BOOST_REQUIRE(!peer_after_drain->endpoints.empty());
-   BOOST_TEST(peer_after_drain->failures == failures_before);
-   BOOST_TEST(peer_after_drain->endpoints.front().failures == endpoint_failures_before_stop);
-   const auto backoff_unchanged_after_drain =
-       peer_after_drain->endpoints.front().backoff_until == endpoint_backoff_before_stop;
-   BOOST_TEST(backoff_unchanged_after_drain);
-   BOOST_TEST(publisher.metrics().direct_failures == metrics_after_stop.direct_failures);
+   extern void gossipsub_outbound_per_peer_quota_regression();
+   gossipsub_outbound_per_peer_quota_regression();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_outbound_byte_limit_is_global_across_peers) {
-   constexpr auto queue_limit = std::size_t{128 * 1024};
-   constexpr auto payload_size = std::size_t{96 * 1024};
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
-   const auto publisher_identity = make_test_identity();
-   const auto pubsub_capabilities = capability_set{.bits = capabilities::direct_quic | capabilities::pubsub};
-   auto publisher_options = options_for(publisher_identity, pubsub_capabilities);
-   publisher_options.limits.pubsub.limits.max_outbound_queue_bytes = queue_limit;
-   auto publisher = node{runtime, std::move(publisher_options)};
-
-   auto accepted_a = std::make_shared<std::promise<void>>();
-   auto accepted_b = std::make_shared<std::promise<void>>();
-   auto accepted_a_future = accepted_a->get_future();
-   auto accepted_b_future = accepted_b->get_future();
-   const auto endpoint_a = start_stalling_tcp_peer(runtime, std::chrono::seconds{5}, accepted_a);
-   const auto endpoint_b = start_stalling_tcp_peer(runtime, std::chrono::seconds{5}, accepted_b);
-   const auto peer_a = peer(163);
-   const auto peer_b = peer(164);
-   publisher.peers().learn_endpoint(peer_a, endpoint_a, pubsub_capabilities);
-
-   const auto subject = pubsub::topic{.value = "forge.limit.global"};
-   auto first = boost::asio::co_spawn(runtime.context(),
-                                      publisher.async_publish(subject, std::vector<std::uint8_t>(payload_size, 0x41U)),
-                                      boost::asio::use_future);
-   BOOST_REQUIRE(accepted_a_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
-
-   publisher.peers().upsert(peer_store::record{.peer = peer_a});
-   publisher.peers().learn_endpoint(peer_b, endpoint_b, pubsub_capabilities);
-   try {
-      static_cast<void>(forge::asio::blocking::run(
-          runtime, publisher.async_publish(subject, std::vector<std::uint8_t>(payload_size, 0x42U))));
-      BOOST_FAIL("global GossipSub outbound byte limit should reject a different peer");
-   } catch (const forge::exceptions::base& error) {
-      BOOST_REQUIRE(exceptions::code_of(error).has_value());
-      BOOST_CHECK(*exceptions::code_of(error) == exceptions::code::backpressure_rejected);
-   }
-   const auto second_accept_is_pending =
-       accepted_b_future.wait_for(std::chrono::milliseconds{50}) != std::future_status::ready;
-   BOOST_TEST(second_accept_is_pending);
-
-   forge::asio::blocking::run(runtime, publisher.async_stop());
-   BOOST_REQUIRE(first.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
-   BOOST_CHECK_THROW(static_cast<void>(first.get()), forge::exceptions::base);
+   extern void gossipsub_outbound_global_quota_regression();
+   gossipsub_outbound_global_quota_regression();
 }
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_rejected_outbound_reservations_do_not_retain_peer_entries) {
@@ -15458,76 +14141,6 @@ BOOST_AUTO_TEST_CASE(p2p_remote_peer_failure_attribution_excludes_local_runtime_
    BOOST_TEST(detail::remote_peer_attributable_failure(exceptions::code::protocol_error, false));
 }
 
-BOOST_AUTO_TEST_CASE(p2p_gossipsub_validation_queue_limit_retries_excess_without_penalizing_peer) {
-   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 6}};
-   auto subscriber_options = pubsub_options_for(make_test_certificate_identity("pubsub-validation-subscriber"));
-   subscriber_options.limits.pubsub.limits.max_validation_queue = 1;
-   subscriber_options.limits.pubsub.limits.max_validation_attempts = 1;
-   subscriber_options.limits.pubsub.limits.validation_retry_initial_delay = std::chrono::milliseconds{600};
-   subscriber_options.limits.pubsub.limits.validation_retry_max_delay = std::chrono::milliseconds{600};
-   subscriber_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   auto publisher_a_options = pubsub_options_for(make_test_certificate_identity("pubsub-validation-a"));
-   publisher_a_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-   auto publisher_b_options = pubsub_options_for(make_test_certificate_identity("pubsub-validation-b"));
-   publisher_b_options.limits.pubsub.signatures = pubsub::signature_policy::lax_no_sign;
-
-   auto subscriber = node{runtime, std::move(subscriber_options)};
-   auto publisher_a = node{runtime, std::move(publisher_a_options)};
-   auto publisher_b = node{runtime, std::move(publisher_b_options)};
-   const auto subscriber_endpoint = listen(subscriber, runtime);
-   publisher_a.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                      capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-   publisher_b.peers().learn_endpoint(subscriber.local_peer(), subscriber_endpoint,
-                                      capability_set{.bits = capabilities::direct_quic | capabilities::pubsub});
-
-   auto entered = std::make_shared<std::atomic_uint64_t>(0);
-   forge::asio::blocking::run(
-       runtime, subscriber.async_subscribe(
-                    pubsub::topic{.value = "forge.validation"},
-                    [entered](pubsub::event) mutable -> boost::asio::awaitable<pubsub::validation_result> {
-                       entered->fetch_add(1, std::memory_order_relaxed);
-                       auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
-                       timer.expires_after(std::chrono::milliseconds{500});
-                       boost::system::error_code ec;
-                       co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-                       co_return pubsub::validation_result::accept;
-                    }));
-
-   auto publish_a = boost::asio::co_spawn(
-       runtime.context(),
-       [&publisher_a]() -> boost::asio::awaitable<void> {
-          (void)co_await publisher_a.async_publish(pubsub::topic{.value = "forge.validation"},
-                                                   std::vector<std::uint8_t>{'a'},
-                                                   pubsub::publish_options{.sign = false});
-       },
-       boost::asio::use_future);
-   auto publish_b = boost::asio::co_spawn(
-       runtime.context(),
-       [&publisher_b]() -> boost::asio::awaitable<void> {
-          (void)co_await publisher_b.async_publish(pubsub::topic{.value = "forge.validation"},
-                                                   std::vector<std::uint8_t>{'b'},
-                                                   pubsub::publish_options{.sign = false});
-       },
-       boost::asio::use_future);
-   wait_for_server(publish_a, std::chrono::seconds{5}, "first validation publish");
-   wait_for_server(publish_b, std::chrono::seconds{5}, "second validation publish");
-   for (auto poll = 0; poll < 100 && entered->load(std::memory_order_relaxed) < 2U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{20}, "validation queue retry");
-   }
-   for (auto poll = 0; poll < 100 && subscriber.pubsub_snapshot().messages_delivered < 2U; ++poll) {
-      wait_on_runtime(runtime, std::chrono::milliseconds{20}, "validation completion");
-   }
-
-   BOOST_TEST(entered->load(std::memory_order_relaxed) == 2U);
-   BOOST_TEST(subscriber.metrics().backpressure_rejections >= 1U);
-   BOOST_TEST(subscriber.metrics().pubsub_invalid_messages == 0U);
-   BOOST_TEST(subscriber.pubsub_snapshot().messages_delivered == 2U);
-
-   forge::asio::blocking::run(runtime, subscriber.async_stop());
-   BOOST_TEST(subscriber.metrics().stopped);
-   forge::asio::blocking::run(runtime, publisher_a.async_stop());
-   forge::asio::blocking::run(runtime, publisher_b.async_stop());
-}
 
 BOOST_AUTO_TEST_CASE(p2p_gossipsub_ten_node_mesh_delivers_multiple_publishes_once) {
    constexpr auto node_count = std::size_t{10};
@@ -17762,7 +16375,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_routing_refresh_task_retains_node_impl_until_stop_i
    auto weak_persistence = std::weak_ptr<dht::record_store::persistence>{persistence};
    {
       auto options = dht_options_for(peer(217), custom_test_dht_profile());
-      options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+      bind_dht_records(options, content_swarm_test_dht, persistence);
       auto source = node{runtime, std::move(options)};
       persistence.reset();
    }
@@ -17781,8 +16394,8 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_maintenance_prunes_each_dht_record_store_prof
    auto value_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto options = dht_options_for(peer(216), custom_test_dht_profile());
    options.dht_profiles.push_back(custom_test_value_dht_profile());
-   options.dht_record_persistence.emplace(content_swarm_test_dht, provider_persistence);
-   options.dht_record_persistence.emplace(content_swarm_value_test_dht, value_persistence);
+   bind_dht_records(options, content_swarm_test_dht, provider_persistence);
+   bind_dht_records(options, content_swarm_value_test_dht, value_persistence);
    options.lifecycle.maintenance_interval = std::chrono::milliseconds{10};
    auto source = node{runtime, std::move(options)};
 
@@ -17803,7 +16416,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_failed_initial_publication_retains_cleanup_for_stop
    const auto identity = make_test_certificate_identity("dht-initial-cleanup-retry");
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto options = dht_options_for(identity, custom_test_dht_profile());
-   options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(options, content_swarm_test_dht, persistence);
    auto advertised = make_dns_tcp_endpoint(4'194, "dht-initial-cleanup-retry.example.com");
    advertised.peer = identity.peer;
    options.advertised_endpoints.push_back(std::move(advertised));
@@ -17829,7 +16442,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_new_admission_retries_failed_destructor_cleanup) {
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto advertised = make_dns_tcp_endpoint(4'196, "dht-readmission.example.com");
    advertised.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(advertised);
@@ -17867,7 +16480,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_removal_failure_allows_stop_retry) {
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_endpoint = make_dns_tcp_endpoint(4'193, "dht-stop-retry.example.com");
    provider_endpoint.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(provider_endpoint);
@@ -17902,7 +16515,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_removal_failure_allows_withdraw_retry) {
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_endpoint = make_dns_tcp_endpoint(4'195, "dht-withdraw-retry.example.com");
    provider_endpoint.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(provider_endpoint);
@@ -17935,7 +16548,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_withdraw_retry_joins_concurrent_shutdown_and_clears
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_endpoint = make_dns_tcp_endpoint(4'197, "dht-withdraw-stop-join.example.com");
    provider_endpoint.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(provider_endpoint);

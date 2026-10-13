@@ -101,27 +101,6 @@ asset parse_asset(std::string_view text) {
    return asset{amount, make_symbol(symbol_text, static_cast<std::uint8_t>(fraction.size()))};
 }
 
-std::string format_amount(std::int64_t amount, std::uint8_t precision) {
-   const auto negative = amount < 0;
-   const auto magnitude =
-       negative ? std::uint64_t{0} - static_cast<std::uint64_t>(amount) : static_cast<std::uint64_t>(amount);
-   auto digits = std::to_string(magnitude);
-   auto result = negative ? std::string{"-"} : std::string{};
-   if (precision == 0U) {
-      return result + digits;
-   }
-   if (digits.size() <= precision) {
-      result += "0.";
-      result.append(static_cast<std::size_t>(precision) - digits.size(), '0');
-      return result + digits;
-   }
-   const auto decimal = digits.size() - precision;
-   result += digits.substr(0U, decimal);
-   result.push_back('.');
-   result += digits.substr(decimal);
-   return result;
-}
-
 } // namespace
 
 void to_variant(const name& value, forge::variant& variant) {
@@ -149,7 +128,7 @@ void from_variant(const forge::variant& variant, symbol& value) {
 }
 
 void to_variant(const asset& value, forge::variant& variant) {
-   variant = format_amount(value.amount, value.sym.precision()) + " " + to_string(value.sym.code());
+   variant = to_string(value);
 }
 
 void from_variant(const forge::variant& variant, asset& value) {

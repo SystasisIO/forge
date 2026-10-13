@@ -12,6 +12,7 @@ module;
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/compat/move_only_function.hpp>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <utility>

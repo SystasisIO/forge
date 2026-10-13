@@ -994,6 +994,43 @@ class [[forge::contract("mismatch")]] mismatch final
 """,
     )
 
+    definition_cases = []
+    for name, definitions, diagnostic in (
+        ("definition-prefix", '"-DVALUE=1"', "unsupported compile definition"),
+        ("definition-function", '"VALUE(x)=x"', "unsupported compile definition"),
+        ("definition-generator", '"VALUE=$<CONFIG>"', "unsupported compile definition"),
+        ("definition-list", '"VALUE=a;b"', "unsupported compile definition"),
+        ("definition-hash", '"VALUE=#"', "unsupported compile definition"),
+        ("definition-newline", '"VALUE=a\\nb"', "unsupported compile definition"),
+        ("definition-sdk", '"FORGE_CONTRACT_GUEST=0"', "reserved compile definition"),
+        ("definition-dispatch", '"FORGE_CONTRACT_DEFER_EOSIO_DISPATCH=0"', "reserved compile definition"),
+        ("definition-profile", '"NDEBUG=0"', "reserved compile definition"),
+        ("definition-compiler", '"__cplusplus=0"', "reserved compile definition"),
+        ("definition-runtime", '"_LIBCPP_HAS_LOCALIZATION=0"', "reserved compile definition"),
+        ("definition-duplicate", '"VALUE=1" "VALUE=2"', "duplicate compile definition"),
+        ("definition-empty", "", "COMPILE_DEFINITIONS requires values"),
+    ):
+        definition_source = source_root / name
+        write_negative_project(
+            definition_source,
+            cmake_body=f"forge_add_contract(negative SOURCES contract.cpp COMPILE_DEFINITIONS {definitions})\n",
+            modules={},
+            contract="class negative {};\n",
+        )
+        definition_cases.append((definition_source, diagnostic))
+
+    definition_mutation = source_root / "definition-post-declaration"
+    write_negative_project(
+        definition_mutation,
+        cmake_body="""
+forge_add_contract(negative SOURCES contract.cpp COMPILE_DEFINITIONS VALUE=1)
+target_compile_definitions(negative PRIVATE UNDECLARED_VALUE=2)
+""",
+        modules={},
+        contract="class negative {};\n",
+    )
+    definition_cases.append((definition_mutation, "changed property: COMPILE_DEFINITIONS"))
+
     toolchain = contract_package / "ForgeContractToolchain.cmake"
     cases = (
         (duplicate, "duplicate Forge Contract owner ID"),
@@ -1063,7 +1100,7 @@ class [[forge::contract("mismatch")]] mismatch final
             "does not exist and is not a declared generated output",
         ),
     )
-    for source, expected in cases:
+    for source, expected in (*cases, *definition_cases):
         run_failure(
             cmake,
             "-S",

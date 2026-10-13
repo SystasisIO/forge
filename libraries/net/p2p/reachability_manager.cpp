@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -32,6 +33,7 @@ module forge.net.p2p.node;
 
 import forge.asio.notification;
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.host_event;
@@ -212,6 +214,16 @@ reachability_state::candidate_snapshot reachability_manager::reconcile() {
 void reachability_manager::publish(time_point now) {
    auto event = state_.snapshot(now);
    if (!published_ || !same_event(*published_, event)) {
+      const auto transitioned = !published_ || published_->effective != event.effective ||
+          published_->autonat_v1 != event.autonat_v1;
+      if (transitioned) {
+         ilog("forge.net.p2p.relay", "P2P AutoNAT reachability changed",
+              ("event", "autonat.reachability_changed")("effective", static_cast<int>(event.effective))
+              ("v1", static_cast<int>(event.autonat_v1))("v2_addresses", event.autonat_v2.size()));
+      } else {
+         dlog("forge.net.p2p.relay", "P2P AutoNAT address evidence changed",
+              ("event", "autonat.evidence_changed")("v2_addresses", event.autonat_v2.size()));
+      }
       published_ = event;
       callbacks_.changed(std::move(event));
    }

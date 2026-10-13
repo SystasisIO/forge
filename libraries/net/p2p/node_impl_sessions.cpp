@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 #include <boost/scope/scope_exit.hpp>
 
 #include <algorithm>
@@ -21,6 +22,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,6 +50,8 @@ module;
 #include <boost/compat/move_only_function.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -78,6 +82,7 @@ import forge.multiformats.multiaddr;
 import forge.net.transport.exceptions;
 import forge.net.transport.session;
 import forge.net.transport.stream;
+import forge.net.yamux.exceptions;
 import forge.net.yamux.session;
 
 #include "details/direct_transport.hxx"
@@ -116,6 +121,11 @@ boost::asio::awaitable<std::exception_ptr> async_close_terminal(forge::net::tran
    } catch (const forge::net::transport::exceptions::canceled&) {
       // Owner retirement accepts cancellation only after the transport's
       // terminal cleanup barrier; it does not acknowledge application I/O.
+      detail::request_session_cancel(connection);
+   } catch (const forge::net::yamux::exceptions::closed&) {
+      detail::request_session_cancel(connection);
+   } catch (const forge::net::yamux::exceptions::canceled&) {
+      // Yamux keeps its native category after joining the read and reset workers.
       detail::request_session_cancel(connection);
    } catch (...) {
       // transport::session reports failures only after terminal cleanup. Keep
@@ -342,6 +352,11 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
    auto pruned_ids = std::vector<std::uint64_t>{};
    auto staged_session_id = std::optional<std::uint64_t>{};
    auto registry_failure = std::exception_ptr{};
+   auto admitted_sessions = std::size_t{};
+   auto admitted_peer = std::string_view{};
+   auto admitted_id = std::uint64_t{};
+   auto admitted_path = path::kind::direct;
+   auto authenticated = false;
    try {
       refresh_connection_scores();
       const auto network_score = [&] {
@@ -416,6 +431,7 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                      ++next_session_id;
                   }
                   pruned_ids = std::move(admission.pruned);
+                  disconnect_pubsub_sessions_locked(pruned_ids, now);
                   for (const auto id : pruned_ids) {
                      auto found = sessions.find(id);
                      if (found == sessions.end()) {
@@ -425,6 +441,14 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                      const auto retired = retire_session_locked(found->second, true);
                      if (retired) {
                         invalidate_pubsub_outbound_locked(retired->info.remote_peer, retired->id);
+                        const auto peer_live = std::ranges::any_of(sessions, [&](const auto& row) {
+                           return !row.second->closed && row.second->info.remote_peer == retired->info.remote_peer;
+                        });
+                        if (peer_live) {
+                           forget_pubsub_endpoint_locked(*retired);
+                        } else {
+                           forget_pubsub_peer_locked(retired->info.remote_peer);
+                        }
                      }
                   }
                   ++metrics_value.sessions_opened;
@@ -436,6 +460,13 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
          metrics_value.active_sessions = sessions.size();
          metrics_value.sessions_pruned += pruned_ids.size();
          metrics_value.sessions_closed += pruned_ids.size();
+         admitted_sessions = sessions.size();
+         // Identity/path are immutable after native admission; the shared session
+         // pins this view without allocating diagnostic state under the mutex.
+         admitted_peer = session->info.remote_peer.value;
+         admitted_id = session->id;
+         admitted_path = session->info.path;
+         authenticated = session->authentication != peer_authentication::unverified;
       }
    } catch (...) {
       {
@@ -492,9 +523,30 @@ boost::asio::awaitable<void> node::impl::remember_session(std::shared_ptr<node::
                             rejection_reason.empty() ? "P2P session admission rejected" : rejection_reason);
    }
 
+   auto pubsub_failure = std::exception_ptr{};
+   try {
+      const auto lock = std::scoped_lock{mutex};
+      if (!session->closed && sessions.contains(session->id)) {
+         static_cast<void>(connect_pubsub_peer_locked(session->info.remote_peer));
+      }
+   } catch (...) {
+      pubsub_failure = std::current_exception();
+   }
+   if (pubsub_failure) {
+      forget_session(session);
+      admission_ticket.release();
+      co_await async_retire_session(session, true);
+      std::rethrow_exception(pubsub_failure);
+   }
+
    // Publish only admitted native authentication facts, never listener/config
    // intent. This also completes a TCP wave whose outbound socket failed early.
    if (paths) { paths->notify_direct(session->info.remote_peer, session->info.path, session->authentication); }
+   dlog("forge.net.p2p.connection", "P2P session admitted",
+        ("event", "connection.admitted")("session_id", admitted_id)("direction", static_cast<int>(direction))
+        ("peer_id", authenticated ? std::string{admitted_peer} : std::string{})("authenticated", authenticated)
+        ("path", static_cast<int>(admitted_path))("active_sessions", admitted_sessions)
+        ("pruned_sessions", pruned_ids.size()));
    lifecycle_wakeup->notify();
    start_autorelay();
    refresh_relay_publication();
@@ -507,6 +559,8 @@ void node::impl::forget_session(const peer_id& peer) {
    {
       auto lock = std::scoped_lock{mutex};
       auto removed = std::size_t{0};
+      removed_sessions.reserve(sessions.size());
+      disconnect_pubsub_peer_locked(peer, std::chrono::steady_clock::now());
       for (auto it = sessions.begin(); it != sessions.end();) {
          if (it->second->info.remote_peer != peer) {
             ++it;
@@ -532,6 +586,8 @@ void node::impl::forget_session(const peer_id& peer) {
    for (const auto& session : removed_sessions) {
       launch_pruned_session_teardown(session);
       identify_service.forget(session->id);
+      dlog("forge.net.p2p.connection", "P2P session retired",
+           ("event", "connection.retired")("session_id", session->id));
    }
 }
 
@@ -543,6 +599,8 @@ void node::impl::forget_session(const std::shared_ptr<node::impl::session_state>
       if (found == sessions.end() || found->second != session) {
          return;
       }
+      const auto selected = std::array{session->id};
+      disconnect_pubsub_sessions_locked(selected, std::chrono::steady_clock::now());
       session->closed = true;
       if (!retire_session_locked(session, true)) {
          return;
@@ -551,18 +609,22 @@ void node::impl::forget_session(const std::shared_ptr<node::impl::session_state>
       connections.forget(session->id);
       metrics_value.active_sessions = sessions.size();
       ++metrics_value.sessions_closed;
-      const auto peer = session->info.remote_peer;
+      const auto& peer = session->info.remote_peer;
       const auto peer_still_connected = std::ranges::any_of(
           sessions, [&](const auto& item) { return item.second->info.remote_peer == peer && !item.second->closed; });
       if (!peer_still_connected) {
          erase_inbound_relay_reservation_locked(peer);
          forget_pubsub_peer_locked(peer);
+      } else {
+         forget_pubsub_endpoint_locked(*session);
       }
       invalidate_pubsub_outbound_locked(session->info.remote_peer, session->id);
    }
    if (removed) {
       launch_pruned_session_teardown(session);
       identify_service.forget(session->id);
+      dlog("forge.net.p2p.connection", "P2P session retired",
+           ("event", "connection.retired")("session_id", session->id));
    }
 }
 
@@ -1074,13 +1136,24 @@ boost::asio::awaitable<void> node::impl::handle_incoming_stream(std::shared_ptr<
          co_await handle_dht(session, admitted.protocol, std::move(admitted.stream));
       } else if (admitted.protocol == builtins::rendezvous) {
          co_await handle_rendezvous(session, std::move(admitted.stream));
-      } else if (admitted.protocol == builtins::meshsub_v11 || admitted.protocol == builtins::meshsub_v10) {
-         co_await handle_pubsub(session, std::move(admitted.stream));
+      } else if (admitted.protocol == builtins::meshsub_v13 || admitted.protocol == builtins::meshsub_v12 ||
+                 admitted.protocol == builtins::meshsub_v11 || admitted.protocol == builtins::meshsub_v10) {
+         co_await handle_pubsub(session, std::move(admitted.stream), admitted.protocol);
       } else {
          increment_protocol_rejected();
          FORGE_THROW_EXCEPTION(exceptions::unsupported_protocol, "unsupported negotiated P2P protocol");
       }
-      co_await detail::async_close_unescaped(admitted.resource);
+      try {
+         co_await detail::async_close_unescaped(admitted.resource);
+      } catch (const forge::exceptions::base& error) {
+         auto closed_by_node = false;
+         {
+            const auto lock = std::scoped_lock{mutex};
+            closed_by_node = stopped || session->closed;
+         }
+         // Terminal cleanup of an owner already closed by this node is not a new protocol rejection.
+         if (!closed_by_node || !is_orderly_stream_close(error)) { throw; }
+      }
    } catch (const std::exception&) {
       increment_protocol_rejected();
    } catch (...) {

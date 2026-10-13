@@ -48,6 +48,18 @@ def _listener_stop_budget(implementation, command, transport):
     return None
 
 
+def _listener_command(spec, binaries, work, label, implementation, command, extra=(), *, forge_cli_arguments=None):
+    argv = [str(binaries[implementation]), command, "--scenario", "autorelay",
+            "--transport", spec.transport, "--ready-file", str(work / f"{label}-ready.json"),
+            "--stop-file", str(work / f"{label}.stop"), "--result-file", str(work / f"{label}.json"), *extra]
+    if implementation == "forge":
+        store = work / f"{label}-store"
+        argv += ["--store-dir", str(store)]
+        if forge_cli_arguments is not None:
+            argv += list(forge_cli_arguments(label, command, store))
+    return argv
+
+
 def _read(path):
     with path.open("rb") as source:
         raw = source.read(1024 * 1024 + 1)
@@ -106,7 +118,7 @@ def _circuits(value, peer=None):
 
 
 def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destination, run_relay_dial,
-             claims_for_case):
+             claims_for_case, forge_cli_arguments=None, semantic_checker=validate_case):
     scope, token = enter_scope()
     work = root / spec.identifier
     owners, raw, echoes, faults = {}, {}, [], []
@@ -117,11 +129,8 @@ def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destinat
 
         def launch(label, implementation, command, extra=()):
             result = work / f"{label}.json"
-            argv = [str(binaries[implementation]), command, "--scenario", "autorelay",
-                    "--transport", spec.transport, "--ready-file", str(work / f"{label}-ready.json"),
-                    "--stop-file", str(work / f"{label}.stop"), "--result-file", str(result), *extra]
-            if implementation == "forge":
-                argv += ["--store-dir", str(work / f"{label}-store")]
+            argv = _listener_command(spec, binaries, work, label, implementation, command, extra,
+                                     forge_cli_arguments=forge_cli_arguments)
             attempt = command_attempt(argv, work / f"{label}.log", spec.identifier, 1, label, 60)
             owner = spawn_owned(argv, work / f"{label}.log", work / f"{label}.stop", attempt,
                                 stop_budget=_listener_stop_budget(implementation, command, spec.transport))
@@ -257,7 +266,7 @@ def run_case(spec, binaries, root, *, wait_json, command_attempt, start_destinat
                     "processes": scope.evidence(), "attempts": scope.attempts,
                     "errors": errors, "cleanup_errors": cleanup, "elapsed_seconds": time.monotonic() - started}
         if not errors and not cleanup:
-            errors.extend(validate_case(artifact))
+            errors.extend(semantic_checker(artifact))
         artifact["status"] = "passed" if not errors and not cleanup else "failed"
         exit_scope(token)
     return artifact

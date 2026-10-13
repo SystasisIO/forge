@@ -87,8 +87,11 @@ attempt; reserve capacity and stop/drain consumers before shutting down this poo
 
 `put` accepts owned bytes or a file path. Byte sources are limited by
 `max_memory_bytes`. A file is opened on a worker, read through a 64 KiB seekable
-buffer and kept open through the transfer. The caller owns the source file's
-lifetime and must prevent concurrent content changes. Automatic multipart uses
+buffer and kept open through the transfer. Special files, including FIFOs, are
+rejected before opening. The caller owns the source file's lifetime and must keep
+its pathname, target and contents stable until completion. This regular-file
+preflight does not protect against an adversarial pathname swap between checking
+and opening. Automatic multipart uses
 one part at a time, bounded by `part_bytes`; the default is 8 MiB and the minimum
 is 5 MiB. At most 10,000 parts are admitted. Larger objects require an explicitly
 larger part size within the configured memory budget. Per-call RAM includes the
@@ -141,7 +144,13 @@ and keep an application recovery journal; the client does not claim to clean
 every orphan. Multipart errors include the known upload identity for recovery.
 Their context also records whether cleanup was attempted and confirmed, and
 whether completion had been attempted. Failed cleanup does not replace the
-original failure.
+original failure. An Asio-canceled waiter receives the upload identity and a
+synchronized snapshot of recovery evidence known when its error is raised;
+the worker retains that state until it actually finishes. `cleanup_finished`
+distinguishes a completed cleanup attempt from one whose result is still pending.
+Later worker completion does not mutate an already returned exception. Reconcile
+using the reported upload identity; `shutdown()` still drains admitted workers
+before releasing the backend.
 
 ## Credentials and URLs
 
@@ -162,7 +171,9 @@ HTTP fixture exercises the real pinned AWS SDK: binary put/head/get, ranges,
 response bounds, write conditions, missing objects, external-host signing and
 credential expiry without unsigned fallback, corrupt response checksums, streamed
 file multipart/download, explicit recovery parts,
-failed-part cleanup, unknown mutation without retry, preflight and active
+failed-part cleanup, caller cancellation during a failed cleanup without losing
+the known upload identity, unknown mutation without retry, FIFO rejection and
+bounded shutdown, preflight and active
 cancellation, overload rejection, and shutdown with an active request. It runs the fixture and caller on a single Asio
 I/O thread while SDK requests use the dedicated worker pool.
 

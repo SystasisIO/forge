@@ -19,6 +19,8 @@ struct options {
    internet_egress_policy internet_egress = internet_egress_policy::deny_external;
 };
 
+// Validates the egress policy independently of the provisioned protector.
+void validate_policy(const options& value);
 void validate(const options& value);
 
 } // namespace forge::net::p2p::private_network

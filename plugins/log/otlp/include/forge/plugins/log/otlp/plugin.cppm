@@ -26,6 +26,8 @@ export namespace forge::plugins::log::otlp {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -38,6 +40,7 @@ class plugin final : public forge::app::plugin {
    boost::asio::awaitable<void> configure(forge::config::core::component_view view) override;
    boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override;
    boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override;
+   boost::asio::awaitable<void> after_initialize() override;
    boost::asio::awaitable<void> startup() override;
    void request_stop() noexcept override;
    boost::asio::awaitable<void> shutdown() override;
@@ -48,7 +51,5 @@ class plugin final : public forge::app::plugin {
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::log::otlp

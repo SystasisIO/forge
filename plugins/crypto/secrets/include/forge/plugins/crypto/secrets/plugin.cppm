@@ -8,8 +8,6 @@ module;
 
 export module forge.plugins.crypto.secrets.plugin;
 
-export import forge.plugins.crypto.secrets.descriptor;
-
 import forge.api.core.exceptions;
 import forge.api.core.types;
 import forge.api.core.descriptor;
@@ -29,6 +27,8 @@ export namespace forge::plugins::crypto::secrets {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -53,7 +53,5 @@ class plugin final : public forge::app::plugin {
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::crypto::secrets

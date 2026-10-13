@@ -38,6 +38,7 @@ module;
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <streambuf>
 #include <sstream>
 #include <variant>
@@ -269,10 +270,16 @@ struct client::impl::backend {
             }
          } else {
             const auto& path = std::get<std::filesystem::path>(input);
-            file.open(path, std::ios::binary | std::ios::ate);
             std::error_code error;
             const auto regular = std::filesystem::is_regular_file(path, error);
-            if (!file || file.tellg() < 0 || !regular || error) {
+            if (!regular || error) {
+               FORGE_THROW_EXCEPTION(exceptions::io, "S3 upload source is not a readable regular file",
+                                     forge::exceptions::ctx("filesystem_status", error.value()));
+            }
+            // The caller must keep this path and its contents stable until completion.
+            // Reject special files before opening; opening a FIFO first can block forever.
+            file.open(path, std::ios::binary | std::ios::ate);
+            if (!file || file.tellg() < 0) {
                FORGE_THROW_EXCEPTION(exceptions::io, "S3 upload source is not a readable regular file",
                                      forge::exceptions::ctx("filesystem_status", error.value()));
             }
@@ -644,6 +651,41 @@ void client::impl::activity::check() const {
    }
 }
 
+void client::impl::activity::remember(const multipart& session) {
+   const auto lock = std::scoped_lock{recovery_mutex};
+   recovery_session = session;
+}
+
+void client::impl::activity::begin_cleanup() {
+   const auto lock = std::scoped_lock{recovery_mutex};
+   cleanup_attempted = true;
+}
+
+void client::impl::activity::finish_cleanup(bool confirmed) {
+   const auto lock = std::scoped_lock{recovery_mutex};
+   cleanup_finished = true;
+   cleanup_confirmed = confirmed;
+}
+
+void client::impl::activity::begin_completion() {
+   const auto lock = std::scoped_lock{recovery_mutex};
+   completion_attempted = true;
+}
+
+void client::impl::activity::append_recovery(forge::exceptions::base& error) const {
+   const auto lock = std::scoped_lock{recovery_mutex};
+   if (recovery_session) {
+      error.append_context("multipart session needs reconciliation",
+                           {forge::exceptions::ctx("upload_id", recovery_session->id),
+                            forge::exceptions::ctx("bucket", recovery_session->target.bucket),
+                            forge::exceptions::ctx("key", recovery_session->target.key),
+                            forge::exceptions::ctx("cleanup_attempted", cleanup_attempted),
+                            forge::exceptions::ctx("cleanup_finished", cleanup_finished),
+                            forge::exceptions::ctx("cleanup_confirmed", cleanup_confirmed),
+                            forge::exceptions::ctx("completion_attempted", completion_attempted)});
+   }
+}
+
 void client::impl::update(credentials identity) {
    const auto lock = std::scoped_lock{_mutex};
    if (_closed) {
@@ -811,6 +853,7 @@ multipart client::impl::begin(const object& target, const write_options& write, 
    backend::check(outcome, call);
    multipart result{target, string(outcome.GetResult().GetUploadId())};
    validate_session(result);
+   call.remember(result);
    return result;
 }
 
@@ -818,6 +861,7 @@ part client::impl::upload(const multipart& session, std::uint32_t number,
                           std::variant<std::vector<std::byte>, std::filesystem::path> input,
                           std::optional<byte_range> range, activity& call) {
    validate_session(session);
+   call.remember(session);
    if (number == 0 || number > 10000) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 multipart part number is invalid");
    }
@@ -841,6 +885,7 @@ part client::impl::upload(const multipart& session, std::uint32_t number,
 
 part_page client::impl::parts(const multipart& session, std::uint32_t after, std::size_t limit, activity& call) {
    validate_session(session);
+   call.remember(session);
    if (after > 10000 || limit == 0 || limit > 1000) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 part listing bounds are invalid");
    }
@@ -875,6 +920,7 @@ part_page client::impl::parts(const multipart& session, std::uint32_t after, std
 metadata client::impl::complete(const multipart& session, std::vector<part> parts, const write_options& conditions,
                                 activity& call) {
    validate_session(session);
+   call.remember(session);
    validate_write(conditions);
    if (parts.empty() || parts.size() > 10000) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 completion part count is invalid");
@@ -902,6 +948,7 @@ metadata client::impl::complete(const multipart& session, std::vector<part> part
    request.SetMultipartUpload(std::move(upload));
    set_conditions(request, conditions);
    backend::bind(request, call);
+   call.begin_completion();
    const auto outcome = _backend->client->CompleteMultipartUpload(request);
    backend::check(outcome, call);
    return describe(outcome.GetResult(), size);
@@ -909,6 +956,7 @@ metadata client::impl::complete(const multipart& session, std::vector<part> part
 
 void client::impl::abort(const multipart& session, activity& call) {
    validate_session(session);
+   call.remember(session);
    Aws::S3::Model::AbortMultipartUploadRequest request;
    set_object(request, session.target);
    request.SetUploadId(aws_string(session.id));
@@ -973,8 +1021,6 @@ metadata client::impl::put(const object& target, std::variant<std::vector<std::b
       return result;
    } catch (...) {
       const auto original = std::current_exception();
-      auto cleanup_attempted = false;
-      auto cleanup_confirmed = false;
       if (!completing) {
          try {
             Aws::S3::Model::AbortMultipartUploadRequest cleanup;
@@ -983,21 +1029,16 @@ metadata client::impl::put(const object& target, std::variant<std::vector<std::b
             // One finite best-effort cleanup call. Failed cleanup needs bucket lifecycle/recovery.
             auto output = std::make_shared<backend::response>(call.response_exceeded);
             cleanup.SetResponseStreamFactory([output] { return Aws::New<Aws::IOStream>("forge.s3", output.get()); });
-            cleanup_attempted = true;
-            cleanup_confirmed = _backend->client->AbortMultipartUpload(cleanup).IsSuccess();
+            call.begin_cleanup();
+            call.finish_cleanup(_backend->client->AbortMultipartUpload(cleanup).IsSuccess());
          } catch (...) {
+            call.finish_cleanup(false);
          }
       }
       try {
          return detail::backend_call([&]() -> metadata { std::rethrow_exception(original); }, &call.started);
       } catch (forge::exceptions::base& error) {
-         error.append_context("multipart session needs reconciliation",
-                              {forge::exceptions::ctx("upload_id", session.id),
-                               forge::exceptions::ctx("bucket", session.target.bucket),
-                               forge::exceptions::ctx("key", session.target.key),
-                               forge::exceptions::ctx("cleanup_attempted", cleanup_attempted),
-                               forge::exceptions::ctx("cleanup_confirmed", cleanup_confirmed),
-                               forge::exceptions::ctx("completion_attempted", completing)});
+         call.append_recovery(error);
          throw;
       }
    }

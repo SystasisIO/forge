@@ -22,6 +22,7 @@ module;
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
+#include <boost/beast/core/buffered_read_stream.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
@@ -33,6 +34,22 @@ import forge.exceptions;
 import forge.net.tls.context;
 import forge.net.websocket.exceptions;
 
+namespace boost::beast {
+
+template <typename Stream, typename Buffer>
+void teardown(role_type role, buffered_read_stream<Stream, Buffer>& stream, boost::system::error_code& error) {
+   using boost::beast::websocket::teardown;
+   teardown(role, stream.next_layer(), error);
+}
+
+template <typename Stream, typename Buffer, typename Handler>
+void async_teardown(role_type role, buffered_read_stream<Stream, Buffer>& stream, Handler&& handler) {
+   using boost::beast::websocket::async_teardown;
+   async_teardown(role, stream.next_layer(), std::forward<Handler>(handler));
+}
+
+} // namespace boost::beast
+
 namespace forge::net::websocket {
 namespace {
 
@@ -41,8 +58,10 @@ namespace beast = boost::beast;
 namespace beast_websocket = boost::beast::websocket;
 using asio::use_awaitable;
 
-using plain_stream = beast_websocket::stream<beast::tcp_stream>;
-using tls_stream = beast_websocket::stream<beast::ssl_stream<beast::tcp_stream>>;
+using plain_input_stream = beast::buffered_read_stream<beast::tcp_stream, beast::flat_buffer>;
+using tls_input_stream = beast::buffered_read_stream<beast::ssl_stream<beast::tcp_stream>, beast::flat_buffer>;
+using plain_stream = beast_websocket::stream<plain_input_stream>;
+using tls_stream = beast_websocket::stream<tls_input_stream>;
 using stream_variant = std::variant<plain_stream, tls_stream>;
 
 struct completion_state {
@@ -105,14 +124,14 @@ struct write_operation {
 
 struct connection::impl {
    explicit impl(beast::tcp_stream stream_value)
-       : stream(plain_stream{std::move(stream_value)}), message_handler_ready(executor()) {
+       : stream(plain_stream{plain_input_stream{std::move(stream_value)}}), message_handler_ready(executor()) {
       message_handler_ready.expires_at(asio::steady_timer::time_point::max());
    }
 
    explicit impl(beast::ssl_stream<beast::tcp_stream> stream_value,
                  forge::net::tls::context_snapshot_ptr tls_context_snapshot_value = {})
-       : stream(tls_stream{std::move(stream_value)}), tls_context_snapshot(std::move(tls_context_snapshot_value)),
-         message_handler_ready(executor()) {
+       : stream(tls_stream{tls_input_stream{std::move(stream_value)}}),
+         tls_context_snapshot(std::move(tls_context_snapshot_value)), message_handler_ready(executor()) {
       message_handler_ready.expires_at(asio::steady_timer::time_point::max());
    }
 
@@ -212,9 +231,12 @@ struct connection::impl {
           stream);
    }
 
-   asio::awaitable<void> accept(const boost::beast::http::request<boost::beast::http::string_body>& request_value) {
+   asio::awaitable<void> accept(const boost::beast::http::request<boost::beast::http::string_body>& request_value,
+                                std::string buffered_input = {}) {
       co_await std::visit(
-          [&request_value](auto& stream_value) -> asio::awaitable<void> {
+          [&request_value, &buffered_input](auto& stream_value) -> asio::awaitable<void> {
+             auto& input = stream_value.next_layer().buffer();
+             input.commit(asio::buffer_copy(input.prepare(buffered_input.size()), asio::buffer(buffered_input)));
              stream_value.set_option(beast_websocket::stream_base::timeout::suggested(beast::role_type::server));
              co_await stream_value.async_accept(request_value, use_awaitable);
           },
@@ -416,6 +438,12 @@ boost::asio::awaitable<void> connection::ping(std::string payload) {
 boost::asio::awaitable<void>
 connection::accept(const boost::beast::http::request<boost::beast::http::string_body>& request_value) {
    co_await impl_->accept(request_value);
+}
+
+boost::asio::awaitable<void>
+connection::accept(const boost::beast::http::request<boost::beast::http::string_body>& request_value,
+                   std::string buffered_input) {
+   co_await impl_->accept(request_value, std::move(buffered_input));
 }
 
 boost::asio::awaitable<void> connection::handshake(std::string host, std::string target) {

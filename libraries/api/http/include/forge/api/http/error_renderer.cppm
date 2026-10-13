@@ -21,7 +21,6 @@ struct error_context {
 
 // Return nullopt to retain the standard Forge error representation. A cause is
 // available only for a local exception; already projected remote errors have none.
-using error_renderer =
-   std::function<std::optional<forge::net::http::response>(const error_context&)>;
+using error_renderer = std::function<std::optional<forge::net::http::response>(const error_context&)>;
 
 } // namespace forge::api::http

@@ -33,5 +33,7 @@ namespace alias = example;
 class [[forge::contract("rootfixture")]] rootfixture : public forge::contract::context {
  public:
    using context::context;
-   [[forge::action]] void submit(std::vector<std::uint8_t> payload) { static_cast<void>(payload); }
+   [[forge::action]] void submit(std::vector<std::uint8_t> payload) {
+      static_cast<void>(payload);
+   }
 };

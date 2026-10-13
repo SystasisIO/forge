@@ -391,8 +391,10 @@ class serializer {
       if (signed_integer) {
          auto number = std::int64_t{};
          const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
-         const auto minimum = bits == 64U ? std::numeric_limits<std::int64_t>::min() : -(std::int64_t{1} << (bits - 1U));
-         const auto maximum = bits == 64U ? std::numeric_limits<std::int64_t>::max() : (std::int64_t{1} << (bits - 1U)) - 1;
+         const auto minimum =
+             bits == 64U ? std::numeric_limits<std::int64_t>::min() : -(std::int64_t{1} << (bits - 1U));
+         const auto maximum =
+             bits == 64U ? std::numeric_limits<std::int64_t>::max() : (std::int64_t{1} << (bits - 1U)) - 1;
          if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || number < minimum ||
              number > maximum || std::to_string(number) != text) {
             fail(abi_error_code::invalid_abi, "Invalid or out-of-range enum metadata value", type, path, 0U);
@@ -416,8 +418,10 @@ class serializer {
          context_.check(1U, "abi_metadata", "metadata", 0U);
          if ((entry && entries++ >= context_.limits().max_metadata_entries) ||
              text.size() > context_.limits().max_string_bytes ||
-             text.size() > context_.limits().max_metadata_bytes - std::min(bytes, context_.limits().max_metadata_bytes)) {
-            fail(abi_error_code::size_limit, "ABI metadata exceeds the configured limit", "abi_metadata", "metadata", 0U);
+             text.size() >
+                 context_.limits().max_metadata_bytes - std::min(bytes, context_.limits().max_metadata_bytes)) {
+            fail(abi_error_code::size_limit, "ABI metadata exceeds the configured limit", "abi_metadata", "metadata",
+                 0U);
          }
          bytes += text.size();
       };
@@ -431,7 +435,8 @@ class serializer {
          consume(root.cpp_type, true);
          consume(root.type);
          if (root.cpp_type.empty() || !roots.insert(root.cpp_type).second || !root_types.insert(root.type).second) {
-            fail(abi_error_code::duplicate_definition, "Empty or duplicate ABI metadata root", root.type, "metadata.roots", 0U);
+            fail(abi_error_code::duplicate_definition, "Empty or duplicate ABI metadata root", root.type,
+                 "metadata.roots", 0U);
          }
          validate_type(root.type, "metadata.roots", 1U);
       }
@@ -439,12 +444,14 @@ class serializer {
          consume(definition.name, true);
          consume(definition.type);
          require_definition_name(definition.name, "metadata.enums", "enum");
-         if (!aliases_.contains(definition.name) || resolve_alias(definition.name, "metadata.enums", 1U) != definition.type) {
+         if (!aliases_.contains(definition.name) ||
+             resolve_alias(definition.name, "metadata.enums", 1U) != definition.type) {
             fail(abi_error_code::invalid_abi, "Enum metadata must match an existing ABI integer alias", definition.name,
                  "metadata.enums", 0U);
          }
          if (definition.values.empty()) {
-            fail(abi_error_code::invalid_abi, "Enum metadata must contain named values", definition.name, "metadata.enums", 0U);
+            fail(abi_error_code::invalid_abi, "Enum metadata must contain named values", definition.name,
+                 "metadata.enums", 0U);
          }
          auto target = enum_definition{.type = definition.type};
          for (const auto& value : definition.values) {
@@ -453,12 +460,13 @@ class serializer {
             const auto number = enum_number(definition.type, value.value, "metadata.enums.values");
             if (value.name.empty() || !target.values.emplace(value.name, number).second ||
                 !target.names.emplace(value.value, value.name).second) {
-               fail(abi_error_code::duplicate_definition, "Empty or duplicate enum metadata name or value", definition.name,
-                    "metadata.enums.values", 0U);
+               fail(abi_error_code::duplicate_definition, "Empty or duplicate enum metadata name or value",
+                    definition.name, "metadata.enums.values", 0U);
             }
          }
          if (!enums_.emplace(definition.name, std::move(target)).second) {
-            fail(abi_error_code::duplicate_definition, "Duplicate ABI enum metadata", definition.name, "metadata.enums", 0U);
+            fail(abi_error_code::duplicate_definition, "Duplicate ABI enum metadata", definition.name, "metadata.enums",
+                 0U);
          }
       }
    }
@@ -814,7 +822,7 @@ class serializer {
       if (const auto* definition = find_enum(type, path, depth)) {
          const auto number = decode_builtin(definition->type, reader, path, depth);
          const auto key = definition->type.starts_with("int") ? std::to_string(number.as_int64())
-                                                               : std::to_string(number.as_uint64());
+                                                              : std::to_string(number.as_uint64());
          const auto found = definition->names.find(key);
          if (found == definition->names.end()) {
             fail(abi_error_code::invalid_binary, "Unknown enum binary value", type, path, reader.tellp());

@@ -40,13 +40,7 @@ namespace forge::net::p2p {
 
 peer_store::impl::impl(peer_store::options options_value)
     : options_(std::move(options_value)), persistence_(options_.persistence) {
-   if (options_.max_peers == 0 || options_.max_rendezvous == 0 || options_.max_pending == 0 ||
-       options_.max_endpoints_per_peer == 0 || options_.max_protocols_per_peer == 0 ||
-       options_.max_relay_reservations_per_peer == 0 || options_.max_relay_endpoints_per_reservation == 0 ||
-       options_.max_peer_record_bytes == 0 || options_.hydration_page_limit == 0 || options_.prune_page_limit == 0 ||
-       options_.max_persistence_waiters == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "peer store limits must be positive");
-   }
+   validate(options_);
    if (!persistence_) {
       persistence_ = peer_store::make_memory_persistence();
       options_.persistence = persistence_;

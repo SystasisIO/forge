@@ -39,7 +39,7 @@ plugin::plugin(plugin_options value) : impl_{std::make_shared<impl>(std::move(va
 
 plugin::~plugin() = default;
 
-forge::app::plugin_descriptor descriptor(plugin_options value) {
+forge::app::plugin_descriptor plugin::descriptor(plugin_options value) {
    return forge::app::plugin_descriptor{
        .id = {.value = "forge.plugins.chain.signer"},
        .dependencies = {},

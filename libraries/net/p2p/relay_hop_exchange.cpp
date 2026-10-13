@@ -6,6 +6,7 @@ module;
 #include <condition_variable>
 #include <cstddef>
 #include <exception>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>

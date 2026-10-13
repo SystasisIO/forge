@@ -20,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -37,6 +38,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/read.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -90,6 +92,7 @@ import forge.net.http.stream;
 import forge.net.http.target;
 import forge.net.http.types;
 import forge.net.http.upload;
+import forge.net.tls.context;
 import forge.net.transport.frame;
 import forge.codec.json;
 import forge.variant.value;
@@ -2514,7 +2517,6 @@ class tls_websocket_echo_server {
       return port_;
    }
 
- private:
    static std::string_view test_certificate() {
       return "-----BEGIN CERTIFICATE-----\n"
              "MIICpDCCAYwCCQCJjaEDxrQqBzANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDDAkx\n"
@@ -2566,6 +2568,7 @@ class tls_websocket_echo_server {
              "-----END PRIVATE KEY-----\n";
    }
 
+ private:
    void run() {
       try {
          auto socket = tcp::socket{io_context_};
@@ -9743,20 +9746,25 @@ BOOST_AUTO_TEST_CASE(websocket_guarded_admission_precedes_handshake_and_preserve
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto router = forge::net::http::router{};
    auto admitted = std::atomic<unsigned>{0};
-   router.websocket_guarded("/private", [&admitted](route_context& context)
-       -> boost::asio::awaitable<websocket_upgrade_result> {
-      if (context.parsed_target.query != "clientId=approved") {
-         co_return websocket_upgrade_result{.rejection = make_text_response(context.request, status::forbidden, "denied")};
-      }
-      const auto client = std::string{context.parsed_target.query};
-      co_return websocket_upgrade_result{.handler = [&admitted, client](forge::net::websocket::connection::ptr connection) {
-         ++admitted;
-         connection->on_message([client](forge::net::websocket::connection& connection, std::string message)
-             -> boost::asio::awaitable<void> {
-            co_await connection.send(client + ":" + message);
-         });
-      }};
-   });
+   router.websocket_guarded(
+       "/private", [&admitted](route_context& context) -> boost::asio::awaitable<websocket_upgrade_result> {
+          if (context.parsed_target.query != "clientId=approved") {
+             co_return websocket_upgrade_result{.rejection =
+                                                    make_text_response(context.request, status::forbidden, "denied")};
+          }
+          auto admission = asio::steady_timer{co_await asio::this_coro::executor};
+          admission.expires_after(std::chrono::milliseconds{20});
+          co_await admission.async_wait(asio::use_awaitable);
+          const auto client = std::string{context.parsed_target.query};
+          co_return websocket_upgrade_result{
+              .handler = [&admitted, client](forge::net::websocket::connection::ptr connection) {
+                 ++admitted;
+                 connection->on_message([client](forge::net::websocket::connection& connection,
+                                                 std::string message) -> boost::asio::awaitable<void> {
+                    co_await connection.send(client + ":" + message);
+                 });
+              }};
+       });
    BOOST_CHECK_THROW(router.websocket("/private", [](auto) {}), exceptions::conflict);
    auto server = forge::net::http::server{runtime, server_config{}, std::move(router)};
    server.start();
@@ -9769,17 +9777,251 @@ BOOST_AUTO_TEST_CASE(websocket_guarded_admission_precedes_handshake_and_preserve
    auto received_cv = std::condition_variable{};
    auto received = std::string{};
    connection->on_message([&](forge::net::websocket::connection&, std::string message) -> boost::asio::awaitable<void> {
-      { const auto lock = std::scoped_lock{received_mutex}; received = std::move(message); }
+      {
+         const auto lock = std::scoped_lock{received_mutex};
+         received = std::move(message);
+      }
       received_cv.notify_all();
       co_return;
    });
    forge::asio::blocking::run(runtime, connection->send("hello"));
-   { auto lock = std::unique_lock{received_mutex};
-     BOOST_REQUIRE(received_cv.wait_for(lock, std::chrono::seconds{2}, [&] { return !received.empty(); })); }
+   {
+      auto lock = std::unique_lock{received_mutex};
+      BOOST_REQUIRE(received_cv.wait_for(lock, std::chrono::seconds{2}, [&] { return !received.empty(); }));
+   }
    BOOST_TEST(received == "clientId=approved:hello");
    BOOST_TEST(admitted.load() == 1U);
    forge::asio::blocking::run(runtime, connection->close());
    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(websocket_guarded_async_stop_cancels_admission_owner) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto timer_promise = std::make_shared<std::promise<std::shared_ptr<asio::steady_timer>>>();
+   auto timer_ready = timer_promise->get_future();
+   auto canceled = std::make_shared<std::atomic_bool>(false);
+   auto admitted = std::make_shared<std::atomic_bool>(false);
+   auto router = forge::net::http::router{};
+   router.websocket_guarded(
+       "/private",
+       [timer_promise, canceled, admitted](route_context&) -> boost::asio::awaitable<websocket_upgrade_result> {
+          auto timer = std::make_shared<asio::steady_timer>(co_await asio::this_coro::executor);
+          timer->expires_at(std::chrono::steady_clock::time_point::max());
+          timer_promise->set_value(timer);
+          try {
+             auto error = boost::system::error_code{};
+             co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, error));
+             canceled->store(error == asio::error::operation_aborted);
+          } catch (const boost::system::system_error& error) {
+             canceled->store(error.code() == asio::error::operation_aborted);
+             throw;
+          }
+          co_return websocket_upgrade_result{.handler = [admitted](auto) { admitted->store(true); }};
+       });
+   auto server = forge::net::http::server{runtime, server_config{}, std::move(router)};
+   forge::asio::blocking::run(runtime, server.async_start());
+   auto client =
+       forge::net::websocket::client{runtime, parse_base_url("http://127.0.0.1:" + std::to_string(server.port()))};
+   auto connecting = asio::co_spawn(runtime.context(), client.async_connect("/private"), asio::use_future);
+   BOOST_REQUIRE(timer_ready.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   const auto timer = timer_ready.get();
+   auto stopped = asio::co_spawn(runtime.context(), server.async_stop(), asio::use_future);
+   const auto stopped_promptly = stopped.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+   if (!stopped_promptly) {
+      // Release the deliberately unbounded guard so a regression cannot hang test teardown.
+      asio::post(timer->get_executor(), [timer] { timer->cancel(); });
+   }
+   BOOST_REQUIRE(stopped.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   stopped.get();
+   BOOST_TEST(stopped_promptly);
+   BOOST_TEST(canceled->load());
+   BOOST_TEST(!admitted->load());
+   BOOST_REQUIRE(connecting.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(connecting.get(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(websocket_guarded_admission_preserves_large_prefetched_frame) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto router = forge::net::http::router{};
+   router.websocket_guarded("/private", [](route_context&) -> boost::asio::awaitable<websocket_upgrade_result> {
+      auto timer = asio::steady_timer{co_await asio::this_coro::executor};
+      timer.expires_after(std::chrono::milliseconds{100});
+      co_await timer.async_wait(asio::use_awaitable);
+      co_return websocket_upgrade_result{.handler = [](forge::net::websocket::connection::ptr connection) {
+         connection->on_message(
+             [](forge::net::websocket::connection& connection, std::string message) -> boost::asio::awaitable<void> {
+                co_await connection.send(std::move(message));
+             });
+      }};
+   });
+   auto server = forge::net::http::server{runtime, server_config{}, std::move(router)};
+   forge::asio::blocking::run(runtime, server.async_start());
+   auto stream = std::make_shared<beast::tcp_stream>(runtime.context());
+   stream->connect(tcp::endpoint{asio::ip::make_address("127.0.0.1"), server.port()});
+   auto handshake = beast_http::request<beast_http::empty_body>{beast_http::verb::get, "/private", 11};
+   handshake.set(beast_http::field::host, "127.0.0.1");
+   handshake.set(beast_http::field::upgrade, "websocket");
+   handshake.set(beast_http::field::connection, "upgrade");
+   handshake.set(beast_http::field::sec_websocket_key, "dGhlIHNhbXBsZSBub25jZQ==");
+   handshake.set(beast_http::field::sec_websocket_version, "13");
+   // Both the parsed HTTP header and the input handed to WebSocket exceed Beast's
+   // 1536-byte handshake buffer; no replay into that fixed buffer is allowed.
+   handshake.set("X-Padding", std::string(2048, 'p'));
+   auto serialized = std::ostringstream{};
+   serialized << handshake;
+   auto wire = serialized.str();
+   const auto payload = std::string(4096, 'x');
+   const auto mask = std::array<unsigned char, 4>{1, 2, 3, 4};
+   wire.append({static_cast<char>(0x81), static_cast<char>(0xfe), static_cast<char>(0x10), '\0'});
+   for (const auto value : mask) {
+      wire.push_back(static_cast<char>(value));
+   }
+   for (std::size_t index = 0; index != payload.size(); ++index) {
+      wire.push_back(static_cast<char>(static_cast<unsigned char>(payload[index]) ^ mask[index % mask.size()]));
+   }
+   asio::write(stream->socket(), asio::buffer(wire));
+   auto received = asio::co_spawn(
+       runtime.context(),
+       [stream, payload]() -> asio::awaitable<std::string> {
+          stream->expires_after(std::chrono::seconds{2});
+          auto buffer = beast::flat_buffer{};
+          auto response = beast_http::response<beast_http::string_body>{};
+          co_await beast_http::async_read(*stream, buffer, response, asio::use_awaitable);
+          if (response.result() != beast_http::status::switching_protocols) {
+             throw std::runtime_error{"guarded admission did not upgrade"};
+          }
+          auto frame = std::string(payload.size() + 4, '\0');
+          const auto copied = asio::buffer_copy(asio::buffer(frame), buffer.data());
+          co_await asio::async_read(*stream, asio::buffer(frame.data() + copied, frame.size() - copied),
+                                    asio::use_awaitable);
+          co_return frame;
+       },
+       asio::use_future);
+   BOOST_REQUIRE(received.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+   const auto frame = received.get();
+   BOOST_TEST(static_cast<unsigned char>(frame[0]) == 0x81U);
+   BOOST_TEST(static_cast<unsigned char>(frame[1]) == 0x7eU);
+   BOOST_TEST(static_cast<unsigned char>(frame[2]) == 0x10U);
+   BOOST_TEST(frame[3] == '\0');
+   BOOST_TEST(frame.substr(4) == payload);
+   auto ignored = boost::system::error_code{};
+   stream->socket().shutdown(tcp::socket::shutdown_both, ignored);
+   stream->socket().close(ignored);
+   forge::asio::blocking::run(runtime, server.async_stop());
+}
+
+BOOST_AUTO_TEST_CASE(websocket_guarded_tls_prefetched_frame_and_explicit_close) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto accepted_promise = std::make_shared<std::promise<forge::net::websocket::connection::ptr>>();
+   auto accepted = accepted_promise->get_future();
+   auto closed = std::make_shared<std::atomic_bool>(false);
+   auto router = forge::net::http::router{};
+   router.websocket_guarded(
+       "/private", [accepted_promise, closed](route_context&) -> asio::awaitable<websocket_upgrade_result> {
+          auto admission = asio::steady_timer{co_await asio::this_coro::executor};
+          admission.expires_after(std::chrono::milliseconds{100});
+          co_await admission.async_wait(asio::use_awaitable);
+          co_return websocket_upgrade_result{.handler = [accepted_promise, closed](auto connection) {
+             connection->on_message(
+                 [](forge::net::websocket::connection& connection, std::string message) -> asio::awaitable<void> {
+                    co_await connection.send(std::move(message));
+                 });
+             connection->on_close([closed](auto&) { closed->store(true); });
+             accepted_promise->set_value(std::move(connection));
+          }};
+       });
+   auto provider = std::make_shared<forge::net::tls::context_provider>(forge::net::tls::context_options{
+       .role = forge::net::tls::endpoint_role::server,
+       .verification = forge::net::tls::peer_verification::none,
+       .certificate_chain_pem = std::string{tls_websocket_echo_server::test_certificate()},
+       .private_key_pem = std::string{tls_websocket_echo_server::test_private_key()},
+       .use_default_verify_paths = false,
+   });
+   auto server = forge::net::http::server{runtime, {.tls_context_provider = provider}, std::move(router)};
+   forge::asio::blocking::run(runtime, server.async_start());
+   auto client_context = asio::ssl::context{asio::ssl::context::tls_client};
+   client_context.set_verify_mode(asio::ssl::verify_none);
+   auto stream = std::make_shared<beast::ssl_stream<beast::tcp_stream>>(runtime.context(), client_context);
+   auto echoed_promise = std::make_shared<std::promise<std::string>>();
+   auto echoed = echoed_promise->get_future();
+   const auto payload = std::string(4096, 't');
+   auto exchanged = asio::co_spawn(
+       runtime.context(),
+       [stream, port = server.port(), payload, echoed_promise]() -> asio::awaitable<void> {
+          beast::get_lowest_layer(*stream).expires_after(std::chrono::seconds{2});
+          co_await beast::get_lowest_layer(*stream).async_connect(
+              tcp::endpoint{asio::ip::make_address("127.0.0.1"), port}, asio::use_awaitable);
+          co_await stream->async_handshake(asio::ssl::stream_base::client, asio::use_awaitable);
+          auto handshake = beast_http::request<beast_http::empty_body>{beast_http::verb::get, "/private", 11};
+          handshake.set(beast_http::field::host, "127.0.0.1");
+          handshake.set(beast_http::field::upgrade, "websocket");
+          handshake.set(beast_http::field::connection, "upgrade");
+          handshake.set(beast_http::field::sec_websocket_key, "dGhlIHNhbXBsZSBub25jZQ==");
+          handshake.set(beast_http::field::sec_websocket_version, "13");
+          handshake.set("X-Padding", std::string(2048, 'p'));
+          auto serialized = std::ostringstream{};
+          serialized << handshake;
+          auto wire = serialized.str();
+          const auto mask = std::array<unsigned char, 4>{1, 2, 3, 4};
+          wire.append({static_cast<char>(0x81), static_cast<char>(0xfe), static_cast<char>(0x10), '\0'});
+          for (const auto value : mask) {
+             wire.push_back(static_cast<char>(value));
+          }
+          for (std::size_t index = 0; index != payload.size(); ++index) {
+             wire.push_back(static_cast<char>(static_cast<unsigned char>(payload[index]) ^ mask[index % mask.size()]));
+          }
+          // Send a complete frame in the same TLS write as the Upgrade request.
+          co_await asio::async_write(*stream, asio::buffer(wire), asio::use_awaitable);
+          auto buffer = beast::flat_buffer{};
+          auto response = beast_http::response<beast_http::string_body>{};
+          co_await beast_http::async_read(*stream, buffer, response, asio::use_awaitable);
+          if (response.result() != beast_http::status::switching_protocols) {
+             throw std::runtime_error{"TLS guarded admission did not upgrade"};
+          }
+          auto frame = std::string(payload.size() + 4, '\0');
+          auto copied = asio::buffer_copy(asio::buffer(frame), buffer.data());
+          buffer.consume(copied);
+          co_await asio::async_read(*stream, asio::buffer(frame.data() + copied, frame.size() - copied),
+                                    asio::use_awaitable);
+          if (static_cast<unsigned char>(frame[0]) != 0x81U || static_cast<unsigned char>(frame[1]) != 0x7eU ||
+              static_cast<unsigned char>(frame[2]) != 0x10U || frame[3] != '\0') {
+             throw std::runtime_error{"TLS prefetched frame has an invalid echo header"};
+          }
+          echoed_promise->set_value(frame.substr(4));
+          auto close_frame = std::array<unsigned char, 4>{};
+          copied = asio::buffer_copy(asio::buffer(close_frame), buffer.data());
+          co_await asio::async_read(*stream, asio::buffer(close_frame.data() + copied, close_frame.size() - copied),
+                                    asio::use_awaitable);
+          if (close_frame != std::array<unsigned char, 4>{0x88, 2, 3, 0xe8}) {
+             throw std::runtime_error{"TLS WebSocket did not send a normal close frame"};
+          }
+          const auto close_reply = std::array<unsigned char, 8>{0x88, 0x82, 1, 2, 3, 4, 2, 0xea};
+          co_await asio::async_write(*stream, asio::buffer(close_reply), asio::use_awaitable);
+          auto shutdown_error = boost::system::error_code{};
+          co_await stream->async_shutdown(asio::redirect_error(asio::use_awaitable, shutdown_error));
+          if (shutdown_error && shutdown_error != asio::error::eof) {
+             throw boost::system::system_error{shutdown_error};
+          }
+          // TLS close_notify leaves TCP open; finish the raw client's transport
+          // shutdown so the server's Beast teardown can observe peer EOF.
+          auto ignored = boost::system::error_code{};
+          auto& socket = beast::get_lowest_layer(*stream).socket();
+          socket.shutdown(tcp::socket::shutdown_send, ignored);
+          socket.close(ignored);
+       },
+       asio::use_future);
+   BOOST_REQUIRE(echoed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+   BOOST_TEST(echoed.get() == payload);
+   BOOST_REQUIRE(accepted.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
+   auto connection = accepted.get();
+   // Close through Forge so its buffered TLS stream must perform async_teardown.
+   auto closing = asio::co_spawn(runtime.context(), connection->close(), asio::use_future);
+   BOOST_REQUIRE(exchanged.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+   BOOST_CHECK_NO_THROW(exchanged.get());
+   BOOST_REQUIRE(closing.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+   BOOST_CHECK_NO_THROW(closing.get());
+   BOOST_REQUIRE(wait_for_http_test([&] { return closed->load(); }));
+   forge::asio::blocking::run(runtime, server.async_stop());
 }
 
 BOOST_AUTO_TEST_CASE(websocket_close_drains_already_queued_writes) {

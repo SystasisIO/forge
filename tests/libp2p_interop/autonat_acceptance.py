@@ -100,7 +100,8 @@ def _network(spec, evidence):
     return network, ip
 
 
-def validate_pair(record, spec, root, binaries, load_indexed_json, fingerprint, pnet_key):
+def validate_pair(record, spec, root, binaries, load_indexed_json, fingerprint, pnet_key,
+                  *, forge_cli_arguments=None, semantic_checker=validate_autonat_evidence):
     """Validate a pair after the common checker verified the complete index."""
     errors = []
     expected = {
@@ -168,6 +169,11 @@ def validate_pair(record, spec, root, binaries, load_indexed_json, fingerprint, 
                 required.update({"--expect-unreachable": "true", "--probe-addr": "/ip4/11.0.0.1/tcp/9"})
         if impl == "forge":
             required["--store-dir"] = str(work / f"{role}-store")
+            if forge_cli_arguments is not None:
+                additional = forge_cli_arguments(role, work / f"{role}-store")
+                if not isinstance(additional, dict) or set(additional) & set(required):
+                    raise ValueError("configured Forge flags must not replace native case inputs")
+                required.update(additional)
         if spec.transport == "tcp-pnet":
             required.update({"--pnet-key-file": str(pnet_key), "--internet-egress":
                              "deny" if role == "client" and spec.outcome == "policy_denied" else "allow"})
@@ -223,7 +229,7 @@ def validate_pair(record, spec, root, binaries, load_indexed_json, fingerprint, 
         errors.extend(validate_policy_denial(spec, payloads["client"], payloads["server"], peer,
                                              terminals["client"], terminals["server"]))
     else:
-        errors.extend(validate_autonat_evidence(
+        errors.extend(semantic_checker(
             payloads["client"], payloads["server"], version=spec.version, transport=spec.transport,
             expected_service_peer=peer, expected_requested_address=address,
             client_terminal_status=terminals["client"], server_terminal_status=terminals["server"],

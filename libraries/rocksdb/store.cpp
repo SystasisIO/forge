@@ -29,7 +29,11 @@ import forge.rocksdb.exceptions;
 
 namespace forge::rocksdb {
 
-store::store(config value) : impl_{std::make_shared<impl>(std::move(value))} {}
+store::store(config value) try : impl_{std::make_shared<impl>(std::move(value))} {
+} catch (...) {
+   detail::drain_process_diagnostics();
+   throw;
+}
 store::~store() = default;
 store::store(store&&) noexcept = default;
 store& store::operator=(store&&) noexcept = default;
@@ -131,7 +135,9 @@ snapshot store::begin_snapshot() {
 }
 
 void store::flush_wal(bool sync) {
-   detail::throw_if_error(impl_->db->FlushWAL(sync), "failed to flush RocksDB WAL");
+   const auto status = impl_->db->FlushWAL(sync);
+   impl_->drain_diagnostics();
+   detail::throw_if_error(status, "failed to flush RocksDB WAL");
 }
 
 } // namespace forge::rocksdb

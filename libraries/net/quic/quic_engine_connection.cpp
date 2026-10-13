@@ -48,10 +48,6 @@ boost::asio::awaitable<std::shared_ptr<engine_stream>> engine_connection::async_
           if (connection->close_started || connection->closing || connection->canceled) {
              throw_engine(engine_error_kind::connection_closed, "QUIC connection is closed");
           }
-          if (connection->active_stream_count() >= connection->limits.max_streams_per_connection) {
-             connection->metrics.backpressure_rejections.fetch_add(1, std::memory_order_relaxed);
-             throw_engine(engine_error_kind::backpressure_rejected, "QUIC max streams exceeded");
-          }
           auto stream = std::make_shared<engine_stream::impl>(-1);
           stream->connection = connection;
           auto stream_id = std::int64_t{-1};
@@ -62,6 +58,11 @@ boost::asio::awaitable<std::shared_ptr<engine_stream>> engine_connection::async_
              if (cancellation.cancelled() != asio::cancellation_type::none) {
                 connection->metrics.cancellations.fetch_add(1, std::memory_order_relaxed);
                 throw_engine(engine_error_kind::canceled, "QUIC stream open canceled");
+             }
+             // Remote-credit waits release the strand; another opener may consume the local slot.
+             if (connection->active_stream_count() >= connection->limits.max_streams_per_connection) {
+                connection->metrics.backpressure_rejections.fetch_add(1, std::memory_order_relaxed);
+                throw_engine(engine_error_kind::backpressure_rejected, "QUIC max streams exceeded");
              }
              const auto rv = ngtcp2_conn_open_bidi_stream(connection->conn, &stream_id, stream.get());
              if (rv == 0) {

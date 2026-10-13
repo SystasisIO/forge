@@ -15,6 +15,10 @@ set(ForgeContract_SYSROOT "${ForgeContract_PREFIX}/sysroot")
 set(ForgeContract_DATA_DIR "${ForgeContract_PREFIX}/@CMAKE_INSTALL_DATADIR@/forge-contract")
 file(READ "${ForgeContract_DATA_DIR}/sysroot.sha256" ForgeContract_SYSROOT_HASH)
 string(STRIP "${ForgeContract_SYSROOT_HASH}" ForgeContract_SYSROOT_HASH)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+   "${ForgeContract_DATA_DIR}/sysroot.sha256"
+   "${ForgeContract_DATA_DIR}/foundation.json"
+)
 set(ForgeContract_ABIGEN "${ForgeContract_PREFIX}/bin/abigen")
 set(ForgeContract_ATTR_PLUGIN "${ForgeContract_PREFIX}/@CMAKE_INSTALL_LIBDIR@/forge-contract/attr-plugin@CMAKE_SHARED_MODULE_SUFFIX@")
 set(ForgeContract_CHECK "${ForgeContract_PREFIX}/bin/contract-check")

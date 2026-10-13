@@ -36,4 +36,5 @@ target_link_libraries(
       forge_raw
    PRIVATE
       forge_asio
+      forge_log
 )

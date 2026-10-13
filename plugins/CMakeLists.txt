@@ -16,8 +16,6 @@ target_link_libraries(
       forge_plugins_crypto_wallet
       forge_plugins_net_p2p_node
       forge_plugins_net_p2p_resolver
-      forge_plugins_net_p2p_diagnostics
-      forge_plugins_net_p2p_pubsub
       forge_plugins_net_http_server
       forge_plugins_log_otlp
       forge_plugins_db_store

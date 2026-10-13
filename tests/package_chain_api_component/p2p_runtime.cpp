@@ -163,7 +163,7 @@ void register_p2p_stack(forge::app::plugin_registry& registry) {
        .id = forge::app::plugin_id{.value = "forge.plugins.crypto.secrets"},
        .factory = [] { return std::make_unique<p2p_secrets_plugin>(); },
    });
-   registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
 }
 
 chain_api_publisher::chain_api_publisher(std::shared_ptr<const p2p_publication_callbacks> callbacks)
@@ -201,7 +201,7 @@ p2p_server_application::p2p_server_application(p2p_publication_callbacks callbac
 
 void p2p_server_application::on_register_plugins(forge::app::plugin_registry& registry) {
    register_p2p_stack(registry);
-   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
    registry.register_plugin(forge::app::plugin_descriptor{
        .id = forge::app::plugin_id{.value = "chain-api-publisher"},
        .dependencies = {forge::app::plugin_id{.value = "forge.plugins.net.p2p.resolver"}},
@@ -215,7 +215,7 @@ boost::asio::awaitable<void> p2p_server_application::on_provide(forge::app::appl
 
 void p2p_client_application::on_register_plugins(forge::app::plugin_registry& registry) {
    register_p2p_stack(registry);
-   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
 }
 
 forge::net::p2p::peer_id test_peer(std::uint8_t seed) {

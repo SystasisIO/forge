@@ -236,8 +236,8 @@ void run_allocator_action(std::string_view action) {
 }
 
 forge::tooling::testing::invocation_result invoke_database(forge::tooling::testing::host& host,
-                                                            const wasm::wasm_code& code, std::string_view receiver,
-                                                            std::uint32_t scenario) {
+                                                           const wasm::wasm_code& code, std::string_view receiver,
+                                                           std::uint32_t scenario) {
    const auto account = protocol::make_name(receiver).value;
    return host.invoke({code.data(), code.size()}, account, account, protocol::make_name("run").value,
                       forge::raw::pack(scenario));
@@ -323,6 +323,15 @@ BOOST_AUTO_TEST_CASE(generated_dispatcher_executes_zero_argument_action_with_emp
 
    BOOST_CHECK_NO_THROW(apply(code, host, "hello", "answer"));
    BOOST_TEST(host.return_value == forge::raw::pack(std::uint32_t{42}), boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_CASE(declaration_definitions_reach_abi_dispatch_and_preserve_quoted_values) {
+   register_intrinsics();
+   const auto code = read_contract(FORGE_CONTRACT_TEST_GUEST_MACRO_WASM);
+   auto host = invocation{};
+   BOOST_CHECK_NO_THROW(apply(code, host, "guestmacro", "declared"));
+   BOOST_TEST(host.return_value == forge::raw::pack(std::string{"quoted \"value\" with space"}),
+              boost::test_tools::per_element());
 }
 
 BOOST_AUTO_TEST_CASE(generated_dispatcher_executes_const_action_method) {

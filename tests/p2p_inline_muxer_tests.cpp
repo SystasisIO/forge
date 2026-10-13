@@ -2,6 +2,7 @@ module;
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -11,6 +12,7 @@ module;
 #include <exception>
 #include <functional>
 #include <future>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -87,6 +89,16 @@ namespace {
 
 [[nodiscard]] endpoint muxer_endpoint() {
    return parse_endpoint("/ip4/127.0.0.1/tcp/0");
+}
+
+[[nodiscard]] bool is_native_connection_refused(const forge::exceptions::base& error) {
+   if (!exceptions::is(error, exceptions::code::peer_not_found)) { return false; }
+   const auto expected = boost::asio::error::make_error_code(boost::asio::error::connection_refused);
+   const auto& fields = error.context();
+   const auto value = std::ranges::find(fields, "native_error_value", &forge::exceptions::field::key);
+   const auto category = std::ranges::find(fields, "native_error_category", &forge::exceptions::field::key);
+   return value != fields.end() && category != fields.end() &&
+          value->value == std::to_string(expected.value()) && category->value == expected.category().name();
 }
 
 [[nodiscard]] detail::noise_handshake_payload signed_noise_payload(const libp2p_identity_material& identity,
@@ -944,6 +956,22 @@ BOOST_AUTO_TEST_CASE(tls_old_peer_fallback_reports_multistream_in_both_direction
    }
 }
 
+BOOST_AUTO_TEST_CASE(coordinated_tcp_refusal_evidence_rejects_timeout_and_missing_context) {
+   const auto refused = boost::asio::error::make_error_code(boost::asio::error::connection_refused);
+   const auto context_for = [](boost::system::error_code error) {
+      return forge::exceptions::make_fields(forge::exceptions::ctx("native_error_value", error.value()),
+                                            forge::exceptions::ctx("native_error_category", error.category().name()));
+   };
+   BOOST_TEST(is_native_connection_refused(exceptions::peer_not_found{"refused", context_for(refused)}));
+   BOOST_TEST(!is_native_connection_refused(exceptions::peer_not_found{"missing context"}));
+   BOOST_TEST(!is_native_connection_refused(exceptions::peer_not_found{
+       "timeout", context_for(boost::asio::error::make_error_code(boost::asio::error::timed_out))}));
+   BOOST_TEST(!is_native_connection_refused(exceptions::canceled{"canceled", context_for(refused)}));
+   auto context = context_for(refused);
+   context.back().value = "wrong category";
+   BOOST_TEST(!is_native_connection_refused(exceptions::peer_not_found{"wrong category", std::move(context)}));
+}
+
 BOOST_AUTO_TEST_CASE(coordinated_tcp_late_inbound_keeps_role_after_outgoing_refused) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    const auto accepting_identity = muxer_identity("late-accepting-client");
@@ -952,61 +980,98 @@ BOOST_AUTO_TEST_CASE(coordinated_tcp_late_inbound_keeps_role_after_outgoing_refu
    auto accepting = direct::registry{runtime, options, accepting_identity, resource_manager{}};
    const auto local = accepting.listen(muxer_endpoint());
    auto batch = std::make_shared<cancellation_latch>();
+   auto failed = std::future<direct::connection>{};
+   auto accepted = std::future<direct::connection>{};
+   auto source = std::optional<forge::net::tcp::listener>{};
+   auto connector = std::optional<forge::net::tcp::connector>{};
+   auto initiator = std::optional<direct::connection>{};
+   auto responding = std::optional<direct::connection>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+      batch->request_stop();
+      accepting.stop();
+      if (connector) { connector->cancel(); }
+      if (source) { source->close(); }
+      const auto join = [&](auto& pending) {
+         if (pending.wait_until(deadline) != std::future_status::ready) {
+            std::cerr << "coordinated TCP fixture failed to join before cleanup deadline\n";
+            std::terminate();
+         }
+      };
+      const auto close = [&](boost::asio::awaitable<void> operation) {
+         auto pending = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+         join(pending);
+         try { pending.get(); }
+         catch (const std::exception& error) { BOOST_ERROR("coordinated TCP cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("coordinated TCP cleanup failed with a non-standard exception"); }
+      };
+      for (auto* pending : {&failed, &accepted}) {
+         if (!pending->valid()) { continue; }
+         join(*pending);
+         try {
+            auto value = pending->get();
+            close(direct::async_discard_unpublished(value));
+         } catch (const std::exception& error) {
+            // A failed assertion still has to collect the canceled operation.
+            std::cerr << "coordinated TCP pending operation during cleanup: " << error.what() << '\n';
+         }
+      }
+      if (initiator) { close(direct::async_discard_unpublished(*initiator)); }
+      if (responding) { close(direct::async_discard_unpublished(*responding)); }
+      if (connector) { close(connector->async_stop()); }
+      if (source) { close(source->async_close()); }
+      auto teardown = accepting.teardown_operation();
+      close(teardown.close());
+   }};
 
-   // Own the remote TCP port without listening: SYN is refused, with no
-   // established socket/TIME_WAIT or sleep before the later reverse dial.
+   // Release the port before dialing. A bound, non-listening socket silently
+   // drops SYN on macOS. Any unexpected takeover must fail the exact errno check.
    auto reserved = boost::asio::ip::tcp::socket{runtime.context()};
    reserved.open(boost::asio::ip::tcp::v4());
    reserved.bind({boost::asio::ip::make_address("127.0.0.1"), 0});
    auto remote = muxer_endpoint();
    remote.transport.port = reserved.local_endpoint().port();
-   auto failed = boost::asio::co_spawn(runtime.context(),
+   reserved.close();
+   failed = boost::asio::co_spawn(runtime.context(),
                                        accepting.async_connect_coordinated(remote, muxer_peer(connecting_identity),
                                                                            upgrade_role::initiator,
                                                                            std::chrono::seconds{15}, batch),
                                        boost::asio::use_future);
    BOOST_REQUIRE(failed.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   // FORGE_THROW_CODE preserves the typed category/code, but throws a runtime
-   // coded exception rather than the compile-time peer_not_found alias.
-   BOOST_CHECK_EXCEPTION(
-       static_cast<void>(failed.get()), forge::exceptions::base,
-       [](const forge::exceptions::base& error) { return exceptions::is(error, exceptions::code::peer_not_found); });
+   try {
+      initiator.emplace(failed.get());
+      BOOST_FAIL("coordinated dial unexpectedly connected to the released port");
+   } catch (const forge::exceptions::base& error) {
+      BOOST_REQUIRE_MESSAGE(is_native_connection_refused(error), error.what());
+   }
    BOOST_TEST(!batch->stop_requested());
-   reserved.close();
 
-   auto source =
-       forge::net::tcp::listener{runtime.context().get_executor(), remote.transport,
-                                 forge::net::transport::listen_options{}, forge::net::tcp::options{.reuse_port = true}};
-   auto connector = source.make_coordinated_connector(source.local_endpoint());
-   auto accepted = boost::asio::co_spawn(runtime.context(), accepting.async_accept(local), boost::asio::use_future);
-   auto native = forge::asio::blocking::run(runtime, connector.async_connect_connection(local.transport));
+   source.emplace(runtime.context().get_executor(), remote.transport,
+                  forge::net::transport::listen_options{}, forge::net::tcp::options{.reuse_port = true});
+   connector.emplace(source->make_coordinated_connector(source->local_endpoint()));
+   accepted = boost::asio::co_spawn(runtime.context(), accepting.async_accept(local), boost::asio::use_future);
+   auto native = forge::asio::blocking::run(runtime, connector->async_connect_connection(local.transport));
    BOOST_TEST(native.local_endpoint().port == remote.transport.port);
    auto responder = forge::asio::blocking::run(
        runtime, upgrade_tcp(std::move(native), options, connecting_identity, muxer_peer(accepting_identity),
                             upgrade_role::responder,
                             tcp_upgrade_deadline{.context = &runtime.context(), .timeout = std::chrono::seconds{5}}));
+   responding.emplace(direct::connection{.session = std::move(*responder.session).as_transport()});
    BOOST_REQUIRE(accepted.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
-   auto initiator = accepted.get();
-   BOOST_REQUIRE(initiator.role.has_value());
+   initiator.emplace(accepted.get());
+   BOOST_REQUIRE(initiator->role.has_value());
    BOOST_REQUIRE(responder.role.has_value());
-   BOOST_TEST(static_cast<int>(*initiator.role) == static_cast<int>(upgrade_role::initiator));
+   BOOST_TEST(static_cast<int>(*initiator->role) == static_cast<int>(upgrade_role::initiator));
    BOOST_TEST(static_cast<int>(*responder.role) == static_cast<int>(upgrade_role::responder));
-   BOOST_TEST(initiator.peer.to_string() == muxer_peer(connecting_identity).to_string());
+   BOOST_TEST(initiator->peer.to_string() == muxer_peer(connecting_identity).to_string());
    BOOST_TEST(responder.peer.to_string() == muxer_peer(accepting_identity).to_string());
-   BOOST_REQUIRE(initiator.local_endpoint.has_value());
-   BOOST_REQUIRE(initiator.remote_endpoint.has_value());
-   BOOST_TEST(initiator.local_endpoint->transport.port == local.transport.port);
-   BOOST_TEST(initiator.remote_endpoint->transport.port == remote.transport.port);
-   BOOST_TEST(initiator.muxer.value == "/yamux/1.0.0");
-   BOOST_TEST(initiator.muxer.value == responder.muxer.value);
-   auto responding = direct::connection{.session = std::move(*responder.session).as_transport()};
-   check_muxer_payload(runtime, initiator.session, responding.session);
-   batch->request_stop();
-   forge::asio::blocking::run(runtime, direct::async_discard_unpublished(initiator));
-   forge::asio::blocking::run(runtime, direct::async_discard_unpublished(responding));
-   forge::asio::blocking::run(runtime, connector.async_stop());
-   forge::asio::blocking::run(runtime, source.async_close());
-   stop_registry(runtime, accepting);
+   BOOST_REQUIRE(initiator->local_endpoint.has_value());
+   BOOST_REQUIRE(initiator->remote_endpoint.has_value());
+   BOOST_TEST(initiator->local_endpoint->transport.port == local.transport.port);
+   BOOST_TEST(initiator->remote_endpoint->transport.port == remote.transport.port);
+   BOOST_TEST(initiator->muxer.value == "/yamux/1.0.0");
+   BOOST_TEST(initiator->muxer.value == responder.muxer.value);
+   check_muxer_payload(runtime, initiator->session, responding->session);
 }
 
 BOOST_AUTO_TEST_CASE(coordinated_quic_second_candidate_probes_and_receives_its_authenticated_inbound) {

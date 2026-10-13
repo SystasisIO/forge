@@ -18,6 +18,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -117,11 +118,14 @@ bool node::impl::remember_inbound_relay_reservation(const std::shared_ptr<sessio
    const auto existing = inbound_relay_reservations.find(owner);
    const auto renewing = existing != inbound_relay_reservations.end();
    const auto ttl = std::min(request.ttl, options.limits.relay.reservation_ttl);
+   const auto now = std::chrono::steady_clock::now();
+   const auto delay = std::chrono::duration_cast<std::chrono::steady_clock::duration>(ttl);
+   const auto maximum = std::chrono::steady_clock::time_point::max();
    auto reservation = relay_reservation_state{
        .owner = owner,
        .relay_peer = local,
        .id = renewing ? existing->second.id : next_reservation_id,
-       .expires_at = std::chrono::steady_clock::now() + ttl,
+       .expires_at = now >= maximum - delay ? maximum : now + delay,
        .max_streams = std::min(request.max_streams, options.limits.relay.max_streams_per_reservation),
        .max_bytes = std::min(request.max_bytes, options.limits.relay.max_relay_bytes),
        .max_queued_bytes = std::min(request.max_queued_bytes, options.limits.relay.max_queued_bytes),
@@ -197,22 +201,20 @@ std::optional<node::impl::relay_admission> node::impl::begin_relay(const peer_id
       }
       FORGE_THROW_EXCEPTION(exceptions::internal, "P2P relay circuit resource admission failed");
    }
-   auto reservation_id = std::optional<std::uint64_t>{};
    const auto reservation = inbound_relay_reservations.find(owner);
-   if (options.limits.relay.require_reservation && reservation == inbound_relay_reservations.end()) {
+   if (reservation == inbound_relay_reservations.end()) {
       ++metrics_value.relay_rejections;
       status = relay::status::no_reservation;
       return std::nullopt;
    }
-   const auto target_limit = reservation == inbound_relay_reservations.end()
-       ? options.limits.relay.max_streams_per_reservation : reservation->second.max_streams;
+   const auto target_limit = reservation->second.max_streams;
    if (participation > target_limit || target_count > target_limit - participation) {
       ++metrics_value.relay_rejections;
       status = relay::status::resource_limit_exceeded;
       return std::nullopt;
    }
-   if (reservation != inbound_relay_reservations.end()) { reservation_id = reservation->second.id; }
-   auto admission = relay_admission{.circuit = std::move(*circuit), .reservation_id = reservation_id, .source = source};
+   auto admission = relay_admission{
+       .circuit = std::move(*circuit), .reservation_id = reservation->second.id, .source = source};
    static_assert(std::is_nothrow_move_constructible_v<relay_admission>);
    const auto discard_empty = [this, &source, &owner](void*) noexcept {
       for (const auto* peer : {&source, &owner}) {
@@ -223,9 +225,7 @@ std::optional<node::impl::relay_admission> node::impl::begin_relay(const peer_id
    auto counters_guard = std::unique_ptr<void, decltype(discard_empty)>{this, discard_empty};
    const auto source_entry = relay_peer_active.try_emplace(source, 0).first;
    const auto target_entry = relay_peer_active.try_emplace(owner, 0).first;
-   if (reservation != inbound_relay_reservations.end()) {
-      ++reservation->second.active_streams;
-   }
+   ++reservation->second.active_streams;
    ++source_entry->second;
    ++target_entry->second;
    static_cast<void>(counters_guard.release());
@@ -327,7 +327,8 @@ boost::asio::awaitable<void> node::impl::handle_relay_hop(std::shared_ptr<node::
       if (endpoints.size() > options.identify.max_listen_endpoints) { endpoints.resize(options.identify.max_listen_endpoints); }
       for (auto& value : endpoints) { value.peer = local; }
       const auto expires_at = std::chrono::duration_cast<std::chrono::seconds>(
-          std::chrono::system_clock::now().time_since_epoch() + options.limits.relay.reservation_ttl);
+          detail::saturating_topology_expiry(std::chrono::system_clock::now(), options.limits.relay.reservation_ttl)
+              .time_since_epoch());
       auto voucher = std::optional<signed_envelope>{};
       if (identity.private_key && !identity.public_key.empty()) {
          voucher = relay::codec::seal_reservation_voucher(
@@ -405,8 +406,6 @@ boost::asio::awaitable<void> node::impl::handle_relay_hop(std::shared_ptr<node::
                 active->second->info.path == path::kind::direct && active->second->info.remote_peer == relay_owner) {
                target_session = active->second;
             }
-         } else if (!options.limits.relay.require_reservation) {
-            target_session = session_for_path_locked(relay_owner, path::kind::direct, std::nullopt);
          }
       }
       if (!target_session) {
@@ -460,9 +459,9 @@ boost::asio::awaitable<void> node::impl::handle_relay_hop(std::shared_ptr<node::
       live_owners = !stopped && !session_admission_closed && !session->closed &&
           source != sessions.end() && source->second == session && target_session && !target_session->closed &&
           destination != sessions.end() && destination->second == target_session &&
-          (!reservation_id || (owner != inbound_relay_reservations.end() && !owner->second.canceled &&
+          reservation_id && owner != inbound_relay_reservations.end() && !owner->second.canceled &&
            owner->second.id == *reservation_id && owner->second.session_id == target_session->id &&
-           owner->second.expires_at > std::chrono::steady_clock::now()));
+           owner->second.expires_at > std::chrono::steady_clock::now();
    }
    if (handshake_failure || !completed || deadline.timed_out() || deadline.stopped() || stop->stop_requested() || !live_owners) {
       co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});

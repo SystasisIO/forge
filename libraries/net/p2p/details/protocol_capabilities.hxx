@@ -17,7 +17,8 @@ namespace forge::net::p2p {
       } else if (protocol == builtins::autonat_v1 || protocol == builtins::autonat_v2_dial_request ||
                  protocol == builtins::autonat_v2_dial_back) {
          out.add(capabilities::autonat);
-      } else if (protocol == builtins::meshsub_v11 || protocol == builtins::meshsub_v10) {
+      } else if (protocol == builtins::meshsub_v13 || protocol == builtins::meshsub_v12 ||
+                 protocol == builtins::meshsub_v11 || protocol == builtins::meshsub_v10) {
          out.add(capabilities::pubsub);
       }
    }

@@ -15,6 +15,7 @@ module;
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <variant>
 
 module forge.net.s3.client;

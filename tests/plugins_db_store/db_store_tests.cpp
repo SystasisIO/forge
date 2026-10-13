@@ -4,7 +4,9 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <forge/exceptions/macros.hpp>
 #include <forge/db/object/macros.hpp>
@@ -16,14 +18,20 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
+#include <future>
+#include <iostream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "../quic_p2p/libp2p_identity_fixture.hxx"
@@ -39,6 +47,7 @@ import forge.app.plugin_registry;
 import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.runtime;
+import forge.asio.notification;
 import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.document;
@@ -66,8 +75,16 @@ import forge.db.revision.store;
 import forge.db.revision.transaction;
 import forge.db.revision.types;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.dht;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
+import forge.net.p2p.identify;
+import forge.net.p2p.exceptions;
+import forge.net.p2p.node;
+import forge.net.p2p.protocol;
+import forge.net.p2p.stream;
+import forge.net.quic.exceptions;
+import forge.net.transport.exceptions;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.exceptions;
 import forge.plugins.crypto.secrets.plugin;
@@ -77,10 +94,15 @@ import forge.plugins.db.store.exceptions;
 import forge.plugins.db.store.plugin;
 import forge.plugins.db.store.types;
 import forge.plugins.net.p2p.node.api;
+import forge.plugins.net.p2p.node.diagnostics_api;
+import forge.plugins.net.p2p.node.configuration_api;
 import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
+import forge.plugins.net.p2p.node.protocol_api;
+import forge.plugins.net.p2p.node.protocol_registration;
 import forge.plugins.net.p2p.node.types;
 import forge.raw.raw;
+import forge.log.logger;
 
 #if FORGE_HAS_ROCKSDB
 import forge.db.rocksdb.driver;
@@ -96,6 +118,24 @@ namespace {
 namespace crypto_secrets = forge::plugins::crypto::secrets;
 namespace p2p_node = forge::plugins::net::p2p::node;
 namespace store_plugin = forge::plugins::db::store;
+
+class store_log_capture_sink final : public forge::sink {
+ public:
+   void log(const forge::log_record& record) override {
+      {
+         const auto lock = std::scoped_lock{mutex};
+         records.push_back(record);
+      }
+      if (probe) { probe(); }
+   }
+   std::mutex mutex;
+   std::vector<forge::log_record> records;
+   std::function<void()> probe;
+};
+
+boost::asio::awaitable<void> probe_store_status(forge::api::core::handle<store_plugin::api> api) {
+   static_cast<void>(co_await api->status());
+}
 
 struct by_id;
 struct by_name;
@@ -200,6 +240,7 @@ struct memory_state {
    std::map<std::string, std::map<forge::db::core::record_key, std::vector<std::byte>, byte_less>> records;
    std::size_t flush_calls = 0;
    std::size_t snapshot_calls = 0;
+   std::size_t transaction_calls = 0;
    std::size_t active_writes = 0;
    bool overlapping_writes = false;
 };
@@ -366,6 +407,10 @@ class memory_driver final : public forge::db::core::driver {
       return state_->snapshot_calls;
    }
 
+   [[nodiscard]] std::size_t transaction_calls() const noexcept {
+      return state_->transaction_calls;
+   }
+
    [[nodiscard]] std::size_t active_writes() const noexcept {
       return state_->active_writes;
    }
@@ -384,6 +429,7 @@ class memory_driver final : public forge::db::core::driver {
 
  private:
    boost::asio::awaitable<std::unique_ptr<forge::db::core::session>> open_transaction() override {
+      ++state_->transaction_calls;
       co_return std::make_unique<memory_session>(state_, true);
    }
 
@@ -399,6 +445,43 @@ class memory_driver final : public forge::db::core::driver {
 
    std::shared_ptr<memory_state> state_ = std::make_shared<memory_state>();
    std::size_t close_calls_ = 0;
+};
+
+// Counts actual reads while retaining the real Secrets plugin's validation and
+// configured PEM results. No fabricated identity or alternative storage path.
+class counted_p2p_secrets final : public crypto_secrets::api {
+ public:
+   explicit counted_p2p_secrets(std::shared_ptr<crypto_secrets::api> source) : source_(std::move(source)) {}
+   std::atomic_uint reads{0};
+   std::atomic_bool hold_psk{false};
+   std::promise<void> psk_entered;
+   forge::asio::notification psk_released;
+   boost::asio::awaitable<crypto_secrets::snapshot> status(crypto_secrets::query query) override {
+      return source_->status(std::move(query));
+   }
+   boost::asio::awaitable<crypto_secrets::get_result> get_bytes(crypto_secrets::get_request request) override {
+      ++reads;
+      if (request.purpose == "p2p.private-network.psk" && hold_psk.load()) {
+         psk_entered.set_value();
+         while (hold_psk.load()) {
+            const auto epoch = psk_released.epoch();
+            if (!hold_psk.load()) { break; }
+            co_await psk_released.async_wait(epoch);
+         }
+      }
+      co_return co_await source_->get_bytes(std::move(request));
+   }
+   boost::asio::awaitable<crypto_secrets::derive_result> derive_hkdf_sha256(crypto_secrets::derive_request request) override {
+      return source_->derive_hkdf_sha256(std::move(request));
+   }
+   boost::asio::awaitable<crypto_secrets::aead_encrypt_result> encrypt_aes_gcm(crypto_secrets::aead_encrypt_request request) override {
+      return source_->encrypt_aes_gcm(std::move(request));
+   }
+   boost::asio::awaitable<crypto_secrets::aead_decrypt_result> decrypt_aes_gcm(crypto_secrets::aead_decrypt_request request) override {
+      return source_->decrypt_aes_gcm(std::move(request));
+   }
+ private:
+   std::shared_ptr<crypto_secrets::api> source_;
 };
 
 class installer_plugin final : public forge::app::plugin {
@@ -448,7 +531,7 @@ class installer_plugin final : public forge::app::plugin {
    auto builder = forge::app::application_builder{};
    builder.name("db-store-plugin-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "db-store-plugin-test"})
-       .plugin(store_plugin::descriptor());
+       .plugin(store_plugin::plugin::descriptor());
    if (driver) {
       builder.plugin(installer_descriptor(std::move(driver)));
    }
@@ -541,9 +624,9 @@ void set_p2p_bootstrap(forge::config::core::document& document, const std::optio
    auto builder = forge::app::application_builder{};
    builder.name("p2p-node-db-store-lifecycle-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "p2p-node-db-store-test"})
-       .plugin(store_plugin::descriptor())
-       .plugin(crypto_secrets::descriptor())
-       .plugin(p2p_node::descriptor());
+       .plugin(store_plugin::plugin::descriptor())
+       .plugin(crypto_secrets::plugin::descriptor())
+       .plugin(p2p_node::plugin::descriptor());
    if (driver) {
       builder.plugin(installer_descriptor(std::move(driver), std::string{p2p_peer_store_name}));
    }
@@ -551,6 +634,102 @@ void set_p2p_bootstrap(forge::config::core::document& document, const std::optio
    auto app = std::move(builder).build();
    app->configure(document);
    return app;
+}
+
+template<class T> T transport_run(forge::app::application_shell& app, boost::asio::awaitable<T> operation,
+                                  std::string_view phase) {
+   using namespace std::chrono_literals;
+   auto result = boost::asio::co_spawn(app.runtime().context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(10s) != std::future_status::ready) {
+      std::cerr << "secure transport fixture exceeded owned join budget: " << phase << '\n';
+      std::terminate();
+   }
+   return result.get();
+}
+
+void shutdown_transport_app(forge::app::application_shell& app) {
+   app.request_stop();
+   auto shutdown_failure = std::exception_ptr{};
+   try { transport_run(app, app.shutdown(), "reverse plugin shutdown and scheduler join"); }
+   catch (...) { shutdown_failure = std::current_exception(); }
+   // This fixture has no compute pool. A plugin failure can bypass the shell's scheduler join.
+   auto scheduler_failure = std::exception_ptr{};
+   try { transport_run(app, app.scheduler().shutdown(), "unconditional fixture scheduler join"); }
+   catch (...) { scheduler_failure = std::current_exception(); }
+   const auto report = [](const std::exception_ptr& failure, std::string_view phase) {
+      if (!failure) { return; }
+      try { std::rethrow_exception(failure); }
+      catch (const std::exception& error) { BOOST_ERROR("secure transport " << phase << ": " << error.what()); }
+      catch (...) { BOOST_ERROR("secure transport " << phase << ": non-standard exception"); }
+   };
+   report(shutdown_failure, "plugin cleanup");
+   report(scheduler_failure, "scheduler join");
+}
+
+forge::config::core::document secure_transport_config(const forge::tests::p2p::identity_fixture& identity) {
+   auto config = p2p_production_config(identity);
+   config.set("plugins.net.p2p.node.allow-insecure-test-mode", false);
+   config.set("plugins.net.p2p.node.topology.mode", "static-only");
+   config.set("plugins.net.p2p.node.tcp.security", "noise");
+   return config;
+}
+
+boost::asio::awaitable<bool> await_secure_transport_sessions(std::shared_ptr<p2p_node::diagnostics_api> reads,
+                                                            std::size_t count,
+                                                            std::optional<forge::net::p2p::peer_id> expected = {}) {
+   using namespace std::chrono_literals;
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto timer = boost::asio::steady_timer{executor};
+   const auto deadline = std::chrono::steady_clock::now() + 4s;
+   do {
+      const auto state = reads->snapshot();
+      if (state.sessions.size() == count && std::ranges::all_of(state.sessions, [&](const auto& session) {
+             return !session.closed && session.identify_state == forge::net::p2p::identify::state::identified &&
+                 session.authentication == forge::net::p2p::peer_authentication::quic_tls &&
+                 (!expected || session.remote_peer == *expected);
+          })) { co_return true; }
+      timer.expires_after(5ms);
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   } while (std::chrono::steady_clock::now() < deadline);
+   co_return false;
+}
+
+boost::asio::awaitable<forge::net::p2p::stream>
+open_after_identify_cleanup(std::shared_ptr<p2p_node::protocol_api> api, forge::net::p2p::peer_id peer,
+                            forge::net::p2p::protocol_id protocol, forge::net::p2p::node::open_options options,
+                            std::chrono::steady_clock::time_point deadline) {
+   using namespace std::chrono_literals;
+   const auto executor = co_await boost::asio::this_coro::executor;
+   auto timer = boost::asio::steady_timer{executor};
+   auto last_rejection = std::exception_ptr{};
+   for (;;) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (remaining <= 0ms && last_rejection) { std::rethrow_exception(last_rejection); }
+      BOOST_REQUIRE_MESSAGE(remaining > 0ms, "Identify streams did not release QUIC capacity within 4s");
+      auto attempt_options = options;
+      attempt_options.timeout = std::min(options.timeout, remaining);
+      try { co_return co_await api->open(peer, protocol, attempt_options); }
+      catch (const forge::exceptions::base& error) {
+         if (!forge::net::p2p::exceptions::is(error, forge::net::p2p::exceptions::code::backpressure_rejected)) {
+            throw;
+         }
+         last_rejection = std::current_exception();
+      }
+      timer.expires_at(std::min(deadline, std::chrono::steady_clock::now() + 5ms));
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   }
+}
+
+forge::net::p2p::node::protocol_handler transport_echo() {
+   return [](forge::net::p2p::node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+      for (;;) {
+         const auto bytes = co_await incoming.stream.async_read_frame();
+         if (bytes.empty()) { break; }
+         co_await incoming.stream.async_write_frame(bytes);
+      }
+      co_await incoming.stream.async_close();
+   };
 }
 
 [[nodiscard]] forge::db::core::record_key header_record_key() {
@@ -734,7 +913,7 @@ void check_p2p_identity_secret_purposes(forge::app::application_shell& app) {
 }
 
 void check_p2p_peer_visible(forge::app::application_shell& app, const forge::net::p2p::peer_id& expected) {
-   auto diagnostics = app.apis().get<p2p_node::diagnostics_source>(p2p_node::diagnostics_source::ref());
+   auto diagnostics = app.apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref());
    const auto snapshot = diagnostics->snapshot();
    BOOST_TEST(std::ranges::any_of(snapshot.peers, [&](const auto& peer) { return peer.peer == expected; }));
 }
@@ -786,7 +965,7 @@ void configure_static_topology(forge::config::core::document& document) {
 }
 
 void check_static_topology_snapshot(forge::app::application_shell& app) {
-   auto diagnostics = app.apis().get<p2p_node::diagnostics_source>(p2p_node::diagnostics_source::ref());
+   auto diagnostics = app.apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref());
    const auto snapshot = diagnostics->snapshot();
    BOOST_TEST(snapshot.topology.mode == "static-only");
    BOOST_TEST(snapshot.topology.phase == "idle");
@@ -864,7 +1043,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_descriptor_api_and_config_are_nested) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_and_api_major) {
-   const auto descriptor = p2p_node::descriptor();
+   const auto descriptor = p2p_node::plugin::descriptor();
    BOOST_TEST(descriptor.id.value == "forge.plugins.net.p2p.node");
    BOOST_REQUIRE_EQUAL(descriptor.dependencies.size(), 2U);
    BOOST_TEST(descriptor.dependencies[0].value == "forge.plugins.db.store");
@@ -872,15 +1051,15 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_descriptor_keeps_production_dependencies_an
 
    const auto plugin = descriptor.factory();
    BOOST_REQUIRE(plugin != nullptr);
-   BOOST_TEST(plugin->version() == "6.0.0");
+   BOOST_TEST(plugin->version() == "8.0.0");
 
    const auto api_descriptor = p2p_node::api::describe();
    BOOST_TEST(api_descriptor.id.value == "forge.plugins.net.p2p.node");
-   BOOST_TEST(api_descriptor.version.major == 2U);
+   BOOST_TEST(api_descriptor.version.major == 3U);
 
-   const auto diagnostics_source_descriptor = p2p_node::diagnostics_source::describe();
-   BOOST_TEST(diagnostics_source_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics_source");
-   BOOST_TEST(diagnostics_source_descriptor.version.major == 2U);
+   const auto diagnostics_api_descriptor = p2p_node::diagnostics_api::describe();
+   BOOST_TEST(diagnostics_api_descriptor.id.value == "forge.plugins.net.p2p.node.diagnostics");
+   BOOST_TEST(diagnostics_api_descriptor.version.major == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_production_lifecycle_reopens_persisted_peer_state) {
@@ -891,6 +1070,208 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_production_lifecycle_reopens_persisted_peer
           set_p2p_bootstrap(document, bootstrap);
           return make_p2p_app(driver, std::move(document));
        });
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_noise_only_keeps_quic_tls_and_configured_queue_rejects_then_recovers) {
+   using namespace std::chrono_literals;
+   namespace p2p = forge::net::p2p;
+   const auto server_identity = forge::tests::p2p::make_identity_fixture("transport-queue-server");
+   const auto client_identity = forge::tests::p2p::make_identity_fixture("transport-queue-client");
+   auto server = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(server_identity));
+   auto client_config = secure_transport_config(client_identity);
+   constexpr auto queued_bytes = std::uint64_t{65536};
+   client_config.set("plugins.net.p2p.node.quic.max-queued-bytes", queued_bytes);
+   auto client = make_p2p_app(std::make_shared<memory_driver>(), std::move(client_config));
+   auto cleanup = boost::scope::scope_exit{[&] {
+      shutdown_transport_app(*client);
+      shutdown_transport_app(*server);
+   }};
+   transport_run(*server, server->startup(), "server production startup");
+   transport_run(*client, client->startup(), "client production startup");
+   const auto server_api = server->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto client_api = client->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto server_reads = server->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto client_reads = client->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto expected_client = p2p::make_peer_id_from_certificate_pem(client_identity.certificate_pem);
+   BOOST_CHECK(client_api->local_peer() == expected_client);
+   const auto endpoint = server_api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   const auto protocol = p2p::protocol_id{"/stage7/transport-queue/1"};
+   const auto server_raw = server->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   const auto client_raw = client->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   auto registration = server_raw->register_protocol(protocol, transport_echo());
+   const auto connected = transport_run(*client, client_api->connect(*endpoint,
+       {.expected_peer = server_api->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}), "authenticated QUIC connect");
+   BOOST_CHECK(connected.remote_peer == server_api->local_peer());
+   BOOST_CHECK(connected.identify_state == p2p::identify::state::identified);
+   BOOST_REQUIRE(transport_run(*client, await_secure_transport_sessions(client_reads, 1, server_api->local_peer()),
+       "client identified QUIC TLS session"));
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, expected_client),
+       "server identified QUIC TLS client identity"));
+   auto stream = transport_run(*client, client_raw->open(server_api->local_peer(), protocol,
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}), "open queue probe stream");
+   auto cancel = boost::scope::scope_exit{[&] { stream.request_cancel(); }};
+   BOOST_CHECK(stream.authentication() == p2p::peer_authentication::quic_tls);
+   const auto oversized = std::vector<std::uint8_t>(queued_bytes + 1, 0x7a);
+   BOOST_CHECK_EXCEPTION(transport_run(*client, stream.async_write(oversized), "oversized write rejection"),
+       forge::exceptions::base, [](const auto& error) {
+          return forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::backpressure_rejected);
+       });
+   const auto small = std::vector<std::uint8_t>{7, 8, 9};
+   transport_run(*client, stream.async_write_frame(small), "small write after rejection");
+   const auto response = transport_run(*client, stream.async_read_frame(), "small echo after rejection");
+   BOOST_CHECK(response == small);
+   transport_run(*client, stream.async_close(), "close queue probe stream");
+   cancel.set_active(false);
+   registration.close();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_quic_local_open_limit_rejects_and_reset_reuses_capacity) {
+   using namespace std::chrono_literals;
+   namespace p2p = forge::net::p2p;
+   const auto server_identity = forge::tests::p2p::make_identity_fixture("transport-stream-server");
+   const auto client_identity = forge::tests::p2p::make_identity_fixture("transport-stream-client");
+   auto server = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(server_identity));
+   auto config = secure_transport_config(client_identity);
+   constexpr auto active_limit = std::uint64_t{4};
+   config.set("plugins.net.p2p.node.quic.max-streams-per-connection", active_limit);
+   auto client = make_p2p_app(std::make_shared<memory_driver>(), std::move(config));
+   auto cleanup = boost::scope::scope_exit{[&] {
+      shutdown_transport_app(*client);
+      shutdown_transport_app(*server);
+   }};
+   transport_run(*server, server->startup(), "stream-limit server startup");
+   transport_run(*client, client->startup(), "stream-limit client startup");
+   const auto server_api = server->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto client_api = client->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto server_reads = server->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto client_reads = client->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto raw = client->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   const auto server_raw = server->apis().get<p2p_node::protocol_api>(p2p_node::protocol_api::ref()).shared();
+   const auto protocol = p2p::protocol_id{"/stage7/transport-active-streams/1"};
+   auto registration = server_raw->register_protocol(protocol, transport_echo());
+   const auto endpoint = server_api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   transport_run(*client, client_api->connect(*endpoint,
+       {.expected_peer = server_api->local_peer(), .allow_relay = false, .timeout = 3s,
+        .direct_attempt_timeout = 2s, .allow_hole_punch = false}), "stream-limit authenticated connect");
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, client_api->local_peer()),
+       "server Identify complete before local stream budget probe"));
+   BOOST_REQUIRE(transport_run(*client, await_secure_transport_sessions(client_reads, 1, server_api->local_peer()),
+       "client Identify complete before local stream budget probe"));
+   auto streams = std::vector<p2p::stream>{};
+   auto cancel = boost::scope::scope_exit{[&] {
+      for (auto& stream : streams) { stream.request_cancel(); }
+   }};
+   const auto open_options = p2p::node::open_options{
+       .allow_relay = false, .timeout = 3s, .allow_hole_punch = false};
+   const auto small = std::vector<std::uint8_t>{1, 2, 3};
+   // identified starts initial Identify Push; native admission, not that state, witnesses FIN cleanup.
+   const auto cleanup_deadline = std::chrono::steady_clock::now() + 4s;
+   // This exercises local async_open_stream admission, not a global bidirectional hard count.
+   for (auto index = std::uint64_t{0}; index != active_limit; ++index) {
+      streams.push_back(transport_run(*client,
+          open_after_identify_cleanup(raw, server_api->local_peer(), protocol, open_options, cleanup_deadline),
+          "open configured active slot after observed Identify cleanup"));
+      BOOST_CHECK(streams.back().authentication() == p2p::peer_authentication::quic_tls);
+      transport_run(*client, streams.back().async_write_frame(small), "keep active slot usable");
+      BOOST_CHECK(transport_run(*client, streams.back().async_read_frame(), "active slot echo") == small);
+   }
+   BOOST_REQUIRE_EQUAL(streams.size(), active_limit);
+   BOOST_CHECK_EXCEPTION(transport_run(*client, raw->open(server_api->local_peer(), protocol, open_options),
+       "local open exceeds configured active limit"), forge::exceptions::base, [](const auto& error) {
+          return p2p::exceptions::is(error, p2p::exceptions::code::backpressure_rejected);
+       });
+   BOOST_TEST(client_reads->snapshot().connections.active_sessions == 1U);
+   streams.front().request_cancel();
+   BOOST_CHECK_EXCEPTION(transport_run(*client, streams.front().async_read(), "local reset terminal witness"),
+       forge::exceptions::base, [](const auto& error) {
+          return forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::stream_reset);
+       });
+   try { transport_run(*client, streams.front().async_close(), "join reset stream cleanup"); }
+   catch (const forge::exceptions::base& error) {
+      BOOST_CHECK(forge::net::transport::exceptions::is(error, forge::net::transport::exceptions::code::canceled) ||
+                  forge::net::quic::exceptions::is(error, forge::net::quic::exceptions::code::stream_reset));
+   }
+   streams.push_back(transport_run(*client, raw->open(server_api->local_peer(), protocol, open_options),
+       "replacement open after joined reset"));
+   BOOST_CHECK(streams.back().authentication() == p2p::peer_authentication::quic_tls);
+   transport_run(*client, streams.back().async_write_frame(small), "replacement stream write");
+   BOOST_CHECK(transport_run(*client, streams.back().async_read_frame(), "replacement stream echo") == small);
+   // Neighbouring streams and the original connection survive the reset.
+   transport_run(*client, streams[1].async_write_frame(small), "neighbour write after reset");
+   BOOST_CHECK(transport_run(*client, streams[1].async_read_frame(), "neighbour echo after reset") == small);
+   BOOST_TEST(client_reads->snapshot().connections.active_sessions == 1U);
+   registration.close();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_transport_config_quic_listener_connection_limit_denies_then_reuses_slot) {
+   using namespace std::chrono_literals;
+   namespace p2p = forge::net::p2p;
+   const auto server_identity = forge::tests::p2p::make_identity_fixture("transport-listener-server");
+   const auto first_identity = forge::tests::p2p::make_identity_fixture("transport-listener-first");
+   const auto denied_identity = forge::tests::p2p::make_identity_fixture("transport-listener-denied");
+   const auto replacement_identity = forge::tests::p2p::make_identity_fixture("transport-listener-replacement");
+   auto config = secure_transport_config(server_identity);
+   config.set("plugins.net.p2p.node.quic.max-connections", std::uint64_t{1});
+   auto server = make_p2p_app(std::make_shared<memory_driver>(), std::move(config));
+   auto first = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(first_identity));
+   auto denied = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(denied_identity));
+   auto replacement = make_p2p_app(std::make_shared<memory_driver>(), secure_transport_config(replacement_identity));
+   auto cleanup = boost::scope::scope_exit{[&] {
+      shutdown_transport_app(*replacement);
+      shutdown_transport_app(*denied);
+      shutdown_transport_app(*first);
+      shutdown_transport_app(*server);
+   }};
+   for (auto* app : {server.get(), first.get(), denied.get(), replacement.get()}) {
+      transport_run(*app, app->startup(), "listener-limit production startup");
+   }
+   const auto server_api = server->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto first_api = first->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto denied_api = denied->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto replacement_api = replacement->apis().get<p2p_node::api>(p2p_node::api::ref()).shared();
+   const auto server_reads = server->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto denied_reads = denied->apis().get<p2p_node::diagnostics_api>(p2p_node::diagnostics_api::ref()).shared();
+   const auto endpoint = server_api->local_endpoint();
+   BOOST_REQUIRE(endpoint);
+   const auto connect_options = p2p::node::connect_options{
+       .expected_peer = server_api->local_peer(), .allow_relay = false, .timeout = 3s,
+       .direct_attempt_timeout = 2s, .allow_hole_punch = false};
+   transport_run(*first, first_api->connect(*endpoint, connect_options), "occupy configured listener slot");
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, first_api->local_peer()),
+       "authenticated first listener occupant"));
+   const auto before = denied_reads->snapshot();
+   // Listener admission drops the extra Initial; the remote dial observes its bounded timeout.
+   BOOST_CHECK_EXCEPTION(transport_run(*denied, denied_api->connect(*endpoint, connect_options),
+       "dial while listener slot is occupied"), forge::exceptions::base, [](const auto& error) {
+          return p2p::exceptions::is(error, p2p::exceptions::code::timeout);
+       });
+   const auto after = denied_reads->snapshot();
+   BOOST_TEST(after.connections.active_sessions == 0U);
+   BOOST_TEST(after.resources.active_dials == before.resources.active_dials);
+   BOOST_TEST(after.resources.system.outbound_connections == before.resources.system.outbound_connections);
+   BOOST_TEST(after.resources.system.file_descriptors == before.resources.system.file_descriptors);
+   BOOST_TEST(after.resources.transient.outbound_connections == before.resources.transient.outbound_connections);
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 1, first_api->local_peer()),
+       "listener still retains only the first authenticated occupant"));
+   transport_run(*first, first_api->ping(server_api->local_peer(),
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}), "first occupant remains usable");
+   first->request_stop();
+   transport_run(*first, first->shutdown(), "release first listener connection slot");
+   BOOST_REQUIRE(transport_run(*server, await_secure_transport_sessions(server_reads, 0),
+       "server observes released connection slot"));
+   // A fresh peer avoids turning slot reuse into a dial-backoff timing test.
+   const auto connected = transport_run(*replacement, replacement_api->connect(*endpoint, connect_options),
+       "replacement uses released listener slot");
+   BOOST_CHECK(connected.remote_peer == server_api->local_peer());
+   BOOST_CHECK(connected.identify_state == p2p::identify::state::identified);
+   BOOST_REQUIRE(transport_run(*server,
+       await_secure_transport_sessions(server_reads, 1, replacement_api->local_peer()),
+       "authenticated replacement listener occupant"));
+   transport_run(*replacement, replacement_api->ping(server_api->local_peer(),
+       {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}), "replacement connection remains usable");
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_rejects_unknown_named_peer_store_before_listening) {
@@ -914,6 +1295,222 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rejects_missing_identity_secret_before_list
 
    auto p2p = app->apis().get<p2p_node::api>(p2p_node::api::ref());
    BOOST_CHECK_THROW((void)p2p->local_endpoint(), p2p_node::exceptions::plugin_not_initialized);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_object_adapter_transactions) {
+   namespace p2p = forge::net::p2p;
+   using value = forge::config::core::value;
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto secret_apis = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto store = store_plugin::plugin{};
+   auto secrets = crypto_secrets::plugin{};
+   auto node = p2p_node::plugin{};
+   auto driver = std::make_shared<memory_driver>();
+   const auto identity = forge::tests::p2p::make_identity_fixture("configuration-preflight");
+   auto document = p2p_production_config(identity);
+   document.set("plugins.net.p2p.node.topology.mode", "static-only");
+   document.set("plugins.net.p2p.node.dht.profiles", value::array_type{
+       value::object_type{{"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
+                          {"peers", true}, {"providers", false}, {"values", true}}});
+   auto run = [&]<class T>(boost::asio::awaitable<T> operation) -> T {
+      auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+      if (result.wait_for(10s) != std::future_status::ready) {
+         std::cerr << "configuration DB fixture failed its owned join budget\n";
+         std::terminate();
+      }
+      return result.get();
+   };
+   auto cleanup = boost::scope::scope_exit{[&] {
+      // Keep providers alive until every startup/adapter operation has joined.
+      node.request_stop();
+      run(node.shutdown());
+      run(secrets.shutdown());
+      run(store.shutdown());
+      run(scheduler.shutdown());
+   }};
+   run(store.configure({document, "plugins.db.store"}));
+   run(secrets.configure({document, "plugins.crypto.secrets"}));
+   run(node.configure({document, "plugins.net.p2p.node"}));
+   auto provider = forge::api::core::installer{apis};
+   auto secret_provider = forge::api::core::installer{secret_apis};
+   run(store.provide(provider));
+   run(secrets.provide(secret_provider));
+   auto counted = std::make_shared<counted_p2p_secrets>(
+       secret_apis.get<crypto_secrets::api>(crypto_secrets::api::ref()).shared());
+   apis.install<crypto_secrets::api>(crypto_secrets::api::describe(), counted);
+   run(node.provide(provider));
+   run(store.initialize(context));
+   auto stores = apis.get<store_plugin::api>(store_plugin::api::ref());
+   run(stores->add_store(std::string{p2p_peer_store_name}, driver));
+   run(secrets.initialize(context));
+   run(node.initialize(context));
+   BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::plugin_not_initialized);
+   BOOST_TEST(counted->reads.load() == 0U);
+   run(store.after_initialize());
+   run(node.after_initialize());
+   run(store.startup());
+   run(secrets.startup());
+
+   // Baselines follow actual provider setup and schema registration, not a
+   // synthetic unopened adapter. Native startup must do no work before policy.
+   const auto snapshots = driver->snapshot_calls();
+   const auto transactions = driver->transaction_calls();
+   BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::invalid_config);
+   BOOST_TEST(counted->reads.load() == 0U);
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   auto api = apis.get<p2p_node::api>(p2p_node::api::ref());
+   BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), p2p_node::exceptions::plugin_not_initialized);
+
+   document.set("plugins.net.p2p.node.peer-store.store", "different");
+   BOOST_CHECK_THROW(run(node.configure({document, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
+   document.set("plugins.net.p2p.node.peer-store.store", "");
+   BOOST_CHECK_THROW(run(node.configure({document, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
+   document.set("plugins.net.p2p.node.peer-store.store", std::string{p2p_peer_store_name});
+   document.set("plugins.net.p2p.node.max-sessions", std::uint64_t{9});
+   run(node.configure({document, "plugins.net.p2p.node"}));
+   auto configuration = apis.get<p2p_node::configuration_api>(p2p_node::configuration_api::ref());
+   auto policies = std::vector<p2p::dht::value_policy>{{
+       .key_prefix = {'/', 't', '/'},
+       .validate = [](const p2p::dht::record&, p2p::dht::value_validation_context) {},
+       .select = [](std::span<const p2p::dht::record>) { return std::size_t{0}; },
+       .expiry = [](const p2p::dht::record&, p2p::dht::value_expiry_context context) { return context.supplied_expires_at; },
+   }};
+   configuration->set_dht_value_policies({"/configuration/store/kad/1"}, std::move(policies));
+   for (const auto& records : {
+            value::object_type{{"max-values", std::uint64_t{0}}},
+            value::object_type{{"hydration-page-limit", std::uint64_t{1'000'000}}}}) {
+      auto invalid = document;
+      invalid.set("plugins.net.p2p.node.dht.profiles", value::array_type{value::object_type{
+          {"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
+          {"peers", true}, {"providers", false}, {"values", true}, {"records", records}}});
+      BOOST_CHECK_THROW(run(node.configure({invalid, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
+   }
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   BOOST_TEST(counted->reads.load() == 0U);
+   run(node.startup());
+   BOOST_TEST(counted->reads.load() == 2U);
+   BOOST_TEST(driver->snapshot_calls() > snapshots);
+   BOOST_TEST(driver->transaction_calls() > transactions);
+   const auto listening = api->local_endpoint();
+   BOOST_REQUIRE(listening.has_value());
+   BOOST_TEST(!listening->transport.host.empty());
+   run(node.shutdown());
+   BOOST_TEST(driver->active_writes() == 0U);
+   BOOST_TEST(!driver->overlapping_writes());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_held_psk_stop_does_not_open_object_adapter_after_secret_returns) {
+   using value = forge::config::core::value;
+   using namespace std::chrono_literals;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto secret_apis = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto store = store_plugin::plugin{};
+   auto secrets = crypto_secrets::plugin{};
+   auto node = p2p_node::plugin{};
+   auto driver = std::make_shared<memory_driver>();
+   const auto identity = forge::tests::p2p::make_identity_fixture("held-psk-store");
+   auto document = p2p_production_config(identity);
+   document.set("plugins.crypto.secrets.secrets", value::array_type{
+       p2p_secret(std::string{p2p_certificate_secret_id}, identity.certificate_pem, "p2p.identity.certificate"),
+       p2p_secret(std::string{p2p_private_key_secret_id}, identity.private_key_pem, "p2p.identity.private-key"),
+       p2p_secret("network/psk", std::string(32, 's'), "p2p.private-network.psk")});
+   document.set("plugins.net.p2p.node.listen", value::array_type{value{"/ip4/127.0.0.1/tcp/0"}});
+   document.set("plugins.net.p2p.node.topology.mode", "static-only");
+   document.set("plugins.net.p2p.node.path.policy", "direct-only");
+   document.set("plugins.net.p2p.node.relay.client-enabled", false);
+   document.set("plugins.net.p2p.node.relay.server-enabled", false);
+   document.set("plugins.net.p2p.node.relay.auto-discovery-enabled", false);
+   document.set("plugins.net.p2p.node.private-network.psk-secret", "network/psk");
+   auto join = []<class T>(std::future<T>& future) -> T {
+      if (future.wait_for(10s) != std::future_status::ready) {
+         std::cerr << "held PSK/ObjectDB fixture exceeded owned join budget\n";
+         std::terminate();
+      }
+      return future.get();
+   };
+   auto run = [&]<class T>(boost::asio::awaitable<T> operation) -> T {
+      auto future = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+      return join(future);
+   };
+   auto cleanup = boost::scope::scope_exit{[&] {
+      node.request_stop();
+      auto failure = std::exception_ptr{};
+      for (auto step = 0; step != 4; ++step) {
+         try {
+            switch (step) {
+            case 0: run(node.shutdown()); break;
+            case 1: run(secrets.shutdown()); break;
+            case 2: run(store.shutdown()); break;
+            case 3: run(scheduler.shutdown()); break;
+            }
+         } catch (...) { if (!failure) { failure = std::current_exception(); } }
+      }
+      if (failure) { BOOST_ERROR("held PSK/ObjectDB cleanup failed after all shutdown steps completed"); }
+   }};
+   run(store.configure({document, "plugins.db.store"}));
+   run(secrets.configure({document, "plugins.crypto.secrets"}));
+   run(node.configure({document, "plugins.net.p2p.node"}));
+   auto provider = forge::api::core::installer{apis};
+   auto secret_provider = forge::api::core::installer{secret_apis};
+   run(store.provide(provider));
+   run(secrets.provide(secret_provider));
+   auto counted = std::make_shared<counted_p2p_secrets>(
+       secret_apis.get<crypto_secrets::api>(crypto_secrets::api::ref()).shared());
+   apis.install<crypto_secrets::api>(crypto_secrets::api::describe(), counted);
+   run(node.provide(provider));
+   run(store.initialize(context));
+   run(apis.get<store_plugin::api>(store_plugin::api::ref())->add_store(std::string{p2p_peer_store_name}, driver));
+   run(secrets.initialize(context));
+   run(node.initialize(context));
+   run(store.after_initialize());
+   run(node.after_initialize());
+   run(store.startup());
+   run(secrets.startup());
+   const auto snapshots = driver->snapshot_calls();
+   const auto transactions = driver->transaction_calls();
+   counted->hold_psk.store(true);
+   auto entered = counted->psk_entered.get_future();
+   auto startup = boost::asio::co_spawn(runtime.context(), node.startup(), boost::asio::use_future);
+   auto shutdown = std::future<void>{};
+   auto release = boost::scope::scope_exit{[&] {
+      counted->hold_psk.store(false);
+      counted->psk_released.notify();
+      auto failure = std::exception_ptr{};
+      for (auto* pending : {&startup, &shutdown}) {
+         if (!pending->valid()) { continue; }
+         try { join(*pending); }
+         catch (...) { if (!failure) { failure = std::current_exception(); } }
+      }
+      if (failure) { BOOST_ERROR("held PSK/ObjectDB operations failed after both joins completed"); }
+   }};
+   join(entered);
+   node.request_stop();
+   shutdown = boost::asio::co_spawn(runtime.context(), node.shutdown(), boost::asio::use_future);
+   BOOST_CHECK(shutdown.wait_for(30ms) == std::future_status::timeout);
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   counted->hold_psk.store(false);
+   counted->psk_released.notify();
+   join(startup);
+   join(shutdown);
+   BOOST_TEST(counted->reads.load() == 3U);
+   BOOST_TEST(driver->snapshot_calls() == snapshots);
+   BOOST_TEST(driver->transaction_calls() == transactions);
+   BOOST_CHECK_THROW(static_cast<void>(apis.get<p2p_node::api>(p2p_node::api::ref())->local_endpoint()),
+                     p2p_node::exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(store_plugin_rejects_invalid_programmatic_setup) {
@@ -1319,6 +1916,80 @@ BOOST_AUTO_TEST_CASE(store_plugin_custom_driver_store_handle_reads_writes_flushe
                      store_plugin::exceptions::stopped);
 }
 
+BOOST_AUTO_TEST_CASE(store_plugin_logging_preserves_programmatic_ownership_and_reentrant_status) {
+   auto previous = forge::logger::get("forge.db.store");
+   auto route = forge::logger{"forge.db.store"};
+   auto captured = std::make_shared<store_log_capture_sink>();
+   route.set_log_level(forge::log_level::all);
+   route.add_sink(captured);
+   forge::logger::update("forge.db.store", route);
+   auto restore = boost::scope::scope_exit{[&] { forge::logger::update("forge.db.store", previous); }};
+   auto runtime = forge::asio::runtime{};
+   auto probe_runtime = forge::asio::runtime{{.worker_threads = 2}};
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto apis = forge::api::core::registry{};
+   auto signals = forge::app::signal_bus{};
+   auto events = forge::app::event_bus{};
+   auto plugin = store_plugin::plugin{};
+   auto document = forge::config::core::document{};
+   forge::asio::blocking::run(runtime, plugin.configure(
+      forge::config::core::component_view{document, "plugins.db.store"}));
+   auto provider = forge::api::core::installer{apis};
+   forge::asio::blocking::run(runtime, plugin.provide(provider));
+   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   forge::asio::blocking::run(runtime, plugin.initialize(context));
+   auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
+   auto probes_ok = std::atomic_bool{true};
+   auto probes = std::atomic_uint{0};
+   captured->probe = [&] {
+      ++probes;
+      if (!forge::asio::blocking::run_for(probe_runtime, probe_store_status(api), std::chrono::seconds{1})) {
+         probes_ok.store(false);
+      }
+   };
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, api->add_store("logical.accounts", driver));
+   forge::asio::blocking::run(runtime, plugin.after_initialize());
+   forge::asio::blocking::run(runtime, plugin.startup());
+   forge::asio::blocking::run(runtime, plugin.shutdown());
+   const auto first_shutdown_records = captured->records.size();
+   forge::asio::blocking::run(runtime, plugin.shutdown());
+   BOOST_TEST(captured->records.size() == first_shutdown_records);
+   captured->probe = {};
+   BOOST_TEST(probes_ok.load());
+   BOOST_TEST(probes.load() >= 4U);
+   BOOST_TEST(driver->close_calls() == 0U);
+   auto registrations = std::size_t{0};
+   auto stopped = std::size_t{0};
+   for (const auto& record : captured->records) {
+      BOOST_TEST(record.logger == "forge.db.store");
+      auto event = std::string{};
+      auto ownership = std::string{};
+      auto store = std::string{};
+      auto backend = std::string{};
+      for (const auto& field : record.fields) {
+         if (field.key == "event") { event = field.value; }
+         if (field.key == "owns_driver") { ownership = field.value; }
+         if (field.key == "store") { store = field.value; }
+         if (field.key == "backend") { backend = field.value; }
+      }
+      if (event == "store.registered") {
+         ++registrations;
+         BOOST_TEST(ownership == "false");
+         BOOST_TEST(store == "logical.accounts");
+         BOOST_TEST(backend == "custom");
+         BOOST_CHECK(record.level == forge::log_level::debug);
+      }
+      if (event == "plugin.stopped") {
+         ++stopped;
+         BOOST_CHECK(record.level == forge::log_level::info);
+      }
+      BOOST_CHECK(record.level != forge::log_level::warn);
+   }
+   BOOST_TEST(registrations == 1U);
+   BOOST_TEST(stopped == 1U);
+}
+
 BOOST_AUTO_TEST_CASE(store_plugin_object_handle_forwards_ranked_aggregates_and_snapshot_ranks) {
    auto driver = std::make_shared<memory_driver>();
    auto app = make_app({}, driver);
@@ -1369,7 +2040,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_after_initialize_opens_store_for_central_objec
    auto builder = forge::app::application_builder{};
    builder.name("db-store-ready-test")
        .runtime(forge::asio::runtime_options{.worker_threads = 1, .thread_name = "db-store-ready-test"})
-       .plugin(store_plugin::descriptor())
+       .plugin(store_plugin::plugin::descriptor())
        .plugin(installer_descriptor(driver))
        .after_initialize([&](const forge::app::application_context& context) -> boost::asio::awaitable<void> {
           auto api = context.api_view().get<store_plugin::api>(store_plugin::api::ref());

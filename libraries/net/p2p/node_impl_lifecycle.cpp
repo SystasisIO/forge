@@ -6,6 +6,7 @@ module;
 #include <boost/asio/ip/udp.hpp>
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -40,6 +41,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -52,6 +54,7 @@ module forge.net.p2p.node;
 import :lifecycle_stop_listener;
 
 import forge.exceptions;
+import forge.log.logger;
 
 import forge.asio.gate;
 import forge.codec.hex;
@@ -243,6 +246,7 @@ void node::impl::initialize_lifecycle() {
 }
 
 void node::impl::request_lifecycle_stop() noexcept {
+   pubsub_value.partial.stop(); // Stop callbacks outside the node mutex; their actual tasks remain lifecycle-owned.
    cancel_coordinated_dials();
    if (paths) { paths->request_stop(); }
    stop_mdns();
@@ -355,7 +359,12 @@ boost::asio::awaitable<lifecycle_status> node::impl::async_start_lifecycle() {
    start_topology_manager();
    start_reachability();
    start_autorelay();
-   lifecycle.set_phase(lifecycle_phase::maintenance);
+   {
+      const auto lock = std::scoped_lock{mutex};
+      lifecycle.set_phase(lifecycle_phase::maintenance);
+      refresh_reachability_locked();
+   }
+   publish_host_state({});
    bootstrap->start_maintenance(lifecycle);
    co_return lifecycle_status{
        .phase = lifecycle_phase::maintenance,
@@ -396,8 +405,9 @@ void node::impl::initialize_mdns() {
               }
            },
            .error = [](std::exception_ptr failure) {
-              try { if (failure) { std::rethrow_exception(failure); } }
-              catch (...) { forge::exceptions::capture_and_log("P2P mDNS service failed"); }
+              if (failure) {
+                 dlog("forge.net.p2p.discovery", "P2P mDNS service failed", ("event", "mdns.service_failed"));
+              }
            },
        });
 }

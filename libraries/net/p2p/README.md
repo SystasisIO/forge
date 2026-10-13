@@ -114,8 +114,8 @@ session/stream/dial admission and explicitly reserved outbound P2P write memory
 are on the normal node path. Managed topology now has one node-owned lifecycle for
 bounded DHT, configured Rendezvous and Forge Peer Exchange discovery, while
 `static_only` disables autonomous discovery and dialing. GossipSub has bounded
-connected-peer mechanics and live interop fixtures, but its overall support
-state remains `partial` until donor-consistent scoring is complete.
+connected-peer mechanics, scoring and live interop fixtures; these do not replace
+the later integration and production/hostile/soak gates.
 
 The following surfaces are not production claims yet:
 
@@ -163,9 +163,141 @@ The following surfaces are not production claims yet:
   chunks retain their explicit child memory reservations until transport drain,
   acknowledgement or reset. Full ingress, handshake, decoder and native queue
   memory accounting remains future Stage 6 work;
-- GossipSub donor-consistent scoring, autonomous mesh selection, v1.2/v1.3 and
-  opt-in Partial Messages implementation remain Stage 6 work;
-  transport topology is owned by the managed topology service above.
+- GossipSub v1.0/v1.1 scoring and autonomous mesh selection have a native
+  implementation and registered acceptance suite. Original Rust QUIC shutdown
+  remains `NOT_PROVEN`; explicitly patched shutdown observations have a separate
+  scope. PR12 adds v1.2/v1.3 and opt-in Partial Messages, whose final-head live
+  acceptance is still pending. Transport topology belongs to the managed
+  topology service above.
+
+### GossipSub Scoring (Preview)
+
+`pubsub::options::scoring` enables validated per-peer/per-topic P1-P7 scoring.
+The node owns decay, negative-score retention, threshold eligibility, mesh
+repair, opportunistic graft and successfully sent IWANT promises. Ignore,
+retry, cancellation and local queue pressure are not malicious behavior.
+Application score callbacks run outside node and score locks. IP colocation
+uses authenticated direct endpoints, never third-party advertised hints or
+the relay's address attributed to a remote peer.
+
+`node::pubsub_scores()` returns copied read-only score and actual mesh facts.
+The optional synchronous tracer receives completed original framed RPCs and
+committed validation/delivery facts outside state locks. Its spans are valid
+only during the callback; observers must copy any data they retain, must not
+block the network executor and cannot mutate routing through the trace API.
+
+Message history uses heartbeat windows. Local flood publish, unsubscribed
+fanout and forwarding through a subscribed mesh are separate paths. PRUNE
+encoding follows the negotiated stream: v1.0 excludes v1.1 PX/backoff fields.
+IHAVE and IWANT are split incrementally by actual protobuf payload size.
+`max_rpc_size` excludes the length prefix, which still counts toward queued
+memory. Individually unencodable gossip IDs are skipped without hiding durable
+GRAFT/PRUNE intents or creating an IWANT promise for unsent data.
+Remote ephemeral replies retain their original authenticated session; a retired
+owner cannot penalize a replacement peer lifetime or create its delivery promise.
+Cached MESSAGE replies use individually bounded RPCs, even when several matching
+entries would exceed the payload limit in a combined response.
+For `codec::next_gossip()`, start with a default cursor and keep the input control
+immutable until traversal ends. An out-of-range
+cursor is rejected with `invalid_options`, rather than permitting a stalled loop.
+
+`max_graft_per_peer` limits outbound GRAFT entries in one durable batch, not
+inbound processing. Remaining GRAFT intents stay queued; PRUNE is selected first.
+Inbound GRAFT entries all pass the existing topic, score, backoff and mesh checks,
+subject to the RPC byte/count bounds. Callers that previously relied on this
+field as an inbound cap must use those receive/resource limits instead.
+
+The scoring acceptance target is `test_forge_p2p_pubsub_acceptance`; codec,
+score-engine or synthetic checker tests alone do not establish interoperability.
+See the [donor traceability note](../../../docs/donors/forge-p2p-gossipsub-scoring-v1.md)
+for composition, Rust score-counter visibility and the unresolved typed QUIC
+shutdown-cause observation gate. Unavailable native causes are not promoted to
+successful shutdown using diagnostic strings, another stream's cause or retries.
+
+### GossipSub Extensions (Preview)
+
+`pubsub::options::preferred` can select v1.2 or v1.3, retaining the default v1.1.
+The standard protocol IDs are `/meshsub/1.2.0` and `/meshsub/1.3.0`; lower-version
+peers use the existing bounded protocol fallback. v1.2 IDONTWANT suppresses
+redundant sends with per-peer/node count, byte and heartbeat bounds. It is not a
+delivery acknowledgement, and a duplicate after IDONTWANT is not by itself a
+scoring offence.
+
+v1.3 advertises enabled extensions in the first RPC of each stream generation.
+Unknown extensions are ignored. A new stream must establish its own facts; it
+does not inherit an old stream's advertisement. Global extension support and
+per-topic partial-message flags are separate.
+
+Partial Messages requires `pubsub::options::partial_messages = true`, v1.3 and
+the partial `node::async_subscribe` overload. Its `partial_options` supplies both
+receive and gossip callbacks. `requests_partial` defaults to false: this allows
+metadata exchange and sending parts while still requesting ordinary full
+messages. Only peers requesting parts may receive a partial data body. An absent
+body differs from a present empty body on the wire.
+
+The returned `partial_topic` is a non-owning registration token. It binds
+`async_send_partial`, `async_partial_peers`, `async_advertise_partial`,
+`async_forget_partial` and scoped unsubscribe to the same node/topic generation.
+Copying or destroying it does not unsubscribe. Replacement invalidates the old
+token, preventing a delayed callback from changing the replacement's state.
+Token equality compares owner identity, topic and generation even after owner
+expiry; equal tokens do not imply a live or usable registration.
+
+`async_disable_partial(token)` retires that exact Partial registration and its
+advertised groups while preserving the full handler, mesh and message state.
+It publishes a full-only subscription update, not PRUNE or a global extension
+disable. Stale, foreign, default and repeated tokens are rejected. Already
+admitted callbacks keep their byte/busy accounting until they finish; the call
+requests their stop but does not join them or prove remote receipt. Cancellation
+before local commit makes no change; an error or cancellation after commit does
+not restore the registration. A replacement committed while an update waits
+uses the existing current-subscription snapshot refresh.
+Peer-local send failures do not prevent attempts to update the remaining
+candidates; the first such error is reported after those attempts. Caller or
+node cancellation stops and joins the owned send operation instead. Retiring
+the Partial registration does not cancel its independent full-only update.
+
+Full-topic `async_unsubscribe(topic)` remains idempotent after node admission
+closes: it removes local handlers and partial registrations without sending
+network updates. Token-scoped partial unsubscribe still rejects a stopped
+owner. Unsubscribe does not join callbacks already admitted; `async_stop()`
+owns that join. Release callback captures and invoke stop callbacks outside
+node locks.
+
+The application owns group IDs, part encoding, authenticity checks, metadata
+replacement and reconstruction. A group ID must be usable before the full
+message is known; blindly hashing the completed payload is not a suitable
+general group scheme. The transport authenticates the sending peer, not the
+truth of each part. Partials never become accepted full messages or earn full
+message delivery scores automatically. Ordinary signed full messages and cached
+IWANT responses retain their existing validation path.
+
+Callbacks receive owned payloads and a cancellation token outside node locks.
+They may send to eligible mesh or non-mesh peers without holding a write gate.
+Local group advertisements have explicit count/byte/heartbeat limits and must be
+refreshed by their owner; remote traffic cannot renew them. At most one gossip
+callback per topic runs at a time, including across registration replacement.
+Callback work and bytes stay accounted until the callback actually finishes.
+Unsubscribe closes admission and requests cancellation; node shutdown joins
+callbacks. A callback must therefore cooperate with cancellation and must not
+await its own node's shutdown.
+
+This is not file storage, automatic chunking or a Swarm implementation. See the
+[extension donor note](../../../docs/donors/forge-p2p-gossipsub-extensions-v1.md)
+for the pinned draft specification, ownership mapping and evidence boundaries.
+
+The native receive boundary enforces signature policies before cache admission
+and IWANT fulfillment. StrictNoSign requires all four authentication protobuf
+fields to be absent, not merely empty; StrictSign requires an eight-byte sequence
+number. Raw codec and cryptographic helper operations are not substitutes for
+receive-policy validation. Self-origin replay from a foreign peer is a P4
+rejection even after local message history expires, without a malformed strike.
+
+`codec::decode_received()` shares the raw decoder's single protobuf parse and
+returns the decoded RPC plus rejected message topics. It checks authentication
+field presence and strict sequence width, not cryptographic authenticity; the
+native node verifies remaining signatures before cache, promise or handler use.
+Rejected messages still count toward the original RPC element limit.
 
 P2P WebSocket `/ws` and `/wss` multiaddrs remain parseable but unsupported for
 dial/listen until Stage 9. WebTransport and WebRTC are separately deferred
@@ -477,6 +609,32 @@ create unbounded work or a second cache.
 
 ## Examples
 
+### Validate Configuration Before Provisioning Resources
+
+`validate_policy(const node::options&)` checks policy without provisioning an
+identity, a private-network protector or persistence. It validates legacy
+discovery against a temporary topology copy; it neither changes the supplied
+options nor copies or invokes application callbacks. DHT callback presence,
+protocol uniqueness and persistence-key membership are checked, but absent
+backends are permitted at this stage. Zero resource-scope budgets are valid
+admission-denial policies, not malformed configuration.
+
+When `private_network` is absent, the direct transport registry installs QUIC
+regardless of the `direct_quic` capability bit. Policy validation follows that
+same availability rule: the native client/server QUIC validator checks all six
+positive bounds and the `UINT32_MAX` frame-size ceiling before listen/connect.
+Clearing the capability bit does not bypass these checks. The private-network
+profile does not install QUIC, so these QUIC-specific constraints are skipped.
+
+`validate(const node::options&)` additionally checks identity presence, explicit
+peer/certificate agreement and required protector/peer/DHT persistence. Private
+key parsing and key/certificate matching remain constructor-owned. A successful
+policy check is not a successful resource or startup check: default options pass `validate_policy`
+but not `validate`. The constructor still normalizes legacy discovery, performs
+full validation, then clamps topology capacity before creating node state.
+Standalone `peer_store` retains its memory fallback; production node validation
+continues to require an explicitly supplied persistence backend.
+
 ### Start A Node
 
 ```cpp
@@ -536,7 +694,27 @@ std::vector<forge::net::p2p::endpoint> advertised = node.local_endpoints();
 ```
 
 QUIC and TCP+TLS/Noise+Yamux are currently registered direct transports. TCP
-prefers libp2p TLS (`/tls/1.0.0`) and keeps Noise as fallback. `/ws` and `/wss`
+uses `node::options::stream_security`, with `node::stream_security::tls_and_noise`
+as the default: offer libp2p TLS (`/tls/1.0.0`) first, then Noise (`/noise`) if the
+peer rejects the TLS protocol during multistream-select. `node::stream_security::tls`
+and `node::stream_security::noise` restrict both incoming and outgoing TCP
+security negotiation to that single protocol, including PNET-protected TCP and
+coordinated connections with reversed security roles. A selected protocol's
+handshake or identity failure is terminal; it does not fall back to another
+security protocol.
+
+```cpp
+forge::net::p2p::node::options options;
+options.stream_security = forge::net::p2p::node::stream_security::noise;
+```
+
+QUIC still uses its native TLS security regardless of this stream policy. Relay
+circuit endpoints currently support only Noise: TLS-only options must disable
+`relay_policy.client_enabled` or node validation rejects them. TLS-only relay
+service forwarding remains supported when its client role is disabled; the
+service forwards the inner byte stream without terminating its security.
+
+`/ws` and `/wss`
 multiaddrs are parseable but direct dial/listen returns typed unsupported until
 a dedicated compatibility block wires a production transport. Future transports
 must use the same private direct profile boundary.
@@ -561,6 +739,12 @@ limit counts native launches, not DNS roots. Private-network dials filter to TCP
 before ranking, so an ineligible QUIC record does not hide an eligible TCP record.
 Peer gating follows resolved identity inference; address gating runs on each
 concrete candidate before native transport admission.
+
+`path_policy.max_direct_endpoints` is validated against the scheduler ceiling
+(`1..100`) before startup; protocol-open budgets are still bounded by the
+caller's options. Explicit connect retains its own attempt budget. Asio
+`operation_aborted` during A/AAAA or TXT resolution maps to the typed P2P
+`canceled` error, not `internal`; unrelated system errors remain failures.
 
 Only the authenticated winner enters the node session registry, after all
 losers have completed native cleanup. Stop seals session admission before
@@ -625,6 +809,22 @@ closest peers and use `alpha` only as the concurrent RPC bound.
 Per-profile diagnostics expose whether autonomous maintenance is enabled, the
 startup lookup and in-flight state, consecutive failures and the bounded delay
 until the next attempt.
+
+`node::options::dht_records` configures each profile's complete
+`dht::record_store::options`, including its persistence port. Build a profile's
+baseline with `dht::record_store::options_for(profile)`, then set its supported
+capacities and `persistence`. An omitted entry retains profile-derived per-key
+and record-size defaults; production still requires durable persistence for
+every profile. Unknown profiles, shared persistence owners, zero bounds and a
+per-key provider capacity above the profile's `k` are rejected. This replaces
+the former persistence-only `dht_record_persistence` map without an alias;
+wire protocols and persisted row layouts are unchanged.
+
+Count and aggregate-byte capacities bound the operational record store, not
+the physical size of a database file. The official ObjectDB adapter receives
+the same effective record/page limits and bounds hydration/pruning requests.
+It does not introduce a second quota engine. Adapter-specific page limits are
+checked before identity Secrets reads and peer-state transactions.
 
 Custom value validators report deterministic record invalidity with
 `exceptions::record_rejected`. Capacity, persistence, key resolution and other
@@ -917,6 +1117,53 @@ callbacks cannot all be joined; this limitation is retained in the evidence.
 Forge observation counts are runtime counts, not fabricated discovery-address
 snapshots. Plugin configuration, cross-platform live support, scoped link-local
 live routing and full Stage 6 production support are not claimed by this matrix.
+
+## Operational Logging
+
+The implementation uses `forge/log/macros.hpp` and `forge.log.logger` only.
+`forge_log` is a private implementation dependency; no exporter, telemetry
+runtime or protocol dependency is introduced.
+
+Constant routes separate ownership and opt-in detail:
+
+- `forge.net.p2p`: INFO `lifecycle.ready/stopped/degraded/recovered` transitions.
+- `forge.net.p2p.connection`: DEBUG session admission/retirement and one
+  `identify.completed` per coalesced Identify leader; metadata/push application
+  is TRACE.
+- `forge.net.p2p.discovery`: bootstrap, topology/DHT refresh and provider owner
+  acquisition/release/removal/renewal. Repeated bootstrap/refresh failures use
+  the existing failure ordinals; saturated renewal streaks log only their first
+  failure and subsequent recovery.
+- `forge.net.p2p.relay`: INFO effective AutoNAT/AutoRelay permission transitions;
+  DEBUG reservation and DCUtR completion, with existing owner/attempt bounds.
+- `forge.net.p2p.pubsub`: DEBUG heartbeat-coalesced mesh maintenance and sampled
+  invalid/overload rejections; RPC size and validation outcomes are TRACE.
+
+These routes inherit application policy. An INFO application default is quiet
+on ordinary attempts; TRACE must be enabled explicitly. Rejection sampling
+uses powers of two from existing counters, not new per-peer maps or metrics.
+Shutdown/cancellation and ordinary not-found/conflict paths are not warnings.
+
+Fields contain only fixed event/source labels, local IDs, authenticated peer IDs,
+enum states, booleans, counts and durations. Endpoint strings, topics, message IDs, provider keys,
+Identify versions/documents, payloads, PSKs and opaque exception text are never
+passed to these logging calls. Existing diagnostic API values are unchanged.
+Owner state is snapshotted under its existing lock; sinks run after unlocking.
+Macro failure containment belongs to shared `forge_log`, not P2P wrappers.
+
+Donor patterns inspected: `go-libp2p/p2p/host/autorelay/autorelay.go`,
+`go-libp2p/p2p/protocol/identify/id.go`,
+`go-libp2p/p2p/net/swarm/{swarm.go,limiter.go,black_hole_detector.go}`;
+`rust-libp2p/protocols/{autonat,relay,dcutr,kad,gossipsub}/src`;
+Spring `plugins/net_plugin/net_plugin.cpp` and its `net_logger.hpp`.
+Accepted: owner-specific categories, transition checks, attempt context and
+TRACE hot paths. Rejected: donor raw-error/address/topic logging, custom macro
+facades and sink calls while an owner mutex is held.
+
+Focused capture/source checks live in `p2p_lifecycle_tests.cpp` and
+`gossipsub_validation_tests.cpp`: native lifecycle transitions, disabled routes,
+unlocked sink reentry, coalesced Identify, bounded failures and no content/error
+fields. They also support a coordinator-owned `FORGE_DISABLE_LOGGING` build.
 
 ## Typical Mistakes
 

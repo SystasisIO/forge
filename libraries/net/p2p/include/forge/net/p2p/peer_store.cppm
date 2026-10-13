@@ -252,4 +252,7 @@ class peer_store::persistence {
    virtual boost::asio::awaitable<void> async_close() = 0;
 };
 
+// Pure bounds validation; standalone peer stores may still use memory persistence.
+void validate(const peer_store::options& options);
+
 } // namespace forge::net::p2p

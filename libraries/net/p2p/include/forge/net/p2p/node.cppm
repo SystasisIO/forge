@@ -8,6 +8,7 @@ module;
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,6 +58,12 @@ export namespace forge::net::p2p {
 
 class node {
  public:
+   enum class stream_security : std::uint8_t {
+      tls_and_noise,
+      tls,
+      noise,
+   };
+
    struct limits {
       std::size_t max_sessions = 1024;
       std::size_t session_low_watermark = 1024;
@@ -91,6 +98,7 @@ class node {
       path::policy path_policy{};
       forge::net::p2p::reachability_policy reachability_policy{};
       std::optional<forge::net::p2p::private_network::options> private_network;
+      node::stream_security stream_security = node::stream_security::tls_and_noise;
       address_resolution::policy dns_resolution{};
       forge::net::dns::resolver_options dns_resolver{};
       dialing::policy direct_dial{};
@@ -104,7 +112,7 @@ class node {
       identify::limits identify;
       lifecycle_options lifecycle;
       std::vector<dht::profile> dht_profiles;
-      std::map<protocol_id, std::shared_ptr<dht::record_store::persistence>> dht_record_persistence;
+      std::map<protocol_id, dht::record_store::options> dht_records;
       forge::net::p2p::mdns_policy mdns{};
    };
 
@@ -240,10 +248,26 @@ class node {
    async_rendezvous_discover(peer_id rendezvous_peer, rendezvous::discover_request request);
    boost::asio::awaitable<pubsub::subscription> async_subscribe(pubsub::topic subject, pubsub::handler handler);
    boost::asio::awaitable<void> async_unsubscribe(pubsub::topic subject);
+   boost::asio::awaitable<pubsub::partial_topic> async_subscribe(
+       pubsub::topic subject, pubsub::handler full_handler, pubsub::partial_options options);
+   // Closes callback admission and requests stop, but never joins the caller's callback.
+   boost::asio::awaitable<void> async_unsubscribe(pubsub::partial_topic registration);
+   // Retires only Partial callbacks/groups; the full subscription and mesh remain.
+   // Does not join admitted callbacks or prove remote receipt. Errors after local commit do not roll it back.
+   boost::asio::awaitable<void> async_disable_partial(pubsub::partial_topic registration);
+   boost::asio::awaitable<void> async_advertise_partial(pubsub::partial_topic registration,
+                                                       std::vector<std::uint8_t> group_id);
+   boost::asio::awaitable<void> async_forget_partial(pubsub::partial_topic registration,
+                                                    std::vector<std::uint8_t> group_id);
+   boost::asio::awaitable<std::vector<peer_id>> async_partial_peers(pubsub::partial_topic registration);
+   // Success means a native write, not delivery/reconstruction. Cancellation after write-start may send bytes.
+   boost::asio::awaitable<void> async_send_partial(pubsub::partial_topic registration, peer_id peer,
+                                                  pubsub::partial_message value, std::stop_token stop = {});
    boost::asio::awaitable<pubsub::message> async_publish(pubsub::topic subject, std::vector<std::uint8_t> data);
    boost::asio::awaitable<pubsub::message> async_publish(pubsub::topic subject, std::vector<std::uint8_t> data,
                                                          pubsub::publish_options options);
    [[nodiscard]] pubsub::snapshot pubsub_snapshot() const;
+   [[nodiscard]] pubsub::score_snapshot pubsub_scores() const;
    boost::asio::awaitable<std::chrono::milliseconds> async_ping(peer_id peer);
    boost::asio::awaitable<std::chrono::milliseconds> async_ping(peer_id peer, open_options options);
    boost::asio::awaitable<hole_punch::status>
@@ -272,6 +296,11 @@ class node {
    std::shared_ptr<impl> impl_;
 };
 
+// Checks policy without requiring identity, a pnet protector or persistence.
+// Does not copy or invoke application callbacks, mutate options or create resources.
+void validate_policy(const node::options& options);
+// Also checks identity presence, explicit peer/certificate agreement and required resources.
+// The constructor retains ownership of private-key parsing and key/certificate matching.
 void validate(const node::options& options);
 
 } // namespace forge::net::p2p

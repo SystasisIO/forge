@@ -54,6 +54,9 @@ class stream {
    boost::asio::awaitable<forge::net::transport::chunk> async_read_frame_chunk();
    boost::asio::awaitable<forge::net::transport::chunk>
    async_read_frame_chunk(forge::net::transport::frame_options options);
+   // FIN only: retain reads, cancellation and resource ownership until close.
+   // Serialize with writes and terminal close.
+   boost::asio::awaitable<void> async_close_write();
    boost::asio::awaitable<void> async_close();
    void cancel();
    void request_cancel() noexcept;

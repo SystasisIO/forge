@@ -38,8 +38,8 @@ struct output {
 BOOST_DESCRIBE_STRUCT(input, (), (limit, token, session))
 BOOST_DESCRIBE_STRUCT(output, (), (limit, token, session))
 
-class api : public forge::api::core::contract<api, forge::api::core::surface::local |
-                                                   forge::api::core::surface::remote> {
+class api
+    : public forge::api::core::contract<api, forge::api::core::surface::local | forge::api::core::surface::remote> {
  public:
    virtual ~api() = default;
    virtual boost::asio::awaitable<output> read(input request) = 0;
@@ -47,18 +47,15 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
 
 } // namespace forge::tests::http_parameters
 
-FORGE_API(::forge::tests::http_parameters::api,
-          FORGE_API_CONTRACT("http-parameters-test", 1, 0),
-          FORGE_API_METHOD_TYPED(read, ::forge::tests::http_parameters::input,
-                                 ::forge::tests::http_parameters::output))
+FORGE_API(::forge::tests::http_parameters::api, FORGE_API_CONTRACT("http-parameters-test", 1, 0),
+          FORGE_API_METHOD_TYPED(read, ::forge::tests::http_parameters::input, ::forge::tests::http_parameters::output))
 FORGE_HTTP_API(::forge::tests::http_parameters::api, FORGE_HTTP_GET(read, "/items"))
 
 namespace forge::tests::http_parameters {
 
 class implementation final : public api {
  public:
-   boost::asio::awaitable<output> read(input request) override
-   {
+   boost::asio::awaitable<output> read(input request) override {
       ++calls;
       co_return output{request.limit.value, std::move(request.token.value), std::move(request.session.value)};
    }
@@ -66,8 +63,7 @@ class implementation final : public api {
    unsigned calls = 0;
 };
 
-BOOST_AUTO_TEST_CASE(query_header_cookie_dto_does_not_require_a_whole_body_codec)
-{
+BOOST_AUTO_TEST_CASE(query_header_cookie_dto_does_not_require_a_whole_body_codec) {
    auto runtime = forge::asio::runtime{};
    auto apis = forge::api::core::registry{};
    auto service = std::make_shared<implementation>();

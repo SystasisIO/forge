@@ -58,6 +58,38 @@ BOOST_AUTO_TEST_CASE(static_variant_preserves_scalar_types_and_full_integer_rang
    }
 }
 
+BOOST_AUTO_TEST_CASE(static_variant_portable_arithmetic_encoding_preserves_payload_kinds) {
+   using scalar = std::variant<bool, long, unsigned long, long long, unsigned long long, float, long double>;
+   const auto precise = 1.0L + std::numeric_limits<long double>::epsilon();
+   const auto values = std::vector<scalar>{false,
+                                           true,
+                                           std::numeric_limits<long>::min(),
+                                           std::numeric_limits<unsigned long>::max(),
+                                           std::numeric_limits<long long>::min(),
+                                           std::numeric_limits<unsigned long long>::max(),
+                                           1.25F,
+                                           precise};
+   const auto expected =
+       forge::variants{forge::variant{false},
+                       forge::variant{true},
+                       forge::variant{static_cast<std::int64_t>(std::numeric_limits<long>::min())},
+                       forge::variant{static_cast<std::uint64_t>(std::numeric_limits<unsigned long>::max())},
+                       forge::variant{static_cast<std::int64_t>(std::numeric_limits<long long>::min())},
+                       forge::variant{static_cast<std::uint64_t>(std::numeric_limits<unsigned long long>::max())},
+                       forge::variant{1.25},
+                       forge::variant{static_cast<double>(precise)}};
+   for (auto index = std::size_t{0}; index < values.size(); ++index) {
+      auto encoded = forge::variant{};
+      forge::to_variant(values[index], encoded);
+      BOOST_REQUIRE(encoded.is_array());
+      const auto& pair = encoded.get_array();
+      BOOST_REQUIRE_EQUAL(pair.size(), 2U);
+      BOOST_TEST(pair[0].as_uint64() == values[index].index());
+      BOOST_TEST(pair[1].get_type() == expected[index].get_type());
+      BOOST_CHECK(pair[1] == expected[index]);
+   }
+}
+
 BOOST_AUTO_TEST_CASE(static_variant_retains_owning_namespace_custom_conversion) {
    const auto value =
        std::variant<std::int32_t, forge_variant_tests::scalar_text>{forge_variant_tests::scalar_text{"record"}};

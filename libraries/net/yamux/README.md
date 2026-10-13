@@ -70,6 +70,10 @@ boost::asio::awaitable<void> serve_mux(forge::net::transport::stream base) {
   `options::close_timeout` for the peer's half-close, then cancels the lower
   transport so shutdown cannot wait forever for a peer that never sends FIN.
 - Reset streams are not valid for further read/write operations.
+- Once buffered bytes are drained, normal remote FIN raises
+  `exceptions::end_of_stream`, a subtype of `exceptions::closed` with the same
+  numeric code. Reset, cancellation and failed sessions do not grant this
+  normal-completion signal, including after an earlier FIN.
 - Lower transport failures are translated to typed Yamux boundary errors.
 - Every physical Yamux frame write is bounded by `options::write_timeout`.
   A stalled lower transport therefore fails the whole session closed instead

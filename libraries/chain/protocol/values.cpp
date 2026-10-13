@@ -4,6 +4,7 @@ module;
 #include <compare>
 #include <cstdint>
 #include <limits>
+#include <string>
 
 #if !defined(FORGE_CONTRACT_GUEST)
 #include <stdexcept>
@@ -42,7 +43,33 @@ void require_same_contract(const extended_asset& left, const extended_asset& rig
    require_value(left.contract == right.contract, "type mismatch");
 }
 
+std::string format_amount(std::int64_t amount, std::uint8_t precision) {
+   const auto negative = amount < 0;
+   const auto magnitude =
+       negative ? std::uint64_t{0} - static_cast<std::uint64_t>(amount) : static_cast<std::uint64_t>(amount);
+   auto digits = std::to_string(magnitude);
+   auto result = negative ? std::string{"-"} : std::string{};
+   if (precision == 0U) {
+      return result + digits;
+   }
+   if (digits.size() <= precision) {
+      result += "0.";
+      result.append(static_cast<std::size_t>(precision) - digits.size(), '0');
+      return result + digits;
+   }
+   const auto decimal = digits.size() - precision;
+   result += digits.substr(0U, decimal);
+   result.push_back('.');
+   result += digits.substr(decimal);
+   return result;
+}
+
+
 } // namespace
+
+std::string to_string(const asset& value) {
+   return format_amount(value.amount, value.sym.precision()) + " " + to_string(value.sym.code());
+}
 
 asset::asset(std::int64_t raw_amount, ::forge::chain::protocol::symbol raw_symbol)
     : amount(raw_amount), sym(raw_symbol) {

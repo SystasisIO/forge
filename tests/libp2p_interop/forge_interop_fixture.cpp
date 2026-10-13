@@ -29,6 +29,7 @@
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancel_after.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/post.hpp>
@@ -36,15 +37,12 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/system/system_error.hpp>
 
-#include <openssl/asn1.h>
-#include <openssl/bio.h>
-#include <openssl/buffer.h>
-#include <openssl/evp.h>
-#include <openssl/objects.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
+#include "libp2p_identity.hxx"
+#include "dht_value_fixture.hxx"
 
 import forge.asio.blocking;
 import forge.asio.notification;
@@ -52,6 +50,7 @@ import forge.asio.runtime;
 import forge.codec.hex;
 import forge.crypto.digest.sha256;
 import forge.crypto.pki.pem;
+import forge.exceptions;
 import forge.net.dns.types;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
@@ -79,18 +78,24 @@ import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
 import forge.net.p2p.topology;
 import forge.net.pnet.protector;
+import forge.variant.value;
+import forge.variant.containers;
 
 #include "forge_autonat_fixture.hxx"
 #include "forge_autorelay_fixture.hxx"
 #include "forge_connection_fixture.hxx"
 #include "forge_mdns_fixture.hxx"
 #include "forge_path_fixture.hxx"
+#include "forge_pubsub_fixture.hxx"
 #include "forge_private_profile_fixture.hxx"
 #include "forge_coordinated_fixture.hxx"
 
 namespace {
 
 using namespace std::chrono_literals;
+using forge::test::libp2p_interop::generate_libp2p_identity;
+using forge::test::libp2p_interop::libp2p_identity;
+using forge::test::libp2p_interop::dht_value_fixture;
 
 constexpr auto echo_protocol = std::string_view{"/forge/interop/relay-echo/1"};
 constexpr auto maximum_echo_payload = std::size_t{256 * 1024};
@@ -99,90 +104,6 @@ constexpr auto rendezvous_namespace = std::string_view{"forge.discovery"};
 constexpr auto pubsub_topic = std::string_view{"forge.pubsub.interop"};
 constexpr auto pubsub_payload = std::string_view{"forge-gossipsub-live"};
 constexpr auto dht_wire_timeout = 5s;
-
-struct dht_value_fixture {
-   forge::net::p2p::dht::key key;
-   std::vector<std::uint8_t> value;
-};
-
-[[nodiscard]] bool is_dht_value_scenario(std::string_view scenario) noexcept {
-   return scenario == "dht_pk_put_get" || scenario == "dht_ipns_put_get";
-}
-
-[[nodiscard]] dht_value_fixture value_fixture(std::string_view scenario) {
-   constexpr auto identity_multihash =
-       std::string_view{"00240801122079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"};
-   if (scenario == "dht_pk_put_get") {
-      return {
-          .key = {.bytes = forge::codec::hex::decode(std::string{"2f706b2f"} + std::string{identity_multihash})},
-          .value =
-              forge::codec::hex::decode("0801122079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"),
-      };
-   }
-   if (scenario == "dht_ipns_put_get") {
-      return {
-          .key = {.bytes = forge::codec::hex::decode(std::string{"2f69706e732f"} + std::string{identity_multihash})},
-          .value = forge::codec::hex::decode(
-              "0a1f2f697066732f6261666b716163336a6f627868676964736e3572777734796b1240b7be19b36e1955d2e1ccddd889d25c"
-              "4eaef61aa72763bc44db9696697be7587e35d2efb2a625e7ac19b05f8c348086114103ee042a5a4041683e39c4ac0c460118"
-              "00221e323033302d30312d30325430333a30343a30352e3132333435363738395a28073080f092cbdd0842408904024a1b09"
-              "b52636334f17b9098f648f9a00214e6c6c89bb954c01300b00f54d085ddcacbe42952f2f819d70a48ff453d13329bb775d66"
-              "e5a4b6165c38a40a4a76a56354544c1b00000045d964b8006556616c7565581f2f697066732f6261666b716163336a6f6278"
-              "68676964736e3572777734796b6853657175656e6365076856616c6964697479581e323033302d30312d30325430333a30343a"
-              "30352e3132333435363738395a6c56616c69646974795479706500"),
-      };
-   }
-   throw std::runtime_error{"unknown DHT value fixture: " + std::string{scenario}};
-}
-
-struct bio_deleter {
-   void operator()(BIO* value) const noexcept {
-      BIO_free(value);
-   }
-};
-
-struct evp_md_ctx_deleter {
-   void operator()(EVP_MD_CTX* value) const noexcept {
-      EVP_MD_CTX_free(value);
-   }
-};
-
-struct evp_pkey_deleter {
-   void operator()(EVP_PKEY* value) const noexcept {
-      EVP_PKEY_free(value);
-   }
-};
-
-struct asn1_object_deleter {
-   void operator()(ASN1_OBJECT* value) const noexcept {
-      ASN1_OBJECT_free(value);
-   }
-};
-
-struct asn1_octet_string_deleter {
-   void operator()(ASN1_OCTET_STRING* value) const noexcept {
-      ASN1_OCTET_STRING_free(value);
-   }
-};
-
-struct x509_deleter {
-   void operator()(X509* value) const noexcept {
-      X509_free(value);
-   }
-};
-
-struct x509_extension_deleter {
-   void operator()(X509_EXTENSION* value) const noexcept {
-      X509_EXTENSION_free(value);
-   }
-};
-
-struct libp2p_identity {
-   std::string certificate_pem;
-   std::string private_key_pem;
-   std::vector<std::uint8_t> public_key;
-   forge::net::p2p::peer_id peer;
-};
 
 std::string json_escape(std::string_view value) {
    auto out = std::string{};
@@ -222,6 +143,9 @@ std::map<std::string, std::string> parse_args(int argc, char** argv) {
       auto key = std::string{argv[i]};
       if (!key.starts_with("--")) {
          throw std::runtime_error{"unexpected positional argument: " + key};
+      }
+      if (key == "--command") {
+         throw std::runtime_error{"--command cannot replace the positional command"};
       }
       if (i + 1 >= argc) {
          throw std::runtime_error{"missing value for " + key};
@@ -269,158 +193,6 @@ void write_file(const std::filesystem::path& path, std::string_view value) {
       throw std::runtime_error{"failed to open " + path.string()};
    }
    out << value;
-}
-
-void require_openssl(bool ok, std::string_view message) {
-   if (!ok) {
-      throw std::runtime_error{std::string{message}};
-   }
-}
-
-std::string bio_to_string(BIO* bio) {
-   BUF_MEM* memory = nullptr;
-   BIO_get_mem_ptr(bio, &memory);
-   if (memory == nullptr) {
-      throw std::runtime_error{"failed to read OpenSSL memory BIO"};
-   }
-   return std::string{memory->data, memory->length};
-}
-
-std::vector<std::uint8_t> public_key_spki_der(EVP_PKEY* key) {
-   const auto length = i2d_PUBKEY(key, nullptr);
-   require_openssl(length > 0, "failed to DER-encode libp2p certificate public key");
-   auto out = std::vector<std::uint8_t>(static_cast<std::size_t>(length));
-   auto* cursor = out.data();
-   require_openssl(i2d_PUBKEY(key, &cursor) == length, "failed to DER-write libp2p certificate public key");
-   return out;
-}
-
-std::vector<std::uint8_t> raw_public_key(EVP_PKEY* key) {
-   auto size = std::size_t{};
-   require_openssl(EVP_PKEY_get_raw_public_key(key, nullptr, &size) == 1 && size != 0,
-                   "failed to size libp2p identity public key");
-   auto out = std::vector<std::uint8_t>(size);
-   require_openssl(EVP_PKEY_get_raw_public_key(key, out.data(), &size) == 1,
-                   "failed to read libp2p identity public key");
-   out.resize(size);
-   return out;
-}
-
-std::vector<std::uint8_t> identity_sign(EVP_PKEY* key, std::span<const std::uint8_t> message) {
-   auto context = std::unique_ptr<EVP_MD_CTX, evp_md_ctx_deleter>{EVP_MD_CTX_new()};
-   require_openssl(context != nullptr, "failed to allocate libp2p signing context");
-   require_openssl(EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr, key) == 1,
-                   "failed to initialize libp2p certificate extension signer");
-   auto size = std::size_t{};
-   require_openssl(EVP_DigestSign(context.get(), nullptr, &size, message.data(), message.size()) == 1,
-                   "failed to size libp2p certificate extension signature");
-   auto out = std::vector<std::uint8_t>(size);
-   require_openssl(EVP_DigestSign(context.get(), out.data(), &size, message.data(), message.size()) == 1,
-                   "failed to sign libp2p certificate extension");
-   out.resize(size);
-   return out;
-}
-
-void append_der_length(std::vector<std::uint8_t>& out, std::size_t value) {
-   if (value < 128) {
-      out.push_back(static_cast<std::uint8_t>(value));
-      return;
-   }
-   auto bytes = std::vector<std::uint8_t>{};
-   while (value != 0) {
-      bytes.push_back(static_cast<std::uint8_t>(value & 0xffU));
-      value >>= 8U;
-   }
-   out.push_back(static_cast<std::uint8_t>(0x80U | bytes.size()));
-   for (auto it = bytes.rbegin(); it != bytes.rend(); ++it) {
-      out.push_back(*it);
-   }
-}
-
-void append_der_octet_string(std::vector<std::uint8_t>& out, std::span<const std::uint8_t> value) {
-   out.push_back(0x04);
-   append_der_length(out, value.size());
-   out.insert(out.end(), value.begin(), value.end());
-}
-
-std::vector<std::uint8_t> signed_key_der(std::span<const std::uint8_t> public_key,
-                                         std::span<const std::uint8_t> signature) {
-   auto content = std::vector<std::uint8_t>{};
-   append_der_octet_string(content, public_key);
-   append_der_octet_string(content, signature);
-   auto out = std::vector<std::uint8_t>{0x30};
-   append_der_length(out, content.size());
-   out.insert(out.end(), content.begin(), content.end());
-   return out;
-}
-
-libp2p_identity generate_libp2p_identity() {
-   auto key = std::unique_ptr<EVP_PKEY, evp_pkey_deleter>{EVP_PKEY_Q_keygen(nullptr, nullptr, "ED25519")};
-   require_openssl(key != nullptr, "failed to generate libp2p Ed25519 identity key");
-
-   const auto spki = public_key_spki_der(key.get());
-   auto signed_message = std::vector<std::uint8_t>{};
-   constexpr auto prefix = std::string_view{"libp2p-tls-handshake:"};
-   signed_message.insert(signed_message.end(), prefix.begin(), prefix.end());
-   signed_message.insert(signed_message.end(), spki.begin(), spki.end());
-   const auto signature = identity_sign(key.get(), signed_message);
-   const auto public_key = forge::net::p2p::encode_public_key(forge::net::p2p::public_key{
-       .type = forge::net::p2p::public_key::type::ed25519,
-       .data = raw_public_key(key.get()),
-   });
-   const auto extension_value = signed_key_der(public_key, signature);
-
-   auto certificate = std::unique_ptr<X509, x509_deleter>{X509_new()};
-   require_openssl(certificate != nullptr, "failed to allocate libp2p certificate");
-   require_openssl(X509_set_version(certificate.get(), 2) == 1, "failed to set libp2p certificate version");
-   require_openssl(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) == 1,
-                   "failed to set libp2p certificate serial");
-   require_openssl(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) != nullptr,
-                   "failed to set libp2p certificate notBefore");
-   require_openssl(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 100L * 365L * 24L * 60L * 60L) != nullptr,
-                   "failed to set libp2p certificate notAfter");
-   require_openssl(X509_set_pubkey(certificate.get(), key.get()) == 1, "failed to set libp2p certificate key");
-   auto* name = X509_get_subject_name(certificate.get());
-   require_openssl(name != nullptr, "failed to allocate libp2p certificate subject");
-   const auto serial = std::string{"forge-libp2p-interop"};
-   require_openssl(X509_NAME_add_entry_by_txt(name, "serialNumber", MBSTRING_ASC,
-                                              reinterpret_cast<const unsigned char*>(serial.data()),
-                                              static_cast<int>(serial.size()), -1, 0) == 1,
-                   "failed to set libp2p certificate subject");
-   require_openssl(X509_set_issuer_name(certificate.get(), name) == 1, "failed to set libp2p certificate issuer");
-
-   auto object = std::unique_ptr<ASN1_OBJECT, asn1_object_deleter>{OBJ_txt2obj("1.3.6.1.4.1.53594.1.1", 1)};
-   require_openssl(object != nullptr, "failed to create libp2p extension OID");
-   auto octets = std::unique_ptr<ASN1_OCTET_STRING, asn1_octet_string_deleter>{ASN1_OCTET_STRING_new()};
-   require_openssl(octets != nullptr, "failed to allocate libp2p extension value");
-   require_openssl(
-       ASN1_OCTET_STRING_set(octets.get(), extension_value.data(), static_cast<int>(extension_value.size())) == 1,
-       "failed to set libp2p extension value");
-   auto extension = std::unique_ptr<X509_EXTENSION, x509_extension_deleter>{
-       X509_EXTENSION_create_by_OBJ(nullptr, object.get(), 1, octets.get())};
-   require_openssl(extension != nullptr, "failed to create libp2p public key extension");
-   require_openssl(X509_add_ext(certificate.get(), extension.get(), -1) == 1,
-                   "failed to add libp2p public key extension");
-   require_openssl(X509_sign(certificate.get(), key.get(), nullptr) > 0, "failed to sign libp2p certificate");
-
-   auto certificate_bio = std::unique_ptr<BIO, bio_deleter>{BIO_new(BIO_s_mem())};
-   auto private_key_bio = std::unique_ptr<BIO, bio_deleter>{BIO_new(BIO_s_mem())};
-   require_openssl(certificate_bio != nullptr && private_key_bio != nullptr, "failed to allocate libp2p PEM BIO");
-   require_openssl(PEM_write_bio_X509(certificate_bio.get(), certificate.get()) == 1,
-                   "failed to write libp2p certificate PEM");
-   require_openssl(PEM_write_bio_PrivateKey(private_key_bio.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) ==
-                       1,
-                   "failed to write libp2p private key PEM");
-
-   return libp2p_identity{
-       .certificate_pem = bio_to_string(certificate_bio.get()),
-       .private_key_pem = bio_to_string(private_key_bio.get()),
-       .public_key = public_key,
-       .peer = forge::net::p2p::make_peer_id(forge::net::p2p::public_key{
-           .type = forge::net::p2p::public_key::type::ed25519,
-           .data = raw_public_key(key.get()),
-       }),
-   };
 }
 
 const libp2p_identity& local_identity() {
@@ -1246,6 +1018,7 @@ forge::net::p2p::rendezvous::discover_response raw_rendezvous_discover(forge::as
                             .cookie = std::move(cookie),
                         },
                 })));
+   forge::asio::blocking::run(runtime, stream.async_close_write());
    const auto response = forge::net::p2p::rendezvous::codec::decode(
        wrap_length_delimited(forge::asio::blocking::run(runtime, read_length_delimited(stream, 1024 * 1024))));
    forge::asio::blocking::run(runtime, stream.async_close());
@@ -1302,6 +1075,223 @@ std::size_t rendezvous_peer_registration_count(const forge::net::p2p::rendezvous
        [&](const forge::net::p2p::rendezvous::registration& registration) { return registration.peer == peer; });
 }
 
+forge::net::p2p::rendezvous::discover_response full_rendezvous_discover(
+    forge::asio::runtime& runtime, forge::net::p2p::node& observer, const forge::net::p2p::peer_id& point) {
+   auto exchange = [&observer, point]() -> boost::asio::awaitable<forge::net::p2p::rendezvous::discover_response> {
+      auto stream = co_await observer.async_open_protocol_stream(
+          point, forge::net::p2p::builtins::rendezvous,
+          {.allow_relay = false, .timeout = 5s, .allow_hole_punch = false});
+      auto response = forge::net::p2p::rendezvous::message{};
+      auto failure = std::exception_ptr{};
+      try {
+         // Always request the full namespace; a cookie could hide an unchanged control record.
+         co_await stream.async_write(forge::net::p2p::rendezvous::codec::encode({
+             .type = forge::net::p2p::rendezvous::message_type::discover,
+             .discover_value = forge::net::p2p::rendezvous::discover_request{
+                 .namespace_name = std::string{rendezvous_namespace}, .limit = 10, .cookie = {}}}));
+         co_await stream.async_close_write();
+         response = forge::net::p2p::rendezvous::codec::decode(
+             wrap_length_delimited(co_await read_length_delimited(stream, 1024 * 1024)));
+         co_await stream.async_close();
+      } catch (...) { failure = std::current_exception(); }
+      if (failure) {
+         stream.request_cancel();
+         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+         try { co_await stream.async_close(); } catch (...) {}
+         std::rethrow_exception(failure);
+      }
+      if (response.type != forge::net::p2p::rendezvous::message_type::discover_response ||
+          !response.discover_response_value ||
+          response.discover_response_value->status_value != forge::net::p2p::rendezvous::status::ok) {
+         throw std::runtime_error{"automatic unregister observer expected an ok full DISCOVER response"};
+      }
+      co_return std::move(*response.discover_response_value);
+   };
+   const auto executor = boost::asio::make_strand(runtime.context());
+   auto completed = boost::asio::co_spawn(
+       executor, exchange(), boost::asio::cancel_after(5s, boost::asio::bind_executor(executor, boost::asio::use_future)));
+   return completed.get();
+}
+
+const forge::net::p2p::rendezvous::registration& checked_rendezvous_registration(
+    const forge::net::p2p::rendezvous::discover_response& response, const forge::net::p2p::peer_id& peer) {
+   if (rendezvous_peer_registration_count(response, peer) != 1) {
+      throw std::runtime_error{"automatic unregister observer expected exactly one registration for the peer"};
+   }
+   const auto found = std::ranges::find(response.registrations, peer, &forge::net::p2p::rendezvous::registration::peer);
+   if (found->namespace_name != rendezvous_namespace || found->ttl != 7'200s || found->signed_peer_record.empty()) {
+      throw std::runtime_error{"automatic unregister registration has the wrong namespace, TTL or signed record"};
+   }
+   return *found;
+}
+
+std::string automatic_rendezvous_unregister(
+    forge::asio::runtime& runtime, forge::net::p2p::node& observer, const forge::net::p2p::peer_id& point,
+    const forge::net::p2p::endpoint& remote, const forge::net::p2p::rendezvous::registration& control) {
+   const auto started = std::chrono::steady_clock::now();
+   const auto identity = generate_libp2p_identity();
+   if (identity.peer == observer.local_peer() || identity.peer == point || control.peer != observer.local_peer()) {
+      throw std::runtime_error{"automatic unregister requires distinct managed, control and point identities"};
+   }
+   if (remote.transport.protocol != forge::net::p2p::endpoint::protocol_kind::quic_v1 ||
+       (remote.peer && *remote.peer != point)) {
+      throw std::runtime_error{"automatic unregister requires the exact native QUIC Rust point"};
+   }
+   auto options = node_options({}, identity);
+   options.allow_insecure_test_mode = false;
+   options.capabilities.bits = forge::net::p2p::capabilities::direct_quic | forge::net::p2p::capabilities::rendezvous;
+   options.dht_profiles.clear();
+   options.relay_policy.client_enabled = false;
+   options.relay_policy.service_enabled = false;
+   options.relay_policy.auto_discovery_enabled = false;
+   options.path_policy.allow_relay = false;
+   options.path_policy.allow_hole_punch = false;
+   options.reachability_policy.client_v1_enabled = false;
+   options.reachability_policy.client_v2_enabled = false;
+   options.reachability_policy.ping_enabled = false;
+   options.limits.rendezvous.operating_role = forge::net::p2p::rendezvous::role::client;
+   options.limits.rendezvous.default_ttl = 7'200s;
+   auto& topology = options.limits.topology;
+   topology.operating_mode = forge::net::p2p::topology::mode::managed;
+   topology.peers = {.low = 1, .target = 1, .high = 3};
+   topology.dht_enabled = false;
+   topology.peer_exchange_enabled = false;
+   topology.refresh_interval = 60s;
+   topology.query_timeout = 5s;
+   topology.max_parallel_queries = 1;
+   topology.max_parallel_dials = 1;
+   topology.retry_jitter = 0;
+   topology.rendezvous_points = {{.endpoint = p2p_endpoint_for(remote, point),
+                                  .namespaces = {std::string{rendezvous_namespace}}}};
+   const auto policy = topology;
+   auto managed = forge::net::p2p::node{runtime, std::move(options)};
+   auto failures = std::make_shared<std::atomic_size_t>(0);
+   forge::exceptions::set_log_sink([failures](std::string_view message) {
+      if (message.starts_with("P2P topology rendezvous unregister failed")) {
+         failures->fetch_add(1);
+      }
+      std::cerr << message << '\n';
+   });
+   auto restore_sink = boost::scope::scope_exit{[] { forge::exceptions::set_log_sink({}); }};
+   auto joined_operations = std::vector<std::string>{};
+   auto refresh_joined = false;
+   auto stop_requested = false;
+   auto stop_joined = false;
+   auto full_discovers = std::size_t{};
+   auto before = forge::net::p2p::rendezvous::discover_response{};
+   auto after = forge::net::p2p::rendezvous::discover_response{};
+   auto point_peer = forge::net::p2p::peer_id{};
+   auto managed_record = forge::net::p2p::rendezvous::peer_record{};
+   auto failure = std::exception_ptr{};
+   try {
+      forge::asio::blocking::run(runtime, managed.async_listen(loopback_quic_endpoint()));
+      joined_operations.emplace_back("managed.async_listen");
+      static_cast<void>(forge::asio::blocking::run(runtime, managed.async_start()));
+      joined_operations.emplace_back("managed.async_start");
+      static_cast<void>(forge::asio::blocking::run(runtime, managed.async_refresh_discovery()));
+      refresh_joined = true;
+      joined_operations.emplace_back("managed.async_refresh_discovery");
+      const auto sessions = managed.diagnostics().sessions;
+      if (sessions.size() != 1 || sessions.front().remote_peer != point ||
+          sessions.front().identify_state != forge::net::p2p::identify::state::identified ||
+          sessions.front().authentication != forge::net::p2p::peer_authentication::quic_tls) {
+         throw std::runtime_error{"automatic unregister did not retain one authenticated Rust point session"};
+      }
+      point_peer = sessions.front().remote_peer;
+      ++full_discovers;
+      before = full_rendezvous_discover(runtime, observer, point_peer);
+      joined_operations.emplace_back("observer.full_discover.before");
+      if (before.registrations.size() != 2) {
+         throw std::runtime_error{"automatic unregister full DISCOVER must contain only managed and control peers"};
+      }
+      const auto& before_control = checked_rendezvous_registration(before, control.peer);
+      const auto& before_managed = checked_rendezvous_registration(before, managed.local_peer());
+      if (before_control.signed_peer_record != control.signed_peer_record) {
+         throw std::runtime_error{"automatic unregister changed the existing signed control registration"};
+      }
+      managed_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+          forge::net::p2p::signed_envelope::decode(before_managed.signed_peer_record), managed.local_peer());
+      const auto local = managed.local_endpoint();
+      if (!local || managed_record.peer != managed.local_peer() || managed_record.sequence == 0 ||
+          managed_record.endpoints.size() != 1 ||
+          (managed_record.endpoints.front().to_string() != local->to_multiaddr().to_string() &&
+           managed_record.endpoints.front().to_string() != p2p_endpoint_for(*local, managed.local_peer()).to_string())) {
+         throw std::runtime_error{"automatic unregister managed signed record has the wrong identity or endpoint"};
+      }
+      // Only the node's shutdown owns UNREGISTER; no raw write or donor-side ACK is used here.
+      managed.request_stop();
+      stop_requested = true;
+      joined_operations.emplace_back("managed.request_stop");
+      forge::asio::blocking::run(runtime, managed.async_stop());
+      stop_joined = true;
+      joined_operations.emplace_back("managed.async_stop");
+      ++full_discovers;
+      after = full_rendezvous_discover(runtime, observer, point_peer);
+      joined_operations.emplace_back("observer.full_discover.after");
+      if (after.registrations.size() != 1 || rendezvous_peer_registration_count(after, managed.local_peer()) != 0 ||
+          checked_rendezvous_registration(after, control.peer).signed_peer_record != control.signed_peer_record) {
+         throw std::runtime_error{"automatic unregister did not remove only the managed peer before TTL expiry"};
+      }
+   } catch (...) { failure = std::current_exception(); }
+   if (!stop_joined) {
+      managed.request_stop();
+      try { forge::asio::blocking::run(runtime, managed.async_stop()); }
+      catch (...) { if (!failure) { failure = std::current_exception(); } }
+   }
+   if (failure) { std::rethrow_exception(failure); }
+   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+   if (failures->load() != 0 || elapsed >= 60s) {
+      throw std::runtime_error{"automatic unregister logged a suppressed failure or exceeded its pre-TTL proof window"};
+   }
+   const auto control_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+       forge::net::p2p::signed_envelope::decode(control.signed_peer_record), control.peer);
+   const auto digest = [](const auto& registration) {
+      return forge::crypto::digest::sha256::hash(std::span<const std::uint8_t>{registration.signed_peer_record}).str();
+   };
+   const auto& before_control = checked_rendezvous_registration(before, control.peer);
+   const auto& before_managed = checked_rendezvous_registration(before, managed.local_peer());
+   const auto& after_control = checked_rendezvous_registration(after, control.peer);
+   const auto before_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+       forge::net::p2p::signed_envelope::decode(before_control.signed_peer_record), control.peer);
+   const auto after_record = forge::net::p2p::rendezvous::codec::open_peer_record(
+       forge::net::p2p::signed_envelope::decode(after_control.signed_peer_record), control.peer);
+   if (before_record.sequence != control_record.sequence || after_record.sequence != control_record.sequence) {
+      throw std::runtime_error{"automatic unregister changed the signed control sequence"};
+   }
+   auto operations = std::string{"["};
+   for (const auto& operation : joined_operations) {
+      if (operations.size() != 1) { operations += ','; }
+      operations += '"' + json_escape(operation) + '"';
+   }
+   operations += ']';
+   return "\"local_peer_id\":\"" + json_escape(control.peer.to_string()) + "\",\"record_sha256\":\"" + digest(control) +
+       "\",\"automatic_unregister\":{\"source\":\"forge.node.topology.shutdown\",\"namespace\":\"" +
+       std::string{rendezvous_namespace} + "\",\"managed_peer_id\":\"" + json_escape(managed.local_peer().to_string()) +
+       "\",\"control_peer_id\":\"" + json_escape(control.peer.to_string()) + "\",\"point_peer_id\":\"" +
+       json_escape(point_peer.to_string()) + "\",\"policy\":{\"mode\":\"managed\",\"low\":" +
+       std::to_string(policy.peers.low) + ",\"target\":" + std::to_string(policy.peers.target) + ",\"high\":" +
+       std::to_string(policy.peers.high) + ",\"rendezvous_points\":" + std::to_string(policy.rendezvous_points.size()) +
+       ",\"dht_enabled\":" + (policy.dht_enabled ? "true" : "false") + ",\"peer_exchange_enabled\":" +
+       (policy.peer_exchange_enabled ? "true" : "false") + "},\"before\":{\"registration_count\":" +
+       std::to_string(before.registrations.size()) + ",\"managed_count\":" +
+       std::to_string(rendezvous_peer_registration_count(before, managed.local_peer())) + ",\"control_count\":" +
+       std::to_string(rendezvous_peer_registration_count(before, control.peer)) + ",\"managed_ttl_seconds\":" +
+       std::to_string(before_managed.ttl.count()) + ",\"managed_record_valid\":true,\"managed_record_sequence\":" +
+       std::to_string(managed_record.sequence) + ",\"managed_record_sha256\":\"" + digest(before_managed) +
+       "\",\"control_ttl_seconds\":" + std::to_string(before_control.ttl.count()) + ",\"control_record_sequence\":" +
+       std::to_string(before_record.sequence) + ",\"control_record_sha256\":\"" + digest(before_control) +
+       "\"},\"after\":{\"registration_count\":" + std::to_string(after.registrations.size()) + ",\"managed_count\":" +
+       std::to_string(rendezvous_peer_registration_count(after, managed.local_peer())) + ",\"control_count\":" +
+       std::to_string(rendezvous_peer_registration_count(after, control.peer)) + ",\"control_ttl_seconds\":" +
+       std::to_string(after_control.ttl.count()) + ",\"control_record_sequence\":" + std::to_string(after_record.sequence) +
+       ",\"control_record_sha256\":\"" + digest(after_control) + "\"},\"refresh_joined\":" +
+       (refresh_joined ? "true" : "false") + ",\"request_stop_called\":" + (stop_requested ? "true" : "false") +
+       ",\"async_stop_joined\":" + (stop_joined ? "true" : "false") + ",\"joined_operations\":" + operations +
+       ",\"full_discover_requests\":" + std::to_string(full_discovers) + ",\"discover_cookie_bytes\":0," +
+       "\"unregister_failure_count\":" + std::to_string(failures->load()) + ",\"elapsed_ms\":" +
+       std::to_string(elapsed.count()) + "}";
+}
+
 [[nodiscard]] bool
 persistence_contains(forge::asio::runtime& runtime,
                      const std::shared_ptr<forge::net::p2p::dht::record_store::persistence>& persistence,
@@ -1333,7 +1323,9 @@ int listen_mode(const std::map<std::string, std::string>& args) {
    configure_dns_server(options, args);
    configure_private_network(options, args, transport);
    configure_rendezvous_lifecycle_ttls(options, scenario);
-   options.dht_record_persistence.emplace(forge::net::p2p::builtins::kad_dht, persistence);
+   auto records = forge::net::p2p::dht::record_store::options_for(options.dht_profiles.front());
+   records.persistence = persistence;
+   options.dht_records.emplace(forge::net::p2p::builtins::kad_dht, std::move(records));
    auto value = forge::net::p2p::node{runtime, std::move(options)};
    register_echo(value);
    auto stress_state = std::shared_ptr<pubsub_stress_state>{};
@@ -1362,8 +1354,8 @@ int listen_mode(const std::map<std::string, std::string>& args) {
          write_file(required(args, "result-file"), "{\"implementation\":\"forge\",\"role\":\"listener\",\"scenario\":\"pnet\",\"status\":\"ok\"," + pnet_evidence(args) + "}\n");
          pnet_result_reported = true;
       }
-      if (!value_record_reported && is_dht_value_scenario(scenario) &&
-          persistence_contains(runtime, persistence, value_fixture(scenario))) {
+      if (!value_record_reported && dht_value_fixture::is_scenario(scenario) &&
+          persistence_contains(runtime, persistence, dht_value_fixture::for_scenario(scenario))) {
          write_file(required(args, "result-file"),
                     "{\"implementation\":\"forge\",\"role\":\"listener\",\"scenario\":\"" + json_escape(scenario) +
                         "\",\"status\":\"ok\",\"record_persisted\":true}\n");
@@ -1702,8 +1694,8 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
          std::rethrow_exception(primary);
       }
    }
-   if (is_dht_value_scenario(scenario)) {
-      const auto fixture = value_fixture(scenario);
+   if (dht_value_fixture::is_scenario(scenario)) {
+      const auto fixture = dht_value_fixture::for_scenario(scenario);
       const auto record = forge::net::p2p::dht::record{
           .key_value = fixture.key,
           .value = fixture.value,
@@ -1777,6 +1769,8 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
       if (sanitized.status_value != forge::net::p2p::rendezvous::status::ok || !sanitized.registrations.empty()) {
          throw std::runtime_error{"rendezvous high-level discovery did not filter the third-party loopback record"};
       }
+      const auto automatic = payload == "automatic_unregister"
+          ? "," + automatic_rendezvous_unregister(runtime, value, peer, remote, wire_registration) : std::string{};
       return "\"negotiated_protocol\":\"/rendezvous/1.0.0\",\"wire_registration_count\":1,"
              "\"signed_peer_record_valid\":true,\"matching_peer_record\":true,\"record_sequence\":" +
              std::to_string(wire_record.sequence) +
@@ -1784,7 +1778,7 @@ std::string run_scenario(forge::asio::runtime& runtime, forge::net::p2p::node& v
              ",\"registered_ttl_seconds\":" + std::to_string(registration.ttl.count()) +
              ",\"discovered_ttl_seconds\":" + std::to_string(wire_registration.ttl.count()) +
              ",\"cookie_bytes\":" + std::to_string(wire.cookie.size()) +
-             ",\"sanitized_registration_count\":0,\"loopback_filtered\":true";
+             ",\"sanitized_registration_count\":0,\"loopback_filtered\":true" + automatic;
    }
    if (scenario == "rendezvous_lifecycle") {
       const auto local = value.local_endpoint();
@@ -2361,6 +2355,40 @@ int main(int argc, char** argv) {
       }
       if (args.at("command") == "build-info") {
          return build_info_mode();
+      }
+      if (args.at("command") == "--pubsub-self-test") {
+         if (argc != 2) { throw std::runtime_error{"PubSub fixture self-test accepts no flags"}; }
+         forge::test::libp2p_interop::forge_pubsub_fixture::self_test();
+         std::cout << "PubSub fixture self-test: PASS (synthetic units only; NOT live interoperability proof)\n";
+         return 0;
+      }
+      if (args.at("command") == "pubsub-live") {
+         if ((argc - 2) % 2 != 0 || args.size() != 1 + static_cast<std::size_t>((argc - 2) / 2)) {
+            throw std::runtime_error{"pubsub-live requires unique flag/value pairs"};
+         }
+         return forge::test::libp2p_interop::forge_pubsub_fixture::run(args, {
+             .make_options = [](const auto& arguments) {
+                auto options = node_options(required(arguments, "store-dir"), generate_libp2p_identity());
+                if (required(arguments, "transport") == "tcp-pnet-noise") {
+                   configure_private_network(options, arguments, "tcp-pnet");
+                }
+                options.allow_insecure_test_mode = false;
+                options.capabilities = {.bits = forge::net::p2p::capabilities::pubsub |
+                    (required(arguments, "transport") == "quic" ? forge::net::p2p::capabilities::direct_quic : 0)};
+                options.dht_profiles.clear();
+                options.relay_policy.service_enabled = false;
+                options.relay_policy.client_enabled = false;
+                options.relay_policy.auto_discovery_enabled = false;
+                options.path_policy = {.allow_direct = true, .allow_hole_punch = false, .allow_relay = false};
+                options.reachability_policy.client_v1_enabled = false;
+                options.reachability_policy.client_v2_enabled = false;
+                options.limits.topology.operating_mode = forge::net::p2p::topology::mode::static_only;
+                options.limits.topology.dht_enabled = false;
+                options.limits.topology.rendezvous_enabled = false;
+                options.limits.topology.peer_exchange_enabled = false;
+                return options;
+             },
+         });
       }
       if (args.at("command") == "coordinated-live") {
          if ((argc - 2) % 2 != 0 || args.size() != 1 + static_cast<std::size_t>((argc - 2) / 2)) {

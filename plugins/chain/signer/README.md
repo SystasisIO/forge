@@ -26,8 +26,7 @@ Neither hook changes the wire API or creates request-time fallback.
 - Block API id: `forge.chain.api.block_signer`
 - Finality API id: `forge.chain.api.finality_signer`
 - Public modules:
-  - `forge.plugins.chain.signer.plugin`
-  - `forge.plugins.chain.signer.descriptor`
+  - `forge.plugins.chain.signer.plugin` owns `plugin::descriptor()` and the canonical factory.
   - `forge.plugins.chain.signer.types`
   - `forge.plugins.chain.signer.exceptions`
   - `forge.plugins.chain.signer.block_execution_handler`
@@ -59,7 +58,7 @@ transactions unless a profile explicitly opts into a bounded delay.
 ```cpp
 import forge.plugins.chain.signer.plugin;
 
-auto descriptor = forge::plugins::chain::signer::descriptor({
+auto descriptor = forge::plugins::chain::signer::plugin::descriptor({
    .providers = {{
       .name = "transaction",
       .value = transaction_provider,
@@ -132,7 +131,7 @@ import forge.plugins.chain.signer.block_execution_handler;
 // durable_guard implements block_execution_handler::execute(request, signing).
 // signing is a lazy move-only awaitable: await it once after durable intent,
 // or discard it and return the exact previously persisted signatures.
-auto descriptor = forge::plugins::chain::signer::descriptor({
+auto descriptor = forge::plugins::chain::signer::plugin::descriptor({
    .providers = providers,
    .block_execution = durable_guard,
    .initial_config = {.block_profiles = profiles},

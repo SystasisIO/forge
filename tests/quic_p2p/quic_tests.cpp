@@ -10,6 +10,7 @@
 #include <deque>
 #include <functional>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -155,6 +156,32 @@ BOOST_AUTO_TEST_CASE(quic_acknowledged_ranges_require_complete_contiguous_covera
    acknowledged.discard_before(32);
    BOOST_TEST(!acknowledged.covers(0, 32));
    BOOST_TEST(acknowledged.covers(32, 32));
+}
+
+BOOST_AUTO_TEST_CASE(quic_transport_limits_validate_exact_stream_count_wire_boundary) {
+   auto limits = transport_limits{};
+   limits.max_streams_per_connection = 0;
+   BOOST_CHECK_EXCEPTION(validate(limits), forge::exceptions::base, [](const auto& error) {
+      return exceptions::is(error, exceptions::code::invalid_options);
+   });
+   constexpr auto maximum_streams = std::uint64_t{1} << 60;
+   if constexpr (std::numeric_limits<std::size_t>::digits > 60) {
+      for (const auto count : {maximum_streams - 1, maximum_streams}) {
+         limits.max_streams_per_connection = static_cast<std::size_t>(count);
+         BOOST_CHECK_NO_THROW(validate(limits));
+      }
+      for (const auto count : {maximum_streams + 1,
+                               static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)())}) {
+         limits.max_streams_per_connection = static_cast<std::size_t>(count);
+         BOOST_CHECK_EXCEPTION(validate(limits), forge::exceptions::base, [](const auto& error) {
+            return exceptions::is(error, exceptions::code::invalid_options);
+         });
+      }
+   } else {
+      // Every positive size_t fits the QUIC stream-count wire bound on narrower targets.
+      limits.max_streams_per_connection = (std::numeric_limits<std::size_t>::max)();
+      BOOST_CHECK_NO_THROW(validate(limits));
+   }
 }
 
 BOOST_AUTO_TEST_CASE(quic_initial_token_unknown_opaque_token_retries) {

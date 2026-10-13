@@ -138,6 +138,10 @@ node::impl::async_connect_owned(std::shared_ptr<impl> self, forge::multiformats:
 }
 
 void node::impl::record_direct_session_failure(const std::shared_ptr<session_state>& session) {
+   const auto lock = std::scoped_lock{mutex};
+   if (stopped || !session || session->closed) { return; }
+   const auto found = sessions.find(session->id);
+   if (found == sessions.end() || found->second != session) { return; }
    // A cached DNS child is not evidence that its source root has exhausted all
    // addresses. Only the scheduler can attribute a fresh resolved root failure.
    if (session->direct_endpoint) {
@@ -149,7 +153,7 @@ void node::impl::record_direct_session_failure(const std::shared_ptr<session_sta
          }
       }
    }
-   increment_direct_failure();
+   ++metrics_value.direct_failures;
 }
 
 boost::asio::awaitable<std::shared_ptr<node::impl::session_state>>

@@ -1,6 +1,7 @@
 module;
 
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +20,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <string_view>
@@ -43,6 +45,8 @@ module;
 #include <boost/scope/scope_exit.hpp>
 
 module forge.net.p2p.node;
+
+import forge.log.logger;
 
 import :lifecycle_stop_listener;
 
@@ -142,6 +146,8 @@ detail::path_manager::claim node::impl::request_path_upgrade(
    if (!paths || !path_session_eligible(session, side)) { return {}; }
    auto claim = paths->begin(session->info.remote_peer, session->id, side, deadline);
    if (!claim.leader) { return claim; }
+   dlog("forge.net.p2p.relay", "P2P DCUtR path upgrade admitted",
+        ("event", "dcutr.started")("session_id", session->id)("role", static_cast<int>(side)));
    auto self = shared_from_this();
    auto tracked = lifecycle.track();
    if (!tracked.active()) {

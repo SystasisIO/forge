@@ -8,8 +8,6 @@ module;
 
 export module forge.plugins.net.http.server.plugin;
 
-export import forge.plugins.net.http.server.descriptor;
-
 import forge.api.core.exceptions;
 import forge.api.core.types;
 import forge.api.core.descriptor;
@@ -28,6 +26,8 @@ export namespace forge::plugins::net::http::server {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -50,7 +50,5 @@ class plugin final : public forge::app::plugin {
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::net::http::server

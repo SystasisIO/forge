@@ -1,5 +1,6 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
 #include <span>
 
 #include <boost/asio/awaitable.hpp>
@@ -21,10 +22,21 @@ module;
 module forge.net.p2p.peer_store;
 
 import forge.asio.gate;
+import forge.net.p2p.exceptions;
 
 #include "details/peer_store_impl.hxx"
 
 namespace forge::net::p2p {
+
+void validate(const peer_store::options& options) {
+   if (options.max_peers == 0 || options.max_rendezvous == 0 || options.max_pending == 0 ||
+       options.max_endpoints_per_peer == 0 || options.max_protocols_per_peer == 0 ||
+       options.max_relay_reservations_per_peer == 0 || options.max_relay_endpoints_per_reservation == 0 ||
+       options.max_peer_record_bytes == 0 || options.hydration_page_limit == 0 || options.prune_page_limit == 0 ||
+       options.max_persistence_waiters == 0) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "peer store limits must be positive");
+   }
+}
 
 peer_store::persistence::~persistence() = default;
 

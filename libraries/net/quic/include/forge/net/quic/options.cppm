@@ -72,6 +72,8 @@ struct server_options {
    std::function<std::shared_ptr<void>()> inbound_admission;
 };
 
+// Validates QUIC bounds independently of endpoint, identity and live resources.
+void validate(const transport_limits& limits);
 void validate(const client_options& options);
 void validate(const server_options& options);
 

@@ -1,6 +1,9 @@
 #pragma once
 
 #include <stddef.h>
+#include <locale.h>
+
+#define MB_CUR_MAX 1
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
@@ -54,6 +57,9 @@ long long atoll(const char* value);
 double strtod(const char* value, char** end);
 float strtof(const char* value, char** end);
 long double strtold(const char* value, char** end);
+float strtof_l(const char* value, char** end, locale_t locale);
+double strtod_l(const char* value, char** end, locale_t locale);
+long double strtold_l(const char* value, char** end, locale_t locale);
 long strtol(const char* value, char** end, int base);
 long long strtoll(const char* value, char** end, int base);
 unsigned long strtoul(const char* value, char** end, int base);
