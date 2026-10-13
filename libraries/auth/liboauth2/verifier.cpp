@@ -6,8 +6,11 @@ extern "C" {
 }
 #include <jansson.h>
 
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <chrono>
@@ -107,8 +110,11 @@ boost::asio::awaitable<oauth2::verified_token> verifier::verify_owned(std::share
    using namespace boost::asio::experimental::awaitable_operators;
    auto result = std::variant<bool, std::monostate>{};
    try {
-      // Join only cancellable notification waits, not the physical blocking job.
-      result = co_await (completed->async_wait(deadline) || state->async_wait_stopped());
+      // Serialize peer cancellation with wait re-arming, not the physical blocking job.
+      const auto executor = co_await boost::asio::this_coro::executor;
+      result = co_await boost::asio::co_spawn(
+          boost::asio::make_strand(executor),
+          (completed->async_wait(deadline) || state->async_wait_stopped()), boost::asio::use_awaitable);
    } catch (const boost::system::system_error& error) {
       operation->cancel();
       if (error.code() == boost::asio::error::operation_aborted) {

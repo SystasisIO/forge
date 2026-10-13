@@ -15,6 +15,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -517,6 +518,52 @@ BOOST_AUTO_TEST_CASE(key_count_and_response_size_bounds_fail_closed_with_size_er
    }
    BOOST_CHECK_THROW((void)f.verify(counted, f.sign(), options.policy), oauth2::exceptions::response_too_large);
    BOOST_CHECK_THROW((void)f.verify(sized, f.sign(), small.policy), oauth2::exceptions::response_too_large);
+}
+
+BOOST_AUTO_TEST_CASE(fast_completion_and_ticket_release_race_settles_on_multithread_executor) {
+   auto f = fixture{};
+   const auto options = f.jwt_options();
+   const auto instance = f.create(options);
+   constexpr std::size_t rounds = 2048;
+   constexpr std::size_t concurrent = 4;
+   const auto stress_deadline = std::chrono::steady_clock::now() + 30s;
+   for (std::size_t round = 0; round < rounds; ++round) {
+      BOOST_TEST_CONTEXT("fast completion round " << round) {
+         BOOST_REQUIRE_MESSAGE(std::chrono::steady_clock::now() < stress_deadline,
+                               "fast completion stress exceeded its total budget");
+         auto running = std::array<std::future<std::optional<oauth2::verified_token>>, concurrent>{};
+         for (auto& result : running) {
+            // Fail inside physical compute work, without HTTP or caller-side serialization.
+            result = boost::asio::co_spawn(
+                f.runtime.context(), own_result(instance->async_verify(secret{"not-a-jwt"}, options.policy)),
+                boost::asio::use_future);
+         }
+         const auto deadline = std::min(stress_deadline,
+                                        std::chrono::steady_clock::now() + options.timeout + 1s);
+         auto ready = true;
+         for (auto& result : running) {
+            ready = (result.wait_until(deadline) == std::future_status::ready) && ready;
+         }
+         if (!ready) {
+            // Wake a stranded stop wait so a RED result does not hang fixture teardown.
+            instance->request_stop();
+            const auto cleanup_deadline = std::chrono::steady_clock::now() + 2s;
+            for (auto& result : running) {
+               BOOST_CHECK_MESSAGE(result.wait_until(cleanup_deadline) == std::future_status::ready,
+                                   "stop must settle a timed-out notification race");
+            }
+         }
+         BOOST_REQUIRE_MESSAGE(ready, "fast physical completion exceeded its bounded notification wait");
+         for (auto& result : running) {
+            BOOST_CHECK_THROW((void)result.get(), oauth2::exceptions::invalid_token);
+         }
+      }
+   }
+   BOOST_CHECK_EQUAL(f.requests.load(), 0U);
+   auto drain = boost::asio::co_spawn(f.runtime.context(), instance->async_drain(), boost::asio::use_future);
+   BOOST_REQUIRE(drain.wait_for(2s) == std::future_status::ready);
+   drain.get();
+   BOOST_CHECK_EQUAL(f.pool.snapshot().pending, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(introspection_rechecks_resource_claims_and_never_caches_opaque_decisions) {
