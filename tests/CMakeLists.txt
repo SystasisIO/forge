@@ -2115,12 +2115,29 @@ set(FORGE_PACKAGE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/forge-package-install")
 set(FORGE_PACKAGE_DIR "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake/Forge")
 set(FORGE_PACKAGE_CONSUMER_PREFIX_PATH ${CMAKE_PREFIX_PATH})
 list(REMOVE_DUPLICATES FORGE_PACKAGE_CONSUMER_PREFIX_PATH)
+set(FORGE_PACKAGE_OPENSSL_CACHE_CONTENT "")
+# Consumer discovery must not mix a different OpenSSL ABI with the producer's
+# headers and native crypto dependencies.
+foreach(FORGE_PACKAGE_OPENSSL_VARIABLE IN ITEMS
+   OPENSSL_INCLUDE_DIR OPENSSL_SSL_LIBRARY OPENSSL_CRYPTO_LIBRARY OPENSSL_ROOT_DIR
+)
+   if(${FORGE_PACKAGE_OPENSSL_VARIABLE})
+      set(FORGE_PACKAGE_OPENSSL_CACHE_TYPE PATH)
+      if(FORGE_PACKAGE_OPENSSL_VARIABLE MATCHES "_LIBRARY$")
+         set(FORGE_PACKAGE_OPENSSL_CACHE_TYPE FILEPATH)
+      endif()
+      string(APPEND FORGE_PACKAGE_OPENSSL_CACHE_CONTENT
+         "set(${FORGE_PACKAGE_OPENSSL_VARIABLE} [==[${${FORGE_PACKAGE_OPENSSL_VARIABLE}}]==] CACHE ${FORGE_PACKAGE_OPENSSL_CACHE_TYPE} \"Exact producer OpenSSL dependency\" FORCE)\n"
+      )
+   endif()
+endforeach()
 set(FORGE_PACKAGE_CONSUMER_CACHE "${CMAKE_BINARY_DIR}/tests/ForgePackageConsumerCache.cmake")
 string(
    CONCAT FORGE_PACKAGE_CONSUMER_CACHE_CONTENT
    "set(Forge_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Exact Forge test package\" FORCE)\n"
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Package dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Exact Glaze package\" FORCE)\n"
+   "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
    "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
@@ -2144,6 +2161,7 @@ string(
    "set(Forge_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Exact Forge test package\" FORCE)\n"
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_EXPLICIT_GLAZE_DIR_PREFIX_PATH}]==] CACHE STRING \"Shared dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Explicit Glaze package hint\" FORCE)\n"
+   "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Expected shared dependency prefixes\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
