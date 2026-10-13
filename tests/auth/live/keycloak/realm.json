@@ -24,6 +24,11 @@
     "REFRESH_TOKEN", "REFRESH_TOKEN_ERROR"
   ],
   "adminEventsEnabled": false,
+  "clientScopeMappings": {
+    "realm-management": [
+      {"client": "forge-fixture-admin", "roles": ["manage-realm"]}
+    ]
+  },
   "clients": [
     {
       "clientId": "forge-desktop",
@@ -60,7 +65,88 @@
         "oauth2.device.authorization.grant.enabled": "true",
         "use.refresh.tokens": "true"
       }
+    },
+    {
+      "clientId": "forge-workload",
+      "description": "Disposable client-credentials resource fixture; not user SSO",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": ["basic", "profile"],
+      "optionalClientScopes": [],
+      "attributes": {
+        "access.token.header.type.rfc9068": "true",
+        "access.token.signed.response.alg": "RS256",
+        "use.refresh.tokens": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "resource audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "forge-resource",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "service account client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "client_id",
+            "claim.name": "client_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "forge-resource",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": [],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "forge-fixture-admin",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": ["basic", "roles"],
+      "optionalClientScopes": []
     }
   ],
-  "users": []
+  "users": [
+    {
+      "username": "service-account-forge-fixture-admin",
+      "enabled": true,
+      "serviceAccountClientId": "forge-fixture-admin",
+      "clientRoles": {"realm-management": ["manage-realm"]}
+    }
+  ]
 }

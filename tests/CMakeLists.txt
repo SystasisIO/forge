@@ -4365,9 +4365,15 @@ add_test(
 )
 set_tests_properties(test_forge_package_auth_oauth2_component PROPERTIES DEPENDS test_forge_package_install)
 
-option(FORGE_BUILD_AUTH_LIVE_TESTS "Build opt-in native authentication acceptance drivers" OFF)
+option(FORGE_BUILD_AUTH_LIVE_TESTS "Build opt-in authentication acceptance drivers" OFF)
 if(FORGE_BUILD_AUTH_LIVE_TESTS)
    add_subdirectory(auth/live)
+   if(TARGET forge_auth_liboauth2)
+      add_executable(forge_auth_live_resource integration/auth/resource_driver.cpp)
+      target_link_libraries(forge_auth_live_resource PRIVATE
+         forge_auth_liboauth2 forge_api_auth forge_api_http forge_api_websocket
+         forge_net_http forge_net_websocket forge_codec_json forge_raw forge_asio)
+   endif()
 endif()
 
 if(TARGET forge_auth_liboauth2)

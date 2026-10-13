@@ -1,9 +1,10 @@
-# Isolated Keycloak F4a fixture
+# Isolated Keycloak Live Fixture
 
-Disposable real issuer for [native live acceptance](../README.md), not a
+Disposable real issuer for [native live acceptance](../README.md) and
+[resource-server acceptance](../../../integration/auth/README.md), not a
 production configuration or completed gate. Only the coordinator runs the
-commands below, manages certificate trust, containers and cleanup. No OAuth
-implementation, mocks, password grant, browser automation or admin credentials.
+commands below, manages certificate trust, containers and cleanup. No custom
+OAuth/JWT engine, mocks, password grant, browser automation or master admin.
 
 Project `forge-auth-live` publishes only `127.0.0.1:18443` over HTTPS. Its own
 `forge-auth-live_data` volume holds the disposable H2 file database; no PostgreSQL,
@@ -11,7 +12,7 @@ external network, Gate configuration or existing volume is used. The image is
 pinned to `26.8.0` and the supplied digest, verified against the public Quay
 manifest; `pull_policy: never` requires the coordinator's cached image.
 
-## Prepare generated inputs
+## Prepare Generated Inputs
 
 Run from the Forge root, in a private interactive terminal with tracing off:
 
@@ -33,40 +34,45 @@ TLS-verification bypass or production policy change. The coordinator owns trust
 installation, verification and removal, including after failure/cancellation.
 The fixture author performs no Docker or `security` execution.
 
-The checked-in [realm template](realm.json) contains no users or passwords.
-Generate the import with `jq` and Bash; the password is hidden terminal input,
-never a CLI argument or environment variable, and stdout goes only to the
-private generated file. Do not overwrite an existing acceptance run's import:
+Use a private Python **3.10+** virtual environment; the coordinator's Homebrew
+Python 3.12 is suitable, macOS system Python 3.9 is not. Create the environment
+with that interpreter if absent, then install the exact direct dependency pins
+in [requirements.txt](requirements.txt). Do not install into system Python.
+`VENV` below is a public path, not a secret; select the coordinator's existing
+environment if it lives elsewhere:
 
 ```sh
-/bin/bash <<'SH'
-set +x
-set -euo pipefail
-umask 077
-: "${FORGE_AUTH_LIVE_DIR:?}"
-mkdir -p "$FORGE_AUTH_LIVE_DIR/import"
-set -o noclobber
-trap 'unset fixture_password' EXIT
-IFS= read -r -s -p 'Disposable fixture-user password: ' fixture_password </dev/tty
-printf '\n' >/dev/tty
-test -n "$fixture_password"
-printf '%s' "$fixture_password" | jq -Rs \
-  --slurpfile realm tests/auth/live/keycloak/realm.json '
-  . as $password | $realm[0] | .users = [{
-    username: "fixture-user", enabled: true,
-    firstName: "Forge", lastName: "Fixture",
-    email: "fixture-user@example.invalid", emailVerified: true,
-    requiredActions: [], realmRoles: ["offline_access"],
-    credentials: [{type: "password", value: $password, temporary: false}]
-  }]' > "$FORGE_AUTH_LIVE_DIR/import/forge-live-realm.json"
-SH
+VENV="$FORGE_AUTH_LIVE_DIR/venv"
+# Only if absent: python3.12 -m venv "$VENV"
+"$VENV/bin/python" -m pip install -r tests/auth/live/keycloak/requirements.txt
+"$VENV/bin/python" -m pip check
+"$VENV/bin/python" tests/auth/live/keycloak/resource_acceptance.py prepare \
+  --directory "$FORGE_AUTH_LIVE_DIR"
 ```
 
-Generated import contains a plaintext disposable password: never commit, print
-or collect it as an artifact. Both bind mounts are read-only. The image runs as
-UID 1000 / GID 0; the coordinator must provide read/search permission through
-Docker's bind mapping without making private inputs world-readable. Do not
-change permissions or ownership of unrelated files.
+The checked-in [realm template](realm.json) contains service-account role mapping,
+but no passwords or client secrets. `prepare` generates random secrets for all
+three confidential clients and a random disposable `fixture-user` password:
+
+- `import/forge-live-realm.json`: generated import, including credentials.
+- `resource-credentials.json`: fixture ownership marker and client secrets only.
+- `login.txt`: two lines, `username: ...` and `password: ...`, for private human login only.
+
+Files are written atomically as `0600` in `0700` directories; neither stdout nor
+arguments/environment contain credentials. Human login needs only `login.txt`,
+never the client-secrets file. Do not print, attach or collect any of these files.
+Existing files, including an old native `login.txt`, are refused unless the
+coordinator explicitly adds `--replace`. Replacement is for this owned fixture
+only, after stopping its stand; it regenerates all credentials. Writes are
+individually atomic, not a multi-file transaction: after interruption, rerun
+with `--replace` and require `PASS/prepared` before starting a fresh owned volume.
+Startup import does not update an existing realm.
+
+Both Compose bind mounts remain read-only. The image runs as UID 1000 / GID 0;
+host files may be UID 501, mode `0600`. The coordinator must verify read/search
+access through Docker's bind mapping without world-readable permissions. Do not
+change unrelated ownership, permissions, Gate config or volumes. TLS files are
+neither generated nor modified by the harness; Compose is unchanged.
 
 ## Start And Discover (Coordinator Only)
 
@@ -104,7 +110,7 @@ curl --fail --silent --show-error --ipv4 --noproxy localhost,127.0.0.1 \
 S256 + refresh; `forge-device` is public Device Flow + refresh. Use
 `openid profile offline_access`, no client secret or audience override. Access
 tokens last 30 seconds; online/offline sessions allow bounded refresh/restart
-tests. Browser login is human-only with `fixture-user`; the driver's
+tests. Browser login is human-only with the private `login.txt`; the driver's
 `live-<run-id>` is a separate local persistence account name.
 
 Actual [Forge backend](../../../../libraries/auth/appauth/appauth_backend.mm)
@@ -123,6 +129,102 @@ do not substitute `host.docker.internal` in discovery or disable TLS verificatio
 Trust this same leaf only in the disposable Linux agent environment. Ensure IPv4
 loopback works for the real agent, or supply a matching IPv6 loopback forwarder.
 Forwarder setup/lifecycle belongs to the coordinator, not this Compose project.
+
+## Real Resource Acceptance
+
+This is a separate **workload token fixture, not user SSO** (single sign-on),
+token exchange, or a substitute for native F4a. The boundary follows the
+[accepted iteration](../../../../docs/iterations/auth-api-resource-verification-v1.md):
+Keycloak issues tokens; the C++ driver exercises real `liboauth2` validation and
+Forge HTTP/WS admission without weakening production verification.
+
+- `forge-workload`: confidential service account, `client_credentials` only.
+- `forge-resource`: confidential introspection client, no login/token grants.
+- `forge-fixture-admin`: service account with only the owning realm's
+  `realm-management/manage-realm` assignment and matching role scope. This
+  permission is realm-wide, not key-only; never reuse it outside this fixture.
+
+The workload uses Keycloak's built-in RFC 9068 header option (`at+jwt`), RS256,
+the built-in audience mapper for `forge-resource`, the built-in user-session
+note mapper for `client_id`, and the `profile` scope. Keycloak itself generates
+`iat` and `jti`. Native desktop/device clients remain acquisition-only. No Java
+extension, manual signing, password grant or protocol implementation is added.
+
+After fresh import/discovery and coordinator build, run from an environment
+where `localhost:18443` reaches this issuer and the driver is executable. Set
+`RESOURCE_DRIVER` to the coordinator-built binary (public path only):
+
+```sh
+: "${RESOURCE_DRIVER:?Set the built resource driver path}"
+"$VENV/bin/python" tests/auth/live/keycloak/resource_acceptance.py run \
+  --directory "$FORGE_AUTH_LIVE_DIR" --driver "$RESOURCE_DRIVER"
+```
+
+The harness uses Authlib `OAuth2Session` for real client-credentials and
+introspection requests, and `joserfc` for signature/claim verification against
+real JWKS (JSON Web Key Set). TLS uses the supplied leaf, never `verify=False`;
+redirects and environment proxy/credential inheritance are disabled. Before
+mutating keys, it verifies the imported random ownership marker via Admin REST.
+It then launches exactly one driver with `Popen`, private stdin/stdout pipes,
+`--ca` as its only flag, and no secret environment variables or token files.
+
+The [driver protocol](../../../integration/auth/README.md) is authoritative.
+The first JSONL message contains `phase=initial`, `token` and
+`introspection_client_secret`; after exactly `READY/rotation`, the harness adds
+a real `rsa-generated` component with higher priority in this same owned realm.
+It obtains a fresh token, cryptographically verifies it and proves its `kid`
+was absent from the original JWKS while the original public key remains
+unchanged and published. Only then does it send `phase=rotation` and the new
+`token`. The same driver process and same warmed JWT verifier remain alive;
+its long cache lifetime makes this unknown-key refresh, not scheduled expiry.
+
+Only fixed PASS/READY/FAIL labels are emitted. `PASS/issuer-key-changed` and
+`PASS/issuer-old-key-retained` establish actual rotation, not merely later token
+expiry. `PASS/resource-acceptance` requires all exact driver labels and zero
+exit status; partial PASS output is never acceptance. Overall timeout is 190 s,
+with up to 2 s termination/reaping grace; timeout, SIGTERM or Ctrl-C cleans up
+the child and fails. Raw child stderr is discarded and unexpected stdout is
+rejected without echo. No tokens, subjects, key IDs, exceptions or HTTP bodies
+are logged. Core dumps are disabled; Python allocations are not claimed to
+provide total secret zeroization. Do not enable SDK/debug tracing.
+
+Rotation never disables/removes the old signing key. A newly created component
+may remain after a later failure; the coordinator removes it with the owned
+disposable volume, not by modifying a shared realm. Run this gate serially,
+without concurrent key changes. No script starts/stops Docker or changes trust.
+
+HTTP and WS labels cover server-side admission and identity propagation. The
+test WS peer uses standard Boost.Beast to send a real Authorization-bearing
+Upgrade into Forge; it does not qualify Forge's outbound client header API.
+This positive/rotation gate does not prove revocation, the full negative-test
+matrix, native human login or product/WASM acceptance.
+
+### Dependency And Issuer Qualification
+
+Exact releases were checked against official package metadata/source; the
+coordinator has reported successful installation in a private Python 3.12 venv.
+This is dependency/API qualification, **not live resource acceptance**. The
+script checks these exact installed versions before connecting. Transitive
+dependencies are resolver-selected, not a fully hash-locked environment.
+
+- [Authlib 1.8.0](https://pypi.org/project/Authlib/1.8.0/) requires Python 3.10+;
+  [tagged requests integration](https://github.com/authlib/authlib/blob/v1.8.0/authlib/integrations/requests_client/oauth2_session.py)
+  and [tagged OAuth client](https://github.com/authlib/authlib/blob/v1.8.0/authlib/oauth2/client.py)
+  provide `fetch_token`, `introspect_token` and authenticated REST requests.
+- [Requests 2.34.2](https://pypi.org/project/requests/2.34.2/) is the explicit
+  HTTP dependency used by that integration.
+- [joserfc 1.7.5](https://pypi.org/project/joserfc/1.7.5/), from the Authlib
+  project, supplies [JWT verification and claims validation](https://jose.authlib.org/en/guide/jwt/)
+  instead of deprecated `authlib.jose` or homemade JWT decoding.
+- [Keycloak 26.2 release notes](https://www.keycloak.org/2025/04/keycloak-2620-released)
+  document the built-in RFC 9068 access-token header. The pinned 26.8.0
+  [OIDC config](https://github.com/keycloak/keycloak/blob/26.8.0/services/src/main/java/org/keycloak/protocol/oidc/OIDCConfigAttributes.java),
+  [client-credentials grant](https://github.com/keycloak/keycloak/blob/26.8.0/services/src/main/java/org/keycloak/protocol/oidc/grants/ClientCredentialsGrantType.java),
+  [audience mapper](https://github.com/keycloak/keycloak/blob/26.8.0/services/src/main/java/org/keycloak/protocol/oidc/mappers/AudienceProtocolMapper.java),
+  [session-note mapper](https://github.com/keycloak/keycloak/blob/26.8.0/services/src/main/java/org/keycloak/protocol/oidc/mappers/UserSessionNoteMapper.java)
+  and [RSA provider](https://github.com/keycloak/keycloak/blob/26.8.0/services/src/main/java/org/keycloak/keys/GeneratedRsaKeyProviderFactory.java)
+  define the fixture's native settings; [Admin REST](https://www.keycloak.org/docs-api/26.8.0/rest-api/index.html)
+  provides realm/component operations. No custom authenticator is required.
 
 ## Issuer-Side Refresh Evidence
 
@@ -177,7 +279,8 @@ After collecting only safe counts and driver status, invalidate the isolated
 AppAuth item / unload and stop only the disposable Linux agent. Stop the owned
 forwarder, remove only the approved temporary leaf trust, then run `kc down
 --volumes` to remove this project's container, network and H2 volume. Remove the
-generated import/key/cert via the coordinator's approved cleanup. Never touch
+generated import, credentials, `login.txt`, private venv and key/cert via the
+coordinator's approved cleanup. Never touch
 Gate resources. Startup import skips an existing realm: changed credentials or
 realm settings require a fresh fixture volume, not a restart or shared-tenant edit.
 
