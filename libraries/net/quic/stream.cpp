@@ -118,6 +118,17 @@ boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read() {
    }
 }
 
+boost::asio::awaitable<void> stream::async_close_write() {
+   if (!impl_ || !impl_->engine) {
+      FORGE_THROW_EXCEPTION(exceptions::stream_closed, "invalid QUIC stream");
+   }
+   try {
+      co_await impl_->engine->async_close_write();
+   } catch (const detail::engine_failure& error) {
+      raise_engine_failure(error);
+   }
+}
+
 boost::asio::awaitable<void> stream::async_close() {
    if (impl_ && impl_->engine) {
       try {

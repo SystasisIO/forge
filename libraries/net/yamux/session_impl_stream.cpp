@@ -159,7 +159,7 @@ boost::asio::awaitable<detail::bytes> session::impl::read_stream(const std::shar
       auto has_data = false;
       {
          auto lock = std::scoped_lock{mutex_};
-         require_stream_owned_locked(state);
+         require_stream_owned_locked(state, true);
          if (!state->inbound.empty()) {
             has_data = true;
          } else {
@@ -228,10 +228,10 @@ boost::asio::awaitable<void> session::impl::close_stream(const std::shared_ptr<s
    auto reset_required = false;
    try {
       co_await ensure_started();
-      co_await write_prepared(
+      const auto sent = co_await write_prepared(
           [this, state]() -> std::optional<detail::bytes> {
              auto lock = std::scoped_lock{mutex_};
-             require_stream_owned_locked(state);
+             require_stream_owned_locked(state, true);
              if (state->local_fin || state->reset) {
                 return std::nullopt;
              }
@@ -243,6 +243,10 @@ boost::asio::awaitable<void> session::impl::close_stream(const std::shared_ptr<s
              return encoded;
           },
           false, {}, state);
+      if (sent) {
+         auto lock = std::scoped_lock{mutex_};
+         state->local_fin_sent = true;
+      }
    } catch (...) {
       error = std::current_exception();
       auto lock = std::scoped_lock{mutex_};
@@ -266,7 +270,8 @@ bool session::impl::is_reclaimable_stream_locked(const stream_state& state) cons
    if (state.reset) {
       return true;
    }
-   return state.local_fin && state.remote_fin && state.inbound.empty();
+   return state.local_fin_sent && state.remote_fin && state.inbound.empty() &&
+          state.pending_receive_credit == 0;
 }
 
 void session::impl::reclaim_closed_streams_locked() {

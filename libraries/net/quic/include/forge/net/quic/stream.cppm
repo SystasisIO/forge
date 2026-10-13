@@ -34,6 +34,9 @@ class stream {
 
    boost::asio::awaitable<void> async_write(std::span<const std::uint8_t> bytes);
    boost::asio::awaitable<std::vector<std::uint8_t>> async_read();
+   // Require submitted/drained FIN; retain reads and cancellation. Serialize
+   // with writes and terminal close. Prior rejection/reset is not success.
+   boost::asio::awaitable<void> async_close_write();
    boost::asio::awaitable<void> async_close();
    void cancel();
    void request_cancel() noexcept;

@@ -83,6 +83,33 @@ boost::asio::awaitable<void> echo_frame(forge::net::transport::stream stream) {
   repeated front erases of buffered bytes.
 - Thread-safety contracts are documented in `docs/runtime/thread-safety.md`.
 
+## Write Half-Close Contract
+
+`stream::async_close_write()` ends only the local
+write direction with FIN. It is not `async_close()`: reads, cancellation and
+stream ownership remain available, including any higher-layer resource
+reservation. The owner still joins terminal `async_close()` or cancellation
+cleanup before releasing resources. Serialize write half-close with all writes
+and terminal close; it does not introduce a concurrent-write/full-close contract.
+
+The intended request/response order is write the complete request, await
+`async_close_write()`, then read the response or normal remote EOF. Half-close
+completion is not a protocol acknowledgement or proof of remote processing.
+QUIC and Yamux models support this operation. Models
+without support fail explicitly with
+`transport::exceptions::unsupported_protocol`; they do not fall back to full
+close or return successful no-ops.
+
+QUIC success must mean that FIN was submitted and its send prefix drained.
+Prior peer write rejection or reset without submitted FIN must not become
+success merely because terminal close cleanup succeeds. Peer STOP_SENDING,
+including application code zero, is not remote EOF or proof of a successful
+request. A late STOP cannot revoke an already drained FIN; an incoming
+RESET_STREAM remains an independent typed read failure. Explicit cancellation
+of a live stream wins over FIN admission and joins native reset cleanup.
+Existing terminal-close/EOF results alone do not establish half-close acceptance;
+the Stage 7 donor note tracks the separate regression and live evidence.
+
 ## Datagram Packet I/O
 
 `datagram_io` borrows a Boost.Asio UDP socket and buffers; it owns no socket,

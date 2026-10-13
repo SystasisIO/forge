@@ -399,12 +399,19 @@ std::shared_ptr<session::impl::stream_state> session::impl::make_stream_locked(s
    return state;
 }
 
-void session::impl::require_stream_owned_locked(const std::shared_ptr<stream_state>& state) const {
+void session::impl::require_stream_owned_locked(const std::shared_ptr<stream_state>& state,
+                                                bool allow_completed) const {
    if (state->cancel_requested.load(std::memory_order_acquire) || state->reset) {
       FORGE_THROW_EXCEPTION(exceptions::stream_reset, "yamux stream reset");
    }
    const auto found = streams_.find(state->id);
    if (found == streams_.end() || found->second != state) {
+      // A surviving facade still owns the terminal result after the bounded
+      // session table reclaims an orderly, fully drained stream.
+      if (allow_completed && found == streams_.end() && state->local_fin_sent &&
+          state->remote_fin && state->inbound.empty() && state->pending_receive_credit == 0) {
+         return;
+      }
       FORGE_THROW_EXCEPTION(exceptions::closed, "yamux stream does not exist");
    }
 }

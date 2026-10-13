@@ -173,6 +173,51 @@ BOOST_AUTO_TEST_CASE(quic_remote_fin_drains_bytes_and_preserves_native_and_adapt
    }
 }
 
+BOOST_AUTO_TEST_CASE(quic_adapter_write_fin_preserves_reads_and_later_cancellation) {
+   for (const auto cancel : {false, true}) {
+      BOOST_TEST_CONTEXT("cancel=" << cancel) {
+         auto fixture = authenticated_pair{};
+         auto [sent, received] = fixture.streams();
+         auto adapted = quic::as_transport_stream(std::move(sent));
+         const auto id = adapted.id();
+         fixture.run(adapted.async_close_write());
+         BOOST_CHECK_EXCEPTION(fixture.run(received.async_read()), quic::exceptions::stream_closed, native_eof);
+         BOOST_TEST(adapted.valid());
+         BOOST_TEST(adapted.id() == id);
+         const auto payload = std::vector<std::uint8_t>{0x52};
+         const auto write_closed = [](const transport::exceptions::closed& error) {
+            return !dynamic_cast<const transport::exceptions::end_of_stream*>(&error) && error.code().value() == 2;
+         };
+         BOOST_CHECK_EXCEPTION(fixture.run(adapted.async_write(payload)), transport::exceptions::closed, write_closed);
+         BOOST_CHECK_EXCEPTION(fixture.run(adapted.async_write_frame(payload)), transport::exceptions::closed, write_closed);
+         auto reading = boost::asio::co_spawn(fixture.runtime.context(), adapted.async_read_chunk(), boost::asio::use_future);
+         // The peer has received our FIN but deliberately has not answered or closed.
+         BOOST_REQUIRE(reading.wait_for(150ms) == std::future_status::timeout);
+         if (cancel) {
+            adapted.request_cancel();
+            BOOST_CHECK_EXCEPTION(joined(reading), forge::exceptions::base, [](const auto& error) {
+               return !dynamic_cast<const quic::exceptions::end_of_stream*>(&error) &&
+                   !dynamic_cast<const transport::exceptions::end_of_stream*>(&error) &&
+                   (quic::exceptions::code_of(error) == quic::exceptions::code::stream_reset ||
+                    transport::exceptions::code_of(error) == transport::exceptions::code::canceled);
+            });
+            try { fixture.run(adapted.async_close()); }
+            catch (const forge::exceptions::base& error) {
+               if (transport::exceptions::code_of(error) != transport::exceptions::code::canceled &&
+                   quic::exceptions::code_of(error) != quic::exceptions::code::stream_reset) { throw; }
+            }
+         } else {
+            fixture.run(received.async_write(payload));
+            fixture.run(received.async_close());
+            BOOST_TEST(joined(reading).into_vector() == payload, boost::test_tools::per_element());
+            BOOST_CHECK_EXCEPTION(fixture.run(adapted.async_read()), transport::exceptions::closed, adapted_eof);
+            fixture.run(adapted.async_close());
+         }
+         fixture.finish();
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(quic_reset_or_connection_loss_is_never_native_or_adapter_eof) {
    for (const auto adapter : {false, true}) {
       for (const auto reset : {false, true}) {

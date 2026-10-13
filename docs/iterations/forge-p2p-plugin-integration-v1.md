@@ -1124,11 +1124,46 @@ gates pass, describe this as test integration with an evolving stack.
   `35332ec7d0488b25de5a2e75342ff0ce2c5232f20e0e115fabec6432fe11e854`.
   This mutation proves the TCP/Yamux regression gate only; no QUIC mutation
   result is claimed.
-- The new Forge-to-Rust automatic-manager-unregister phase compiled but has not
-  yet run live. It preserves the original register/discover checks and adds a
+- The new Forge-to-Rust automatic-manager-unregister phase compiled. It
+  preserves the original register/discover checks and adds a
   distinct managed identity, joined refresh/stop, full no-cookie observations,
   exact managed/control identities, signed control continuity and TTL7200,
   with logged unregister failures treated as failures even when stop returns.
+- The subsequent focused Rust live run on source head
+  `0834111f650b2a25d50dc4a80bdd98f86275d43e` recorded 2/4 PASS: both
+  Forge-to-Rust `rendezvous_register_discover` and `rendezvous_lifecycle` failed,
+  while both reverse Rust-to-Forge cases passed. The Forge failure was
+  `peer_write_rejected` before native FIN submission (`stream.cpp:69`,
+  `quic_engine_stream.cpp:185`); the failed artifacts are retained. This is a
+  focused four-case run, not full canonical Stage 6 acceptance. Failure may
+  precede the automatic-unregister phase, so that phase is not live-proven.
+  Earlier native/local PASS results do not override this RED checkpoint.
+- Donor review confirms Rust's one-request-per-substream path writes the
+  request, half-closes writing and then reads the response. The next dirty
+  candidate adds `async_close_write` before register/discover response reads
+  and the existing unregister remote-EOF barrier. Callers serialize it with
+  writes and terminal close; reading, cancellation and the exact stream
+  resource reservation remain alive until terminal cleanup. QUIC and Yamux
+  are the intended supported models; other transport models default to typed
+  `transport::exceptions::unsupported_protocol`. QUIC half-close success must
+  prove submitted/drained FIN, not a no-op terminal close after prior rejection
+  or reset. Native review/regressions and a new live run remain pending; no fix
+  PASS, swallowed reset, donor patch, retry or relaxed validator is claimed.
+  Rust can stop its request receive side after decoding a frame without waiting
+  for EOF, so a legitimate STOP_SENDING can still race FIN submission; code zero
+  alone is not successful completion.
+- The write-half-close regression checkpoint passed nine focused native cases
+  and 899 assertions: drained FIN, pre-FIN rejection, independent read reset,
+  late STOP, cancel-before-FIN and Rendezvous resource/error ownership. The
+  late-STOP fixture holds the existing asynchronous cleanup owner, not an OS
+  thread or owner strand. Restoring the rejected post-FIN STOP check made this
+  test fail at its exact success assertion; restoring the correction returned
+  `quic_engine_stream.cpp` to SHA256
+  `31cf7233c2b34b56b6d0f46ce26268a7445e67e4962a0d15e155f7d93bc81772`.
+  Full Yamux passed 20 consecutive runs after its error-worker observation
+  barrier was fixed. Earlier failed native/test-barrier results remain retained;
+  these dirty-candidate checks do not replace clean-head configured acceptance.
+- These focused results do not complete Stage 7.
   The final configured matrices and independent validators, installed-package
   checks and clean exact-head acceptance remain pending. Rust's original
   whole-host QUIC shutdown remains `NOT_PROVEN`; these native/local results do

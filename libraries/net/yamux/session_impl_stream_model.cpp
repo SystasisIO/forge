@@ -80,6 +80,15 @@ boost::asio::awaitable<transport::chunk> session::impl::stream_model::async_read
    co_return transport::chunk{co_await owner->read_stream(state_)};
 }
 
+boost::asio::awaitable<void> session::impl::stream_model::async_close_write() {
+   auto owner = owner_.lock();
+   if (!owner) {
+      FORGE_THROW_EXCEPTION(exceptions::closed, "yamux session expired");
+   }
+   // Yamux FIN closes only the local write direction.
+   co_await owner->close_stream(state_);
+}
+
 boost::asio::awaitable<void> session::impl::stream_model::async_close() {
    auto owner = owner_.lock();
    if (owner) {

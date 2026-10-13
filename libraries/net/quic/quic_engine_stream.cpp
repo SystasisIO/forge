@@ -113,12 +113,26 @@ boost::asio::awaitable<std::vector<std::uint8_t>> engine_stream::async_read() {
        asio::use_awaitable);
 }
 
+boost::asio::awaitable<void> engine_stream::async_close_write() {
+   co_await async_close_impl(true);
+}
+
 boost::asio::awaitable<void> engine_stream::async_close() {
+   co_await async_close_impl(false);
+}
+
+boost::asio::awaitable<void> engine_stream::async_close_impl(bool require_fin) {
    if (!impl_) {
+      if (require_fin) {
+         throw_engine(engine_error_kind::stream_closed, "invalid QUIC stream");
+      }
       co_return;
    }
    auto connection = impl_->connection.lock();
    if (!connection) {
+      if (require_fin) {
+         throw_engine(engine_error_kind::connection_closed, "QUIC connection is closed");
+      }
       co_return;
    }
    co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation{});
@@ -130,7 +144,7 @@ boost::asio::awaitable<void> engine_stream::async_close() {
       }
       co_await asio::co_spawn(
           connection->strand,
-          [connection, stream = impl_, deadline]() -> asio::awaitable<void> {
+          [connection, stream = impl_, deadline, require_fin]() -> asio::awaitable<void> {
              auto error = std::exception_ptr{};
              try {
                 if (connection->test_failpoint && connection->test_failpoint("stream_close_before_state_check")) {
@@ -138,11 +152,41 @@ boost::asio::awaitable<void> engine_stream::async_close() {
                 }
                 if (connection->close_started) {
                    co_await connection->wait_close_cleanup();
+                   if (require_fin) {
+                      throw_engine(connection->canceled || connection->cancellation_requested.load(std::memory_order_acquire)
+                                       ? engine_error_kind::canceled : engine_error_kind::connection_closed,
+                                   "QUIC connection closed before write half-close");
+                   }
                    co_return;
                 }
                 if (connection->closing || connection->canceled) {
                    co_await connection->wait_udp_send_idle();
+                   if (require_fin) {
+                      throw_engine(connection->canceled ? engine_error_kind::canceled : engine_error_kind::connection_closed,
+                                   "QUIC connection ended before write half-close");
+                   }
                    co_return;
+                }
+                // Native/connection terminal notifications publish closed or
+                // reset first. On a live stream this epoch is pending cancel
+                // intent; join the existing reset path before admitting FIN.
+                if (!stream->closed && !stream->reset && stream->cancel_requested.epoch() != 0U) {
+                   co_await connection->async_reset_stream_after_close_failure(stream);
+                }
+                if (require_fin) {
+                   connection->rethrow_udp_failure(std::nullopt);
+                   if (stream->local_write_canceled ||
+                       connection->cancellation_requested.load(std::memory_order_acquire)) {
+                      throw_engine(engine_error_kind::canceled, "QUIC write half-close was canceled");
+                   }
+                   // An incoming RESET_STREAM belongs to async_read, not the
+                   // still-open local write direction.
+                   if (stream->reset || stream->native_write_rejected) {
+                      throw_engine(engine_error_kind::stream_reset, "QUIC stream rejected before write half-close");
+                   }
+                   if (stream->closed && !stream->fin_queued) {
+                      throw_engine(engine_error_kind::stream_closed, "QUIC stream ended without write FIN");
+                   }
                 }
                 if (!stream->local_write_closed && !stream->reset && !stream->closed) {
                    if (!stream->fin_queued) {
@@ -188,6 +232,9 @@ boost::asio::awaitable<void> engine_stream::async_close() {
                                    "QUIC live stream ended FIN submission without a native prefix");
                    }
                    co_await connection->wait_udp_send_prefix(stream->fin_send_generation, deadline, stream);
+                }
+                if (require_fin && (!stream->fin_queued || !stream->local_write_closed || stream->fin_send_generation == 0)) {
+                   throw_engine(engine_error_kind::internal_error, "QUIC write half-close completed without submitted FIN");
                 }
              } catch (...) {
                 error = std::current_exception();
@@ -253,9 +300,24 @@ boost::asio::awaitable<void> engine_stream::async_close() {
    co_await wait_for_stream_terminal_cleanup(impl_);
    co_await asio::co_spawn(
        connection->strand,
-       [stream = impl_]() -> asio::awaitable<void> {
+       [connection, stream = impl_, require_fin]() -> asio::awaitable<void> {
           if (stream->terminal_cleanup_error) {
              std::rethrow_exception(stream->terminal_cleanup_error);
+          }
+          if (require_fin) {
+             connection->rethrow_udp_failure(std::nullopt);
+             if (stream->local_write_canceled || connection->canceled ||
+                 connection->cancellation_requested.load(std::memory_order_acquire)) {
+                throw_engine(engine_error_kind::canceled, "QUIC write half-close canceled during completion");
+             }
+             if (connection->close_started || connection->closing || connection->terminal_cleanup_complete) {
+                throw_engine(engine_error_kind::connection_closed, "QUIC connection closed during write half-close");
+             }
+             // The FIN prefix already drained. A later peer STOP/native close
+             // cannot revoke it; incoming RESET_STREAM remains a read failure.
+             if (stream->reset) {
+                throw_engine(engine_error_kind::stream_reset, "QUIC stream locally reset during write half-close");
+             }
           }
           co_return;
        },

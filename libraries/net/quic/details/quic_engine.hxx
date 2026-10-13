@@ -134,6 +134,7 @@ class engine_stream : public std::enable_shared_from_this<engine_stream> {
    boost::asio::awaitable<void> async_write(std::span<const std::uint8_t> bytes, std::shared_ptr<void> lifetime);
    boost::asio::awaitable<void> async_write(std::vector<std::uint8_t> bytes, std::shared_ptr<void> lifetime);
    boost::asio::awaitable<std::vector<std::uint8_t>> async_read();
+   boost::asio::awaitable<void> async_close_write();
    boost::asio::awaitable<void> async_close();
    void cancel_write();
    void cancel();
@@ -143,6 +144,7 @@ class engine_stream : public std::enable_shared_from_this<engine_stream> {
    friend class engine_connection;
 
    explicit engine_stream(std::shared_ptr<impl> impl_value);
+   boost::asio::awaitable<void> async_close_impl(bool require_fin);
 
    std::shared_ptr<impl> impl_;
 };

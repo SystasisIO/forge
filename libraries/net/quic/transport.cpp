@@ -92,6 +92,14 @@ class quic_stream_concept final : public forge::net::transport::detail::stream_c
       }
    }
 
+   boost::asio::awaitable<void> async_close_write() override {
+      try {
+         co_await value_.async_close_write();
+      } catch (const forge::exceptions::base& error) {
+         raise_transport_failure(error);
+      }
+   }
+
    boost::asio::awaitable<void> async_close() override {
       try {
          co_await value_.async_close();

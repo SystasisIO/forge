@@ -646,6 +646,7 @@ node::impl::exchange_topology_rendezvous(const std::shared_ptr<session_state>& s
                                       "P2P topology rendezvous operation canceled during stream open");
              }
              co_await stream->async_write(rendezvous::codec::encode(request, options.limits.rendezvous));
+             co_await stream->async_close_write();
              auto buffer = std::vector<std::uint8_t>{};
              response.emplace(rendezvous::codec::decode(
                  co_await async_read_length_delimited(*stream, buffer, options.limits.rendezvous.max_message_size),
@@ -813,6 +814,7 @@ boost::asio::awaitable<void> node::impl::async_unregister_topology_rendezvous(st
                       },
                    },
                    options.limits.rendezvous));
+                co_await stream->async_close_write();
                 // UNREGISTER has no ACK: retain the stream/resource owner until remote FIN.
                 auto remote_fin = false;
                 try {

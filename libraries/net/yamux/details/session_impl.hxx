@@ -56,7 +56,8 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    [[nodiscard]] std::uint32_t local_window_delta() const noexcept;
    [[nodiscard]] std::uint32_t checked_peer_window(std::uint32_t current, std::uint32_t delta) const;
    [[nodiscard]] std::shared_ptr<stream_state> make_stream_locked(std::uint32_t id, std::uint32_t send_window);
-   void require_stream_owned_locked(const std::shared_ptr<stream_state>& state) const;
+   void require_stream_owned_locked(const std::shared_ptr<stream_state>& state,
+                                    bool allow_completed = false) const;
    [[nodiscard]] bool stream_valid(const std::shared_ptr<stream_state>& state) const noexcept;
    [[nodiscard]] transport::stream make_transport_stream(const std::shared_ptr<stream_state>& state);
 

@@ -302,6 +302,7 @@ exchange_rendezvous(const auto& self, const peer_id& peer, rendezvous::message r
    deadline.arm([&stream] noexcept { stream.request_cancel(); });
    try {
       co_await stream.async_write(rendezvous::codec::encode(request, self->options.limits.rendezvous));
+      co_await stream.async_close_write();
       auto buffer = std::vector<std::uint8_t>{};
       auto response = rendezvous::codec::decode(
           co_await async_read_length_delimited(stream, buffer, self->options.limits.rendezvous.max_message_size),

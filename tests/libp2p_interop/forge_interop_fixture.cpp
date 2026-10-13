@@ -1018,6 +1018,7 @@ forge::net::p2p::rendezvous::discover_response raw_rendezvous_discover(forge::as
                             .cookie = std::move(cookie),
                         },
                 })));
+   forge::asio::blocking::run(runtime, stream.async_close_write());
    const auto response = forge::net::p2p::rendezvous::codec::decode(
        wrap_length_delimited(forge::asio::blocking::run(runtime, read_length_delimited(stream, 1024 * 1024))));
    forge::asio::blocking::run(runtime, stream.async_close());
@@ -1088,6 +1089,7 @@ forge::net::p2p::rendezvous::discover_response full_rendezvous_discover(
              .type = forge::net::p2p::rendezvous::message_type::discover,
              .discover_value = forge::net::p2p::rendezvous::discover_request{
                  .namespace_name = std::string{rendezvous_namespace}, .limit = 10, .cookie = {}}}));
+         co_await stream.async_close_write();
          response = forge::net::p2p::rendezvous::codec::decode(
              wrap_length_delimited(co_await read_length_delimited(stream, 1024 * 1024)));
          co_await stream.async_close();

@@ -161,7 +161,8 @@
         ],
         "forge.net.p2p.scoring": [ "topology.connection_manager", "state.peer_store" ],
         "forge.net.p2p.stream": [
-          "identity.secure_transport_authentication", "resource.streams", "resource.queued_bytes"
+          "identity.secure_transport_authentication", "resource.streams", "resource.queued_bytes",
+          "transport.direct_quic", "transport.tcp_yamux", "protocol.rendezvous"
         ],
         "forge.net.p2p.topology": [
           "protocol.peer_exchange", "protocol.kademlia", "protocol.rendezvous", "lifecycle.discovery",
@@ -169,7 +170,7 @@
         ]
       },
       "header_features": {},
-      "sha256": "1cfcdf7973d6bc998d19e3b3aecfea5aa9d863e63dca0a718bf4c3d2f4f094de",
+      "sha256": "c2553297f66d33c711de45e5a0add47bf585fca32d71ff585a1d0a0350836c1e",
       "feature_ids": [
         "addressing.dnsaddr",
         "dialing.happy_eyeballs",
@@ -811,7 +812,7 @@
       "owner": "net.p2p.node",
       "normal_activation": "configured_points_in_managed_topology_or_explicit_caller",
       "configuration": "explicit role, bounded configured points and namespaces; no opportunistic servers",
-      "resource_ownership": "node-owned per-point namespace state, bounded requests and response pages",
+      "resource_ownership": "node-owned per-point namespace state, bounded requests and response pages; request write-half closes before response/EOF reading while stream reservations remain owned until terminal close",
       "persistence": "server registrations use peer_store; client cookies and source observations are operational state",
       "maintenance": "TTL-derived registration renewal, signed-address generation refresh, cookie delta and unregister",
       "diagnostics": "registration, discovery and topology failure state",
@@ -822,6 +823,7 @@
         "layers": [ "codec", "state_machine", "raw_node", "donor_interop" ],
         "source_paths": [
           "libraries/net/p2p/rendezvous.cpp", "libraries/net/p2p/node_impl_topology.cpp",
+          "libraries/net/p2p/node.cpp", "tests/quic_p2p/rendezvous_unregister_tests.cpp",
           "libraries/net/p2p/topology_manager_discovery.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_libp2p_interop" ],
@@ -1014,7 +1016,7 @@
       "resource_ownership":
           "move-only provisional reservation bound atomically after negotiation and retained by resource_stream",
       "persistence": "none",
-      "maintenance": "released by close, reset, destruction, cancellation and tracked shutdown",
+      "maintenance": "retained through write half-close; released by terminal close, reset, destruction, cancellation and tracked shutdown",
       "diagnostics": "active reservations and reason-specific stream denials",
       "intended_disposition": "preserve_and_extend_live_transport_profiles",
       "builtin_protocols": [],
@@ -1024,6 +1026,7 @@
         "layers": [ "state_machine", "raw_node", "official_plugin", "adversarial" ],
         "source_paths": [
           "libraries/net/p2p/resource_manager.cpp", "libraries/net/p2p/resource_stream.cpp",
+          "libraries/net/p2p/stream.cpp", "tests/quic_p2p/quic_stream_eof_tests.cpp",
           "libraries/net/p2p/node_impl_streams.cpp", "plugins/net/p2p/node/plugin.cpp"
         ],
         "tests": [ "test_forge_quic_p2p", "test_forge_plugins" ],

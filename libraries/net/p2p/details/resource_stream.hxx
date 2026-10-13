@@ -42,6 +42,7 @@ class resource_stream final : public forge::net::transport::detail::stream_conce
    boost::asio::awaitable<void> async_write_frame_chunk(forge::net::transport::chunk bytes) override;
    boost::asio::awaitable<std::vector<std::uint8_t>> async_read() override;
    boost::asio::awaitable<forge::net::transport::chunk> async_read_chunk() override;
+   boost::asio::awaitable<void> async_close_write() override;
    boost::asio::awaitable<void> async_close() override;
    void cancel() override;
    void request_cancel() noexcept;

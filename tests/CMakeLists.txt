@@ -947,7 +947,7 @@ add_executable(
    transport/transport_tests.cpp
    transport/datagram_io_tests.cpp
 )
-target_link_libraries(test_forge_transport forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_transport forge_net_transport forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_transport COMMAND test_forge_transport WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -980,7 +980,7 @@ add_executable(
    unit/main.cpp
    yamux/yamux_tests.cpp
 )
-target_link_libraries(test_forge_yamux forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_yamux forge_net_yamux forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_yamux COMMAND test_forge_yamux WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(

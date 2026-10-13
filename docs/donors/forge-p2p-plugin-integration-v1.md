@@ -525,3 +525,56 @@ The existing raw `rendezvous_lifecycle` donor fixture invokes manual unregister
 and must not be reported as automatic node-owned shutdown evidence. New focused
 regressions and fresh donor/configured acceptance are required before crediting
 this correction as verified.
+
+### Rendezvous Write Half-Close Candidate
+
+The subsequent four-case focused Rust run used source head
+`0834111f650b2a25d50dc4a80bdd98f86275d43e`. Both Forge-to-Rust cases,
+`rendezvous_register_discover` and `rendezvous_lifecycle`, failed; both reverse
+Rust-to-Forge cases passed. The failed Forge path reported
+`peer_write_rejected` before native FIN submission, at `stream.cpp:69` and
+`quic_engine_stream.cpp:185`. Failed artifacts are retained. This is a focused
+2/4 result, not full canonical Stage 6 or Stage 7 acceptance. The failure can
+precede the new automatic-manager-unregister phase; its successful completion
+against Rust is not proven by compilation or the reverse-direction results.
+
+Pinned Rust `22fb4c784fc55ad8b15d05fdc9f98d663107d4cb` documents one new
+substream per request in `protocols/request-response/src/lib.rs:25-27`.
+Its outbound handler uses `write_request -> close(write) -> read_response`
+(`protocols/request-response/src/handler.rs:188-193`). The Rendezvous codec
+reads one framed message, not request EOF (`protocols/rendezvous/src/codec.rs:248-257`),
+and the server writes its response, closes its write direction and drops the
+stream (`protocols/request-response/src/handler.rs:149-157`). UNREGISTER removes
+the registration before omitting the response
+(`protocols/rendezvous/src/server.rs:324-332`). No application ACK is added.
+
+The Rust QUIC adapter closes only the send half
+(`transports/quic/src/connection/stream.rs:79-86`). The fixture lock resolves
+Quinn 0.11.11 and quinn-proto 0.11.16. Quinn's receive-half destructor calls
+`stop(0)` unless EOF was consumed (`src/recv_stream.rs:509-535`); quinn-proto
+explicitly allows a redundant STOP_SENDING even after data/FIN arrival
+(`src/connection/streams/recv.rs:89-102`). Stopping reception before EOF is
+permitted by [RFC 9000 section 3.5](https://www.rfc-editor.org/rfc/rfc9000.html#section-3.5).
+The STOP code is application-defined, not a transport NO_ERROR or Rendezvous
+success status ([section 20.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-20.2)).
+Code zero alone cannot distinguish normal stream disposal from early rejection.
+
+The correction adds `async_close_write` for register, discover
+and unregister before response/remote-EOF reads. Its required contract is a
+write-only FIN, serialized by the caller with writes and terminal close, with
+the read direction, cancellation and P2P resource reservation retained until
+terminal cleanup. QUIC and Yamux are the intended supported models; other
+transport models default to typed `transport::exceptions::unsupported_protocol`.
+QUIC success must prove actual FIN submission and send-prefix drain, not merely
+successful terminal cleanup after prior STOP/rejection/reset. Once that FIN
+prefix has drained, a late STOP cannot revoke the write result. An incoming
+RESET_STREAM remains a typed read failure, not a failure of the independent
+write direction. A live stream's pending cancellation request joins the existing
+owner-strand reset/drain path before FIN admission; normal native-close
+notifications already mark the stream closed and do not invent cancellation.
+Early write half-close removes the
+read-response-before-FIN ordering gap, but does not exclude STOP racing FIN
+submission after the server decodes the complete request. Native correctness,
+focused regressions and fresh live validation remain pending. No donor patch,
+new ACK, retry or relaxed acceptance is part of this candidate; the original
+Rust whole-host QUIC shutdown limitation remains `NOT_PROVEN`.
