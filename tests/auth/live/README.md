@@ -22,7 +22,7 @@ configuration or a healthy container.
   thread runs Asio; the provider dispatches its SDK work to the main queue.
   `appauth_driver.cpp` consumes the actual named Forge modules, avoiding an
   unsupported ObjC++/C++ module-BMI mix. No AppAuth calls are duplicated here.
-- Linux with the real **5.3.8** `oidc-agent`, `oidc-gen`, `oidc-add`, public C
+- Linux with the real **5.3.8-systasis.1** `oidc-agent`, `oidc-gen`, `oidc-add`, public C
   library/headers and its required dependencies. GNU `timeout` bounds the
   external interactive setup below; `uuidgen` supplies disposable IDs. Use an isolated disposable agent, not a
   user's existing socket. A browser on another device may complete Device Flow.
@@ -99,7 +99,8 @@ control characters and invalid bounds fail without echoing input. All values
 are public configuration, never tokens, passwords or client secrets.
 
 Keys: `issuer`, `client`, `account`, `run-id`, `flow`, `scopes` (comma-separated,
-up to 8 unique scopes), optional `audience`, `minimum-validity` (0-60 seconds,
+up to 8 unique scopes; an explicit empty value requests the provider's default
+account profile), optional `audience`, `minimum-validity` (0-60 seconds,
 default 10), `timeout` (5-900 seconds, default 180). The example file is
 [live.conf.example](live.conf.example); replace its issuer/client placeholders
 before use. Account must be exactly `live-<run-id>`. Run ID is a fresh lowercase
@@ -235,6 +236,10 @@ Issuer comparison uses provider metadata; it is **not** verified user identity,
 JWT signature/audience/scope validation or resource-server authorization.
 Linux `client` is public setup documentation input: the provider selects an
 agent account and cannot verify its client ID through this API.
+`metadata_observed` records only returned expiry and issuer equality before
+assertions. It is not a success result and must not be interpreted as token
+validation. Explicit overrides and the default account profile are distinct
+acceptance cases; passing one does not waive a failure in the other.
 
 Only final `PASS/<flow>` plus exit 0 completes that phase. Earlier `EVENT`
 records are observations, not PASS. Exit 1 is provider/assertion failure, 2 is

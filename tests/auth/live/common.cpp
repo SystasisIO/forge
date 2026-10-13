@@ -123,6 +123,9 @@ void set(options& config, const std::string& key, const std::string& value) {
       config.timeout = std::chrono::seconds{number(value, 5, 900)};
    } else if (key == "scopes") {
       config.scopes.clear();
+      if (value.empty()) {
+         return;
+      }
       std::size_t start = 0;
       while (start <= value.size()) {
          const auto end = value.find(',', start);
@@ -152,7 +155,8 @@ options parse(int argc, char** argv) {
    for (int i = 1; i < argc; i += 2) {
       const auto argument = std::string_view{argv[i]};
       const auto value = std::string_view{argv[i + 1]};
-      if (!argument.starts_with("--") || !safe_text(argument, 32) || !safe_text(value, 1024) ||
+      if (!argument.starts_with("--") || !safe_text(argument, 32) ||
+          (!safe_text(value, 1024) && !(argument == "--scopes" && value.empty())) ||
           !cli.emplace(std::string{argument.substr(2)}, std::string{value}).second) {
          invalid_config();
       }
@@ -171,7 +175,8 @@ options parse(int argc, char** argv) {
             }
             const auto key = line.substr(0, equals);
             const auto value = line.substr(equals + 1);
-            if (!safe_text(key, 32) || !safe_text(value) || !seen.emplace(key, true).second) {
+            if (!safe_text(key, 32) || (!safe_text(value) && !(key == "scopes" && value.empty())) ||
+                !seen.emplace(key, true).second) {
                invalid_config();
             }
             set(config, key, value);
@@ -226,6 +231,11 @@ std::chrono::system_clock::time_point inspect(const forge::auth::oauth2::access_
                                             const options& config) {
    const auto& metadata = token.metadata();
    const auto now = std::chrono::system_clock::now();
+   event("EVENT", "metadata_observed", false,
+         metadata.expires_at
+             ? std::chrono::duration_cast<std::chrono::seconds>(metadata.expires_at->time_since_epoch()).count()
+             : 0,
+         metadata.issuer == config.issuer ? 1 : 0);
    if (metadata.issuer != config.issuer || !metadata.expires_at || *metadata.expires_at <= now ||
        *metadata.expires_at + std::chrono::seconds{1} < now + config.minimum_validity) {
       throw std::runtime_error{"public token metadata did not satisfy fixture constraints"};
