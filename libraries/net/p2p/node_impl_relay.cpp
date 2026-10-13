@@ -126,7 +126,8 @@ std::chrono::system_clock::time_point node::impl::endpoint_backoff_until(
       const auto endpoint_string = address.to_string();
       for (const auto& current : record->endpoints) {
          if (current.kind == kind && current.address.to_string() == endpoint_string) {
-            failures = current.failures + 1;
+            failures = current.failures == (std::numeric_limits<std::uint64_t>::max)()
+                           ? current.failures : current.failures + 1;
             break;
          }
       }
@@ -143,7 +144,7 @@ std::chrono::system_clock::time_point node::impl::endpoint_backoff_until(
                            : failures * failures;
    const auto extra = std::chrono::milliseconds{
        static_cast<std::chrono::milliseconds::rep>(std::min(square, max_square) * step_count)};
-   return std::chrono::system_clock::now() + std::min(base + extra, cap);
+   return detail::saturating_topology_expiry(std::chrono::system_clock::now(), std::min(base + extra, cap));
 }
 
 void node::impl::record_relay_failure() {

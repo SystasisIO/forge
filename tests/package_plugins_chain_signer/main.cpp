@@ -16,8 +16,8 @@ import forge.chain.api.finality_signer;
 import forge.chain.api.block_signer;
 import forge.chain.protocol.block_signing;
 import forge.chain.api.transaction_signer;
-import forge.plugins.chain.signer.descriptor;
 import forge.plugins.chain.signer.types;
+import forge.plugins.chain.signer.plugin;
 import forge.plugins.chain.signer.block_execution_handler;
 
 int main() {
@@ -57,6 +57,6 @@ int main() {
                         std::declval<boost::asio::awaitable<std::vector<forge::chain::protocol::signature>>>())),
                     boost::asio::awaitable<std::vector<forge::chain::protocol::signature>>>);
 
-   const auto descriptor = forge::plugins::chain::signer::default_descriptor();
+   const auto descriptor = forge::plugins::chain::signer::plugin::descriptor();
    return descriptor.id.value == std::string_view{"forge.plugins.chain.signer"} ? 0 : 1;
 }

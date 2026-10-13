@@ -22,14 +22,19 @@ enum class code : std::uint16_t {
    canceled = 6,
 };
 
-FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.net.yamux")
-
 using invalid_options = forge::exceptions::coded_exception<code, code::invalid_options>;
 using protocol_error = forge::exceptions::coded_exception<code, code::protocol_error>;
 using resource_limit = forge::exceptions::coded_exception<code, code::resource_limit>;
 using stream_reset = forge::exceptions::coded_exception<code, code::stream_reset>;
 using closed = forge::exceptions::coded_exception<code, code::closed>;
 using canceled = forge::exceptions::coded_exception<code, code::canceled>;
+
+class end_of_stream : public closed {
+ public:
+   using closed::closed;
+};
+
+FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.net.yamux")
 
 [[nodiscard]] inline std::optional<code> code_of(const forge::exceptions::base& value) noexcept {
    const auto& actual = value.code();

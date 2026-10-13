@@ -240,6 +240,29 @@ The returned `partial_topic` is a non-owning registration token. It binds
 `async_forget_partial` and scoped unsubscribe to the same node/topic generation.
 Copying or destroying it does not unsubscribe. Replacement invalidates the old
 token, preventing a delayed callback from changing the replacement's state.
+Token equality compares owner identity, topic and generation even after owner
+expiry; equal tokens do not imply a live or usable registration.
+
+`async_disable_partial(token)` retires that exact Partial registration and its
+advertised groups while preserving the full handler, mesh and message state.
+It publishes a full-only subscription update, not PRUNE or a global extension
+disable. Stale, foreign, default and repeated tokens are rejected. Already
+admitted callbacks keep their byte/busy accounting until they finish; the call
+requests their stop but does not join them or prove remote receipt. Cancellation
+before local commit makes no change; an error or cancellation after commit does
+not restore the registration. A replacement committed while an update waits
+uses the existing current-subscription snapshot refresh.
+Peer-local send failures do not prevent attempts to update the remaining
+candidates; the first such error is reported after those attempts. Caller or
+node cancellation stops and joins the owned send operation instead. Retiring
+the Partial registration does not cancel its independent full-only update.
+
+Full-topic `async_unsubscribe(topic)` remains idempotent after node admission
+closes: it removes local handlers and partial registrations without sending
+network updates. Token-scoped partial unsubscribe still rejects a stopped
+owner. Unsubscribe does not join callbacks already admitted; `async_stop()`
+owns that join. Release callback captures and invoke stop callbacks outside
+node locks.
 
 The application owns group IDs, part encoding, authenticity checks, metadata
 replacement and reconstruction. A group ID must be usable before the full
@@ -586,6 +609,32 @@ create unbounded work or a second cache.
 
 ## Examples
 
+### Validate Configuration Before Provisioning Resources
+
+`validate_policy(const node::options&)` checks policy without provisioning an
+identity, a private-network protector or persistence. It validates legacy
+discovery against a temporary topology copy; it neither changes the supplied
+options nor copies or invokes application callbacks. DHT callback presence,
+protocol uniqueness and persistence-key membership are checked, but absent
+backends are permitted at this stage. Zero resource-scope budgets are valid
+admission-denial policies, not malformed configuration.
+
+When `private_network` is absent, the direct transport registry installs QUIC
+regardless of the `direct_quic` capability bit. Policy validation follows that
+same availability rule: the native client/server QUIC validator checks all six
+positive bounds and the `UINT32_MAX` frame-size ceiling before listen/connect.
+Clearing the capability bit does not bypass these checks. The private-network
+profile does not install QUIC, so these QUIC-specific constraints are skipped.
+
+`validate(const node::options&)` additionally checks identity presence, explicit
+peer/certificate agreement and required protector/peer/DHT persistence. Private
+key parsing and key/certificate matching remain constructor-owned. A successful
+policy check is not a successful resource or startup check: default options pass `validate_policy`
+but not `validate`. The constructor still normalizes legacy discovery, performs
+full validation, then clamps topology capacity before creating node state.
+Standalone `peer_store` retains its memory fallback; production node validation
+continues to require an explicitly supplied persistence backend.
+
 ### Start A Node
 
 ```cpp
@@ -691,6 +740,12 @@ before ranking, so an ineligible QUIC record does not hide an eligible TCP recor
 Peer gating follows resolved identity inference; address gating runs on each
 concrete candidate before native transport admission.
 
+`path_policy.max_direct_endpoints` is validated against the scheduler ceiling
+(`1..100`) before startup; protocol-open budgets are still bounded by the
+caller's options. Explicit connect retains its own attempt budget. Asio
+`operation_aborted` during A/AAAA or TXT resolution maps to the typed P2P
+`canceled` error, not `internal`; unrelated system errors remain failures.
+
 Only the authenticated winner enters the node session registry, after all
 losers have completed native cleanup. Stop seals session admission before
 draining the scheduler. A failed publication retires the exact session and
@@ -754,6 +809,22 @@ closest peers and use `alpha` only as the concurrent RPC bound.
 Per-profile diagnostics expose whether autonomous maintenance is enabled, the
 startup lookup and in-flight state, consecutive failures and the bounded delay
 until the next attempt.
+
+`node::options::dht_records` configures each profile's complete
+`dht::record_store::options`, including its persistence port. Build a profile's
+baseline with `dht::record_store::options_for(profile)`, then set its supported
+capacities and `persistence`. An omitted entry retains profile-derived per-key
+and record-size defaults; production still requires durable persistence for
+every profile. Unknown profiles, shared persistence owners, zero bounds and a
+per-key provider capacity above the profile's `k` are rejected. This replaces
+the former persistence-only `dht_record_persistence` map without an alias;
+wire protocols and persisted row layouts are unchanged.
+
+Count and aggregate-byte capacities bound the operational record store, not
+the physical size of a database file. The official ObjectDB adapter receives
+the same effective record/page limits and bounds hydration/pruning requests.
+It does not introduce a second quota engine. Adapter-specific page limits are
+checked before identity Secrets reads and peer-state transactions.
 
 Custom value validators report deterministic record invalidity with
 `exceptions::record_rejected`. Capacity, persistence, key resolution and other

@@ -1095,7 +1095,7 @@ from pubsub_extension_cases import case_specs as extension_specs, run_case as ru
         self.assertIn("forge-p2p-autorelay-v1 dependencies differ from baseline", stderr)
 
     def test_stale_plugin_hashes_are_rejected_not_silently_refreshed(self) -> None:
-        for owner in ("node", "resolver", "pubsub", "diagnostics"):
+        for owner in ("node", "resolver"):
             inventory = self.manifest("p2p_feature_inventory.json")
             key = f"plugin.p2p.{owner}"
             inventory["public_surface_snapshots"][key]["sha256"] = "0" * 64
@@ -1103,6 +1103,36 @@ from pubsub_extension_cases import case_specs as extension_specs, run_case as ru
                 status, _, stderr = self.check(inventory=inventory)
                 self.assertEqual(status, 1)
                 self.assertIn(f"public surface {key}: declarations changed", stderr)
+
+    def test_consolidated_node_inventory_retains_partial_functionality(self) -> None:
+        from check_p2p_feature_inventory import REQUIRED_OWNERS
+
+        inventory = self.manifest("p2p_feature_inventory.json")
+        self.assertEqual(inventory["owners"], REQUIRED_OWNERS)
+        self.assertEqual({key for key, owner in inventory["owners"].items() if owner["kind"] == "plugin"},
+                         {"plugin.p2p.node", "plugin.p2p.resolver"})
+        self.assertEqual(set(inventory["public_surface_snapshots"]),
+                         {"net.p2p.node", "plugin.p2p.node", "plugin.p2p.resolver"})
+        features = {feature["id"]: feature for feature in inventory["features"]}
+        snapshot = inventory["public_surface_snapshots"]["plugin.p2p.node"]
+        self.assertEqual(snapshot["module_count"], len(snapshot["modules"]))
+        self.assertEqual(snapshot["modules"], sorted(set(snapshot["modules"])))
+        self.assertEqual(set(snapshot["module_features"]), set(snapshot["modules"]))
+        self.assertEqual(set(snapshot["feature_ids"]), {"plugin.node", "plugin.pubsub", "plugin.diagnostics"})
+        for feature_id in snapshot["feature_ids"]:
+            self.assertEqual(features[feature_id]["owner"], "plugin.p2p.node")
+            self.assertEqual(features[feature_id]["state"], "partial")
+        for name, feature_id in (("pubsub_api", "plugin.pubsub"), ("diagnostics_api", "plugin.diagnostics"),
+                                 ("events_api", "plugin.diagnostics")):
+            self.assertEqual(snapshot["module_features"][f"forge.plugins.net.p2p.node.{name}"], [feature_id])
+        self.assertFalse(any(module.endswith("_source") for module in snapshot["modules"]))
+        for feature in features.values():
+            for path in feature["evidence"]["source_paths"]:
+                self.assertFalse(path.startswith(("plugins/net/p2p/pubsub/", "plugins/net/p2p/diagnostics/")), path)
+        for feature_id in ("plugin.node", "plugin.pubsub", "plugin.diagnostics"):
+            for path in features[feature_id]["evidence"]["source_paths"]:
+                self.assertTrue(path.startswith("plugins/net/p2p/node/"), path)
+                self.assertNotIn("_source", path)
 
     def test_plugin_module_coverage_cannot_be_omitted(self) -> None:
         inventory = self.manifest("p2p_feature_inventory.json")

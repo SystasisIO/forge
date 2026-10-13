@@ -4,10 +4,16 @@
 #include <boost/asio/use_future.hpp>
 #include <array>
 #include <chrono>
+#include <concepts>
 #include <future>
 
 import forge.net.transport.datagram_io;
 import forge.net.transport.endpoint;
+import forge.net.transport.stream;
+
+static_assert(requires(forge::net::transport::stream& stream) {
+   { stream.async_close_write() } -> std::same_as<boost::asio::awaitable<void>>;
+});
 
 int main() {
    const auto endpoint = forge::net::transport::endpoint{.host = "127.0.0.1", .port = 9000};

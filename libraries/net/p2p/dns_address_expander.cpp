@@ -21,7 +21,9 @@ module;
 #include <vector>
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
 
@@ -464,6 +466,11 @@ perform_lookup(dns_address_expansion_state& state, Operation operation) {
          co_return std::nullopt;
       }
       FORGE_THROW_EXCEPTION(exceptions::internal, "P2P DNS resolver failed internally");
+   } catch (const boost::system::system_error& error) {
+      if (error.code() == boost::asio::error::operation_aborted) {
+         throw_canceled();
+      }
+      FORGE_THROW_EXCEPTION(exceptions::internal, "P2P DNS resolver failed unexpectedly");
    } catch (...) {
       FORGE_THROW_EXCEPTION(exceptions::internal, "P2P DNS resolver failed unexpectedly");
    }

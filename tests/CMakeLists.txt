@@ -385,11 +385,12 @@ add_executable(
 target_link_libraries(
    test_forge_plugins_descriptor_surfaces PRIVATE
       forge_plugins_crypto_secrets
+      forge_plugins_crypto_wallet
       forge_plugins_chain_signer
       forge_plugins_db_store
+      forge_plugins_log_otlp
       forge_plugins_net_http_server
       forge_plugins_net_p2p_node
-      forge_plugins_net_p2p_pubsub
       forge_plugins_net_p2p_resolver
 )
 add_test(
@@ -946,7 +947,7 @@ add_executable(
    transport/transport_tests.cpp
    transport/datagram_io_tests.cpp
 )
-target_link_libraries(test_forge_transport forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_transport forge_net_transport forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_transport COMMAND test_forge_transport WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -979,7 +980,7 @@ add_executable(
    unit/main.cpp
    yamux/yamux_tests.cpp
 )
-target_link_libraries(test_forge_yamux forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_yamux forge_net_yamux forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_yamux COMMAND test_forge_yamux WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -1100,6 +1101,7 @@ add_executable(
    quic_p2p/interface_state_tests.cpp
    quic_p2p/interface_watcher_tests.cpp
    quic_p2p/quic_tests.cpp
+   quic_p2p/quic_stream_eof_tests.cpp
    quic_p2p/quic_connector_cleanup_tests.cpp
    quic_p2p/quic_send_drain_tests.cpp
    quic_p2p/quic_cid_registry_tests.cpp
@@ -1122,6 +1124,7 @@ add_executable(
    quic_p2p/path_manager_tests.cpp
    quic_p2p/path_session_tests.cpp
    quic_p2p/p2p_tests.cpp
+   quic_p2p/host_policy_tests.cpp
    quic_p2p/gossipsub_test_shutdown.cpp
    quic_p2p/gossipsub_test_shutdown_fixture.cpp
    quic_p2p/gossipsub_test_shutdown_tests.cpp
@@ -1146,9 +1149,11 @@ add_executable(
    quic_p2p/dial_scheduler_tests.cpp
    quic_p2p/session_teardown_tests.cpp
    quic_p2p/node_session_tests.cpp
+   quic_p2p/node_policy_tests.cpp
    quic_p2p/node_addressing_tests.cpp
    quic_p2p/node_bootstrap_addressing_tests.cpp
    quic_p2p/topology_tests.cpp
+   quic_p2p/rendezvous_unregister_tests.cpp
 )
 target_sources(
    test_forge_quic_p2p
@@ -1387,6 +1392,9 @@ add_custom_target(
 add_executable(
    forge_interop_fixture
    libp2p_interop/forge_interop_fixture.cpp
+   libp2p_interop/dht_value_fixture.hxx
+   libp2p_interop/dht_value_fixture.cpp
+   libp2p_interop/libp2p_identity.cpp
    libp2p_interop/forge_autonat_fixture.cpp
    libp2p_interop/forge_autorelay_fixture.cpp
    libp2p_interop/forge_connection_fixture.cpp
@@ -1405,6 +1413,36 @@ add_dependencies(forge_interop_fixture forge_interop_fixture_build_info)
 target_include_directories(forge_interop_fixture PRIVATE ${FORGE_INTEROP_BUILD_INFO_DIRECTORY})
 target_link_libraries(forge_interop_fixture forge_net_p2p forge_codec_hex forge_codec_json forge_crypto_digest)
 
+add_executable(
+   forge_plugin_interop_fixture
+   libp2p_interop/libp2p_identity.cpp
+   libp2p_interop/forge_plugin_interop_fixture.cpp
+   libp2p_interop/forge_plugin_interop_fixture_config.cpp
+   libp2p_interop/forge_plugin_interop_fixture_protocol.cpp
+   libp2p_interop/forge_plugin_interop_fixture_pubsub.cpp
+   libp2p_interop/forge_plugin_interop_fixture_relay.cpp
+   libp2p_interop/forge_plugin_interop_fixture_autonat.cpp
+   libp2p_interop/forge_autonat_fixture.cpp
+   libp2p_interop/forge_plugin_interop_fixture_dht.cpp
+   libp2p_interop/dht_value_fixture.hxx
+   libp2p_interop/dht_value_fixture.cpp
+)
+add_dependencies(forge_plugin_interop_fixture forge_interop_fixture_build_info)
+target_include_directories(forge_plugin_interop_fixture PRIVATE ${FORGE_INTEROP_BUILD_INFO_DIRECTORY})
+target_link_libraries(forge_plugin_interop_fixture PRIVATE
+   forge_app forge_plugins_net_p2p_node forge_plugins_crypto_secrets forge_plugins_db_store
+   forge_codec_hex forge_codec_json forge_codec_yaml forge_crypto_digest OpenSSL::Crypto
+)
+target_compile_definitions(forge_plugin_interop_fixture PRIVATE
+   FORGE_HAS_MDBX=$<BOOL:${FORGE_HAS_MDBX}>
+   FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>
+)
+add_test(
+   NAME test_forge_p2p_plugin_autonat_fixture
+   COMMAND forge_plugin_interop_fixture autonat-self-test
+)
+set_tests_properties(test_forge_p2p_plugin_autonat_fixture PROPERTIES TIMEOUT 15)
+
 add_test(
    NAME test_forge_libp2p_wire_fixture
    COMMAND forge_interop_fixture --self-test
@@ -1416,6 +1454,17 @@ add_test(
    COMMAND forge_interop_fixture --pubsub-self-test
 )
 set_tests_properties(test_forge_p2p_pubsub_fixture PROPERTIES TIMEOUT 45)
+
+add_test(
+   NAME test_forge_p2p_plugin_pubsub_fixture
+   COMMAND forge_plugin_interop_fixture pubsub-self-test
+)
+set_tests_properties(test_forge_p2p_plugin_pubsub_fixture PROPERTIES TIMEOUT 45)
+add_test(
+   NAME test_forge_p2p_plugin_relay_fixture
+   COMMAND forge_plugin_interop_fixture relay-self-test
+)
+set_tests_properties(test_forge_p2p_plugin_relay_fixture PROPERTIES TIMEOUT 30)
 
 set(_forge_libp2p_interop_enabled 0)
 if(FORGE_ENABLE_LIBP2P_INTEROP)
@@ -1636,6 +1685,41 @@ add_test(
    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
 )
 set_tests_properties(test_forge_libp2p_private_profile_evidence PROPERTIES TIMEOUT 10)
+add_test(
+   NAME test_forge_libp2p_plugin_node_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_plugin_node_cases test_plugin_node_evidence test_plugin_node_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_plugin_node_evidence PROPERTIES TIMEOUT 30)
+add_test(
+   NAME test_forge_libp2p_plugin_dht_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_plugin_dht_cases test_plugin_dht_evidence test_plugin_dht_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_plugin_dht_evidence PROPERTIES TIMEOUT 30)
+add_test(
+   NAME test_forge_libp2p_plugin_pubsub_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_plugin_pubsub_cases test_plugin_pubsub_evidence test_plugin_pubsub_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_plugin_pubsub_evidence PROPERTIES TIMEOUT 30)
+add_test(
+   NAME test_forge_libp2p_plugin_relay_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_plugin_relay_cases test_plugin_relay_evidence test_plugin_relay_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_plugin_relay_evidence PROPERTIES TIMEOUT 45)
+add_test(
+   NAME test_forge_libp2p_plugin_autonat_evidence
+   COMMAND ${Python3_EXECUTABLE} -B -m unittest
+      test_plugin_autonat_cases test_plugin_autonat_evidence test_plugin_autonat_acceptance
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/libp2p_interop
+)
+set_tests_properties(test_forge_libp2p_plugin_autonat_evidence PROPERTIES TIMEOUT 45)
 
 execute_process(
    COMMAND git -C ${CMAKE_SOURCE_DIR} rev-parse HEAD
@@ -1758,6 +1842,31 @@ add_executable(
    unit/main.cpp
    quic_p2p/libp2p_identity_fixture.cpp
    plugins/plugins_tests.cpp
+   plugins/p2p_dht_api_tests.cpp
+   plugins/p2p_configuration_api_tests.cpp
+   plugins/p2p_resource_config_tests.cpp
+   plugins/p2p_host_config_tests.cpp
+   plugins/p2p_transport_config_tests.cpp
+   plugins/p2p_private_network_config_tests.cpp
+   plugins/p2p_dial_config_tests.cpp
+   plugins/p2p_service_config_tests.cpp
+   plugins/p2p_lifecycle_config_tests.cpp
+   plugins/p2p_dht_config_tests.cpp
+   plugins/p2p_pubsub_config_tests.cpp
+   plugins/p2p_pubsub_scoring_config_tests.cpp
+   plugins/p2p_protocol_api_tests.cpp
+   plugins/p2p_peer_api_tests.cpp
+   plugins/p2p_peer_contribution_tests.cpp
+   plugins/p2p_protocol_registry_tests.cpp
+   plugins/protocol_registry_fixture.cpp
+   plugins/details/protocol_registry_fixture.hxx
+   plugins/p2p_host_event_api_tests.cpp
+   plugins/p2p_shutdown_tests.cpp
+   plugins/p2p_pubsub_shutdown_tests.cpp
+   plugins/p2p_pubsub_lifecycle_tests.cpp
+   plugins/pubsub_service_fixture.cpp
+   plugins/details/pubsub_service_fixture.hxx
+   plugins/p2p_pubsub_partial_tests.cpp
    plugins/http_server_tests.cpp
    plugins/net_identity_tests.cpp
    plugins/config_assertions.cpp
@@ -1769,6 +1878,7 @@ add_executable(
 target_link_libraries(
    test_forge_plugins
    forge_app
+   forge_codec_yaml
    forge_api_http
    forge_api_p2p
    forge_api_transport
@@ -1778,9 +1888,7 @@ target_link_libraries(
    forge_plugins_crypto_secrets
    forge_plugins_net_http_server
    forge_plugins_log_otlp
-   forge_plugins_net_p2p_diagnostics
    forge_plugins_net_p2p_node
-   forge_plugins_net_p2p_pubsub
    forge_plugins_net_p2p_resolver
    Boost::included_unit_test_framework
 )
@@ -1811,8 +1919,39 @@ add_executable(
    test_forge_plugins_db_store
    unit/main.cpp
    quic_p2p/libp2p_identity_fixture.cpp
+   fixtures/local_dns_server.cpp
+   fixtures/local_dns_server.hxx
    plugins_db_store/db_store_tests.cpp
    plugins_db_store/p2p_peer_state_persistence_tests.cpp
+   plugins_db_store/p2p_private_network_tests.cpp
+   plugins_db_store/secure_node_fixture.cpp
+   plugins_db_store/details/secure_node_fixture.hxx
+   plugins_db_store/p2p_dial_tests.cpp
+   plugins_db_store/p2p_dial_configuration_tests.cpp
+   plugins_db_store/p2p_service_policy_tests.cpp
+   plugins_db_store/p2p_discovery_policy_tests.cpp
+   plugins_db_store/p2p_pubsub_policy_tests.cpp
+   plugins_db_store/p2p_dht_policy_tests.cpp
+)
+add_test(
+   NAME test_forge_p2p_plugin_host_events_live
+   COMMAND test_forge_plugins_db_store
+      --run_test=p2p_plugin_service_policies/configured_host_events_coalesce_and_resync
+      --log_level=message
+)
+set_tests_properties(test_forge_p2p_plugin_host_events_live PROPERTIES
+   TIMEOUT 45
+   SKIP_REGULAR_EXPRESSION "NOT_RUN: host-event runtime proof requires FORGE_TEST_P2P_LAN_ADDRESS"
+)
+add_test(
+   NAME test_forge_p2p_plugin_mdns_live
+   COMMAND test_forge_plugins_db_store
+      --run_test=p2p_plugin_discovery_policies/configured_private_mdns_discovers_without_seed_and_retires_observations
+      --log_level=message
+)
+set_tests_properties(test_forge_p2p_plugin_mdns_live PROPERTIES
+   TIMEOUT 60
+   SKIP_REGULAR_EXPRESSION "NOT_RUN: mDNS runtime proof requires FORGE_TEST_P2P_LAN_ADDRESS"
 )
 target_link_libraries(
    test_forge_plugins_db_store

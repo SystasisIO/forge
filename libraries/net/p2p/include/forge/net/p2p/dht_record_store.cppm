@@ -102,6 +102,7 @@ class record_store {
    struct options {
       std::shared_ptr<persistence> persistence;
       public_key_resolver public_keys;
+      // Operational quotas belong to record_store, not its persistence backend.
       std::size_t max_values = 4'096;
       std::size_t max_providers = 16'384;
       std::size_t max_local_providers = 1'024;
@@ -125,6 +126,8 @@ class record_store {
    record_store& operator=(record_store&&) noexcept;
 
    [[nodiscard]] static std::shared_ptr<persistence> make_memory_persistence();
+   // Node defaults derive per-key and record-byte bounds from the owning profile.
+   [[nodiscard]] static options options_for(const dht::profile& profile);
 
    boost::asio::awaitable<put_result>
    async_put(value_record incoming, std::chrono::system_clock::time_point now = std::chrono::system_clock::now());
@@ -169,3 +172,12 @@ class record_store::persistence {
 };
 
 } // namespace forge::net::p2p::dht
+
+export namespace forge::net::p2p {
+
+// Scalar-only preflight: does not copy or invoke callbacks or persistence.
+void validate(const dht::record_store::options& options);
+// Declaration-only profile check permits preflight before value policies are bound.
+void validate(const dht::profile& profile, const dht::record_store::options& options);
+
+} // namespace forge::net::p2p

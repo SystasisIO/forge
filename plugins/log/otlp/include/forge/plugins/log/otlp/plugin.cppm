@@ -26,6 +26,8 @@ export namespace forge::plugins::log::otlp {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -48,7 +50,5 @@ class plugin final : public forge::app::plugin {
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::log::otlp

@@ -1,6 +1,5 @@
 add_library(
    forge_plugins_net_http_server STATIC
-   descriptor.cpp
    api_impl.cpp
    bearer_auth.cpp
    config.cpp

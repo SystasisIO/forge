@@ -28,6 +28,9 @@ namespace {
 
 [[noreturn]] void raise_transport_failure(
    const forge::exceptions::base& error) {
+   if (dynamic_cast<const exceptions::end_of_stream*>(&error)) {
+      FORGE_THROW_EXCEPTION(forge::net::transport::exceptions::end_of_stream, error.what());
+   }
    const auto code = exceptions::code_of(error);
    if (code == exceptions::code::connection_closed ||
        code == exceptions::code::stream_closed) {
@@ -84,6 +87,14 @@ class quic_stream_concept final : public forge::net::transport::detail::stream_c
    boost::asio::awaitable<forge::net::transport::chunk> async_read_chunk() override {
       try {
          co_return forge::net::transport::chunk{co_await value_.async_read()};
+      } catch (const forge::exceptions::base& error) {
+         raise_transport_failure(error);
+      }
+   }
+
+   boost::asio::awaitable<void> async_close_write() override {
+      try {
+         co_await value_.async_close_write();
       } catch (const forge::exceptions::base& error) {
          raise_transport_failure(error);
       }

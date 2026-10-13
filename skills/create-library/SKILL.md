@@ -117,6 +117,18 @@ target-ов, объявляется `INTERFACE`. Добавлять фиктив
 Основной модуль библиотеки владеет собственными declarations; удобное объединение
 нескольких leaf-модулей остаётся на уровне CMake/package component.
 
+**R9. Объявления раньше метаданных.** Сначала объявлять обычные классы, структуры
+и enum. Внизу файла размещать единый блок namespace-scope metadata:
+`BOOST_DESCRIBE_STRUCT`, `BOOST_DESCRIBE_ENUM`, serialization/API generation macros
+и schema specializations. Не чередовать такие блоки с объявлениями типов.
+Сохранять требуемые C++ namespace и export placement: reflection-макросы могут
+оставаться в owning namespace, а schema specializations идти после его закрытия.
+Нетривиальные schema definitions по-прежнему живут в парном `.cpp`.
+Узкое техническое исключение: макрос, который по контракту требует class scope
+(например, `BOOST_DESCRIBE_CLASS` для private members), остаётся в завершающем
+metadata-блоке своего класса, после его членов; это не разрешает перемежать
+namespace-scope metadata с обычными объявлениями.
+
 ## Куда положить новый файл (решение)
 1. Публичный интерфейс? → `include/<ns_root>/<lib_path>/<entity>.cppm`
    (макросы/шаблоны, не выразимые модулем → `<entity>.hpp` там же).
@@ -138,6 +150,8 @@ target-ов, объявляется `INTERFACE`. Добавлять фиктив
 - `X_<aspect>.cpp` без основного `X.cpp`.
 - Нетривиальная coroutine/функция реализована в `.hxx` без template/constexpr причины.
 - Несколько самостоятельных private classes собраны в одном `details/X.hxx`.
+- Reflection/API macros или schema specializations перемежаются с обычными
+  объявлениями классов, структур или enum вместо завершающего metadata-блока.
 - Code-less aggregate скомпилирован через dummy source или anchor symbol вместо `INTERFACE`.
 - `details/` есть в одних либах и нет в других при наличии приватных хедеров.
 

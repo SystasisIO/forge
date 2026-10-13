@@ -66,7 +66,7 @@ class Listener:
     def capture_outputs(self) -> None:
         # Snapshot before a retry can reset/overwrite the requested result path.
         # Partial JSON is raw output, not a fabricated validated result payload.
-        for flag in ("--ready-file", "--result-file"):
+        for flag in ("--ready-file", "--result-file", "--echo-witness-file"):
             if flag in self.command:
                 path = Path(self.command[self.command.index(flag) + 1])
                 output = {"argument": flag, "path": str(path), "exists": path.is_file()}
@@ -208,7 +208,7 @@ def spawn_owned(command: list[str], log_file: Path, stop_file: Optional[Path] = 
             attempt["log_file"] = str(log_file)
         # Output freshness is independent of whether the peer store is reused.
         # Previous attempts have already captured immutable raw snapshots.
-        for flag in ("--ready-file", "--result-file"):
+        for flag in ("--ready-file", "--result-file", "--echo-witness-file"):
             if flag in command:
                 Path(command[command.index(flag) + 1]).unlink(missing_ok=True)
         process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)

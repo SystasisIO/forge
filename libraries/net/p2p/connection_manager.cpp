@@ -124,7 +124,10 @@ bool connection_manager::untag(const peer_id& peer, std::string_view tag) {
    if (found == tags_.end()) {
       return false;
    }
-   const auto erased = found->second.erase(std::string{tag}) != 0;
+   const auto entry = std::find_if(found->second.begin(), found->second.end(),
+                                 [tag](const auto& item) { return item.first == tag; });
+   const auto erased = entry != found->second.end();
+   if (erased) { found->second.erase(entry); }
    if (found->second.empty()) {
       tags_.erase(found);
    }

@@ -1,6 +1,5 @@
 add_library(
    forge_plugins_db_store STATIC
-   descriptor.cpp
    plugin.cpp
    config.cpp
    plugin_impl.cpp

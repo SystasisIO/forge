@@ -24,8 +24,6 @@ enum class code : std::uint16_t {
    invalid_buffer = 8,
 };
 
-FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.net.transport")
-
 using invalid_endpoint = forge::exceptions::coded_exception<code, code::invalid_endpoint>;
 using closed = forge::exceptions::coded_exception<code, code::closed>;
 using canceled = forge::exceptions::coded_exception<code, code::canceled>;
@@ -34,6 +32,13 @@ using protocol_error = forge::exceptions::coded_exception<code, code::protocol_e
 using unsupported_protocol = forge::exceptions::coded_exception<code, code::unsupported_protocol>;
 using duplicate_registration = forge::exceptions::coded_exception<code, code::duplicate_registration>;
 using invalid_buffer = forge::exceptions::coded_exception<code, code::invalid_buffer>;
+
+class end_of_stream : public closed {
+ public:
+   using closed::closed;
+};
+
+FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.net.transport")
 
 [[nodiscard]] inline std::optional<code> code_of(const forge::exceptions::base& value) noexcept {
    const auto& actual = value.code();

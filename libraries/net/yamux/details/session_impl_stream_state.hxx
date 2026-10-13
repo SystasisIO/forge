@@ -14,6 +14,7 @@ struct session::impl::stream_state {
    std::deque<detail::bytes> inbound;
    std::size_t buffered = 0;
    bool local_fin = false;
+   bool local_fin_sent = false;
    bool remote_fin = false;
    bool reset = false;
    bool accepted = false;

@@ -191,8 +191,8 @@ void register_p2p(forge::app::plugin_registry& registry,
        .id = {.value = "forge.plugins.crypto.secrets"},
        .factory = [identity = std::move(identity)] { return std::make_unique<secrets_plugin>(identity); },
    });
-   registry.register_plugin(forge::plugins::net::p2p::node::descriptor());
-   registry.register_plugin(forge::plugins::net::p2p::resolver::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::node::plugin::descriptor());
+   registry.register_plugin(forge::plugins::net::p2p::resolver::plugin::descriptor());
 }
 
 class publisher_plugin final : public forge::app::plugin {
@@ -295,7 +295,7 @@ class test_application final : public forge::app::application_shell {
 [[nodiscard]] std::string listen_endpoint(test_application& app) {
    const auto endpoint =
        app.apis()
-           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0})
+           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0})
            ->local_endpoint();
    BOOST_REQUIRE(endpoint.has_value());
    return endpoint->to_string();
@@ -304,7 +304,7 @@ class test_application final : public forge::app::application_shell {
 [[nodiscard]] std::string listen_address(test_application& app) {
    const auto endpoint =
        app.apis()
-           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 2, .min_revision = 0})
+           .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0})
            ->local_endpoint();
    BOOST_REQUIRE(endpoint.has_value());
    auto address = *endpoint;

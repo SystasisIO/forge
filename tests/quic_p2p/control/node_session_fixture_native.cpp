@@ -6,6 +6,7 @@ module;
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -27,11 +28,14 @@ module;
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include "pubsub_control_allocation.hxx"
 
@@ -264,6 +268,77 @@ void node_session_fixture::native_unsubscribe_rollback() {
    }));
    first_shutdown.join();
    second_shutdown.join();
+}
+
+void node_session_fixture::native_unsubscribe_after_stop() {
+   auto fixture = pubsub_router_fixture{};
+   auto config = manual_options();
+   config.preferred = pubsub::version::v1_3;
+   config.partial_messages = true;
+   config.flood_publish = true;
+   auto& owner = fixture.add("unsubscribe-stop-owner", config);
+   auto& remote = fixture.add("unsubscribe-stop-remote", config);
+   const auto release = std::make_shared<forge::asio::notification>();
+   const auto epoch = release->epoch();
+   auto entered = std::atomic_bool{false}, exited = std::atomic_bool{false};
+   auto pending = std::future<void>{};
+   auto token = pubsub::partial_topic{};
+   const auto join = [&](auto deadline) {
+      if (!pending.valid()) { return; }
+      if (pending.wait_until(deadline) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      pending.get();
+   };
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, remote, [release] { release->notify(); }, join};
+   const auto handler = [&](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
+      // Keep the held wait's cancellation policy out of the native inbound parent.
+      const auto held = [release, epoch, &entered, &exited]() -> boost::asio::awaitable<pubsub::validation_result> {
+         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+         entered = true;
+         static_cast<void>(co_await release->async_wait(epoch));
+         exited = true;
+         co_return pubsub::validation_result::accept;
+      };
+      co_return co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
+          held(), boost::asio::use_awaitable);
+   };
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      token = co_await owner.async_subscribe(fixture.topic, handler, pubsub::partial_options{
+          .receive = [](pubsub::partial_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; },
+          .gossip = [](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; }});
+   }());
+   fixture.subscribe(remote);
+   fixture.connect(remote, owner);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{remote.impl_->mutex};
+      const auto out = remote.impl_->pubsub_value.outbound.find(owner.local_peer());
+      return remote.impl_->pubsub_value.peer_topics.contains(owner.local_peer()) &&
+          remote.impl_->pubsub_value.peer_topics.at(owner.local_peer()).contains(fixture.topic.value) &&
+          out != remote.impl_->pubsub_value.outbound.end() && !out->second.snapshot_pending;
+   }));
+   static_cast<void>(fixture.publish(remote, "unsubscribe-held-callback"));
+   BOOST_REQUIRE(fixture.wait([&] { return entered.load(); }));
+   owner.request_stop();
+   const auto writes = [&] {
+      return std::ranges::count_if(fixture.receipts(owner), [](const auto& value) {
+         return value.kind == pubsub::trace_kind::rpc_write;
+      });
+   };
+   const auto before = writes();
+   run(fixture.runtime, owner.async_unsubscribe(fixture.topic));
+   run(fixture.runtime, owner.async_unsubscribe(fixture.topic));
+   BOOST_CHECK_THROW(run(fixture.runtime, owner.async_unsubscribe(token)), forge::exceptions::base);
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().topics, 0U);
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().partial_groups, 0U);
+   BOOST_CHECK(!exited.load());
+   BOOST_CHECK_EQUAL(writes(), before);
+   pending = boost::asio::co_spawn(fixture.runtime.context(), owner.async_stop(), boost::asio::use_future);
+   BOOST_CHECK(pending.wait_for(0ms) != std::future_status::ready);
+   release->notify();
+   join(std::chrono::steady_clock::now() + 5s);
+   BOOST_CHECK(exited.load());
+   run(fixture.runtime, owner.async_unsubscribe(fixture.topic));
+   BOOST_CHECK_EQUAL(writes(), before);
+   shutdown.join();
 }
 
 void node_session_fixture::control_preparation_allocation_rollback() {
@@ -1542,6 +1617,7 @@ BOOST_AUTO_TEST_CASE(control_native_heartbeat_quota_retry_is_neutral) { forge::n
 BOOST_AUTO_TEST_CASE(control_native_rejected_graft_quota_retry_preserves_backoff) { forge::net::p2p::node_session_fixture::native_retry(true); }
 BOOST_AUTO_TEST_CASE(control_native_v10_prune_retry_preserves_legacy_wire) { forge::net::p2p::node_session_fixture::native_retry(true, true); }
 BOOST_AUTO_TEST_CASE(control_native_unsubscribe_batch_refusal_preserves_all_state) { forge::net::p2p::node_session_fixture::native_unsubscribe_rollback(); }
+BOOST_AUTO_TEST_CASE(control_native_unsubscribe_after_stop_is_local_and_retains_active_callback_join) { forge::net::p2p::node_session_fixture::native_unsubscribe_after_stop(); }
 BOOST_AUTO_TEST_CASE(control_owner_preparation_allocation_rollback_preserves_pending_mesh_and_backoff) { forge::net::p2p::node_session_fixture::control_preparation_allocation_rollback(); }
 BOOST_AUTO_TEST_CASE(control_native_heartbeat_allocation_refusal_resumes_original_loop_and_repairs_mesh) { forge::net::p2p::node_session_fixture::native_heartbeat_allocation_recovery(); }
 BOOST_AUTO_TEST_CASE(control_native_neutral_scoring_accepts_owner_wire_topic_and_message_id_bounds) { forge::net::p2p::node_session_fixture::native_neutral_wire_topic(); }

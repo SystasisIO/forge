@@ -6,10 +6,11 @@ module;
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 export module forge.plugins.net.p2p.node.plugin;
 
-export import forge.plugins.net.p2p.node.descriptor;
+import forge.plugins.net.p2p.node.config;
 
 import forge.api.core.exceptions;
 import forge.api.core.types;
@@ -27,37 +28,21 @@ import forge.app.plugin_context;
 import forge.app.plugin_registry;
 import forge.config.core.component;
 import forge.net.p2p.node;
+import forge.net.p2p.dht;
+import forge.net.p2p.connection_gater;
 import forge.net.p2p.protocol;
 import forge.plugins.net.p2p.node.types;
 
 namespace forge::plugins::net::p2p::node::detail {
-
-class api_publication_registry;
-
-[[nodiscard]] std::shared_ptr<api_publication_registry> make_api_publication_registry();
-[[nodiscard]] forge::api::p2p::publication
-publish_api_publication(const std::shared_ptr<api_publication_registry>& registry,
-                        forge::api::p2p::api_binding binding);
-void bind_api_publication_registry_executor(
-   const std::shared_ptr<api_publication_registry>& registry,
-   boost::asio::any_io_executor owner_executor);
-void attach_api_publication_registry(
-   const std::shared_ptr<api_publication_registry>& registry,
-   const std::shared_ptr<forge::net::p2p::node>& node);
-[[nodiscard]] bool api_publication_registry_contains(
-   const std::shared_ptr<api_publication_registry>& registry,
-   const forge::net::p2p::protocol_id& protocol) noexcept;
-void request_close_api_publication_registry(
-   const std::shared_ptr<api_publication_registry>& registry) noexcept;
-boost::asio::awaitable<void> async_close_api_publication_registry(
-   const std::shared_ptr<api_publication_registry>& registry);
-
-} // namespace forge::plugins::net::p2p::node::detail
+struct pubsub_service;
+}
 
 export namespace forge::plugins::net::p2p::node {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -78,14 +63,17 @@ class plugin final : public forge::app::plugin {
  private:
    struct impl;
    class api_impl;
-   class diagnostics_source_adapter;
-   class pubsub_source_adapter;
+   class dht_api_impl;
+   class configuration_api_impl;
+   class protocol_api_impl;
+   class diagnostics_api_impl;
+   class events_api_impl;
+   class pubsub_api_impl;
 
    friend void apply_config(impl&, const config&);
+   friend struct detail::pubsub_service;
 
    std::shared_ptr<impl> impl_;
 };
-
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 
 } // namespace forge::plugins::net::p2p::node

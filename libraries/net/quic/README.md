@@ -254,6 +254,14 @@ discarded output was sent. Cancellation of an active graceful drain and actual
 socket failures/timeouts remain errors shared by repeated close callers. Stream
 FIN close still fails if its own captured send did not complete.
 
+After draining buffered input, normal remote FIN raises
+`exceptions::end_of_stream`, derived from `exceptions::stream_closed` without
+changing its numeric code. The transport adapter maps it to
+`forge::net::transport::exceptions::end_of_stream`, derived from that boundary's
+`closed` type. Reset, cancellation and connection termination take precedence
+over FIN and never constitute successful remote stream completion. This signal
+alone is not an application-level acknowledgement.
+
 Reset cleanup stops application writes through ngtcp2 and joins already queued
 UDP work. Any pending RESET and retransmission remain connection-owned until
 native completion or connection teardown; accepting a reset does not prove

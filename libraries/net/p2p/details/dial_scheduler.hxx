@@ -214,4 +214,7 @@ class dial_scheduler final {
    std::shared_ptr<owner> owner_;
 };
 
+[[nodiscard]] dial_scheduler::policy dial_scheduler_policy(const address_resolution::policy& resolution,
+                                                          const dialing::policy& direct, bool private_network);
+
 } // namespace forge::net::p2p::detail

@@ -70,12 +70,7 @@ void dht::record_store::impl::throw_durability_uncertain(const dht::record_store
 dht::record_store::impl::impl(dht::profile profile_value, dht::record_store::options options_value)
     : profile_(std::move(profile_value)), options_(std::move(options_value)), persistence_(options_.persistence) {
    validate(profile_);
-   if (options_.max_values == 0 || options_.max_providers == 0 || options_.max_local_providers == 0 ||
-       options_.max_providers_per_key == 0 || options_.max_total_bytes == 0 || options_.max_record_bytes == 0 ||
-       options_.hydration_page_limit == 0 || options_.prune_page_limit == 0 || options_.max_hydration_pages == 0 ||
-       options_.max_persistence_waiters == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "DHT record store limits must be positive");
-   }
+   validate(profile_, options_);
    if (!persistence_) {
       persistence_ = dht::record_store::make_memory_persistence();
       options_.persistence = persistence_;

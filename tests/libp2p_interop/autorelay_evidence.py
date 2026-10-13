@@ -104,7 +104,20 @@ def _connection(row, peer, transport, *, relayed=False):
                  "Go native security/muxer receipt mismatch")
 
 
-def _observations(result, target, transport):
+def _configured_rows(rows):
+    _require(isinstance(rows, list) and 2 <= len(rows) <= 602, "missing bounded configured observations")
+    previous = -1
+    for row in rows:
+        _require(isinstance(row, dict) and _integer(row.get("elapsed_ms"), max(0, previous), 65_000)
+                 and _integer(row.get("unix_ms"), 1) and row.get("stopped") is False
+                 and row.get("phase") not in ("before_start", "stopped", "post_stop"),
+                 "configured observations must be real attached live snapshots")
+        previous = row["elapsed_ms"]
+    _require(rows[0].get("phase") == "before_seed" and rows[-1].get("phase") == "pre_stop",
+             "configured boundary lacks actual before-seed/pre-stop snapshots")
+
+
+def _observations(result, target, transport, boundary):
     _require(result.get("reservations_basis") == "diagnostics.snapshot.relay_reservations",
              "reservations are not authoritative live node ownership")
     rows = result.get("observations")
@@ -159,8 +172,15 @@ def _observations(result, target, transport):
                      "reservation candidate lacks authenticated direct Identify")
             _require(any(p.get("peer_id") == lease["relay_peer_id"] and HOP in p.get("protocols", [])
                          for p in row.get("peers", [])), "candidate did not Identify exact relay hop")
-    _require(rows[0].get("phase") == "before_start" and not rows[0]["reservations"]
+    first_phase = "before_seed" if boundary == "configured-plugin" else "before_start"
+    _require(rows[0].get("phase") == first_phase and not rows[0]["reservations"]
              and not any("/p2p-circuit" in a for a in rows[0]["addresses"]), "acquisition precondition contaminated")
+    if boundary == "configured-plugin":
+        _configured_rows(rows)
+        _require(all(row["autorelay"]["enabled"] is True and row["autorelay"]["running"] is True
+                     and row["autorelay"]["stopping"] is False for row in rows),
+                 "configured snapshots are not from the running native manager")
+        return rows
     _require(rows[-2].get("phase") == "stopped" and rows[-1].get("phase") == "post_stop"
              and rows[-1]["elapsed_ms"] - rows[-2]["elapsed_ms"] >= 1000,
              "shutdown lacks measured delayed post-stop observation")
@@ -264,15 +284,16 @@ def _native_pushes(observation, target, transport):
     return pushes
 
 
-def validate_case(artifact):
+def validate_case(artifact, *, boundary="native"):
     try:
-        _validate_case(artifact)
+        _require(boundary in ("native", "configured-plugin"), "unknown caller-selected AutoRelay boundary")
+        _validate_case(artifact, boundary)
     except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
         return [str(error)]
     return []
 
 
-def _validate_case(artifact):
+def _validate_case(artifact, boundary="native"):
     _require(isinstance(artifact, dict) and artifact.get("scenario") == "autorelay"
              and artifact.get("cleanup_errors") == [], "wrong scenario or cleanup errors")
     spec, raw = artifact["case"], artifact["raw"]
@@ -323,13 +344,22 @@ def _validate_case(artifact):
         observations = service.get("observations", [])
         _require(any(_integer(r.get("relay_bytes"), 1) and _integer(r.get("service_reservations"), 1)
                      for r in observations), "Forge service did not measure actual relayed bytes/reservation")
-        _require(observations[-1].get("stopped") is True and observations[-1].get("service_reservations") == 0,
-                 "Forge service resources retained after stop")
+        if boundary == "configured-plugin":
+            _configured_rows(observations)
+            _require(all(_integer(row.get("relay_bytes")) and _integer(row.get("service_reservations"))
+                         for row in observations)
+                     and observations[0]["relay_bytes"] == observations[0]["service_reservations"] == 0,
+                     "configured service precondition/counters contaminated")
+        else:
+            _require(observations[-1].get("stopped") is True and observations[-1].get("service_reservations") == 0,
+                     "Forge service resources retained after stop")
         return
     destination, result = _actor(raw["destination"], "forge", "destination", transport)
-    _require(destination == target and result.get("operation_basis") == "async_start_authenticated_connect_only"
+    operation = ("official_shell_startup_authenticated_connect_only" if boundary == "configured-plugin"
+                 else "async_start_authenticated_connect_only")
+    _require(destination == target and result.get("operation_basis") == operation
              and raw["destination"]["process"]["command"][1] == "autorelay-destination", "manual Forge reservation path")
-    rows = _observations(result, target, transport)
+    rows = _observations(result, target, transport, boundary)
     observer, observation = _actor(raw["observer"], source, "observer", transport)
     _require(observer not in (relay, target), "observer is not independent")
     observed = {}

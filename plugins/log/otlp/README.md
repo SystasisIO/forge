@@ -31,7 +31,7 @@ target_link_libraries(app PRIVATE Forge::forge_plugins_log_otlp)
 ```cpp
 import forge.plugins.log.otlp.plugin;
 
-registry.register_plugin(forge::plugins::log::otlp::descriptor());
+registry.register_plugin(forge::plugins::log::otlp::plugin::descriptor());
 ```
 
 Runtime identity:

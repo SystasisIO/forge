@@ -20,6 +20,10 @@ void validate(const mdns_policy& value) {
        value.max_pending_packets == 0 || value.max_records_per_packet == 0) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS resource bounds must be non-zero");
    }
+   if (value.max_interfaces > 256 || value.max_pending_packets > 1024 ||
+       value.max_records_per_packet > 1024 || value.max_addresses_per_peer > 64) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS resource bounds exceed service limits");
+   }
    if (value.max_packet_size < minimum_packet_size || value.max_packet_size > maximum_packet_size) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS packet size must be between 512 and 8932 bytes");
    }

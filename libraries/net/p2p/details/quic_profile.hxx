@@ -35,6 +35,8 @@ class quic_profile final {
    };
 
  public:
+   static void validate_policy(const forge::net::transport::limits& limits);
+
    quic_profile(forge::asio::runtime& runtime_value, const node::options& options_value,
                 resource_manager resources_value, std::shared_ptr<forge::net::p2p::detail::connection_gate> gate);
 

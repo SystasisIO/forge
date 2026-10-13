@@ -560,7 +560,10 @@ void node_session_fixture::native_control_failure_generation(bool stale) {
    accepted.get();
    BOOST_REQUIRE(fixture.wait([&] {
       const auto lock = std::scoped_lock{self->mutex};
+      // The budget is reserved before negotiation. Inject RESET only after the
+      // stream is published, so this tests write failure rather than failed open.
       return self->pubsub_value.outbound.contains(peer) && self->pubsub_value.outbound.at(peer).snapshot_pending &&
+          self->pubsub_value.outbound.at(peer).stream &&
           self->pubsub_value.outbound_budget.total() > forge::net::yamux::options{}.initial_window;
    }));
    if (stale) {
@@ -572,11 +575,18 @@ void node_session_fixture::native_control_failure_generation(bool stale) {
       BOOST_TEST(self->pubsub_value.peers.at(peer).generation > generation);
    }
    barrier->notify();
-   BOOST_REQUIRE(fixture.wait([&] {
+   auto remaining_bytes = std::size_t{};
+   auto remaining_controls = std::size_t{};
+   auto observed_failures = failures;
+   const auto settled = fixture.wait([&] {
       const auto lock = std::scoped_lock{self->mutex};
-      return self->pubsub_value.outbound_budget.total() == 0 &&
-          (stale ? self->pubsub_value.controls->bytes() == 0 : self->store.find(peer)->failures == failures + 1U);
-   }));
+      remaining_bytes = self->pubsub_value.outbound_budget.total();
+      remaining_controls = self->pubsub_value.controls->bytes();
+      observed_failures = self->store.find(peer)->failures;
+      return remaining_bytes == 0 && (stale ? remaining_controls == 0 : observed_failures == failures + 1U);
+   });
+   BOOST_REQUIRE_MESSAGE(settled, "control failure did not settle: bytes=" << remaining_bytes
+       << " controls=" << remaining_controls << " failures=" << observed_failures << " baseline=" << failures);
    BOOST_TEST(source.peers().find(peer)->failures == failures + (stale ? 0U : 1U));
    BOOST_TEST(controls(fixture, source, peer, true) == 0U);
    if (!stale) {

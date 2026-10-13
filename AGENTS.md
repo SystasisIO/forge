@@ -335,6 +335,12 @@ implementation-library namespaces. For plugin family/role decisions, follow
 ## Reflection And Serialization
 
 - New canonical reflection uses Boost.Describe directly.
+- Declare ordinary classes, structs and enums before reflection/schema/API
+  metadata. Keep namespace-scope `BOOST_DESCRIBE_*`, serialization/API generation
+  macros and schema specializations together at the bottom of the file; never
+  interleave them with the types they describe. Preserve their C++-required
+  namespace and export placement. The narrow class-scope exception and layout
+  details are defined by `create-library`.
 - Diagnostic aggregate fallback may use Boost.PFR through `forge_reflect` and
   `forge_variant`. It must not replace explicit Boost.Describe field order for
   existing wire/persisted contracts or introduce a logger-owned serializer.
@@ -475,9 +481,13 @@ implementation-library namespaces. For plugin family/role decisions, follow
 ## Plugins
 
 - Network plugins live in the nested families `net.http` and `net.p2p`:
-  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver,diagnostics,pubsub}`.
+  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver}`.
   The `net`, `net.http` and `net.p2p` grouping namespaces contain no types or
   aggregate modules/targets; each leaf keeps its own dependencies and lifecycle.
+- The P2P node owns consumer PubSub, diagnostics and host events through separate
+  `pubsub_api`, `diagnostics_api` and `events_api` modules. Standalone PubSub and
+  diagnostics plugins and public `*_source` mediators must not be restored.
+  Resolver remains the optional application API catalog and connection service.
 - This approved clean rename changes plugin/module/namespace/target/component
   identities and configuration paths together, without compatibility aliases.
   Library families `forge.net.*` and API bindings `forge.api.*`, protocol routes,
@@ -571,8 +581,10 @@ implementation-library namespaces. For plugin family/role decisions, follow
   application has substantial state or lifecycle customization that callbacks
   cannot express cleanly.
 - Plugin-owned descriptor factories live on the owner type as
-  `plugin_type::descriptor()`. Avoid free `*_descriptor()` functions when the
-  owner type already names the concept.
+  `[[nodiscard]] static plugin_descriptor plugin_type::descriptor(...)`.
+  Optional construction parameters belong to this same factory. Do not add a
+  free factory, `default_descriptor()` wrapper or descriptor-only module; apply
+  `create-plugin` for the exact declaration/implementation layout.
 - APIs define typed contracts.
 - Plugins orchestrate behavior.
 - Adapters connect concrete backends and external systems.

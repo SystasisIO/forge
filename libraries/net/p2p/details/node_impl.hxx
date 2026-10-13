@@ -85,9 +85,8 @@ void validate_bootstrap(const std::vector<bootstrap_peer>& peers, bool require_n
 attempt_timeout(std::chrono::milliseconds remaining, std::chrono::milliseconds configured, std::string_view operation);
 [[noreturn]] void throw_operation_timeout(std::string_view operation);
 [[nodiscard]] resource_manager::limits resource_limits_for(const node::limits& limits);
-void normalize_legacy_discovery(node::options& options);
+void normalize_legacy_discovery(const discovery::policy& legacy, topology::policy& topology_policy);
 void normalize_topology_capacity(node::options& options) noexcept;
-void validate(const node::options& options);
 
 struct node::impl : std::enable_shared_from_this<impl> {
    struct admitted_stream {
@@ -775,6 +774,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
        pubsub::topic subject, pubsub::handler handler, std::optional<pubsub::partial_options> partial = {});
    boost::asio::awaitable<void> unsubscribe_pubsub(pubsub::topic subject,
                                                  std::optional<pubsub::partial_topic> registration = {});
+   static boost::asio::awaitable<void> disable_partial_owned(std::shared_ptr<impl> self,
+                                                            pubsub::partial_topic registration);
+   boost::asio::awaitable<void> disable_pubsub_partial(pubsub::partial_topic registration);
    [[nodiscard]] bool partial_peer_supported_locked(const peer_id& peer, const pubsub::topic& subject,
                                                     bool data, std::uint64_t session_id = 0) const;
    [[nodiscard]] bool prefer_pubsub_partial_locked(const peer_id& peer, const pubsub::topic& subject,
@@ -793,6 +795,9 @@ struct node::impl : std::enable_shared_from_this<impl> {
    boost::asio::awaitable<void> announce_pubsub_subscriptions(const peer_id& peer);
 
    void finish_pubsub_validation(const peer_id& peer);
+
+   [[nodiscard]] static std::chrono::steady_clock::time_point pubsub_deadline(
+       std::chrono::steady_clock::time_point now, std::chrono::milliseconds delay);
 
    [[nodiscard]] pubsub_state::claim claim_pubsub_message(const peer_id& peer, const std::string& key,
       const pubsub::message& value, bool requires_validation, const std::shared_ptr<session_state>& session = {});

@@ -581,8 +581,12 @@ sandbox for arbitrary native code.
 Consumers receive focused local typed API contracts grouped by coherent
 capabilities, not one interface per method: discovery/DHT and provider
 registration, PubSub, host events/diagnostics, and connections/publications.
-Exact interface names and grouping are decided during Stage 7 design within
-the current `plugins.net.p2p` leaves, without an aggregate plugin or namespace.
+The approved Stage 7 consolidation places `pubsub_api`, `diagnostics_api`
+and `events_api` in separate modules of the node plugin. It removes the
+standalone PubSub/diagnostics plugins and public source intermediaries.
+Resolver remains a separate optional application API catalog. See the
+[Stage 7 implementation plan](forge-p2p-plugin-integration-v1.md) for the complete
+contract/configuration migration; no aggregate plugin or namespace is added.
 Reuse library types and delegate operations to the same node; do not copy DTOs,
 create a second network runtime or make these interfaces remotely callable
 merely because they use Forge API contracts.

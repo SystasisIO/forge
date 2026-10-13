@@ -532,6 +532,24 @@ BOOST_AUTO_TEST_CASE(transport_stream_delegates_chunk_read_write_without_forcing
    BOOST_CHECK_EQUAL_COLLECTIONS(read.bytes().begin(), read.bytes().end(), expected_read.begin(), expected_read.end());
 }
 
+BOOST_AUTO_TEST_CASE(transport_stream_unsupported_half_close_does_not_terminalize_model) {
+   auto runtime = forge::asio::runtime{};
+   auto model = std::make_shared<fake_stream>(49);
+   auto value = make_stream(model);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, value.async_close_write()),
+                     forge::net::transport::exceptions::unsupported_protocol);
+   BOOST_TEST(model->close_count == 0U);
+   BOOST_CHECK(value.valid());
+   const auto payload = text_bytes("still open");
+   model->reads.push_back(payload);
+   BOOST_TEST(forge::asio::blocking::run(runtime, value.async_read()) == payload,
+              boost::test_tools::per_element());
+   forge::asio::blocking::run(runtime, value.async_close());
+   BOOST_TEST(model->close_count == 1U);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, value.async_close_write()),
+                     forge::net::transport::exceptions::closed);
+}
+
 BOOST_AUTO_TEST_CASE(transport_stream_reads_framed_chunks_and_preserves_trailing_bytes_without_extra_reads) {
    auto runtime = forge::asio::runtime{};
    auto model = std::make_shared<fake_stream>(47);

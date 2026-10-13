@@ -75,7 +75,7 @@ int main() {
    });
 
    const auto plugin = forge::plugins::db::store::plugin{};
-   const auto descriptor = forge::plugins::db::store::descriptor();
+   const auto descriptor = forge::plugins::db::store::plugin::descriptor();
    const auto api = forge::plugins::db::store::api::describe();
    const auto options = forge::db::revision::prune_options{
        .max_revisions = 1U,

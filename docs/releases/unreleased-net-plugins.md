@@ -69,5 +69,31 @@ Use a fresh installation prefix for package verification: an incremental CMake
 install does not remove obsolete files from an older installation.
 
 `net`, `net.http` and `net.p2p` are empty groupings, not new runtime components.
-The five leaf plugins retain independent targets and lifecycle; there is no
-aggregate network plugin or parallel networking implementation.
+The family rename initially retained five leaf plugins. Stage 7 subsequently
+consolidates the P2P leaves as described below; there is no aggregate network
+plugin or parallel networking implementation.
+
+## Stage 7 P2P Consolidation
+
+This additional maintainer-approved source/package/configuration break removes
+the standalone PubSub and diagnostics plugins. The node plugin owns their
+consumer behavior; the resolver remains an independent optional plugin.
+
+| Previous surface | Replacement |
+| --- | --- |
+| `plugins_net_p2p_pubsub`, `plugins_net_p2p_diagnostics` components | `plugins_net_p2p_node` |
+| `forge_plugins_net_p2p_pubsub`, `forge_plugins_net_p2p_diagnostics` targets | `forge_plugins_net_p2p_node` |
+| PubSub/diagnostics plugin descriptors | Remove from application registration; retain the node descriptor |
+| `forge.plugins.net.p2p.pubsub.api` / `pubsub::api` | `forge.plugins.net.p2p.node.pubsub_api` / `node::pubsub_api` |
+| `forge.plugins.net.p2p.diagnostics.api` / `diagnostics::api` | `forge.plugins.net.p2p.node.diagnostics_api` / `node::diagnostics_api` |
+| `forge.plugins.net.p2p.diagnostics.events_api` | `forge.plugins.net.p2p.node.events_api` |
+| `node::{pubsub_source,diagnostics_source,host_event_source}` | Use the corresponding consumer API directly; the intermediary contracts are removed |
+| `plugins.net.p2p.pubsub` and `plugins.net.p2p.diagnostics` settings | Nested `plugins.net.p2p.node.pubsub` and `.diagnostics` settings |
+
+The node plugin version becomes `8.0.0`; the new role contracts start at
+`1.0` under `forge.plugins.net.p2p.node.{pubsub,diagnostics,events}`.
+Existing unaffected node and resolver contracts keep their versions.
+These local contracts do not change libp2p wire formats, protocol IDs, native
+GossipSub algorithms or the persisted peer-state schema. Remove old installed
+package files by deploying to a clean prefix rather than relying on incremental
+install to delete retired modules. No compatibility aliases are supplied.

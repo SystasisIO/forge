@@ -193,6 +193,12 @@ boost::asio::awaitable<forge::net::transport::chunk> resource_stream::async_read
    co_return co_await stream_.async_read_chunk();
 }
 
+boost::asio::awaitable<void> resource_stream::async_close_write() {
+   // A write FIN is not a terminal ownership transition: the response and its
+   // deadline still belong to this stream and its resource reservation.
+   co_await stream_.async_close_write();
+}
+
 boost::asio::awaitable<void> resource_stream::async_close() {
    if (!claim_terminal_owner()) {
       co_return;

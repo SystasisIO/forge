@@ -301,10 +301,8 @@ resource_manager::limits resource_limits_for(const node::limits& limits) {
    return limits.resources;
 }
 
-void normalize_legacy_discovery(node::options& options) {
+void normalize_legacy_discovery(const discovery::policy& legacy, topology::policy& topology_policy) {
    const auto defaults = discovery::policy{};
-   const auto& legacy = options.limits.discovery;
-   auto& topology_policy = options.limits.topology;
    const auto topology_defaults = topology::policy{};
 
    if (legacy.query_timeout.count() <= 0 || legacy.refresh_interval.count() <= 0 || legacy.max_parallel_queries == 0 ||
@@ -369,227 +367,6 @@ void normalize_topology_capacity(node::options& options) noexcept {
    policy.peers.low = std::min(policy.peers.low, policy.peers.target);
 }
 
-[[nodiscard]] detail::dial_scheduler::policy dial_scheduler_policy(const node::options& options) {
-   auto black_holes = options.direct_dial.black_holes;
-   if (options.private_network) {
-      // Private networks are direct-TCP-only, but IPv6 reachability detection remains useful.
-      black_holes.udp_enabled = false;
-   }
-   return detail::dial_scheduler::policy{
-       .resolution = options.dns_resolution,
-       .ranker = options.direct_dial.ranker,
-       .black_holes = std::move(black_holes),
-       .max_concurrent_attempts = options.direct_dial.max_concurrent_attempts,
-   };
-}
-
-void validate(const node::options& options) {
-   static_cast<void>(detail::stream_security_protocols(options.stream_security));
-   if (options.stream_security == node::stream_security::tls && options.relay_policy.client_enabled) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "TLS-only stream security does not support relay clients");
-   }
-   validate(options.mdns);
-   if (options.mdns.enabled && options.limits.topology.operating_mode == topology::mode::static_only) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "mDNS requires managed topology");
-   }
-   validate(options.reachability_policy);
-   detail::dns_address_expander::validate_policy(options.dns_resolution);
-   detail::dial_scheduler::validate_policy(dial_scheduler_policy(options));
-   try {
-      forge::net::dns::validate(options.dns_resolver);
-   } catch (const forge::net::dns::exceptions::invalid_options& error) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                            "invalid P2P DNS resolver options: " + std::string{error.what()});
-   }
-   if (options.private_network) {
-      private_network::validate(*options.private_network);
-      if (options.capabilities.has(capabilities::direct_quic) || options.capabilities.has(capabilities::relay) ||
-          options.capabilities.has(capabilities::relay_reservation) ||
-          options.capabilities.has(capabilities::hole_punching)) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P private-network profile permits only direct TCP transport");
-      }
-      if (options.relay_policy.service_enabled || options.relay_policy.client_enabled ||
-          options.relay_policy.auto_discovery_enabled) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P private-network profile requires every relay policy to be disabled");
-      }
-      if (!options.path_policy.allow_direct || options.path_policy.allow_relay || options.path_policy.allow_hole_punch) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P private-network profile requires a direct-only path policy");
-      }
-      const auto require_direct_tcp = [](const endpoint& value, std::string_view use) {
-         if (!value.is_direct_tcp()) {
-            FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                                  "P2P private-network " + std::string{use} + " must be a direct TCP endpoint");
-         }
-      };
-      for (const auto& value : options.advertised_endpoints) {
-         require_direct_tcp(value, "advertised endpoint");
-      }
-      for (const auto& value : options.lifecycle.listen) {
-         require_direct_tcp(value, "lifecycle listener");
-      }
-   }
-   const auto relay_duration = std::chrono::duration_cast<std::chrono::seconds>(options.limits.relay.max_duration);
-   validate(options.limits.topology);
-   for (const auto& point : options.limits.topology.rendezvous_points) {
-      for (const auto& namespace_name : point.namespaces) {
-         if (namespace_name.size() > options.limits.rendezvous.max_namespace_size) {
-            FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                                  "P2P topology rendezvous namespace exceeds the configured limit");
-         }
-      }
-   }
-   if (!options.allow_insecure_test_mode && (options.certificate_pem.empty() || options.private_key_pem.empty())) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                            "production P2P node requires mTLS certificate and private key");
-   }
-   if (options.certificate_pem.empty() != options.private_key_pem.empty()) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P certificate and private key must be provided together");
-   }
-   if (options.explicit_peer_id && !valid_peer_id(*options.explicit_peer_id)) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid explicit P2P peer id");
-   }
-   if (!options.allow_insecure_test_mode && options.explicit_peer_id && !options.certificate_pem.empty() &&
-       *options.explicit_peer_id != make_peer_id_from_certificate_pem(options.certificate_pem)) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_identity,
-                            "explicit P2P peer id does not match the configured certificate");
-   }
-   if (options.allow_insecure_test_mode && options.certificate_pem.empty() && !options.explicit_peer_id) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                            "insecure P2P test node without certificate requires explicit peer id");
-   }
-   if (!options.allow_insecure_test_mode && !options.peer_state.persistence) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "production P2P node requires peer persistence");
-   }
-   if (options.limits.max_sessions == 0 || options.limits.session_low_watermark == 0 ||
-       options.limits.session_low_watermark > options.limits.max_sessions ||
-       options.limits.session_grace_period.count() < 0 || options.limits.session_prune_silence.count() <= 0 ||
-       options.limits.dial_backoff_base.count() <= 0 || options.limits.dial_backoff_step.count() <= 0 ||
-       options.limits.dial_backoff_max.count() <= 0 ||
-       options.limits.dial_backoff_base > options.limits.dial_backoff_max ||
-       options.limits.max_protocol_handlers == 0 ||
-       options.limits.max_peer_exchange_message_size < peer_exchange_codec::minimum_message_size ||
-       options.limits.max_peer_exchange_message_size > std::numeric_limits<std::uint32_t>::max() ||
-       options.limits.max_peer_exchange_records == 0 ||
-       options.limits.max_peer_exchange_records > std::numeric_limits<std::uint32_t>::max() ||
-       options.limits.max_peer_exchange_queue == 0 || options.limits.relay.max_active_relays == 0 ||
-       options.limits.relay.max_reservations == 0 || options.limits.relay.max_streams_per_reservation == 0 ||
-       options.limits.relay.max_relay_bytes == 0 || options.limits.relay.max_queued_bytes == 0 ||
-       relay_duration.count() <= 0 ||
-       std::chrono::duration_cast<std::chrono::milliseconds>(relay_duration) != options.limits.relay.max_duration ||
-       options.limits.relay.reservation_ttl.count() <= 0 || options.limits.resources.max_relay_reservations == 0 ||
-       options.limits.resources.max_dial_attempts == 0 || options.limits.resources.max_dial_attempts_per_peer == 0 ||
-       options.limits.resources.max_malformed_messages_per_peer == 0 ||
-       options.limits.rendezvous.default_ttl.count() <= 0 || options.limits.rendezvous.min_ttl.count() <= 0 ||
-       options.limits.rendezvous.max_ttl.count() <= 0 ||
-       options.limits.rendezvous.min_ttl > options.limits.rendezvous.max_ttl ||
-       options.limits.rendezvous.max_namespace_size == 0 || options.limits.rendezvous.max_registrations_per_peer == 0 ||
-       options.limits.rendezvous.max_discover_limit == 0 || options.limits.rendezvous.max_message_size == 0 ||
-       options.limits.pubsub.limits.max_rpc_size == 0 || options.limits.pubsub.limits.max_message_size == 0 ||
-       options.limits.pubsub.limits.max_data_size == 0 || options.limits.pubsub.limits.max_topic_size == 0 ||
-       options.limits.pubsub.limits.max_subscriptions == 0 || options.limits.pubsub.limits.max_messages == 0 ||
-       options.limits.pubsub.limits.max_control_entries == 0 || options.limits.pubsub.limits.max_message_ids == 0 ||
-       options.limits.pubsub.limits.max_peers_per_topic == 0 || options.limits.pubsub.limits.max_topics == 0 ||
-       options.limits.pubsub.limits.max_validation_queue == 0 ||
-       options.limits.pubsub.limits.max_outbound_queue_bytes == 0 ||
-       options.limits.pubsub.limits.heartbeat_initial_delay.count() <= 0 ||
-       options.limits.pubsub.limits.heartbeat_interval.count() <= 0 ||
-       options.limits.pubsub.limits.fanout_ttl.count() <= 0 ||
-       options.limits.pubsub.limits.prune_backoff.count() <= 0 ||
-       options.limits.pubsub.limits.unsubscribe_backoff.count() <= 0 ||
-       options.limits.pubsub.limits.validation_retry_initial_delay.count() <= 0 ||
-       options.limits.pubsub.limits.validation_retry_max_delay <
-           options.limits.pubsub.limits.validation_retry_initial_delay ||
-       options.limits.pubsub.limits.max_validation_attempts == 0 ||
-       options.limits.pubsub.limits.max_validation_redeliveries == 0 ||
-       options.limits.pubsub.limits.max_validation_requests == 0 || options.limits.pubsub.limits.mesh_n == 0 ||
-       options.limits.pubsub.limits.mesh_n_low == 0 ||
-       options.limits.pubsub.limits.mesh_n_high < options.limits.pubsub.limits.mesh_n_low ||
-       options.limits.pubsub.limits.history_length == 0 || options.limits.pubsub.limits.history_gossip == 0 ||
-       options.limits.pubsub.limits.gossip_lazy == 0 || options.limits.pubsub.limits.gossip_factor <= 0.0 ||
-       options.limits.pubsub.limits.gossip_retransmission == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid P2P node limits");
-   }
-   if (!options.path_policy.allow_direct && !options.path_policy.allow_hole_punch && !options.path_policy.allow_relay) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P path policy must allow at least one path kind");
-   }
-   if (options.path_policy.max_direct_endpoints == 0 || options.path_policy.max_relay_candidates == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P path policy limits must be positive");
-   }
-   if (options.relay_policy.target_reservations == 0 || options.relay_policy.refresh_margin.count() <= 0 ||
-       options.relay_policy.max_candidates_per_refresh == 0 || options.relay_policy.max_parallel_reservations == 0 ||
-       options.relay_policy.candidate_backoff.count() <= 0 ||
-       options.relay_policy.max_candidates_per_refresh > 4096 ||
-       options.relay_policy.target_reservations > options.relay_policy.max_candidates_per_refresh ||
-       options.relay_policy.target_reservations > options.limits.relay.max_reservations ||
-       options.relay_policy.max_parallel_reservations > options.relay_policy.max_candidates_per_refresh ||
-       options.relay_policy.refresh_margin > std::chrono::hours{24} ||
-       options.relay_policy.candidate_backoff > std::chrono::hours{24}) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P AutoRelay policy limits must be positive");
-   }
-   const auto& relay_limits = options.limits.relay;
-   if (relay_limits.max_reservations_per_ip == 0 || relay_limits.max_circuits_per_peer == 0 ||
-       relay_limits.max_service_requests == 0 || relay_limits.max_service_requests > 65'536 ||
-       relay_limits.max_service_requests_per_peer == 0 || relay_limits.max_service_requests_per_ip == 0 ||
-       relay_limits.service_request_window.count() <= 0 || relay_limits.service_request_window > std::chrono::hours{1} ||
-       relay_limits.handshake_timeout.count() <= 0 || relay_limits.handshake_timeout > std::chrono::minutes{5}) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P relay service admission limits are invalid");
-   }
-   const auto& lifecycle = options.lifecycle;
-   if (lifecycle.listen.size() > 1'024 || lifecycle.startup_budget.count() <= 0 ||
-       lifecycle.startup_budget > std::chrono::minutes{10} || lifecycle.max_parallel_bootstrap == 0 ||
-       lifecycle.max_parallel_bootstrap > 256 || lifecycle.connect_timeout.count() <= 0 ||
-       lifecycle.connect_timeout > std::chrono::minutes{5} || lifecycle.bootstrap_retry_initial_delay.count() <= 0 ||
-       lifecycle.bootstrap_retry_max_delay < lifecycle.bootstrap_retry_initial_delay ||
-       lifecycle.bootstrap_retry_max_delay > std::chrono::hours{1} ||
-       !std::isfinite(lifecycle.bootstrap_retry_jitter) || lifecycle.bootstrap_retry_jitter < 0.0 ||
-       lifecycle.bootstrap_retry_jitter > 0.20 || lifecycle.maintenance_interval.count() <= 0 ||
-       lifecycle.maintenance_interval > std::chrono::minutes{10}) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid P2P node lifecycle options");
-   }
-   validate_bootstrap(lifecycle.bootstrap, lifecycle.requirement == bootstrap_requirement::require_connection,
-                      options.dns_resolution, options.private_network.has_value());
-   constexpr auto max_dht_profiles = std::size_t{64};
-   if (options.dht_profiles.size() > max_dht_profiles) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P DHT profile count exceeds the supported limit");
-   }
-   auto dht_protocols = std::set<protocol_id>{};
-   for (const auto& profile : options.dht_profiles) {
-      forge::net::p2p::validate(profile);
-      if (!dht_protocols.insert(profile.protocol).second) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "P2P DHT profile protocol IDs must be unique");
-      }
-      if (!options.allow_insecure_test_mode) {
-         const auto persistence = options.dht_record_persistence.find(profile.protocol);
-         if (persistence == options.dht_record_persistence.end() || !persistence->second) {
-            FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                                  "production P2P DHT profile requires durable record persistence");
-         }
-      }
-   }
-   for (const auto& [protocol, persistence] : options.dht_record_persistence) {
-      if (!persistence || !dht_protocols.contains(protocol)) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_options,
-                               "P2P DHT persistence must reference one configured profile");
-      }
-   }
-   const auto& identify = options.identify;
-   if (identify.timeout.count() <= 0 || identify.max_message_size == 0 || identify.max_total_message_size == 0 ||
-       identify.max_own_message_size == 0 || identify.max_own_message_size > identify.max_message_size ||
-       identify.max_message_parts == 0 ||
-       identify.max_message_size > (std::numeric_limits<std::size_t>::max)() / identify.max_message_parts ||
-       identify.max_total_message_size < identify.max_message_size ||
-       identify.max_total_message_size > identify.max_message_size * identify.max_message_parts ||
-       identify.max_protocols == 0 || identify.max_listen_endpoints == 0 || identify.max_protocol_size == 0 ||
-       identify.max_version_size == 0 || identify.max_public_key_size == 0 ||
-       identify.max_signed_peer_record_size == 0 || identify.max_signed_peer_record_size > identify.max_message_size ||
-       identify.max_push_operations == 0) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "invalid P2P Identify limits");
-   }
-}
-
 node::impl::impl(forge::asio::runtime& runtime_value, node::options options_value)
     : runtime(runtime_value), options(std::move(options_value)), identity(make_libp2p_identity_material(options)),
       local(options.explicit_peer_id ? *options.explicit_peer_id
@@ -597,13 +374,14 @@ node::impl::impl(forge::asio::runtime& runtime_value, node::options options_valu
       resources(resource_limits_for(options.limits)),
       connection_gate(std::make_shared<detail::connection_gate>(options.connection_gater)),
       dial_scheduler(std::make_shared<detail::dial_scheduler>(runtime_value.context().get_executor(),
-                                                              dial_scheduler_policy(options), options.dns_resolver)),
+          detail::dial_scheduler_policy(options.dns_resolution, options.direct_dial, options.private_network.has_value()),
+          options.dns_resolver)),
       direct_registry(runtime_value, options, identity, resources, connection_gate),
       teardown(runtime_value.context().get_executor()), lifecycle(runtime_value.context().get_executor()),
       lifecycle_wakeup(std::make_shared<detail::lifecycle_wakeup>()),
       identify_service(runtime_value.context().get_executor()), store(options.peer_state),
       dht_profiles(
-          detail::make_dht_profile_states(local, options.dht_profiles, options.dht_record_persistence,
+          detail::make_dht_profile_states(local, options.dht_profiles, options.dht_records,
                                           [this](const peer_id& peer) { return store.find_public_key(peer); })),
       peer_exchange_value(options.limits.max_peer_exchange_queue) {
    initialize_pubsub();

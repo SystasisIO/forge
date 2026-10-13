@@ -302,6 +302,7 @@ exchange_rendezvous(const auto& self, const peer_id& peer, rendezvous::message r
    deadline.arm([&stream] noexcept { stream.request_cancel(); });
    try {
       co_await stream.async_write(rendezvous::codec::encode(request, self->options.limits.rendezvous));
+      co_await stream.async_close_write();
       auto buffer = std::vector<std::uint8_t>{};
       auto response = rendezvous::codec::decode(
           co_await async_read_length_delimited(stream, buffer, self->options.limits.rendezvous.max_message_size),
@@ -505,7 +506,7 @@ node::impl::exchange_rendezvous(const peer_id& peer, rendezvous::message request
 }
 
 node::node(forge::asio::runtime& runtime, node::options options) {
-   normalize_legacy_discovery(options);
+   normalize_legacy_discovery(options.limits.discovery, options.limits.topology);
    validate(options);
    // Relay roles are policy-owned; advertised capability bits are derived facts.
    constexpr auto relay_service_bits = capabilities::relay | capabilities::relay_reservation;

@@ -63,6 +63,10 @@ boost::asio::awaitable<void> node::async_unsubscribe(pubsub::partial_topic regis
    co_await impl_->unsubscribe_pubsub(subject, std::move(registration));
 }
 
+boost::asio::awaitable<void> node::async_disable_partial(pubsub::partial_topic registration) {
+   return impl::disable_partial_owned(impl_, std::move(registration));
+}
+
 boost::asio::awaitable<void> node::async_advertise_partial(pubsub::partial_topic registration,
                                                         std::vector<std::uint8_t> group_id) {
    const auto self = impl_;

@@ -68,7 +68,9 @@ import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.net.transport.session;
 import forge.net.transport.stream;
+import forge.net.transport.exceptions;
 import forge.net.yamux.session;
+import forge.net.yamux.exceptions;
 
 #include "details/certified_peer_record.hxx"
 #include "details/cancellation_latch.hxx"
@@ -644,6 +646,7 @@ node::impl::exchange_topology_rendezvous(const std::shared_ptr<session_state>& s
                                       "P2P topology rendezvous operation canceled during stream open");
              }
              co_await stream->async_write(rendezvous::codec::encode(request, options.limits.rendezvous));
+             co_await stream->async_close_write();
              auto buffer = std::vector<std::uint8_t>{};
              response.emplace(rendezvous::codec::decode(
                  co_await async_read_length_delimited(*stream, buffer, options.limits.rendezvous.max_message_size),
@@ -801,17 +804,34 @@ boost::asio::awaitable<void> node::impl::async_unregister_topology_rendezvous(st
                 FORGE_THROW_EXCEPTION(exceptions::canceled,
                                       "P2P topology rendezvous unregister canceled during stream open");
              }
-             co_await stream->async_write(rendezvous::codec::encode(
-                 rendezvous::message{
-                     .type = rendezvous::message_type::unregister_peer,
-                     .unregister_value =
-                         rendezvous::unregister_request{
-                             .namespace_name = std::move(namespace_name),
-                             .peer = local,
-                         },
-                 },
-                 options.limits.rendezvous));
-             co_await stream->async_close();
+             try {
+                co_await stream->async_write(rendezvous::codec::encode(
+                   rendezvous::message{
+                      .type = rendezvous::message_type::unregister_peer,
+                      .unregister_value = rendezvous::unregister_request{
+                         .namespace_name = std::move(namespace_name),
+                         .peer = local,
+                      },
+                   },
+                   options.limits.rendezvous));
+                co_await stream->async_close_write();
+                // UNREGISTER has no ACK: retain the stream/resource owner until remote FIN.
+                auto remote_fin = false;
+                try {
+                   static_cast<void>(co_await stream->async_read());
+                } catch (const forge::net::yamux::exceptions::end_of_stream&) {
+                   remote_fin = true;
+                } catch (const forge::net::transport::exceptions::end_of_stream&) {
+                   remote_fin = true;
+                }
+                if (!remote_fin) {
+                   FORGE_THROW_EXCEPTION(exceptions::protocol_error, "rendezvous unregister returned unexpected data");
+                }
+                co_await stream->async_close();
+             } catch (...) {
+                stream->request_cancel();
+                throw;
+             }
           });
       if (!deadline.finish()) {
          throw_operation_timeout("P2P topology rendezvous unregister");

@@ -31,7 +31,7 @@ class plugin final : public forge::app::plugin {
  public:
    explicit plugin(plugin_options options = {});
    ~plugin() override;
-   static forge::app::plugin_descriptor descriptor(plugin_options options = {});
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor(plugin_options options = {});
    forge::app::plugin_id id() const override;
    std::string version() const override;
    std::optional<forge::config::core::component_descriptor> describe_config() const override;

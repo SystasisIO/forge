@@ -10,8 +10,6 @@ module;
 
 export module forge.plugins.net.p2p.resolver.plugin;
 
-export import forge.plugins.net.p2p.resolver.descriptor;
-
 import forge.api.core.exceptions;
 import forge.api.core.types;
 import forge.api.core.descriptor;
@@ -52,6 +50,8 @@ export namespace forge::plugins::net::p2p::resolver {
 
 class plugin final : public forge::app::plugin {
  public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+
    plugin();
    ~plugin() override;
 
@@ -82,7 +82,6 @@ class plugin final : public forge::app::plugin {
    std::shared_ptr<impl> impl_;
 };
 
-[[nodiscard]] forge::app::plugin_descriptor descriptor();
 [[nodiscard]] forge::net::p2p::protocol_id default_protocol();
 
 } // namespace forge::plugins::net::p2p::resolver

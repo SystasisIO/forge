@@ -1,10 +1,12 @@
 module;
 
 #include <boost/test/unit_test.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/asio/use_future.hpp>
 #include <future>
 #include <thread>
 #include "libp2p_identity_fixture.hxx"
+#include "../fixtures/local_dns_server.hxx"
 
 #include <forge/exceptions/macros.hpp>
 
@@ -19,6 +21,7 @@ module;
 #include <deque>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -65,6 +68,7 @@ import forge.asio.notification;
 import forge.crypto.asymmetric;
 import forge.net.p2p.connection_gater;
 import forge.net.p2p.dht;
+import forge.net.p2p.dht.record_store;
 import forge.net.p2p.discovery;
 import forge.net.p2p.endpoint;
 import forge.net.p2p.envelope;
@@ -87,6 +91,7 @@ import forge.net.p2p.rendezvous;
 import forge.net.p2p.resource_manager;
 import forge.net.p2p.scoring;
 import forge.net.p2p.stream;
+import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.net.transport.exceptions;
 import forge.net.transport.session;
@@ -94,8 +99,10 @@ import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "../../libraries/net/p2p/details/direct_transport.hxx"
+#include "../../libraries/net/p2p/details/dht_profile_state.hxx"
 #include "../../libraries/net/p2p/details/cancellation_latch.hxx"
 #include "../../libraries/net/p2p/details/lifecycle_wakeup.hxx"
+#include "../../libraries/net/p2p/details/length_delimited.hxx"
 #include "../../libraries/net/p2p/details/node_impl.hxx"
 #include "../../libraries/net/p2p/details/node_impl_autonat_operation.hxx"
 #include "../../libraries/net/p2p/details/observed_address_manager.hxx"
@@ -103,6 +110,7 @@ import forge.net.yamux.session;
 #include "../../libraries/net/p2p/details/path_selector.hxx"
 #include "../../libraries/net/p2p/details/peer_exchange_codec.hxx"
 #include "../../libraries/net/p2p/details/peer_failure.hxx"
+#include "../../libraries/net/p2p/details/pubsub_peer_score.hxx"
 #include "../../libraries/net/p2p/details/relay_pair.hxx"
 #include "../../libraries/net/p2p/details/resource_stream.hxx"
 #include "../../libraries/net/p2p/details/reachability_manager.hxx"
@@ -113,6 +121,20 @@ import forge.net.yamux.session;
 
 namespace forge::net::p2p {
 namespace {
+
+std::optional<forge::tests::dns::bytes> direct_root_dns_response(const std::uint8_t* request, std::size_t size) {
+   const auto question = forge::tests::dns::parse_question(request, size);
+   if (!question) {
+      return std::nullopt;
+   }
+   if (question->name != "direct-root.test") {
+      return forge::tests::dns::make_failure_response(request, *question, 3);
+   }
+   const auto answers = question->type == 1
+                            ? std::vector<forge::tests::dns::response_answer>{{.type = 1, .value = {127, 0, 0, 1}}}
+                            : std::vector<forge::tests::dns::response_answer>{};
+   return forge::tests::dns::make_response(request, *question, answers);
+}
 
 enum class terminal_close { success, canceled, closed, internal, io_failure };
 
@@ -306,6 +328,251 @@ node::options fixture_options(std::string_view name) {
 // The friendship permits this test TU to reach existing admission and session
 // state. No production option, runtime callback or alternate admission is added.
 struct node_session_fixture {
+   static dht::profile records_profile() {
+      auto profile = custom_dht_profile({"/forge/test/node/records/1"}, dht::mode::server,
+          {.peers = true, .providers = true, .values = true}, {
+              dht::value_policy{
+                  .key_prefix = {'/'},
+                  .validate = [](const dht::record& value, dht::value_validation_context context) {
+                     if (value.publisher && context.public_keys) {
+                        static_cast<void>((*context.public_keys)(*value.publisher));
+                     }
+                  },
+                  .select = [](std::span<const dht::record>) { return std::size_t{}; },
+                  .expiry = [](const dht::record&, dht::value_expiry_context context) {
+                     return context.supplied_expires_at;
+                  },
+              },
+          });
+      profile.limits.replication = 1;
+      profile.limits.alpha = 1;
+      profile.limits.max_record_size = 128;
+      return profile;
+   }
+
+   static void dht_record_capacity_reaches_operational_store() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      for (const auto capacity : {std::size_t{1}, std::size_t{2}}) {
+         auto options = fixture_options("node-records-capacity");
+         auto profile = records_profile();
+         const auto protocol = profile.protocol;
+         auto effective = dht::record_store::options_for(profile);
+         effective.max_values = capacity;
+         auto persistence = dht::record_store::make_memory_persistence();
+         effective.persistence = persistence;
+         auto resolver_calls = std::make_shared<std::atomic_size_t>();
+         effective.public_keys = [resolver_calls](const peer_id&) -> std::optional<public_key> {
+            ++*resolver_calls;
+            return std::nullopt;
+         };
+         options.dht_profiles.push_back(std::move(profile));
+         options.dht_records.emplace(protocol, std::move(effective));
+         auto owner = node{runtime, std::move(options)};
+         auto cleanup = boost::scope::scope_exit{[&] {
+            try { bounded_result(runtime, owner.async_stop()); }
+            catch (...) { BOOST_ERROR("node DHT capacity fixture cleanup failed"); }
+         }};
+         auto& records = owner.impl_->dht_profiles.at(protocol)->records;
+         const auto now = std::chrono::system_clock::now();
+         const auto value = [&](std::uint8_t key) {
+            return dht::record_store::value_record{
+                .record = {.key_value = {.bytes = {'/', key}}, .value = {key}, .publisher = owner.local_peer()},
+                .expires_at = now + std::chrono::hours{1},
+            };
+         };
+         const auto first = bounded_result(runtime, records.async_put(value('a'), now));
+         BOOST_CHECK(first.outcome == dht::record_store::put_outcome::incoming_stored);
+         BOOST_TEST(resolver_calls->load() > 0U);
+         if (capacity == 1) {
+            BOOST_CHECK_THROW(static_cast<void>(bounded_result(runtime, records.async_put(value('b'), now))),
+                              exceptions::backpressure_rejected);
+         } else {
+            const auto second = bounded_result(runtime, records.async_put(value('b'), now));
+            BOOST_CHECK(second.outcome == dht::record_store::put_outcome::incoming_stored);
+         }
+         BOOST_TEST(records.find_value({.bytes = {'/', 'a'}}, now).has_value());
+         BOOST_TEST(records.find_value({.bytes = {'/', 'b'}}, now).has_value() == (capacity == 2));
+         const auto committed = bounded_result(runtime, persistence->async_hydrate({.limit = 2}));
+         BOOST_TEST(committed.values.size() == capacity);
+      }
+   }
+
+   static void dht_missing_options_derive_bounds_but_explicit_options_are_not_rewritten() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      for (const auto configured : {false, true}) {
+         auto options = fixture_options("node-records-defaults");
+         // Missing persistence is supported only by the explicit native test mode.
+         options.allow_insecure_test_mode = !configured;
+         auto profile = records_profile();
+         profile.limits.replication = 2;
+         const auto protocol = profile.protocol;
+         if (configured) {
+            auto effective = dht::record_store::options_for(profile);
+            effective.persistence = dht::record_store::make_memory_persistence();
+            effective.max_record_bytes = 256;
+            effective.max_providers_per_key = 1;
+            options.dht_records.emplace(protocol, std::move(effective));
+         }
+         options.dht_profiles.push_back(std::move(profile));
+         auto owner = node{runtime, std::move(options)};
+         auto cleanup = boost::scope::scope_exit{[&] {
+            try { bounded_result(runtime, owner.async_stop()); }
+            catch (...) { BOOST_ERROR("node DHT default-limit fixture cleanup failed"); }
+         }};
+         auto& records = owner.impl_->dht_profiles.at(protocol)->records;
+         const auto now = std::chrono::system_clock::now();
+         const auto key = dht::key{.bytes = {'/', 'v'}};
+         auto value = dht::record_store::value_record{
+             .record = {.key_value = key, .value = std::vector<std::uint8_t>(127, 1)},
+             .expires_at = now + std::chrono::hours{1},
+         };
+         if (configured) {
+            static_cast<void>(bounded_result(runtime, records.async_put(value, now)));
+            // Storage permits 256 bytes, but the profile still rejects a 129-byte payload.
+            value.record.value.resize(129);
+            BOOST_CHECK_THROW(static_cast<void>(bounded_result(runtime, records.async_put(value, now))),
+                              exceptions::record_rejected);
+         } else {
+            // The 127-byte payload fits the profile; key plus payload exceeds its derived storage bound.
+            BOOST_CHECK_THROW(static_cast<void>(bounded_result(runtime, records.async_put(value, now))),
+                              exceptions::backpressure_rejected);
+         }
+         const auto provider = [&](std::uint8_t id) {
+            return dht::record_store::provider_record{
+                .key = key,
+                .provider = make_peer_id(public_key{.type = public_key::type::ed25519,
+                                                    .data = std::vector<std::uint8_t>(32, id)}),
+                .provider_expires_at = now + std::chrono::hours{1},
+            };
+         };
+         bounded_result(runtime, records.async_upsert_provider(provider(1), now));
+         if (configured) {
+            BOOST_CHECK_THROW(bounded_result(runtime, records.async_upsert_provider(provider(2), now)),
+                              exceptions::backpressure_rejected);
+         } else {
+            bounded_result(runtime, records.async_upsert_provider(provider(2), now));
+         }
+         BOOST_TEST(records.find_providers(key, 10, now).size() == (configured ? 1U : 2U));
+      }
+   }
+
+   static void pubsub_retry_deadlines_saturate_without_early_redelivery() {
+      using clock = std::chrono::steady_clock;
+      using namespace std::chrono_literals;
+      const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(clock::duration::max());
+      const auto ticks = std::chrono::duration_cast<clock::duration>(maximum);
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = fixture_options("bounded-pubsub-retry");
+      options.capabilities.bits |= capabilities::pubsub;
+      options.limits.pubsub.limits.max_validation_queue = 1;
+      options.limits.pubsub.limits.validation_retry_initial_delay = maximum;
+      options.limits.pubsub.limits.validation_retry_max_delay = maximum;
+      auto owner = node{runtime, std::move(options)};
+      const auto stop = [&] {
+         auto stopped = boost::asio::co_spawn(runtime.context(), owner.async_stop(), boost::asio::use_future);
+         if (stopped.wait_for(5s) != std::future_status::ready) { std::terminate(); }
+         stopped.get();
+      };
+      auto cleanup = boost::scope::scope_exit{[&] {
+         try { stop(); } catch (...) { std::terminate(); }
+      }};
+      const auto self = owner.impl_;
+      const auto source = make_peer_id({.type = public_key::type::ed25519,
+                                       .data = std::vector<std::uint8_t>(32, 42)});
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_REQUIRE(self->pubsub_value.scoring->connect(source, {}, clock::now()));
+      }
+      const auto value = pubsub::message{.data = {1, 0, 2}, .subject = {"bounded-retry"}};
+      const auto before = clock::now();
+      // Exercise native admission/defer state, not a replacement facade or a wire identity claim.
+      const auto scoring_pressure = self->claim_pubsub_message(owner.local_peer(), "score-pressure", value, true);
+      BOOST_CHECK(scoring_pressure.status == node::impl::pubsub_state::claim_status::backpressured);
+      const auto claimed = self->claim_pubsub_message(source, "claimed", value, true);
+      BOOST_REQUIRE(claimed.status == node::impl::pubsub_state::claim_status::claimed);
+      const auto queue_pressure = self->claim_pubsub_message(source, "queue-pressure", value, true);
+      BOOST_CHECK(queue_pressure.status == node::impl::pubsub_state::claim_status::backpressured);
+      self->defer_pubsub_message("claimed", claimed.generation);
+      self->finish_pubsub_validation(source);
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         for (const auto* key : {"score-pressure", "queue-pressure", "claimed"}) {
+            const auto& row = self->pubsub_value.validations.at(key);
+            BOOST_CHECK(row.state == node::impl::pubsub_state::validation::status::retryable);
+            BOOST_CHECK(row.retry_after > before);
+            BOOST_CHECK(row.request_after == row.retry_after);
+            if (before > clock::time_point::max() - ticks) {
+               BOOST_CHECK(row.retry_after == clock::time_point::max());
+            }
+         }
+         BOOST_TEST(self->pubsub_value.active_validations == 0U);
+         BOOST_TEST(self->pubsub_value.active_validations_by_peer.empty());
+      }
+      const auto duplicate = self->claim_pubsub_message(source, "claimed", value, true);
+      BOOST_CHECK(duplicate.status == node::impl::pubsub_state::claim_status::duplicate);
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         auto& row = self->pubsub_value.validations.at("claimed");
+         BOOST_TEST(row.attempts == 1U);
+         BOOST_TEST(row.redeliveries == 0U);
+         // The existing request operation accepts an explicit clock. Stage a due row at each boundary.
+         const auto near_end = clock::time_point::max() - 1ms;
+         row.retry_after = row.request_after = near_end;
+         BOOST_REQUIRE(self->should_request_pubsub_message_locked("claimed", source, near_end));
+         BOOST_CHECK(row.request_after == clock::time_point::max());
+         BOOST_TEST(row.requests == 1U);
+         BOOST_TEST(!self->should_request_pubsub_message_locked("claimed", source, near_end));
+         BOOST_TEST(row.requests == 1U);
+
+         const auto negative_now = clock::time_point{} - 1ms;
+         row.retry_after = row.request_after = negative_now;
+         row.requests = 0;
+         BOOST_REQUIRE(self->should_request_pubsub_message_locked("claimed", source, negative_now));
+         BOOST_CHECK(row.request_after == negative_now + ticks);
+
+         const auto exact_boundary = clock::time_point::max() - ticks;
+         row.retry_after = row.request_after = exact_boundary;
+         row.requests = 0;
+         BOOST_REQUIRE(self->should_request_pubsub_message_locked("claimed", source, exact_boundary));
+         BOOST_CHECK(row.request_after == clock::time_point::max());
+      }
+      stop();
+      cleanup.set_active(false);
+   }
+
+   static void endpoint_backoff_bounds_native_clock_addition() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = fixture_options("bounded-endpoint-backoff");
+      const auto largest = std::min(
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()),
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::duration::max()));
+      options.limits.dial_backoff_base = largest;
+      options.limits.dial_backoff_max = largest;
+      auto owner = node{runtime, std::move(options)};
+      const auto cleanup = boost::scope::scope_exit{[&] { bounded_result(runtime, owner.async_stop()); }};
+      const auto address = parse_endpoint("/ip4/127.0.0.1/tcp/4001");
+      const auto peer = owner.local_peer();
+      auto record = peer_store::record{.peer = peer};
+      record.endpoints.push_back({.address = address.to_multiaddr(),
+                                  .failures = (std::numeric_limits<std::uint64_t>::max)()});
+      owner.impl_->store.upsert(std::move(record));
+      const auto before = std::chrono::system_clock::now();
+      const auto until = owner.impl_->endpoint_backoff_until(peer, address, path::kind::direct);
+      const auto after = std::chrono::system_clock::now();
+      // The real clock may have a wider range than steady_clock; saturation is
+      // not implied by the largest delay permitted by both clocks.
+      BOOST_CHECK(until >= detail::saturating_topology_expiry(before, largest));
+      BOOST_CHECK(until <= detail::saturating_topology_expiry(after, largest));
+      using clock = std::chrono::system_clock;
+      const auto maximum = clock::time_point::max();
+      const auto tick = std::chrono::duration_cast<clock::duration>(std::chrono::milliseconds{1});
+      const auto near_maximum = maximum - tick;
+      BOOST_CHECK(detail::saturating_topology_expiry(near_maximum, std::chrono::milliseconds{2}) == maximum);
+      BOOST_CHECK(detail::saturating_topology_expiry(near_maximum, std::chrono::milliseconds{1}) == maximum);
+      BOOST_CHECK(detail::saturating_topology_expiry(maximum - 3 * tick, std::chrono::milliseconds{1}) ==
+                  maximum - 2 * tick);
+   }
+
    static void mdns_callbacks_do_not_retain_node() {
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
       auto owner_weak = std::weak_ptr<node::impl>{};
@@ -440,6 +707,68 @@ struct node_session_fixture {
       co_return detail::reachability_manager::probe_result{
           .result = {.value = reachability::state::publicly_reachable, .observed = addresses.front()},
           .verified_dialback = true, .internet_scope = true};
+   }
+
+   static void startup_publishes_maintenance_without_background_refresh() {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      auto options = passive_reachability_options("startup-host-phase");
+      options.limits.topology.operating_mode = topology::mode::static_only;
+      options.relay_policy.auto_discovery_enabled = false;
+      auto owner = node{runtime, std::move(options)};
+      const auto self = owner.impl_;
+      auto stopped = false;
+      const auto stop = [&] {
+         if (stopped) { return; }
+         auto joined = boost::asio::co_spawn(runtime.context(), owner.async_stop(), boost::asio::use_future);
+         if (joined.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+            std::cerr << "startup host-phase fixture cleanup did not join\n";
+            std::terminate();
+         }
+         stopped = true;
+         joined.get();
+      };
+      auto cleanup = boost::scope::scope_exit{[&] {
+         try { stop(); }
+         catch (const std::exception& error) { BOOST_ERROR("startup host-phase cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("startup host-phase cleanup failed with a non-standard exception"); }
+      }};
+      const auto weak = std::weak_ptr<node::impl>{self};
+      self->reachability_manager_value = std::make_shared<detail::reachability_manager>(
+          runtime.context().get_executor(), self->options.reachability_policy,
+          detail::reachability_manager::callbacks{
+              .observers = [] { return std::vector<detail::reachability_manager::observer>{}; },
+              // Background callbacks cannot repair a missing startup publication.
+              .candidates = [weak] { return weak.lock()->reachability_manager_value->candidates(); },
+              .exchange = [](detail::reachability_manager::observer, bool, std::vector<endpoint>,
+                              std::shared_ptr<cancellation_latch>)
+                  -> boost::asio::awaitable<detail::reachability_manager::probe_result> {
+                 FORGE_THROW_EXCEPTION(exceptions::internal, "idle startup must not launch a reachability probe");
+                 co_return detail::reachability_manager::probe_result{};
+              },
+              .changed = [](host_event) {},
+              .finished = [weak] { if (const auto value = weak.lock()) { value->finish_reachability(); } },
+          });
+      const auto before = owner.reachability_status();
+      const auto started = bounded_result(runtime, owner.async_start());
+      BOOST_CHECK(started.phase == lifecycle_phase::maintenance);
+      BOOST_CHECK(owner.lifecycle_state().phase == lifecycle_phase::maintenance);
+      const auto current = owner.reachability_status();
+      BOOST_CHECK(current.phase == lifecycle_phase::maintenance);
+      BOOST_TEST(current.generation > before.generation);
+      BOOST_CHECK(current.effective == reachability::state::unknown);
+      BOOST_TEST(current.confirmed_addresses.empty());
+
+      auto subscription = owner.host_events();
+      const auto initial = bounded_result(runtime, subscription.async_read());
+      BOOST_REQUIRE(initial);
+      BOOST_CHECK(initial->phase == lifecycle_phase::maintenance);
+      BOOST_TEST(initial->generation == current.generation);
+      BOOST_CHECK(initial->effective == current.effective);
+      BOOST_TEST(initial->confirmed_addresses.empty());
+      BOOST_TEST(owner.metrics().path_direct_attempts == 0U);
+      BOOST_TEST(self->reachability_manager_value->stats().probe_errors == 0U);
+      stop();
+      BOOST_TEST(!bounded_result(runtime, subscription.async_read()).has_value());
    }
 
    static void getter_and_subscription_share_published_snapshot() {
@@ -725,6 +1054,88 @@ struct node_session_fixture {
       }
    }
 
+   static boost::asio::awaitable<void> heartbeat_clock_boundary_rounds(
+       std::shared_ptr<node::impl> self, peer_id stale_peer, bool long_initial_delay) {
+      const auto executor = co_await boost::asio::this_coro::executor;
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         self->pubsub_value.handlers.try_emplace("heartbeat-clock-boundary");
+         self->pubsub_value.mesh["heartbeat-clock-boundary"].insert(stale_peer);
+      }
+      self->launch_pubsub_heartbeat();
+      if (!long_initial_delay) {
+         // Pruning is a mandatory witness of the actual first heartbeat, not a tracer-before-state signal.
+         const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+         auto ticked = false;
+         while (std::chrono::steady_clock::now() < limit) {
+            {
+               const auto lock = std::scoped_lock{self->mutex};
+               ticked = !self->pubsub_value.mesh.at("heartbeat-clock-boundary").contains(stale_peer);
+            }
+            if (ticked) { break; }
+            auto timer = boost::asio::steady_timer{executor};
+            timer.expires_after(std::chrono::milliseconds{5});
+            co_await timer.async_wait(boost::asio::use_awaitable);
+         }
+         BOOST_REQUIRE_MESSAGE(ticked, "initial heartbeat did not commit its actual mesh update");
+         const auto lock = std::scoped_lock{self->mutex};
+         self->pubsub_value.mesh["heartbeat-clock-boundary"].insert(stale_peer);
+      }
+      for (auto round = 0; round != 4; ++round) {
+         self->lifecycle_wakeup->notify();
+         co_await boost::asio::post(executor, boost::asio::use_awaitable);
+         co_await boost::asio::post(executor, boost::asio::use_awaitable);
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_TEST(self->pubsub_value.heartbeat_started);
+         BOOST_CHECK_MESSAGE(self->pubsub_value.mesh.at("heartbeat-clock-boundary").contains(stale_peer),
+                             "bounded heartbeat deadline expired or advanced on an unrelated epoch");
+      }
+   }
+
+   static void heartbeat_clock_boundaries_preserve_wait_and_join() {
+      using clock = std::chrono::steady_clock;
+      using namespace std::chrono_literals;
+      const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(clock::duration::max());
+      const auto ticks = std::chrono::duration_cast<clock::duration>(maximum);
+      BOOST_CHECK(node::impl::pubsub_deadline(clock::time_point::max() - 1ms, maximum) ==
+                  clock::time_point::max());
+      BOOST_CHECK(node::impl::pubsub_deadline(clock::time_point::max() - ticks, maximum) ==
+                  clock::time_point::max());
+      BOOST_CHECK(node::impl::pubsub_deadline(clock::time_point{} - 1ms, maximum) ==
+                  clock::time_point{} - 1ms + ticks);
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+      for (const auto long_initial_delay : {true, false}) {
+         auto options = passive_reachability_options("heartbeat-clock-boundary-owner");
+         options.capabilities.bits |= capabilities::pubsub;
+         options.limits.pubsub.limits.heartbeat_initial_delay = long_initial_delay ? maximum : 1ms;
+         options.limits.pubsub.limits.heartbeat_interval = maximum;
+         auto owner = node{runtime, std::move(options)};
+         const auto self = owner.impl_;
+         const auto stop = [&] {
+            owner.request_stop();
+            auto stopped = boost::asio::co_spawn(runtime.context(), owner.async_stop(), boost::asio::use_future);
+            if (stopped.wait_for(5s) != std::future_status::ready) { std::terminate(); }
+            stopped.get();
+         };
+         auto cleanup = boost::scope::scope_exit{[&] {
+            try { stop(); } catch (...) { std::terminate(); }
+         }};
+         const auto stale_peer = make_peer_id({.type = public_key::type::ed25519,
+                                               .data = std::vector<std::uint8_t>(32, 61)});
+         bounded_result(runtime, heartbeat_clock_boundary_rounds(self, stale_peer, long_initial_delay));
+         auto joined = boost::asio::co_spawn(runtime.context(), self->lifecycle.wait(), boost::asio::use_future);
+         BOOST_CHECK(joined.wait_for(0ms) != std::future_status::ready);
+         stop();
+         BOOST_REQUIRE(joined.wait_for(5s) == std::future_status::ready);
+         joined.get();
+         {
+            const auto lock = std::scoped_lock{self->mutex};
+            BOOST_CHECK(self->pubsub_value.mesh.at("heartbeat-clock-boundary").contains(stale_peer));
+         }
+         cleanup.set_active(false);
+      }
+   }
+
    static void periodic_worker_ignores_unrelated_epochs() {
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
       auto options = passive_reachability_options("periodic-wakeup-owner");
@@ -847,6 +1258,128 @@ struct node_session_fixture {
       BOOST_TEST(terminal.stopping);
       BOOST_TEST(terminal.pending_reservations == 0U);
       BOOST_TEST(owner.metrics().relay_reservation_expirations == expirations);
+   }
+
+   static boost::asio::awaitable<relay::hop_message> exchange_relay_request(
+       forge::net::p2p::stream stream, relay::hop_message request) {
+      auto reply = std::optional<relay::hop_message>{};
+      auto failure = std::exception_ptr{};
+      try {
+         const auto encoded = relay::codec::encode_hop(request);
+         co_await stream.async_write(encoded);
+         auto buffer = std::vector<std::uint8_t>{};
+         reply = relay::codec::decode_hop(
+             co_await async_read_length_delimited(stream, buffer, reachability::options{}.max_message_size));
+      } catch (...) { failure = std::current_exception(); }
+      co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+      try { co_await stream.async_close(); }
+      catch (...) { if (!failure) { failure = std::current_exception(); } }
+      if (failure) { std::rethrow_exception(failure); }
+      co_return std::move(*reply);
+   }
+
+   static void relay_connected_target_requires_reservation(bool largest_ttl) {
+      auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+      auto relay_options = passive_reachability_options("connected-target-relay");
+      relay_options.relay_policy.service_enabled = true;
+      relay_options.relay_policy.client_enabled = false;
+      relay_options.relay_policy.auto_discovery_enabled = false;
+      const auto maximum_clock_delay = std::min(
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()),
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::duration::max()));
+      if (largest_ttl) { relay_options.limits.relay.reservation_ttl = maximum_clock_delay; }
+      auto source_options = passive_reachability_options("connected-target-source");
+      source_options.relay_policy.auto_discovery_enabled = false;
+      auto target_options = passive_reachability_options("connected-target-destination");
+      target_options.relay_policy.auto_discovery_enabled = false;
+      auto relay_node = node{runtime, std::move(relay_options)};
+      auto source = node{runtime, std::move(source_options)};
+      auto target = node{runtime, std::move(target_options)};
+      auto cleanup = boost::scope::scope_exit{[&] {
+         for (auto* owner : {&target, &source, &relay_node}) { owner->request_stop(); }
+         for (auto* owner : {&target, &source, &relay_node}) {
+            try { bounded_result(runtime, owner->async_stop()); }
+            catch (...) { BOOST_ERROR("connected-target relay fixture failed to stop one node"); }
+         }
+      }};
+      bounded_result(runtime, relay_node.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
+      const auto address = relay_node.local_endpoint();
+      BOOST_REQUIRE(address);
+      const auto target_connection = bounded_result(runtime, target.async_connect(*address));
+      BOOST_CHECK(target_connection.remote_peer == relay_node.local_peer());
+      const auto source_connection = bounded_result(runtime, source.async_connect(*address));
+      BOOST_CHECK(source_connection.remote_peer == relay_node.local_peer());
+      const auto self = relay_node.impl_;
+      const auto connected_target = self->session_for_path(target.local_peer(), path::kind::direct);
+      BOOST_REQUIRE(connected_target);
+      bounded_result(runtime, self->identify_session(connected_target));
+      BOOST_CHECK(connected_target->authentication != peer_authentication::unverified);
+      BOOST_CHECK(connected_target->info.identify_state == identify::state::identified);
+      BOOST_REQUIRE(connected_target->remote_endpoint);
+      BOOST_CHECK(connected_target->remote_endpoint->is_direct_tcp());
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_CHECK(self->inbound_relay_reservations.empty());
+      }
+      const auto before_metrics = relay_node.metrics();
+      const auto before_resources = self->resources.current();
+      const auto direct_open = node::open_options{.allow_relay = false, .allow_hole_punch = false};
+      auto hop = bounded_result(runtime, source.async_open_protocol_stream(
+          relay_node.local_peer(), builtins::relay_hop, direct_open));
+      const auto response = bounded_result(runtime, exchange_relay_request(std::move(hop), relay::hop_message{
+          .kind = relay::hop_message::message_kind::connect,
+          .target = relay::peer{.id = target.local_peer()},
+      }));
+      BOOST_CHECK(response.kind == relay::hop_message::message_kind::status);
+      BOOST_CHECK(response.status == relay::status::no_reservation);
+      const auto after_metrics = relay_node.metrics();
+      BOOST_TEST(after_metrics.relay_rejections == before_metrics.relay_rejections + 1);
+      BOOST_TEST(after_metrics.relays_opened == before_metrics.relays_opened);
+      BOOST_TEST(after_metrics.active_relays == before_metrics.active_relays);
+      const auto after_resources = self->resources.current();
+      BOOST_TEST(after_resources.active_relay_reservations == before_resources.active_relay_reservations);
+      BOOST_TEST(after_resources.relay_reservation_scopes == before_resources.relay_reservation_scopes);
+      BOOST_CHECK(self->session_for_path(target.local_peer(), path::kind::direct) == connected_target);
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         BOOST_CHECK(self->inbound_relay_reservations.empty());
+         BOOST_CHECK(self->relay_peer_active.empty());
+      }
+      if (!largest_ttl) { return; }
+
+      auto reserve = bounded_result(runtime, target.async_open_protocol_stream(
+          relay_node.local_peer(), builtins::relay_hop, direct_open));
+      const auto steady_before = std::chrono::steady_clock::now();
+      const auto system_before = std::chrono::system_clock::now();
+      const auto reservation = bounded_result(runtime, exchange_relay_request(std::move(reserve), relay::hop_message{
+          .kind = relay::hop_message::message_kind::reserve,
+      }));
+      const auto steady_after = std::chrono::steady_clock::now();
+      const auto system_after = std::chrono::system_clock::now();
+      BOOST_CHECK(reservation.kind == relay::hop_message::message_kind::status);
+      BOOST_REQUIRE(reservation.status == relay::status::ok);
+      BOOST_REQUIRE(reservation.reservation_value);
+      using clock = std::chrono::steady_clock;
+      const auto delay = std::chrono::duration_cast<clock::duration>(maximum_clock_delay);
+      const auto expected_steady_expiry = [delay](clock::time_point now) {
+         const auto maximum = clock::time_point::max();
+         return now >= maximum - delay ? maximum : now + delay;
+      };
+      {
+         const auto lock = std::scoped_lock{self->mutex};
+         const auto found = self->inbound_relay_reservations.find(target.local_peer());
+         BOOST_REQUIRE(found != self->inbound_relay_reservations.end());
+         BOOST_TEST(found->second.session_id == connected_target->id);
+         BOOST_CHECK(found->second.expires_at >= expected_steady_expiry(steady_before));
+         BOOST_CHECK(found->second.expires_at <= expected_steady_expiry(steady_after));
+      }
+      const auto expected_wire_expiry = [maximum_clock_delay](std::chrono::system_clock::time_point now) {
+         return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+             detail::saturating_topology_expiry(now, maximum_clock_delay).time_since_epoch()).count());
+      };
+      BOOST_TEST(reservation.reservation_value->expires_at >= expected_wire_expiry(system_before));
+      BOOST_TEST(reservation.reservation_value->expires_at <= expected_wire_expiry(system_after));
+      BOOST_TEST(relay_node.metrics().active_relay_reservations == before_metrics.active_relay_reservations + 1);
    }
 
    static void relay_pre_handoff_closed_releases_guarded_admission(bool preserve_other) {
@@ -1724,14 +2257,32 @@ struct node_session_fixture {
    }
 
    static void mixed_duplicate_and_dns_coalesced_roots_persist_any_persistent_input() {
+      auto dns_server = forge::tests::dns::local_dns_server{direct_root_dns_response};
+      auto dns_cleanup = boost::scope::scope_exit{[&] {
+         try { dns_server.close(); }
+         catch (const std::exception& error) { BOOST_ERROR("mixed direct-root DNS cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("mixed direct-root DNS cleanup failed with a non-standard exception"); }
+      }};
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-      auto server = node{runtime, fixture_options("mixed-root-server")};
-      auto client = node{runtime, fixture_options("mixed-root-client")};
+      auto server_options = fixture_options("mixed-root-server");
+      auto client_options = fixture_options("mixed-root-client");
+      server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+      client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
+      auto server = node{runtime, std::move(server_options)};
+      auto client = node{runtime, std::move(client_options)};
       const auto self = client.impl_;
       auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
          for (auto* owner : {&client, &server}) {
-            try { bounded_result(runtime, owner->async_stop()); }
-            catch (...) { BOOST_ERROR("mixed direct-root fixture cleanup failed"); }
+            try {
+               auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+               if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                  std::cerr << "mixed direct-root fixture cleanup did not join\n";
+                  std::terminate();
+               }
+               stopped.get();
+            }
+            catch (const std::exception& error) { BOOST_ERROR("mixed direct-root fixture cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("mixed direct-root fixture cleanup failed with a non-standard exception"); }
          }
       }};
       bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
@@ -1739,7 +2290,7 @@ struct node_session_fixture {
       BOOST_REQUIRE(listening);
       const auto literal = listening->to_multiaddr();
       const auto dns = forge::multiformats::multiaddr::parse(
-          "/dns4/localhost/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
+          "/dns4/direct-root.test/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
       // The DNS and literal roots resolve to one local concrete dial. Only the
       // canonical root with a persistent input may reach the peer store.
       const auto session = bounded_result(
@@ -1773,14 +2324,32 @@ struct node_session_fixture {
    }
 
    static void persistent_dns_root_owns_coalesced_direct_winner() {
+      auto dns_server = forge::tests::dns::local_dns_server{direct_root_dns_response};
+      auto dns_cleanup = boost::scope::scope_exit{[&] {
+         try { dns_server.close(); }
+         catch (const std::exception& error) { BOOST_ERROR("persistent DNS root cleanup failed: " << error.what()); }
+         catch (...) { BOOST_ERROR("persistent DNS root cleanup failed with a non-standard exception"); }
+      }};
       auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-      auto server = node{runtime, fixture_options("persistent-dns-root-server")};
-      auto client = node{runtime, fixture_options("persistent-dns-root-client")};
+      auto server_options = fixture_options("persistent-dns-root-server");
+      auto client_options = fixture_options("persistent-dns-root-client");
+      server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+      client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
+      auto server = node{runtime, std::move(server_options)};
+      auto client = node{runtime, std::move(client_options)};
       const auto self = client.impl_;
       auto cleanup = std::unique_ptr<void, std::function<void(void*)>>{self.get(), [&](void*) noexcept {
          for (auto* owner : {&client, &server}) {
-            try { bounded_result(runtime, owner->async_stop()); }
-            catch (...) { BOOST_ERROR("persistent DNS root fixture cleanup failed"); }
+            try {
+               auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+               if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                  std::cerr << "persistent DNS root fixture cleanup did not join\n";
+                  std::terminate();
+               }
+               stopped.get();
+            }
+            catch (const std::exception& error) { BOOST_ERROR("persistent DNS root fixture cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("persistent DNS root fixture cleanup failed with a non-standard exception"); }
          }
       }};
       bounded_result(runtime, server.async_listen(parse_endpoint("/ip4/127.0.0.1/tcp/0")));
@@ -1789,7 +2358,7 @@ struct node_session_fixture {
       const auto literal = listening->to_multiaddr();
       server.set_advertised_endpoints({parse_endpoint(literal.to_string())});
       const auto dns = forge::multiformats::multiaddr::parse(
-          "/dns4/localhost/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
+          "/dns4/direct-root.test/tcp/" + std::to_string(listening->transport.port) + "/p2p/" + server.local_peer().to_string());
       const auto session = bounded_result(
           runtime,
           self->connect_direct(
@@ -2000,6 +2569,14 @@ BOOST_AUTO_TEST_CASE(p2p_dial_cancellation_interrupts_occupied_admission_and_awa
    node_session_fixture::blocked_admission(false);
 }
 
+BOOST_AUTO_TEST_CASE(p2p_dht_record_capacity_one_to_two_reaches_node_owned_store) {
+   node_session_fixture::dht_record_capacity_reaches_operational_store();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_dht_record_options_preserve_derived_defaults_and_explicit_storage_bounds) {
+   node_session_fixture::dht_missing_options_derive_bounds_but_explicit_options_are_not_rewritten();
+}
+
 BOOST_AUTO_TEST_CASE(p2p_dial_deadline_interrupts_occupied_admission_and_awaits_native_close) {
    node_session_fixture::blocked_admission(true);
 }
@@ -2106,8 +2683,24 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_heartbeat_ignores_unrelated_wakeup_epochs) {
    node_session_fixture::periodic_worker_ignores_unrelated_epochs();
 }
 
+BOOST_AUTO_TEST_CASE(p2p_pubsub_retry_deadlines_saturate_without_early_redelivery) {
+   node_session_fixture::pubsub_retry_deadlines_saturate_without_early_redelivery();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_pubsub_heartbeat_clock_boundaries_preserve_wait_and_join) {
+   node_session_fixture::heartbeat_clock_boundaries_preserve_wait_and_join();
+}
+
 BOOST_AUTO_TEST_CASE(p2p_autorelay_expiry_ignores_unrelated_wakeup_epochs) {
    node_session_fixture::autorelay_expiry_ignores_unrelated_epochs();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_connected_target_without_reservation_is_rejected) {
+   node_session_fixture::relay_connected_target_requires_reservation(false);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_relay_large_ttl_preserves_monotonic_and_wire_reservation_expiry) {
+   node_session_fixture::relay_connected_target_requires_reservation(true);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_relay_pre_handoff_closed_releases_guarded_admission_and_budget) {
@@ -2196,6 +2789,14 @@ BOOST_AUTO_TEST_CASE(p2p_autonat_v1_v2_local_upgraded_gater_refusal_is_not_negat
 
 BOOST_AUTO_TEST_CASE(p2p_reachability_getter_and_subscription_share_snapshot_across_held_publish_and_ttl) {
    node_session_fixture::getter_and_subscription_share_published_snapshot();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_startup_publishes_maintenance_without_background_refresh) {
+   node_session_fixture::startup_publishes_maintenance_without_background_refresh();
+}
+
+BOOST_AUTO_TEST_CASE(p2p_endpoint_backoff_bounds_deadline_addition_and_exhausted_failure_counter) {
+   node_session_fixture::endpoint_backoff_bounds_native_clock_addition();
 }
 
 } // namespace forge::net::p2p

@@ -2,6 +2,7 @@ module;
 
 #include <boost/test/unit_test.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <forge/api/core/macros.hpp>
 #include <forge/exceptions/macros.hpp>
 
@@ -18,6 +19,7 @@ module;
 #include <exception>
 #include <future>
 #include <initializer_list>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1046,13 +1048,25 @@ node::options dht_options_for(const test_identity& identity, dht::profile profil
    return out;
 }
 
+void bind_dht_records(node::options& options, const protocol_id& protocol,
+                      std::shared_ptr<dht::record_store::persistence> persistence) {
+   auto configured = options.dht_records.find(protocol);
+   if (configured == options.dht_records.end()) {
+      const auto profile = std::ranges::find(options.dht_profiles, protocol, &dht::profile::protocol);
+      BOOST_REQUIRE(profile != options.dht_profiles.end());
+      configured = options.dht_records.emplace(protocol, dht::record_store::options_for(*profile)).first;
+   }
+   configured->second.persistence = std::move(persistence);
+}
+
 node::options authenticated_options(node::options options, bool automatic_discovery = false) {
    options.allow_insecure_test_mode = false;
    options.peer_state.persistence = peer_store::make_memory_persistence();
    options.relay_policy.auto_discovery_enabled = automatic_discovery;
    for (const auto& profile : options.dht_profiles) {
-      if (!options.dht_record_persistence.contains(profile.protocol)) {
-         options.dht_record_persistence.emplace(profile.protocol, dht::record_store::make_memory_persistence());
+      const auto configured = options.dht_records.find(profile.protocol);
+      if (configured == options.dht_records.end() || !configured->second.persistence) {
+         bind_dht_records(options, profile.protocol, dht::record_store::make_memory_persistence());
       }
    }
    return options;
@@ -1131,6 +1145,57 @@ std::optional<forge::tests::dns::bytes> hidden_dns_response(const std::uint8_t* 
                             : std::vector<forge::tests::dns::response_answer>{};
    return forge::tests::dns::make_response(request, *question, answers);
 }
+
+class dht_fixture_dns final {
+ public:
+   dht_fixture_dns()
+       : requests_(std::make_shared<request_log>()),
+         server_([requests = requests_](const std::uint8_t* request,
+                                        std::size_t size) -> std::optional<forge::tests::dns::bytes> {
+            const auto question = forge::tests::dns::parse_question(request, size);
+            if (!question) {
+               throw std::runtime_error{"DHT fixture received a malformed DNS request"};
+            }
+            {
+               const auto lock = std::scoped_lock{requests->mutex};
+               requests->questions.push_back(*question);
+            }
+            // Synthetic advertised names are discovery evidence, not live dial targets.
+            return forge::tests::dns::make_failure_response(request, *question, 3);
+         }) {}
+
+   ~dht_fixture_dns() {
+      try {
+         server_.close();
+         const auto lock = std::scoped_lock{requests_->mutex};
+         if (requests_->questions.empty()) {
+            BOOST_TEST_MESSAGE("DHT fixture DNS: no requests");
+         }
+         for (const auto& question : requests_->questions) {
+            BOOST_TEST_MESSAGE("DHT fixture DNS NXDOMAIN name=" << question.name << " type=" << question.type);
+         }
+      } catch (const std::exception& error) {
+         BOOST_ERROR("DHT fixture DNS cleanup failed: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("DHT fixture DNS cleanup failed with a non-standard exception");
+      }
+   }
+
+   void configure(std::initializer_list<node::options*> options) const {
+      for (auto* value : options) {
+         value->dns_resolver.nameservers = {{.address = "127.0.0.1", .port = server_.port()}};
+      }
+   }
+
+ private:
+   struct request_log {
+      std::mutex mutex;
+      std::vector<forge::tests::dns::parsed_question> questions;
+   };
+
+   std::shared_ptr<request_log> requests_;
+   forge::tests::dns::local_dns_server server_;
+};
 
 endpoint listen_quic_with_advertised_dns4(node& value, forge::asio::runtime& runtime) {
    forge::asio::blocking::run(runtime, value.async_listen(make_quic_endpoint(0, "0.0.0.0")));
@@ -4274,7 +4339,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_response_uses_response_stream_provenance) 
    const auto server_identity = make_test_certificate_identity("dht-discovery-server");
    const auto client_identity = make_test_certificate_identity("dht-discovery-client");
    auto server_options = dht_options_for(server_identity, server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, provider_persistence);
+   bind_dht_records(server_options, server_profile.protocol, provider_persistence);
    auto client_options = dht_options_for(client_identity, amino_v1());
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -4321,7 +4386,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_add_provider_preserves_identity_and_continues_rpc_s
    const auto server_profile = custom_test_dht_profile(dht::mode::server, profile_limits);
    auto server_options = dht_options_for(peer(226), server_profile);
    auto server_store = std::make_shared<tracking_dht_record_store_persistence>();
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_store);
+   bind_dht_records(server_options, server_profile.protocol, server_store);
    auto client_options = dht_options_for(peer(227), custom_test_dht_profile(dht::mode::client, profile_limits));
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -4401,7 +4466,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_add_provider_retains_identity_when_address_is_filte
    const auto server_profile = amino_v1(dht::mode::server);
    auto server_options = dht_options_for(peer(236), server_profile);
    auto server_store = std::make_shared<tracking_dht_record_store_persistence>();
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_store);
+   bind_dht_records(server_options, server_profile.protocol, server_store);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(237), amino_v1())};
    const auto server_endpoint = listen(server, runtime);
@@ -4598,7 +4663,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_large_stored_value_is_omitted_without_resetting_str
    static_cast<void>(forge::asio::blocking::run(runtime, persistence->async_apply(std::move(batch))));
 
    auto server_options = dht_options_for(peer(235), server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, persistence);
+   bind_dht_records(server_options, server_profile.protocol, persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(236), client_profile)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -4637,7 +4702,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_oversized_put_echo_is_rejected_before_durable_mutat
    const auto client_profile = custom_test_value_dht_profile(dht::mode::client, limits);
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto server_options = dht_options_for(peer(239), server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, persistence);
+   bind_dht_records(server_options, server_profile.protocol, persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(240), client_profile)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -4705,7 +4770,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_response_incrementally_truncates_to_wire_b
    seed_dht_provider_records(runtime, server_profile, persistence, std::move(providers));
 
    auto server_options = dht_options_for(peer(237), server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, persistence);
+   bind_dht_records(server_options, server_profile.protocol, persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, dht_options_for(peer(238), client_profile)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -4943,21 +5008,43 @@ BOOST_AUTO_TEST_CASE(p2p_direct_tcp_nodes_prefer_tls_yamux_and_echo_frames) {
 BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_retains_source_root_for_public_and_private_tcp) {
    for (const auto private_profile : {false, true}) {
       BOOST_TEST_CONTEXT("private profile=" << private_profile) {
+         auto dns_server = forge::tests::dns::local_dns_server{hidden_dns_response};
+         auto dns_cleanup = boost::scope::scope_exit{[&] {
+            try { dns_server.close(); }
+            catch (const std::exception& error) { BOOST_ERROR("source-root DNS cleanup failed: " << error.what()); }
+            catch (...) { BOOST_ERROR("source-root DNS cleanup failed with a non-standard exception"); }
+         }};
          auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
          const auto server_identity = make_test_identity();
          const auto client_identity = make_test_identity();
          auto server_options = private_profile ? private_network_options_for(server_identity) : options_for(server_identity);
          auto client_options = private_profile ? private_network_options_for(client_identity) : options_for(client_identity);
+         server_options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
+         client_options.dns_resolver.nameservers = server_options.dns_resolver.nameservers;
          auto gater = std::make_shared<recording_connection_gater>();
          client_options.connection_gater = gater;
          client_options.limits.resources.max_dial_attempts = 1;
          client_options.limits.resources.max_dial_attempts_per_peer = 1;
          auto server = node{runtime, std::move(server_options)};
          auto client = node{runtime, std::move(client_options)};
+         auto cleanup = boost::scope::scope_exit{[&] {
+            for (auto* owner : {&client, &server}) {
+               try {
+                  auto stopped = boost::asio::co_spawn(runtime.context(), owner->async_stop(), boost::asio::use_future);
+                  if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+                     std::cerr << "source-root node cleanup did not join\n";
+                     std::terminate();
+                  }
+                  stopped.get();
+               }
+               catch (const std::exception& error) { BOOST_ERROR("source-root node cleanup failed: " << error.what()); }
+               catch (...) { BOOST_ERROR("source-root node cleanup failed with a non-standard exception"); }
+            }
+         }};
          register_echo(server);
          const auto listening = listen_tcp(server, runtime);
          const auto root = forge::multiformats::multiaddr::parse(
-             "/dns4/localhost/tcp/" + std::to_string(listening.transport.port) + "/p2p/" + server.local_peer().to_string());
+             "/dns4/hidden.test/tcp/" + std::to_string(listening.transport.port) + "/p2p/" + server.local_peer().to_string());
          // Identify also advertises the source root, so no numeric address is
          // independently learned from the remote node during this assertion.
          server.set_advertised_endpoints({parse_endpoint(root.to_string())});
@@ -4997,27 +5084,117 @@ BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_retains_source_root_for_public_and_pri
          BOOST_TEST(client.diagnostics().resources.active_dials == 0U);
          BOOST_TEST(client.diagnostics().resources.system.file_descriptors == 0U);
          forge::asio::blocking::run(runtime, server.async_stop());
+         cleanup.set_active(false);
       }
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_raw_dns4_connect_holds_one_logical_permit_and_stop_releases_it) {
+   auto dns_server = forge::tests::dns::local_dns_server{hidden_dns_response};
+   auto dns_cleanup = boost::scope::scope_exit{[&] {
+      try { dns_server.close(); }
+      catch (const std::exception& error) { BOOST_ERROR("dial-permit DNS cleanup failed: " << error.what()); }
+      catch (...) { BOOST_ERROR("dial-permit DNS cleanup failed with a non-standard exception"); }
+   }};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto options = options_for(make_test_identity());
+   options.dns_resolver.nameservers = {{.address = "127.0.0.1", .port = dns_server.port()}};
    options.limits.resources.max_dial_attempts = 1;
    options.limits.resources.max_dial_attempts_per_peer = 1;
    auto client = node{runtime, std::move(options)};
    auto accepted = std::make_shared<std::promise<void>>();
    auto accepted_future = accepted->get_future();
-   const auto stalled = start_stalling_tcp_peer(runtime, std::chrono::seconds{5}, accepted);
+   // Own the stalled peer through completion, including setup failures before accept.
+   const auto strand = boost::asio::make_strand(runtime.context());
+   auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(
+       strand, boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 0});
+   const auto stalled = make_tcp_endpoint(acceptor->local_endpoint().port());
+   auto cancellation = boost::asio::cancellation_signal{};
+   const auto serve = [acceptor, accepted]() -> boost::asio::awaitable<void> {
+      auto close_acceptor = boost::scope::scope_exit{[&] {
+         auto ignored = boost::system::error_code{};
+         acceptor->close(ignored);
+      }};
+      auto socket = boost::asio::ip::tcp::socket{co_await boost::asio::this_coro::executor};
+      co_await acceptor->async_accept(socket, boost::asio::use_awaitable);
+      accepted->set_value();
+      auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+      timer.expires_after(std::chrono::seconds{5});
+      co_await timer.async_wait(boost::asio::use_awaitable);
+   };
+   auto stalled_done = boost::asio::co_spawn(
+       strand, serve(), boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   auto pending = std::future<node::session_info>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      try {
+         auto stopped = boost::asio::co_spawn(runtime.context(), client.async_stop(), boost::asio::use_future);
+         if (stopped.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+            std::cerr << "dial-permit client cleanup did not join\n";
+            std::terminate();
+         }
+         stopped.get();
+      }
+      catch (const std::exception& error) { BOOST_ERROR("dial-permit client cleanup failed: " << error.what()); }
+      catch (...) { BOOST_ERROR("dial-permit client cleanup failed with a non-standard exception"); }
+      if (pending.valid()) {
+         if (pending.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+            std::cerr << "dial-permit connect did not join after node stop\n";
+            std::terminate();
+         }
+         try {
+            (void)pending.get();
+            BOOST_ERROR("dial-permit connect unexpectedly succeeded during failed-case cleanup");
+         } catch (const std::exception& error) {
+            std::cerr << "dial-permit pending connect during cleanup: " << error.what() << '\n';
+         } catch (...) {
+            BOOST_ERROR("dial-permit pending connect failed with a non-standard exception");
+         }
+      }
+      auto cancel_posted = std::promise<void>{};
+      auto cancel_done = cancel_posted.get_future();
+      boost::asio::post(strand, [&] {
+         cancellation.emit(boost::asio::cancellation_type::all);
+         cancel_posted.set_value();
+      });
+      if (cancel_done.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+         std::cerr << "dial-permit stalled TCP cancellation callback did not join\n";
+         std::terminate();
+      }
+      cancel_done.get();
+      if (stalled_done.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
+         std::cerr << "dial-permit stalled TCP peer did not join after cancellation\n";
+         std::terminate();
+      }
+      try { stalled_done.get(); }
+      catch (const boost::system::system_error& error) {
+         BOOST_CHECK_MESSAGE(error.code() == boost::asio::error::operation_aborted,
+                             "stalled TCP peer failed: " << error.what());
+      } catch (const std::exception& error) {
+         BOOST_ERROR("stalled TCP peer failed: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("stalled TCP peer failed with a non-standard exception");
+      }
+   }};
    const auto root = forge::multiformats::multiaddr::parse(
-       "/dns4/localhost/tcp/" + std::to_string(stalled.transport.port) + "/p2p/" + peer(248).to_string());
+       "/dns4/hidden.test/tcp/" + std::to_string(stalled.transport.port) + "/p2p/" + peer(248).to_string());
    const auto connect_options = node::connect_options{
        .allow_relay = false, .timeout = std::chrono::seconds{10},
        .direct_attempt_timeout = std::chrono::seconds{5}, .max_direct_endpoints = 1};
-   auto pending = boost::asio::co_spawn(runtime.context(), client.async_connect(root, connect_options),
-                                      boost::asio::use_future);
-   BOOST_REQUIRE(accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   pending = boost::asio::co_spawn(runtime.context(), client.async_connect(root, connect_options),
+                                   boost::asio::use_future);
+   const auto accepted_in_time = accepted_future.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+   if (!accepted_in_time && pending.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+      try {
+         (void)pending.get();
+         BOOST_ERROR("DNS connect succeeded without the fixture TCP accept");
+      } catch (const std::exception& error) {
+         BOOST_ERROR("DNS connect failed before fixture TCP accept: " << error.what());
+      } catch (...) {
+         BOOST_ERROR("DNS connect failed before fixture TCP accept with a non-standard exception");
+      }
+   }
+   BOOST_REQUIRE_MESSAGE(accepted_in_time, "fixture TCP accept did not complete within two seconds");
+   accepted_future.get();
    BOOST_TEST(client.diagnostics().resources.active_dials == 1U);
    BOOST_TEST(client.diagnostics().resources.system.outbound_connections == 1U);
    BOOST_CHECK_EXCEPTION(
@@ -11447,7 +11624,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_value_reports_remaining_record_ttl) {
 
    auto reader_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto reader_options = dht_options_for(reader_identity, client_profile);
-   reader_options.dht_record_persistence.emplace(client_profile.protocol, reader_persistence);
+   bind_dht_records(reader_options, client_profile.protocol, reader_persistence);
    auto reader = node{runtime, std::move(reader_options)};
    forge::asio::blocking::run(runtime, reader.async_hydrate_peer_state());
    verify_dht_server(runtime, reader, server, server_endpoint, content_swarm_value_test_dht);
@@ -11491,10 +11668,10 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_value_propagates_local_persistence_failures) {
    static_cast<void>(forge::asio::blocking::run(runtime, server_persistence->async_apply(std::move(seed))));
 
    auto server_options = dht_options_for(server_identity, server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_persistence);
+   bind_dht_records(server_options, server_profile.protocol, server_persistence);
    auto client_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto client_options = dht_options_for(client_identity, client_profile);
-   client_options.dht_record_persistence.emplace(client_profile.protocol, client_persistence);
+   bind_dht_records(client_options, client_profile.protocol, client_persistence);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
    forge::asio::blocking::run(runtime, server.async_hydrate_peer_state());
@@ -11576,9 +11753,9 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_value_skips_rejected_record_and_reaches_quorum)
    static_cast<void>(forge::asio::blocking::run(runtime, valid_persistence->async_apply(std::move(valid_seed))));
 
    auto invalid_options = dht_options_for(*invalid_identity, invalid_server_profile);
-   invalid_options.dht_record_persistence.emplace(invalid_server_profile.protocol, invalid_persistence);
+   bind_dht_records(invalid_options, invalid_server_profile.protocol, invalid_persistence);
    auto valid_options = dht_options_for(*valid_identity, valid_server_profile);
-   valid_options.dht_record_persistence.emplace(valid_server_profile.protocol, valid_persistence);
+   bind_dht_records(valid_options, valid_server_profile.protocol, valid_persistence);
    auto invalid_server = node{runtime, std::move(invalid_options)};
    auto valid_server = node{runtime, std::move(valid_options)};
    auto client = node{runtime, dht_options_for(client_identity, client_profile)};
@@ -11734,6 +11911,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_find_node_returns_exact_peer_store_and_self_before_
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream) {
+   auto dns = dht_fixture_dns{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    const auto server_identity = make_test_certificate_identity("dht-node-server");
    const auto client_identity = make_test_certificate_identity("dht-node-client");
@@ -11741,7 +11919,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream
    const auto provider_identity = make_test_certificate_identity("dht-node-provider");
    auto server_options = dht_options_for(server_identity, amino_v1(dht::mode::server));
    auto server_persistence = std::make_shared<tracking_dht_record_store_persistence>();
-   server_options.dht_record_persistence.emplace(builtins::kad_dht, server_persistence);
+   bind_dht_records(server_options, builtins::kad_dht, server_persistence);
    auto client_options = dht_options_for(client_identity, amino_v1());
    auto target_options = dht_options_for(target_identity, amino_v1(dht::mode::server));
    auto provider_endpoint = make_dns_tcp_endpoint(4121, "provider.example.com");
@@ -11749,7 +11927,8 @@ BOOST_AUTO_TEST_CASE(p2p_dht_node_finds_peer_and_provider_over_negotiated_stream
    auto provider_options = dht_options_for(provider_identity, amino_v1());
    provider_options.advertised_endpoints.push_back(provider_endpoint);
    auto provider_persistence = std::make_shared<tracking_dht_record_store_persistence>();
-   provider_options.dht_record_persistence.emplace(builtins::kad_dht, provider_persistence);
+   bind_dht_records(provider_options, builtins::kad_dht, provider_persistence);
+   dns.configure({&server_options, &client_options, &target_options, &provider_options});
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
    auto target_node = node{runtime, std::move(target_options)};
@@ -11832,9 +12011,9 @@ BOOST_AUTO_TEST_CASE(p2p_dht_local_provider_publication_bounds_advertised_endpoi
    auto server_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto server_options = dht_options_for(server_identity, server_profile);
-   server_options.dht_record_persistence.emplace(server_profile.protocol, server_persistence);
+   bind_dht_records(server_options, server_profile.protocol, server_persistence);
    auto provider_options = dht_options_for(provider_identity, provider_profile);
-   provider_options.dht_record_persistence.emplace(provider_profile.protocol, provider_persistence);
+   bind_dht_records(provider_options, provider_profile.protocol, provider_persistence);
    for (const auto port : {4'211, 4'212}) {
       auto advertised = make_dns_tcp_endpoint(port, "bounded-provider.example.com");
       advertised.peer = provider_identity.peer;
@@ -11879,7 +12058,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provide_requires_quorum_and_rolls_back_local_record
    auto server = node{runtime, dht_options_for(server_identity, server_profile)};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, provider_profile);
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_node = node{runtime, std::move(provider_options)};
    const auto server_endpoint = listen(server, runtime);
    static_cast<void>(listen(provider_node, runtime));
@@ -11909,8 +12088,8 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provide_replicates_to_all_closest_peers_after_quoru
    auto second_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto first_options = dht_options_for(first_identity, custom_test_dht_profile(dht::mode::server));
    auto second_options = dht_options_for(second_identity, custom_test_dht_profile(dht::mode::server));
-   first_options.dht_record_persistence.emplace(content_swarm_test_dht, first_persistence);
-   second_options.dht_record_persistence.emplace(content_swarm_test_dht, second_persistence);
+   bind_dht_records(first_options, content_swarm_test_dht, first_persistence);
+   bind_dht_records(second_options, content_swarm_test_dht, second_persistence);
    auto provider_options = dht_options_for(
        provider_identity, custom_test_dht_profile(dht::mode::client, dht::options{.replication = 2, .alpha = 1}));
    auto advertised = make_dns_tcp_endpoint(4'194, "dht-fanout-provider.example.com");
@@ -11962,7 +12141,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_get_providers_does_not_persist_third_party_claim) {
    auto client_options = dht_options_for(client_identity, client_profile);
    auto client_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    client_persistence->reject_provider_upserts = true;
-   client_options.dht_record_persistence.emplace(content_swarm_test_dht, client_persistence);
+   bind_dht_records(client_options, content_swarm_test_dht, client_persistence);
    auto provider_options = dht_options_for(provider_identity, client_profile);
    auto server = node{runtime, std::move(server_options)};
    auto client = node{runtime, std::move(client_options)};
@@ -12055,6 +12234,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_iterative_lookup_walks_many_peer_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(p2p_dht_iterative_provider_lookup_and_provide_reach_closest_peers) {
+   auto dns = dht_fixture_dns{};
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
    const auto seed_identity = make_test_certificate_identity("dht-provider-seed");
    const auto hop_identity = make_test_certificate_identity("dht-provider-hop");
@@ -12071,6 +12251,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_iterative_provider_lookup_and_provide_reach_closest
    provider_endpoint.peer = provider_identity.peer;
    auto provider_options = dht_options_for(provider_identity, client_profile);
    provider_options.advertised_endpoints.push_back(provider_endpoint);
+   dns.configure({&seed_options, &hop_options, &client_options, &provider_options});
 
    auto seed = node{runtime, std::move(seed_options)};
    auto hop = node{runtime, std::move(hop_options)};
@@ -16194,7 +16375,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_routing_refresh_task_retains_node_impl_until_stop_i
    auto weak_persistence = std::weak_ptr<dht::record_store::persistence>{persistence};
    {
       auto options = dht_options_for(peer(217), custom_test_dht_profile());
-      options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+      bind_dht_records(options, content_swarm_test_dht, persistence);
       auto source = node{runtime, std::move(options)};
       persistence.reset();
    }
@@ -16213,8 +16394,8 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_maintenance_prunes_each_dht_record_store_prof
    auto value_persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto options = dht_options_for(peer(216), custom_test_dht_profile());
    options.dht_profiles.push_back(custom_test_value_dht_profile());
-   options.dht_record_persistence.emplace(content_swarm_test_dht, provider_persistence);
-   options.dht_record_persistence.emplace(content_swarm_value_test_dht, value_persistence);
+   bind_dht_records(options, content_swarm_test_dht, provider_persistence);
+   bind_dht_records(options, content_swarm_value_test_dht, value_persistence);
    options.lifecycle.maintenance_interval = std::chrono::milliseconds{10};
    auto source = node{runtime, std::move(options)};
 
@@ -16235,7 +16416,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_failed_initial_publication_retains_cleanup_for_stop
    const auto identity = make_test_certificate_identity("dht-initial-cleanup-retry");
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto options = dht_options_for(identity, custom_test_dht_profile());
-   options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(options, content_swarm_test_dht, persistence);
    auto advertised = make_dns_tcp_endpoint(4'194, "dht-initial-cleanup-retry.example.com");
    advertised.peer = identity.peer;
    options.advertised_endpoints.push_back(std::move(advertised));
@@ -16261,7 +16442,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_new_admission_retries_failed_destructor_cleanup) {
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto advertised = make_dns_tcp_endpoint(4'196, "dht-readmission.example.com");
    advertised.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(advertised);
@@ -16299,7 +16480,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_removal_failure_allows_stop_retry) {
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_endpoint = make_dns_tcp_endpoint(4'193, "dht-stop-retry.example.com");
    provider_endpoint.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(provider_endpoint);
@@ -16334,7 +16515,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_provider_removal_failure_allows_withdraw_retry) {
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_endpoint = make_dns_tcp_endpoint(4'195, "dht-withdraw-retry.example.com");
    provider_endpoint.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(provider_endpoint);
@@ -16367,7 +16548,7 @@ BOOST_AUTO_TEST_CASE(p2p_dht_withdraw_retry_joins_concurrent_shutdown_and_clears
    auto server = node{runtime, dht_options_for(server_identity, custom_test_dht_profile(dht::mode::server))};
    auto persistence = std::make_shared<tracking_dht_record_store_persistence>();
    auto provider_options = dht_options_for(provider_identity, custom_test_dht_profile());
-   provider_options.dht_record_persistence.emplace(content_swarm_test_dht, persistence);
+   bind_dht_records(provider_options, content_swarm_test_dht, persistence);
    auto provider_endpoint = make_dns_tcp_endpoint(4'197, "dht-withdraw-stop-join.example.com");
    provider_endpoint.peer = provider_identity.peer;
    provider_options.advertised_endpoints.push_back(provider_endpoint);

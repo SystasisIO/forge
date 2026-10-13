@@ -50,6 +50,7 @@ namespace {
    case detail::engine_error_kind::connection_closed:
       return exceptions::code::connection_closed;
    case detail::engine_error_kind::stream_closed:
+   case detail::engine_error_kind::end_of_stream:
       return exceptions::code::stream_closed;
    case detail::engine_error_kind::stream_reset:
       return exceptions::code::stream_reset;
@@ -62,6 +63,9 @@ namespace {
 }
 
 [[noreturn]] void raise_engine_failure(const detail::engine_failure& error) {
+   if (error.kind() == detail::engine_error_kind::end_of_stream) {
+      FORGE_THROW_EXCEPTION(exceptions::end_of_stream, error.what());
+   }
    FORGE_THROW_CODE(map_error(error.kind()), error.what());
 }
 
@@ -109,6 +113,17 @@ boost::asio::awaitable<std::vector<std::uint8_t>> stream::async_read() {
    }
    try {
       co_return co_await impl_->engine->async_read();
+   } catch (const detail::engine_failure& error) {
+      raise_engine_failure(error);
+   }
+}
+
+boost::asio::awaitable<void> stream::async_close_write() {
+   if (!impl_ || !impl_->engine) {
+      FORGE_THROW_EXCEPTION(exceptions::stream_closed, "invalid QUIC stream");
+   }
+   try {
+      co_await impl_->engine->async_close_write();
    } catch (const detail::engine_failure& error) {
       raise_engine_failure(error);
    }

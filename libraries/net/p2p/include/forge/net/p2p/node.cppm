@@ -112,7 +112,7 @@ class node {
       identify::limits identify;
       lifecycle_options lifecycle;
       std::vector<dht::profile> dht_profiles;
-      std::map<protocol_id, std::shared_ptr<dht::record_store::persistence>> dht_record_persistence;
+      std::map<protocol_id, dht::record_store::options> dht_records;
       forge::net::p2p::mdns_policy mdns{};
    };
 
@@ -252,6 +252,9 @@ class node {
        pubsub::topic subject, pubsub::handler full_handler, pubsub::partial_options options);
    // Closes callback admission and requests stop, but never joins the caller's callback.
    boost::asio::awaitable<void> async_unsubscribe(pubsub::partial_topic registration);
+   // Retires only Partial callbacks/groups; the full subscription and mesh remain.
+   // Does not join admitted callbacks or prove remote receipt. Errors after local commit do not roll it back.
+   boost::asio::awaitable<void> async_disable_partial(pubsub::partial_topic registration);
    boost::asio::awaitable<void> async_advertise_partial(pubsub::partial_topic registration,
                                                        std::vector<std::uint8_t> group_id);
    boost::asio::awaitable<void> async_forget_partial(pubsub::partial_topic registration,
@@ -293,6 +296,11 @@ class node {
    std::shared_ptr<impl> impl_;
 };
 
+// Checks policy without requiring identity, a pnet protector or persistence.
+// Does not copy or invoke application callbacks, mutate options or create resources.
+void validate_policy(const node::options& options);
+// Also checks identity presence, explicit peer/certificate agreement and required resources.
+// The constructor retains ownership of private-key parsing and key/certificate matching.
 void validate(const node::options& options);
 
 } // namespace forge::net::p2p

@@ -109,22 +109,6 @@ REQUIRED_OWNERS = {
         "module_prefix": "forge.plugins.net.p2p.resolver",
         "module_root": "plugins/net/p2p/resolver",
     },
-    "plugin.p2p.pubsub": {
-        "kind": "plugin",
-        "path": "plugins/net/p2p/pubsub",
-        "target": "forge_plugins_net_p2p_pubsub",
-        "component": "plugins_net_p2p_pubsub",
-        "module_prefix": "forge.plugins.net.p2p.pubsub",
-        "module_root": "plugins/net/p2p/pubsub",
-    },
-    "plugin.p2p.diagnostics": {
-        "kind": "plugin",
-        "path": "plugins/net/p2p/diagnostics",
-        "target": "forge_plugins_net_p2p_diagnostics",
-        "component": "plugins_net_p2p_diagnostics",
-        "module_prefix": "forge.plugins.net.p2p.diagnostics",
-        "module_root": "plugins/net/p2p/diagnostics",
-    },
     "application": {"kind": "external"},
     "none": {"kind": "none"},
 }

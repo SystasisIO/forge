@@ -6,13 +6,16 @@ module;
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <future>
 #include <map>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -25,11 +28,16 @@ module;
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 
 module forge.net.p2p.node;
@@ -40,6 +48,7 @@ import forge.asio.gate;
 import forge.asio.notification;
 import forge.crypto.asymmetric;
 import forge.multiformats.multiaddr;
+import forge.multiformats.varint;
 import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.peer_store;
@@ -722,6 +731,538 @@ void node_session_fixture::native_partial_callback_stop() {
    shutdown.join();
 }
 
+void node_session_fixture::native_partial_downgrade() {
+   auto fixture = pubsub_router_fixture{};
+   auto config = manual_options(); config.preferred = pubsub::version::v1_3;
+   config.partial_messages = true; config.flood_publish = true;
+   config.scoring = pubsub::scoring_params{};
+   config.scoring->topics.emplace(fixture.topic, pubsub::topic_score_params{});
+   auto& owner = fixture.add("downgrade-owner", config);
+   auto& remote = fixture.add("downgrade-remote", config);
+   auto release = std::make_shared<forge::asio::notification>();
+   const auto epoch = release->epoch();
+   auto entered = std::atomic_bool{}, stopped = std::atomic_bool{}, reentrant = std::atomic_bool{};
+   auto destroyed = std::atomic_bool{};
+   auto capture = std::shared_ptr<int>{new int{}, [&](int* value) {
+      delete value;
+      static_cast<void>(owner.pubsub_snapshot());
+      destroyed = true;
+   }};
+   auto full_delivered = std::atomic_size_t{};
+   auto token = pubsub::partial_topic{}, remote_token = pubsub::partial_topic{};
+   const auto full = [&](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
+      ++full_delivered; co_return pubsub::validation_result::accept;
+   };
+   const auto receive = [&](pubsub::partial_event event, std::stop_token stop) -> boost::asio::awaitable<void> {
+      if (event.value.metadata == std::optional{std::vector<std::uint8_t>{2}}) {
+         co_await owner.async_disable_partial(event.registration);
+         reentrant = true;
+         co_return;
+      }
+      const auto on_stop = std::stop_callback{stop, [&] {
+         // Reenter both node and registry snapshots synchronously from request_stop.
+         stopped = owner.pubsub_snapshot().partial_groups == 0;
+      }};
+      entered = true;
+      static_cast<void>(co_await release->async_wait(epoch));
+   };
+   const auto discard = [](pubsub::partial_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto gossip = [](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, remote, [release] { release->notify(); }};
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      token = co_await owner.async_subscribe(fixture.topic, full,
+          {.requests_partial = true, .receive = receive,
+           .gossip = [capture](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> {
+              static_cast<void>(capture); co_return;
+           }});
+      remote_token = co_await remote.async_subscribe(fixture.topic,
+          [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> { co_return pubsub::validation_result::accept; },
+          {.receive = discard, .gossip = gossip});
+   }());
+   capture.reset();
+   fixture.connect(owner, remote);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex, remote.impl_->mutex};
+      return remote.impl_->partial_peer_supported_locked(owner.local_peer(), fixture.topic, true) &&
+          owner.impl_->partial_peer_supported_locked(remote.local_peer(), fixture.topic, false);
+   }));
+   run(fixture.runtime, owner.impl_->pubsub_heartbeat_once());
+   BOOST_REQUIRE(fixture.wait([&] { return owner.pubsub_snapshot().mesh_edges == 1 && remote.pubsub_snapshot().mesh_edges == 1; }));
+   const auto cached = fixture.publish(owner, "retained-full-cache");
+   BOOST_REQUIRE(fixture.wait([&] { return remote.pubsub_snapshot().messages_delivered == 1; }));
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      auto generation = std::optional<std::uint64_t>{};
+      static_cast<void>(co_await remote.impl_->send_pubsub_rpc(owner.local_peer(),
+          pubsub::rpc{.control_value = pubsub::control{.dont_want = {{.message_ids = {{0x55}}}}}}, generation));
+   }());
+   BOOST_REQUIRE(fixture.wait([&] { return owner.pubsub_snapshot().idontwant_entries == 1; }));
+   run(fixture.runtime, owner.async_advertise_partial(token, {1, 2}));
+   run(fixture.runtime, remote.async_send_partial(remote_token, owner.local_peer(),
+       {.group_id = std::vector<std::uint8_t>{1}, .metadata = std::vector<std::uint8_t>{1}}));
+   BOOST_REQUIRE(fixture.wait([&] { return entered.load(); }));
+   const auto before = owner.pubsub_snapshot();
+   const auto score_before = owner.pubsub_scores();
+   const auto prunes = controls(fixture, owner, remote.local_peer(), false);
+   const auto old_epoch = [&] { const auto lock = std::scoped_lock{owner.impl_->mutex}; return owner.impl_->pubsub_value.subscription_epoch; }();
+   BOOST_CHECK_THROW(run(fixture.runtime, owner.async_disable_partial(remote_token)), forge::exceptions::base);
+   BOOST_CHECK_THROW(run(fixture.runtime, owner.async_disable_partial({})), forge::exceptions::base);
+   run(fixture.runtime, owner.async_disable_partial(token));
+   const auto after = owner.pubsub_snapshot();
+   BOOST_CHECK(stopped.load());
+   BOOST_CHECK_EQUAL(after.topics, before.topics);
+   BOOST_CHECK_EQUAL(after.mesh_edges, before.mesh_edges);
+   BOOST_CHECK_EQUAL(after.cached_messages, before.cached_messages);
+   BOOST_CHECK_EQUAL(after.invalid_messages, before.invalid_messages);
+   BOOST_CHECK_EQUAL(after.idontwant_entries, before.idontwant_entries);
+   BOOST_CHECK_EQUAL(after.idontwant_bytes, before.idontwant_bytes);
+   BOOST_CHECK_EQUAL(after.partial_groups, 0U);
+   BOOST_CHECK_EQUAL(after.partial_group_bytes, 0U);
+   BOOST_CHECK_EQUAL(after.partial_callbacks, 1U);
+   BOOST_CHECK(!destroyed.load());
+   BOOST_CHECK_GT(before.partial_callback_bytes, 0U);
+   BOOST_CHECK_EQUAL(after.partial_callback_bytes, before.partial_callback_bytes);
+   BOOST_CHECK_EQUAL(controls(fixture, owner, remote.local_peer(), false), prunes);
+   const auto score_after = owner.pubsub_scores();
+   BOOST_REQUIRE_EQUAL(score_after.peers.size(), score_before.peers.size());
+   BOOST_CHECK_EQUAL(score_after.pending_validations, score_before.pending_validations);
+   for (auto i = std::size_t{}; i < score_before.peers.size(); ++i) {
+      BOOST_CHECK_EQUAL(score_after.peers[i].value, score_before.peers[i].value);
+      BOOST_CHECK_EQUAL(score_after.peers[i].behaviour_penalty, score_before.peers[i].behaviour_penalty);
+   }
+   {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      BOOST_CHECK_EQUAL(owner.impl_->pubsub_value.subscription_epoch, old_epoch + 1);
+      BOOST_CHECK(owner.impl_->options.limits.pubsub.partial_messages);
+      BOOST_CHECK(owner.impl_->pubsub_value.cache.contains(bytes_key(pubsub::codec::message_id(cached, config))));
+   }
+   BOOST_CHECK_THROW(run(fixture.runtime, owner.async_disable_partial(token)), forge::exceptions::base);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{remote.impl_->mutex};
+      const auto& inbound = remote.impl_->pubsub_value.inbound.at(owner.local_peer()).rbegin()->second;
+      const auto row = inbound.partial_topics.find(fixture.topic.value);
+      return row != inbound.partial_topics.end() && row->second.subscribe &&
+          !row->second.requests_partial && !row->second.supports_sending_partial;
+   }));
+   static_cast<void>(fixture.publish(remote, "full-after-partial-downgrade"));
+   BOOST_REQUIRE(fixture.wait([&] { return full_delivered.load() == 1; }));
+   release->notify();
+   BOOST_REQUIRE(fixture.wait([&] { return destroyed.load() && owner.pubsub_snapshot().partial_callbacks == 0; }));
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().partial_callback_bytes, 0U);
+   const auto old_token = token;
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      token = co_await owner.async_subscribe(fixture.topic, full,
+          {.requests_partial = true, .receive = receive, .gossip = gossip});
+   }());
+   BOOST_CHECK_THROW(run(fixture.runtime, owner.async_disable_partial(old_token)), forge::exceptions::base);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{remote.impl_->mutex};
+      return remote.impl_->partial_peer_supported_locked(owner.local_peer(), fixture.topic, true);
+   }));
+   run(fixture.runtime, remote.async_send_partial(remote_token, owner.local_peer(),
+       {.group_id = std::vector<std::uint8_t>{1}, .metadata = std::vector<std::uint8_t>{2}}));
+   BOOST_REQUIRE(fixture.wait([&] { return reentrant.load() && owner.pubsub_snapshot().partial_callbacks == 0; }));
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().topics, 1U);
+   shutdown.join();
+}
+
+void node_session_fixture::native_partial_downgrade_queued() {
+   auto fixture = pubsub_router_fixture{};
+   auto config = manual_options(); config.preferred = pubsub::version::v1_3; config.partial_messages = true;
+   auto& owner = fixture.add("downgrade-queued-owner", config);
+   auto& remote = fixture.add("downgrade-queued-remote", config);
+   auto ticket = forge::asio::gate::ticket{};
+   auto old = std::future<void>{}, downgrade = std::future<void>{}, replacement = std::future<void>{};
+   auto token = pubsub::partial_topic{};
+   const auto full = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> { co_return pubsub::validation_result::accept; };
+   const auto receive = [](pubsub::partial_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto gossip = [](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto join = [&](auto deadline) {
+      for (auto* pending : {&old, &downgrade, &replacement}) {
+         if (!pending->valid()) { continue; }
+         if (pending->wait_until(deadline) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+         try { pending->get(); } catch (...) {}
+      }
+   };
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, remote, [&] { ticket.release(); }, join};
+   fixture.subscribe(remote);
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      token = co_await owner.async_subscribe(fixture.topic, full,
+          {.requests_partial = true, .receive = receive, .gossip = gossip});
+   }());
+   fixture.connect(owner, remote);
+   const auto idle = [&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      const auto out = owner.impl_->pubsub_value.outbound.find(remote.local_peer());
+      return out != owner.impl_->pubsub_value.outbound.end() && out->second.stream && !out->second.snapshot_pending &&
+          owner.impl_->pubsub_value.outbound_budget.total() == 0;
+   };
+   BOOST_REQUIRE(fixture.wait(idle));
+   for (const auto replace : {false, true}) {
+      if (replace) {
+         run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+            token = co_await owner.async_subscribe(fixture.topic, full,
+                {.requests_partial = true, .receive = receive, .gossip = gossip});
+         }());
+         BOOST_REQUIRE(fixture.wait(idle));
+      }
+      auto gate = std::shared_ptr<forge::asio::gate>{};
+      {
+         const auto lock = std::scoped_lock{owner.impl_->mutex};
+         gate = owner.impl_->pubsub_value.outbound.at(remote.local_peer()).write_gate;
+      }
+      auto acquired = boost::asio::co_spawn(fixture.runtime.context(), gate->acquire(), boost::asio::use_future);
+      if (acquired.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      ticket = acquired.get();
+      const auto before = fixture.receipts(owner).size();
+      old = boost::asio::co_spawn(fixture.runtime.context(), owner.impl_->announce_pubsub_subscriptions(remote.local_peer()),
+          boost::asio::use_future);
+      BOOST_REQUIRE(fixture.wait([&] {
+         const auto lock = std::scoped_lock{owner.impl_->mutex};
+         return owner.impl_->pubsub_value.outbound_budget.total() != 0;
+      }));
+      downgrade = boost::asio::co_spawn(fixture.runtime.context(), owner.async_disable_partial(token), boost::asio::use_future);
+      BOOST_REQUIRE(fixture.wait([&] { return !owner.impl_->pubsub_value.partial.current(token); }));
+      BOOST_CHECK(downgrade.wait_for(0ms) != std::future_status::ready);
+      if (replace) {
+         replacement = boost::asio::co_spawn(fixture.runtime.context(), [&]() -> boost::asio::awaitable<void> {
+            static_cast<void>(co_await owner.async_subscribe(fixture.topic, full,
+                {.requests_partial = false, .receive = receive, .gossip = gossip}));
+         }, boost::asio::use_future);
+         BOOST_REQUIRE(fixture.wait([&] { return owner.impl_->pubsub_value.partial.find(fixture.topic) != nullptr; }));
+      }
+      ticket.release();
+      for (auto* pending : {&old, &downgrade, &replacement}) {
+         if (!pending->valid()) { continue; }
+         if (pending->wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+         pending->get();
+      }
+      auto saw_topic = false;
+      const auto receipts = fixture.receipts(owner);
+      for (auto i = before; i < receipts.size(); ++i) {
+         const auto& receipt = receipts[i];
+         if (receipt.kind != pubsub::trace_kind::rpc_write || receipt.peer != remote.local_peer()) { continue; }
+         const auto rpc = pubsub::codec::decode(receipt.frame, config);
+         if (rpc.control_value) { BOOST_CHECK(rpc.control_value->prunes.empty()); }
+         for (const auto& row : rpc.subscriptions) {
+            if (row.subject != fixture.topic) { continue; }
+            saw_topic = true;
+            BOOST_CHECK(row.subscribe);
+            BOOST_CHECK(!row.requests_partial.value_or(false));
+            BOOST_CHECK_EQUAL(row.supports_sending_partial.value_or(false), replace);
+            if (!replace) { BOOST_CHECK(!row.requests_partial && !row.supports_sending_partial); }
+         }
+      }
+      BOOST_CHECK(saw_topic);
+      BOOST_REQUIRE(fixture.wait(idle));
+      BOOST_CHECK_EQUAL(owner.pubsub_snapshot().topics, 1U);
+   }
+   shutdown.join();
+}
+
+void node_session_fixture::native_partial_downgrade_cancellation() {
+   auto fixture = pubsub_router_fixture{};
+   auto config = manual_options(); config.preferred = pubsub::version::v1_3; config.partial_messages = true;
+   auto& owner = fixture.add("downgrade-cancel-owner", config);
+   auto& remote = fixture.add("downgrade-cancel-remote", config);
+   auto token = pubsub::partial_topic{};
+   auto ticket = forge::asio::gate::ticket{};
+   auto pending = std::future<void>{};
+   auto signal = boost::asio::cancellation_signal{};
+   auto strand = boost::asio::make_strand(fixture.runtime.context());
+   auto released = std::make_shared<forge::asio::notification>();
+   const auto epoch = released->epoch();
+   auto waiting = std::atomic_bool{};
+   const auto full = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> { co_return pubsub::validation_result::accept; };
+   const auto receive = [](pubsub::partial_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto gossip = [](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto join = [&](auto deadline) {
+      if (!pending.valid()) { return; }
+      if (pending.wait_until(deadline) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      try { pending.get(); } catch (...) {}
+   };
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, remote,
+       [&] { ticket.release(); released->notify(); }, join};
+   const auto subscribe = [&] {
+      run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+         token = co_await owner.async_subscribe(fixture.topic, full, {.receive = receive, .gossip = gossip});
+      }());
+   };
+   subscribe();
+   const auto before_epoch = [&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex}; return owner.impl_->pubsub_value.subscription_epoch;
+   }();
+   pending = boost::asio::co_spawn(strand, [&]() -> boost::asio::awaitable<void> {
+      auto operation = owner.async_disable_partial(token);
+      signal.emit(boost::asio::cancellation_type::terminal);
+      co_await std::move(operation);
+   }, boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+   if (pending.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+   BOOST_CHECK_THROW(pending.get(), std::exception);
+   BOOST_CHECK(owner.impl_->pubsub_value.partial.current(token));
+   {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      BOOST_CHECK_EQUAL(owner.impl_->pubsub_value.subscription_epoch, before_epoch);
+      owner.impl_->pubsub_value.subscription_epoch = (std::numeric_limits<std::uint64_t>::max)();
+   }
+   const auto restore_epoch = [&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex}; owner.impl_->pubsub_value.subscription_epoch = before_epoch;
+   };
+   try { run(fixture.runtime, owner.async_disable_partial(token)); BOOST_ERROR("generation exhaustion accepted"); }
+   catch (const forge::exceptions::base& error) { BOOST_CHECK(exceptions::is(error, exceptions::code::closed)); }
+   catch (...) { restore_epoch(); throw; }
+   restore_epoch();
+   BOOST_CHECK(owner.impl_->pubsub_value.partial.current(token));
+   fixture.subscribe(remote); fixture.connect(owner, remote);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      const auto out = owner.impl_->pubsub_value.outbound.find(remote.local_peer());
+      return out != owner.impl_->pubsub_value.outbound.end() && out->second.stream && !out->second.snapshot_pending &&
+          owner.impl_->pubsub_value.outbound_budget.total() == 0;
+   }));
+   auto gate = std::shared_ptr<forge::asio::gate>{};
+   {
+      const auto lock = std::scoped_lock{owner.impl_->mutex}; gate = owner.impl_->pubsub_value.outbound.at(remote.local_peer()).write_gate;
+   }
+   auto acquired = boost::asio::co_spawn(fixture.runtime.context(), gate->acquire(), boost::asio::use_future);
+   if (acquired.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+   ticket = acquired.get();
+   pending = boost::asio::co_spawn(strand, owner.async_disable_partial(token),
+       boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      return !owner.impl_->pubsub_value.partial.current(token) && owner.impl_->pubsub_value.outbound_budget.total() != 0;
+   }));
+   const auto cancel = [&] {
+      auto emitted = boost::asio::co_spawn(strand, [&]() -> boost::asio::awaitable<void> {
+         signal.emit(boost::asio::cancellation_type::terminal); co_return;
+      }, boost::asio::use_future);
+      if (emitted.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      emitted.get();
+   };
+   cancel();
+   if (pending.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+   BOOST_CHECK_THROW(pending.get(), std::exception);
+   BOOST_CHECK(!owner.impl_->pubsub_value.partial.current(token));
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().topics, 1U);
+   ticket.release();
+   subscribe();
+   pending = boost::asio::co_spawn(strand, [&]() -> boost::asio::awaitable<void> {
+      co_await owner.async_disable_partial(token);
+      waiting = true;
+      static_cast<void>(co_await released->async_wait(epoch));
+   }, boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+   BOOST_REQUIRE(fixture.wait([&] { return waiting.load(); }));
+   cancel();
+   if (pending.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+   BOOST_CHECK_THROW(pending.get(), std::exception); // Outbound gate did not consume the caller's policy.
+   subscribe();
+   owner.request_stop();
+   BOOST_CHECK_EXCEPTION(run(fixture.runtime, owner.async_disable_partial(token)), forge::exceptions::base,
+       [](const auto& error) { return exceptions::is(error, exceptions::code::closed); });
+   shutdown.join();
+}
+
+void node_session_fixture::native_partial_downgrade_peer_failure() {
+   auto fixture = pubsub_router_fixture{};
+   auto config = manual_options(); config.preferred = pubsub::version::v1_3;
+   config.partial_messages = true; config.flood_publish = true;
+   config.limits.max_topic_size = 768U * 1024U;
+   const auto large = pubsub::topic{std::string(config.limits.max_topic_size, 's')};
+   auto& owner = fixture.add("downgrade-multi-owner", config);
+   auto& first = fixture.add("downgrade-multi-first", config);
+   auto& second = fixture.add("downgrade-multi-second", config);
+   auto token = pubsub::partial_topic{};
+   auto delivered = std::atomic_size_t{};
+   auto pending = std::future<void>{};
+   const auto read = std::make_shared<std::promise<std::size_t>>();
+   auto read_result = read->get_future();
+   const auto full = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> { co_return pubsub::validation_result::accept; };
+   const auto receive = [](pubsub::partial_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto gossip = [](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto join = [&](auto deadline) {
+      if (!pending.valid()) { return; }
+      if (pending.wait_until(deadline) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      try { pending.get(); } catch (...) {}
+   };
+   auto second_shutdown = gossipsub_test_shutdown{fixture.runtime, owner, second, [&] { owner.request_stop(); }, join};
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, first, [&] { owner.request_stop(); }, join};
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      token = co_await owner.async_subscribe(fixture.topic,
+          [&](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> {
+             ++delivered; co_return pubsub::validation_result::accept;
+          }, {.requests_partial = true, .receive = receive, .gossip = gossip});
+      static_cast<void>(co_await owner.async_subscribe(large, full));
+   }());
+   fixture.subscribe(first); fixture.subscribe(second);
+   fixture.connect(owner, first); fixture.connect(owner, second);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      for (const auto& peer : {first.local_peer(), second.local_peer()}) {
+         const auto out = owner.impl_->pubsub_value.outbound.find(peer);
+         if (!owner.impl_->pubsub_value.peer_topics.contains(peer) ||
+             out == owner.impl_->pubsub_value.outbound.end() || !out->second.stream || out->second.snapshot_pending) { return false; }
+      }
+      return owner.impl_->pubsub_value.outbound_budget.total() == 0;
+   }));
+   const auto peers = owner.impl_->pubsub_candidate_peers(fixture.topic.value);
+   BOOST_REQUIRE_EQUAL(peers.size(), 2U);
+   auto& bad = peers.front() == first.local_peer() ? first : second;
+   auto& healthy = &bad == &first ? second : first;
+   bad.register_protocol_handler(builtins::meshsub_v13,
+       [read, config](node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+          auto reported = false;
+          try {
+             const auto bytes = co_await incoming.stream.async_read();
+             const auto prefix = forge::multiformats::varint_decode(bytes);
+             if (bytes.size() > forge::net::yamux::options{}.initial_window || bytes.size() <= prefix.size ||
+                 prefix.value <= 2U * forge::net::yamux::options{}.initial_window || prefix.value > config.limits.max_rpc_size ||
+                 bytes[prefix.size] != 0x0aU) {
+                FORGE_THROW_EXCEPTION(exceptions::protocol_error, "downgrade fault peer did not observe the large subscription snapshot");
+             }
+             read->set_value(bytes.size());
+             reported = true;
+             incoming.stream.cancel(); // Actual native RESET while the snapshot still exceeds available credit.
+          } catch (...) {
+             if (!reported) { read->set_exception(std::current_exception()); }
+             throw;
+          }
+       });
+   {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      owner.impl_->invalidate_pubsub_outbound_locked(bad.local_peer()); // Retire only the idle cached stream.
+   }
+   const auto before = fixture.receipts(owner).size();
+   pending = boost::asio::co_spawn(fixture.runtime.context(), owner.async_disable_partial(token), boost::asio::use_future);
+   BOOST_REQUIRE(read_result.wait_for(5s) == std::future_status::ready);
+   BOOST_CHECK_GT(read_result.get(), 0U);
+   BOOST_REQUIRE(pending.wait_for(5s) == std::future_status::ready);
+   BOOST_CHECK_THROW(pending.get(), std::exception); // First peer's original error remains observable.
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{healthy.impl_->mutex};
+      const auto streams = healthy.impl_->pubsub_value.inbound.find(owner.local_peer());
+      if (streams == healthy.impl_->pubsub_value.inbound.end() || streams->second.empty()) { return false; }
+      const auto& topics = streams->second.rbegin()->second.partial_topics;
+      const auto row = topics.find(fixture.topic.value);
+      return row != topics.end() && row->second.subscribe && !row->second.requests_partial && !row->second.supports_sending_partial;
+   }));
+   auto written = false;
+   const auto receipts = fixture.receipts(owner);
+   for (auto i = before; i < receipts.size(); ++i) {
+      const auto& receipt = receipts[i];
+      if (receipt.kind != pubsub::trace_kind::rpc_write || receipt.peer != healthy.local_peer()) { continue; }
+      for (const auto& row : pubsub::codec::decode(receipt.frame, config).subscriptions) {
+         if (row.subject == fixture.topic && row.subscribe && !row.requests_partial && !row.supports_sending_partial) { written = true; }
+      }
+   }
+   BOOST_CHECK(written);
+   BOOST_CHECK(!owner.impl_->pubsub_value.partial.current(token));
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().topics, 2U);
+   static_cast<void>(fixture.publish(healthy, "full-after-first-peer-reset"));
+   BOOST_REQUIRE(fixture.wait([&] { return delivered.load() == 1; }));
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex}; return owner.impl_->pubsub_value.outbound_budget.total() == 0;
+   }));
+   shutdown.join(); second_shutdown.join();
+}
+
+void node_session_fixture::native_partial_downgrade_native_write(bool stop_node) {
+   auto fixture = pubsub_router_fixture{};
+   auto config = manual_options(); config.preferred = pubsub::version::v1_3; config.partial_messages = true;
+   config.limits.max_topic_size = 768U * 1024U;
+   const auto large = pubsub::topic{std::string(config.limits.max_topic_size, 's')};
+   auto& owner = fixture.add("downgrade-write-owner", config);
+   auto& remote = fixture.add("downgrade-write-remote", config);
+   auto token = pubsub::partial_topic{};
+   auto pending = std::future<void>{};
+   auto signal = boost::asio::cancellation_signal{};
+   auto caller = boost::asio::make_strand(fixture.runtime.context());
+   const auto release = std::make_shared<forge::asio::notification>();
+   const auto epoch = release->epoch();
+   const auto read = std::make_shared<std::promise<std::size_t>>();
+   auto observed = read->get_future();
+   const auto join = [&](auto deadline) {
+      if (!pending.valid()) { return; }
+      if (pending.wait_until(deadline) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      try { pending.get(); } catch (...) {}
+   };
+   auto shutdown = gossipsub_test_shutdown{fixture.runtime, owner, remote,
+       [&] { owner.request_stop(); release->notify(); }, join};
+   const auto full = [](pubsub::event) -> boost::asio::awaitable<pubsub::validation_result> { co_return pubsub::validation_result::accept; };
+   const auto receive = [](pubsub::partial_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto gossip = [](pubsub::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   run(fixture.runtime, [&]() -> boost::asio::awaitable<void> {
+      token = co_await owner.async_subscribe(fixture.topic, full, {.receive = receive, .gossip = gossip});
+      static_cast<void>(co_await owner.async_subscribe(large, full));
+   }());
+   fixture.subscribe(remote); fixture.connect(owner, remote);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      const auto out = owner.impl_->pubsub_value.outbound.find(remote.local_peer());
+      return owner.impl_->pubsub_value.peer_topics.contains(remote.local_peer()) &&
+          out != owner.impl_->pubsub_value.outbound.end() && out->second.stream && !out->second.snapshot_pending &&
+          owner.impl_->pubsub_value.outbound_budget.total() == 0;
+   }));
+   remote.register_protocol_handler(builtins::meshsub_v13,
+       [read, release, epoch, config](node::incoming_protocol_stream incoming) -> boost::asio::awaitable<void> {
+          auto reported = false;
+          try {
+             const auto bytes = co_await incoming.stream.async_read();
+             const auto prefix = forge::multiformats::varint_decode(bytes);
+             if (bytes.size() > forge::net::yamux::options{}.initial_window || bytes.size() <= prefix.size ||
+                 prefix.value <= 2U * forge::net::yamux::options{}.initial_window || prefix.value > config.limits.max_rpc_size ||
+                 bytes[prefix.size] != 0x0aU) {
+                FORGE_THROW_EXCEPTION(exceptions::protocol_error, "downgrade fixture did not observe a credit-blocked subscription write");
+             }
+             read->set_value(bytes.size());
+             reported = true;
+             // Only one native chunk is consumed; a >2-window frame cannot complete while this receiver is held.
+             static_cast<void>(co_await release->async_wait(epoch));
+             incoming.stream.cancel();
+          } catch (...) {
+             if (!reported) { read->set_exception(std::current_exception()); }
+             throw;
+          }
+       });
+   {
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      owner.impl_->invalidate_pubsub_outbound_locked(remote.local_peer()); // Fresh native stream, no active write retired here.
+   }
+   pending = boost::asio::co_spawn(caller, owner.async_disable_partial(token),
+       boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+   BOOST_REQUIRE(observed.wait_for(5s) == std::future_status::ready);
+   BOOST_CHECK_GT(observed.get(), 0U);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto memory = owner.diagnostics().resources.streams.memory;
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      const auto out = owner.impl_->pubsub_value.outbound.find(remote.local_peer());
+      return out != owner.impl_->pubsub_value.outbound.end() && out->second.stream && out->second.snapshot_pending &&
+          memory > 2U * forge::net::yamux::options{}.initial_window &&
+          owner.impl_->pubsub_value.outbound_budget.total() > 2U * forge::net::yamux::options{}.initial_window;
+   }));
+   BOOST_CHECK(pending.wait_for(0ms) != std::future_status::ready);
+   if (stop_node) { owner.request_stop(); }
+   else {
+      auto canceled = boost::asio::co_spawn(caller, [&]() -> boost::asio::awaitable<void> {
+         signal.emit(boost::asio::cancellation_type::terminal); co_return;
+      }, boost::asio::use_future);
+      if (canceled.wait_for(5s) != std::future_status::ready) { gossipsub_test_shutdown::fail_closed(); }
+      canceled.get();
+   }
+   BOOST_REQUIRE_MESSAGE(pending.wait_for(5s) == std::future_status::ready,
+       "downgrade native write did not join cancellation while its receiver was still held");
+   BOOST_CHECK_EXCEPTION(pending.get(), forge::exceptions::base,
+       [](const auto& error) { return exceptions::is(error, exceptions::code::canceled); });
+   BOOST_CHECK(!owner.impl_->pubsub_value.partial.current(token));
+   BOOST_CHECK_EQUAL(owner.pubsub_snapshot().topics, 2U);
+   BOOST_REQUIRE(fixture.wait([&] {
+      const auto memory = owner.diagnostics().resources.streams.memory;
+      const auto lock = std::scoped_lock{owner.impl_->mutex};
+      return memory == 0 && owner.impl_->pubsub_value.outbound_budget.total() == 0;
+   }));
+   release->notify();
+   shutdown.join();
+}
+
 } // namespace forge::net::p2p
 
 namespace {
@@ -749,6 +1290,65 @@ bool partial_backpressure(const forge::exceptions::base& error) {
 
 BOOST_AUTO_TEST_SUITE(pubsub_partial_runtime)
 BOOST_AUTO_TEST_CASE(registry_generation_budget_ttl_busy_and_config) { forge::net::p2p::node_session_fixture::partial_registry(); }
+BOOST_AUTO_TEST_CASE(token_equality_preserves_expired_owner_identity_not_liveness) {
+   auto first = ps::partial_topic{}, copy = ps::partial_topic{}, replacement = ps::partial_topic{};
+   auto foreign = ps::partial_topic{}, different_topic = ps::partial_topic{};
+   {
+      auto owner = partial_registry{}, other = partial_registry{};
+      first = owner.prepare({"identity"}, {})->token;
+      copy = first;
+      replacement = owner.prepare({"identity"}, {})->token;
+      foreign = other.prepare({"identity"}, {})->token;
+      different_topic = owner.prepare({"other"}, {})->token;
+      BOOST_CHECK(first == copy);
+      BOOST_CHECK(first != replacement);
+      BOOST_CHECK(first != foreign);
+      BOOST_CHECK(first != different_topic);
+      BOOST_CHECK(!owner.current(first)); // Prepared identity alone never admits operations.
+   }
+   BOOST_CHECK(first == copy);
+   BOOST_CHECK(first != replacement);
+   BOOST_CHECK(first != foreign); // Both lock() results would be null here.
+   BOOST_CHECK(first != ps::partial_topic{});
+   BOOST_CHECK(ps::partial_topic{} == ps::partial_topic{});
+}
+BOOST_AUTO_TEST_CASE(registry_token_close_is_exact_and_preserves_live_callback_accounting) {
+   auto registry = partial_registry{}, foreign = partial_registry{};
+   auto limits = ps::limits{};
+   limits.max_partial_callbacks = 4;
+   const auto gossip = [](ps::partial_gossip_event, std::stop_token) -> boost::asio::awaitable<void> { co_return; };
+   const auto first = registry.prepare({"token-close"}, {.gossip = gossip});
+   const auto other = foreign.prepare({"token-close"}, {.gossip = gossip});
+   static_cast<void>(registry.install(first, limits));
+   registry.advertise(first->token, {1, 2, 3}, limits);
+   auto lease = registry.admit(first, 64, true, limits);
+   BOOST_REQUIRE(lease);
+   auto before = ps::snapshot{}; registry.snapshot(before);
+   const auto closed = [](const forge::exceptions::base& error) {
+      return forge::net::p2p::exceptions::is(error, forge::net::p2p::exceptions::code::closed);
+   };
+   BOOST_CHECK_EXCEPTION(static_cast<void>(registry.close(ps::partial_topic{})), forge::exceptions::base, closed);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(registry.close(other->token)), forge::exceptions::base, closed);
+   const auto retired = registry.close(first->token);
+   BOOST_CHECK(retired == first);
+   auto after = ps::snapshot{}; registry.snapshot(after);
+   BOOST_CHECK_EQUAL(after.partial_groups, 0U);
+   BOOST_CHECK_EQUAL(after.partial_group_bytes, 0U);
+   BOOST_CHECK_EQUAL(after.partial_callbacks, before.partial_callbacks);
+   BOOST_CHECK_EQUAL(after.partial_callback_bytes, before.partial_callback_bytes);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(registry.close(first->token)), forge::exceptions::base, closed);
+   const auto next = registry.prepare({"token-close"}, {.gossip = gossip});
+   static_cast<void>(registry.install(next, limits));
+   registry.advertise(next->token, {4}, limits);
+   BOOST_CHECK_EXCEPTION(static_cast<void>(registry.close(first->token)), forge::exceptions::base, closed);
+   BOOST_CHECK(registry.current(next->token));
+   BOOST_CHECK(!registry.admit(next, 64, true, limits));
+   lease.reset();
+   lease = registry.admit(next, 64, true, limits);
+   BOOST_REQUIRE(lease);
+   lease.reset();
+   check_partial_budget(registry, limits, 1, 1);
+}
 
 BOOST_AUTO_TEST_CASE(registry_global_count_exhaustion_and_forget_close_ttl_reuse) {
    auto registry = partial_registry{};
@@ -863,4 +1463,10 @@ BOOST_AUTO_TEST_CASE(native_old_subscription_intents_cannot_restore_flags_or_unr
 BOOST_AUTO_TEST_CASE(native_old_full_subscribe_after_tracer_uses_replacement_flags) { forge::net::p2p::node_session_fixture::native_partial_subscription_tracer(); }
 BOOST_AUTO_TEST_CASE(native_off_mesh_gossip_without_full_cache_busy_tick_and_ttl) { forge::net::p2p::node_session_fixture::native_partial_gossip(); }
 BOOST_AUTO_TEST_CASE(native_scoped_unsubscribe_callback_failure_and_shutdown_join) { forge::net::p2p::node_session_fixture::native_partial_callback_stop(); }
+BOOST_AUTO_TEST_CASE(native_downgrade_preserves_full_mesh_cache_and_held_callbacks) { forge::net::p2p::node_session_fixture::native_partial_downgrade(); }
+BOOST_AUTO_TEST_CASE(native_downgrade_queued_subscription_refreshes_current_flags) { forge::net::p2p::node_session_fixture::native_partial_downgrade_queued(); }
+BOOST_AUTO_TEST_CASE(native_downgrade_cancellation_admission_and_caller_policy) { forge::net::p2p::node_session_fixture::native_partial_downgrade_cancellation(); }
+BOOST_AUTO_TEST_CASE(native_downgrade_bad_first_peer_still_updates_healthy_peer) { forge::net::p2p::node_session_fixture::native_partial_downgrade_peer_failure(); }
+BOOST_AUTO_TEST_CASE(native_downgrade_caller_cancel_joins_credit_blocked_write) { forge::net::p2p::node_session_fixture::native_partial_downgrade_native_write(false); }
+BOOST_AUTO_TEST_CASE(native_downgrade_node_stop_joins_credit_blocked_write) { forge::net::p2p::node_session_fixture::native_partial_downgrade_native_write(true); }
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,5 +1,7 @@
 module;
 
+#include <boost/compat/move_only_function.hpp>
+
 #include <forge/exceptions/macros.hpp>
 #include <algorithm>
 #include <array>
@@ -9,6 +11,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <map>
@@ -25,10 +28,14 @@ module;
 #include <utility>
 #include <vector>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/system/system_error.hpp>
 
 module forge.net.p2p.node;
 import :lifecycle_stop_listener;
@@ -48,9 +55,76 @@ import forge.net.transport.stream;
 import forge.net.yamux.session;
 
 #include "details/node_impl.hxx"
+#include "details/owner_cancellation.hxx"
 #include "details/pubsub_router.hxx"
 
 namespace forge::net::p2p {
+
+boost::asio::awaitable<void> node::impl::disable_partial_owned(std::shared_ptr<impl> self,
+                                                             pubsub::partial_topic registration) {
+   // Outbound gates may install a cancellation filter; it must not escape into the caller.
+   co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
+       self->disable_pubsub_partial(std::move(registration)), boost::asio::use_awaitable);
+}
+
+boost::asio::awaitable<void> node::impl::disable_pubsub_partial(pubsub::partial_topic registration) {
+   auto operation = lifecycle.track();
+   if (!operation.active()) { FORGE_THROW_EXCEPTION(exceptions::closed, "Partial downgrade owner closed"); }
+   auto bridge = std::make_shared<detail::worker_stop_bridge>();
+   const auto lifecycle_stop = operation.stop_source();
+   auto completed = false;
+   auto first_peer_error = std::exception_ptr{};
+   co_await boost::asio::co_spawn(operation.executor(), detail::async_run_with_owner_cancellation(bridge,
+       [this, registration = std::move(registration), bridge, lifecycle_stop, &completed, &first_peer_error]
+       (boost::asio::cancellation_slot slot) -> boost::asio::awaitable<void> {
+          const auto check_stop = [&] {
+             if (bridge->stop_requested() || lifecycle_stop->stop_requested()) {
+                FORGE_THROW_EXCEPTION(exceptions::canceled, "Partial downgrade owner canceled");
+             }
+          };
+          auto subscription = pubsub::subscription{.subscribe = true, .subject = registration.subject()};
+          auto retired = std::shared_ptr<detail::pubsub_partial::registration>{};
+          {
+             const auto lock = std::scoped_lock{mutex};
+             if (stopped || session_admission_closed) {
+                FORGE_THROW_EXCEPTION(exceptions::closed, "Partial downgrade owner closed");
+             }
+             if (pubsub_value.subscription_epoch == (std::numeric_limits<std::uint64_t>::max)()) {
+                FORGE_THROW_EXCEPTION(exceptions::closed, "GossipSub subscription generation exhausted");
+             }
+             check_stop();
+             retired = pubsub_value.partial.close(registration);
+             ++pubsub_value.subscription_epoch;
+          }
+          // Retirement stops callbacks, not the independent owner of this full-only update.
+          retired->stop.request_stop();
+          retired.reset();
+          check_stop();
+          for (const auto& peer : pubsub_candidate_peers(subscription.subject.value)) {
+             check_stop();
+             auto generation = std::optional<std::uint64_t>{};
+             try {
+                const auto sent = co_await send_pubsub_rpc(peer,
+                    pubsub::rpc{.subscriptions = {subscription}}, generation, {}, true, {}, {}, bridge, slot);
+                check_stop();
+                if (!sent) { FORGE_THROW_EXCEPTION(exceptions::closed, "Partial downgrade peer update was not written"); }
+             } catch (const forge::exceptions::base& error) {
+                check_stop();
+                if (!first_peer_error) { first_peer_error = std::current_exception(); }
+                record_pubsub_send_failure(peer, error, generation);
+             } catch (const boost::system::system_error&) {
+                check_stop();
+                if (!first_peer_error) { first_peer_error = std::current_exception(); }
+             }
+          }
+          completed = true;
+       }, detail::worker_stop_bridge_options{.lifecycle_stop = lifecycle_stop}), boost::asio::use_awaitable);
+   // A stopped bridge may skip work or consume a cancellation exception, but never proves completion.
+   if (!completed || bridge->stop_requested() || lifecycle_stop->stop_requested()) {
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "Partial downgrade stopped before broadcast completion");
+   }
+   if (first_peer_error) { std::rethrow_exception(first_peer_error); }
+}
 
 bool node::impl::partial_peer_supported_locked(const peer_id& peer, const pubsub::topic& subject,
                                                bool data, std::uint64_t session_id) const {

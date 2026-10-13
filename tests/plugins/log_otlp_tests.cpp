@@ -228,7 +228,7 @@ struct plugin_harness {
 class shell_application final : public forge::app::application_shell {
  protected:
    void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(log_otlp::descriptor());
+      registry.register_plugin(log_otlp::plugin::descriptor());
    }
 };
 

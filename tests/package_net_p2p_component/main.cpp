@@ -29,9 +29,14 @@ import forge.net.p2p.reachability_policy;
 import forge.net.p2p.relay;
 import forge.net.p2p.topology;
 import forge.net.p2p.node;
+import forge.net.p2p.stream;
 import forge.multiformats.multiaddr;
 
 namespace p2p = forge::net::p2p;
+
+static_assert(requires(p2p::stream& stream) {
+   { stream.async_close_write() } -> std::same_as<boost::asio::awaitable<void>>;
+});
 
 static_assert(std::is_same_v<decltype(std::declval<const p2p::ipns::record&>().eol()),
                              forge::chrono::timestamp>);

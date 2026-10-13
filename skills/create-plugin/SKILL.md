@@ -74,9 +74,8 @@ module или target и не объединяет независимые lifecyc
 
 ## 4. Публичные module-слайсы
 Под `include/<ns>/plugins/<family>/<name>/` (по R1 из create-library):
-- `plugin.cppm` — класс плагина + канонический `descriptor(...)`
-- опц. `descriptor.cppm` — лёгкий application-composition слайс только с
-  `default_descriptor()`; `plugin.cppm` re-export-ит этот слайс
+- `plugin.cppm` — класс плагина и единственная статическая фабрика
+  `plugin::descriptor(...)`; отдельный `descriptor.cppm` не создавать
 - `api.cppm` — типизированные локальные контракты
 - `types.cppm` — config + DTO-типы
 - `exceptions.cppm` — типизированные исключения
@@ -90,12 +89,16 @@ module или target и не объединяет независимые lifecyc
 
 - `plugin.cppm` + `plugin.cpp` объявляют и реализуют public plugin lifecycle и
   канонический, в том числе конфигурируемый, `descriptor(...)`.
-- Опциональная пара `descriptor.cppm` + `descriptor.cpp` существует только для
-  лёгкой application composition: интерфейс импортирует только
-  `forge.app.plugin_registry` и объявляет `default_descriptor()`, реализация
-  импортирует owning `plugin` module и возвращает `descriptor()`. Этот wrapper
-  не дублирует plugin id, dependencies, `enabled_by_default`, factory behavior,
-  config types или default arguments канонического descriptor.
+- Фабрика объявляется как
+  `[[nodiscard]] static forge::app::plugin_descriptor descriptor();`
+  внутри `plugin` в `plugin.cppm`, а определяется out-of-line в `plugin.cpp`.
+  Если нужна программная конфигурация, эта же фабрика принимает
+  `plugin_options options = {}`; отдельная default-фабрика не нужна.
+  Потребитель импортирует `...plugin` и вызывает `plugin::descriptor(...)`.
+  Свободная `descriptor(...)`, `default_descriptor()`, descriptor-only
+  `descriptor.cppm/.cpp`, aliases и forwarding wrappers запрещены.
+  При переносе сохраняются параметры, plugin id, dependencies,
+  `enabled_by_default` и поведение factory.
 - `details/plugin_impl.hxx` + `plugin_impl.cpp` содержат только `plugin::impl` и его
   методы. Concrete API implementation и lifecycle facade в этих файлах запрещены.
 - Concrete implementation локального `api` называется `plugin::api_impl` и живёт в

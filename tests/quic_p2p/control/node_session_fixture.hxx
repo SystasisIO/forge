@@ -18,6 +18,7 @@ struct node_session_fixture {
    static void native_heartbeat_allocation_recovery();
    static void native_retry(bool rejected, bool legacy = false);
    static void native_unsubscribe_rollback();
+   static void native_unsubscribe_after_stop();
    static void native_gate_supersession();
    static void native_snapshot_supersession();
    static void native_dispatch_request(bool stop);
@@ -51,6 +52,11 @@ struct node_session_fixture {
    static void native_partial_subscription_tracer();
    static void native_partial_gossip();
    static void native_partial_callback_stop();
+   static void native_partial_downgrade();
+   static void native_partial_downgrade_queued();
+   static void native_partial_downgrade_cancellation();
+   static void native_partial_downgrade_peer_failure();
+   static void native_partial_downgrade_native_write(bool stop_node);
 
  private:
    static void run(forge::asio::runtime& runtime, boost::asio::awaitable<void> operation);

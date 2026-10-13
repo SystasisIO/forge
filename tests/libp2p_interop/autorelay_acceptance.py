@@ -155,7 +155,7 @@ def _owned_output(actor, impl, action, log, options, work, binaries, load_json, 
     return loaded
 
 
-def validate_record(record, spec, root, binaries, load_indexed_json):
+def validate_record(record, spec, root, binaries, load_indexed_json, *, semantic_checker=validate_case):
     """Load only indexed final snapshots, then apply the existing semantics."""
     expected = {"scenario": "autorelay", "scenario_id": spec.identifier, "status": "passed",
                 "case": {"source": spec.source, "relay": spec.relay, "destination": spec.destination,
@@ -233,7 +233,7 @@ def validate_record(record, spec, root, binaries, load_indexed_json):
                  and attempt["timeout_seconds"] == (15 if echo else 60), "attempt differs from exact successful owner")
         checked.add(index)
     _require(checked == set(range(len(attempts))), "undeclared or failed execution attempt")
-    return validate_case(hydrated)
+    return semantic_checker(hydrated)
 
 
 def validate_suite(records, required, root, binaries, load_indexed_json):

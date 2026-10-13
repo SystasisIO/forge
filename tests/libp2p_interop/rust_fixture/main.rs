@@ -37,6 +37,8 @@ mod provider;
 mod task_owner;
 mod upgrade_observer;
 mod application_observer;
+mod echo_completion;
+mod dht_completion;
 mod private_profile;
 mod path;
 mod coordinated;
@@ -85,6 +87,10 @@ struct Options {
     pnet_control: String,
     pnet_correlation: String,
     features: HashSet<String>,
+    echo_completion_barrier: String,
+    echo_completion: Option<echo_completion::Barrier>,
+    dht_completion_barrier: String,
+    dht_completion: Option<dht_completion::Barrier>,
 }
 
 #[derive(Clone, Debug)]
@@ -254,7 +260,10 @@ fn parse_path_live_args(argv: &[String]) -> std::io::Result<Option<BTreeMap<Stri
 }
 
 fn parse_args() -> Result<Options, Box<dyn Error>> {
-    let mut args = std::env::args().skip(1);
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Options, Box<dyn Error>> {
     let mut out = Options::default();
     out.command = args.next().ok_or("missing command")?;
     while let Some(key) = args.next() {
@@ -277,6 +286,18 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
             "--ready-file" => out.ready_file = PathBuf::from(value),
             "--stop-file" => out.stop_file = PathBuf::from(value),
             "--result-file" => out.result_file = PathBuf::from(value),
+            "--echo-completion-barrier" => {
+                if value != "stop-file" || !out.echo_completion_barrier.is_empty() {
+                    return Err("--echo-completion-barrier requires one stop-file value".into());
+                }
+                out.echo_completion_barrier = value;
+            }
+            "--dht-completion-barrier" => {
+                if value != "stop-file" || !out.dht_completion_barrier.is_empty() {
+                    return Err("--dht-completion-barrier requires one stop-file value".into());
+                }
+                out.dht_completion_barrier = value;
+            }
             "--seed-file" => out.seed_file = PathBuf::from(value),
             "--seed-peer-id" => out.seed_peer_id = value,
             "--seed-addr" => out.seed_addr = value,
@@ -327,6 +348,8 @@ fn parse_args() -> Result<Options, Box<dyn Error>> {
     {
         return Err(format!("tcp-pnet does not permit feature {feature}").into());
     }
+    out.echo_completion = echo_completion::prepare(&out)?;
+    out.dht_completion = dht_completion::prepare(&out)?;
     Ok(out)
 }
 
@@ -998,21 +1021,57 @@ async fn open_echo_stream_direct(
     payload: &[u8],
     observer: &upgrade_observer::Observer,
 ) -> Result<usize, Box<dyn Error>> {
+    open_echo_stream_with_completion(swarm, peer, payload, observer, None).await
+}
+
+async fn open_echo_stream_with_completion(
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    peer: PeerId,
+    payload: &[u8],
+    observer: &upgrade_observer::Observer,
+    completion: Option<&echo_completion::Barrier>,
+) -> Result<usize, Box<dyn Error>> {
     let mut control = swarm.behaviour().stream.new_control();
     let attempt = observer.application(peer, application_observer::ECHO);
+    let expires = tokio::time::Instant::now() + Duration::from_secs(15);
     let exchange = async {
+        if let Some(barrier) = completion { barrier.phase("protocol.open_echo"); }
         let stream = control.open_stream(peer, StreamProtocol::new(application_observer::ECHO)).await?;
         let mut stream = attempt.wrap(stream);
+        if let Some(barrier) = completion { barrier.phase("protocol.write"); }
         write_frame(&mut stream, payload).await?;
+        if let Some(barrier) = completion { barrier.phase("protocol.read"); }
         let echoed = read_frame(&mut stream).await?;
-        stream.close().await?;
+        if let Some(barrier) = completion {
+            // Publish only completed actual I/O; keep this very stream alive until stop.
+            barrier.finish_stream(&mut stream, payload, &echoed, expires).await?;
+        } else {
+            stream.close().await?;
+        }
         if echoed != payload { return Err("echo mismatch".into()); }
         stream.complete();
         Ok::<_, Box<dyn Error>>(echoed.len())
     };
     tokio::pin!(exchange);
-    let deadline = tokio::time::sleep(Duration::from_secs(15));
+    let deadline = tokio::time::sleep_until(expires);
     tokio::pin!(deadline);
+    if let Some(barrier) = completion {
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut deadline => return Err("timed out completing echo stream/barrier".into()),
+                event = swarm.select_next_some() => match event {
+                    SwarmEvent::NewListenAddr { address, .. } => swarm.add_external_address(address),
+                    SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } => {
+                        barrier.established(*swarm.local_peer_id(), peer_id, peer, connection_id, &endpoint)?;
+                    }
+                    SwarmEvent::ConnectionClosed { connection_id, .. } => barrier.disconnected(connection_id)?,
+                    _ => {}
+                },
+                result = &mut exchange => return result,
+            }
+        }
+    }
     loop {
         tokio::select! {
             result = &mut exchange => return result,
@@ -1070,6 +1129,7 @@ struct DhtFindPeerEvidence {
 async fn wait_dht_remote_ready(
     swarm: &mut libp2p::Swarm<Behaviour>,
     remote_peer: PeerId,
+    barrier: Option<&dht_completion::Barrier>,
 ) -> Result<(), Box<dyn Error>> {
     let mut routing_admitted = false;
     let mut amino_advertised = false;
@@ -1084,6 +1144,7 @@ async fn wait_dht_remote_ready(
                 ).into());
             }
             event = swarm.select_next_some() => {
+                if let Some(barrier) = barrier { barrier.observe(&event)?; }
                 match event {
                     SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::RoutingUpdated {
                         peer,
@@ -1362,6 +1423,8 @@ async fn wait_dht_put_get(
     swarm: &mut libp2p::Swarm<Behaviour>,
     scenario: &str,
     operation: &str,
+    barrier: Option<&dht_completion::Barrier>,
+    deadline: tokio::time::Instant,
 ) -> Result<usize, Box<dyn Error>> {
     let (key, expected) = dht_value_fixture(scenario)?;
     let mut put_id = None;
@@ -1374,12 +1437,13 @@ async fn wait_dht_put_get(
             kad::Quorum::One,
         )?);
     }
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
+    let deadline = tokio::time::sleep_until(deadline);
     tokio::pin!(deadline);
     loop {
         tokio::select! {
             _ = &mut deadline => return Err("timed out waiting for Kademlia value proof".into()),
             event = swarm.select_next_some() => {
+                if let Some(barrier) = barrier { barrier.observe(&event)?; }
                 match event {
                     SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
                         id,
@@ -2209,6 +2273,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
         return provider::run(&opts).await;
     }
     let mut swarm = new_swarm(&opts).await?;
+    if let Some(barrier) = &opts.echo_completion { barrier.swarm_started(); }
     let remote_peer: PeerId = opts.peer_id.parse()?;
     let remote: Multiaddr = opts.addr.parse()?;
     let native_echo = matches!(opts.transport.as_str(), "tcp" | "tcp-tls")
@@ -2272,19 +2337,31 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
     let mut identify_signed_record = false;
     let mut authenticated_remote_peer_id = None;
     let mut connection_remote_addr = None;
+    let mut observed_connection_id = None;
     let mut negotiated_transport = None;
     let mut tcp_upgrade_observation = None;
     while started.elapsed() < Duration::from_secs(20) {
-        let event = if native_echo {
+        let event = if native_echo || opts.echo_completion.is_some() || opts.dht_completion.is_some() {
             tokio::time::timeout(Duration::from_secs(20).saturating_sub(started.elapsed()), swarm.select_next_some())
-                .await.map_err(|_| "timed out awaiting Behaviour Identify before native echo")?
+                .await.map_err(|_| if native_echo { "timed out awaiting Behaviour Identify before native echo" }
+                                  else if opts.dht_completion.is_some() { "timed out awaiting native DHT connection" }
+                                  else { "timed out awaiting native QUIC connection before echo" })?
         } else { swarm.select_next_some().await };
+        if let Some(barrier) = &opts.dht_completion { barrier.observe(&event)?; }
         if let SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } = &event {
             opts.upgrade_observer.established(connection_id, *peer_id, endpoint);
+            if let Some(barrier) = &opts.echo_completion {
+                barrier.established(*swarm.local_peer_id(), *peer_id, remote_peer, *connection_id, endpoint)?;
+            }
+        }
+        if let SwarmEvent::ConnectionClosed { connection_id, .. } = &event
+            && let Some(barrier) = &opts.echo_completion
+        {
+            barrier.disconnected(*connection_id)?;
         }
         match event {
             SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
+                connection_id, peer_id, endpoint, ..
             } if peer_id == remote_peer => {
                 eprintln!("rust-dial connected: {peer_id}");
                 connected = true;
@@ -2293,6 +2370,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
                 }
                 authenticated_remote_peer_id = Some(peer_id.to_string());
                 connection_remote_addr = Some(endpoint.get_remote_address().to_string());
+                observed_connection_id = Some(connection_id.to_string());
                 negotiated_transport = observed_quic_transport(&endpoint);
                 if dns_root && matches!(opts.transport.as_str(), "tcp" | "tcp-tls") {
                     tcp_upgrade_observation = Some(TcpUpgradeObservation {
@@ -2354,6 +2432,9 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             SwarmEvent::OutgoingConnectionError { error, .. } if dns_root => {
                 return Err(format!("DNSADDR dial failed: {error}").into());
             }
+            SwarmEvent::OutgoingConnectionError { error, .. } if opts.echo_completion.is_some() => {
+                return Err(error.into());
+            }
             other => {
                 eprintln!("rust-dial event: {other:?}");
             }
@@ -2377,7 +2458,7 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
         opts.scenario.as_str(),
         "dht_pk_put_get" | "dht_ipns_put_get"
     ) {
-        wait_dht_remote_ready(&mut swarm, remote_peer).await?;
+        wait_dht_remote_ready(&mut swarm, remote_peer, opts.dht_completion.as_ref()).await?;
     }
     let mut separate_identify = None;
     match opts.scenario.as_str() {
@@ -2459,6 +2540,13 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             } else {
                 opts.payload.as_bytes().to_vec()
             };
+            if let Some(barrier) = &opts.echo_completion {
+                open_echo_stream_with_completion(
+                    &mut swarm, remote_peer, &payload, &opts.upgrade_observer, Some(barrier),
+                ).await?;
+                // main writes the terminal receipt only after Swarm drop and owned joins.
+                return Ok(());
+            }
             let echo = open_echo_stream_direct(&mut swarm, remote_peer, &payload, &opts.upgrade_observer);
             let bytes = if native_echo {
                 application_observer::after_verified_identify(&result["raw_identify_exchange"], echo).await?
@@ -2568,24 +2656,43 @@ async fn dial(opts: Options) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         "dht_pk_put_get" | "dht_ipns_put_get" => {
-            let bytes = wait_dht_put_get(&mut swarm, &opts.scenario, &opts.payload).await?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            let bytes = wait_dht_put_get(&mut swarm, &opts.scenario, &opts.payload,
+                opts.dht_completion.as_ref(), deadline).await?;
             let operation = match opts.payload.as_str() {
                 "put_only" => "put_only",
                 "get_only" => "get_only",
                 _ => "put_get",
             };
-            write_json(
-                &opts.result_file,
-                json!({
+            let receipt = json!({
                     "implementation": "rust",
                     "role": "dialer",
                     "scenario": opts.scenario,
                     "status": "ok",
                     "operation": operation,
                     "remote_get": operation == "get_only",
+                    // Initial authenticated routing connection, not a per-RPC/cache receipt.
+                    "local_peer_id": swarm.local_peer_id().to_string(),
+                    "authenticated_remote_peer_id": authenticated_remote_peer_id,
+                    "connection_remote_addr": connection_remote_addr,
+                    "connection_id": observed_connection_id,
                     "value_bytes": bytes
-                }),
-            )?;
+                });
+            if let Some(barrier) = &opts.dht_completion {
+                barrier.publish(receipt)?;
+                // Poll this same Swarm while the runner independently captures
+                // the server's actual Identify session. No additional DHT call.
+                let stop = barrier.wait_stop(deadline);
+                tokio::pin!(stop);
+                loop {
+                    tokio::select! {
+                        result = &mut stop => { result?; break; }
+                        event = swarm.select_next_some() => { barrier.observe(&event)?; }
+                    }
+                }
+            } else {
+                write_json(&opts.result_file, receipt)?;
+            }
             return Ok(());
         }
         "rendezvous_register_discover" => {
@@ -3028,6 +3135,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         && matches!(opts.scenario.as_str(), "identify" | "echo" | "echo_large");
     let observer = opts.upgrade_observer.clone();
     let tasks = opts.tasks.clone();
+    let echo_completion = opts.echo_completion.clone();
+    let dht_completion = opts.dht_completion.clone();
     let result_file = opts.result_file.clone();
     let role = if opts.command == "listen" { "listener" } else { "dialer" };
     let scenario = opts.scenario.clone();
@@ -3055,7 +3164,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         evidence
     });
-    if !result_file.as_os_str().is_empty() {
+    if let Some(barrier) = dht_completion {
+        barrier.finalize(lifecycle.snapshot(), &mut outcome)?;
+    } else if let Some(barrier) = echo_completion {
+        if let Err(error) = barrier.finalize(lifecycle.snapshot(), &mut outcome) {
+            if outcome.is_ok() { return Err(error); }
+            eprintln!("echo completion result finalization failed: {error}");
+        }
+    } else if !result_file.as_os_str().is_empty() {
         if let Err(error) = lifecycle.write_result(
             &result_file, role, &scenario, &outcome, observation,
         ) {

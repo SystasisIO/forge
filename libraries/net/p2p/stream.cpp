@@ -108,6 +108,13 @@ stream::async_read_frame_chunk(forge::net::transport::frame_options options) {
    co_return co_await impl_->transport.async_read_frame_chunk(options);
 }
 
+boost::asio::awaitable<void> stream::async_close_write() {
+   if (!impl_) {
+      FORGE_THROW_EXCEPTION(exceptions::closed, "invalid P2P stream");
+   }
+   co_await impl_->transport.async_close_write();
+}
+
 boost::asio::awaitable<void> stream::async_close() {
    if (!impl_) {
       co_return;

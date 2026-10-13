@@ -707,7 +707,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
     from pubsub_quic_proof import original_stdout_owners
     diagnostic_owners = original_stdout_owners(artifacts, root, binaries)
 
-    def visit(value, process=False, isolated=False):
+    def visit(value, process=False, isolated=False, configured_autonat_root=False):
         if isinstance(value, list):
             for nested in value:
                 visit(nested, process, isolated)
@@ -741,10 +741,16 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                         non_stdout.add(path)
                 # `processes` is either a list or a map of role -> process.
                 child_process = key in {"owned_processes", "processes", "attempts", "listener_process", "process"}
-                visit(nested, child_process or (process and "log_file" not in value), isolated)
+                child_isolated = isolated or (configured_autonat_root and key == "native"
+                    and isinstance(nested, dict) and nested.get("suite") == "autonat")
+                visit(nested, child_process or (process and "log_file" not in value), child_isolated)
 
     for record in artifacts:
-        visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns", "path", "coordinated"))
+        # Only known raw roots and the exact configured AutoNAT -> native edge
+        # own namespace context; nested suite labels cannot grant it.
+        suite = record.get("suite") if isinstance(record, dict) else None
+        visit(record, isolated=suite in ("autonat", "mdns", "path", "coordinated"),
+              configured_autonat_root=suite == "plugin-autonat")
 
     def clean(view, path):
         terminal = view.get("terminal_status")
@@ -1777,7 +1783,61 @@ def validate_kademlia_evidence(result: dict, record: dict, _listener: Optional[d
     return validate_provider_evidence(result, listener_peer if isinstance(listener_peer, str) else None)
 
 
-def validate_rendezvous_evidence(result: dict, _record: dict, _listener: Optional[dict]) -> list[str]:
+def validate_automatic_rendezvous_unregister(result: dict, record: dict) -> list[str]:
+    """Only Forge-to-Rust adds node-owned shutdown proof to the existing wire case."""
+    if (record.get("dialer"), record.get("listener")) != ("forge", "rust"):
+        return []
+    proof = result.get("automatic_unregister")
+    if not isinstance(proof, dict):
+        return ["Rendezvous evidence lacks automatic_unregister from the managed Forge node"]
+    policy, before, after = (proof.get(field) for field in ("policy", "before", "after"))
+    if not all(isinstance(value, dict) for value in (policy, before, after)):
+        return ["Rendezvous automatic_unregister lacks policy and full before/after snapshots"]
+    errors = []
+    managed, control, point = (proof.get(field) for field in ("managed_peer_id", "control_peer_id", "point_peer_id"))
+    if (not all(isinstance(peer, str) and peer for peer in (managed, control, point))
+            or len({managed, control, point}) != 3
+            or control != result.get("local_peer_id") or point != record.get("peer_id")):
+        errors.append("Rendezvous automatic_unregister has mixed or unbound managed/control/point identities")
+    if (result.get("implementation") != "forge" or proof.get("source") != "forge.node.topology.shutdown"
+            or proof.get("namespace") != "forge.discovery" or policy.get("mode") != "managed"
+            or policy.get("dht_enabled") is not False or policy.get("peer_exchange_enabled") is not False):
+        errors.append("Rendezvous automatic_unregister lacks the isolated managed-node ownership contract")
+    expected_integers = (
+        (policy, "low", 1), (policy, "target", 1), (policy, "high", 3), (policy, "rendezvous_points", 1),
+        (result, "wire_registration_count", 1), (result, "record_address_count", 1),
+        (result, "registered_ttl_seconds", 7200), (result, "discovered_ttl_seconds", 7200),
+        (before, "registration_count", 2), (before, "managed_count", 1), (before, "control_count", 1),
+        (before, "managed_ttl_seconds", 7200), (before, "control_ttl_seconds", 7200),
+        (after, "registration_count", 1), (after, "managed_count", 0), (after, "control_count", 1),
+        (after, "control_ttl_seconds", 7200), (proof, "full_discover_requests", 2),
+        (proof, "discover_cookie_bytes", 0), (proof, "unregister_failure_count", 0),
+        (result, "sanitized_registration_count", 0),
+    )
+    if any(type(owner.get(field)) is not int or owner[field] != expected
+           for owner, field, expected in expected_integers):
+        errors.append("Rendezvous automatic_unregister lacks exact 2-to-1 full snapshots, TTL7200 or zero failures")
+    if (before.get("managed_record_valid") is not True or not positive_integer(before.get("managed_record_sequence"))
+            or not sha256_value(before.get("managed_record_sha256")) or result.get("loopback_filtered") is not True):
+        errors.append("Rendezvous automatic_unregister lacks a valid signed managed record and existing filter proof")
+    sequence, digest = result.get("record_sequence"), result.get("record_sha256")
+    if (not positive_integer(sequence) or not sha256_value(digest)
+            or any(type(snapshot.get("control_record_sequence")) is not int
+                   or snapshot["control_record_sequence"] != sequence
+                   or snapshot.get("control_record_sha256") != digest for snapshot in (before, after))):
+        errors.append("Rendezvous automatic_unregister changed or failed to bind the original signed control record")
+    operations = [
+        "managed.async_listen", "managed.async_start", "managed.async_refresh_discovery",
+        "observer.full_discover.before", "managed.request_stop", "managed.async_stop", "observer.full_discover.after",
+    ]
+    elapsed = proof.get("elapsed_ms")
+    if (any(proof.get(field) is not True for field in ("refresh_joined", "request_stop_called", "async_stop_joined"))
+            or proof.get("joined_operations") != operations or type(elapsed) is not int or not 0 <= elapsed < 60_000):
+        errors.append("Rendezvous automatic_unregister lacks ordered joined refresh/stop and an immediate pre-TTL observation")
+    return errors
+
+
+def validate_rendezvous_evidence(result: dict, record: dict, _listener: Optional[dict]) -> list[str]:
     if (
         result.get("negotiated_protocol") == "/rendezvous/1.0.0"
         and positive_integer(result.get("wire_registration_count"))
@@ -1789,7 +1849,7 @@ def validate_rendezvous_evidence(result: dict, _record: dict, _listener: Optiona
         and positive_integer(result.get("discovered_ttl_seconds"))
         and positive_integer(result.get("cookie_bytes"))
     ):
-        return []
+        return validate_automatic_rendezvous_unregister(result, record)
     return ["Rendezvous evidence lacks the register/discover wire record proof"]
 
 
@@ -2083,6 +2143,11 @@ def validate_successful_raw_record(
         if expected_evidence_contract in PRIVATE_PROFILE_EVIDENCE_CONTRACTS and (
                 options.get("--addr") != record.get("addr") or options.get("--peer-id") != record.get("peer_id")):
             errors.append("private/inline dial argv differs from the exact observed peer/endpoint")
+        if (expected_evidence_contract == evidence_contract_for("rendezvous_rust")
+                and (record.get("dialer"), record.get("listener")) == ("forge", "rust")
+                and (options.get("--payload") != "automatic_unregister"
+                     or options.get("--peer-id") != record.get("peer_id") or options.get("--addr") != record.get("addr"))):
+            errors.append("automatic Rendezvous UNREGISTER dial argv lacks its selector or exact Rust point")
         log_file = attempt.get("log_file")
         if not isinstance(log_file, str):
             errors.append("raw runner command attempt lacks a log file")
@@ -2745,11 +2810,31 @@ def semantic_fixture(scenario_id: str) -> tuple[dict, dict, Optional[dict]]:
     elif scenario_id == "kademlia_amino":
         result["network_proof"] = semantic_provider_network_proof()
     elif scenario_id == "rendezvous_rust":
+        record["listener"] = "rust"
         result.update({
             "negotiated_protocol": "/rendezvous/1.0.0", "wire_registration_count": 1,
             "signed_peer_record_valid": True, "matching_peer_record": True,
-            "record_sequence": 1, "record_address_count": 1, "registered_ttl_seconds": 60,
-            "discovered_ttl_seconds": 60, "cookie_bytes": 8,
+            "record_sequence": 1, "record_address_count": 1, "registered_ttl_seconds": 7200,
+            "discovered_ttl_seconds": 7200, "cookie_bytes": 8,
+            "sanitized_registration_count": 0, "loopback_filtered": True,
+            "local_peer_id": "control-peer", "record_sha256": "1" * 64,
+            "automatic_unregister": {
+                "source": "forge.node.topology.shutdown", "namespace": "forge.discovery",
+                "managed_peer_id": "managed-peer", "control_peer_id": "control-peer", "point_peer_id": "listener-peer",
+                "policy": {"mode": "managed", "low": 1, "target": 1, "high": 3, "rendezvous_points": 1,
+                           "dht_enabled": False, "peer_exchange_enabled": False},
+                "before": {"registration_count": 2, "managed_count": 1, "control_count": 1,
+                           "managed_ttl_seconds": 7200, "managed_record_valid": True,
+                           "managed_record_sequence": 2, "managed_record_sha256": "2" * 64,
+                           "control_ttl_seconds": 7200, "control_record_sequence": 1, "control_record_sha256": "1" * 64},
+                "after": {"registration_count": 1, "managed_count": 0, "control_count": 1,
+                          "control_ttl_seconds": 7200, "control_record_sequence": 1, "control_record_sha256": "1" * 64},
+                "refresh_joined": True, "request_stop_called": True, "async_stop_joined": True,
+                "joined_operations": ["managed.async_listen", "managed.async_start", "managed.async_refresh_discovery",
+                                      "observer.full_discover.before", "managed.request_stop", "managed.async_stop",
+                                      "observer.full_discover.after"],
+                "full_discover_requests": 2, "discover_cookie_bytes": 0, "unregister_failure_count": 0, "elapsed_ms": 250,
+            },
         })
     elif scenario_id == "pnet":
         result.update({
@@ -3061,6 +3146,7 @@ def self_test() -> int:
             "negotiated_protocol", "wire_registration_count", "signed_peer_record_valid",
             "matching_peer_record", "record_sequence", "record_address_count",
             "registered_ttl_seconds", "discovered_ttl_seconds", "cookie_bytes",
+            "automatic_unregister", "local_peer_id", "record_sha256",
         ),
         "pnet": (
             "pnet_enabled", "negotiated_pnet", "pnet_fingerprint", "identify_observed",
@@ -3075,6 +3161,72 @@ def self_test() -> int:
             if not validator(result, record, listener):
                 print(f"self-test failed: {scenario_id} accepted without {field}", file=sys.stderr)
                 return 1
+    unregister_mutations = (
+        (("automatic_unregister",), None), (("automatic_unregister",), {}),
+        (("automatic_unregister", "policy"), None),
+        (("automatic_unregister", "before"), None),
+        (("automatic_unregister", "after"), None),
+        (("automatic_unregister", "source"), "raw.unregister"),
+        (("automatic_unregister", "namespace"), "another.namespace"),
+        (("automatic_unregister", "managed_peer_id"), "control-peer"),
+        (("automatic_unregister", "managed_peer_id"), "listener-peer"),
+        (("automatic_unregister", "managed_peer_id"), []),
+        (("automatic_unregister", "control_peer_id"), "managed-peer"),
+        (("automatic_unregister", "point_peer_id"), "wrong-point"),
+        (("local_peer_id",), "wrong-control"), (("record_sha256",), "3" * 64),
+        (("automatic_unregister", "policy", "mode"), "static_only"),
+        (("automatic_unregister", "policy", "low"), 2),
+        (("automatic_unregister", "policy", "target"), 2),
+        (("automatic_unregister", "policy", "high"), 4),
+        (("automatic_unregister", "policy", "rendezvous_points"), 2),
+        (("automatic_unregister", "policy", "dht_enabled"), True),
+        (("automatic_unregister", "policy", "peer_exchange_enabled"), True),
+        (("automatic_unregister", "before", "registration_count"), 3),
+        (("automatic_unregister", "before", "managed_count"), 0),
+        (("automatic_unregister", "before", "managed_count"), True),
+        (("automatic_unregister", "before", "control_count"), 0),
+        (("automatic_unregister", "before", "managed_ttl_seconds"), 1),
+        (("automatic_unregister", "before", "control_ttl_seconds"), 1),
+        (("automatic_unregister", "before", "managed_record_valid"), False),
+        (("automatic_unregister", "before", "managed_record_sequence"), 0),
+        (("automatic_unregister", "before", "managed_record_sha256"), "not-a-digest"),
+        (("automatic_unregister", "before", "control_record_sequence"), 2),
+        (("automatic_unregister", "before", "control_record_sha256"), "3" * 64),
+        (("automatic_unregister", "after", "registration_count"), 2),
+        (("automatic_unregister", "after", "managed_count"), 1),
+        (("automatic_unregister", "after", "control_count"), 0),
+        (("automatic_unregister", "after", "control_ttl_seconds"), 1),
+        (("automatic_unregister", "after", "control_record_sequence"), 2),
+        (("automatic_unregister", "after", "control_record_sha256"), "3" * 64),
+        (("automatic_unregister", "refresh_joined"), False),
+        (("automatic_unregister", "request_stop_called"), False),
+        (("automatic_unregister", "async_stop_joined"), False),
+        (("automatic_unregister", "joined_operations"), ["managed.async_stop"]),
+        (("automatic_unregister", "full_discover_requests"), 3),
+        (("automatic_unregister", "discover_cookie_bytes"), 8),
+        (("automatic_unregister", "unregister_failure_count"), 1),
+        (("automatic_unregister", "unregister_failure_count"), False),
+        (("automatic_unregister", "elapsed_ms"), 60_000),
+        (("automatic_unregister", "elapsed_ms"), -1),
+        (("automatic_unregister", "elapsed_ms"), True),
+    )
+    for path, value in unregister_mutations:
+        result, record, listener = semantic_fixture("rendezvous_rust")
+        owner = result
+        for field in path[:-1]:
+            owner = owner[field]
+        owner[path[-1]] = value
+        if not validate_rendezvous_evidence(result, record, listener):
+            print(f"self-test failed: automatic Rendezvous UNREGISTER accepted mutation {path}", file=sys.stderr)
+            return 1
+    result, record, listener = semantic_fixture("rendezvous_rust")
+    result["implementation"] = "rust"
+    record.update({"dialer": "rust", "listener": "forge"})
+    for field in ("automatic_unregister", "local_peer_id", "record_sha256"):
+        result.pop(field)
+    if validate_rendezvous_evidence(result, record, listener):
+        print("self-test failed: reverse Rust-to-Forge Rendezvous proof now requires automatic unregister", file=sys.stderr)
+        return 1
     result, record, listener = semantic_fixture("pnet")
     result["implementation"] = "rust"
     listener["implementation"] = "rust"

@@ -67,6 +67,8 @@ def rust_stream(connection, protocol, sent, received, outbound):
             item["direction"] = "write" if item["direction"] == "read" else "read"
         if item["kind"] == "response_completion":
             item["detail"]["write"] = copy.deepcopy(stream["write"])
+            item["detail"]["read"] = copy.deepcopy(stream["read"])
+            item["detail"]["write_close_returned"] = True
     return stream
 
 
@@ -546,9 +548,106 @@ class PrivateProfileEvidenceTests(unittest.TestCase):
     def test_rust_outbound_request_close_is_not_a_response_boundary(self):
         result, record, listener = direction_fixture("noise_identity_private_pnet", "rust", True)
         c = result["upgrade_observation"]["connections"][0]
+        marker = next(e for e in c["events"] if e["kind"] == "response_completion")
+        marker["detail"].pop("read")
         c["negotiations"][1]["io_failed"] = True
         event(c, "muxer", "muxer_poll_error", detail={"error": "connection is closed", "failure_stage": "post_upgrade"})
         self.assertTrue(validate_private_profile(result, record, listener))
+
+    def test_rust_outbound_echo_complete_at_close_preserves_late_errors(self):
+        for name in ("noise_identity_private_pnet", "tls_identity_private_pnet"):
+            for phase, kind, index in (("security", "read_error", 0), ("muxer", "muxer_poll_error", 1)):
+                with self.subTest(name=name, phase=phase):
+                    result, record, listener = direction_fixture(name, "rust", True)
+                    c = result["upgrade_observation"]["connections"][0]
+                    marker = next(e for e in c["events"] if e["kind"] == "response_completion")
+                    before = copy.deepcopy(marker)
+                    c["negotiations"][index]["io_failed"] = True
+                    event(c, phase, kind, detail={"error": "arbitrary late native error", "failure_stage": "post_upgrade"})
+                    self.assertEqual(validate_private_profile(result, record, listener), [])
+                    self.assertEqual(marker, before)
+                    self.assertGreater(c["events"][-1]["sequence"], marker["sequence"])
+                    self.assertEqual(c["events"][-1]["kind"], kind)
+
+    def test_rust_outbound_echo_boundary_cannot_hide_incomplete_or_failed_io(self):
+        changes = ("missing_read", "empty_read", "partial_read", "read_hash", "missing_write", "partial_write",
+                   "write_hash", "read_frames", "write_frames", "missing_close", "false_close", "numeric_close",
+                   "final_close_false", "flush_basis", "before_reply",
+                   "pre_upgrade", "missing_marker", "wrong_sequence", "other_stream", "duplicate_marker",
+                   "stream_failure", "parser_failure", "stream_close_error")
+        for change in changes:
+            with self.subTest(change=change):
+                result, record, listener = direction_fixture("tls_identity_private_pnet", "rust", True)
+                c = result["upgrade_observation"]["connections"][0]
+                stream = c["streams"][0]
+                marker = next(e for e in c["events"] if e["kind"] == "response_completion")
+                c["negotiations"][1]["io_failed"] = True
+                event(c, "muxer", "muxer_poll_error", detail={"error": "late native failure", "failure_stage": "post_upgrade"})
+                if change == "missing_read": marker["detail"].pop("read")
+                if change == "empty_read": marker["detail"]["read"] = body(b"")
+                if change == "partial_read": marker["detail"]["read"]["complete_frames"] = False
+                if change == "read_hash": marker["detail"]["read"]["framed_sha256"] = "0" * 64
+                if change == "missing_write": marker["detail"].pop("write")
+                if change == "partial_write": marker["detail"]["write"]["complete_frames"] = False
+                if change == "write_hash": marker["detail"]["write"]["framed_sha256"] = "0" * 64
+                if change == "read_frames": marker["detail"]["read"]["frames"] = 2
+                if change == "write_frames": marker["detail"]["write"]["frames"] = 2
+                if change == "missing_close": marker["detail"].pop("write_close_returned")
+                if change == "false_close": marker["detail"]["write_close_returned"] = False
+                if change == "numeric_close": marker["detail"]["write_close_returned"] = 1
+                if change == "final_close_false": stream["write_close_returned"] = False
+                if change == "flush_basis": marker["detail"]["completion_basis"] = "native_kad_response_flush"
+                if change == "before_reply":
+                    failure = c["events"].pop(); c["events"].insert(c["events"].index(marker), failure); renumber(c)
+                if change == "pre_upgrade": c["events"][-1]["detail"]["failure_stage"] = "pre_upgrade"
+                if change == "missing_marker": c["events"].remove(marker); renumber(c)
+                if change == "wrong_sequence": stream["response_completed_sequence"] -= 1
+                if change == "other_stream": marker["stream_trace_id"] += 1
+                if change == "duplicate_marker": c["events"].append(copy.deepcopy(marker)); renumber(c)
+                if change == "stream_failure": stream["io_failed"] = True
+                if change == "parser_failure": stream["parser_error"] = "invalid negotiation frame length"
+                if change == "stream_close_error":
+                    event(c, "application", "close_error", stream["stream_trace_id"],
+                          detail={"error": "actual close failed", "failure_stage": "post_upgrade"})
+                    stream["io_failed"] = True
+                self.assertTrue(validate_private_profile(result, record, listener), change)
+
+    def test_rust_outbound_echo_close_cannot_hide_earlier_security_or_muxer_errors(self):
+        for phase, kind, index in (("security", "read_error", 0), ("muxer", "muxer_poll_error", 1)):
+            with self.subTest(phase=phase):
+                result, record, listener = direction_fixture("noise_identity_private_pnet", "rust", True)
+                c = result["upgrade_observation"]["connections"][0]
+                marker = next(e for e in c["events"] if e["kind"] == "response_completion")
+                c["negotiations"][index]["io_failed"] = True
+                event(c, phase, kind, detail={"error": "before complete echo", "failure_stage": "post_upgrade"})
+                failure = c["events"].pop()
+                c["events"].insert(c["events"].index(marker), failure)
+                renumber(c)
+                self.assertTrue(validate_private_profile(result, record, listener))
+
+    def test_rust_outbound_non_echo_markers_do_not_get_echo_shutdown_allowance(self):
+        for name in ("ping_private_tcp_yamux_pnet", "kademlia_amino_private_tcp_yamux_pnet"):
+            with self.subTest(name=name):
+                result, record, listener = direction_fixture(name, "rust", True)
+                c = result["upgrade_observation"]["connections"][0]
+                c["negotiations"][1]["io_failed"] = True
+                event(c, "muxer", "muxer_poll_error", detail={"error": "late native failure", "failure_stage": "post_upgrade"})
+                self.assertTrue(validate_private_profile(result, record, listener))
+
+    def test_rust_outbound_echo_final_read_cannot_repair_the_close_marker(self):
+        response = varint(len(PAYLOAD)) + PAYLOAD
+        for consumed in range(len(response)):
+            with self.subTest(consumed=consumed):
+                result, record, listener = direction_fixture("noise_identity_private_pnet", "rust", True)
+                c = result["upgrade_observation"]["connections"][0]
+                stream = c["streams"][0]
+                marker = next(e for e in c["events"] if e["kind"] == "response_completion")
+                partial = body(response[:consumed])
+                partial.update(frames=0, complete_frames=False)
+                marker["detail"]["read"] = partial
+                self.assertEqual(stream["read"], body(response))
+                self.assertTrue(validate_private_profile(result, record, listener))
+                self.assertEqual(marker["detail"]["read"], partial)
 
     def test_native_rust_ping_and_kad_flush_are_exact_inbound_response_boundaries(self):
         cases = (("ping_private_tcp_yamux_pnet", "native_ping_response_flush"),

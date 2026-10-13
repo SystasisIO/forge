@@ -26,13 +26,12 @@ contracts it exposes before opening a typed API connection.
 - Plugin id: `forge.plugins.net.p2p.resolver`
 - Main API id: `forge.plugins.net.p2p.resolver`
 - Main API contract: `2.0`
-- Extra protocol API id: `forge.plugins.net.p2p.resolver.protocol`
+- Managed API id: `forge.plugins.net.p2p.resolver.managed`
 - Resolver protocol route: `/forge/api/resolver/2`
 - Config section: `plugins.net.p2p.resolver`
 - Depends on plugin id: `forge.plugins.net.p2p.node`
 - Public modules:
   - `forge.plugins.net.p2p.resolver.plugin`
-  - `forge.plugins.net.p2p.resolver.descriptor`
   - `forge.plugins.net.p2p.resolver.api`
   - `forge.plugins.net.p2p.resolver.managed_api`
   - `forge.plugins.net.p2p.resolver.types`
@@ -64,7 +63,7 @@ the bound; completed retirement or shutdown fallback drains it. This prevents
 unbounded retention if the background retirement queue cannot admit work.
 
 The resolver API contract is now `2.0` and requires
-`forge.plugins.net.p2p.node` major `2`. Consumers upgrading from resolver `1.x`
+`forge.plugins.net.p2p.node` major `3`. Consumers upgrading from resolver `1.x`
 must request resolver major `2`, retain the returned publication lease, and
 explicitly close or await it during their own shutdown.
 

@@ -12,6 +12,7 @@ class session::impl::stream_model final : public transport::detail::stream_conce
    boost::asio::awaitable<void> async_write_chunk(transport::chunk value) override;
    boost::asio::awaitable<detail::bytes> async_read() override;
    boost::asio::awaitable<transport::chunk> async_read_chunk() override;
+   boost::asio::awaitable<void> async_close_write() override;
    boost::asio::awaitable<void> async_close() override;
    void cancel() override;
    void request_cancel() noexcept;

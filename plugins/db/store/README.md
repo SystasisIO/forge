@@ -11,8 +11,7 @@ applications. Each named store owns one `forge::db::core::driver` and may expose
 - Main API id: `forge.plugins.db.store`
 - Config section: `plugins.db.store`
 - Public modules:
-  - `forge.plugins.db.store.plugin`
-  - `forge.plugins.db.store.descriptor`
+  - `forge.plugins.db.store.plugin` owns `plugin::descriptor()` and the canonical factory.
   - `forge.plugins.db.store.api`
   - `forge.plugins.db.store.types`
   - `forge.plugins.db.store.exceptions`

@@ -1,6 +1,5 @@
 add_library(
    forge_plugins_chain_signer STATIC
-   descriptor.cpp
    admission.cpp
    config.cpp
    plugin.cpp
