@@ -7,6 +7,7 @@ module;
 
 export module forge.app.daemon;
 
+export import forge.app.application_environment;
 import forge.app.application_shell;
 import forge.app.runner;
 
@@ -14,10 +15,9 @@ export namespace forge::app {
 
 struct daemon_context {
    std::string name;
-   std::filesystem::path data_dir;
+   application_environment environment;
    std::filesystem::path config_path;
    std::filesystem::path dotenv_path;
-   std::string profile;
    application_shell_options shell;
 };
 

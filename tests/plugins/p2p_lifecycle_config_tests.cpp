@@ -25,7 +25,6 @@ module forge.plugins.net.p2p.node.plugin;
 import forge.api.core.registry;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.log.logger;
@@ -450,9 +449,8 @@ BOOST_AUTO_TEST_CASE(p2p_lifecycle_config_listenerless_candidate_rollback_and_gr
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    auto plugin = np::plugin{};
    auto cleanup = boost::scope::scope_exit{[&] {
       plugin.request_stop();

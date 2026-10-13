@@ -44,7 +44,7 @@ import forge.plugins.net.p2p.node.exceptions;
 
 namespace forge::plugins::net::p2p::resolver {
 
-plugin::plugin() : impl_{std::make_shared<impl>()} {}
+plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
 plugin::~plugin() = default;
 
 forge::net::p2p::protocol_id default_protocol() {
@@ -63,7 +63,7 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.net.p2p.resolver");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    auto config = decode_config(view);
    validate_config(config);
    impl_->settings = std::move(config);
@@ -71,64 +71,56 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    provider.install<managed_api>(std::make_shared<managed_api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
    auto p2p =
        context.apis()
            .get<forge::plugins::net::p2p::node::api>({.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0})
            .shared();
    auto publications = detail::make_publication_catalog(context.scheduler());
-   {
-      auto lock = std::scoped_lock{impl_->mutex};
+   const auto generation = impl_->lifecycle.snapshot().generation;
+   if (!impl_->lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{impl_->mutex};
       impl_->p2p = p2p;
       impl_->local_publications = std::move(publications);
-      impl_->initialized = false;
-      impl_->stopping = false;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::remote_stopped, "P2P API resolver initialization was stopped");
    }
 
    try {
       impl_->install_protocol(p2p);
    } catch (const forge::plugins::net::p2p::node::exceptions::route_conflict& error) {
-      auto lock = std::scoped_lock{impl_->mutex};
       impl_->protocol_registry.clear();
+      auto lock = std::scoped_lock{impl_->mutex};
       impl_->p2p = nullptr;
-      impl_->initialized = false;
       FORGE_THROW_EXCEPTION(exceptions::duplicate_api, "P2P API resolver protocol conflicts with an existing route",
                             forge::exceptions::ctx("protocol", impl_->protocol.value),
                             forge::exceptions::ctx("error", error.message()));
    } catch (...) {
-      auto lock = std::scoped_lock{impl_->mutex};
       impl_->protocol_registry.clear();
+      auto lock = std::scoped_lock{impl_->mutex};
       impl_->p2p = nullptr;
-      impl_->initialized = false;
       throw;
    }
 
-   {
-      auto lock = std::scoped_lock{impl_->mutex};
-      if (impl_->stopping) {
-         FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P API resolver plugin is stopping");
-      }
-      impl_->initialized = true;
-   }
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    co_return;
 }
 
-void plugin::request_stop() noexcept {
+void plugin::on_request_stop() noexcept {
    impl_->request_stop_managed();
    impl_->request_stop_publications();
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
+boost::asio::awaitable<void> plugin::on_shutdown() {
    request_stop();
 
    auto failure = std::exception_ptr{};
@@ -146,10 +138,10 @@ boost::asio::awaitable<void> plugin::shutdown() {
       }
    }
 
-   {
+   auto retired_p2p = std::shared_ptr<forge::plugins::net::p2p::node::api>{};
+   if (!failure) {
       auto lock = std::scoped_lock{impl_->mutex};
-      impl_->initialized = false;
-      impl_->p2p = nullptr;
+      retired_p2p.swap(impl_->p2p);
       impl_->cache.clear();
    }
 

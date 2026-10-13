@@ -80,10 +80,10 @@ class resolver_publication_race_node_plugin final : public forge::app::plugin {
 
    [[nodiscard]] forge::app::plugin_id id() const override;
    [[nodiscard]] std::string version() const override;
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override;
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override;
-   boost::asio::awaitable<void> startup() override;
-   boost::asio::awaitable<void> shutdown() override;
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override;
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override;
+   boost::asio::awaitable<void> on_startup() override;
+   boost::asio::awaitable<void> on_shutdown() override;
 
  private:
    std::shared_ptr<resolver_publish_barrier> barrier_;

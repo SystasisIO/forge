@@ -24,6 +24,10 @@ add_test(
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/net_plugins_tests.py
 )
 add_test(
+   NAME test_forge_app_lifecycle_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/app_lifecycle_tests.py
+)
+add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
    COMMAND
       ${CMAKE_COMMAND}
@@ -1005,6 +1009,15 @@ target_link_libraries(test_forge_tls forge Boost::included_unit_test_framework O
 add_test(NAME test_forge_tls COMMAND test_forge_tls WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
+   test_forge_http_stop_retry
+   unit/main.cpp
+   http/server_stop_retry_tests.cpp
+)
+target_link_libraries(test_forge_http_stop_retry forge_net_http forge_asio Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_stop_retry COMMAND test_forge_http_stop_retry WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_stop_retry PROPERTIES TIMEOUT 60)
+
+add_executable(
    test_forge_yamux
    unit/main.cpp
    yamux/yamux_tests.cpp
@@ -1024,9 +1037,16 @@ add_executable(
    test_forge_app
    unit/main.cpp
    app/app_tests.cpp
+   app/plugin_lifecycle_tests.cpp
+   app/application_environment_tests.cpp
+   app/application_shell_lifecycle_tests.cpp
+   app/application_cancellation_tests.cpp
+   app/diagnostics_tests.cpp
+   app/app_observability_tests.cpp
 )
 target_link_libraries(test_forge_app forge_app Boost::included_unit_test_framework)
 add_test(NAME test_forge_app COMMAND test_forge_app WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_app PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_schema
@@ -3081,6 +3101,17 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
+   test_forge_package_app_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_app_component
+      ${CMAKE_BINARY_DIR}/forge-package-app
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_app
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
    test_forge_package_plugins_db_store
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -4167,6 +4198,17 @@ add_test(
       --test-command forge_package_plugins_log_otlp
 )
 set_tests_properties(test_forge_package_plugins_log_otlp PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_app_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_app_component
+      ${CMAKE_BINARY_DIR}/forge-package-app
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_app
+)
+set_tests_properties(test_forge_package_app_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_plugins_db_store
    COMMAND ${CMAKE_CTEST_COMMAND}

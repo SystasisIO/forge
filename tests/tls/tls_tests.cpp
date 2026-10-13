@@ -552,4 +552,34 @@ BOOST_AUTO_TEST_CASE(rejected_rotation_preserves_the_published_snapshot) {
    BOOST_CHECK_EQUAL(provider.snapshot().get(), first.get());
 }
 
+BOOST_AUTO_TEST_CASE(prepared_exchange_rejects_null_without_changing_current) {
+   auto options = forge::net::tls::context_options{};
+   options.verification = forge::net::tls::peer_verification::none;
+   options.use_default_verify_paths = false;
+   auto provider = forge::net::tls::context_provider{options};
+   const auto current = provider.snapshot();
+   BOOST_CHECK_THROW(static_cast<void>(provider.exchange({})), forge::net::tls::exceptions::invalid_options);
+   BOOST_CHECK_EQUAL(provider.snapshot().get(), current.get());
+}
+
+BOOST_AUTO_TEST_CASE(prepared_exchange_preserves_identity_and_returns_retired_owner) {
+   auto options = forge::net::tls::context_options{};
+   options.verification = forge::net::tls::peer_verification::none;
+   options.use_default_verify_paths = false;
+   auto provider = forge::net::tls::context_provider{options};
+   auto current = provider.snapshot();
+   const auto* previous = current.get();
+   auto lifetime = std::weak_ptr<const forge::net::tls::context_snapshot>{current};
+   current.reset();
+   auto prepared = forge::net::tls::make_context(options);
+   const auto* next = prepared.get();
+   auto retired = provider.exchange(std::move(prepared));
+   BOOST_CHECK_EQUAL(provider.snapshot().get(), next);
+   BOOST_CHECK_EQUAL(retired.get(), previous);
+   BOOST_CHECK(!lifetime.expired());
+   retired.reset();
+   BOOST_CHECK(lifetime.expired());
+   BOOST_CHECK_EQUAL(provider.snapshot().get(), next);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -33,7 +33,6 @@ import forge.api.core.handle;
 import forge.api.core.registry;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.notification;
 import forge.asio.gate;
 import forge.asio.runtime;
@@ -239,14 +238,12 @@ struct fixture {
    forge::asio::task::scheduler scheduler{runtime};
    boost::asio::strand<boost::asio::io_context::executor_type> executor{boost::asio::make_strand(runtime.context())};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
    std::shared_ptr<controlled_source> source = std::make_shared<controlled_source>();
    std::unique_ptr<node_plugin::test::pubsub_service_fixture> owner;
    std::shared_ptr<facade::pubsub_api> api;
    std::vector<std::shared_ptr<barrier>> barriers;
-   bool expected_shutdown_error = false;
 
    explicit fixture(unsigned max_topics = 16, unsigned max_handlers = 8) {
       auto config = facade::pubsub_config{};
@@ -262,12 +259,8 @@ struct fixture {
       for (const auto& hold : barriers) { hold->release(); }
       if (owner) {
          owner->request_stop();
-         try {
-            run(owner->shutdown());
-            if (expected_shutdown_error) { BOOST_ERROR("expected sticky shutdown failure was lost"); }
-         } catch (const std::exception& error) {
-            if (!expected_shutdown_error) { BOOST_ERROR("PubSub lifecycle cleanup: " << error.what()); }
-         }
+         try { run(owner->shutdown()); }
+         catch (const std::exception& error) { BOOST_ERROR("PubSub lifecycle cleanup: " << error.what()); }
       }
       BOOST_TEST(source->active.load() == 0U);
       api.reset();
@@ -470,7 +463,9 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_stop_during_join_waits_for_compensatio
    auto stop_a = f.start(f.owner->shutdown());
    auto stop_b = f.start(f.owner->shutdown());
    BOOST_CHECK_THROW(f.run(f.api->publish({"other"}, {1})), p2p::exceptions::canceled);
-   BOOST_CHECK_THROW((void)joined(second), std::exception);
+   // The transition gate remains available for cleanup; queued ordinary calls
+   // reject common admission once the admitted owner finishes compensation.
+   BOOST_CHECK(second.wait_for(0ms) != std::future_status::ready);
    join_hold->release();
    leave_hold->await_call();
    BOOST_CHECK(stop_a.wait_for(0ms) != std::future_status::ready);
@@ -478,6 +473,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_stop_during_join_waits_for_compensatio
    BOOST_CHECK(first.wait_for(0ms) != std::future_status::ready);
    leave_hold->release();
    BOOST_CHECK_THROW((void)joined(first), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW((void)joined(second), p2p::exceptions::canceled);
    joined(stop_a);
    joined(stop_b);
    BOOST_TEST(f.source->count(false, "one") == 1U);
@@ -862,19 +858,56 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_shutdown_joins_running_handler_and_pub
    BOOST_TEST(f.source->count(false, "one") == 1U);
 }
 
-BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_concurrent_shutdown_replays_actual_leave_failure) {
+BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_unsubscribe_cleanup_remains_allowed_after_stop) {
    auto f = fixture{};
-   (void)f.run(f.api->subscribe({"one"}, accepting()));
+   const auto token = f.run(f.api->subscribe({"one"}, accepting()));
+   f.owner->request_stop();
+   BOOST_CHECK_THROW(f.api->snapshot(), p2p::exceptions::canceled);
+   f.run(f.api->unsubscribe(token));
+   BOOST_TEST(f.source->count(false, "one") == 1U);
+   BOOST_TEST(f.source->snapshot().topics == 0U);
+   f.run(f.owner->shutdown());
+   BOOST_TEST(f.source->count(false, "one") == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_failed_shutdown_retains_owners_and_retries_unfinished_topics) {
+   auto f = fixture{};
+   const auto destruction = std::make_shared<destruction_barrier>();
+   auto release_capture = boost::scope::scope_exit{[destruction]() noexcept { destruction->release(); }};
+   auto capture = std::make_shared<retiring_capture>(destruction);
+   const auto remaining = std::weak_ptr<retiring_capture>{capture};
+   const auto token = f.run(f.api->subscribe({"one"}, [capture](facade::message)
+       -> boost::asio::awaitable<core::validation_result> { co_return core::validation_result::accept; }));
+   capture.reset();
+   (void)f.run(f.api->subscribe({"two"}, accepting()));
    const auto hold = f.hold(false, "one");
    auto first = f.start(f.owner->shutdown());
    hold->await_call();
    auto second = f.start(f.owner->shutdown());
    f.settle();
-   f.expected_shutdown_error = true;
    hold->release(true);
    BOOST_CHECK_THROW(joined(first), std::runtime_error);
    BOOST_CHECK_THROW(joined(second), std::runtime_error);
-   BOOST_CHECK_THROW(f.run(f.owner->shutdown()), std::runtime_error);
+   BOOST_TEST(!remaining.expired());
+   BOOST_TEST(f.source->snapshot().topics == 1U);
    BOOST_TEST(f.source->count(false, "one") == 1U);
+   BOOST_TEST(f.source->count(false, "two") == 1U);
    BOOST_TEST(f.source->active.load() == 0U);
+
+   auto retry = f.start(f.owner->shutdown());
+   auto cleanup = boost::scope::scope_exit{[&]() noexcept { destruction->release(); drain_pending(retry); }};
+   destruction->await_entry();
+   BOOST_CHECK(retry.wait_for(0ms) != std::future_status::ready);
+   // A last capture destructor must hold neither resource nor lifecycle mutex.
+   auto probe = boost::asio::co_spawn(f.runtime.context(), f.api->unsubscribe(token), boost::asio::use_future);
+   BOOST_CHECK_THROW(joined(probe), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(f.api->snapshot(), p2p::exceptions::canceled);
+   destruction->release();
+   joined(retry);
+   BOOST_TEST(remaining.expired());
+   BOOST_TEST(f.source->snapshot().topics == 0U);
+   BOOST_TEST(f.source->count(false, "one") == 2U);
+   BOOST_TEST(f.source->count(false, "two") == 1U);
+   f.run(f.owner->shutdown());
+   BOOST_TEST(f.source->count(false, "one") == 2U);
 }

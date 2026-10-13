@@ -24,6 +24,7 @@ module forge.plugins.chain.signer.plugin;
 import forge.chain.protocol.time;
 import forge.api.core.registry;
 import forge.chain.api.block_signer;
+import forge.chain.api.exceptions;
 import forge.chain.protocol.block_signing;
 import forge.plugins.chain.signer.exceptions;
 import forge.plugins.chain.signer.types;
@@ -45,7 +46,8 @@ namespace {
 
 } // namespace
 
-plugin::impl::impl(plugin_options value) : options_{std::move(value)} {}
+plugin::impl::impl(plugin_options value, forge::app::plugin_lifecycle state)
+    : lifecycle{std::move(state)}, options_{std::move(value)} {}
 
 plugin::impl::~impl() = default;
 
@@ -54,6 +56,7 @@ void plugin::impl::set_config(config value) {
 }
 
 boost::asio::awaitable<void> plugin::impl::initialize(forge::api::core::view apis) {
+   const auto generation = lifecycle.snapshot().generation;
    if (runtime_snapshot()) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer is already initialized");
    }
@@ -78,14 +81,11 @@ boost::asio::awaitable<void> plugin::impl::initialize(forge::api::core::view api
        .shutdown_timeout = std::chrono::milliseconds{static_cast<std::int64_t>(settings.shutdown_timeout_ms)},
    });
 
-   auto close_admission = false;
-   {
+   if (!lifecycle.try_admit(generation, [&] {
       const auto lock = std::scoped_lock{lifecycle_mutex_};
       runtime_ = runtime;
-      close_admission = stop_requested_.load(std::memory_order_acquire);
-   }
-   if (close_admission) {
-      runtime->admission->close();
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer initialization was stopped");
    }
    co_return;
 }
@@ -159,7 +159,14 @@ void plugin::impl::resolve_providers(const forge::api::core::view& apis) {
 }
 
 boost::asio::awaitable<admission_lease> plugin::impl::acquire(std::string caller, std::size_t bytes) {
-   const auto runtime = runtime_snapshot();
+   const auto generation = lifecycle.snapshot().generation;
+   auto runtime = std::shared_ptr<const runtime_state>{};
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{lifecycle_mutex_};
+      runtime = runtime_;
+   })) {
+      FORGE_THROW_EXCEPTION(forge::chain::api::exceptions::unavailable, "Chain signer admission is closed");
+   }
    if (runtime == nullptr) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_lifecycle, "Chain signer plugin is not initialized");
    }
@@ -167,7 +174,6 @@ boost::asio::awaitable<admission_lease> plugin::impl::acquire(std::string caller
 }
 
 void plugin::impl::request_stop() noexcept {
-   stop_requested_.store(true, std::memory_order_release);
    const auto runtime = runtime_snapshot();
    if (runtime != nullptr) {
       runtime->admission->close();
@@ -189,7 +195,7 @@ boost::asio::awaitable<void> plugin::impl::wait_for_drain() {
 }
 
 bool plugin::impl::stopping() const noexcept {
-   return stop_requested_.load(std::memory_order_acquire);
+   return lifecycle.snapshot().stop_requested;
 }
 
 signing_policy::transaction_selection

@@ -76,7 +76,7 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
    candidate->subject = subject;
    auto topic = std::shared_ptr<topic_state>{};
    auto source = std::shared_ptr<forge::net::p2p::node>{};
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       source = self->require_node_locked();
       self->ensure_topic_allowed_locked(subject);
@@ -96,7 +96,7 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
       if (found == self->topics.end()) { self->topics.emplace(subject.value, topic); }
       ++topic->participants;
       ++self->active_operations;
-   }
+   });
    auto completed = boost::scope::scope_exit{[&] { self->finish_topic_operation(topic, record, true); }};
    // Release the gate before the last participant can retire the topic.
    auto ticket = forge::asio::gate::ticket{};
@@ -107,14 +107,14 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
       ticket = co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
           topic->transition.acquire(), boost::asio::use_awaitable);
       auto join = false;
-      {
+      self->admit_operation([&] {
          const auto lock = std::scoped_lock{self->mutex};
          (void)self->require_node_locked();
          if (topic->leave_error) { std::rethrow_exception(topic->leave_error); }
          if (topic->join_error) { std::rethrow_exception(topic->join_error); }
          join = !topic->joined;
          if (join) { topic->native_dirty = true; }
-      }
+      });
       if (join) {
          attempted_join = true;
          const auto weak = std::weak_ptr<detail::pubsub_service>{self};
@@ -126,12 +126,12 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
       if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
          FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub subscribe canceled");
       }
-      {
+      self->admit_operation([&] {
          const auto lock = std::scoped_lock{self->mutex};
          (void)self->require_node_locked();
          topic->joined = true;
          record->committed = true;
-      }
+      });
    } catch (...) {
       failure = std::current_exception();
    }
@@ -142,7 +142,11 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
       auto cleanup_error = std::exception_ptr{};
       try { co_await self->operations.unsubscribe(source, subject); }
       catch (...) { cleanup_error = std::current_exception(); }
+      auto retired_join_error = std::exception_ptr{};
+      auto retired_leave_error = std::exception_ptr{};
       const auto lock = std::scoped_lock{self->mutex};
+      retired_join_error.swap(topic->join_error);
+      retired_leave_error.swap(topic->leave_error);
       topic->join_error = failure;
       topic->leave_error = cleanup_error;
       topic->joined = false;
@@ -159,7 +163,10 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::unsubscribe_transition(
    auto record = std::shared_ptr<handler_record>{};
    {
       const auto lock = std::scoped_lock{self->mutex};
-      source = self->require_node_locked();
+      source = self->require_node_locked(true);
+      if (self->shutdown && !self->shutdown->done) {
+         FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub cleanup is already running");
+      }
       const auto found = self->topics.find(value.subject.value);
       if (found != self->topics.end()) {
          topic = found->second;
@@ -180,7 +187,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::unsubscribe_transition(
    auto leave = false;
    {
       const auto lock = std::scoped_lock{self->mutex};
-      (void)self->require_node_locked();
+      (void)self->require_node_locked(true);
       // A pre-gate reservation owns quota, not the native topic. The same gate excludes
       // an in-progress enable/repair, so only a committed or dirty native owner can retain it.
       const auto& partial = topic->partial;
@@ -196,8 +203,10 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::unsubscribe_transition(
       auto failure = std::exception_ptr{};
       try { co_await self->operations.unsubscribe(source, value.subject); }
       catch (...) { failure = std::current_exception(); }
+      auto retired_error = std::exception_ptr{};
       {
          const auto lock = std::scoped_lock{self->mutex};
+         retired_error.swap(topic->leave_error);
          topic->leave_error = failure;
          if (!failure) { topic->joined = false; topic->native_dirty = false; }
       }

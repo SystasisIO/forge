@@ -37,7 +37,8 @@ import forge.plugins.net.p2p.node.types;
 
 namespace forge::plugins::net::p2p::node::detail {
 
-pubsub_service::pubsub_service(pubsub_operations value) : operations{std::move(value)} {
+pubsub_service::pubsub_service(forge::app::plugin_lifecycle state, pubsub_operations value)
+    : lifecycle{std::move(state)}, operations{std::move(value)} {
    operations.validate();
 }
 
@@ -46,13 +47,18 @@ std::shared_ptr<pubsub_api> pubsub_service::interface() {
 }
 
 bool pubsub_service::try_begin_handler() {
-   const auto lock = std::scoped_lock{mutex};
-   if (stopping || active_handlers >= settings.max_active_handlers) {
-      ++messages_dropped;
-      return false;
-   }
-   ++active_handlers;
-   return true;
+   auto admitted = false;
+   const auto generation = lifecycle.snapshot().generation;
+   static_cast<void>(lifecycle.try_admit(generation, forge::app::lifecycle_phase::started, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (stopping || active_handlers >= settings.max_active_handlers) {
+         ++messages_dropped;
+         return;
+      }
+      ++active_handlers;
+      admitted = true;
+   }));
+   return admitted;
 }
 
 void pubsub_service::finish_handler() noexcept {
@@ -108,12 +114,14 @@ boost::asio::awaitable<forge::net::p2p::pubsub::validation_result>
 pubsub_service::handle_event_owned(std::shared_ptr<pubsub_service> self, forge::net::p2p::pubsub::event event) {
    if (!self) { co_return forge::net::p2p::pubsub::validation_result::ignore; }
    auto handlers = std::vector<std::shared_ptr<handler_record>>{};
-   {
+   auto admitted = false;
+   const auto generation = self->lifecycle.snapshot().generation;
+   const auto accepted = self->lifecycle.try_admit(generation, forge::app::lifecycle_phase::started, [&] {
       const auto lock = std::scoped_lock{self->mutex};
-      if (self->stopping) { co_return forge::net::p2p::pubsub::validation_result::ignore; }
+      if (self->stopping) { return; }
       if (event.value.data.size() > self->settings.max_message_size) {
          ++self->messages_dropped;
-         co_return forge::net::p2p::pubsub::validation_result::ignore;
+         return;
       }
       if (const auto found = self->topics.find(event.value.subject.value); found != self->topics.end()) {
          for (const auto& [_, record] : found->second->handlers) {
@@ -122,9 +130,11 @@ pubsub_service::handle_event_owned(std::shared_ptr<pubsub_service> self, forge::
          const auto& partial = found->second->partial;
          if (partial && partial->committed && partial->admission) { handlers.push_back(partial->fallback); }
       }
-      if (handlers.empty()) { co_return forge::net::p2p::pubsub::validation_result::ignore; }
+      if (handlers.empty()) { return; }
       ++self->active_events;
-   }
+      admitted = true;
+   });
+   if (!accepted || !admitted) { co_return forge::net::p2p::pubsub::validation_result::ignore; }
    auto completed = boost::scope::scope_exit{[&] {
       // Destruction of user captures is part of the owned event, never under the plugin mutex.
       handlers.clear();

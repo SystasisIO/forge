@@ -38,6 +38,8 @@ import forge.plugins.net.http.server.routes;
 #include "details/tls_secret_material.hxx"
 
 namespace forge::plugins::net::http::server {
+plugin::impl::impl(forge::app::plugin_lifecycle value) : lifecycle{std::move(value)} {}
+
 namespace {
 
 constexpr auto tls_certificate_chain_purpose = std::string_view{"http.server.tls.certificate-chain"};
@@ -104,62 +106,80 @@ load_tls_secret_material(const config& settings, const std::shared_ptr<forge::pl
 } // namespace
 
 void plugin::impl::add(pending_binding value) {
-   auto lock = std::scoped_lock{mutex};
-   if (value.options.require_mutual_tls && settings.tls_mode_value != tls_mode::mutual) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "API publication requires mutual TLS");
-   }
-   if (publication_closed) {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (value.options.require_mutual_tls && settings.tls_mode_value != tls_mode::mutual) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "API publication requires mutual TLS");
+      }
+      if (publication_closed) {
+         FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
+      }
+      bindings.push_back(std::move(value));
+   })) {
       FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
    }
-   bindings.push_back(std::move(value));
 }
 
 void plugin::impl::add(middleware_descriptor value) {
-   auto lock = std::scoped_lock{mutex};
-   if (publication_closed) {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (publication_closed) {
+         FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
+      }
+      middleware.push_back(std::move(value));
+   })) {
       FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
    }
-   middleware.push_back(std::move(value));
 }
 
 void plugin::impl::add(forge::net::http::asset_mount value) {
+   const auto generation = lifecycle.snapshot().generation;
    auto executor = forge::asio::compute::executor{};
-   auto publication_generation = std::uint64_t{};
    {
       const auto lock = std::scoped_lock{mutex};
       if (publication_closed) {
          FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
       }
       executor = file_read_executor;
-      publication_generation = lifecycle_generation;
    }
    if (!executor.valid()) {
       FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP asset mounts require the application compute executor");
    }
 
    auto bundle = forge::net::http::asset_bundle{std::move(value), std::move(executor)};
-   auto lock = std::scoped_lock{mutex};
-   if (publication_closed || lifecycle_generation != publication_generation) {
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (publication_closed) {
+         FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
+      }
+      for (const auto& existing : asset_mounts) {
+         if (existing.contains(bundle.path()) || bundle.contains(existing.path())) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_config, "HTTP asset mounts must not overlap");
+         }
+      }
+      asset_mounts.push_back(std::move(bundle));
+   })) {
       FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP server publication is closed");
    }
-   for (const auto& existing : asset_mounts) {
-      if (existing.contains(bundle.path()) || bundle.contains(existing.path())) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "HTTP asset mounts must not overlap");
-      }
-   }
-   asset_mounts.push_back(std::move(bundle));
 }
 
 void plugin::impl::add(route_mount value) {
-   auto lock = std::scoped_lock{mutex};
-   if (publication_closed) {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (publication_closed) {
+         FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP route publication is closed");
+      }
+      if (value.id.empty() || !value.apply || route_mounts.size() >= 128 ||
+          std::ranges::any_of(route_mounts, [&](const auto& saved) { return saved.id == value.id; })) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Invalid or duplicate HTTP route mount");
+      }
+      route_mounts.push_back(std::move(value));
+   })) {
       FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP route publication is closed");
    }
-   if (value.id.empty() || !value.apply || route_mounts.size() >= 128 ||
-       std::ranges::any_of(route_mounts, [&](const auto& saved) { return saved.id == value.id; })) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Invalid or duplicate HTTP route mount");
-   }
-   route_mounts.push_back(std::move(value));
 }
 
 startup_snapshot plugin::impl::close_publication() {
@@ -191,32 +211,40 @@ boost::asio::awaitable<void> plugin::impl::reload_tls() {
    auto settings_copy = config{};
    auto secrets_copy = std::shared_ptr<forge::plugins::crypto::secrets::api>{};
    auto provider = std::shared_ptr<forge::net::tls::context_provider>{};
-   auto reload_generation = std::uint64_t{};
-   {
+   const auto reload_state = lifecycle.snapshot();
+   const auto reload_generation = reload_state.generation;
+   if (reload_state.phase != forge::app::lifecycle_phase::started) {
+      FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload requires a running server");
+   }
+   if (!lifecycle.try_admit(reload_generation, forge::app::lifecycle_phase::started, [&] {
       const auto lock = std::scoped_lock{mutex};
-      if (stopping || settings.tls_mode_value == tls_mode::disabled || !tls_context_provider || !secrets) {
+      if (settings.tls_mode_value == tls_mode::disabled || !tls_context_provider || !secrets) {
          FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload is unavailable when TLS is disabled");
       }
       settings_copy = settings;
       secrets_copy = secrets;
       provider = tls_context_provider;
-      reload_generation = lifecycle_generation;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload was stopped");
    }
 
    try {
       auto material = co_await load_tls_secret_material(settings_copy, secrets_copy);
       auto replacement = make_tls_context_options(settings_copy, material);
       auto erase_replacement = boost::scope::scope_exit{[&] { clear_tls_context_options(replacement); }};
+      auto prepared = forge::net::tls::make_context(std::move(replacement));
+      auto retired = forge::net::tls::context_snapshot_ptr{};
 
-      {
+      if (!lifecycle.try_admit(reload_generation, forge::app::lifecycle_phase::started, [&] {
          const auto lock = std::scoped_lock{mutex};
-         if (stopping || lifecycle_generation != reload_generation || tls_context_provider != provider) {
-            FORGE_THROW_EXCEPTION(
-                exceptions::tls_reload_failed,
-                "HTTP TLS reload was superseded by the plugin lifecycle; the active TLS context was preserved");
+         if (tls_context_provider != provider) {
+            FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS provider was retired");
          }
-         provider->replace(std::move(replacement));
+         retired = provider->exchange(std::move(prepared));
+      })) {
+         FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload was stopped");
       }
+      // Prepared and retired context owners are destroyed only after both locks.
    } catch (const exceptions::tls_reload_failed&) {
       throw;
    } catch (...) {
@@ -227,19 +255,23 @@ boost::asio::awaitable<void> plugin::impl::reload_tls() {
 }
 
 void plugin::impl::reset_runtime() noexcept {
-   auto lock = std::scoped_lock{mutex};
-   ++lifecycle_generation;
-   apis = nullptr;
-   file_read_executor = {};
-   secrets.reset();
-   tls_context_provider.reset();
-   runtime = nullptr;
-   publication_closed = false;
-   stopping = true;
-   bindings.clear();
-   middleware.clear();
-   asset_mounts.clear();
-   route_mounts.clear();
+   auto retired = startup_snapshot{};
+   auto retired_secrets = std::shared_ptr<forge::plugins::crypto::secrets::api>{};
+   auto retired_tls = std::shared_ptr<forge::net::tls::context_provider>{};
+   auto retired_executor = forge::asio::compute::executor{};
+   {
+      const auto lock = std::scoped_lock{mutex};
+      apis = nullptr;
+      runtime = nullptr;
+      publication_closed = true;
+      retired_executor = std::move(file_read_executor);
+      retired_secrets.swap(secrets);
+      retired_tls.swap(tls_context_provider);
+      retired.bindings.swap(bindings);
+      retired.middleware.swap(middleware);
+      retired.asset_mounts.swap(asset_mounts);
+      retired.route_mounts.swap(route_mounts);
+   }
 }
 
 } // namespace forge::plugins::net::http::server

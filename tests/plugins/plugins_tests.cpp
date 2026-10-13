@@ -331,15 +331,15 @@ class p2p_test_dependency_plugin : public forge::app::plugin {
       return "test";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -403,7 +403,7 @@ class p2p_test_secrets_plugin final : public p2p_test_dependency_plugin {
    explicit p2p_test_secrets_plugin(std::shared_ptr<const forge::tests::p2p::identity_fixture> identity = {})
        : p2p_test_dependency_plugin{"forge.plugins.crypto.secrets"}, identity_{std::move(identity)} {}
 
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override {
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override {
       provider.install<crypto_secrets::api>(std::make_shared<p2p_test_secrets_api>(identity_));
       co_return;
    }
@@ -659,7 +659,7 @@ class route_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::api>(
           {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
 
@@ -678,12 +678,12 @@ class route_publisher_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("routes.startup");
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("routes.shutdown");
       raw_.close();
       co_await publication_.async_close();
@@ -706,7 +706,7 @@ class duplicate_route_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::protocol_api>(
           {.id = {"forge.plugins.net.p2p.node.protocol"}, .major = 1});
       auto handler = [](forge::net::p2p::node::incoming_protocol_stream) -> boost::asio::awaitable<void> { co_return; };
@@ -715,11 +715,11 @@ class duplicate_route_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 };
@@ -734,7 +734,7 @@ class resolver_route_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
           {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
 
@@ -747,11 +747,11 @@ class resolver_route_publisher_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await publication_.async_close();
       co_return;
    }
@@ -770,7 +770,7 @@ class duplicate_resolver_route_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
           {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
       auto plan = forge::api::core::binding()
@@ -783,11 +783,11 @@ class duplicate_resolver_route_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await publication_.async_close();
       co_return;
    }
@@ -806,7 +806,7 @@ class resolver_custom_transport_route_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
           {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
       auto plan = forge::api::core::binding()
@@ -826,11 +826,11 @@ class resolver_custom_transport_route_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await publication_.async_close();
       co_return;
    }
@@ -849,7 +849,7 @@ class receipt_route_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
           {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
 
@@ -862,11 +862,11 @@ class receipt_route_publisher_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await publication_.async_close();
       co_return;
    }
@@ -885,7 +885,7 @@ class resolver_protocol_conflict_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::protocol_api>(
           {.id = {"forge.plugins.net.p2p.node.protocol"}, .major = 1});
       raw_ = p2p->register_protocol(
@@ -894,11 +894,11 @@ class resolver_protocol_conflict_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       raw_.close();
       co_return;
    }
@@ -916,7 +916,7 @@ class scripted_resolver_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::api>(
           {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
       auto plan = forge::api::core::binding()
@@ -928,11 +928,11 @@ class scripted_resolver_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await publication_.async_close();
       co_return;
    }
@@ -2725,8 +2725,9 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_rolls_back_strict_bootstrap_failure) {
    const auto failed_plugin = std::ranges::find_if(
        diagnostics.plugins, [](const auto& plugin) { return plugin.id == "forge.plugins.net.p2p.node"; });
    BOOST_REQUIRE(failed_plugin != diagnostics.plugins.end());
-   BOOST_TEST(static_cast<int>(failed_plugin->state) == static_cast<int>(forge::app::lifecycle_state::failed));
-   BOOST_TEST(!failed_plugin->last_error.empty());
+   BOOST_CHECK(failed_plugin->lifecycle.phase == forge::app::lifecycle_phase::stopped);
+   BOOST_REQUIRE(failed_plugin->lifecycle.failure.has_value());
+   BOOST_CHECK(failed_plugin->lifecycle.failure->exception != nullptr);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_plugin_config_is_described_from_public_schema) {

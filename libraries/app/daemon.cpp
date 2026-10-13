@@ -1,6 +1,10 @@
 module;
 
+#include "details/lifecycle_log.hxx"
+#include <forge/exceptions/macros.hpp>
+
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -15,6 +19,7 @@ module forge.app.daemon;
 
 import forge.app.application_shell;
 import forge.app.runner;
+import forge.app.exceptions;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.key_path;
@@ -28,27 +33,22 @@ import forge.config.program_options;
 import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;
+import forge.schema.scalar;
 import forge.schema.enums;
 import forge.codec.yaml;
+
+#include "details/parsed_cli.hxx"
 
 namespace forge::app {
 namespace {
 
-struct parsed_cli {
-   forge::config::core::document document;
-   std::vector<std::string> filtered_args;
-   std::vector<forge::schema::diagnostic> diagnostics;
-   bool help = false;
-   bool check_config = false;
-   bool print_effective_config = false;
-   bool configure = false;
-   bool config_explicit = false;
-   bool dotenv_explicit = false;
+using detail::parsed_cli;
 
-   [[nodiscard]] bool ok() const {
-      return diagnostics.empty();
-   }
-};
+void log_daemon(const char* event, const char* operation, detail::lifecycle_log_level level,
+                std::exception_ptr error = {}) noexcept {
+   detail::emit_lifecycle_log({.logger = "forge.app.daemon", .event = event, .operation = operation,
+                              .level = level, .error = error, .canceled_event = "daemon.canceled"});
+}
 
 const std::vector<forge::config::program_options::reserved_option>& daemon_reserved_options() {
    static const auto options = std::vector<forge::config::program_options::reserved_option>{
@@ -235,7 +235,8 @@ std::string string_field(const forge::config::core::document& document, std::str
    if (const auto* text = std::get_if<std::string>(&value->storage)) {
       return *text;
    }
-   throw std::invalid_argument{"daemon config value must be a string: " + std::string{path}};
+   FORGE_THROW_EXCEPTION(exceptions::config_failed, "daemon config value must be a string",
+                         forge::exceptions::ctx("path", path));
 }
 
 std::uint64_t unsigned_field(const forge::config::core::document& document, std::string_view path, std::uint64_t fallback) {
@@ -249,7 +250,8 @@ std::uint64_t unsigned_field(const forge::config::core::document& document, std:
    if (const auto* signed_number = std::get_if<std::int64_t>(&value->storage); signed_number && *signed_number >= 0) {
       return static_cast<std::uint64_t>(*signed_number);
    }
-   throw std::invalid_argument{"daemon config value must be an unsigned integer: " + std::string{path}};
+   FORGE_THROW_EXCEPTION(exceptions::config_failed, "daemon config value must be an unsigned integer",
+                         forge::exceptions::ctx("path", path));
 }
 
 bool bool_field(const forge::config::core::document& document, std::string_view path, bool fallback) {
@@ -262,11 +264,14 @@ bool bool_field(const forge::config::core::document& document, std::string_view 
    }
    if (const auto* text = std::get_if<std::string>(&value->storage)) {
       auto parsed = false;
-      if (forge::config::core::parse_bool_text(*text, parsed)) {
+      if (forge::schema::parse_bool_text(*text, parsed)) {
          return parsed;
       }
+      FORGE_THROW_EXCEPTION(exceptions::config_failed, "boolean has invalid syntax",
+                            forge::exceptions::ctx("path", path));
    }
-   throw std::invalid_argument{"daemon config value must be a boolean: " + std::string{path}};
+   FORGE_THROW_EXCEPTION(exceptions::config_failed, "daemon config value must be a boolean",
+                         forge::exceptions::ctx("path", path));
 }
 
 std::vector<const char*> argv_view(const std::vector<std::string>& arguments) {
@@ -298,6 +303,7 @@ void print_diagnostics(const std::vector<forge::schema::diagnostic>& diagnostics
 }
 
 int fail_with_diagnostics(const std::vector<forge::schema::diagnostic>& diagnostics) {
+   log_daemon("daemon.config.failed", "config", detail::lifecycle_log_level::error);
    print_diagnostics(diagnostics);
    return 1;
 }
@@ -311,12 +317,54 @@ bool has_errors(const std::vector<forge::schema::diagnostic>& diagnostics) {
    return false;
 }
 
+const char* known_validation_reason(const std::exception& error) noexcept {
+   auto message = std::string_view{};
+   if (const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error)) {
+      message = typed->message();
+   } else if (dynamic_cast<const std::invalid_argument*>(&error)) {
+      // Legacy configure callbacks sometimes forward only a schema reason as
+      // invalid_argument. Recognize exact fixed vocabulary, never echo what().
+      message = error.what();
+   } else {
+      return nullptr;
+   }
+   for (const auto* reason : {"daemon config value must be a string",
+                             "daemon config value must be an unsigned integer",
+                             "daemon config value must be a boolean",
+                             "boolean has invalid syntax", "integer has invalid syntax",
+                             "integer is outside target type range",
+                             "config value has incompatible type",
+                             "value is above the allowed maximum",
+                             "value is below the allowed minimum"}) {
+      if (message == reason) {
+         return reason;
+      }
+   }
+   return nullptr;
+}
+
 void append_bootstrap_diagnostic(std::vector<forge::schema::diagnostic>& diagnostics, const std::exception& error) {
+   auto path = std::string{"daemon"};
+   const auto* reason = known_validation_reason(error);
+   if (reason) {
+      if (const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error)) {
+         for (const auto& context : typed->context()) {
+            if (context.key != "path" || context.redacted) {
+               continue;
+            }
+            for (const auto& option : daemon_reserved_options()) {
+               if (context.value == option.path) {
+                  path = context.value;
+               }
+            }
+         }
+      }
+   }
    diagnostics.push_back(forge::schema::diagnostic{
-      .path = "daemon",
+      .path = std::move(path),
       .code = "daemon.bootstrap",
       .level = forge::schema::severity::error,
-      .message = error.what(),
+      .message = reason ? reason : "daemon bootstrap failed",
    });
 }
 
@@ -400,17 +448,26 @@ forge::config::core::document read_product_cli_layer(const std::vector<std::stri
    return parsed.ok() ? std::move(parsed.document) : forge::config::core::document{};
 }
 
-daemon_context context_from_document(const daemon_options& options, const forge::config::core::document& document) {
+daemon_context context_from_document(const daemon_options& options, const forge::config::core::document& document,
+                                     const std::filesystem::path& working_dir) {
    auto context = daemon_context{};
    const auto config_filename = options.config_filename.empty() ? std::filesystem::path{"config.yml"}
                                                                 : std::filesystem::path{options.config_filename};
    const auto dotenv_filename = options.dotenv_filename.empty() ? std::filesystem::path{".env"}
                                                                 : std::filesystem::path{options.dotenv_filename};
    context.name = options.name.empty() ? "forge-daemon" : options.name;
-   context.profile = string_field(document, "daemon.profile", options.default_profile);
-   context.data_dir = string_field(document, "daemon.data-dir", default_data_dir(options).string());
-   context.config_path = string_field(document, "daemon.config", (context.data_dir / config_filename).string());
-   context.dotenv_path = string_field(document, "daemon.dotenv", (context.data_dir / dotenv_filename).string());
+   auto data_dir = std::filesystem::path{string_field(document, "daemon.data-dir", default_data_dir(options).string())};
+   if (!data_dir.empty() && data_dir.is_relative()) {
+      data_dir = working_dir / data_dir;
+   }
+   context.environment = application_environment{std::move(data_dir),
+                                                 string_field(document, "daemon.profile", options.default_profile)};
+   context.config_path = document.try_get("daemon.config")
+                            ? std::filesystem::path{string_field(document, "daemon.config")}
+                            : context.environment.resolve_data_path(config_filename);
+   context.dotenv_path = document.try_get("daemon.dotenv")
+                            ? std::filesystem::path{string_field(document, "daemon.dotenv")}
+                            : context.environment.resolve_data_path(dotenv_filename);
 
    const auto runtime_threads = unsigned_field(document, "daemon.runtime-threads", 1);
    const auto queue_depth = unsigned_field(document, "daemon.scheduler-queue-depth", 4096);
@@ -427,14 +484,14 @@ daemon_context context_from_document(const daemon_options& options, const forge:
             .max_pending_tasks = static_cast<std::size_t>(queue_depth),
          },
    };
+   context.shell.environment = context.environment;
    return context;
 }
 
-forge::config::core::document resolve_daemon_paths(forge::config::core::document document, const daemon_options& options) {
-   const auto context = context_from_document(options, document);
-   if (!document.try_get("daemon.data-dir")) {
-      document.set("daemon.data-dir", context.data_dir.string());
-   }
+forge::config::core::document resolve_daemon_paths(forge::config::core::document document, const daemon_options& options,
+                                                  const std::filesystem::path& working_dir) {
+   const auto context = context_from_document(options, document, working_dir);
+   document.set("daemon.data-dir", context.environment.data_dir().string());
    if (!document.try_get("daemon.config")) {
       document.set("daemon.config", context.config_path.string());
    }
@@ -481,7 +538,9 @@ std::string daemon_help(const daemon_options& options, const forge::config::core
 } // namespace
 
 int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options options) {
+   log_daemon("daemon.config.begin", "config", detail::lifecycle_log_level::debug);
    if (!make_app) {
+      log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
       std::cerr << "error: daemon factory is empty\n";
       return 1;
    }
@@ -493,25 +552,26 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       return fail_with_diagnostics(diagnostics);
    }
 
-   const auto daemon_defaults = dynamic_daemon_defaults(options);
-   const auto daemon_only_registry = daemon_registry();
+   try {
+      // Factories and hooks must not change the base used by later config layers.
+      const auto working_dir = std::filesystem::current_path();
+      const auto daemon_defaults = dynamic_daemon_defaults(options);
+      const auto daemon_only_registry = daemon_registry();
 
-   if (daemon_cli.help) {
-      try {
-         const auto context = context_from_document(options, forge::config::core::merge({daemon_defaults, daemon_cli.document}));
+      if (daemon_cli.help) {
+         const auto context = context_from_document(
+            options, forge::config::core::merge({daemon_defaults, daemon_cli.document}), working_dir);
          auto app = make_app(context);
          if (!app) {
+            log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
             std::cerr << "error: daemon factory returned null application\n";
             return 1;
          }
          std::cout << daemon_help(options, app->describe_config());
+         log_daemon("daemon.mode.complete", "help", detail::lifecycle_log_level::debug);
          return 0;
-      } catch (const std::exception& error) {
-         return fail_with_bootstrap_diagnostic(diagnostics, error);
       }
-   }
 
-   try {
       auto early_process_env =
          read_process_env_layer(daemon_only_registry, options, forge::config::env::unknown_variable_policy::ignore, diagnostics);
       if (has_errors(diagnostics)) {
@@ -519,7 +579,7 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       }
 
       auto early_without_yaml = forge::config::core::merge({daemon_defaults, early_process_env, daemon_cli.document});
-      auto early_context = context_from_document(options, early_without_yaml);
+      auto early_context = context_from_document(options, early_without_yaml, working_dir);
       auto yaml = options.read_yaml ? read_yaml_layer(
                                          early_context.config_path,
                                          daemon_cli.config_explicit && !daemon_cli.configure && !daemon_cli.help,
@@ -530,8 +590,8 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       }
 
       auto early_paths = resolve_daemon_paths(
-         forge::config::core::merge({daemon_defaults, yaml, early_process_env, daemon_cli.document}), options);
-      auto early_path_context = context_from_document(options, early_paths);
+         forge::config::core::merge({daemon_defaults, yaml, early_process_env, daemon_cli.document}), options, working_dir);
+      auto early_path_context = context_from_document(options, early_paths, working_dir);
       auto early_dotenv = read_dotenv_layer(
          early_path_context.dotenv_path,
          daemon_only_registry,
@@ -543,10 +603,12 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       }
 
       auto early_effective = resolve_daemon_paths(
-         forge::config::core::merge({daemon_defaults, yaml, early_dotenv, early_process_env, daemon_cli.document}), options);
-      auto context = context_from_document(options, early_effective);
+         forge::config::core::merge({daemon_defaults, yaml, early_dotenv, early_process_env, daemon_cli.document}), options,
+         working_dir);
+      auto context = context_from_document(options, early_effective, working_dir);
       auto app = make_app(context);
       if (!app) {
+         log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
          std::cerr << "error: daemon factory returned null application\n";
          return 1;
       }
@@ -577,7 +639,7 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
             daemon_cli.document,
             product_cli,
          }),
-         options);
+         options, working_dir);
 
       const auto help = bool_field(effective, "daemon.help", false);
       const auto check_config = bool_field(effective, "daemon.check-config", false);
@@ -586,6 +648,7 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
 
       if (help) {
          std::cout << daemon_help(options, app_registry);
+         log_daemon("daemon.mode.complete", "help", detail::lifecycle_log_level::debug);
          return 0;
       }
 
@@ -594,13 +657,17 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
          return fail_with_diagnostics(diagnostics);
       }
 
+      log_daemon("daemon.config.accepted", "config", detail::lifecycle_log_level::debug);
+
       if (configure) {
          if (!options.allow_configure) {
+            log_daemon("daemon.config.failed", "generate_config", detail::lifecycle_log_level::error);
             std::cerr << "error: --configure is disabled for this daemon\n";
             return 1;
          }
          const auto config_path = string_field(effective, "daemon.config", context.config_path.string());
          if (std::filesystem::exists(config_path)) {
+            log_daemon("daemon.config.failed", "generate_config", detail::lifecycle_log_level::error);
             std::cerr << "error: refusing to overwrite existing config: " << config_path << '\n';
             return 1;
          }
@@ -612,16 +679,18 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
             forge::config::core::merge({forge::config::core::defaults_for(registry), daemon_defaults, early_process_env,
                                 daemon_cli.document});
          reset_daemon_action_flags(generated);
-         generated = resolve_daemon_paths(std::move(generated), options);
+         generated = resolve_daemon_paths(std::move(generated), options, working_dir);
          auto saved = forge::codec::yaml::save_document(config_path, forge::config::core::redact(std::move(generated), registry));
          append_diagnostics(diagnostics, saved.diagnostics);
          if (!saved.ok()) {
             return fail_with_diagnostics(diagnostics);
          }
+         log_daemon("daemon.mode.complete", "generate_config", detail::lifecycle_log_level::debug);
          return 0;
       }
       if (print_effective_config) {
          if (!options.allow_print_effective_config) {
+            log_daemon("daemon.config.failed", "print_config", detail::lifecycle_log_level::error);
             std::cerr << "error: --print-effective-config is disabled for this daemon\n";
             return 1;
          }
@@ -631,19 +700,26 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
             return fail_with_diagnostics(diagnostics);
          }
          std::cout << written.text;
+         log_daemon("daemon.mode.complete", "print_config", detail::lifecycle_log_level::debug);
          return 0;
       }
       if (check_config) {
          if (!options.allow_check_config) {
+            log_daemon("daemon.config.failed", "check_config", detail::lifecycle_log_level::error);
             std::cerr << "error: --check-config is disabled for this daemon\n";
             return 1;
          }
          try {
             app->configure(effective);
          } catch (const std::exception& error) {
-            std::cerr << "error: " << error.what() << '\n';
+            log_daemon("daemon.config.failed", "check_config", detail::lifecycle_log_level::error,
+                       std::current_exception());
+            const auto* reason = known_validation_reason(error);
+            std::cerr << "error: config.validation at application.configure: "
+                      << (reason ? reason : "application configuration failed") << '\n';
             return 1;
          }
+         log_daemon("daemon.mode.complete", "check_config", detail::lifecycle_log_level::debug);
          return 0;
       }
 
@@ -651,11 +727,13 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       apply_run_options_from_document(run_options, effective);
       try {
          return forge::app::run_application(std::move(app), effective, std::move(run_options));
-      } catch (const std::exception& error) {
-         std::cerr << "error: " << error.what() << '\n';
+      } catch (const std::exception&) {
+         log_daemon("daemon.run.failed", "run", detail::lifecycle_log_level::error, std::current_exception());
+         std::cerr << "error: application run failed\n";
          return 1;
       }
    } catch (const std::exception& error) {
+      log_daemon("daemon.config.failed", "bootstrap", detail::lifecycle_log_level::error, std::current_exception());
       return fail_with_bootstrap_diagnostic(diagnostics, error);
    }
 }

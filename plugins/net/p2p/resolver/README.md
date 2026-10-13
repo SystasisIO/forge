@@ -1,5 +1,18 @@
 # P2P Resolver Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+The resolver copies the common lifecycle into its implementation instead of
+maintaining plugin initialized/stopping flags. Setup APIs check both the guarded
+phase and the retained P2P resource. Publication catalogs, managed remote state
+and their close/drain barriers remain backend-owned; external calls and close
+callbacks are not executed under the lifecycle guard.
+
 `forge::plugins::net::p2p::resolver` publishes and resolves typed API metadata over
 the shared P2P node. It lets consumers ask a peer which API versions and method
 contracts it exposes before opening a typed API connection.
@@ -110,8 +123,8 @@ import forge.plugins.net.p2p.resolver.plugin;
 import forge.api.p2p.publication;
 
 class catalog_resolver_plugin final : public forge::app::plugin {
- public:
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+ protected:
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
          {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2});
 

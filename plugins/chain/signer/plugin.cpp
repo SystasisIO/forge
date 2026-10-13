@@ -35,7 +35,7 @@ import forge.plugins.chain.signer.types;
 
 namespace forge::plugins::chain::signer {
 
-plugin::plugin(plugin_options value) : impl_{std::make_shared<impl>(std::move(value))} {}
+plugin::plugin(plugin_options value) : impl_{std::make_shared<impl>(std::move(value), lifecycle_handle())} {}
 
 plugin::~plugin() = default;
 
@@ -60,24 +60,24 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.chain.signer");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    impl_->set_config(decode_config(view));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<forge::chain::api::transaction_signer>(std::make_shared<transaction_api_impl>(impl_));
    provider.install<forge::chain::api::block_signer>(std::make_shared<block_api_impl>(impl_));
    provider.install<forge::chain::api::finality_signer>(std::make_shared<finality_api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
    co_await impl_->initialize(context.apis());
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    if (impl_->stopping()) {
       FORGE_THROW_EXCEPTION(forge::plugins::chain::signer::exceptions::invalid_lifecycle,
                             "Chain signer plugin was stopped before startup");
@@ -85,11 +85,11 @@ boost::asio::awaitable<void> plugin::startup() {
    co_return;
 }
 
-void plugin::request_stop() noexcept {
+void plugin::on_request_stop() noexcept {
    impl_->request_stop();
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
+boost::asio::awaitable<void> plugin::on_shutdown() {
    request_stop();
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    co_await impl_->wait_for_drain();

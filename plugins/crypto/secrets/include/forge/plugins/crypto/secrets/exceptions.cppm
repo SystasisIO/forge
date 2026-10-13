@@ -21,6 +21,7 @@ class exceptions {
       invalid_source = 6,
       size_limit_exceeded = 7,
       crypto_failed = 8,
+      stopped = 9,
    };
 
    using invalid_config = forge::exceptions::coded_exception<code, code::invalid_config>;
@@ -31,6 +32,7 @@ class exceptions {
    using invalid_source = forge::exceptions::coded_exception<code, code::invalid_source>;
    using size_limit_exceeded = forge::exceptions::coded_exception<code, code::size_limit_exceeded>;
    using crypto_failed = forge::exceptions::coded_exception<code, code::crypto_failed>;
+   using stopped = forge::exceptions::coded_exception<code, code::stopped>;
 };
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(exceptions::code, "forge.plugins.crypto.secrets")

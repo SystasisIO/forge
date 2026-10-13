@@ -66,19 +66,14 @@ import forge.plugins.db.store.api;
 #include "details/protocol_registry.hxx"
 
 namespace forge::plugins::net::p2p::node {
-plugin::impl::impl()
-    : configuration{std::make_shared<const detail::configuration_snapshot>()},
+plugin::impl::impl(forge::app::plugin_lifecycle state)
+    : lifecycle{std::move(state)}, configuration{std::make_shared<const detail::configuration_snapshot>()},
       protocols{detail::make_protocol_registry(configuration->options.limits.max_protocol_handlers)},
       contributions{std::make_shared<detail::peer_contributions>()},
-      pubsub{std::make_shared<detail::pubsub_service>()} {}
+      pubsub{std::make_shared<detail::pubsub_service>(lifecycle)} {}
 plugin::impl::~impl() = default;
 
 void plugin::impl::request_stop() noexcept {
-   {
-      const auto lock = std::scoped_lock{configuration_mutex};
-      stop_requested.store(true, std::memory_order_release);
-      phase.store(lifecycle_phase::stopping, std::memory_order_release);
-   }
    contributions->close();
    pubsub->request_stop();
    detail::request_close_protocol_registry(protocols);
@@ -91,21 +86,12 @@ void plugin::impl::request_stop() noexcept {
    }
 }
 
-void plugin::impl::mark_started() noexcept {
-   auto expected = lifecycle_phase::starting;
-   static_cast<void>(phase.compare_exchange_strong(expected, lifecycle_phase::started, std::memory_order_acq_rel,
-                                                   std::memory_order_acquire));
-}
-
-void plugin::impl::mark_stopped() noexcept {
-   phase.store(lifecycle_phase::stopped, std::memory_order_release);
-}
-
 bool plugin::impl::is_started() const noexcept {
-   return phase.load(std::memory_order_acquire) == lifecycle_phase::started;
+   return lifecycle.snapshot().phase == forge::app::lifecycle_phase::started;
 }
 
 std::shared_ptr<forge::net::p2p::node> plugin::impl::ensure_node(forge::net::p2p::node::options options) {
+   const auto generation = lifecycle.snapshot().generation;
    if (!runtime) {
       FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P node plugin is not initialized");
    }
@@ -126,10 +112,15 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::ensure_node(forge::net::p2p
          candidate->stop();
          throw;
       }
-      std::atomic_store_explicit(&node, candidate, std::memory_order_release);
+      if (!lifecycle.try_admit(generation, [&] {
+         std::atomic_store_explicit(&node, candidate, std::memory_order_release);
+      })) {
+         candidate->stop();
+         FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P node startup was stopped");
+      }
       current = std::move(candidate);
    }
-   if (stop_requested.load(std::memory_order_acquire)) {
+   if (lifecycle.snapshot().stop_requested) {
       current->stop();
    }
    return current;
@@ -148,15 +139,22 @@ std::shared_ptr<forge::net::p2p::node> plugin::impl::require_node() const {
 }
 
 std::shared_ptr<forge::net::p2p::node> plugin::impl::require_running_node() const {
-   const auto lock = std::scoped_lock{configuration_mutex};
-   const auto started = is_started();
-   if (stop_requested.load(std::memory_order_acquire)) {
+   const auto state = lifecycle.snapshot();
+   if (state.stop_requested) {
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P node plugin admission is closed");
    }
-   if (!started) {
+   if (state.phase != forge::app::lifecycle_phase::started) {
       FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P node plugin is not running");
    }
-   return require_node();
+   auto current = std::shared_ptr<forge::net::p2p::node>{};
+   if (!lifecycle.try_admit(state.generation, forge::app::lifecycle_phase::started,
+                            [&] { current = node_snapshot(); })) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P node plugin admission is closed");
+   }
+   if (!current) {
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P node plugin is not running");
+   }
+   return current;
 }
 
 forge::net::p2p::node::open_options plugin::impl::open_options_for(remote_options value) const {

@@ -31,7 +31,6 @@ import forge.api.core.registry;
 import forge.api.core.types;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
@@ -173,9 +172,8 @@ struct plugin_environment {
    forge::asio::runtime runtime{};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
 
    ~plugin_environment() {
       run(scheduler.shutdown());

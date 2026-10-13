@@ -10,7 +10,8 @@
 namespace forge::plugins::chain::signer {
 
 struct plugin::impl {
-   explicit impl(plugin_options value);
+   explicit impl(plugin_options value, forge::app::plugin_lifecycle state);
+   const forge::app::plugin_lifecycle lifecycle;
    ~impl();
 
    void set_config(config value);
@@ -38,7 +39,6 @@ struct plugin::impl {
    plugin_options options_;
    mutable std::mutex lifecycle_mutex_;
    std::shared_ptr<const runtime_state> runtime_;
-   std::atomic_bool stop_requested_ = false;
 };
 
 } // namespace forge::plugins::chain::signer

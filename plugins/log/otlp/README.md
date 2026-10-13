@@ -1,5 +1,18 @@
 # forge::plugins::log::otlp
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Exporter construction belongs to `on_after_initialize`; the base `startup()`
+ensures that barrier for direct consumers too. Shared stop closes management API
+admission, but logger sinks remain attached until reverse shutdown reaches OTLP.
+Admitted call counts, sink detach, crash-capture ownership and awaited exporter
+cleanup remain backend responsibilities.
+
 `forge::plugins::log::otlp` connects existing `forge_log` loggers to the
 `forge_otlp` HTTP/JSON log exporter. It does not add a new logging API: code
 uses `tlog/dlog/ilog/wlog/elog` with named logger routes or a one-message
@@ -195,9 +208,9 @@ releasing its runtime owner. No lock covers an await or exporter I/O. An API
 handle, or an unstarted management awaitable, may outlive plugin/runtime teardown;
 executing it then raises the existing `exporter_unavailable` error.
 
-`request_stop()` leaves sink export **and management calls** available. Only
-explicit `shutdown()` closes new management admission. Accepted calls finish or
-cancel safely; cancellation of a flush waiter does not stop the shared sink drain.
+`request_stop()` leaves sink export available but closes new management
+admission through the shared lifecycle. Accepted calls finish or cancel safely;
+cancellation of a flush waiter does not stop the shared sink drain.
 Startup failure/export-disabled mode also reports `exporter_unavailable`.
 Plugin lifecycle phases remain application-owner serialized; this contract does
 not introduce concurrent configure/startup/restart as supported lifecycle use.

@@ -17,14 +17,23 @@ import forge.plugins.log.otlp.types;
 #include "details/plugin_impl.hxx"
 
 namespace forge::plugins::log::otlp {
+plugin::impl::impl(forge::app::plugin_lifecycle value) : lifecycle{std::move(value)} {}
+
 
 std::shared_ptr<forge::otlp::log_exporter> plugin::impl::admit_exporter() {
-   const auto lock = std::scoped_lock{admission_mutex};
-   if (shutting_down || !exporter) {
+   const auto generation = lifecycle.snapshot().generation;
+   auto admitted = std::shared_ptr<forge::otlp::log_exporter>{};
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{admission_mutex};
+      if (!exporter) {
+         throw exceptions::exporter_unavailable{"OTLP logs exporter is not available"};
+      }
+      admitted = exporter;
+      ++admitted_calls;
+   })) {
       throw exceptions::exporter_unavailable{"OTLP logs exporter is not available"};
    }
-   ++admitted_calls;
-   return exporter;
+   return admitted;
 }
 
 void plugin::impl::release_call() noexcept {
@@ -49,22 +58,18 @@ boost::asio::awaitable<void> plugin::impl::wait_for_calls() {
 }
 
 void plugin::impl::publish_exporter(std::shared_ptr<forge::otlp::log_exporter> value) {
-   const auto lock = std::scoped_lock{admission_mutex};
-   if (shutting_down) {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{admission_mutex};
+      exporter.swap(value);
+   })) {
       throw exceptions::exporter_unavailable{"OTLP logs exporter is stopping"};
    }
-   exporter = std::move(value);
 }
 
 std::shared_ptr<forge::otlp::log_exporter> plugin::impl::take_exporter() noexcept {
    const auto lock = std::scoped_lock{admission_mutex};
-   shutting_down = true;
    return std::exchange(exporter, {});
-}
-
-void plugin::impl::reset_admission() noexcept {
-   const auto lock = std::scoped_lock{admission_mutex};
-   shutting_down = false;
 }
 
 void plugin::impl::clear_exporter() noexcept {

@@ -3,7 +3,6 @@ module;
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,61 +26,29 @@ struct event_record {
    std::string message;
 };
 
-struct event_filter {
-   std::string topic;
-   event_severity min_severity = event_severity::debug;
-   bool include_child_topics = true;
-};
-
-struct event_bus_options {
-   std::uint64_t max_subscription_events = 64;
+struct event_journal_options {
    std::uint64_t max_critical_events = 128;
    std::uint64_t max_recent_events = 128;
+   std::uint64_t max_record_bytes = 4096;
 };
 
-struct event_bus_metrics {
+struct event_journal_metrics {
    std::uint64_t published = 0;
-   std::uint64_t delivered = 0;
    std::uint64_t dropped = 0;
-   std::uint64_t subscriptions = 0;
 };
 
-class event_subscription {
+class event_journal {
  public:
-   event_subscription();
-   ~event_subscription();
+   explicit event_journal(event_journal_options options = {});
+   ~event_journal();
 
-   event_subscription(event_subscription&&) noexcept;
-   event_subscription& operator=(event_subscription&&) noexcept;
+   event_journal(const event_journal&) = delete;
+   event_journal& operator=(const event_journal&) = delete;
 
-   event_subscription(const event_subscription&) = delete;
-   event_subscription& operator=(const event_subscription&) = delete;
-
-   [[nodiscard]] std::optional<event_record> poll();
-   void unsubscribe();
-
- private:
-   struct state;
-   std::shared_ptr<state> state_;
-
-   explicit event_subscription(std::shared_ptr<state> state);
-
-   friend class event_bus;
-};
-
-class event_bus {
- public:
-   explicit event_bus(event_bus_options options = {});
-   ~event_bus();
-
-   event_bus(const event_bus&) = delete;
-   event_bus& operator=(const event_bus&) = delete;
-
-   [[nodiscard]] event_subscription subscribe(event_filter filter = {});
-   void publish(event_severity severity, std::string topic, std::string message);
+   void publish(event_severity severity, std::string topic, std::string message) noexcept;
    [[nodiscard]] std::vector<event_record> critical_events() const;
    [[nodiscard]] std::vector<event_record> recent_events() const;
-   [[nodiscard]] event_bus_metrics metrics() const;
+   [[nodiscard]] event_journal_metrics metrics() const;
 
  private:
    struct impl;

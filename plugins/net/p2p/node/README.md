@@ -1,5 +1,17 @@
 # P2P Node Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Running-node APIs require canonical `phase == started`, not general setup
+admission. Configuration retains the actual frozen startup snapshot; it is not
+a second lifecycle phase. Setup joins, publication drains, PubSub resource states
+and retryable native/persistence cleanup ownership remain backend responsibilities.
+
 `forge::plugins::net::p2p::node` owns one shared `forge_net_p2p` node and exposes typed
 contribution APIs for protocol handlers and API-over-P2P publication, consumer
 PubSub, bounded read-only diagnostics and native host events.
@@ -151,12 +163,11 @@ Native `validate_declaration(profile)` checks declaration policy only;
 `validate(profile)` still requires every value callback. Neither executes
 application callbacks. No permissive placeholder policies are installed.
 
-After startup, only diagnostics bounds may change through the existing
-`plugin::configure` lifecycle entry point. The complete configuration must still
-decode and validate, and its frozen node/PubSub declarative portion must be
-structurally unchanged. A mixed or invalid update fails atomically; it cannot
-rebuild the node, overwrite typed contributions or change network policy.
-Configuration after stop is rejected. The read-only diagnostics API has no setter.
+Configuration input is one-shot through the shared `plugin::configure` wrapper.
+Repeated input or post-start diagnostics-only reconfiguration is no longer
+accepted. Supply diagnostics bounds before initialization/startup; the read-only
+diagnostics API has no setter. Pre-start typed Configuration API contributions
+still use immutable candidates and freeze with the owned startup snapshot.
 
 Candidate preparation, callback copies and destruction occur outside the
 configuration mutex. Commit compares the previous snapshot and admission again;
@@ -166,10 +177,9 @@ Gater callbacks must be nonblocking and thread-safe; callback captures must own
 their consumer state rather than borrow a destroyed application object.
 
 `initialize()` binds available DB Store and Secrets providers exactly once.
-Later pre-start changes cannot introduce an unbound dependency, but references
-to an already bound Secrets provider may change or be cleared. `after_initialize()`
-fixes the exact Store name, including empty, before awaiting its handle; policy
-updates remain allowed. Production startup requires the initialized Store.
+`after_initialize()` fixes the exact Store name, including empty, before
+awaiting its handle. Pre-start typed contributions cannot introduce an unbound
+dependency; lifecycle configuration input is not repeated. Production startup requires the initialized Store.
 The explicit empty-store test path can start after `initialize()` alone.
 No PEM or opened persistence handle is stored in the policy snapshot.
 
@@ -181,8 +191,13 @@ runtime or claim that the earlier shared DB driver setup was resource-free.
 For consumer PubSub, stop closes admission and signals owned Partial operations.
 Awaited shutdown joins admitted operations, callbacks and callback-capture
 destruction, then performs local native topic cleanup before native `async_stop()`
-and persistence/provider release. Native full-topic unsubscribe remains usable
-after `request_stop()`; cleanup does not require running-node admission.
+and persistence/provider release. Retained PubSub APIs require the shared
+`started` phase; backend initialization alone does not admit operations during
+startup or after common stop. Existing subscription/Partial cleanup remains
+usable after `request_stop()` until joined cleanup begins. A failed topic leave
+retains its native owner and callbacks for a subsequent shutdown retry; only
+unfinished native leaves are retried. Native node/persistence ownership is not
+released until PubSub and protocol cleanup both succeed.
 
 ### Connection Operations
 
@@ -365,8 +380,9 @@ and plugin stop. Stop reaches active retired callbacks before waiting for them.
 Disable requests stop but does not wait for its own callback; shutdown joins
 admitted callbacks and capture destruction. Keep stop callbacks nonblocking.
 Native wrappers hold weak references to consumer state, not a second queue or
-network loop. Concurrent component shutdowns observe one completion/error;
-cleanup failures remain retained and rethrown.
+network loop. Concurrent component shutdowns observe the same attempt's
+completion/error. A later shutdown retries retained failures without rewriting
+the error already delivered to earlier waiters.
 
 Receive-side donor mapping: pinned Go pubsub `0ed6f6fd`,
 `pubsub.go:1390-1430`, replaces per-topic state on each subscribed update and
@@ -1041,8 +1057,8 @@ import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.plugin;
 
 class catalog_p2p_plugin final : public forge::app::plugin {
- public:
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+ protected:
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::api>(
          {.id = {"forge.plugins.net.p2p.node"}, .major = 3});
 

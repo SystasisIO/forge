@@ -81,7 +81,7 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
    candidate->subject = subject;
    auto topic = std::shared_ptr<topic_state>{};
    auto source = std::shared_ptr<forge::net::p2p::node>{};
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       source = self->require_node_locked();
       self->ensure_topic_allowed_locked(subject);
@@ -102,7 +102,7 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
       topic->partial = record; // Reserve before the gate, including the required fallback.
       ++topic->participants;
       ++self->active_operations;
-   }
+   });
    auto completed = boost::scope::scope_exit{[&] {
       {
          const auto lock = std::scoped_lock{self->mutex};
@@ -115,14 +115,14 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
    try {
       ticket = co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
           topic->transition.acquire(), boost::asio::use_awaitable);
-      {
+      self->admit_operation([&] {
          const auto lock = std::scoped_lock{self->mutex};
          static_cast<void>(self->require_node_locked());
          if (topic->leave_error) { std::rethrow_exception(topic->leave_error); }
          if (topic->join_error) { std::rethrow_exception(topic->join_error); }
          record->attempted = true;
          topic->native_dirty = true;
-      }
+      });
       const auto weak = std::weak_ptr<detail::pubsub_service>{self};
       const auto weak_record = std::weak_ptr<partial_record>{record};
       auto native = forge::net::p2p::pubsub::partial_options{
@@ -135,7 +135,7 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
           }};
       auto token = co_await self->operations.enable_partial(source, subject, detail::pubsub_service::full_dispatch(self), std::move(native));
       const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
-      {
+      self->admit_operation([&] {
          const auto lock = std::scoped_lock{self->mutex};
          record->token = std::move(token);
          static_cast<void>(self->require_node_locked());
@@ -144,7 +144,7 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
          }
          record->admission = record->committed = true;
          topic->joined = true;
-      }
+      });
    } catch (...) { failure = std::current_exception(); }
    if (failure && record->attempted) {
       record->stop.request_stop();
@@ -156,9 +156,11 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
          co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
              detail::pubsub_service::restore_full_owned(self, topic, source), boost::asio::use_awaitable);
       } catch (...) { cleanup = std::current_exception(); }
+      auto retired_error = std::exception_ptr{};
       {
          const auto lock = std::scoped_lock{self->mutex};
          record->cleanup_pending = static_cast<bool>(cleanup);
+         retired_error.swap(topic->leave_error);
          topic->leave_error = cleanup;
          if (!cleanup) { topic->partial.reset(); }
       }
@@ -180,7 +182,10 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::disable_partial_transition
    auto record = std::shared_ptr<partial_record>{};
    {
       const auto lock = std::scoped_lock{self->mutex};
-      source = self->require_node_locked();
+      source = self->require_node_locked(true);
+      if (self->shutdown && !self->shutdown->done) {
+         FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub cleanup is already running");
+      }
       record = self->require_partial_locked(token, true);
       topic = self->topics.at(token.subject().value);
       record->removing = true;
@@ -199,7 +204,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::disable_partial_transition
    auto repair = false;
    {
       const auto lock = std::scoped_lock{self->mutex};
-      static_cast<void>(self->require_node_locked());
+      static_cast<void>(self->require_node_locked(true));
       if (topic->partial != record || record->token != token) {
          FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "Partial owner changed");
       }
@@ -226,8 +231,10 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::disable_partial_transition
          }
       }
    } catch (...) { failure = std::current_exception(); }
+   auto retired_error = std::exception_ptr{};
    {
       const auto lock = std::scoped_lock{self->mutex};
+      retired_error.swap(topic->leave_error);
       topic->leave_error = failure;
       if (!failure) { topic->partial.reset(); }
    }

@@ -510,7 +510,7 @@ implementation-library namespaces. For plugin family/role decisions, follow
 
 - `forge_app` provides an opinionated `application_shell` for production
   programs. Prefer it for new services instead of copying runtime, scheduler,
-  API registry, signals, events, diagnostics, plugin context and application runtime
+  API registry, event journal, diagnostics, plugin context and application runtime
   members into every product application.
 - `application_shell` owns lifecycle order: collect app and plugin config,
   merge defaults with input document, configure app hook, configure plugins,
@@ -518,6 +518,24 @@ implementation-library namespaces. For plugin family/role decisions, follow
   reverse shutdown.
 - Plugins own behavior and lifecycle. APIs expose typed contracts; they
   must not become fake lifecycle modules.
+- Common lifecycle transitions and stop admission belong to
+  `forge.app.plugin_lifecycle`. Official plugins implement protected
+  `on_configure/on_provide/on_initialize/on_after_initialize/on_startup/
+  on_request_stop/on_shutdown` hooks, not the guarded public entrypoints.
+  Compose the shared lifecycle handle into private resource owners; do not add
+  duplicate plugin phase enums. Resource-specific states remain with their owners.
+- Generation validation and resource publication must be atomic with stop.
+  Do not await, invoke virtual/user callbacks or tear down resources inside the
+  lifecycle admission lock. Shutdown joins setup before releasing dependencies.
+- Lifecycle observers are read-only snapshots with async change waiting.
+  Diagnostics projects those same objects; do not maintain a second mutable
+  state table or synchronous lifecycle callback bus. OS process signals are a
+  separate runner concern. The bounded event journal is diagnostic history,
+  not an inter-plugin command or delivery bus.
+- Shared host facts flow through immutable `application_environment`.
+  Plugin settings still use typed component views. Relative data paths require
+  an explicit base; legacy string-map config lookup and fallback to "." are
+  forbidden.
 - Ready-made infrastructure plugins may own transport/runtime lifecycle and
   publish narrow `forge_api_core` capabilities for product plugins, but they must not
   own product business logic.

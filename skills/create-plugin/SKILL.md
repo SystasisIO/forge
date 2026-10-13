@@ -105,8 +105,14 @@ module или target и не объединяет независимые lifecyc
   `details/api_impl.hxx` + `api_impl.cpp`.
 - Pure-virtual `api.cppm` не получает декоративный `api.cpp`. `api.cpp` допустим только
   для out-of-line реализации concrete public entities, объявленных в `api.cppm`.
-- `configure`, `provide`, `initialize`, `startup`, `request_stop` и `shutdown`
-  реализуются прямо как методы `plugin` в `plugin.cpp`; одноразовые lifecycle helper
+- Общие public entrypoints `configure`, `provide`, `initialize`,
+  `after_initialize`, `startup`, `request_stop` и `shutdown` принадлежат
+  `forge::app::plugin` и не переопределяются. Конкретный плагин реализует
+  соответствующие protected `on_*` hooks прямо в `plugin.cpp`.
+  Общий lifecycle handle композиционно передаётся private resource owners;
+  параллельные phase enums для того же plugin lifecycle запрещены.
+  Backend-specific resource states не заменяются общим состоянием плагина.
+  Одноразовые lifecycle helper
   facade и пустые helper headers для них запрещены.
 - Private class нельзя объявлять внутри `.cpp`: declaration живёт в
   `details/<exact_entity>.hxx`, member implementation — в одноимённом `.cpp`.

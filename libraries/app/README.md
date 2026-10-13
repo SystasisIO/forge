@@ -2,7 +2,7 @@
 
 `forge_app` is the opinionated application shell for FORGE services. It owns the
 runtime objects that every daemon tends to duplicate by hand: `runtime`,
-`scheduler`, optional `compute::pool`, API registry, signal bus, event bus,
+`scheduler`, optional `compute::pool`, API registry, bounded event journal,
 diagnostics, plugin registry, plugin context and lifecycle runtime.
 
 The preferred production entrypoint is `forge::app::application_builder`, which
@@ -47,15 +47,16 @@ for applications with substantial state or custom lifecycle hooks.
   process env and CLI, merges defaults and handles help/check/print/configure
   actions.
 - `forge.app.runner` — foreground lifecycle runner with signal policy.
-- `forge.app.application` — lower-level `application_base` and
-  `application_runtime`.
+- `forge.app.application` — lower-level `application_runtime`.
 - `forge.app.plugin`, `forge.app.plugin_context`, `forge.app.plugin_registry`.
-- `forge.app.events`, `forge.app.diagnostics`, `forge.app.signals`.
+- `forge.app.plugin_lifecycle` — shared transitions and read-only observation.
+- `forge.app.application_environment` — immutable host paths and profile.
+- `forge.app.events`, `forge.app.diagnostics`.
 
 Target: `forge_app`.
 
 Dependencies: `forge_asio`, `forge_config_core`, `forge_codec_yaml`, `forge_config_env`,
-`forge_config_program_options`, Boost headers.
+`forge_config_program_options`, `forge_log`, Boost headers.
 
 ## Stability
 
@@ -64,6 +65,10 @@ The scheduler and compute integration in `application_shell_options`,
 in Forge 8.x. MINOR releases may make documented source-level changes to that
 surface. The remaining App public contracts are Stable unless their owning
 documentation marks them otherwise.
+
+The current maintainer-approved App lifecycle clean break is documented in the
+[migration note](../../docs/releases/unreleased-app-lifecycle.md). It changes
+source interfaces only; no network or persisted format changes.
 
 ## Examples
 
@@ -170,19 +175,19 @@ class http_plugin final : public forge::app::plugin {
       return forge::config::core::describe_component<http_config>("http");
    }
 
-   boost::asio::awaitable<void> configure(forge::config::core::component_view view) override {
+   boost::asio::awaitable<void> on_configure(forge::config::core::component_view view) override {
       bind_port_ = view.get_or<std::uint16_t>("bind-port", 8080);
       tls_enabled_ = view.get_or<bool>("tls-enabled", false);
       co_return;
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       context.events().publish(forge::app::event_severity::info, "http.initialize", "configured");
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override { co_return; }
-   boost::asio::awaitable<void> shutdown() override { co_return; }
+   boost::asio::awaitable<void> on_startup() override { co_return; }
+   boost::asio::awaitable<void> on_shutdown() override { co_return; }
 
  private:
    std::uint16_t bind_port_ = 8080;
@@ -234,7 +239,7 @@ app.configure(document);
 ## Application Shell Example
 
 The derived app declares only application-specific hooks. It does not store
-`plugin_context`, `application_runtime`, diagnostics, events, signals and API registry
+`plugin_context`, `application_runtime`, diagnostics, event journal and API registry
 as repeated boilerplate members.
 
 ```cpp
@@ -449,8 +454,8 @@ int main(int argc, char** argv) {
    return forge::app::run_daemon(
       [](const forge::app::daemon_context& context) {
          return std::make_unique<service_application>(service_application_options{
-            .data_dir = context.data_dir,
-            .profile = context.profile,
+            .data_dir = context.environment.data_dir(),
+            .profile = context.environment.profile(),
             .shell = context.shell,
          });
       },
@@ -568,7 +573,7 @@ boost::asio::awaitable<void> on_provide(forge::app::application_context& context
    co_return;
 }
 
-boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
    cache_ = context.apis().get<cache>({.id = {"cache"}, .major = 1, .min_revision = 8});
    co_return;
 }
@@ -578,45 +583,91 @@ Infrastructure plugins should publish narrow APIs instead of leaking their
 transport/runtime internals:
 
 ```cpp
-boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override {
+boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override {
    provider.install<node_admin_api>(std::make_shared<node_admin_api_impl>(impl_));
    co_return;
 }
 ```
 
-The implementation type can stay in the plugin `.cpp`; consumers only see the
-published API interface.
+The private implementation declaration lives in its exact `details/*.hxx`
+pair; consumers only see the published API interface.
 
 Do not use APIs as lifecycle modules. A plugin owns behavior/lifecycle; an API is
 the typed contract exposed by that plugin or application.
 
 ## Events And Diagnostics
 
-Events are for operator visibility. Diagnostics preserve lifecycle state and
-last errors for app/plugin startup.
+Diagnostics reads the same lifecycle objects that guard transitions. A failed
+operation is separate from the phase: a failure does not mean cleanup finished.
+The journal is bounded diagnostic history, not an event-delivery or command bus.
+Plugin contexts expose diagnostics through a const pointer; only the host owner
+binds or clears the observer registry.
 
 ```cpp
-auto subscription = app.events().subscribe({
-   .topic = "app",
-   .min_severity = forge::app::event_severity::warning,
-   .include_child_topics = true,
-});
-
 auto snapshot = app.diagnostics().snapshot(app.events());
 for (const auto& plugin : snapshot.plugins) {
-   if (!plugin.last_error.empty()) {
-      report(plugin.id, plugin.last_error);
+   if (plugin.lifecycle.failure) {
+      report(plugin.id, plugin.lifecycle.failure->operation);
    }
 }
 ```
+
+Observe lifecycle changes asynchronously instead of subscribing to callbacks:
+
+```cpp
+#include <chrono>
+
+import forge.app.plugin_lifecycle;
+
+// Inside an existing coroutine, with the app owner kept alive by the host:
+auto observer = app.lifecycle();
+const auto before = observer.snapshot();
+const auto after = co_await observer.async_wait_until(
+   before.epoch, std::chrono::steady_clock::now() + std::chrono::seconds{2});
+```
+
+Waits may time out or be canceled, and changes may coalesce. A terminal snapshot
+(`stopped` or `owner_alive == false`) returns immediately even at its current
+epoch; owner destruction is not proof of successful cleanup. Observers confer
+no transition authority or resource-lifetime guarantee.
+
+Plugin configure/provide/initialize inputs are one-shot: repeated or concurrent
+calls reject new inputs. After-initialize/startup/shutdown callers join an
+accepted attempt or skip an already successful hook. `stopped` is terminal for
+that owner; a new run needs a new instance. Historical failure may remain visible
+after successful shutdown. See [Runtime + App](../../docs/runtime/asio-app.md)
+for the shared lifecycle and admission contract.
+
+## Lifecycle Logging
+
+Lifecycle records use named loggers `forge.app.application`, `forge.app.plugin`,
+`forge.app.runner` and `forge.app.daemon` through normal Forge macros and configured
+sinks. Logging is observational: sink failures cannot veto transitions or cleanup.
+Records carry bounded operation/phase metadata and numeric error codes, not raw
+configuration, argv, exception text, secrets or automatic path/profile dumps.
+
+Early startup may precede OTLP exporter initialization; late cleanup may follow
+its teardown. Local/configured sinks follow normal routing, but whole-process
+remote delivery is not guaranteed. App neither owns an exporter nor keeps it
+alive solely for lifecycle logs. Exporter drain and collector verification are
+separate concerns; see the [donor note](../../docs/donors/app-lifecycle-observability.md).
 
 ## Startup Failure And Rollback
 
 Plugin order comes from `plugin_registry` dependencies. Initialize,
 `after_initialize` and startup run in that order; shutdown runs in reverse
-order. If any initialize hook or application callback fails, the shell shuts
-down every successfully initialized plugin before rethrowing the original
-error. Startup is never entered.
+order. Configure/provide/initialize/after-initialize/connect/startup failure
+requests stop and cleans up partially configured or initialized owners, including
+the failing plugin, not just plugins that initialized successfully. Cleanup hooks
+must tolerate never-initialized resources. Successful rollback rethrows the
+original failure; failed rollback reports `shutdown_failed` with the cleanup
+exception nested.
+
+Reverse cleanup stops at a failed dependent and retains its dependencies for
+retry; already-stopped plugins are skipped. Cleanup failure leaves `stopping`,
+not `stopped`. On plugin cleanup failure, keep the same owner, scheduler, compute
+pool and connected services alive for another shutdown attempt; the shell
+releases these facilities only after plugin cleanup succeeds.
 
 ```cpp
 #include <forge/exceptions/macros.hpp>
@@ -630,18 +681,20 @@ try {
 ```
 
 The app should still call `request_stop()` and `shutdown()` from the outer
-entrypoint cleanup path. Both calls are idempotent enough for normal failure
-handling.
+entrypoint cleanup path. Stop closes admission without waiting for cleanup;
+concurrent shutdown callers join the accepted cleanup attempt, successful
+repeats run no hook again, and a failed cleanup may be retried. Do not destroy
+the owner while cleanup is pending or failed.
 
 The cleanup path is not optional ceremony. It keeps failed startup paths from
 leaving APIs, background jobs or plugins in half-started states. Prefer
-`run_application(...)` for normal foreground daemons because it centralizes that
-flow.
+`run_daemon(...)` for normal foreground daemons, or `run_application(...)` for
+hosts with an already merged config document; both centralize that flow.
 
 ## Lower-Level Escape Hatch
 
 `application_runtime` remains available when a host framework already owns
-runtime, API registry, signals and diagnostics. That is an escape hatch, not the normal
+runtime, API registry and diagnostics. That is an escape hatch, not the normal
 daemon pattern. Prefer `application_shell` or `application_builder` for new
 services.
 
@@ -673,8 +726,9 @@ boost::asio::awaitable<void> run_runtime(forge::app::application_runtime& runtim
 - Do not assume `request_stop()` waits for cleanup; it only requests shutdown.
 - Do not stop the scheduler or `io_context` from a stop callback or hook.
   Plugins may still need async cleanup work during `shutdown()`.
-- Do not ignore failed `initialize()` or `startup()`. Treat the shell as stopped
-  and create a new instance if the application wants another attempt.
+- Do not assume failed `initialize()` or `startup()` leaves the shell stopped.
+  Complete or retry shutdown before destroying it; another startup attempt
+  requires a new instance after cleanup.
 - Do not use `abort()` from signal handlers or lifecycle catches. Request stop,
   run shutdown at the application boundary, then return an error.
 
@@ -684,9 +738,8 @@ boost::asio::awaitable<void> run_runtime(forge::app::application_runtime& runtim
   Hidden detached work is a process-lifetime leak.
 - APIs must be provided before plugins initialize and must outlive plugin
   shutdown. Removing APIs early creates use-after-shutdown failures.
-- Event subscribers should keep their connection lifetime explicit. Capturing a
-  short-lived object in a long-lived signal/event callback is a common crash
-  source.
+- App events have no subscriptions or callbacks. Use read-only lifecycle
+  observers for changes; a copied observer is not ownership of plugin resources.
 - Events and diagnostics are observability surfaces, not recovery. Log/report
   them, but still propagate correctness-path failures to the caller.
 - Lower-level `application_runtime` users must preserve the same lifecycle
@@ -695,7 +748,7 @@ boost::asio::awaitable<void> run_runtime(forge::app::application_runtime& runtim
 
 ## Tests
 
-`test_forge_app` covers API publication, event bus bounds, plugin dependency
+`test_forge_app` covers API publication, event journal bounds, plugin dependency
 order, config collection, shell-owned default merge, configure-before-initialize,
 after-initialize ordering and failure cleanup, startup rollback, reverse shutdown
 and diagnostics.

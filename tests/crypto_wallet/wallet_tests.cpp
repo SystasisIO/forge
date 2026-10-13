@@ -24,7 +24,6 @@ import forge.api.core.trusted_invocation;
 import forge.api.http.openapi;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.asio.task;
@@ -127,7 +126,7 @@ struct plugin_fixture {
       value = std::make_unique<plugin::plugin>(plugin::plugin_options{.initial_config = std::move(settings)});
       auto installer = forge::api::core::installer{apis};
       run(runtime, value->provide(installer));
-      auto context = forge::app::plugin_context{scheduler, apis, signals, events, nullptr, {}, compute.get_executor()};
+      auto context = forge::app::plugin_context{scheduler, apis, events, nullptr, {}, compute.get_executor()};
       run(runtime, value->initialize(context));
       run(runtime, value->startup());
    }
@@ -143,8 +142,7 @@ struct plugin_fixture {
    forge::asio::runtime runtime{{.worker_threads = 2}};
    forge::asio::task::scheduler scheduler;
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events;
+   forge::app::event_journal events;
    forge::asio::compute::pool compute{{.worker_threads = 2}};
    std::unique_ptr<plugin::plugin> value;
 };

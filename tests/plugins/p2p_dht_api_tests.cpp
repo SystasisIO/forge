@@ -103,15 +103,15 @@ class dependency_plugin final : public forge::app::plugin {
        : id_{std::move(id)}, identity_{std::move(identity)} {}
    forge::app::plugin_id id() const override { return {.value = id_}; }
    std::string version() const override { return "test"; }
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override {
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override {
       if (identity_) {
          provider.install<secrets::api>(identity_);
       }
       co_return;
    }
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override { co_return; }
-   boost::asio::awaitable<void> startup() override { co_return; }
-   boost::asio::awaitable<void> shutdown() override { co_return; }
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override { co_return; }
+   boost::asio::awaitable<void> on_startup() override { co_return; }
+   boost::asio::awaitable<void> on_shutdown() override { co_return; }
 
  private:
    std::string id_;

@@ -8,12 +8,14 @@ class pubsub_service_fixture {
  public:
    pubsub_service_fixture(forge::asio::runtime& runtime, detail::pubsub_operations operations,
                           pubsub_config settings);
+   ~pubsub_service_fixture();
    [[nodiscard]] std::shared_ptr<pubsub_api> interface();
    [[nodiscard]] const std::shared_ptr<forge::net::p2p::node>& native() const noexcept;
    void request_stop() noexcept;
    boost::asio::awaitable<void> shutdown();
 
  private:
+   forge::app::plugin_lifecycle lifecycle_;
    std::shared_ptr<forge::net::p2p::node> native_;
    std::shared_ptr<detail::pubsub_service> owner_;
 };

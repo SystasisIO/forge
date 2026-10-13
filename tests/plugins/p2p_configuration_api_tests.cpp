@@ -32,7 +32,6 @@ import forge.api.core.registry;
 import forge.api.core.types;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
@@ -151,9 +150,8 @@ struct fixture {
    forge::asio::runtime runtime{forge::asio::runtime_options{.worker_threads = 2}};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
    np::plugin node;
    std::shared_ptr<identity_source> identity = std::make_shared<identity_source>();
    std::shared_ptr<np::configuration_api> configuration;
@@ -439,7 +437,7 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_rejected_initialize_preserves_original_bi
    {
       auto runtime = forge::asio::runtime{};
       auto scheduler = forge::asio::task::scheduler{runtime};
-      auto context = forge::app::plugin_context{scheduler, f.apis, f.signals, f.events};
+      auto context = forge::app::plugin_context{scheduler, f.apis, f.events};
       BOOST_CHECK_THROW(f.run(f.node.initialize(context)), np::exceptions::route_conflict);
       f.run(scheduler.shutdown());
    }

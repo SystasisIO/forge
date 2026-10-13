@@ -5,7 +5,6 @@
 import forge.api.core.registry;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.asio.task;
@@ -25,8 +24,7 @@ struct chain_signer_fixture::impl {
    forge::asio::runtime& runtime;
    forge::asio::task::scheduler scheduler;
    forge::api::core::registry registry;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events;
+   forge::app::event_journal events;
    std::unique_ptr<signer::plugin> plugin;
 };
 
@@ -65,7 +63,7 @@ chain_signer_fixture::chain_signer_fixture(forge::asio::runtime& runtime, forge:
    });
    auto installer = forge::api::core::installer{impl_->registry};
    forge::asio::blocking::run(runtime, impl_->plugin->provide(installer));
-   auto context = forge::app::plugin_context{impl_->scheduler, impl_->registry, impl_->signals, impl_->events};
+   auto context = forge::app::plugin_context{impl_->scheduler, impl_->registry, impl_->events};
    forge::asio::blocking::run(runtime, impl_->plugin->initialize(context));
    forge::asio::blocking::run(runtime, impl_->plugin->startup());
 }

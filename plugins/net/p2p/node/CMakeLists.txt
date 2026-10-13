@@ -41,7 +41,6 @@ add_library(
       object_dht_record_store_adapter.cpp
       object_peer_state_adapter.cpp
       p2p_state_schema.cpp
-      details/lifecycle_phase.hxx
       details/shutdown_attempt.hxx
       details/dht_api_impl.hxx
       details/configuration_api_impl.hxx

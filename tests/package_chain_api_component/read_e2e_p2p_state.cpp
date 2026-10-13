@@ -78,12 +78,12 @@ read_p2p_state_responses run_p2p_state_e2e(std::shared_ptr<read_p2p_state_fixtur
       const auto shutdown_elapsed = std::chrono::steady_clock::now() - shutdown_started;
       client_started = false;
       require(shutdown_elapsed < std::chrono::seconds{2}, "P2P resolver client shutdown did not cancel promptly");
-      require(client.state() == forge::app::application_state::stopped,
+      require(client.state() == forge::app::lifecycle_phase::stopped,
               "P2P resolver client did not reach stopped state");
       server.request_stop();
       forge::asio::blocking::run(server.runtime(), server.shutdown());
       server_started = false;
-      require(server.state() == forge::app::application_state::stopped,
+      require(server.state() == forge::app::lifecycle_phase::stopped,
               "P2P chain API server did not reach stopped state");
       return responses;
    } catch (...) {

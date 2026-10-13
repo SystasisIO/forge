@@ -28,8 +28,8 @@ import forge.api.core.types;
 import forge.api.p2p.publication;
 import forge.api.transport.connection;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.config.core.component;
@@ -52,6 +52,7 @@ import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.plugin;
 import forge.plugins.net.p2p.node.protocol_api;
 import forge.plugins.net.p2p.node.protocol_registration;
+import forge.plugins.net.p2p.node.pubsub_api;
 
 namespace {
 namespace p2p = forge::net::p2p;
@@ -69,9 +70,11 @@ template<class T> T joined(std::future<T>& value) {
 
 class identity_source final : public secrets::api {
  public:
+   bool reject_reads = false;
    forge::tests::p2p::identity_fixture identity = forge::tests::p2p::make_identity_fixture("raw-plugin");
    boost::asio::awaitable<secrets::snapshot> status(secrets::query) override { co_return secrets::snapshot{.configured_secrets = 2}; }
    boost::asio::awaitable<secrets::get_result> get_bytes(secrets::get_request request) override {
+      if (reject_reads) { throw std::runtime_error{"raw fixture identity read failed"}; }
       const auto* bytes = request.secret_id == "raw/cert" ? &identity.certificate_pem
           : request.secret_id == "raw/key" ? &identity.private_key_pem : nullptr;
       if (!bytes) { throw std::invalid_argument{"unknown raw fixture secret"}; }
@@ -92,15 +95,15 @@ struct fixture {
    forge::asio::runtime runtime{};
    forge::asio::task::scheduler scheduler{runtime};
    forge::api::core::registry apis;
-   forge::app::signal_bus signals;
-   forge::app::event_bus events{};
-   forge::app::plugin_context context{scheduler, apis, signals, events};
+   forge::app::event_journal events{};
+   forge::app::plugin_context context{scheduler, apis, events};
    np::plugin node;
+   std::shared_ptr<identity_source> identity = std::make_shared<identity_source>();
    std::shared_ptr<np::protocol_api> raw;
    std::shared_ptr<np::api> api;
    forge::config::core::document configuration;
 
-   explicit fixture(std::optional<p2p::endpoint> bootstrap = {}, unsigned limit = 32) {
+   explicit fixture(std::optional<p2p::endpoint> bootstrap = {}, unsigned limit = 32, bool pubsub = false) {
       auto& config = configuration;
       config.set("plugins.net.p2p.node.allow-insecure-test-mode", true);
       config.set("plugins.net.p2p.node.identity.certificate-secret", "raw/cert");
@@ -108,12 +111,13 @@ struct fixture {
       config.set("plugins.net.p2p.node.topology.mode", "static-only");
       config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{"/ip4/127.0.0.1/tcp/0"});
       config.set("plugins.net.p2p.node.max-protocol-handlers", static_cast<std::uint64_t>(limit));
+      config.set("plugins.net.p2p.node.pubsub.enabled", pubsub);
       if (bootstrap) {
          config.set("plugins.net.p2p.node.bootstrap", forge::config::core::value::array_type{bootstrap->to_string()});
          config.set("plugins.net.p2p.node.bootstrap-policy.requirement", "require-connection");
       }
       run(node.configure({config, "plugins.net.p2p.node"}));
-      apis.install<secrets::api>(secrets::api::describe(), std::make_shared<identity_source>());
+      apis.install<secrets::api>(secrets::api::describe(), identity);
       auto installer = forge::api::core::installer{apis};
       run(node.provide(installer));
       run(node.initialize(context));
@@ -189,6 +193,27 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_contract_and_exact_generation_ownership) {
    auto last = first.raw->register_protocol(name, noop());
    moved.close();
    BOOST_TEST(last.active());
+}
+
+BOOST_AUTO_TEST_CASE(p2p_failed_startup_closes_contribution_admission) {
+   fixture f{std::nullopt, 32, true};
+   auto previous = f.raw->register_protocol({"/raw/before-failure/1"}, noop());
+   auto pubsub = f.apis.get<np::pubsub_api>(np::pubsub_api::ref()).shared();
+   f.identity->reject_reads = true;
+   BOOST_CHECK_THROW(f.run(f.node.startup()), std::runtime_error);
+   const auto state = f.node.lifecycle().snapshot();
+   BOOST_CHECK(state.failure.has_value());
+   BOOST_CHECK(!state.stop_requested);
+   BOOST_CHECK(!state.admission_open);
+   BOOST_CHECK_THROW(static_cast<void>(f.raw->register_protocol({"/raw/after-failure/1"}, noop())),
+                     np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(static_cast<void>(f.raw->replace_protocol(previous, {"/raw/before-failure/1"}, noop())),
+                     np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(static_cast<void>(f.publish({"/api/after-failure/1"})), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(f.run(pubsub->publish({"after-failure"}, {1})), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(pubsub->snapshot()), p2p::exceptions::canceled);
+   previous.close();
+   BOOST_CHECK(!previous.active());
 }
 
 BOOST_AUTO_TEST_CASE(p2p_protocol_raw_api_collision_both_orders_and_concurrency) {

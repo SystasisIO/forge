@@ -300,10 +300,11 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
       ("plugins/net/http/server/config.cpp", plugin_config,
        ("address.is_loopback()", 'value.bind_address == "localhost"', "validate_tls_config")),
       ("plugins/net/http/server/plugin.cpp", plugin_source,
-       ("settings.tls_mode_value != tls_mode::disabled", "make_tls_context_provider", "lifecycle_generation")),
+       ("settings.tls_mode_value != tls_mode::disabled", "make_tls_context_provider", "lifecycle.try_admit")),
       ("plugins/net/http/server/plugin_impl.cpp", plugin_impl,
        ("http.server.tls.certificate-chain", "http.server.tls.private-key", "http.server.tls.client-ca",
-        "provider->replace(std::move(replacement))", "lifecycle_generation != reload_generation",
+        "forge::net::tls::make_context", "provider->exchange(std::move(prepared))",
+        "lifecycle.try_admit(reload_generation",
         '"details/tls_secret_material.hxx"', "tls_secret_material", "clear_tls_context_options", "secure_erase")),
       ("plugins/net/http/server/details/tls_secret_material.hxx", tls_secret_material_header,
        ("struct tls_secret_material", "~tls_secret_material();",
@@ -312,7 +313,7 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
        ("tls_secret_material::~tls_secret_material()", "tls_secret_material::operator=(tls_secret_material&& other)",
         "secure_erase")),
       ("plugins/net/http/server/details/plugin_impl.hxx", plugin_impl_header,
-       ("std::shared_ptr<forge::plugins::crypto::secrets::api>", "lifecycle_generation")),
+       ("std::shared_ptr<forge::plugins::crypto::secrets::api>", "forge::app::plugin_lifecycle lifecycle")),
       ("plugins/net/http/server/include/forge/plugins/net/http/server/api.cppm", plugin_api,
        ("reload_tls", "mount_routes", 'FORGE_API_CONTRACT("forge.plugins.net.http.server", 2, 1)')),
    ):
@@ -2535,6 +2536,25 @@ def check_modules(root: Path, files: list[Path], errors: list[str]) -> None:
          errors.append(f"{path}:{line_number}: import references unknown Forge module {name}")
 
 
+def check_app_lifecycle_ownership(root: Path, errors: list[str]) -> None:
+   app = root / "libraries/app"
+   if (app / "include/forge/app/signals.cppm").exists():
+      errors.append("libraries/app: synchronous lifecycle signal module must not return")
+   for path in source_files(root, ("libraries/app",)):
+      source = path.read_text(errors="ignore")
+      for legacy in ("signal_bus", "event_subscription", "event_filter", "config_view",
+                     "config_value", "application_state", "plugin_state", "set_plugin_state",
+                     "set_application_state"):
+         if re.search(rf"\b{legacy}\b", source):
+            errors.append(f"{path.relative_to(root)}: removed App lifecycle surface {legacy}")
+   for path in (root / "plugins").rglob("plugin.cppm"):
+      source = path.read_text(errors="ignore")
+      for name in ("configure", "provide", "initialize", "after_initialize",
+                   "startup", "request_stop", "shutdown"):
+         if re.search(rf"\b{name}\s*\([^;{{}}]*\)\s*(?:noexcept\s*)?override", source):
+            errors.append(f"{path.relative_to(root)}: override on_{name}, not guarded {name}")
+
+
 def main() -> int:
    if len(sys.argv) != 2:
       print("usage: check_structure.py <repository-root>", file=sys.stderr)
@@ -2558,6 +2578,7 @@ def main() -> int:
    check_contract_tooling_boundaries(root, files, errors)
    check_plugin_impl_ownership(root, errors)
    check_plugin_descriptor_ownership(root, errors)
+   check_app_lifecycle_ownership(root, errors)
    check_net_plugin_families(root, errors)
    check_chain_savanna_boundaries(root, errors)
    check_bls_value_ownership(root, files, errors)

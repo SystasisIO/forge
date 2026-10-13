@@ -1,5 +1,17 @@
 # Chain Signer Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Runtime publication and new queue admission use the shared lifecycle guard.
+The signing queue's capacity, per-caller limits and drain timeout remain
+backend-owned. Provider resolution and audit callbacks run outside lifecycle
+and plugin locks; shared stop never publishes a late initialized runtime.
+
 `forge::plugins::chain::signer` composes injected local signing providers into
 the Chain transaction, block and finality signer contracts. It owns no private
 keys, transport listener, HTTP/P2P publication, consensus state, or durable

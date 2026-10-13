@@ -44,7 +44,6 @@ import forge.app.events;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
-import forge.app.signals;
 import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.asio.notification;
@@ -497,16 +496,16 @@ class installer_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto api = context.apis().get<store_plugin::api>(store_plugin::api::ref());
       co_await api->add_store(store_name_, driver_);
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -1305,9 +1304,8 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_objec
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
    auto secret_apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    auto store = store_plugin::plugin{};
    auto secrets = crypto_secrets::plugin{};
    auto node = p2p_node::plugin{};
@@ -1414,9 +1412,8 @@ BOOST_AUTO_TEST_CASE(p2p_held_psk_stop_does_not_open_object_adapter_after_secret
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
    auto secret_apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    auto store = store_plugin::plugin{};
    auto secrets = crypto_secrets::plugin{};
    auto node = p2p_node::plugin{};
@@ -1517,8 +1514,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_invalid_programmatic_setup) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
 
    auto document = forge::config::core::document{};
@@ -1526,7 +1522,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_invalid_programmatic_setup) {
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
@@ -1563,8 +1559,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_does_not_publish_object_store_with_incompatibl
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
    driver->seed_record(forge::db::core::family{"objectdb"}, header_record_key(),
@@ -1575,7 +1570,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_does_not_publish_object_store_with_incompatibl
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
@@ -1598,8 +1593,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_programmatic_overlapping_layer_familie
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
 
    auto document = forge::config::core::document{};
@@ -1607,7 +1601,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_programmatic_overlapping_layer_familie
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
@@ -1848,9 +1842,8 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_configure_after_stop_or_shutdown) {
       auto plugin = store_plugin::plugin{};
       auto scheduler = forge::asio::task::scheduler{runtime};
       auto apis = forge::api::core::registry{};
-      auto signals = forge::app::signal_bus{};
-      auto events = forge::app::event_bus{};
-      auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+      auto events = forge::app::event_journal{};
+      auto context = forge::app::plugin_context{scheduler, apis, events};
       forge::asio::blocking::run(runtime,
                                  plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
       forge::asio::blocking::run(runtime, plugin.initialize(context));
@@ -1928,15 +1921,14 @@ BOOST_AUTO_TEST_CASE(store_plugin_logging_preserves_programmatic_ownership_and_r
    auto probe_runtime = forge::asio::runtime{{.worker_threads = 2}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto document = forge::config::core::document{};
    forge::asio::blocking::run(runtime, plugin.configure(
       forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
    auto probes_ok = std::atomic_bool{true};
@@ -2091,8 +2083,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_blob_only_programmatic_store_rejects_objects_a
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2101,7 +2092,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_blob_only_programmatic_store_rejects_objects_a
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2134,8 +2125,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_shared_transaction_commits_object_metadata_and
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2144,7 +2134,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_shared_transaction_commits_object_metadata_and
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2181,8 +2171,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_repeated_blob_join_reuses_revision_transaction
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2191,7 +2180,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_repeated_blob_join_reuses_revision_transaction
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2224,8 +2213,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_unified_snapshot_preserves_object_blob_and_ref
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2234,7 +2222,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_unified_snapshot_preserves_object_blob_and_ref
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2350,8 +2338,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_revision_layer_is_explicit_and_atomic) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2360,7 +2347,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_revision_layer_is_explicit_and_atomic) {
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2443,8 +2430,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_revision_handle_reverts_prunes_and_rejects_for
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2453,7 +2439,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_revision_handle_reverts_prunes_and_rejects_for
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto first_options = store_plugin::store_options{};
@@ -2523,8 +2509,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_authenticated_handle_shares_named_store_transa
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2533,7 +2518,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_authenticated_handle_shares_named_store_transa
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
@@ -2645,8 +2630,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_layer_joins_from_another_named_store) 
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2655,7 +2639,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_layer_joins_from_another_named_store) 
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto first_options = store_plugin::store_options{};
@@ -2702,8 +2686,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_shared_transaction_rollback_hides_object_and_b
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2712,7 +2695,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_shared_transaction_rollback_hides_object_and_b
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2744,8 +2727,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_shared_transaction_object_failure_rolls_back_b
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2754,7 +2736,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_shared_transaction_object_failure_rolls_back_b
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
@@ -2790,8 +2772,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_store_handle_remains_valid_during_dependent_sh
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2800,7 +2781,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_store_handle_remains_valid_during_dependent_sh
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
@@ -2830,8 +2811,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_store_handle_concurrent_close_is_snapshot_safe
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
    auto driver = std::make_shared<memory_driver>();
 
@@ -2840,7 +2820,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_store_handle_concurrent_close_is_snapshot_safe
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
@@ -2972,8 +2952,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_programmatic_mdbx_store_shares_all_db_layers) 
    auto lane = forge::asio::affine::lane{{.thread_name = "store-mdbx-test"}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto apis = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = store_plugin::plugin{};
 
    auto driver = forge::asio::blocking::run(runtime, forge::db::mdbx::driver::open(
@@ -2988,7 +2967,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_programmatic_mdbx_store_shares_all_db_layers) 
                               plugin.configure(forge::config::core::component_view{document, "plugins.db.store"}));
    auto provider = forge::api::core::installer{apis};
    forge::asio::blocking::run(runtime, plugin.provide(provider));
-   auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+   auto context = forge::app::plugin_context{scheduler, apis, events};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
 
    auto options = store_plugin::store_options{};
