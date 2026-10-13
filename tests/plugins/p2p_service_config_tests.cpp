@@ -26,6 +26,7 @@ import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.document;
 import forge.config.core.value;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.mdns_policy;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;

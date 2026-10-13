@@ -28,6 +28,7 @@ import forge.config.core.value;
 import forge.net.dns.types;
 import forge.net.p2p.address_resolution;
 import forge.net.p2p.dialing;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.scoring;

@@ -30,6 +30,7 @@ import forge.config.core.value;
 import forge.db.core.record;
 import forge.net.p2p.dht;
 import forge.net.p2p.dht.record_store;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.node;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
