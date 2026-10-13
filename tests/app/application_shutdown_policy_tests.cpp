@@ -20,6 +20,7 @@
 #include <future>
 #include <initializer_list>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -244,6 +245,22 @@ boost::asio::awaitable<void> finish_core_cleanup(forge::app::plugin_lifecycle li
    if (const auto failure = operation.complete()) {
       std::rethrow_exception(failure);
    }
+}
+
+boost::asio::awaitable<void> join_explicit_cleanup(forge::app::plugin_lifecycle lifecycle,
+                                                std::stop_token stop) {
+   auto operation = co_await lifecycle.begin(forge::app::lifecycle_operation::shutdown, std::move(stop));
+   if (const auto failure = operation.complete()) {
+      std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<std::exception_ptr> finish_then_cancel(forge::app::plugin_lifecycle::operation owner,
+    std::exception_ptr failure, std::stop_source* stop, boost::asio::cancellation_signal* signal) {
+   const auto result = owner.complete(std::move(failure));
+   static_cast<void>(stop->request_stop());
+   signal->emit(boost::asio::cancellation_type::terminal);
+   co_return result;
 }
 
 boost::asio::awaitable<forge::app::lifecycle_snapshot>
@@ -477,6 +494,43 @@ BOOST_AUTO_TEST_CASE(plugin_lifecycle_pending_stop_cleanup_owner_preserves_calle
    BOOST_CHECK(!result.failure);
    check_policy(result, true);
    BOOST_CHECK(lifecycle.snapshot().phase == forge::app::lifecycle_phase::stopped);
+}
+BOOST_AUTO_TEST_CASE(plugin_lifecycle_published_joined_result_wins_explicit_and_associated_cancellation) {
+   for (const auto explicit_stop : {false, true}) {
+      for (const auto fails : {false, true}) {
+         for (auto iteration = 0; iteration != 8; ++iteration) {
+            auto fixture = policy_fixture<plugin_owner>{};
+            auto lifecycle = forge::app::plugin_lifecycle{};
+            auto stop = std::stop_source{};
+            auto beginning = boost::asio::co_spawn(fixture.serial,
+                lifecycle.begin(forge::app::lifecycle_operation::shutdown), boost::asio::use_future);
+            auto owner = ready_policy(beginning);
+            const auto expected = fails
+                ? std::make_exception_ptr(forge::app::exceptions::shutdown_failed{"test terminal failure"})
+                : std::exception_ptr{};
+            auto joined = boost::asio::co_spawn(fixture.serial, capture_policy_error(explicit_stop
+                ? join_explicit_cleanup(lifecycle, stop.get_token()) : finish_core_cleanup(lifecycle)),
+                boost::asio::bind_cancellation_slot(fixture.signal->slot(), boost::asio::use_future));
+            auto waiting = boost::asio::post(fixture.serial, boost::asio::use_future);
+            BOOST_REQUIRE(waiting.wait_for(result_deadline) == std::future_status::ready);
+            waiting.get();
+            BOOST_CHECK(joined.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+            // The serial executor prevents waiter resumption between result
+            // publication and cancellation. No sleeps or internal hooks needed.
+            auto completed = boost::asio::co_spawn(fixture.serial,
+                finish_then_cancel(std::move(owner), expected, &stop, fixture.signal.get()), boost::asio::use_future);
+            BOOST_CHECK(ready_policy(completed) == expected);
+            BOOST_CHECK(ready_policy(joined) == expected);
+            const auto final = lifecycle.snapshot();
+            BOOST_CHECK(final.phase == (fails
+                ? forge::app::lifecycle_phase::stopping : forge::app::lifecycle_phase::stopped));
+            if (fails) {
+               BOOST_REQUIRE(final.failure);
+               BOOST_CHECK(final.failure->exception == expected);
+            }
+         }
+      }
+   }
 }
 BOOST_AUTO_TEST_CASE(plugin_lifecycle_destroyed_owner_releases_reserved_cleanup_and_joiner) {
    for (const auto active_hook : {false, true}) {

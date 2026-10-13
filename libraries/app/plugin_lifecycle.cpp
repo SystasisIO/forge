@@ -188,12 +188,14 @@ plugin_lifecycle::begin_owned(std::shared_ptr<impl> owner, lifecycle_operation v
             // terminal result under the same lock that publishes it.
             for (;;) {
                auto completed = false;
+               auto canceled = false;
                auto error = std::exception_ptr{};
                {
                   const auto lock = std::scoped_lock{owner->mutex};
                   completed = joined->completed;
                   error = joined->error;
                   observed = owner->changed.epoch();
+                  canceled = stop && stop->stop_requested();
                }
                if (completed) {
                   if (error) {
@@ -201,11 +203,33 @@ plugin_lifecycle::begin_owned(std::shared_ptr<impl> owner, lifecycle_operation v
                   }
                   co_return operation{};
                }
-               if (stop && stop->stop_requested()) {
+               if (canceled) {
                   throw boost::system::system_error{boost::asio::error::operation_aborted};
                }
-               static_cast<void>(stop ? co_await owner->changed.async_wait(observed, *stop)
-                                     : co_await owner->changed.async_wait(observed));
+               try {
+                  static_cast<void>(stop ? co_await owner->changed.async_wait(observed, *stop)
+                                        : co_await owner->changed.async_wait(observed));
+               } catch (const boost::system::system_error& waiting_error) {
+                  if (waiting_error.code() != boost::asio::error::operation_aborted) {
+                     throw;
+                  }
+                  auto terminal = false;
+                  auto terminal_error = std::exception_ptr{};
+                  {
+                     const auto lock = std::scoped_lock{owner->mutex};
+                     terminal = joined->completed;
+                     terminal_error = joined->error;
+                  }
+                  // A published attempt result wins cancellation, including
+                  // cancellation during notification's executor restoration.
+                  if (!terminal) {
+                     throw;
+                  }
+                  if (terminal_error) {
+                     std::rethrow_exception(terminal_error);
+                  }
+                  co_return operation{};
+               }
             }
          }
       } catch (...) {
