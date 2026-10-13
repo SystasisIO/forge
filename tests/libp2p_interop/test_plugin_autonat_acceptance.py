@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -149,6 +150,192 @@ class CanonicalArtifactTests(unittest.TestCase):
         self.assertEqual(sources.call_count, 8)
         relay.assert_not_called()
         node.assert_not_called()
+
+    def quiet_stdout_logs(self):
+        logs = {Path(owner["log_file"]) for record in self.records for owner in record["native"]["owned_processes"]}
+        for path in logs:
+            path.write_bytes(b"")
+        return logs
+
+    def test_quiet_wrapped_native_stdout_preserves_the_complete_acceptance_gate(self):
+        logs = self.quiet_stdout_logs()
+        self.assertEqual(len(logs), 16)
+        self.assertTrue(all(record["suite"] == "plugin-autonat" and record["native"]["suite"] == "autonat"
+                            for record in self.records))
+        self.assertEqual(provenance_checker.verified_process_stdout_paths(self.records, self.run_root, self.paths), logs)
+        with patch.object(acceptance, "validate_autonat_sources", wraps=validate_terminal_sources) as sources:
+            self.assertEqual(self.check(), [])
+        self.assertEqual(sources.call_count, 8)
+        empty = [entry for entry in self.artifact["evidence_index"] if entry["size"] == 0]
+        self.assertEqual({self.run_root / entry["path"] for entry in empty}, logs)
+        self.assertTrue(all(entry["sha256"] == hashlib.sha256(b"").hexdigest() for entry in empty))
+
+    def test_quiet_native_stdout_rejects_unowned_failed_or_conflicting_process_views(self):
+        self.quiet_stdout_logs()
+        self.assertEqual(self.check(), [])
+        modes = ("unowned", "failed", "forced", "pid", "command", "binary", "requested-log", "spawn", "timeout", "cleanup")
+        for index, baseline in enumerate(self.records):
+            for mode in modes:
+                with self.subTest(case=baseline["scenario_id"], mode=mode):
+                    artifact = deepcopy(self.artifact)
+                    record = artifact["artifacts"][index]
+                    native = record["native"]
+                    donor = 0 if record["spec"]["server"] != "forge" else 1
+                    owner, attempt = native["owned_processes"][donor], native["attempts"][donor]
+                    log = Path(owner["log_file"])
+                    if mode == "unowned":
+                        native["owned_processes"].pop(donor)
+                        native["attempts"].pop(donor)
+                        record["unowned_stdout"] = {"log_file": str(log)}
+                    elif mode == "failed":
+                        owner["terminal_status"] = {"exit_code": 1, "termination": "graceful"}
+                    elif mode == "forced":
+                        owner["terminal_status"] = {"exit_code": 0, "termination": "terminated"}
+                    elif mode == "pid":
+                        attempt["pid"] = owner["pid"] + 1
+                    elif mode == "command":
+                        attempt["command"] = [*owner["command"][:3], "foreign-namespace", *owner["command"][4:]]
+                    elif mode == "binary":
+                        for view in (owner, attempt):
+                            view["command"] = [*view["command"][:4], "/unbound/fixture", *view["command"][5:]]
+                    elif mode == "requested-log":
+                        attempt["requested_log_file"] = str(self.run_root / "foreign.log")
+                    elif mode == "spawn":
+                        owner["spawn_error"] = "synthetic spawn failure"
+                    elif mode == "timeout":
+                        attempt["timeout_class"] = "dial_timeout"
+                    else:
+                        owner["cleanup_errors"] = ["synthetic failed join"]
+                    self.assertNotIn(log, provenance_checker.verified_process_stdout_paths(
+                        artifact["artifacts"], self.run_root, self.paths))
+                    self.assertIn("artifact evidence index has an empty non-process proof", self.check(artifact=artifact))
+
+    def test_native_isolation_context_does_not_grant_wrapper_siblings_stdout_ownership(self):
+        logs = self.quiet_stdout_logs()
+        artifact = deepcopy(self.artifact)
+        sibling = deepcopy(artifact["artifacts"][0]["native"]["owned_processes"][0])
+        log = self.run_root / "sibling.log"
+        log.write_bytes(b"")
+        sibling["log_file"] = str(log)
+        artifact["artifacts"][0]["owned_processes"] = [sibling]
+        self.assertEqual(provenance_checker.verified_process_stdout_paths(
+            artifact["artifacts"], self.run_root, self.paths), logs)
+        self.assertIn("artifact evidence index has an empty non-process proof", self.check(artifact=artifact))
+        artifact = deepcopy(self.artifact)
+        artifact["artifacts"][0]["native"]["suite"] = "plugin-autonat"
+        log = Path(artifact["artifacts"][0]["native"]["owned_processes"][0]["log_file"])
+        self.assertNotIn(log, provenance_checker.verified_process_stdout_paths(
+            artifact["artifacts"], self.run_root, self.paths))
+        self.assertIn("artifact evidence index has an empty non-process proof", self.check(artifact=artifact))
+
+    def test_quiet_native_stdout_cannot_relax_exact_namespace_commands(self):
+        self.quiet_stdout_logs()
+        self.assertEqual(self.check(), [])
+        for mode in ("namespace", "launcher", "host-command"):
+            with self.subTest(mode=mode):
+                artifact = deepcopy(self.artifact)
+                native = artifact["artifacts"][0]["native"]
+                owner, attempt = native["owned_processes"][0], native["attempts"][0]
+                command = list(owner["command"])
+                if mode == "namespace":
+                    command[3] = "foreign-namespace"
+                elif mode == "launcher":
+                    command[0] = "/unbound/ip"
+                else:
+                    command = command[4:]
+                owner["command"] = list(command)
+                attempt["command"] = list(command)
+                errors = self.check(artifact=artifact)
+                self.assertTrue(any("terminal sources" in error for error in errors), errors)
+
+    def test_nested_suite_labels_cannot_grant_isolated_stdout_ownership(self):
+        logs = self.quiet_stdout_logs()
+        self.assertEqual(self.check(), [])
+        for mode in ("extra-suite", "deeper-raw-suite", "deeper-plugin-wrapper", "unknown-wrapper"):
+            with self.subTest(mode=mode):
+                artifact = deepcopy(self.artifact)
+                record = artifact["artifacts"][0]
+                owner = deepcopy(record["native"]["owned_processes"][0])
+                log = self.run_root / (mode + ".log")
+                log.write_bytes(b"")
+                owner["log_file"] = str(log)
+                forged = {"suite": "autonat", "owned_processes": [owner]}
+                if mode == "extra-suite":
+                    record["extra"] = forged
+                elif mode == "deeper-raw-suite":
+                    record["extra"] = {"payload": forged}
+                elif mode == "deeper-plugin-wrapper":
+                    record["extra"] = {"suite": "plugin-autonat", "native": forged}
+                else:
+                    artifact["artifacts"].append({"suite": "unknown-wrapper", "native": forged})
+                self.assertEqual(provenance_checker.verified_process_stdout_paths(
+                    artifact["artifacts"], self.run_root, self.paths), logs)
+                self.assertIn("artifact evidence index has an empty non-process proof", self.check(artifact=artifact))
+
+    def test_known_raw_suite_roots_keep_isolated_stdout_ownership(self):
+        logs = self.quiet_stdout_logs()
+        for suite in ("autonat", "mdns", "path", "coordinated"):
+            with self.subTest(suite=suite):
+                records = [deepcopy(record["native"]) for record in self.records]
+                for record in records:
+                    record["suite"] = suite
+                self.assertEqual(provenance_checker.verified_process_stdout_paths(
+                    records, self.run_root, self.paths), logs)
+                index = provenance_checker.build_evidence_index(self.run_root, records)
+                self.assertEqual(provenance_checker.validate_evidence_index(
+                    self.artifact_path, self.run_root, records, index, self.paths)[1], [])
+
+    def test_empty_native_json_and_stdout_aliases_are_never_process_proof(self):
+        logs = self.quiet_stdout_logs()
+        self.assertEqual(self.check(), [])
+        for index, record in enumerate(self.records):
+            donor = 0 if record["spec"]["server"] != "forge" else 1
+            output = next(output for output in record["native"]["owned_processes"][donor]["outputs"]
+                          if output["argument"] == "--result-file")
+            for key in ("path", "log_file"):
+                with self.subTest(case=record["scenario_id"], source=key):
+                    path = Path(output[key])
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(b"")
+                        errors = self.check()
+                        if key == "path":
+                            self.assertTrue(any(error.startswith("plugin-autonat terminal sources:")
+                                                for error in errors), errors)
+                        else:
+                            self.assertIn("artifact evidence index has an empty non-process proof", errors)
+                    finally:
+                        path.write_bytes(original)
+            artifact = deepcopy(self.artifact)
+            owner = artifact["artifacts"][index]["native"]["owned_processes"][donor]
+            log = Path(owner["log_file"])
+            owner["outputs"][0]["log_file"] = str(log)
+            self.assertNotIn(log, provenance_checker.verified_process_stdout_paths(
+                artifact["artifacts"], self.run_root, self.paths))
+            self.assertIn("artifact evidence index has an empty non-process proof", self.check(artifact=artifact))
+        self.assertEqual(provenance_checker.verified_process_stdout_paths(self.records, self.run_root, self.paths), logs)
+        self.assertEqual(self.check(), [])
+
+    def test_quiet_native_stdout_still_requires_hash_size_coverage_and_binary_provenance(self):
+        logs = self.quiet_stdout_logs()
+        self.assertEqual(self.check(), [])
+        for mode in ("hash", "size", "coverage"):
+            with self.subTest(mode=mode):
+                artifact = deepcopy(self.artifact)
+                entry = next(entry for entry in artifact["evidence_index"] if self.run_root / entry["path"] in logs)
+                if mode == "hash":
+                    entry["sha256"] = "0" * 64
+                elif mode == "size":
+                    entry["size"] = 1
+                else:
+                    artifact["evidence_index"].remove(entry)
+                errors = self.check(artifact=artifact, index=False)
+                expected = "does not exactly cover" if mode == "coverage" else "hash or size differs"
+                self.assertTrue(any(expected in error for error in errors), errors)
+        self.assertTrue(any("pinned revision" in error for error in self.check(
+            checkout_errors=["donor not at exact pinned revision"])))
+        self.paths["rust"].write_text("changed donor binary\n")
+        self.assertTrue(any("SHA-256" in error for error in self.check()))
 
     def test_partial_matrix_and_backend_override_never_count_as_complete_acceptance(self):
         for records in (self.records[:-1], self.records + [self.records[0]]):

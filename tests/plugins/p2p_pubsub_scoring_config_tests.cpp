@@ -182,7 +182,7 @@ void configure(forge::asio::runtime& runtime, np::plugin& plugin,
 BOOST_AUTO_TEST_CASE(p2p_pubsub_scoring_config_opt_in_and_native_defaults) {
    auto configured = np::pubsub_config{};
    BOOST_CHECK(!np::detail::pubsub_options_for(configured).scoring);
-   configured.scoring.emplace();
+   configured.scoring = np::pubsub_config::scoring_config{};
    BOOST_CHECK(!np::detail::pubsub_options_for(configured).scoring);
    const auto actual = mapped();
    const auto defaults = pubsub::scoring_params{};

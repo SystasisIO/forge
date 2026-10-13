@@ -1059,3 +1059,46 @@ gates pass, describe this as test integration with an evolving stack.
   Complete configured service exchanges, package checks, fixture provenance and
   independent final reviews remain required. PR 172 is still incomplete and
   unmerged; no support claim or project version changes at this checkpoint.
+- The complete policy implementation was committed as `96665817`. Independent
+  reviews found no remaining source findings in the production slice. Configured
+  node (84 cases), DHT (16) and relay (8) matrices passed through both MDBX and
+  RocksDB on macOS, with their separate provenance/evidence validators. These
+  results are scoped to that commit, not a blanket final-head verdict.
+- Configured PubSub exposed a fixture receipt-publication race: the native write
+  had completed, but the periodic donor result snapshot had not yet recorded it.
+  `a48332e7` waits for the exact matching native-write receipt within the existing
+  case deadline, after actual Forge delivery. It adds no republish, network retry,
+  donor patch or relaxed final assertion. Focused regressions cover delayed,
+  missing and mismatched receipts; 186 configured evidence tests passed.
+- On `a48332e7`, the Linux configured PubSub matrix passed all eight cases and its
+  independent validator. Configured AutoNAT also completed all eight live cases,
+  but the separate evidence validator rejected quiet donor stdout under the
+  configured wrapper. Its native namespace process ownership was not classified
+  by the shared index checker. Empty result JSON is still forbidden; resolving
+  this classification gap requires positive and negative ownership regressions,
+  not exempting configured proofs from indexing. Both successful network results
+  and the failed validator logs are retained outside the source tree.
+- Final acceptance must rerun all five configured matrices and their independent
+  validators on one clean final commit, after fixture-lock validation and source
+  review. The recovered Linux fixture includes both durable backends; no missing
+  dependency or Docker interruption counts as PASS. Full CI, Stage 8 production
+  proof and downstream product integration remain outside this PR.
+- The quiet-stdout correction retains isolation only for registered raw roots
+  and the exact configured AutoNAT `native` edge. Forged sibling/deep suite
+  labels, conflicting process ownership, empty JSON, altered hash/size and
+  incomplete index coverage are rejected. The corrected slice passed 105
+  AutoNAT/shared regressions and all 194 configured Python regressions.
+- Final-gate review found the earlier configured score-aware pruning obligation
+  still open. Its new real plugin/TLS test passed 100 assertions: opposite tag
+  assignments change the survivor, even after refreshing the lowest-scored
+  connection. It checks exact peer/session identities and two removals with no
+  hard protection. This fixture uses memory persistence; durable-backend parity
+  remains a separate gate.
+- A repeated macOS DB Store run exposed Rendezvous fixture attribution races
+  and an unregister shutdown failure; the failed logs are retained. Hidden now
+  needs only its configured point, preventing reverse autonomous dialing, and
+  seeker waits for both authenticated Identify and published discovery provenance
+  within the existing bound. This corrected fixture passed 100 assertions across
+  Linux MDBX/RocksDB. It does not close the independent runtime gap between local
+  UNREGISTER write completion and remote stream completion; that gap needs a
+  bounded owned-completion fix and regressions before merge.

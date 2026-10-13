@@ -707,7 +707,7 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
     from pubsub_quic_proof import original_stdout_owners
     diagnostic_owners = original_stdout_owners(artifacts, root, binaries)
 
-    def visit(value, process=False, isolated=False):
+    def visit(value, process=False, isolated=False, configured_autonat_root=False):
         if isinstance(value, list):
             for nested in value:
                 visit(nested, process, isolated)
@@ -741,10 +741,16 @@ def verified_process_stdout_paths(artifacts: list[object], root: Path,
                         non_stdout.add(path)
                 # `processes` is either a list or a map of role -> process.
                 child_process = key in {"owned_processes", "processes", "attempts", "listener_process", "process"}
-                visit(nested, child_process or (process and "log_file" not in value), isolated)
+                child_isolated = isolated or (configured_autonat_root and key == "native"
+                    and isinstance(nested, dict) and nested.get("suite") == "autonat")
+                visit(nested, child_process or (process and "log_file" not in value), child_isolated)
 
     for record in artifacts:
-        visit(record, isolated=isinstance(record, dict) and record.get("suite") in ("autonat", "mdns", "path", "coordinated"))
+        # Only known raw roots and the exact configured AutoNAT -> native edge
+        # own namespace context; nested suite labels cannot grant it.
+        suite = record.get("suite") if isinstance(record, dict) else None
+        visit(record, isolated=suite in ("autonat", "mdns", "path", "coordinated"),
+              configured_autonat_root=suite == "plugin-autonat")
 
     def clean(view, path):
         terminal = view.get("terminal_status")

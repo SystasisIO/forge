@@ -722,6 +722,75 @@ BOOST_AUTO_TEST_CASE(p2p_host_config_connection_watermark_prunes_unprotected_ses
    }
 }
 
+BOOST_AUTO_TEST_CASE(p2p_host_config_connection_watermark_prunes_by_peer_tags_before_recency) {
+   for (const auto reverse_scores : {false, true}) {
+      BOOST_TEST_CONTEXT("reverse_scores=" << reverse_scores) {
+         fixture server;
+         server.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});
+         server.document.set(std::string{section} + ".max-sessions", std::uint64_t{3});
+         server.document.set(std::string{section} + ".connections.session-low-watermark", std::uint64_t{1});
+         server.document.set(std::string{section} + ".connections.session-grace-period-ms", std::uint64_t{0});
+         server.document.set(std::string{section} + ".connections.session-prune-silence-ms", std::uint64_t{1});
+         server.configure(); server.start();
+         const auto endpoint = server.host->local_endpoint();
+         BOOST_REQUIRE(endpoint);
+         auto clients = std::vector<std::unique_ptr<fixture>>{};
+         auto tags = std::array<np::peer_contribution, 3>{};
+         const auto scores = reverse_scores ? std::array<std::int64_t, 3>{-100, 0, 100}
+                                            : std::array<std::int64_t, 3>{100, 0, -100};
+         const auto survivor = reverse_scores ? 2U : 0U;
+         const auto refreshed = reverse_scores ? 0U : 2U;
+         for (auto index = 0U; index != scores.size(); ++index) {
+            auto client = std::make_unique<fixture>();
+            client->start();
+            const auto connected = client->run(client->host->connect(*endpoint,
+                {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+                 .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+            check_session_authentication(*client, connected, p2p::peer_authentication::libp2p_tls);
+            tags[index] = server.host->tag_peer(client->host->local_peer(), scores[index]);
+            clients.push_back(std::move(client));
+         }
+         BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 3)));
+         // Refresh the lowest-scored peer last; tags must outrank recent use.
+         server.run(server.host->ping(clients[refreshed]->host->local_peer(),
+             {.allow_relay = false, .timeout = 3s, .allow_hole_punch = false}));
+         const auto before = server.diagnostics->snapshot({.max_sessions = 16});
+         BOOST_REQUIRE_EQUAL(before.sessions.size(), 3U);
+         BOOST_REQUIRE_EQUAL(before.connections.active_sessions, 3U);
+         BOOST_TEST(before.metrics.sessions_pruned == 0U);
+         for (auto index = 0U; index != clients.size(); ++index) {
+            BOOST_REQUIRE(tags[index].active());
+            const auto peer = clients[index]->host->local_peer();
+            BOOST_TEST(std::ranges::count(before.sessions, peer, &p2p::diagnostics::session::remote_peer) == 1);
+            BOOST_TEST(!server.host->is_peer_protected(peer));
+         }
+         fixture newcomer;
+         newcomer.start();
+         const auto connected = newcomer.run(newcomer.host->connect(*endpoint,
+             {.expected_peer = server.host->local_peer(), .allow_relay = false, .timeout = 3s,
+              .direct_attempt_timeout = 2s, .allow_hole_punch = false}));
+         check_session_authentication(newcomer, connected, p2p::peer_authentication::libp2p_tls);
+         BOOST_REQUIRE(server.run(await_identified_sessions(server.diagnostics, 2)));
+         const auto after = server.diagnostics->snapshot({.max_sessions = 16});
+         BOOST_REQUIRE_EQUAL(after.sessions.size(), 2U);
+         BOOST_TEST(after.connections.active_sessions == 2U);
+         BOOST_TEST(after.metrics.sessions_pruned == before.metrics.sessions_pruned + 2);
+         BOOST_TEST(std::ranges::count(after.sessions, newcomer.host->local_peer(),
+                                      &p2p::diagnostics::session::remote_peer) == 1);
+         for (auto index = 0U; index != clients.size(); ++index) {
+            BOOST_TEST(tags[index].active());
+            const auto peer = clients[index]->host->local_peer();
+            const auto expected = index == survivor ? 1U : 0U;
+            BOOST_TEST(std::ranges::count(after.sessions, peer, &p2p::diagnostics::session::remote_peer) == expected);
+            BOOST_TEST(!server.host->is_peer_protected(peer));
+            const auto original = std::ranges::find(before.sessions, peer, &p2p::diagnostics::session::remote_peer);
+            BOOST_REQUIRE(original != before.sessions.end());
+            BOOST_TEST(std::ranges::count(after.sessions, original->id, &p2p::diagnostics::session::id) == expected);
+         }
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(p2p_host_config_peer_state_protocol_bound_rejects_identify_without_committing_oversized_state) {
    fixture server;
    server.document.set(std::string{section} + ".listen", value::array_type{"/ip4/127.0.0.1/tcp/0"});

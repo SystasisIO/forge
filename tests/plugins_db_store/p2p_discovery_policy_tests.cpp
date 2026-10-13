@@ -254,6 +254,9 @@ BOOST_AUTO_TEST_CASE(configured_rendezvous_discovers_hidden_peer_without_manual_
              {boost::asio::ip::make_address("127.0.0.1"), 0}};
          const auto port = std::to_string(reserved.local_endpoint().port());
          auto hidden_config = client_settings(dns_server.port(), coordinate);
+         // The point fills hidden's managed demand; only seeker should dial the discovered peer.
+         hidden_config.set("plugins.net.p2p.node.topology.peers.low", std::uint64_t{1});
+         hidden_config.set("plugins.net.p2p.node.topology.peers.target", std::uint64_t{1});
          hidden_config.set("plugins.net.p2p.node.listen", value::array_type{value{"/ip4/127.0.0.1/tcp/" + port}});
          hidden_config.set("plugins.net.p2p.node.advertised-endpoints",
                            value::array_type{value{"/dns4/configured-discovery.test/tcp/" + port}});
@@ -270,7 +273,10 @@ BOOST_AUTO_TEST_CASE(configured_rendezvous_discovers_hidden_peer_without_manual_
          seeker.start();
          const auto target = hidden.api<np::api>()->local_peer();
          const auto diagnostics = seeker.api<np::diagnostics_api>();
-         BOOST_REQUIRE(seeker.run(await_state([&] { return identified(diagnostics, target); })));
+         BOOST_REQUIRE(seeker.run(await_state([&] {
+            return identified(diagnostics, target) &&
+                diagnostics->peer(target).discovered_by == p2p::discovery::source::rendezvous;
+         })));
          const auto learned = diagnostics->peer(target);
          BOOST_CHECK(learned.discovered_by == p2p::discovery::source::rendezvous);
          const auto state = diagnostics->snapshot();
