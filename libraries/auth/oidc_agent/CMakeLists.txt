@@ -1,10 +1,10 @@
 if(NOT TARGET OIDCAgent::client)
-   message(STATUS "Skipping forge_auth_oidc_agent: coordinator must provide OIDCAgent::client pinned to 5.3.8")
+   message(STATUS "Skipping forge_auth_oidc_agent: coordinator must provide OIDCAgent::client pinned to 5.3.8-systasis.1")
    return()
 endif()
 
-if(NOT DEFINED OIDCAgent_VERSION OR NOT OIDCAgent_VERSION VERSION_EQUAL "5.3.8")
-   message(FATAL_ERROR "forge_auth_oidc_agent requires OIDCAgent_VERSION 5.3.8")
+if(NOT DEFINED OIDCAgent_VERSION OR NOT OIDCAgent_VERSION STREQUAL "5.3.8-systasis.1")
+   message(FATAL_ERROR "forge_auth_oidc_agent requires OIDCAgent_VERSION 5.3.8-systasis.1")
 endif()
 
 add_library(forge_auth_oidc_agent STATIC client.cpp client_impl.cpp)

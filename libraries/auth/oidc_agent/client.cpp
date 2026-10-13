@@ -82,6 +82,28 @@ void validate_request(const forge::auth::oauth2::token_request& request) {
    }
 }
 
+[[nodiscard]] std::chrono::system_clock::time_point response_expiry(std::time_t expires_at,
+                                                                   std::chrono::seconds minimum_validity) {
+   using clock = std::chrono::system_clock;
+   const auto maximum_seconds = std::chrono::duration_cast<std::chrono::seconds>(clock::duration::max());
+   if (expires_at <= 0 || std::cmp_greater(expires_at, maximum_seconds.count())) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_response, "oidc-agent returned a missing or unrepresentable token expiry");
+   }
+   if (minimum_validity > maximum_seconds) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_response, "oidc-agent token lifetime does not meet minimum validity");
+   }
+
+   const auto expiry = clock::time_point{std::chrono::duration_cast<clock::duration>(
+       std::chrono::seconds{static_cast<std::chrono::seconds::rep>(expires_at)})};
+   const auto validity = std::chrono::duration_cast<clock::duration>(minimum_validity);
+   const auto now = clock::now();
+   // Both durations are bounded; subtracting validity from a positive expiry cannot overflow.
+   if (expiry <= now || expiry - validity < now) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_response, "oidc-agent returned an expired or insufficiently valid token");
+   }
+   return expiry;
+}
+
 class response_guard {
  public:
    explicit response_guard(struct agent_response response) : response_{response} {}
@@ -209,11 +231,9 @@ class token_wait_state final : public std::enable_shared_from_this<token_wait_st
    }
 
    auto metadata = forge::auth::oauth2::access_token_metadata{};
+   metadata.expires_at = response_expiry(raw.token_response.expires_at, request.minimum_validity);
    if (raw.token_response.issuer != nullptr) {
       metadata.issuer = raw.token_response.issuer;
-   }
-   if (raw.token_response.expires_at > 0) {
-      metadata.expires_at = std::chrono::system_clock::from_time_t(raw.token_response.expires_at);
    }
    return forge::auth::oauth2::access_token{
        forge::crypto::core::secret_string{raw.token_response.token},

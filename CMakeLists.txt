@@ -187,14 +187,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT FORGE_CONTRACT_SDK_HOST_PROFILE AN
          pkg_check_modules(OIDC_AGENT QUIET IMPORTED_TARGET GLOBAL oidc-agent)
       endif()
    endif()
-   if(TARGET PkgConfig::OIDC_AGENT AND OIDC_AGENT_VERSION VERSION_EQUAL "5.3.8")
+   if(TARGET PkgConfig::OIDC_AGENT AND OIDC_AGENT_VERSION STREQUAL "5.3.8-systasis.1")
       add_library(OIDCAgent::client ALIAS PkgConfig::OIDC_AGENT)
       set(OIDCAgent_VERSION "${OIDC_AGENT_VERSION}")
       message(STATUS "Forge oidc-agent backend: ${OIDC_AGENT_VERSION}")
    elseif(FORGE_ENABLE_OIDC_AGENT STREQUAL "ON")
-      message(FATAL_ERROR "FORGE_ENABLE_OIDC_AGENT=ON requires liboidc-agent 5.3.8")
+      message(FATAL_ERROR "FORGE_ENABLE_OIDC_AGENT=ON requires liboidc-agent 5.3.8-systasis.1")
    else()
-      message(STATUS "Skipping Forge oidc-agent backend: exact liboidc-agent 5.3.8 not found")
+      message(STATUS "Skipping Forge oidc-agent backend: exact liboidc-agent 5.3.8-systasis.1 not found")
    endif()
 endif()
 
@@ -1405,6 +1405,15 @@ if(TARGET oauth2-internal)
    install(
       FILES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liboauth2/LICENSE"
       DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge/liboauth2"
+      COMPONENT dev
+      EXCLUDE_FROM_ALL
+   )
+endif()
+
+if(TARGET forge_auth_oidc_agent)
+   install(
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/oidc-agent/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge/oidc-agent"
       COMPONENT dev
       EXCLUDE_FROM_ALL
    )

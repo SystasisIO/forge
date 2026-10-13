@@ -25,3 +25,6 @@
 [submodule "vendor/liboauth2"]
 	path = vendor/liboauth2
 	url = https://github.com/SystasisIO/liboauth2.git
+[submodule "vendor/oidc-agent"]
+	path = vendor/oidc-agent
+	url = https://github.com/SystasisIO/oidc-agent.git

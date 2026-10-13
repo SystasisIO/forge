@@ -14,7 +14,9 @@ extern "C" {
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -52,6 +54,7 @@ struct fake_agent_state {
    std::string application_hint;
    std::string audience;
    std::time_t minimum_validity = 0;
+   std::time_t expires_at = 0;
 };
 
 fake_agent_state fake_agent;
@@ -75,7 +78,8 @@ void release(char*& value) noexcept {
    value = nullptr;
 }
 
-void reset_fake(response_kind response = response_kind::token, bool block = false) {
+void reset_fake(response_kind response = response_kind::token, bool block = false,
+                std::optional<std::time_t> expires_at = std::nullopt) {
    const auto lock = std::scoped_lock{fake_agent.mutex};
    fake_agent.response = response;
    fake_agent.block = block;
@@ -89,11 +93,13 @@ void reset_fake(response_kind response = response_kind::token, bool block = fals
    fake_agent.application_hint.clear();
    fake_agent.audience.clear();
    fake_agent.minimum_validity = 0;
+   fake_agent.expires_at = expires_at.value_or(std::time(nullptr) + 3600);
 }
 
 [[nodiscard]] agent_response make_response(const char* selection, std::time_t minimum_validity, const char* scopes,
                                            const char* application_hint, const char* audience, bool issuer_request) {
    auto response = response_kind::token;
+   auto expires_at = std::time_t{};
    {
       auto lock = std::unique_lock{fake_agent.mutex};
       ++fake_agent.calls;
@@ -105,6 +111,7 @@ void reset_fake(response_kind response = response_kind::token, bool block = fals
       fake_agent.audience = audience == nullptr ? "" : audience;
       fake_agent.minimum_validity = minimum_validity;
       response = fake_agent.response;
+      expires_at = fake_agent.expires_at;
       fake_agent.changed.notify_all();
       fake_agent.changed.wait(lock, [] { return !fake_agent.block || fake_agent.released; });
    }
@@ -117,7 +124,7 @@ void reset_fake(response_kind response = response_kind::token, bool block = fals
    } else if (response == response_kind::token) {
       result.token_response.token = duplicate("test-access-token");
       result.token_response.issuer = duplicate("https://issuer.example");
-      result.token_response.expires_at = std::time(nullptr) + 3600;
+      result.token_response.expires_at = expires_at;
    }
    return result;
 }
@@ -175,7 +182,8 @@ BOOST_AUTO_TEST_CASE(account_and_issuer_requests_use_the_public_agent_api) {
    auto blocking = forge::asio::compute::pool{blocking_lane_options()};
    for (const auto kind :
         {forge::auth::oidc_agent::selection_kind::account, forge::auth::oidc_agent::selection_kind::issuer}) {
-      reset_fake();
+      const auto expires_at = std::time(nullptr) + 3600;
+      reset_fake(response_kind::token, false, expires_at);
       auto runtime = forge::asio::runtime{};
       auto provider = make_client(kind, blocking.get_executor());
       auto token = forge::asio::blocking::run(runtime, provider->async_access_token({
@@ -186,14 +194,107 @@ BOOST_AUTO_TEST_CASE(account_and_issuer_requests_use_the_public_agent_api) {
 
       BOOST_CHECK(token.secret().view() == std::string_view{"test-access-token"});
       BOOST_CHECK_EQUAL(token.metadata().issuer, "https://issuer.example");
+      BOOST_REQUIRE(token.metadata().expires_at.has_value());
+      BOOST_CHECK(*token.metadata().expires_at == std::chrono::system_clock::from_time_t(expires_at));
       const auto lock = std::scoped_lock{fake_agent.mutex};
       BOOST_CHECK_EQUAL(fake_agent.calls, 1U);
       BOOST_CHECK_EQUAL(fake_agent.frees, 1U);
       BOOST_CHECK_EQUAL(fake_agent.issuer_request, kind == forge::auth::oidc_agent::selection_kind::issuer);
+      BOOST_CHECK_EQUAL(fake_agent.selection, kind == forge::auth::oidc_agent::selection_kind::account
+                                                 ? "test-account"
+                                                 : "https://issuer.example");
       BOOST_CHECK_EQUAL(fake_agent.scopes, "openid profile");
       BOOST_CHECK_EQUAL(fake_agent.application_hint, "forge-tests");
       BOOST_CHECK_EQUAL(fake_agent.audience, "forge-api");
       BOOST_CHECK_EQUAL(fake_agent.minimum_validity, 60);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(invalid_expiries_fail_closed_and_release_the_response_once) {
+   const auto maximum_seconds =
+       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::duration::max()).count();
+   const auto invalid_expiries = {
+       std::time_t{0},
+       std::time_t{-1},
+       std::time_t{1},
+       static_cast<std::time_t>(maximum_seconds + 1),
+       std::numeric_limits<std::time_t>::max(),
+   };
+   auto blocking = forge::asio::compute::pool{blocking_lane_options()};
+   auto runtime = forge::asio::runtime{};
+
+   for (const auto kind :
+        {forge::auth::oidc_agent::selection_kind::account, forge::auth::oidc_agent::selection_kind::issuer}) {
+      auto provider = make_client(kind, blocking.get_executor());
+      for (const auto expires_at : invalid_expiries) {
+         BOOST_TEST_CONTEXT("expires_at=" << expires_at) {
+            reset_fake(response_kind::token, false, expires_at);
+            BOOST_CHECK_THROW((void)forge::asio::blocking::run(runtime, provider->async_access_token({})),
+                              forge::auth::oidc_agent::exceptions::invalid_response);
+            const auto lock = std::scoped_lock{fake_agent.mutex};
+            BOOST_CHECK_EQUAL(fake_agent.calls, 1U);
+            BOOST_CHECK_EQUAL(fake_agent.frees, 1U);
+         }
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(insufficient_validity_fails_closed_without_overflow) {
+   const auto expires_at = std::time(nullptr) + 3600;
+   const auto maximum_seconds =
+       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::duration::max());
+   const auto invalid_validities = {
+       std::chrono::seconds{7200},
+       maximum_seconds,
+       maximum_seconds + std::chrono::seconds{1},
+       std::chrono::seconds::max(),
+   };
+   auto blocking = forge::asio::compute::pool{blocking_lane_options()};
+   auto runtime = forge::asio::runtime{};
+
+   for (const auto kind :
+        {forge::auth::oidc_agent::selection_kind::account, forge::auth::oidc_agent::selection_kind::issuer}) {
+      auto provider = make_client(kind, blocking.get_executor());
+      for (const auto validity : invalid_validities) {
+         BOOST_TEST_CONTEXT("minimum_validity=" << validity.count()) {
+            reset_fake(response_kind::token, false, expires_at);
+            BOOST_CHECK_THROW(
+                (void)forge::asio::blocking::run(runtime, provider->async_access_token({
+                                                            .scopes = {"openid", "profile"},
+                                                            .audience = "forge-api",
+                                                            .minimum_validity = validity,
+                                                        })),
+                forge::auth::oidc_agent::exceptions::invalid_response);
+            const auto lock = std::scoped_lock{fake_agent.mutex};
+            BOOST_CHECK_EQUAL(fake_agent.calls, 1U);
+            BOOST_CHECK_EQUAL(fake_agent.frees, 1U);
+            BOOST_CHECK_EQUAL(fake_agent.scopes, "openid profile");
+            BOOST_CHECK_EQUAL(fake_agent.audience, "forge-api");
+            BOOST_CHECK_EQUAL(fake_agent.minimum_validity, validity.count());
+         }
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(maximum_representable_expiry_is_preserved) {
+   const auto maximum_seconds =
+       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::duration::max());
+   const auto expires_at = static_cast<std::time_t>(maximum_seconds.count());
+   auto blocking = forge::asio::compute::pool{blocking_lane_options()};
+   auto runtime = forge::asio::runtime{};
+
+   for (const auto kind :
+        {forge::auth::oidc_agent::selection_kind::account, forge::auth::oidc_agent::selection_kind::issuer}) {
+      reset_fake(response_kind::token, false, expires_at);
+      auto provider = make_client(kind, blocking.get_executor());
+      auto token = forge::asio::blocking::run(
+          runtime, provider->async_access_token({.minimum_validity = std::chrono::seconds{60}}));
+
+      BOOST_REQUIRE(token.metadata().expires_at.has_value());
+      BOOST_CHECK(*token.metadata().expires_at == std::chrono::system_clock::time_point{maximum_seconds});
+      const auto lock = std::scoped_lock{fake_agent.mutex};
+      BOOST_CHECK_EQUAL(fake_agent.calls, 1U);
+      BOOST_CHECK_EQUAL(fake_agent.frees, 1U);
    }
 }
 
@@ -205,10 +306,18 @@ BOOST_AUTO_TEST_CASE(agent_errors_and_malformed_tokens_fail_closed) {
    reset_fake(response_kind::error);
    BOOST_CHECK_THROW((void)forge::asio::blocking::run(runtime, provider->async_access_token({})),
                      forge::auth::oauth2::exceptions::setup_required);
+   {
+      const auto lock = std::scoped_lock{fake_agent.mutex};
+      BOOST_CHECK_EQUAL(fake_agent.calls, 1U);
+      BOOST_CHECK_EQUAL(fake_agent.frees, 1U);
+   }
 
    reset_fake(response_kind::malformed);
    BOOST_CHECK_THROW((void)forge::asio::blocking::run(runtime, provider->async_access_token({})),
                      forge::auth::oidc_agent::exceptions::invalid_response);
+   const auto lock = std::scoped_lock{fake_agent.mutex};
+   BOOST_CHECK_EQUAL(fake_agent.calls, 1U);
+   BOOST_CHECK_EQUAL(fake_agent.frees, 1U);
 }
 
 BOOST_AUTO_TEST_CASE(empty_blocking_executor_is_rejected) {

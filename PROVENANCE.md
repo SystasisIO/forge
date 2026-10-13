@@ -26,6 +26,21 @@ upstream advisory [GHSA-f6wf-pqg3-6wqq](https://github.com/OpenIDC/cjose/securit
 Although the resource profile uses signed tokens rather than JWE encryption,
 the qualified dependency must carry the upstream fix.
 
+## Linux Native Token Acquisition
+
+`vendor/oidc-agent` pins the maintained SystasisIO fork of KIT's oidc-agent
+`5.3.8`, upstream commit `f31513acaacaa7ebc115b3a329105d449b43ac99`.
+The fork identifies itself as `5.3.8-systasis.1`; its exact gitlink is
+`28d6f89701b64d5150b05d01f85b8a8eed54808e` on `token-response-expiry`.
+It corrects per-response token expiry and ownership in the agent daemon
+without replacing OAuth flows or changing the public C API/IPC field layout.
+Forge consumes that public C API through the optional Linux-only
+`forge_auth_oidc_agent` target. The daemon is deployed separately, including
+when accessed through SSH forwarding; the client package alone is insufficient.
+See the [upstream report](docs/donors/oidc-agent-upstream-report.md) for the
+defect, reproduction and acceptance boundaries. MIT notices and bundled
+third-party notices remain in the vendor tree.
+
 ## Forge Contract SDK
 
 `guest` is Forge's native C++23 smart-contract toolchain assembly. Release

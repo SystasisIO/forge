@@ -19,6 +19,16 @@ consumers and apply the exact symbol, exception and component mapping in the
 Forge byte-compatibility fixtures from consumer-owned full database reopen
 tests. This change must not be shipped in a patch release.
 
+The Linux `auth_oidc_agent` component now requires the exact maintained
+`5.3.8-systasis.1` package from `vendor/oidc-agent`, rather than unpatched 5.3.8.
+Rebuild the client library and deploy/restart the patched daemon serving the
+configured socket, including an agent forwarded over SSH. The public C ABI and
+IPC fields are unchanged, but the old daemon reports another token's expiry
+for scope/audience overrides. A client-library-only update is not a repair.
+Forge rejects missing, expired, unrepresentable or insufficient expiry metadata
+instead of substituting a lifetime or decoding an access token. See the
+[Linux adapter guide](../../libraries/auth/oidc_agent/README.md).
+
 ## Added Surfaces
 
 - `auth_oauth2` provides neutral resource-token verification contracts in

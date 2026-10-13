@@ -27,6 +27,23 @@ complete notices. Apache/NGINX bindings and optional Redis/memcache adapters
 are not included in the Forge target.
 
 
+oidc-agent Linux Token Acquisition Backend
+------------------------------------------
+
+Vendored under `vendor/oidc-agent` from the SystasisIO fork of
+indigo-dc/oidc-agent, based on 5.3.8, commit
+`f31513acaacaa7ebc115b3a329105d449b43ac99`. The gitlink pins the patched source.
+The fork reports `5.3.8-systasis.1` and corrects token-response expiry/ownership.
+
+Copyright (c) 2017 - 2024 Karlsruhe Institute of Technology - Scientific Computing Center
+
+Distributed under the MIT License. The complete upstream license remains at
+`vendor/oidc-agent/LICENSE`, and is installed under `share/doc/Forge/oidc-agent`
+when the optional Linux adapter is built. Bundled upstream dependencies retain
+their own notices in the vendor source. Separately deployed agent binaries must
+carry their complete upstream notices; this file does not replace those.
+
+
 AppAuth For iOS And macOS
 -------------------------
 
