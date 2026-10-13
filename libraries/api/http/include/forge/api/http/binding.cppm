@@ -1964,7 +1964,6 @@ class binding_builder {
                                            "HTTP API binding has no local registry");
                   }
                   auto pinned = plan.pin(interface_type::ref());
-                  auto trusted = detail::trusted_invocation_for(request_value.context);
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
                   validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
@@ -2093,7 +2092,6 @@ class binding_builder {
                                            "HTTP API binding has no local registry");
                   }
                   auto pinned = plan.pin(interface_type::ref());
-                  auto trusted = detail::trusted_invocation_for(request_value.context);
                   const auto& installed_method_descriptor = require_route_method_descriptor(
                      pinned.describe(interface_type::ref()), name);
                   validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);

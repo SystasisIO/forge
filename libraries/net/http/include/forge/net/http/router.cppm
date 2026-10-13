@@ -43,15 +43,6 @@ struct websocket_upgrade_result {
 // verified application context without exposing credentials to a connection.
 using websocket_upgrade_handler = std::function<boost::asio::awaitable<websocket_upgrade_result>(route_context&)>;
 
-struct websocket_upgrade_result {
-   websocket_route_handler handler;
-   std::optional<response> rejection;
-};
-
-// Runs before the handshake and may reject it. The accepted callback captures
-// verified application context without exposing credentials to a connection.
-using websocket_upgrade_handler = std::function<boost::asio::awaitable<websocket_upgrade_result>(route_context&)>;
-
 class router;
 
 class router {

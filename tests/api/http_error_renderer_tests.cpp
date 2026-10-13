@@ -14,6 +14,7 @@
 import forge.api.core.binding;
 import forge.api.core.descriptor;
 import forge.api.core.exceptions;
+import forge.api.core.invocation_context;
 import forge.api.core.registry;
 import forge.api.core.types;
 import forge.api.http.binding;
@@ -190,6 +191,39 @@ BOOST_AUTO_TEST_CASE(nullopt_and_throwing_renderer_retain_safe_projection) {
       BOOST_TEST(error.body().find("hidden-") == std::string::npos);
       BOOST_TEST(error["X-Job-Id"] == "job-123");
    }
+}
+
+BOOST_AUTO_TEST_CASE(invocation_denial_uses_renderer_before_payload_decode_or_handler) {
+   auto value = fixture{};
+   unsigned rendered = 0;
+   value.router.mount(
+       forge::api::http::binding()
+           .use(forge::api::core::binding().serve(value.apis).build())
+           .invocation([](const forge::net::http::route_context&,
+                          const forge::api::core::method_descriptor&)
+                           -> boost::asio::awaitable<forge::api::core::invocation_context> {
+              FORGE_THROW_EXCEPTION(forge::api::core::exceptions::invocation_denied, "private admission diagnostic");
+              co_return forge::api::core::invocation_context{};
+           })
+           .errors([&](const forge::api::http::error_context& context)
+                       -> std::optional<forge::net::http::response> {
+              ++rendered;
+              BOOST_CHECK(dynamic_cast<const forge::api::core::exceptions::invocation_denied*>(context.cause));
+              BOOST_TEST(static_cast<unsigned>(context.status) == 403U);
+              return forge::net::http::make_text_response(context.request, context.status, "access denied");
+           })
+           .bind<api>()
+           .build());
+
+   for (const auto* body : {R"({"value":0})", "{"}) {
+      const auto error = value.invoke(body);
+      BOOST_TEST(error.result_int() == 403U);
+      BOOST_TEST(error.body() == "access denied");
+      BOOST_TEST(error.body().find("private") == std::string::npos);
+      BOOST_TEST(error["Cache-Control"] == "no-store");
+   }
+   BOOST_TEST(rendered == 2U);
+   BOOST_TEST(value.service->calls == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(explicit_route_renderer_overrides_publication_default) {
