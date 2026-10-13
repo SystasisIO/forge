@@ -64,24 +64,36 @@ RocksDB and MDBX are both enabled. The DB Store integration build also needed
 an explicit `std::size_t` for its nonnegative `count_if` log field; the previous
 signed difference type made Variant conversion ambiguous on this toolchain.
 
-The initial normal focused run passed all five CTest entries. Review added a
-logger self-assignment regression and two already-started retry-wait regressions,
-bringing the new scenarios to ten logger, seven exporter and three plugin tests.
-Both external build-tree package consumers (`otlp`, `plugins_log_otlp`)
-compiled and ran.
-This is not an install/relocation or full-package-matrix claim.
+The initial normal focused run passed all five CTest entries. The final patch
+adds ten logger, seven exporter, four plugin and three Schema tests. The
+no-argument API regression checks both `flush()` and `metrics()` after every
+API handle, the plugin registry and the source runtime have been destroyed.
 
 Build tree: `build/log-otlp-concurrency`; all builds use `-j4`. The same tree is
 reconfigured sequentially for sanitizers, rather than retaining three builds.
 Sanitizer flags apply to production Forge objects and test objects. Prebuilt
 system/Homebrew dependencies are not rebuilt with instrumentation.
 
-ThreadSanitizer passed all four executable CTest entries after both review fixes:
-29 logger, 30 exporter and 22 plugin test cases, plus the late-shutdown helper.
-The focused plugin target explicitly enables its MDBX and RocksDB test variants;
-those variants ran in this sanitizer pass. No TSan suppression was used.
+Code revision: `d36ab846c2d01e5f7f1f7f44a2cbe0e0bda306d4`.
 
-Independent review caught and closed two defects before acceptance:
+- AddressSanitizer with LeakSanitizer enabled: all six executable CTest entries
+  pass. This covers 29 logger, 30 exporter, 23 plugin, 22 Schema and 20 config
+  test cases, plus the late-shutdown helper. No suppression or leak exclusion
+  is used.
+- Both external build-tree package consumers (`otlp`, `plugins_log_otlp`)
+  compile and run with ASan and leak detection. Their temporary builds are
+  removed after preserving configuration and run evidence. This is not an
+  install/relocation or full-package-matrix claim.
+- `test_forge_structure` and `git diff --check` pass.
+- The focused plugin target explicitly enables its MDBX and RocksDB test
+  variants. Both execute in the final ASan pass; the early unsanitized focused
+  pass is not used as backend evidence because that target initially omitted
+  these compile definitions.
+- Final ThreadSanitizer validation passes all six executable suites, each
+  repeated three times with `--repeat until-fail:3`. Both DB backend variants
+  execute here as well. No TSan suppression is used.
+
+Independent review caught and closed three defects before acceptance:
 
 - Copy self-assignment could overwrite a concurrently published logger route.
   It now returns without loading/storing the shared handle.
@@ -89,6 +101,9 @@ Independent review caught and closed two defects before acceptance:
   subsequent retry wait. HTTP requests now run in an isolated coroutine chain
   on the same owning strand; tests prove deadline cancellation of a retry timer
   that was already started before shutdown.
+- No-argument API wrappers deferred virtual dispatch while retaining a raw
+  `this`. They now obtain the owned typed operation eagerly. The void-returning
+  flush adapter owns that awaitable by value, preserving the public signature.
 
 Runtime lifetime remains an explicit application obligation. Caller executors
 must progress until their admitted API calls join. Producer shutdown must also
@@ -103,5 +118,43 @@ through diagnostic redaction and plugin config construction; it is not hidden
 with `detect_leaks=0` or a suppression. The same patch corrects that ownership
 and adds focused Schema/config validation.
 
-Leak repair and final exact-head validation are in progress. No final acceptance
-claim yet.
+The callback cycle is removed with weak references back to the owning fields.
+Callbacks retain a strong owner only during invocation. Schema copies and live
+builders preserve ownership; an extracted schema-dependent callback invoked
+after its last owner dies throws typed `invalid_value`. That lifetime boundary
+is documented and covered explicitly, including vector growth.
+
+## Reproduction
+
+Use the environment above with both DB drivers enabled. On the same build tree,
+set `CMAKE_CXX_FLAGS` and `CMAKE_C_FLAGS` to include either
+`-fsanitize=address -fno-omit-frame-pointer` or
+`-fsanitize=thread -fno-omit-frame-pointer`, and matching executable/shared
+linker flags. Production/test Debug flags are `-O1 -gline-tables-only`;
+the external package consumers use `-O0 -g0` with ASan.
+
+```sh
+cmake --build build/log-otlp-concurrency -j4 --target \
+  test_forge_schema test_forge_config_core test_forge_log \
+  test_forge_otlp test_forge_plugins_log_otlp
+
+ctest --test-dir build/log-otlp-concurrency --output-on-failure \
+  -R '^(test_forge_structure|test_forge_schema|test_forge_config_core|test_forge_log|test_forge_log_shutdown|test_forge_otlp|test_forge_plugins_log_otlp)$' \
+  --timeout 120
+
+git diff --check
+```
+
+ASan runs use `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1`; TSan runs use
+`TSAN_OPTIONS=halt_on_error=1`. The LLVM symbolizer is set explicitly for both.
+Local logs and configuration evidence are retained under
+`.cache/acceptance/log-otlp-concurrency-20261013/` before build cleanup.
+Linux and the full CI matrix are not part of this acceptance.
+
+Independent Sol reviews cover logger/Schema ownership and OTLP/plugin ownership
+separately. All three actionable review findings are closed on the code revision
+above. The receipt-only followup does not change executable sources.
+
+This records focused native acceptance, not a proof of every possible schedule
+or a cross-platform/full-CI result. The runtime ownership requirements above
+remain part of the supported application contract.
