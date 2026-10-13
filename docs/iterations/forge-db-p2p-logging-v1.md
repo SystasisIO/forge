@@ -1,6 +1,6 @@
 # DB And P2P Operational Logging
 
-Status: implementation; no production or acceptance claim until final validation.
+Status: focused implementation acceptance passed; no whole-stack production claim.
 Base: dev `03d4c43b`. Scope: operational logs, not protocol/storage changes.
 
 ## Ownership
@@ -87,3 +87,50 @@ business/audit ledger and must not be stored in the DB it is diagnosing.
   fix loop, then reviewed merge dev and cleanup only task-owned inactive builds.
 
 No version bump, release, Stage 8 or downstream product changes are in scope.
+
+## Acceptance Receipt
+
+Validated on 2026-10-13 against implementation head
+`d400c4935802819f533d98e92e27ed44e9e89d93`. Production/CMake changes were frozen
+at `39ca3d90455b57e5d49c631b1834ed096f662706`; subsequent implementation commits
+only add missing explicit `<string>` includes to package consumers. This receipt
+is a documentation-only follow-up. Base remains dev `03d4c43b`.
+
+- Linux ARM64, Clang 22.1.8, Ninja, Debug `-O0 -g0`, assertions enabled, both
+  RocksDB and MDBX enabled; coordinator-only builds with `-j4`.
+- Final focused CTest run: 17/17 PASS. Targets: structure, log_shutdown, log,
+  otlp, db_mdbx, db_object, db_blob, db_revision, db_rocksdb, p2p_lifecycle,
+  p2p_pubsub_router, p2p_autorelay, p2p_path_management, p2p_inventory, plugins,
+  plugins_db_store and rocksdb (all prefixed `test_forge_`).
+- Separate external build-tree package consumers: 11/11 PASS. Components:
+  db_mdbx, db_rocksdb, rocksdb, db_object, db_blob, db_revision, otlp, net_p2p,
+  plugins_db_store, plugins_log_otlp and plugins_net_p2p_node. Each consumer was
+  configured, compiled and executed; completed consumer builds were removed
+  before continuing. Unchanged source closures reuse their earlier result in
+  this sequential run, not a claim that every consumer was rebuilt per commit.
+- macOS Homebrew LLVM: `contract-sdk-host` built `forge_db_object`; an external
+  `db_object` package consumer compiled and ran. The SDK profile exports Log
+  without acquiring App, OTLP or network dependencies.
+- Real DB Store/OTLP application fixtures pass for both backend drivers with
+  collector success and HTTP 503. Tests cover early open/final close events,
+  no native RocksDB LOG files, redaction, commit/rollback/reopen, exporter
+  rollback after initialization failure, crash-capture rollback, recursion,
+  failing sinks and logging after main-thread TLS destruction.
+- Huygens independently reviewed the full diff; Kuhn independently reviewed
+  Log/OTLP, package/SDK changes and cross-layer boundaries. Both returned CLEAN
+  at `d400c493`; coordinator owns test execution, not the reviewers.
+
+Not run: full CI, a new Go/Rust interoperability matrix, production soak, full
+install/relocation package matrix, or the omnibus `test_forge_quic_p2p` target.
+The latter drags unrelated large chain/signer compilation; the existing focused
+lifecycle, PubSub, AutoRelay and path-management suites were run instead. Linux
+SDK configuration was blocked by the trimmed toolchain's missing
+`libLLVMDemangle.a`; the complete native macOS SDK build passed.
+
+Existing concurrency limits remain explicit: concurrent logger reconfiguration
+and OTLP API calls overlapping explicit shutdown were not validated. Review
+found pre-existing unsynchronized shared state in those paths at the base, not
+a new concurrent path introduced by earlier exporter attachment. Normal ordered
+application lifecycle is the tested contract here. Native diagnostic counters
+can remain buffered until a safe drain, and synchronous local sinks remain
+synchronous. Collector delivery is best-effort, not a durable audit ledger.
