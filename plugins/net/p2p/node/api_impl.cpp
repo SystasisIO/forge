@@ -92,13 +92,7 @@ plugin::api_impl::publish_api(forge::api::core::binding_plan plan, forge::net::p
    options.max_item_size = std::min(options.max_item_size, options.max_frame_size);
    auto binding =
        forge::api::p2p::api().use(std::move(plan)).protocol_id(protocol).session_options(std::move(options)).build();
-   auto candidate = detail::publish_api_publication(impl_->protocols, std::move(binding));
-   auto publication = forge::api::p2p::publication{};
-   if (!impl_->lifecycle.try_admit(state.generation, [&] { publication = std::move(candidate); })) {
-      candidate.close();
-      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P API publications are closed");
-   }
-   return publication;
+   return detail::publish_api_publication(impl_->protocols, std::move(binding));
 }
 
 boost::asio::awaitable<forge::api::transport::connection>

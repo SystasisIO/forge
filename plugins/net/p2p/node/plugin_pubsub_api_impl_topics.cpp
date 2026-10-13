@@ -145,8 +145,8 @@ boost::asio::awaitable<subscription> plugin::pubsub_api_impl::subscribe_transiti
       auto retired_join_error = std::exception_ptr{};
       auto retired_leave_error = std::exception_ptr{};
       const auto lock = std::scoped_lock{self->mutex};
-      retired_join_error.swap(topic->join_error);
-      retired_leave_error.swap(topic->leave_error);
+      std::swap(retired_join_error, topic->join_error);
+      std::swap(retired_leave_error, topic->leave_error);
       topic->join_error = failure;
       topic->leave_error = cleanup_error;
       topic->joined = false;
@@ -206,7 +206,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::unsubscribe_transition(
       auto retired_error = std::exception_ptr{};
       {
          const auto lock = std::scoped_lock{self->mutex};
-         retired_error.swap(topic->leave_error);
+         std::swap(retired_error, topic->leave_error);
          topic->leave_error = failure;
          if (!failure) { topic->joined = false; topic->native_dirty = false; }
       }

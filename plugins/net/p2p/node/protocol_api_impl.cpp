@@ -52,27 +52,11 @@ plugin::protocol_api_impl::protocol_api_impl(std::shared_ptr<plugin::impl> owner
 
 protocol_registration plugin::protocol_api_impl::register_protocol(forge::net::p2p::protocol_id protocol,
     forge::net::p2p::node::protocol_handler handler) {
-   const auto state = owner_->lifecycle.snapshot();
-   if (!state.admission_open) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed"); }
-   auto candidate = owner_->protocols->register_raw(std::move(protocol), std::move(handler));
-   auto registration = protocol_registration{};
-   if (!owner_->lifecycle.try_admit(state.generation, [&] { registration = std::move(candidate); })) {
-      candidate.close();
-      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed");
-   }
-   return registration;
+   return owner_->protocols->register_raw(std::move(protocol), std::move(handler));
 }
 protocol_registration plugin::protocol_api_impl::replace_protocol(const protocol_registration& registration,
     forge::net::p2p::protocol_id protocol, forge::net::p2p::node::protocol_handler handler) {
-   const auto state = owner_->lifecycle.snapshot();
-   if (!state.admission_open) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed"); }
-   auto candidate = owner_->protocols->register_raw(std::move(protocol), std::move(handler), &registration);
-   auto replacement = protocol_registration{};
-   if (!owner_->lifecycle.try_admit(state.generation, [&] { replacement = std::move(candidate); })) {
-      candidate.close();
-      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed");
-   }
-   return replacement;
+   return owner_->protocols->register_raw(std::move(protocol), std::move(handler), &registration);
 }
 boost::asio::awaitable<forge::net::p2p::stream> plugin::protocol_api_impl::open(forge::net::p2p::peer_id peer,
     forge::net::p2p::protocol_id protocol, forge::net::p2p::node::open_options options) {

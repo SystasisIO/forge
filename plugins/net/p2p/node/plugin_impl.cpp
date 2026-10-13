@@ -68,7 +68,7 @@ import forge.plugins.db.store.api;
 namespace forge::plugins::net::p2p::node {
 plugin::impl::impl(forge::app::plugin_lifecycle state)
     : lifecycle{std::move(state)}, configuration{std::make_shared<const detail::configuration_snapshot>()},
-      protocols{detail::make_protocol_registry(configuration->options.limits.max_protocol_handlers)},
+      protocols{detail::make_protocol_registry(configuration->options.limits.max_protocol_handlers, lifecycle)},
       contributions{std::make_shared<detail::peer_contributions>()},
       pubsub{std::make_shared<detail::pubsub_service>(lifecycle)} {}
 plugin::impl::~impl() = default;

@@ -37,9 +37,11 @@ class p2p_dependency : public forge::app::plugin {
 
    [[nodiscard]] forge::app::plugin_id id() const override;
    [[nodiscard]] std::string version() const override;
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override;
-   boost::asio::awaitable<void> startup() override;
-   boost::asio::awaitable<void> shutdown() override;
+
+ protected:
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override;
+   boost::asio::awaitable<void> on_startup() override;
+   boost::asio::awaitable<void> on_shutdown() override;
 
  private:
    std::string id_;
@@ -61,7 +63,8 @@ class p2p_secrets_plugin final : public p2p_dependency {
  public:
    p2p_secrets_plugin();
 
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override;
+ protected:
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override;
 };
 
 void register_p2p_stack(forge::app::plugin_registry& registry);
@@ -84,9 +87,11 @@ class chain_api_publisher final : public forge::app::plugin {
 
    [[nodiscard]] forge::app::plugin_id id() const override;
    [[nodiscard]] std::string version() const override;
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override;
-   boost::asio::awaitable<void> startup() override;
-   boost::asio::awaitable<void> shutdown() override;
+
+ protected:
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override;
+   boost::asio::awaitable<void> on_startup() override;
+   boost::asio::awaitable<void> on_shutdown() override;
 
  private:
    std::shared_ptr<const p2p_publication_callbacks> callbacks_;

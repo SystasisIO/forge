@@ -12,6 +12,8 @@
 #include <string>
 #include <utility>
 
+import forge.app.exceptions;
+import forge.config.core.component;
 import forge.config.core.document;
 import forge.config.core.value;
 import forge.net.p2p.diagnostics;
@@ -149,7 +151,13 @@ BOOST_AUTO_TEST_CASE(configured_ping_and_event_capacity_use_native_owners) {
             auto invalid = client.config;
             invalid.set("plugins.net.p2p.node.reachability.service-v1-enabled", true);
             invalid.set(std::string{"plugins.net.p2p.node."} + field, std::uint64_t{0});
-            BOOST_CHECK_THROW(client.configure_node(invalid), np::exceptions::invalid_config);
+            BOOST_TEST_CONTEXT(field) {
+               auto invalid_node = np::plugin{};
+               BOOST_CHECK_THROW(client.run(invalid_node.configure({invalid, "plugins.net.p2p.node"})),
+                                 np::exceptions::invalid_config);
+               client.run(invalid_node.shutdown());
+               BOOST_CHECK_THROW(client.configure_node(invalid), forge::app::exceptions::invalid_state);
+            }
          }
          client.start();
          const auto server_api = server.api<np::api>();
@@ -180,8 +188,10 @@ BOOST_AUTO_TEST_CASE(configured_ping_and_event_capacity_use_native_owners) {
          for (const auto* field : {"reachability.max-parallel-pings", "mdns.max-peers", "relay.target-reservations"}) {
             auto candidate = client.config;
             candidate.set(std::string{"plugins.net.p2p.node."} + field, std::uint64_t{3});
-            BOOST_CHECK_THROW(client.configure_node(candidate), np::exceptions::route_conflict);
+            BOOST_CHECK_THROW(client.configure_node(candidate), forge::app::exceptions::invalid_state);
          }
+         BOOST_TEST(diagnostics->snapshot().reachability.max_parallel_pings == 1U);
+         BOOST_CHECK_THROW((void)events->host_events(), p2p::exceptions::backpressure_rejected);
          client.request_stop_node();
          client.run(client.shutdown_node());
          BOOST_TEST(!client.run(subscription.async_read()).has_value());

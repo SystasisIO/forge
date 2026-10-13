@@ -98,15 +98,15 @@ std::string p2p_dependency::version() const {
    return "test";
 }
 
-boost::asio::awaitable<void> p2p_dependency::initialize(forge::app::plugin_context&) {
+boost::asio::awaitable<void> p2p_dependency::on_initialize(forge::app::plugin_context&) {
    co_return;
 }
 
-boost::asio::awaitable<void> p2p_dependency::startup() {
+boost::asio::awaitable<void> p2p_dependency::on_startup() {
    co_return;
 }
 
-boost::asio::awaitable<void> p2p_dependency::shutdown() {
+boost::asio::awaitable<void> p2p_dependency::on_shutdown() {
    co_return;
 }
 
@@ -149,7 +149,7 @@ p2p_secrets_api::decrypt_aes_gcm(crypto_secrets::aead_decrypt_request) {
 
 p2p_secrets_plugin::p2p_secrets_plugin() : p2p_dependency{"forge.plugins.crypto.secrets"} {}
 
-boost::asio::awaitable<void> p2p_secrets_plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> p2p_secrets_plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<crypto_secrets::api>(std::make_shared<p2p_secrets_api>());
    co_return;
 }
@@ -177,7 +177,7 @@ std::string chain_api_publisher::version() const {
    return "1";
 }
 
-boost::asio::awaitable<void> chain_api_publisher::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> chain_api_publisher::on_initialize(forge::app::plugin_context& context) {
    auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
        {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
    publication_ = resolver->publish_api(
@@ -188,11 +188,11 @@ boost::asio::awaitable<void> chain_api_publisher::initialize(forge::app::plugin_
    co_return;
 }
 
-boost::asio::awaitable<void> chain_api_publisher::startup() {
+boost::asio::awaitable<void> chain_api_publisher::on_startup() {
    co_return;
 }
 
-boost::asio::awaitable<void> chain_api_publisher::shutdown() {
+boost::asio::awaitable<void> chain_api_publisher::on_shutdown() {
    co_await publication_.async_close();
 }
 

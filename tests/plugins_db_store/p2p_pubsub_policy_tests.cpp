@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+import forge.app.exceptions;
 import forge.config.core.document;
 import forge.net.p2p.diagnostics;
 import forge.net.p2p.exceptions;
@@ -118,7 +119,7 @@ BOOST_AUTO_TEST_CASE(configured_signed_and_unsigned_payload_limits_are_delivered
    }
 }
 
-BOOST_AUTO_TEST_CASE(typed_pubsub_snapshot_keeps_protocol_score_callback_and_limit_across_yaml_reconfigure) {
+BOOST_AUTO_TEST_CASE(typed_pubsub_snapshot_keeps_protocol_score_callback_and_limit_across_rejected_yaml_reconfigure) {
    for (const auto& backend : secure_node_fixture::backends()) {
       BOOST_TEST_CONTEXT(backend) {
          auto config = forge::config::core::document{};
@@ -152,7 +153,7 @@ BOOST_AUTO_TEST_CASE(typed_pubsub_snapshot_keeps_protocol_score_callback_and_lim
          competing.set("plugins.net.p2p.node.pubsub.preferred-version", "v1-0");
          competing.set("plugins.net.p2p.node.pubsub.max-message-size", std::uint64_t{64});
          competing.set("plugins.net.p2p.node.pubsub.flood-publish", false);
-         sender.configure_node(competing);
+         BOOST_CHECK_THROW(sender.configure_node(competing), forge::app::exceptions::invalid_state);
          receiver.start();
          sender.start();
          BOOST_CHECK_THROW(configuration->set_pubsub_options(options), np::exceptions::route_conflict);

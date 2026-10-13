@@ -14,6 +14,8 @@
 #include "../fixtures/local_dns_server.hxx"
 #include "details/secure_node_fixture.hxx"
 
+import forge.app.exceptions;
+import forge.config.core.component;
 import forge.config.core.value;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.endpoint;
@@ -98,18 +100,23 @@ BOOST_AUTO_TEST_CASE(p2p_dial_configuration_rollback_and_freeze_preserve_resolve
          rejected.set(std::string{section} + "dns.resolver.nameservers", nameservers(1));
          rejected.set(std::string{section} + "path.max-direct-endpoints", std::uint64_t{0});
          rejected.set(std::string{section} + "diagnostics.max-peers", std::uint64_t{2});
-         BOOST_CHECK_THROW(client.configure_node(rejected), np::exceptions::invalid_config);
+         // Validate initial input independently; the configured owner cannot
+         // accept another input, even before startup.
+         auto invalid_node = np::plugin{};
+         BOOST_CHECK_THROW(client.run(invalid_node.configure({rejected, "plugins.net.p2p.node"})),
+                           np::exceptions::invalid_config);
+         client.run(invalid_node.shutdown());
+         BOOST_CHECK_THROW(client.configure_node(rejected), forge::app::exceptions::invalid_state);
          client.start();
-         const auto host = client.api<np::api>();
-         const auto connect = [&](std::string name, const auto& remote) {
-            const auto session = client.run(host->connect(forge::multiformats::multiaddr::parse(
+         const auto connect = [&](application& local, std::string name, const auto& remote) {
+            const auto session = local.run(local.api<np::api>()->connect(forge::multiformats::multiaddr::parse(
                 "/dnsaddr/" + name + "/p2p/" + remote->local_peer().to_string()),
                 {.expected_peer = remote->local_peer(), .allow_relay = false, .timeout = 3s,
                  .allow_hole_punch = false}));
             BOOST_CHECK(session.remote_peer == remote->local_peer());
             BOOST_CHECK(session.identify_state == forge::net::p2p::identify::state::identified);
          };
-         connect("first.stage7.test", first_api);
+         connect(client, "first.stage7.test", first_api);
          BOOST_TEST(first_queries.load() > 0U);
          for (const auto& [field, setting] : std::vector<std::pair<std::string, value>>{
                   {"dns.resolver.nameservers", nameservers(1)},
@@ -120,18 +127,29 @@ BOOST_AUTO_TEST_CASE(p2p_dial_configuration_rollback_and_freeze_preserve_resolve
             rejected.set(std::string{section} + field, setting);
             rejected.set(std::string{section} + "diagnostics.max-peers", std::uint64_t{2});
             BOOST_TEST_CONTEXT(field) {
-               BOOST_CHECK_THROW(client.configure_node(rejected), np::exceptions::route_conflict);
+               BOOST_CHECK_THROW(client.configure_node(rejected), forge::app::exceptions::invalid_state);
             }
          }
-         connect("second.stage7.test", second_api);
+         connect(client, "second.stage7.test", second_api);
          BOOST_TEST(second_queries.load() > 0U);
          const auto diagnostics = client.api<np::diagnostics_api>();
          BOOST_REQUIRE(client.run(await_peers(diagnostics)));
          BOOST_TEST(diagnostics->snapshot().peers.size() == 1U);
          auto diagnostics_only = accepted;
          diagnostics_only.set(std::string{section} + "diagnostics.max-peers", std::uint64_t{2});
-         BOOST_CHECK_NO_THROW(client.configure_node(diagnostics_only));
-         BOOST_TEST(diagnostics->snapshot().peers.size() == 2U);
+         BOOST_CHECK_THROW(client.configure_node(diagnostics_only), forge::app::exceptions::invalid_state);
+         BOOST_TEST(diagnostics->snapshot().peers.size() == 1U);
+         BOOST_TEST(diagnostics->snapshot({.max_peers = 2}).peers.size() == 2U);
+
+         auto larger_bounds = overrides;
+         larger_bounds.set(std::string{section} + "diagnostics.max-peers", std::uint64_t{2});
+         application larger_client{backend, {.private_profile = false}, "noise", larger_bounds};
+         larger_client.start();
+         connect(larger_client, "first.stage7.test", first_api);
+         connect(larger_client, "second.stage7.test", second_api);
+         const auto larger_diagnostics = larger_client.api<np::diagnostics_api>();
+         BOOST_REQUIRE(larger_client.run(await_peers(larger_diagnostics)));
+         BOOST_TEST(larger_diagnostics->snapshot().peers.size() == 2U);
          dns_server.close();
       }
    }

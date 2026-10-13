@@ -35,6 +35,7 @@ import forge.api.core.descriptor;
 import forge.api.core.handle;
 import forge.api.core.registry;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin_context;
 import forge.asio.runtime;
 import forge.asio.task;
@@ -454,18 +455,20 @@ BOOST_AUTO_TEST_CASE(p2p_resource_config_frozen_updates_and_mixed_diagnostics_ro
    const auto running = f.document;
    f.document.set("plugins.net.p2p.node.resources.system.max-connections", std::uint64_t{4});
    f.document.set("plugins.net.p2p.node.diagnostics.max-peers", std::uint64_t{2});
-   BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
    BOOST_TEST(f.diagnostics->snapshot().effective_limits.system.max_connections == 3U);
    BOOST_TEST(f.diagnostics->snapshot().peers.size() == 1U);
    BOOST_TEST(f.diagnostics->snapshot({.max_peers = 16}).peers.size() >= 3U);
    f.document = running;
    f.document.set("plugins.net.p2p.node.diagnostics.max-peers", std::uint64_t{2});
-   BOOST_CHECK_NO_THROW(f.configure());
-   BOOST_TEST(f.diagnostics->snapshot().peers.size() == 2U);
+   BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
+   BOOST_TEST(f.diagnostics->snapshot().peers.size() == 1U);
+   BOOST_TEST(f.diagnostics->snapshot({.max_peers = 2}).peers.size() == 2U);
+   BOOST_TEST(f.diagnostics->snapshot().effective_limits.system.max_connections == 3U);
    f.node.request_stop();
-   BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
    f.run(f.node.shutdown());
-   BOOST_CHECK_THROW(f.configure(), np::exceptions::route_conflict);
+   BOOST_CHECK_THROW(f.configure(), forge::app::exceptions::invalid_state);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_resource_config_real_connection_denial_keeps_native_code_and_releases_reservations) {

@@ -41,6 +41,7 @@ import forge.api.core.registry;
 import forge.app.application_builder;
 import forge.app.application_shell;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
@@ -1302,17 +1303,11 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_objec
    using namespace std::chrono_literals;
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto scheduler = forge::asio::task::scheduler{runtime};
-   auto apis = forge::api::core::registry{};
-   auto secret_apis = forge::api::core::registry{};
    auto events = forge::app::event_journal{};
-   auto context = forge::app::plugin_context{scheduler, apis, events};
-   auto store = store_plugin::plugin{};
-   auto secrets = crypto_secrets::plugin{};
-   auto node = p2p_node::plugin{};
-   auto driver = std::make_shared<memory_driver>();
    const auto identity = forge::tests::p2p::make_identity_fixture("configuration-preflight");
    auto document = p2p_production_config(identity);
    document.set("plugins.net.p2p.node.topology.mode", "static-only");
+   document.set("plugins.net.p2p.node.max-sessions", std::uint64_t{9});
    document.set("plugins.net.p2p.node.dht.profiles", value::array_type{
        value::object_type{{"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
                           {"peers", true}, {"providers", false}, {"values", true}}});
@@ -1324,85 +1319,124 @@ BOOST_AUTO_TEST_CASE(p2p_configuration_preflight_precedes_real_secrets_and_objec
       }
       return result.get();
    };
-   auto cleanup = boost::scope::scope_exit{[&] {
-      // Keep providers alive until every startup/adapter operation has joined.
-      node.request_stop();
+   auto runtime_cleanup = boost::scope::scope_exit{[&] { run(scheduler.shutdown()); }};
+   enum class startup_case { unopened_provider, missing_policy, ready };
+   const auto exercise = [&](startup_case attempt) {
+      // Failed lifecycle owners cannot be reconfigured or restarted. Each
+      // attempt owns real providers and an independent ObjectDB transaction log.
+      auto apis = forge::api::core::registry{};
+      auto secret_apis = forge::api::core::registry{};
+      auto context = forge::app::plugin_context{scheduler, apis, events};
+      auto store = store_plugin::plugin{};
+      auto secrets = crypto_secrets::plugin{};
+      auto node = p2p_node::plugin{};
+      auto driver = std::make_shared<memory_driver>();
+      auto cleanup = boost::scope::scope_exit{[&] {
+         // Keep providers alive until every startup/adapter operation has joined.
+         node.request_stop();
+         auto failure = std::exception_ptr{};
+         for (auto step = 0; step != 3; ++step) {
+            try {
+               switch (step) {
+               case 0: run(node.shutdown()); break;
+               case 1: run(secrets.shutdown()); break;
+               case 2: run(store.shutdown()); break;
+               }
+            } catch (...) { if (!failure) { failure = std::current_exception(); } }
+         }
+         if (failure) { BOOST_ERROR("configuration DB fixture cleanup failed after all provider joins"); }
+      }};
+      run(store.configure({document, "plugins.db.store"}));
+      run(secrets.configure({document, "plugins.crypto.secrets"}));
+      run(node.configure({document, "plugins.net.p2p.node"}));
+      auto provider = forge::api::core::installer{apis};
+      auto secret_provider = forge::api::core::installer{secret_apis};
+      run(store.provide(provider));
+      run(secrets.provide(secret_provider));
+      auto counted = std::make_shared<counted_p2p_secrets>(
+          secret_apis.get<crypto_secrets::api>(crypto_secrets::api::ref()).shared());
+      apis.install<crypto_secrets::api>(crypto_secrets::api::describe(), counted);
+      run(node.provide(provider));
+      run(store.initialize(context));
+      auto stores = apis.get<store_plugin::api>(store_plugin::api::ref());
+      run(stores->add_store(std::string{p2p_peer_store_name}, driver));
+      run(secrets.initialize(context));
+      run(node.initialize(context));
+      auto api = apis.get<p2p_node::api>(p2p_node::api::ref());
+      if (attempt == startup_case::unopened_provider) {
+         const auto snapshots = driver->snapshot_calls();
+         const auto transactions = driver->transaction_calls();
+         // Startup now performs after_initialize, which rejects an unopened DB.
+         BOOST_CHECK_THROW(run(node.startup()), store_plugin::exceptions::stopped);
+         BOOST_TEST(counted->reads.load() == 0U);
+         BOOST_TEST(driver->snapshot_calls() == snapshots);
+         BOOST_TEST(driver->transaction_calls() == transactions);
+         BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), p2p_node::exceptions::plugin_not_initialized);
+         return;
+      }
+      run(store.after_initialize());
+      run(node.after_initialize());
+      run(store.startup());
+      run(secrets.startup());
+
+      // Baselines follow actual provider setup and schema registration, not a
+      // synthetic unopened adapter. Native startup must do no work before policy.
+      const auto snapshots = driver->snapshot_calls();
+      const auto transactions = driver->transaction_calls();
+      if (attempt == startup_case::missing_policy) {
+         BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::invalid_config);
+         BOOST_TEST(counted->reads.load() == 0U);
+         BOOST_TEST(driver->snapshot_calls() == snapshots);
+         BOOST_TEST(driver->transaction_calls() == transactions);
+         BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), p2p_node::exceptions::plugin_not_initialized);
+         return;
+      }
+
+      for (const auto* name : {"different", ""}) {
+         auto rebound = document;
+         rebound.set("plugins.net.p2p.node.peer-store.store", name);
+         BOOST_CHECK_THROW(run(node.configure({rebound, "plugins.net.p2p.node"})),
+                           forge::app::exceptions::invalid_state);
+      }
+      auto configuration = apis.get<p2p_node::configuration_api>(p2p_node::configuration_api::ref());
+      auto policies = std::vector<p2p::dht::value_policy>{{
+          .key_prefix = {'/', 't', '/'},
+          .validate = [](const p2p::dht::record&, p2p::dht::value_validation_context) {},
+          .select = [](std::span<const p2p::dht::record>) { return std::size_t{0}; },
+          .expiry = [](const p2p::dht::record&, p2p::dht::value_expiry_context context) { return context.supplied_expires_at; },
+      }};
+      configuration->set_dht_value_policies({"/configuration/store/kad/1"}, std::move(policies));
+      for (const auto& records : {
+               value::object_type{{"max-values", std::uint64_t{0}}},
+               value::object_type{{"hydration-page-limit", std::uint64_t{1'000'000}}}}) {
+         auto invalid = document;
+         invalid.set("plugins.net.p2p.node.dht.profiles", value::array_type{value::object_type{
+             {"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
+             {"peers", true}, {"providers", false}, {"values", true}, {"records", records}}});
+         auto invalid_node = p2p_node::plugin{};
+         BOOST_CHECK_THROW(run(invalid_node.configure({invalid, "plugins.net.p2p.node"})),
+                           p2p_node::exceptions::invalid_config);
+         run(invalid_node.shutdown());
+         BOOST_CHECK_THROW(run(node.configure({invalid, "plugins.net.p2p.node"})),
+                           forge::app::exceptions::invalid_state);
+      }
+      BOOST_TEST(driver->snapshot_calls() == snapshots);
+      BOOST_TEST(driver->transaction_calls() == transactions);
+      BOOST_TEST(counted->reads.load() == 0U);
+      run(node.startup());
+      BOOST_TEST(counted->reads.load() == 2U);
+      BOOST_TEST(driver->snapshot_calls() > snapshots);
+      BOOST_TEST(driver->transaction_calls() > transactions);
+      const auto listening = api->local_endpoint();
+      BOOST_REQUIRE(listening.has_value());
+      BOOST_TEST(!listening->transport.host.empty());
       run(node.shutdown());
-      run(secrets.shutdown());
-      run(store.shutdown());
-      run(scheduler.shutdown());
-   }};
-   run(store.configure({document, "plugins.db.store"}));
-   run(secrets.configure({document, "plugins.crypto.secrets"}));
-   run(node.configure({document, "plugins.net.p2p.node"}));
-   auto provider = forge::api::core::installer{apis};
-   auto secret_provider = forge::api::core::installer{secret_apis};
-   run(store.provide(provider));
-   run(secrets.provide(secret_provider));
-   auto counted = std::make_shared<counted_p2p_secrets>(
-       secret_apis.get<crypto_secrets::api>(crypto_secrets::api::ref()).shared());
-   apis.install<crypto_secrets::api>(crypto_secrets::api::describe(), counted);
-   run(node.provide(provider));
-   run(store.initialize(context));
-   auto stores = apis.get<store_plugin::api>(store_plugin::api::ref());
-   run(stores->add_store(std::string{p2p_peer_store_name}, driver));
-   run(secrets.initialize(context));
-   run(node.initialize(context));
-   BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::plugin_not_initialized);
-   BOOST_TEST(counted->reads.load() == 0U);
-   run(store.after_initialize());
-   run(node.after_initialize());
-   run(store.startup());
-   run(secrets.startup());
-
-   // Baselines follow actual provider setup and schema registration, not a
-   // synthetic unopened adapter. Native startup must do no work before policy.
-   const auto snapshots = driver->snapshot_calls();
-   const auto transactions = driver->transaction_calls();
-   BOOST_CHECK_THROW(run(node.startup()), p2p_node::exceptions::invalid_config);
-   BOOST_TEST(counted->reads.load() == 0U);
-   BOOST_TEST(driver->snapshot_calls() == snapshots);
-   BOOST_TEST(driver->transaction_calls() == transactions);
-   auto api = apis.get<p2p_node::api>(p2p_node::api::ref());
-   BOOST_CHECK_THROW(static_cast<void>(api->local_endpoint()), p2p_node::exceptions::plugin_not_initialized);
-
-   document.set("plugins.net.p2p.node.peer-store.store", "different");
-   BOOST_CHECK_THROW(run(node.configure({document, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
-   document.set("plugins.net.p2p.node.peer-store.store", "");
-   BOOST_CHECK_THROW(run(node.configure({document, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
-   document.set("plugins.net.p2p.node.peer-store.store", std::string{p2p_peer_store_name});
-   document.set("plugins.net.p2p.node.max-sessions", std::uint64_t{9});
-   run(node.configure({document, "plugins.net.p2p.node"}));
-   auto configuration = apis.get<p2p_node::configuration_api>(p2p_node::configuration_api::ref());
-   auto policies = std::vector<p2p::dht::value_policy>{{
-       .key_prefix = {'/', 't', '/'},
-       .validate = [](const p2p::dht::record&, p2p::dht::value_validation_context) {},
-       .select = [](std::span<const p2p::dht::record>) { return std::size_t{0}; },
-       .expiry = [](const p2p::dht::record&, p2p::dht::value_expiry_context context) { return context.supplied_expires_at; },
-   }};
-   configuration->set_dht_value_policies({"/configuration/store/kad/1"}, std::move(policies));
-   for (const auto& records : {
-            value::object_type{{"max-values", std::uint64_t{0}}},
-            value::object_type{{"hydration-page-limit", std::uint64_t{1'000'000}}}}) {
-      auto invalid = document;
-      invalid.set("plugins.net.p2p.node.dht.profiles", value::array_type{value::object_type{
-          {"kind", "custom"}, {"mode", "server"}, {"protocol", "/configuration/store/kad/1"},
-          {"peers", true}, {"providers", false}, {"values", true}, {"records", records}}});
-      BOOST_CHECK_THROW(run(node.configure({invalid, "plugins.net.p2p.node"})), p2p_node::exceptions::invalid_config);
-   }
-   BOOST_TEST(driver->snapshot_calls() == snapshots);
-   BOOST_TEST(driver->transaction_calls() == transactions);
-   BOOST_TEST(counted->reads.load() == 0U);
-   run(node.startup());
-   BOOST_TEST(counted->reads.load() == 2U);
-   BOOST_TEST(driver->snapshot_calls() > snapshots);
-   BOOST_TEST(driver->transaction_calls() > transactions);
-   const auto listening = api->local_endpoint();
-   BOOST_REQUIRE(listening.has_value());
-   BOOST_TEST(!listening->transport.host.empty());
-   run(node.shutdown());
-   BOOST_TEST(driver->active_writes() == 0U);
-   BOOST_TEST(!driver->overlapping_writes());
+      BOOST_TEST(driver->active_writes() == 0U);
+      BOOST_TEST(!driver->overlapping_writes());
+   };
+   exercise(startup_case::unopened_provider);
+   exercise(startup_case::missing_policy);
+   exercise(startup_case::ready);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_held_psk_stop_does_not_open_object_adapter_after_secret_returns) {
@@ -1501,7 +1535,7 @@ BOOST_AUTO_TEST_CASE(p2p_held_psk_stop_does_not_open_object_adapter_after_secret
    BOOST_TEST(driver->transaction_calls() == transactions);
    counted->hold_psk.store(false);
    counted->psk_released.notify();
-   join(startup);
+   BOOST_CHECK_THROW(join(startup), forge::app::exceptions::operation_stopped);
    join(shutdown);
    BOOST_TEST(counted->reads.load() == 3U);
    BOOST_TEST(driver->snapshot_calls() == snapshots);
@@ -1576,14 +1610,17 @@ BOOST_AUTO_TEST_CASE(store_plugin_does_not_publish_object_store_with_incompatibl
    auto api = apis.get<store_plugin::api>(store_plugin::api::ref());
    forge::asio::blocking::run(runtime, api->add_store("accounts", driver));
 
-   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.startup()), store_plugin::exceptions::startup_failed);
+   const auto handle = forge::asio::blocking::run(runtime, api->store("accounts"));
+   // Startup performs after_initialize, where ObjectDB header validation runs.
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.startup()), store_plugin::exceptions::initialize_failed);
 
    const auto status = forge::asio::blocking::run(runtime, api->status());
    BOOST_REQUIRE_EQUAL(status.stores.size(), 1U);
    BOOST_CHECK(!status.stores.front().started);
 
-   const auto handle = forge::asio::blocking::run(runtime, api->store("accounts"));
    BOOST_CHECK_THROW((void)handle.objects(), store_plugin::exceptions::stopped);
+   BOOST_CHECK_THROW(static_cast<void>(forge::asio::blocking::run(runtime, api->store("accounts"))),
+                     store_plugin::exceptions::stopped);
    BOOST_CHECK_EQUAL(driver->active_writes(), 0U);
 
    forge::asio::blocking::run(runtime, plugin.shutdown());
@@ -1833,9 +1870,9 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_configure_after_stop_or_shutdown) {
 
       BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.configure(forge::config::core::component_view{
                                                                 document, "plugins.db.store"})),
-                        store_plugin::exceptions::stopped);
+                        forge::app::exceptions::invalid_state);
       BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.startup()),
-                        store_plugin::exceptions::startup_failed);
+                        forge::app::exceptions::invalid_state);
    }
 
    {
@@ -1853,7 +1890,7 @@ BOOST_AUTO_TEST_CASE(store_plugin_rejects_configure_after_stop_or_shutdown) {
 
       BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.configure(forge::config::core::component_view{
                                                                 document, "plugins.db.store"})),
-                        store_plugin::exceptions::stopped);
+                        forge::app::exceptions::invalid_state);
    }
 }
 

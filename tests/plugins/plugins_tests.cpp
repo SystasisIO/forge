@@ -2501,6 +2501,20 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_preserves_stop_requested_before_node_startu
    }};
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.initialize());
+   auto startup = std::future<void>{};
+   auto cleanup = boost::scope::scope_exit{[&] {
+      app.request_stop();
+      if (startup.valid()) {
+         if (startup.wait_for(std::chrono::seconds{10}) != std::future_status::ready) { std::terminate(); }
+         try { startup.get(); }
+         catch (const forge::app::exceptions::invalid_state&) {}
+         catch (...) { BOOST_ERROR("stop-before-startup join failed"); }
+      }
+      auto shutdown = boost::asio::co_spawn(app.runtime().context(), app.shutdown(), boost::asio::use_future);
+      if (shutdown.wait_for(std::chrono::seconds{10}) != std::future_status::ready) { std::terminate(); }
+      try { shutdown.get(); }
+      catch (...) { BOOST_ERROR("stop-before-startup application cleanup failed"); }
+   }};
    auto p2p = app.apis().get<forge::plugins::net::p2p::node::api>(
        {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
 
@@ -2508,12 +2522,15 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_preserves_stop_requested_before_node_startu
    stop_thread.join();
 
    const auto started = std::chrono::steady_clock::now();
-   forge::asio::blocking::run(app.runtime(), app.startup());
+   startup = boost::asio::co_spawn(app.runtime().context(), app.startup(), boost::asio::use_future);
+   BOOST_REQUIRE(startup.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(startup.get(), forge::app::exceptions::invalid_state);
    const auto elapsed = std::chrono::steady_clock::now() - started;
 
    BOOST_TEST(elapsed < std::chrono::seconds{2});
    BOOST_CHECK_THROW((void)p2p->local_endpoint(), forge::plugins::net::p2p::node::exceptions::plugin_not_initialized);
    forge::asio::blocking::run(app.runtime(), app.shutdown());
+   BOOST_CHECK(app.state() == forge::app::lifecycle_phase::stopped);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_startup_does_not_copy_raw_handler_captures) {
@@ -2557,13 +2574,24 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_live_slots_accept_registration_during_start
    auto p2p = app.apis().get<forge::plugins::net::p2p::node::api>(
        {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
 
-   auto startup_failure = std::exception_ptr{};
-   auto startup = std::thread{[&] {
-      try {
-         forge::asio::blocking::run(app.runtime(), app.startup());
-      } catch (...) {
-         startup_failure = std::current_exception();
+   auto startup = boost::asio::co_spawn(app.runtime().context(), app.startup(), boost::asio::use_future);
+   const auto join_startup = [&] {
+      if (startup.wait_for(std::chrono::seconds{10}) != std::future_status::ready) { std::terminate(); }
+      startup.get();
+   };
+   // An assertion during native publication must still stop and join startup
+   // before destroying either the application or its published route handles.
+   auto cleanup = boost::scope::scope_exit{[&] {
+      app.request_stop();
+      if (startup.valid()) {
+         try { join_startup(); }
+         catch (const forge::app::exceptions::operation_stopped&) {}
+         catch (...) { BOOST_ERROR("live-slot startup cleanup failed"); }
       }
+      auto shutdown = boost::asio::co_spawn(app.runtime().context(), app.shutdown(), boost::asio::use_future);
+      if (shutdown.wait_for(std::chrono::seconds{10}) != std::future_status::ready) { std::terminate(); }
+      try { shutdown.get(); }
+      catch (...) { BOOST_ERROR("live-slot application cleanup failed"); }
    }};
 
    auto node_created = false;
@@ -2576,6 +2604,8 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_live_slots_accept_registration_during_start
       }
    }
    BOOST_REQUIRE(node_created);
+   BOOST_REQUIRE(startup.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+   BOOST_CHECK(app.state() == forge::app::lifecycle_phase::starting);
 
    auto raw = app.apis().get<forge::plugins::net::p2p::node::protocol_api>(
        {.id = {"forge.plugins.net.p2p.node.protocol"}, .major = 1});
@@ -2585,12 +2615,14 @@ BOOST_AUTO_TEST_CASE(p2p_node_plugin_live_slots_accept_registration_during_start
    late.close();
    BOOST_TEST(!late.active());
 
+   BOOST_REQUIRE(startup.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
    app.request_stop();
-   startup.join();
-   if (startup_failure) {
-      std::rethrow_exception(startup_failure);
-   }
+   BOOST_CHECK_THROW(join_startup(), forge::app::exceptions::operation_stopped);
+   BOOST_CHECK_THROW(static_cast<void>(raw->register_protocol({.value = "/forge/test/stopped-route/1"},
+       [](forge::net::p2p::node::incoming_protocol_stream) -> boost::asio::awaitable<void> { co_return; })),
+       forge::plugins::net::p2p::node::exceptions::route_conflict);
    forge::asio::blocking::run(app.runtime(), app.shutdown());
+   BOOST_CHECK(app.state() == forge::app::lifecycle_phase::stopped);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_node_plugin_cancels_bootstrap_sleep_from_an_external_thread) {

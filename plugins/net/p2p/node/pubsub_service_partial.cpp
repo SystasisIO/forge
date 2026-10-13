@@ -99,8 +99,8 @@ boost::asio::awaitable<void> pubsub_service::restore_full_owned(std::shared_ptr<
       const auto lock = std::scoped_lock{self->mutex};
       topic->joined = ordinary;
       topic->native_dirty = ordinary;
-      retired_join_error.swap(topic->join_error);
-      retired_leave_error.swap(topic->leave_error);
+      std::swap(retired_join_error, topic->join_error);
+      std::swap(retired_leave_error, topic->leave_error);
    }
 }
 

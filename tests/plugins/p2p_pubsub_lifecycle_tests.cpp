@@ -862,7 +862,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_unsubscribe_cleanup_remains_allowed_af
    auto f = fixture{};
    const auto token = f.run(f.api->subscribe({"one"}, accepting()));
    f.owner->request_stop();
-   BOOST_CHECK_THROW(f.api->snapshot(), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(f.api->snapshot()), p2p::exceptions::canceled);
    f.run(f.api->unsubscribe(token));
    BOOST_TEST(f.source->count(false, "one") == 1U);
    BOOST_TEST(f.source->snapshot().topics == 0U);
@@ -901,7 +901,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_failed_shutdown_retains_owners_and_ret
    // A last capture destructor must hold neither resource nor lifecycle mutex.
    auto probe = boost::asio::co_spawn(f.runtime.context(), f.api->unsubscribe(token), boost::asio::use_future);
    BOOST_CHECK_THROW(joined(probe), p2p::exceptions::canceled);
-   BOOST_CHECK_THROW(f.api->snapshot(), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(f.api->snapshot()), p2p::exceptions::canceled);
    destruction->release();
    joined(retry);
    BOOST_TEST(remaining.expired());

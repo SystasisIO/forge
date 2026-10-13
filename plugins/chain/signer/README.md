@@ -114,7 +114,10 @@ state.
 
 ## Runtime
 
-Cheap exact-profile selection runs before admission. Admission is bounded by
+Common lifecycle admission and runtime readiness are checked before exact-profile
+selection; stopped or uninitialized APIs return retryable `unavailable`, not a
+policy denial or provider failure. Cheap exact-profile selection still runs before
+queue capacity admission. Admission is bounded by
 `max_inflight`, request count, queued decoded bytes and per-caller quota; the
 queue byte budget is independent from each profile's final
 `max_packed_bytes`. Caller cancellation and plugin stop propagate to active

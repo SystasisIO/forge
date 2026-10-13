@@ -408,7 +408,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_retained_api_obeys_starting_and_common_stop_befo
    BOOST_CHECK(!initialize.complete());
    auto startup = f.run(lifecycle.begin(forge::app::lifecycle_operation::startup));
    const auto retained = service->interface();
-   BOOST_CHECK_THROW(retained->snapshot(), facade::exceptions::plugin_not_initialized);
+   BOOST_CHECK_THROW(static_cast<void>(retained->snapshot()), facade::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW(f.run(retained->publish({"not-running"}, {1})), facade::exceptions::plugin_not_initialized);
    BOOST_CHECK_THROW(f.run(retained->enable_partial({"not-running"}, accepting(), callbacks())),
                      facade::exceptions::plugin_not_initialized);
@@ -416,7 +416,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_retained_api_obeys_starting_and_common_stop_befo
    // Close common admission before the backend stop hook updates its local resource state.
    BOOST_CHECK(lifecycle.request_stop());
    lifecycle.complete_stop();
-   BOOST_CHECK_THROW(retained->snapshot(), p2p::exceptions::canceled);
+   BOOST_CHECK_THROW(static_cast<void>(retained->snapshot()), p2p::exceptions::canceled);
    BOOST_CHECK_THROW(f.run(retained->publish({"stopped"}, {1})), p2p::exceptions::canceled);
    BOOST_CHECK_THROW(f.run(retained->subscribe({"stopped"}, accepting())), p2p::exceptions::canceled);
    BOOST_TEST(f.source->enable_calls.load() == 0U);

@@ -15,7 +15,7 @@ class protocol_slot final : public std::enable_shared_from_this<protocol_slot> {
       std::shared_ptr<api_publication_generation> api;
    };
 
-   explicit protocol_slot(forge::net::p2p::protocol_id protocol);
+   protocol_slot(forge::net::p2p::protocol_id protocol, forge::app::plugin_lifecycle lifecycle);
    [[nodiscard]] const forge::net::p2p::protocol_id& protocol() const noexcept;
    [[nodiscard]] std::shared_ptr<generation> current() const noexcept;
    [[nodiscard]] std::shared_ptr<generation> replace(std::shared_ptr<generation> next) noexcept;
@@ -24,11 +24,14 @@ class protocol_slot final : public std::enable_shared_from_this<protocol_slot> {
    void detach();
 
  private:
+   [[nodiscard]] std::shared_ptr<generation> admit() const;
    static boost::asio::awaitable<void> accept(std::shared_ptr<generation> owner,
                                              forge::net::p2p::node::incoming_protocol_stream stream);
    forge::net::p2p::protocol_id protocol_;
+   const forge::app::plugin_lifecycle lifecycle_;
    std::shared_ptr<generation> current_;
    std::mutex mutex_;
    std::shared_ptr<const protocol_operations> operations_;
+   bool retired_ = false;
 };
 }

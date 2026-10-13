@@ -231,7 +231,7 @@ boost::asio::awaitable<void> pubsub_service::shutdown_joined(std::shared_ptr<pub
          auto retired_error = std::exception_ptr{};
          {
             const auto lock = std::scoped_lock{self->mutex};
-            retired_error.swap(topic->leave_error);
+            std::swap(retired_error, topic->leave_error);
             topic->leave_error = error;
             if (!error) {
                topic->native_dirty = false;

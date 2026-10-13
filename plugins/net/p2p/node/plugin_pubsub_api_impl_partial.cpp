@@ -160,7 +160,7 @@ boost::asio::awaitable<forge::net::p2p::pubsub::partial_topic> plugin::pubsub_ap
       {
          const auto lock = std::scoped_lock{self->mutex};
          record->cleanup_pending = static_cast<bool>(cleanup);
-         retired_error.swap(topic->leave_error);
+         std::swap(retired_error, topic->leave_error);
          topic->leave_error = cleanup;
          if (!cleanup) { topic->partial.reset(); }
       }
@@ -234,7 +234,7 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::disable_partial_transition
    auto retired_error = std::exception_ptr{};
    {
       const auto lock = std::scoped_lock{self->mutex};
-      retired_error.swap(topic->leave_error);
+      std::swap(retired_error, topic->leave_error);
       topic->leave_error = failure;
       if (!failure) { topic->partial.reset(); }
    }

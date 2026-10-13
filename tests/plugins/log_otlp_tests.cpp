@@ -48,6 +48,7 @@ import forge.app.diagnostics;
 import forge.app.events;
 import forge.app.exceptions;
 import forge.app.plugin_context;
+import forge.app.plugin_lifecycle;
 import forge.app.plugin_registry;
 import forge.asio.blocking;
 import forge.asio.runtime;
@@ -99,7 +100,7 @@ struct collected_request {
    std::string body;
 };
 
-std::size_t exported_event_count(const std::vector<collected_request>& requests,
+std::size_t received_event_count(const std::vector<collected_request>& requests,
                                  std::string_view logger, std::string_view event) {
    auto count = std::size_t{};
    for (const auto& request : requests) {
@@ -127,12 +128,12 @@ std::size_t exported_event_count(const std::vector<collected_request>& requests,
    return count;
 }
 
-std::size_t exported_event_count(const std::vector<std::string>& bodies,
+std::size_t received_event_count(const std::vector<std::string>& bodies,
                                  std::string_view logger, std::string_view event) {
    auto requests = std::vector<collected_request>{};
    requests.reserve(bodies.size());
    for (const auto& body : bodies) { requests.push_back(collected_request{.body = body}); }
-   return exported_event_count(requests, logger, event);
+   return received_event_count(requests, logger, event);
 }
 
 class fake_collector {
@@ -349,20 +350,6 @@ void expect_contains(std::string_view haystack, std::string_view needle) {
    }
 }
 
-boost::asio::awaitable<bool> observe_management_closed(std::shared_ptr<log_otlp::api> api) {
-   const auto executor = co_await boost::asio::this_coro::executor;
-   const auto deadline = std::chrono::steady_clock::now() + 2s;
-   while (std::chrono::steady_clock::now() < deadline) {
-      try {
-         static_cast<void>(co_await api->metrics(log_otlp::metrics_request{}));
-      } catch (const log_otlp::exceptions::exporter_unavailable&) {
-         co_return true;
-      }
-      co_await boost::asio::post(executor, boost::asio::use_awaitable);
-   }
-   co_return false;
-}
-
 boost::asio::awaitable<void> sample_management_metrics(std::shared_ptr<log_otlp::api> api) {
    const auto executor = co_await boost::asio::this_coro::executor;
    for (auto count = 0; count != 128; ++count) {
@@ -437,12 +424,16 @@ BOOST_AUTO_TEST_CASE(log_otlp_export_disabled_keeps_named_routes_on_the_console_
    BOOST_REQUIRE(named.get_parent() != nullptr);
    dlog(named, "named route remains visible without OTLP");
 
-   BOOST_REQUIRE_EQUAL(shared_sink->records.size(), 1U);
-   BOOST_TEST(shared_sink->records.front().logger == "spine.runtime");
-   BOOST_TEST(shared_sink->records.front().message == "named route remains visible without OTLP");
+   const auto named_route = [](const auto& record) { return record.logger == "spine.runtime"; };
+   BOOST_REQUIRE_EQUAL(std::ranges::count_if(shared_sink->records, named_route), 1U);
+   const auto record = std::ranges::find_if(shared_sink->records, named_route);
+   BOOST_TEST(record->message == "named route remains visible without OTLP");
+   BOOST_CHECK(record->level == forge::log_level::debug);
 
    auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
    BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, api->metrics()),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, api->flush()),
                      log_otlp::exceptions::exporter_unavailable);
 
    harness.shutdown();
@@ -536,9 +527,9 @@ BOOST_AUTO_TEST_CASE(log_otlp_captures_after_initialize_and_stop_without_duplica
    harness.shutdown();
    ilog("plugin.lifecycle", "fixture detached", ("event", "fixture.detached"));
    const auto requests = collector.requests();
-   BOOST_TEST(exported_event_count(requests, "plugin.lifecycle", "fixture.after-initialize") == 1U);
-   BOOST_TEST(exported_event_count(requests, "plugin.lifecycle", "fixture.producer-shutdown") == 1U);
-   BOOST_TEST(exported_event_count(requests, "plugin.lifecycle", "fixture.detached") == 0U);
+   BOOST_TEST(received_event_count(requests, "plugin.lifecycle", "fixture.after-initialize") == 1U);
+   BOOST_TEST(received_event_count(requests, "plugin.lifecycle", "fixture.producer-shutdown") == 1U);
+   BOOST_TEST(received_event_count(requests, "plugin.lifecycle", "fixture.detached") == 0U);
    const auto body = std::accumulate(requests.begin(), requests.end(), std::string{},
                                      [](std::string out, const auto& request) { return out + request.body; });
    expect_contains(body, "fixture after_initialize");
@@ -556,7 +547,7 @@ BOOST_AUTO_TEST_CASE(log_otlp_direct_startup_retains_compatibility_without_phase
    forge::asio::blocking::run(harness.runtime, harness.plugin.startup());
    ilog("plugin.direct", "direct startup", ("event", "fixture.direct"));
    harness.shutdown();
-   BOOST_TEST(exported_event_count(collector.requests(), "plugin.direct", "fixture.direct") == 1U);
+   BOOST_TEST(received_event_count(collector.requests(), "plugin.direct", "fixture.direct") == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(log_otlp_failure_after_attachment_detaches_and_requires_fresh_instance) {
@@ -595,8 +586,8 @@ BOOST_AUTO_TEST_CASE(log_otlp_failure_after_attachment_detaches_and_requires_fre
    fresh.shutdown();
    BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime, api->metrics()),
                      log_otlp::exceptions::exporter_unavailable);
-   BOOST_TEST(exported_event_count(collector.requests(), "plugin.rollback", "fixture.failed") == 0U);
-   BOOST_TEST(exported_event_count(collector.requests(), "plugin.rollback", "fixture.restarted") == 1U);
+   BOOST_TEST(received_event_count(collector.requests(), "plugin.rollback", "fixture.failed") == 0U);
+   BOOST_TEST(received_event_count(collector.requests(), "plugin.rollback", "fixture.restarted") == 1U);
 }
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -644,8 +635,8 @@ BOOST_AUTO_TEST_CASE(log_otlp_resend_failure_restores_installed_crash_capture) {
    ilog("plugin.resend", "fresh instance", ("event", "fixture.restarted"));
    fresh.shutdown();
    BOOST_CHECK(std::get_terminate() == previous_terminate);
-   BOOST_TEST(exported_event_count(collector.requests(), "plugin.resend", "fixture.failed") == 0U);
-   BOOST_TEST(exported_event_count(collector.requests(), "plugin.resend", "fixture.restarted") == 1U);
+   BOOST_TEST(received_event_count(collector.requests(), "plugin.resend", "fixture.failed") == 0U);
+   BOOST_TEST(received_event_count(collector.requests(), "plugin.resend", "fixture.restarted") == 1U);
 }
 #endif
 
@@ -714,8 +705,8 @@ BOOST_AUTO_TEST_CASE(log_otlp_application_exports_database_open_and_shutdown) {
             const auto driver_route = "forge.db." + backend;
             const auto opened = backend == "mdbx" ? "environment.opened" : "store.opened";
             const auto closed = backend == "mdbx" ? "environment.closed" : "store.closed";
-            BOOST_TEST(exported_event_count(requests, driver_route, opened) == 1U);
-            BOOST_TEST(exported_event_count(requests, driver_route, closed) == 1U);
+            BOOST_TEST(received_event_count(requests, driver_route, opened) == 1U);
+            BOOST_TEST(received_event_count(requests, driver_route, closed) == 1U);
             BOOST_TEST(body.find(path.string()) == std::string::npos);
          }
       }
@@ -744,7 +735,7 @@ BOOST_AUTO_TEST_CASE(log_otlp_application_rolls_back_exporter_after_database_ope
    BOOST_CHECK_THROW(forge::asio::blocking::run(application.runtime(), telemetry->metrics()),
                      log_otlp::exceptions::exporter_unavailable);
    const auto requests = collector.requests();
-   BOOST_TEST(exported_event_count(requests, "forge.db.store", "composition.failed") == 1U);
+   BOOST_TEST(received_event_count(requests, "forge.db.store", "composition.failed") == 1U);
    for (const auto& request : requests) {
       BOOST_TEST(request.body.find(path.string()) == std::string::npos);
    }
@@ -981,13 +972,32 @@ BOOST_AUTO_TEST_CASE(log_otlp_shutdown_joins_admitted_call_with_blocked_external
    auto caller = forge::asio::runtime{{.worker_threads = 1}};
    auto observer = forge::asio::runtime{{.worker_threads = 2}};
    auto caller_strand = boost::asio::make_strand(caller.context());
+   auto cleanup_strand = boost::asio::make_strand(harness.runtime.context());
+   auto cleanup_marker = std::make_shared<std::promise<forge::app::lifecycle_snapshot>>();
+   auto cleanup_progress = cleanup_marker->get_future();
+   auto secrets = std::shared_ptr<test_secrets_api>{new test_secrets_api{},
+       [cleanup_strand, lifecycle = harness.plugin.lifecycle(), cleanup_marker](test_secrets_api* value) {
+          delete value;
+          // on_shutdown releases this resolver capture after core export/drain
+          // and sink detach, immediately before joining admitted callers.
+          boost::asio::post(cleanup_strand, [lifecycle, cleanup_marker] {
+             cleanup_marker->set_value(lifecycle.snapshot());
+          });
+       }};
+   const auto secret_owner = std::weak_ptr<test_secrets_api>{secrets};
+   harness.install_secrets(secrets);
    auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
    auto document = plugin_config(collector.endpoint(), {logger_route("plugin.join")});
    document.set("plugins.log.otlp.request-timeout-ms", std::uint64_t{10000});
    document.set("plugins.log.otlp.shutdown-timeout-ms", std::uint64_t{5000});
+   document.set("plugins.log.otlp.headers", forge::config::core::value::array_type{
+       secret_header("Authorization", "otlp/cloud-token", "otlp.logs.authorization")});
    harness.configure(document);
    harness.provide_and_start();
    auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref()).shared();
+   harness.apis.clear();
+   secrets.reset();
+   BOOST_REQUIRE(!secret_owner.expired());
    // Constructing an awaitable is not admission and must not block shutdown.
    auto never_started = api->flush(log_otlp::flush_request{});
    ilog("plugin.join", "before stop", ("event", "fixture.before-stop"));
@@ -1015,15 +1025,19 @@ BOOST_AUTO_TEST_CASE(log_otlp_shutdown_joins_admitted_call_with_blocked_external
                      log_otlp::exceptions::exporter_unavailable);
    ilog("plugin.join", "after stop", ("event", "fixture.after-stop"));
    auto samples = boost::asio::co_spawn(observer.context(), sample_management_metrics(api), boost::asio::use_future);
-   auto shutdown = boost::asio::co_spawn(harness.runtime.context(), harness.plugin.shutdown(), boost::asio::use_future);
-   auto closed = boost::asio::co_spawn(observer.context(), observe_management_closed(api), boost::asio::use_future);
-   require_concurrent_ready(closed);
-   BOOST_REQUIRE(closed.get());
+   auto shutdown = boost::asio::co_spawn(cleanup_strand, harness.plugin.shutdown(), boost::asio::use_future);
    collector.release();
    BOOST_REQUIRE(collector.wait_for_requests(2));
-   // The transport is released, but flush cannot release its exporter on the
-   // blocked caller strand. Shutdown must join that accepted call, not just I/O.
-   BOOST_CHECK(shutdown.wait_for(100ms) == std::future_status::timeout);
+   require_concurrent_ready(cleanup_progress);
+   const auto joining = cleanup_progress.get();
+   BOOST_TEST(secret_owner.expired());
+   BOOST_CHECK(joining.phase == forge::app::lifecycle_phase::stopping);
+   BOOST_CHECK(joining.in_progress == forge::app::lifecycle_operation::shutdown);
+   BOOST_TEST(!joining.completed(forge::app::lifecycle_operation::shutdown));
+   // The marker runs on the cleanup strand after the concrete resolver owner
+   // retired. An unstarted shutdown never reaches it; omitting the caller join
+   // publishes stopped/completed before this serialized executor turn.
+   BOOST_CHECK(shutdown.wait_for(0ms) == std::future_status::timeout);
    BOOST_CHECK(flush.wait_for(0ms) == std::future_status::timeout);
    unblock->set_value();
    release_caller.set_active(false);
@@ -1040,8 +1054,8 @@ BOOST_AUTO_TEST_CASE(log_otlp_shutdown_joins_admitted_call_with_blocked_external
    BOOST_CHECK_THROW(forge::asio::blocking::run(observer, api->metrics(log_otlp::metrics_request{})),
                      log_otlp::exceptions::exporter_unavailable);
    const auto bodies = collector.bodies();
-   BOOST_TEST(exported_event_count(bodies, "plugin.join", "fixture.before-stop") == 1U);
-   BOOST_TEST(exported_event_count(bodies, "plugin.join", "fixture.after-stop") == 1U);
+   BOOST_TEST(received_event_count(bodies, "plugin.join", "fixture.before-stop") == 1U);
+   BOOST_TEST(received_event_count(bodies, "plugin.join", "fixture.after-stop") == 1U);
    const auto body = std::accumulate(bodies.begin(), bodies.end(), std::string{});
    expect_contains(body, "fixture.before-stop");
    expect_contains(body, "fixture.after-stop");
@@ -1053,42 +1067,67 @@ BOOST_AUTO_TEST_CASE(log_otlp_cancelled_management_call_releases_admission_and_p
    auto caller = forge::asio::runtime{{.worker_threads = 2}};
    auto caller_strand = boost::asio::make_strand(caller.context());
    auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
+   auto release_transport = boost::scope::scope_exit{[&collector] { collector.release(); }};
    harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.cancel")}));
    harness.provide_and_start();
    auto api = harness.apis.get<log_otlp::api>(log_otlp::api::ref()).shared();
    ilog("plugin.cancel", "before cancellation", ("event", "fixture.before-cancellation"));
-   auto signal = boost::asio::cancellation_signal{};
-   auto cancelled = boost::asio::co_spawn(caller_strand, api->flush(log_otlp::flush_request{}),
-       boost::asio::bind_cancellation_slot(signal.slot(), boost::asio::use_future));
+   auto signal = std::make_shared<boost::asio::cancellation_signal>();
+   auto cancelled = boost::asio::co_spawn(caller_strand,
+       [api, signal]() -> boost::asio::awaitable<log_otlp::flush_result> {
+          // co_spawn owns this function until its coroutine frame retires, even on failed assertions.
+          static_cast<void>(signal);
+          co_return co_await api->flush(log_otlp::flush_request{});
+       }, boost::asio::bind_cancellation_slot(signal->slot(), boost::asio::use_future));
+   auto cancel_and_join = boost::scope::scope_exit{[&]() noexcept {
+      collector.release();
+      if (!cancelled.valid()) { return; }
+      try {
+         boost::asio::post(caller_strand, [signal] { signal->emit(boost::asio::cancellation_type::all); });
+         // The frame-owned signal remains valid even if the bounded unwind join times out.
+         static_cast<void>(cancelled.wait_for(3s));
+      } catch (...) {}
+   }};
    BOOST_REQUIRE(collector.wait_for_requests(1));
-   boost::asio::post(caller_strand, [&] { signal.emit(boost::asio::cancellation_type::all); });
+   boost::asio::post(caller_strand, [signal] { signal->emit(boost::asio::cancellation_type::all); });
    require_concurrent_ready(cancelled);
    BOOST_CHECK_THROW(static_cast<void>(cancelled.get()), boost::system::system_error);
+   cancel_and_join.set_active(false);
    const auto before_stop = forge::asio::blocking::run(caller, api->metrics(log_otlp::metrics_request{}));
    BOOST_TEST(before_stop.enqueued_records == 1U);
    BOOST_TEST(before_stop.failed_records == 0U);
+   ilog("plugin.cancel", "after cancellation", ("event", "fixture.after-cancellation"));
    auto surviving = boost::asio::co_spawn(caller_strand, api->flush(log_otlp::flush_request{}),
                                          boost::asio::use_future);
    auto entered = std::make_shared<std::promise<void>>();
    auto admitted = entered->get_future();
-   // The strand fence follows flush admission, before common stop closes it.
+   // The strand fence follows flush admission; the collector still holds I/O.
    boost::asio::post(caller_strand, [entered] { entered->set_value(); });
    require_concurrent_ready(admitted);
    admitted.get();
    BOOST_CHECK(surviving.wait_for(0ms) == std::future_status::timeout);
+   collector.release();
+   require_concurrent_ready(surviving);
+   static_cast<void>(surviving.get());
+   const auto exported = forge::asio::blocking::run(caller, api->metrics(log_otlp::metrics_request{}));
+   BOOST_TEST(exported.enqueued_records == 2U);
+   BOOST_TEST(exported.exported_records == 2U);
+   BOOST_TEST(exported.failed_records == 0U);
+   BOOST_TEST(exported.dropped_records == 0U);
+   BOOST_TEST(exported.queue_records == 0U);
    harness.plugin.request_stop();
    ilog("plugin.cancel", "final producer log", ("event", "fixture.final-producer"));
    BOOST_CHECK_THROW(forge::asio::blocking::run(caller, api->flush(log_otlp::flush_request{})),
                      log_otlp::exceptions::exporter_unavailable);
    BOOST_CHECK_THROW(forge::asio::blocking::run(caller, api->metrics(log_otlp::metrics_request{})),
                      log_otlp::exceptions::exporter_unavailable);
-   collector.release();
-   require_concurrent_ready(surviving);
-   static_cast<void>(surviving.get());
+   // Post-stop receipt proves final producer capture/drain, not an export
+   // success metric. Success after cancellation was measured before stop above.
    harness.shutdown();
    const auto bodies = collector.bodies();
-   BOOST_TEST(exported_event_count(bodies, "plugin.cancel", "fixture.before-cancellation") == 1U);
-   BOOST_TEST(exported_event_count(bodies, "plugin.cancel", "fixture.final-producer") == 1U);
+   BOOST_TEST(received_event_count(bodies, "plugin.cancel", "fixture.before-cancellation") == 1U);
+   BOOST_TEST(received_event_count(bodies, "plugin.cancel", "fixture.after-cancellation") == 1U);
+   BOOST_TEST(received_event_count(bodies, "plugin.cancel", "fixture.final-producer") == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(log_otlp_held_api_and_delayed_call_are_safe_after_plugin_and_runtime_destruction) {

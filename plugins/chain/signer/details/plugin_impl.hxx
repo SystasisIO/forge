@@ -34,6 +34,7 @@ struct plugin::impl {
    void audit(audit_entry value) const noexcept;
 
  private:
+   [[nodiscard]] std::shared_ptr<const runtime_state> admitted_runtime_snapshot() const;
    [[nodiscard]] std::shared_ptr<const runtime_state> runtime_snapshot() const;
 
    plugin_options options_;
