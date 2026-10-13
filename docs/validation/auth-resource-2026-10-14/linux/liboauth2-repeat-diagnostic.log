@@ -1,0 +1,45 @@
+UpdateCTestConfiguration  from :/build/forge/DartConfiguration.tcl
+Parse Config file:/build/forge/DartConfiguration.tcl
+Test project /build/forge
+Constructing a list of tests
+Ignore test: bls12-381
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 54
+    Start 54: test_forge_auth_liboauth2
+
+54: Test command: /build/forge/tests/test_forge_auth_liboauth2
+54: Working Directory: /build/forge
+54: Test timeout computed to be: 180
+54: Running 17 test cases...
+54: Entering test module "libforge"
+54: /src/tests/auth/liboauth2_tests.cpp(367): Entering test suite "liboauth2_tests"
+54: /src/tests/auth/liboauth2_tests.cpp(369): Entering test case "strict_urls_profiles_and_finite_limits_are_not_decorative"
+54: /src/tests/auth/liboauth2_tests.cpp(369): Leaving test case "strict_urls_profiles_and_finite_limits_are_not_decorative"; testing time: 187499us
+54: /src/tests/auth/liboauth2_tests.cpp(399): Entering test case "jwt_normalizes_verified_evidence_and_requires_the_exact_configured_policy"
+54: /src/tests/auth/liboauth2_tests.cpp(399): Leaving test case "jwt_normalizes_verified_evidence_and_requires_the_exact_configured_policy"; testing time: 148395us
+54: /src/tests/auth/liboauth2_tests.cpp(414): Entering test case "purpose_algorithm_and_signature_denials_never_fallback_to_introspection"
+54: /src/tests/auth/liboauth2_tests.cpp(414): Leaving test case "purpose_algorithm_and_signature_denials_never_fallback_to_introspection"; testing time: 240006us
+54: /src/tests/auth/liboauth2_tests.cpp(426): Entering test case "strict_claim_types_resources_and_numericdate_overflow_are_denied"
+54: /src/tests/auth/liboauth2_tests.cpp(426): Leaving test case "strict_claim_types_resources_and_numericdate_overflow_are_denied"; testing time: 221743us
+54: /src/tests/auth/liboauth2_tests.cpp(459): Entering test case "duplicate_claims_and_nul_suffixed_signed_payloads_are_rejected_without_a_second_parser"
+54: /src/tests/auth/liboauth2_tests.cpp(459): Leaving test case "duplicate_claims_and_nul_suffixed_signed_payloads_are_rejected_without_a_second_parser"; testing time: 372657us
+54: /src/tests/auth/liboauth2_tests.cpp(474): Entering test case "verification_result_cache_is_unconditionally_disabled_including_literal_jwks_url_tokens"
+54: /src/tests/auth/liboauth2_tests.cpp(474): Leaving test case "verification_result_cache_is_unconditionally_disabled_including_literal_jwks_url_tokens"; testing time: 205669us
+54: /src/tests/auth/liboauth2_tests.cpp(489): Entering test case "provider_domains_do_not_share_keys_even_at_same_endpoint_and_same_kid"
+54: /src/tests/auth/liboauth2_tests.cpp(489): Leaving test case "provider_domains_do_not_share_keys_even_at_same_endpoint_and_same_kid"; testing time: 208872us
+54: /src/tests/auth/liboauth2_tests.cpp(505): Entering test case "key_count_and_response_size_bounds_fail_closed_with_size_errors"
+    Test #54: test_forge_auth_liboauth2 ........***Timeout 180.12 sec
+
+0% tests passed, 1 tests failed out of 1
+
+Total Test time (real) = 180.38 sec
+
+The following tests FAILED:
+	 54 - test_forge_auth_liboauth2 (Timeout)
+Errors while running CTest
+Output from these tests are in: /build/forge/Testing/Temporary/LastTest.log
+Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.

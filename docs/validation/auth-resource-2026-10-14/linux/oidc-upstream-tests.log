@@ -1,0 +1,46 @@
+Package gtk+-3.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gtk+-3.0.pc'
+to the PKG_CONFIG_PATH environment variable
+Package 'gtk+-3.0' not found
+Package 'webkit2gtk-4.0' not found
+test/src/utils/stringUtils/tc_strelim.c:10:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   10 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+test/src/utils/stringUtils/tc_strelim.c:18:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   18 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+2 warnings generated.
+test/src/utils/stringUtils/tc_strelimIfAfter.c:10:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   10 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+test/src/utils/stringUtils/tc_strelimIfAfter.c:18:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   18 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+test/src/utils/stringUtils/tc_strelimIfAfter.c:26:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   26 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+3 warnings generated.
+test/src/utils/stringUtils/tc_strelimIfFollowed.c:10:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   10 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+test/src/utils/stringUtils/tc_strelimIfFollowed.c:18:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   18 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+test/src/utils/stringUtils/tc_strelimIfFollowed.c:26:23: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+   26 |   char              s[strlen(str) + 1];
+      |                       ^~~~~~~~~~~~~~~
+3 warnings generated.
+Running suite(s): json
+100%: Checks: 12, Failures: 0, Errors: 0
+Running suite(s): portUtils
+100%: Checks: 14, Failures: 0, Errors: 0
+Running suite(s): stringUtils
+100%: Checks: 56, Failures: 0, Errors: 0
+Running suite(s): memoryCrypt
+100%: Checks: 5, Failures: 0, Errors: 0
+Running suite(s): crypt
+100%: Checks: 16, Failures: 0, Errors: 0
+Running suite(s): account
+100%: Checks: 3, Failures: 0, Errors: 0
+Running suite(s): uriUtils
+100%: Checks: 37, Failures: 0, Errors: 0

@@ -1,0 +1,41 @@
+Running 17 test cases...
+Entering test module "libforge"
+/src/tests/auth/liboauth2_tests.cpp(367): Entering test suite "liboauth2_tests"
+/src/tests/auth/liboauth2_tests.cpp(369): Entering test case "strict_urls_profiles_and_finite_limits_are_not_decorative"
+/src/tests/auth/liboauth2_tests.cpp(369): Leaving test case "strict_urls_profiles_and_finite_limits_are_not_decorative"; testing time: 154515us
+/src/tests/auth/liboauth2_tests.cpp(399): Entering test case "jwt_normalizes_verified_evidence_and_requires_the_exact_configured_policy"
+/src/tests/auth/liboauth2_tests.cpp(399): Leaving test case "jwt_normalizes_verified_evidence_and_requires_the_exact_configured_policy"; testing time: 164522us
+/src/tests/auth/liboauth2_tests.cpp(414): Entering test case "purpose_algorithm_and_signature_denials_never_fallback_to_introspection"
+/src/tests/auth/liboauth2_tests.cpp(414): Leaving test case "purpose_algorithm_and_signature_denials_never_fallback_to_introspection"; testing time: 138187us
+/src/tests/auth/liboauth2_tests.cpp(426): Entering test case "strict_claim_types_resources_and_numericdate_overflow_are_denied"
+/src/tests/auth/liboauth2_tests.cpp(426): Leaving test case "strict_claim_types_resources_and_numericdate_overflow_are_denied"; testing time: 197115us
+/src/tests/auth/liboauth2_tests.cpp(459): Entering test case "duplicate_claims_and_nul_suffixed_signed_payloads_are_rejected_without_a_second_parser"
+/src/tests/auth/liboauth2_tests.cpp(459): Leaving test case "duplicate_claims_and_nul_suffixed_signed_payloads_are_rejected_without_a_second_parser"; testing time: 158114us
+/src/tests/auth/liboauth2_tests.cpp(474): Entering test case "verification_result_cache_is_unconditionally_disabled_including_literal_jwks_url_tokens"
+/src/tests/auth/liboauth2_tests.cpp(474): Leaving test case "verification_result_cache_is_unconditionally_disabled_including_literal_jwks_url_tokens"; testing time: 165720us
+/src/tests/auth/liboauth2_tests.cpp(489): Entering test case "provider_domains_do_not_share_keys_even_at_same_endpoint_and_same_kid"
+/src/tests/auth/liboauth2_tests.cpp(489): Leaving test case "provider_domains_do_not_share_keys_even_at_same_endpoint_and_same_kid"; testing time: 252960us
+/src/tests/auth/liboauth2_tests.cpp(505): Entering test case "key_count_and_response_size_bounds_fail_closed_with_size_errors"
+/src/tests/auth/liboauth2_tests.cpp(505): Leaving test case "key_count_and_response_size_bounds_fail_closed_with_size_errors"; testing time: 237352us
+/src/tests/auth/liboauth2_tests.cpp(522): Entering test case "introspection_rechecks_resource_claims_and_never_caches_opaque_decisions"
+/src/tests/auth/liboauth2_tests.cpp(522): Leaving test case "introspection_rechecks_resource_claims_and_never_caches_opaque_decisions"; testing time: 185116us
+/src/tests/auth/liboauth2_tests.cpp(537): Entering test case "https_trust_redirects_and_outages_never_become_success_or_bad_credential"
+/src/tests/auth/liboauth2_tests.cpp(537): Leaving test case "https_trust_redirects_and_outages_never_become_success_or_bad_credential"; testing time: 323794us
+/src/tests/auth/liboauth2_tests.cpp(557): Entering test case "cancel_discards_late_result_backpressure_and_drain_track_physical_work"
+/src/tests/auth/liboauth2_tests.cpp(557): Leaving test case "cancel_discards_late_result_backpressure_and_drain_track_physical_work"; testing time: 211193us
+/src/tests/auth/liboauth2_tests.cpp(607): Entering test case "stop_discards_running_result_without_shortening_physical_drain"
+/src/tests/auth/liboauth2_tests.cpp(607): Leaving test case "stop_discards_running_result_without_shortening_physical_drain"; testing time: 172353us
+/src/tests/auth/liboauth2_tests.cpp(635): Entering test case "shared_provider_refresh_wait_is_bounded_and_coalesces_cloned_calls"
+/src/tests/auth/liboauth2_tests.cpp(635): Leaving test case "shared_provider_refresh_wait_is_bounded_and_coalesces_cloned_calls"; testing time: 212096us
+/src/tests/auth/liboauth2_tests.cpp(656): Entering test case "secret_material_never_enters_own_error_messages"
+/src/tests/auth/liboauth2_tests.cpp(656): Leaving test case "secret_material_never_enters_own_error_messages"; testing time: 101444us
+/src/tests/auth/liboauth2_tests.cpp(675): Entering test case "oversized_inputs_never_enter_the_compute_or_http_lane"
+/src/tests/auth/liboauth2_tests.cpp(675): Leaving test case "oversized_inputs_never_enter_the_compute_or_http_lane"; testing time: 105775us
+/src/tests/auth/liboauth2_tests.cpp(686): Entering test case "queue_deadline_cancels_unstarted_work_and_drain_does_not_stop_the_shared_pool"
+/src/tests/auth/liboauth2_tests.cpp(686): Leaving test case "queue_deadline_cancels_unstarted_work_and_drain_does_not_stop_the_shared_pool"; testing time: 1267566us
+/src/tests/auth/liboauth2_tests.cpp(720): Entering test case "introspection_token_type_is_case_insensitive_but_active_does_not_replace_resource_policy"
+
+*** No errors detected
+/src/tests/auth/liboauth2_tests.cpp(720): Leaving test case "introspection_token_type_is_case_insensitive_but_active_does_not_replace_resource_policy"; testing time: 159668us
+/src/tests/auth/liboauth2_tests.cpp(367): Leaving test suite "liboauth2_tests"; testing time: 4207903us
+Leaving test module "libforge"; testing time: 4207912us

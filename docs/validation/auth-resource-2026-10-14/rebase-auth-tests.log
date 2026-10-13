@@ -1,0 +1,20 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+    Start 34: test_forge_plugins_net_http_server
+1/7 Test #34: test_forge_plugins_net_http_server ...   Passed    1.77 sec
+    Start 49: test_forge_auth_credential
+2/7 Test #49: test_forge_auth_credential ...........   Passed    0.46 sec
+    Start 50: test_forge_auth_pairing
+3/7 Test #50: test_forge_auth_pairing ..............   Passed    0.35 sec
+    Start 51: test_forge_auth_session
+4/7 Test #51: test_forge_auth_session ..............   Passed    0.32 sec
+    Start 52: test_forge_auth_http
+5/7 Test #52: test_forge_auth_http .................   Passed    0.36 sec
+    Start 53: test_forge_auth_token_verifier
+6/7 Test #53: test_forge_auth_token_verifier .......   Passed    0.38 sec
+    Start 55: test_forge_client_auth
+7/7 Test #55: test_forge_client_auth ...............   Passed    0.33 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   3.99 sec

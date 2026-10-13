@@ -1,0 +1,14 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+    Start 1: test_forge_structure
+1/4 Test #1: test_forge_structure ...........................   Passed   16.67 sec
+    Start 2: test_forge_net_plugin_structure
+2/4 Test #2: test_forge_net_plugin_structure ................   Passed    0.44 sec
+    Start 3: test_forge_contract_sdk_cmake_runtime_policy
+3/4 Test #3: test_forge_contract_sdk_cmake_runtime_policy ...   Passed    0.01 sec
+    Start 5: test_forge_contract_sdk_dependencies
+4/4 Test #5: test_forge_contract_sdk_dependencies ...........   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =  17.17 sec

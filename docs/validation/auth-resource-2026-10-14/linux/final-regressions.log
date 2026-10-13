@@ -1,0 +1,38 @@
+Test project /build/forge
+      Start 49: test_forge_auth_credential
+ 1/11 Test #49: test_forge_auth_credential .......   Passed    0.21 sec
+      Start 50: test_forge_auth_pairing
+ 2/11 Test #50: test_forge_auth_pairing ..........   Passed    0.38 sec
+      Start 51: test_forge_auth_session
+ 3/11 Test #51: test_forge_auth_session ..........   Passed    0.26 sec
+      Start 52: test_forge_auth_http
+ 4/11 Test #52: test_forge_auth_http .............   Passed    0.58 sec
+      Start 53: test_forge_auth_token_verifier
+ 5/11 Test #53: test_forge_auth_token_verifier ...   Passed    0.27 sec
+      Start 54: test_forge_auth_liboauth2
+ 6/11 Test #54: test_forge_auth_liboauth2 ........   Passed    8.54 sec
+      Start 55: test_forge_client_auth
+ 7/11 Test #55: test_forge_client_auth ...........   Passed    0.16 sec
+      Start 57: test_forge_auth_oidc_agent
+ 8/11 Test #57: test_forge_auth_oidc_agent .......   Passed    0.29 sec
+      Start 91: test_forge_http_error_renderer
+ 9/11 Test #91: test_forge_http_error_renderer ...   Passed    0.41 sec
+      Start 92: test_forge_http_parameters
+10/11 Test #92: test_forge_http_parameters .......   Passed    0.31 sec
+      Start 95: test_forge_api_trusted_subject
+11/11 Test #95: test_forge_api_trusted_subject ...***Failed    3.43 sec
+Running 21 test cases...
+/src/tests/http_websocket/trusted_subject_tests.cpp(330): [4;31;49mfatal error: in "f3_trusted_subject_suite/websocket_backpressure_revoke_aborts_pending_write_and_joins": critical check before.queued_writes > 0U has failed[0;39;49m
+/src/tests/http_websocket/trusted_subject_tests.cpp(334): [4;31;49mfatal error: in "f3_trusted_subject_suite/websocket_backpressure_shutdown_aborts_pending_write_and_joins": critical check stalled.sent_messages == before.sent_messages has failed[0;39;49m
+
+[1;31;49m*** 2 failures are detected in the test module "libforge"
+[0;39;49m
+
+
+91% tests passed, 1 tests failed out of 11
+
+Total Test time (real) =  16.28 sec
+
+The following tests FAILED:
+	 95 - test_forge_api_trusted_subject (Failed)
+Errors while running CTest

@@ -1,0 +1,6 @@
+{"status":"EVENT","event":"metadata_observed","success":false,"expires_at":1791923933,"issuer_match_count":1}
+{"status":"EVENT","event":"token_observed","success":true,"expires_at":1791923933,"issuer_match_count":1}
+{"status":"EVENT","event":"waiting_for_actual_expiry","success":false,"expires_at":1791923933,"issuer_match_count":1}
+{"status":"EVENT","event":"metadata_observed","success":false,"expires_at":1791923968,"issuer_match_count":1}
+{"status":"EVENT","event":"renewed_after_expiry","success":true,"expires_at":1791923968,"issuer_match_count":1}
+{"status":"PASS","event":"refresh","success":true,"expires_at":0,"issuer_match_count":0}

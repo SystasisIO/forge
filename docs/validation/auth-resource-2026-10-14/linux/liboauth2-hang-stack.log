@@ -1,0 +1,77 @@
+[New LWP 12577]
+[New LWP 12576]
+[New LWP 12575]
+[New LWP 12574]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/aarch64-linux-gnu/libthread_db.so.1".
+0x0000ffffad0046e4 in syscall () from /usr/lib/aarch64-linux-gnu/libc.so.6
+
+Thread 5 (Thread 0xffffab88ed80 (LWP 12574) "forge-asio"):
+#0  0x0000ffffacfa5aec in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#1  0x0000ffffacf98440 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#2  0x0000ffffacf98490 [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#3  0x0000ffffad006e84 [PAC] in epoll_pwait () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#4  0x0000aaaaad5cddd8 [PAC] in boost::asio::detail::epoll_reactor::run(long, boost::asio::detail::op_queue<boost::asio::detail::scheduler_operation>&) ()
+#5  0x0000aaaaad5ceebc in boost::asio::detail::scheduler::do_run_one(boost::asio::detail::conditionally_enabled_mutex::scoped_lock&, boost::asio::detail::scheduler_thread_info&, boost::system::error_code const&) ()
+#6  0x0000aaaaad5ceb30 in boost::asio::detail::scheduler::run(boost::system::error_code&) ()
+#7  0x0000aaaaadcde288 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<forge::asio::runtime@forge.asio.runtime::impl::impl(forge::asio::runtime_options@forge.asio.runtime)::{lambda()#1}> > >::_M_run() ()
+#8  0x0000ffffad2d7860 in ?? () from /usr/lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffacf9c248 [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#10 0x0000ffffad00692c [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+
+Thread 4 (Thread 0xffffac09ed80 (LWP 12575) "forge-asio"):
+#0  0x0000ffffacfa5ae8 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#1  0x0000ffffacf98440 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#2  0x0000ffffacf988b4 [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#3  0x0000ffffacf9b628 [PAC] in pthread_cond_wait () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#4  0x0000aaaaad5cee58 [PAC] in boost::asio::detail::scheduler::do_run_one(boost::asio::detail::conditionally_enabled_mutex::scoped_lock&, boost::asio::detail::scheduler_thread_info&, boost::system::error_code const&) ()
+#5  0x0000aaaaad5ceb30 in boost::asio::detail::scheduler::run(boost::system::error_code&) ()
+#6  0x0000aaaaadcde288 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<forge::asio::runtime@forge.asio.runtime::impl::impl(forge::asio::runtime_options@forge.asio.runtime)::{lambda()#1}> > >::_M_run() ()
+#7  0x0000ffffad2d7860 in ?? () from /usr/lib/aarch64-linux-gnu/libstdc++.so.6
+#8  0x0000ffffacf9c248 [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#9  0x0000ffffad00692c [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+
+Thread 3 (Thread 0xffffab07ed80 (LWP 12576) "forge-compute"):
+#0  0x0000ffffacfa5ae8 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#1  0x0000ffffacf98440 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#2  0x0000ffffacf988b4 [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#3  0x0000ffffacf9b628 [PAC] in pthread_cond_wait () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#4  0x0000aaaaad5cee58 [PAC] in boost::asio::detail::scheduler::do_run_one(boost::asio::detail::conditionally_enabled_mutex::scoped_lock&, boost::asio::detail::scheduler_thread_info&, boost::system::error_code const&) ()
+#5  0x0000aaaaad5ceb30 in boost::asio::detail::scheduler::run(boost::system::error_code&) ()
+#6  0x0000aaaaadcd0ec4 in boost::asio::detail::posix_thread::func<boost::asio::thread_pool::thread_function, boost::asio::execution_context::allocator<void> >::run() ()
+#7  0x0000aaaaad5cea08 in boost_asio_detail_posix_thread_function ()
+#8  0x0000ffffacf9c248 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#9  0x0000ffffad00692c [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+
+Thread 2 (Thread 0xffffaa86ed80 (LWP 12577) "forge-compute"):
+#0  0x0000ffffacfa5ae8 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#1  0x0000ffffacf98440 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#2  0x0000ffffacf988b4 [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#3  0x0000ffffacf9b628 [PAC] in pthread_cond_wait () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#4  0x0000aaaaad5cee58 [PAC] in boost::asio::detail::scheduler::do_run_one(boost::asio::detail::conditionally_enabled_mutex::scoped_lock&, boost::asio::detail::scheduler_thread_info&, boost::system::error_code const&) ()
+#5  0x0000aaaaad5ceb30 in boost::asio::detail::scheduler::run(boost::system::error_code&) ()
+#6  0x0000aaaaadcd0ec4 in boost::asio::detail::posix_thread::func<boost::asio::thread_pool::thread_function, boost::asio::execution_context::allocator<void> >::run() ()
+#7  0x0000aaaaad5cea08 in boost_asio_detail_posix_thread_function ()
+#8  0x0000ffffacf9c248 in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#9  0x0000ffffad00692c [PAC] in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+
+Thread 1 (Thread 0xffffadecb020 (LWP 12543) "test_forge_auth"):
+#0  0x0000ffffad0046e4 in syscall () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#1  0x0000ffffad2d1cfc in std::__atomic_futex_unsigned_base::_M_futex_wait_until(unsigned int*, unsigned int, bool, std::chrono::duration<long, std::ratio<1l, 1l> >, std::chrono::duration<long, std::ratio<1l, 1000000000l> >) () from /usr/lib/aarch64-linux-gnu/libstdc++.so.6
+#2  0x0000aaaaad56eae0 [PAC] in std::__basic_future<std::optional<forge::auth::oauth2::verified_token@forge.auth.oauth2.token_verifier> >::_M_get_result() const ()
+#3  0x0000aaaaad55e77c in std::future<std::optional<forge::auth::oauth2::verified_token@forge.auth.oauth2.token_verifier> >::get() ()
+#4  0x0000aaaaad5409b8 in (anonymous namespace)::fixture::verify(std::shared_ptr<forge::auth::liboauth2::verifier@forge.auth.liboauth2.verifier> const&, forge::crypto::core::secret_string@forge.crypto.core.secret_string, forge::auth::oauth2::verification_policy@forge.auth.oauth2.verification_policy const&) ()
+#5  0x0000aaaaad548aac in liboauth2_tests::key_count_and_response_size_bounds_fail_closed_with_size_errors::test_method() ()
+#6  0x0000aaaaad548168 in liboauth2_tests::key_count_and_response_size_bounds_fail_closed_with_size_errors_invoker() ()
+#7  0x0000aaaaad538e84 in boost::detail::function::function_obj_invoker<boost::detail::forward, int>::invoke(boost::detail::function::function_buffer&) ()
+#8  0x0000aaaaad4f1aa8 in boost::execution_monitor::catch_signals(boost::function<int ()> const&) ()
+#9  0x0000aaaaad4f1c18 in boost::execution_monitor::execute(boost::function<int ()> const&) ()
+#10 0x0000aaaaad4eedd4 in boost::unit_test::unit_test_monitor_t::execute_and_translate(boost::function<void ()> const&, unsigned long) ()
+#11 0x0000aaaaad50fd80 in boost::unit_test::framework::state::execute_test_tree(unsigned long, unsigned long, boost::unit_test::framework::state::random_generator_helper const*) ()
+#12 0x0000aaaaad50ff88 in boost::unit_test::framework::state::execute_test_tree(unsigned long, unsigned long, boost::unit_test::framework::state::random_generator_helper const*) ()
+#13 0x0000aaaaad50ff88 in boost::unit_test::framework::state::execute_test_tree(unsigned long, unsigned long, boost::unit_test::framework::state::random_generator_helper const*) ()
+#14 0x0000aaaaad4edfe0 in boost::unit_test::framework::run(unsigned long, bool) ()
+#15 0x0000aaaaad4ff3a0 in boost::unit_test::unit_test_main(boost::unit_test::test_suite* (*)(int, char**), int, char**) ()
+#16 0x0000ffffacf32f1c in ?? () from /usr/lib/aarch64-linux-gnu/libc.so.6
+#17 0x0000ffffacf3305c [PAC] in __libc_start_main () from /usr/lib/aarch64-linux-gnu/libc.so.6
+[Inferior 1 (process 12543) detached]

@@ -1,0 +1,2 @@
+{"status":"EVENT","event":"local_state_absent","success":true,"expires_at":0,"issuer_match_count":0}
+{"status":"PASS","event":"invalidate","success":true,"expires_at":0,"issuer_match_count":0}

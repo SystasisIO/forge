@@ -1,0 +1,46 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    6.94 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed   11.65 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    7.29 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.19 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.40 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    5.54 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    5.61 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    6.64 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    6.69 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    7.97 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.22 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.44 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.64 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    5.43 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.45 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    3.95 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    6.76 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    4.05 sec
+    Start 54: test_forge_auth_liboauth2
+    Test #54: test_forge_auth_liboauth2 ........   Passed    3.79 sec
+    Start 54: test_forge_auth_liboauth2
+1/1 Test #54: test_forge_auth_liboauth2 ........   Passed    3.90 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) = 112.63 sec

@@ -1,0 +1,45 @@
+Test project /build/forge
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.78 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.68 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.69 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.63 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.71 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.60 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.67 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.68 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.59 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.61 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.66 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.62 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.65 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.76 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.56 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.61 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.75 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.65 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.63 sec
+    Start 95: test_forge_api_trusted_subject
+1/1 Test #95: test_forge_api_trusted_subject ...   Passed    1.63 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  33.29 sec

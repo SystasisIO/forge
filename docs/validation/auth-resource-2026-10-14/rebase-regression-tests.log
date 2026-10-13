@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+    Start 54: test_forge_auth_liboauth2
+1/6 Test #54: test_forge_auth_liboauth2 ............   Passed    4.82 sec
+    Start 91: test_forge_http_error_renderer
+2/6 Test #91: test_forge_http_error_renderer .......   Passed    0.73 sec
+    Start 92: test_forge_http_parameters
+3/6 Test #92: test_forge_http_parameters ...........   Passed    0.96 sec
+    Start 93: test_forge_http_websocket
+4/6 Test #93: test_forge_http_websocket ............   Passed    3.89 sec
+    Start 94: test_forge_http_client_preparation
+5/6 Test #94: test_forge_http_client_preparation ...   Passed    2.61 sec
+    Start 95: test_forge_api_trusted_subject
+6/6 Test #95: test_forge_api_trusted_subject .......   Passed    2.53 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =  15.58 sec

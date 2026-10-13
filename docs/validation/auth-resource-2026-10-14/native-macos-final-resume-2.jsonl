@@ -1,0 +1,3 @@
+{"status":"EVENT","event":"metadata_observed","success":false,"expires_at":1791923989,"issuer_match_count":1}
+{"status":"EVENT","event":"token_observed","success":true,"expires_at":1791923989,"issuer_match_count":1}
+{"status":"PASS","event":"resume","success":true,"expires_at":0,"issuer_match_count":0}

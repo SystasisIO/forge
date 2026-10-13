@@ -1,0 +1,46 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    3.28 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.25 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.12 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.12 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.13 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.12 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.12 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.10 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.11 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.20 sec
+    Start 95: test_forge_api_trusted_subject
+    Test #95: test_forge_api_trusted_subject ...   Passed    1.13 sec
+    Start 95: test_forge_api_trusted_subject
+1/1 Test #95: test_forge_api_trusted_subject ...   Passed    1.16 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  24.78 sec

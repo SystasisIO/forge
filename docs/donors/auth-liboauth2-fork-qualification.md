@@ -6,6 +6,9 @@ does not approve adapter TLS/lifecycle or full package/export acceptance.
 The [original upstream report](auth-liboauth2-qualification.md) remains unchanged
 historical evidence; its findings are not reclassified by this fork run.
 
+The [upstream-ready defect report](liboauth2-upstream-report.md) separates the
+reproduced bugs from optional controls and remains **NOT_SUBMITTED**.
+
 ## Source And Dependencies
 
 The fork is `vendor/liboauth2`, upstream version 2.4.0, base commit

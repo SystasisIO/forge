@@ -1,0 +1,6 @@
+Package gtk+-3.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gtk+-3.0.pc'
+to the PKG_CONFIG_PATH environment variable
+Package 'gtk+-3.0' not found
+Package 'webkit2gtk-4.0' not found
+Installed library dev

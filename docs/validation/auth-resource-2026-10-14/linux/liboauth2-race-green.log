@@ -1,0 +1,26 @@
+Running 1 test case...
+Entering test module "libforge"
+/src/tests/auth/liboauth2_tests.cpp(368): Entering test suite "liboauth2_tests"
+/src/tests/auth/liboauth2_tests.cpp(370): Test case "liboauth2_tests/strict_urls_profiles_and_finite_limits_are_not_decorative" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(400): Test case "liboauth2_tests/jwt_normalizes_verified_evidence_and_requires_the_exact_configured_policy" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(415): Test case "liboauth2_tests/purpose_algorithm_and_signature_denials_never_fallback_to_introspection" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(427): Test case "liboauth2_tests/strict_claim_types_resources_and_numericdate_overflow_are_denied" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(460): Test case "liboauth2_tests/duplicate_claims_and_nul_suffixed_signed_payloads_are_rejected_without_a_second_parser" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(475): Test case "liboauth2_tests/verification_result_cache_is_unconditionally_disabled_including_literal_jwks_url_tokens" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(490): Test case "liboauth2_tests/provider_domains_do_not_share_keys_even_at_same_endpoint_and_same_kid" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(506): Test case "liboauth2_tests/key_count_and_response_size_bounds_fail_closed_with_size_errors" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(523): Entering test case "fast_completion_and_ticket_release_race_settles_on_multithread_executor"
+/src/tests/auth/liboauth2_tests.cpp(523): Leaving test case "fast_completion_and_ticket_release_race_settles_on_multithread_executor"; testing time: 906235us
+/src/tests/auth/liboauth2_tests.cpp(569): Test case "liboauth2_tests/introspection_rechecks_resource_claims_and_never_caches_opaque_decisions" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(584): Test case "liboauth2_tests/https_trust_redirects_and_outages_never_become_success_or_bad_credential" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(604): Test case "liboauth2_tests/cancel_discards_late_result_backpressure_and_drain_track_physical_work" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(654): Test case "liboauth2_tests/stop_discards_running_result_without_shortening_physical_drain" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(682): Test case "liboauth2_tests/shared_provider_refresh_wait_is_bounded_and_coalesces_cloned_calls" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(703): Test case "liboauth2_tests/secret_material_never_enters_own_error_messages" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(722): Test case "liboauth2_tests/oversized_inputs_never_enter_the_compute_or_http_lane" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(733): Test case "liboauth2_tests/queue_deadline_cancels_unstarted_work_and_drain_does_not_stop_the_shared_pool" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(767): Test case "liboauth2_tests/introspection_token_type_is_case_insensitive_but_active_does_not_replace_resource_policy" is skipped because disabled
+/src/tests/auth/liboauth2_tests.cpp(368): Leaving test suite "liboauth2_tests"; testing time: 906304us
+Leaving test module "libforge"; testing time: 906313us
+
+*** No errors detected

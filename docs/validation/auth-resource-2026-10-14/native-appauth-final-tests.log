@@ -1,0 +1,21 @@
+Running 6 test cases...
+[1;34;49mEntering test module "libforge"
+[0;39;49m[1;33;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/client_auth_tests.cpp:111: Test suite "client_auth_tests" is skipped because disabled
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:158: Entering test suite "appauth_request_tests"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:160: Entering test case "native_code_flow_uses_state_nonce_and_pkce_s256"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:160: Leaving test case "native_code_flow_uses_state_nonce_and_pkce_s256"; testing time: 320us
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:190: Entering test case "loopback_response_and_authorization_completion_have_separate_lifetimes"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:190: Leaving test case "loopback_response_and_authorization_completion_have_separate_lifetimes"; testing time: 5448us
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:260: Entering test case "loopback_tcp_delivers_the_complete_first_success_redirect"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:260: Leaving test case "loopback_tcp_delivers_the_complete_first_success_redirect"; testing time: 27617us
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:326: Entering test case "persisted_state_binding_rejects_immutable_config_mismatch"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:326: Leaving test case "persisted_state_binding_rejects_immutable_config_mismatch"; testing time: 91us
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:359: Entering test case "invalidation_rejects_stale_state_mutation"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:359: Leaving test case "invalidation_rejects_stale_state_mutation"; testing time: 14us
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:380: Entering test case "concurrent_state_mutations_consume_an_epoch_ticket_once"
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:380: Leaving test case "concurrent_state_mutations_consume_an_epoch_ticket_once"; testing time: 164us
+[0;39;49m[1;34;49m/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/tests/auth/appauth_request_tests.mm:158: Leaving test suite "appauth_request_tests"; testing time: 33767us
+[0;39;49m[1;34;49mLeaving test module "libforge"; testing time: 33791us
+[0;39;49m
+[1;32;49m*** No errors detected
+[0;39;49m

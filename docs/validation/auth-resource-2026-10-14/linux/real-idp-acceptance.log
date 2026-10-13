@@ -1,0 +1,12 @@
+PASS/issuer-profile
+PASS/issuer-introspection
+PASS/jwt-http
+PASS/jwt-ws
+PASS/introspection-http
+PASS/introspection-ws
+READY/rotation
+PASS/issuer-key-changed
+PASS/issuer-old-key-retained
+PASS/rotation
+PASS/shutdown
+PASS/resource-acceptance

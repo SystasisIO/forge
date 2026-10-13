@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+Test project /Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource
+    Start 179: test_forge_package_auth_credential_component
+1/6 Test #179: test_forge_package_auth_credential_component ...   Passed    4.79 sec
+    Start 180: test_forge_package_auth_pairing_component
+2/6 Test #180: test_forge_package_auth_pairing_component ......   Passed   21.24 sec
+    Start 181: test_forge_package_auth_session_component
+3/6 Test #181: test_forge_package_auth_session_component ......   Passed   21.32 sec
+    Start 182: test_forge_package_auth_http_component
+4/6 Test #182: test_forge_package_auth_http_component .........   Passed   24.97 sec
+    Start 235: test_forge_package_auth_oauth2_component
+5/6 Test #235: test_forge_package_auth_oauth2_component .......   Passed    3.95 sec
+    Start 236: test_forge_package_auth_liboauth2_component
+6/6 Test #236: test_forge_package_auth_liboauth2_component ....   Passed    6.00 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =  82.30 sec
