@@ -256,9 +256,9 @@ boost::asio::awaitable<void> join_explicit_cleanup(forge::app::plugin_lifecycle 
 }
 
 boost::asio::awaitable<std::exception_ptr> finish_then_cancel(forge::app::plugin_lifecycle::operation owner,
-    std::exception_ptr failure, std::stop_source* stop, boost::asio::cancellation_signal* signal) {
+    std::exception_ptr failure, std::stop_source stop, std::shared_ptr<boost::asio::cancellation_signal> signal) {
    const auto result = owner.complete(std::move(failure));
-   static_cast<void>(stop->request_stop());
+   static_cast<void>(stop.request_stop());
    signal->emit(boost::asio::cancellation_type::terminal);
    co_return result;
 }
@@ -518,7 +518,7 @@ BOOST_AUTO_TEST_CASE(plugin_lifecycle_published_joined_result_wins_explicit_and_
             // The serial executor prevents waiter resumption between result
             // publication and cancellation. No sleeps or internal hooks needed.
             auto completed = boost::asio::co_spawn(fixture.serial,
-                finish_then_cancel(std::move(owner), expected, &stop, fixture.signal.get()), boost::asio::use_future);
+                finish_then_cancel(std::move(owner), expected, stop, fixture.signal), boost::asio::use_future);
             BOOST_CHECK(ready_policy(completed) == expected);
             BOOST_CHECK(ready_policy(joined) == expected);
             const auto final = lifecycle.snapshot();
