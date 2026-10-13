@@ -1,0 +1,670 @@
+[0/2] Re-checking globbed directories...
+[1/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/relay_transport.cpp.o
+[2/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/relay_budget.cpp.o
+[3/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/relay_pair.cpp.o
+[4/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/node_pubsub_partial.cpp.o
+[5/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/node_impl_pubsub_partial.cpp.o
+[6/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/session_retirement.cpp.o
+[7/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/private_transport_stream.cpp.o
+[8/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/session_teardown.cpp.o
+[9/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/noise_cipher_state.cpp.o
+[10/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/noise_symmetric_state.cpp.o
+[11/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/stream_upgrade_tls.cpp.o
+[12/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/stream_upgrade.cpp.o
+[13/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/secure_io.cpp.o
+[14/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/secure_stream_concept.cpp.o
+[15/772] Building CXX object libraries/net/p2p/CMakeFiles/forge_net_p2p.dir/noise_handshake.cpp.o
+[16/772] Building CXX object libraries/app/CMakeFiles/forge_app.dir/application_builder.cpp.o
+[17/772] Building CXX object libraries/app/CMakeFiles/forge_app.dir/application_shell.cpp.o
+[18/772] Building CXX object libraries/app/CMakeFiles/forge_app.dir/runner.cpp.o
+[19/772] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/include/forge/plugins/crypto/secrets/exceptions.cppm.o
+[20/772] Building CXX object libraries/app/CMakeFiles/forge_app.dir/daemon.cpp.o
+[21/772] Building CXX object libraries/chain/transaction/CMakeFiles/forge_chain_transaction.dir/signing.cpp.o
+[22/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/policy.cpp.o
+[23/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/qc.cpp.o
+[24/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/vote.cpp.o
+[25/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/vote_accumulator.cpp.o
+[26/772] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/include/forge/plugins/crypto/secrets/api.cppm.o
+[27/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/vote_accumulator_impl.cpp.o
+[28/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/finalizer_safety.cpp.o
+[29/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/validation.cpp.o
+[30/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/rank.cpp.o
+[31/772] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/include/forge/plugins/crypto/secrets/plugin.cppm.o
+[32/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/policy_state.cpp.o
+[33/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/genesis.cpp.o
+[34/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/extensions.cpp.o
+[35/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/checkpoint.cpp.o
+[36/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/header_state.cpp.o
+[37/772] Generating CXX dyndep file libraries/chain/api/CMakeFiles/forge_chain_api.dir/CXX.dd
+[38/772] Scanning /src/libraries/vm/wasm/interpret/allocator.cpp for CXX dependencies
+[39/772] Scanning /src/libraries/vm/wasm/interpret/debug_info.cpp for CXX dependencies
+[40/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/admission.cpp.o
+[41/772] Scanning /src/libraries/vm/wasm/interpret/types.cpp for CXX dependencies
+[42/772] Scanning /src/libraries/vm/wasm/interpret/signals.cpp for CXX dependencies
+[43/772] Scanning /src/libraries/vm/wasm/interpret/watchdog.cpp for CXX dependencies
+[44/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/allocator.cppm for CXX dependencies
+[45/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/argument_proxy.cppm for CXX dependencies
+[46/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/base_visitor.cppm for CXX dependencies
+[47/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/bitcode_writer.cppm for CXX dependencies
+[48/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/config.cppm for CXX dependencies
+[49/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/constants.cppm for CXX dependencies
+[50/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/backend.cppm for CXX dependencies
+[51/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/debug_info.cppm for CXX dependencies
+[52/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/debug_visitor.cppm for CXX dependencies
+[53/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/exceptions.cppm for CXX dependencies
+[54/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/execution_interface.cppm for CXX dependencies
+[55/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/execution_context.cppm for CXX dependencies
+[56/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/function_traits.cppm for CXX dependencies
+[57/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/guarded_ptr.cppm for CXX dependencies
+[58/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/interpret_visitor.cppm for CXX dependencies
+[59/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/host_function.cppm for CXX dependencies
+[60/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/null_writer.cppm for CXX dependencies
+[61/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/leb128.cppm for CXX dependencies
+[62/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/options.cppm for CXX dependencies
+[63/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/opcodes.cppm for CXX dependencies
+[64/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/scope_guard.cppm for CXX dependencies
+[65/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/sections.cppm for CXX dependencies
+[66/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/parser.cppm for CXX dependencies
+[67/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/softfloat.cppm for CXX dependencies
+[68/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/signals.cppm for CXX dependencies
+[69/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/stack_elem.cppm for CXX dependencies
+[70/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/span.cppm for CXX dependencies
+[71/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/types.cppm for CXX dependencies
+[72/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/utils.cppm for CXX dependencies
+[73/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/variant.cppm for CXX dependencies
+[74/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/vector.cppm for CXX dependencies
+[75/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/wasm_stack.cppm for CXX dependencies
+[76/772] Linking CXX static library libraries/crypto/keystore/libforge_crypto_keystore.a
+[77/772] Scanning /src/libraries/crypto/math/bigint.cpp for CXX dependencies
+[78/772] Scanning /src/libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/watchdog.cppm for CXX dependencies
+[79/772] Scanning /src/libraries/crypto/math/include/forge/crypto/math/bigint.cppm for CXX dependencies
+[80/772] Scanning /src/libraries/crypto/math/modular_arithmetic.cpp for CXX dependencies
+[81/772] Generating CXX dyndep file libraries/crypto/bls/signer/CMakeFiles/forge_crypto_bls_signer.dir/CXX.dd
+[82/772] Generating CXX dyndep file libraries/crypto/wallet/CMakeFiles/forge_crypto_wallet.dir/CXX.dd
+[83/772] Scanning /src/libraries/crypto/math/include/forge/crypto/math/modular_arithmetic.cppm for CXX dependencies
+[84/772] Scanning /src/libraries/crypto/bn256/bn256.cpp for CXX dependencies
+[85/772] Linking CXX static library libraries/db/blob/libforge_db_blob.a
+[86/772] Scanning /src/libraries/crypto/bn256/include/forge/crypto/bn256/bn256.cppm for CXX dependencies
+[87/772] Linking CXX static library libraries/db/revision/libforge_db_revision.a
+[88/772] Linking CXX static library libraries/db/authenticated/libforge_db_authenticated.a
+[89/772] Scanning /src/libraries/api/quic/include/forge/api/quic/binding.cppm for CXX dependencies
+[90/772] Building CXX object libraries/chain/savanna/CMakeFiles/forge_chain_savanna.dir/finality_witness.cpp.o
+[91/772] Building CXX object libraries/api/p2p/CMakeFiles/forge_api_p2p.dir/publication.cpp.o
+[92/772] Generating CXX dyndep file libraries/otlp/CMakeFiles/forge_otlp.dir/CXX.dd
+[93/772] Linking CXX static library libraries/db/mdbx/libforge_db_mdbx.a
+[94/772] Linking CXX static library libraries/net/p2p/libforge_net_p2p.a
+[95/772] Generating CXX dyndep file libraries/auth/session/CMakeFiles/forge_auth_session.dir/CXX.dd
+[96/766] Building CXX object libraries/api/p2p/CMakeFiles/forge_api_p2p.dir/publication_state.cpp.o
+[97/766] Scanning /src/libraries/cli/command.cpp for CXX dependencies
+[98/766] Scanning /src/libraries/cli/completion.cpp for CXX dependencies
+[99/766] Scanning /src/libraries/cli/parser.cpp for CXX dependencies
+[100/766] Scanning /src/libraries/cli/runner.cpp for CXX dependencies
+[101/766] Scanning /src/libraries/cli/terminal.cpp for CXX dependencies
+[102/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/include/forge/plugins/db/store/plugin.cppm.o
+[103/766] Scanning /src/libraries/cli/include/forge/cli/completion.cppm for CXX dependencies
+[104/766] Scanning /src/libraries/cli/include/forge/cli/command.cppm for CXX dependencies
+[105/766] Scanning /src/libraries/cli/include/forge/cli/parser.cppm for CXX dependencies
+[106/766] Scanning /src/libraries/cli/include/forge/cli/exceptions.cppm for CXX dependencies
+[107/766] Linking CXX static library libraries/app/libforge_app.a
+[108/766] Scanning /src/libraries/cli/include/forge/cli/terminal.cppm for CXX dependencies
+[109/766] Scanning /src/libraries/cli/include/forge/cli/runner.cppm for CXX dependencies
+[110/766] Scanning /src/plugins/chain/signer/config.cpp for CXX dependencies
+[111/766] Scanning /src/plugins/chain/signer/admission.cpp for CXX dependencies
+[112/766] Scanning /src/plugins/chain/signer/signing_policy.cpp for CXX dependencies
+[113/766] Scanning /src/plugins/chain/signer/plugin.cpp for CXX dependencies
+[114/766] Scanning /src/plugins/chain/signer/plugin_impl.cpp for CXX dependencies
+[115/766] Scanning /src/plugins/chain/signer/transaction_api_impl.cpp for CXX dependencies
+[116/766] Scanning /src/plugins/chain/signer/block_api_impl.cpp for CXX dependencies
+[117/766] Scanning /src/plugins/chain/signer/finality_api_impl.cpp for CXX dependencies
+[118/766] Scanning /src/plugins/chain/signer/include/forge/plugins/chain/signer/exceptions.cppm for CXX dependencies
+[119/766] Scanning /src/plugins/chain/signer/include/forge/plugins/chain/signer/block_execution_handler.cppm for CXX dependencies
+[120/766] Scanning /src/plugins/chain/signer/include/forge/plugins/chain/signer/plugin.cppm for CXX dependencies
+[121/766] Scanning /src/plugins/chain/signer/include/forge/plugins/chain/signer/types.cppm for CXX dependencies
+[122/766] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/api_impl.cpp.o
+[123/766] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/plugin.cpp.o
+[124/766] Scanning /src/plugins/crypto/wallet/plugin.cpp for CXX dependencies
+[125/766] Scanning /src/plugins/crypto/wallet/plugin_impl.cpp for CXX dependencies
+[126/766] Scanning /src/plugins/crypto/wallet/api_impl.cpp for CXX dependencies
+[127/766] Scanning /src/plugins/crypto/wallet/provider.cpp for CXX dependencies
+[128/766] Scanning /src/plugins/crypto/wallet/provider_impl.cpp for CXX dependencies
+[129/766] Scanning /src/plugins/crypto/wallet/provider_source_impl.cpp for CXX dependencies
+[130/766] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/config.cpp.o
+[131/766] Scanning /src/plugins/crypto/wallet/include/forge/plugins/crypto/wallet/config.cppm for CXX dependencies
+[132/766] Scanning /src/plugins/crypto/wallet/include/forge/plugins/crypto/wallet/plugin.cppm for CXX dependencies
+[133/766] Building CXX object plugins/crypto/secrets/CMakeFiles/forge_plugins_crypto_secrets.dir/plugin_impl.cpp.o
+[134/766] Scanning /src/plugins/crypto/wallet/include/forge/plugins/crypto/wallet/provider.cppm for CXX dependencies
+[135/766] Scanning /src/plugins/crypto/wallet/include/forge/plugins/crypto/wallet/provider_source.cppm for CXX dependencies
+[136/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/config.cpp.o
+[137/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/plugin.cpp.o
+[138/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/plugin_impl.cpp.o
+[139/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/api.cpp.o
+[140/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/api_impl.cpp.o
+[141/766] Generating CXX dyndep file plugins/net/http/server/CMakeFiles/forge_plugins_net_http_server.dir/CXX.dd
+[142/766] Generating CXX dyndep file plugins/net/p2p/node/CMakeFiles/forge_plugins_net_p2p_node.dir/CXX.dd
+[143/766] Scanning /src/plugins/net/p2p/resolver/config.cpp for CXX dependencies
+[144/766] Scanning /src/plugins/net/p2p/resolver/plugin.cpp for CXX dependencies
+[145/766] Scanning /src/plugins/net/p2p/resolver/plugin_impl.cpp for CXX dependencies
+[146/766] Scanning /src/plugins/net/p2p/resolver/api_impl.cpp for CXX dependencies
+[147/766] Scanning /src/plugins/net/p2p/resolver/publication_catalog.cpp for CXX dependencies
+[148/766] Scanning /src/plugins/net/p2p/resolver/resolver_protocol.cpp for CXX dependencies
+[149/766] Scanning /src/plugins/net/p2p/resolver/managed_api_impl.cpp for CXX dependencies
+[150/766] Scanning /src/plugins/net/p2p/resolver/managed_remote_invoker.cpp for CXX dependencies
+[151/766] Scanning /src/plugins/net/p2p/resolver/managed_remote_state.cpp for CXX dependencies
+[152/766] Scanning /src/plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/exceptions.cppm for CXX dependencies
+[153/766] Scanning /src/plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/api.cppm for CXX dependencies
+[154/766] Scanning /src/plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/plugin.cppm for CXX dependencies
+[155/766] Scanning /src/plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/managed_api.cppm for CXX dependencies
+[156/766] Building CXX object plugins/db/store/CMakeFiles/forge_plugins_db_store.dir/store_handle_state_impl.cpp.o
+[157/766] Scanning /src/plugins/net/p2p/resolver/include/forge/plugins/net/p2p/resolver/types.cppm for CXX dependencies
+[158/766] Scanning /src/plugins/log/otlp/config.cpp for CXX dependencies
+[159/766] Scanning /src/plugins/log/otlp/plugin.cpp for CXX dependencies
+[160/766] Scanning /src/plugins/log/otlp/api.cpp for CXX dependencies
+[161/766] Scanning /src/plugins/log/otlp/api_impl.cpp for CXX dependencies
+[162/766] Scanning /src/plugins/log/otlp/plugin_impl.cpp for CXX dependencies
+[163/766] Scanning /src/plugins/log/otlp/include/forge/plugins/log/otlp/exceptions.cppm for CXX dependencies
+[164/766] Scanning /src/plugins/log/otlp/include/forge/plugins/log/otlp/api.cppm for CXX dependencies
+[165/766] Scanning /src/forge.cpp for CXX dependencies
+[166/766] Scanning /src/plugins/log/otlp/include/forge/plugins/log/otlp/types.cppm for CXX dependencies
+[167/766] Building CXX object vendor/bn256/src/CMakeFiles/bn256.dir/random_255.cpp.o
+[168/766] Scanning /src/plugins/log/otlp/include/forge/plugins/log/otlp/plugin.cppm for CXX dependencies
+[169/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_eq128.c.o
+[170/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_lt128.c.o
+[171/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_le128.c.o
+[172/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shortShiftLeft128.c.o
+[173/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shortShiftRight128.c.o
+[174/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shortShiftRightJam64Extra.c.o
+[175/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shortShiftRightJam64.c.o
+[176/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shortShiftRightJam128.c.o
+[177/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shortShiftRightJam128Extra.c.o
+[178/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shiftRightJam32.c.o
+[179/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shiftRightJam64.c.o
+[180/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shiftRightJam64Extra.c.o
+[181/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shiftRightJam128.c.o
+[182/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shiftRightJam128Extra.c.o
+[183/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_countLeadingZeros8.c.o
+[184/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_shiftRightJam256M.c.o
+[185/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_countLeadingZeros16.c.o
+[186/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_countLeadingZeros32.c.o
+[187/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_add128.c.o
+[188/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_countLeadingZeros64.c.o
+[189/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_add256M.c.o
+[190/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_sub128.c.o
+[191/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_sub256M.c.o
+[192/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mul64ByShifted32To128.c.o
+[193/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mul128By32.c.o
+[194/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mul64To128.c.o
+[195/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mul128To256M.c.o
+[196/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_approxRecip_1Ks.c.o
+[197/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_approxRecipSqrt_1Ks.c.o
+[198/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_approxRecip32_1.c.o
+[199/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_approxRecipSqrt32_1.c.o
+[200/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/softfloat_raiseFlags.c.o
+[201/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_f16UIToCommonNaN.c.o
+[202/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_commonNaNToF16UI.c.o
+[203/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_propagateNaNF16UI.c.o
+[204/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_f32UIToCommonNaN.c.o
+[205/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_commonNaNToF32UI.c.o
+[206/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_propagateNaNF32UI.c.o
+[207/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_f64UIToCommonNaN.c.o
+[208/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_commonNaNToF64UI.c.o
+[209/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_propagateNaNF64UI.c.o
+[210/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_extF80UIToCommonNaN.c.o
+[211/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/extF80M_isSignalingNaN.c.o
+[212/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_commonNaNToExtF80UI.c.o
+[213/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_propagateNaNExtF80UI.c.o
+[214/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/f128M_isSignalingNaN.c.o
+[215/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_f128UIToCommonNaN.c.o
+[216/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_commonNaNToF128UI.c.o
+[217/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/8086-SSE/s_propagateNaNF128UI.c.o
+[218/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundToUI32.c.o
+[219/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundToUI64.c.o
+[220/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundToI32.c.o
+[221/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundToI64.c.o
+[222/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normSubnormalF16Sig.c.o
+[223/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundPackToF16.c.o
+[224/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normRoundPackToF16.c.o
+[225/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_addMagsF16.c.o
+[226/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_subMagsF16.c.o
+[227/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mulAddF16.c.o
+[228/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normSubnormalF32Sig.c.o
+[229/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normRoundPackToF32.c.o
+[230/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundPackToF32.c.o
+[231/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_addMagsF32.c.o
+[232/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_subMagsF32.c.o
+[233/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normSubnormalF64Sig.c.o
+[234/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mulAddF32.c.o
+[235/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundPackToF64.c.o
+[236/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normRoundPackToF64.c.o
+[237/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_addMagsF64.c.o
+[238/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_subMagsF64.c.o
+[239/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normSubnormalExtF80Sig.c.o
+[240/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mulAddF64.c.o
+[241/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normRoundPackToExtF80.c.o
+[242/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundPackToExtF80.c.o
+[243/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_addMagsExtF80.c.o
+[244/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_subMagsExtF80.c.o
+[245/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normSubnormalF128Sig.c.o
+[246/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_roundPackToF128.c.o
+[247/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_normRoundPackToF128.c.o
+[248/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_addMagsF128.c.o
+[249/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_subMagsF128.c.o
+[250/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/softfloat_state.c.o
+[251/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/s_mulAddF128.c.o
+[252/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_f16.c.o
+[253/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_f32.c.o
+[254/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_f64.c.o
+[255/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_extF80.c.o
+[256/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_extF80M.c.o
+[257/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_f128.c.o
+[258/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui32_to_f128M.c.o
+[259/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_f16.c.o
+[260/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_f32.c.o
+[261/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_f64.c.o
+[262/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_extF80.c.o
+[263/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_extF80M.c.o
+[264/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_f128.c.o
+[265/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/ui64_to_f128M.c.o
+[266/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_f16.c.o
+[267/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_f32.c.o
+[268/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_f64.c.o
+[269/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_extF80.c.o
+[270/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_extF80M.c.o
+[271/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_f128.c.o
+[272/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i32_to_f128M.c.o
+[273/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_f16.c.o
+[274/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_f32.c.o
+[275/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_f64.c.o
+[276/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_extF80.c.o
+[277/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_extF80M.c.o
+[278/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_f128.c.o
+[279/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/i64_to_f128M.c.o
+[280/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_ui32.c.o
+[281/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_ui64.c.o
+[282/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_i32.c.o
+[283/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_i64.c.o
+[284/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_ui32_r_minMag.c.o
+[285/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_ui64_r_minMag.c.o
+[286/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_i32_r_minMag.c.o
+[287/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_i64_r_minMag.c.o
+[288/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_f32.c.o
+[289/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_f64.c.o
+[290/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_extF80.c.o
+[291/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_extF80M.c.o
+[292/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_f128.c.o
+[293/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_to_f128M.c.o
+[294/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_roundToInt.c.o
+[295/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_add.c.o
+[296/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_sub.c.o
+[297/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_mul.c.o
+[298/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_mulAdd.c.o
+[299/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_div.c.o
+[300/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_sqrt.c.o
+[301/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_rem.c.o
+[302/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_le.c.o
+[303/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_eq.c.o
+[304/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_eq_signaling.c.o
+[305/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_lt.c.o
+[306/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_le_quiet.c.o
+[307/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_lt_quiet.c.o
+[308/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f16_isSignalingNaN.c.o
+[309/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_ui32.c.o
+[310/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_ui64.c.o
+[311/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_i32.c.o
+[312/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_i64.c.o
+[313/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_ui32_r_minMag.c.o
+[314/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_ui64_r_minMag.c.o
+[315/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_i32_r_minMag.c.o
+[316/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_i64_r_minMag.c.o
+[317/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_f16.c.o
+[318/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_f64.c.o
+[319/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_extF80.c.o
+[320/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_extF80M.c.o
+[321/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_f128.c.o
+[322/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_to_f128M.c.o
+[323/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_roundToInt.c.o
+[324/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_add.c.o
+[325/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_sub.c.o
+[326/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_mul.c.o
+[327/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_mulAdd.c.o
+[328/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_div.c.o
+[329/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_rem.c.o
+[330/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_sqrt.c.o
+[331/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_eq.c.o
+[332/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_le.c.o
+[333/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_lt.c.o
+[334/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_eq_signaling.c.o
+[335/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_le_quiet.c.o
+[336/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_lt_quiet.c.o
+[337/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f32_isSignalingNaN.c.o
+[338/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_ui32.c.o
+[339/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_ui64.c.o
+[340/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_i32.c.o
+[341/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_i64.c.o
+[342/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_ui32_r_minMag.c.o
+[343/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_ui64_r_minMag.c.o
+[344/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_i32_r_minMag.c.o
+[345/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_i64_r_minMag.c.o
+[346/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_f16.c.o
+[347/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_f32.c.o
+[348/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_extF80.c.o
+[349/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_extF80M.c.o
+[350/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_f128.c.o
+[351/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_to_f128M.c.o
+[352/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_add.c.o
+[353/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_roundToInt.c.o
+[354/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_sub.c.o
+[355/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_mul.c.o
+[356/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_mulAdd.c.o
+[357/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_div.c.o
+[358/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_rem.c.o
+[359/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_sqrt.c.o
+[360/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_eq.c.o
+[361/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_le.c.o
+[362/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_lt.c.o
+[363/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_eq_signaling.c.o
+[364/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_le_quiet.c.o
+[365/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_lt_quiet.c.o
+[366/766] Building CXX object vendor/bn256/src/CMakeFiles/bn256.dir/bn256.cpp.o
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:320:96: note: in instantiation of function template specialization 'bn256::operator""_i512<'2', '1', '8', '8', '8', '2', '4', '2', '8', '7', '1', '8', '3', '9', '2', '7', '5', '2', '2', '2', '2', '4', '6', '4', '0', '5', '7', '4', '5', '2', '5', '7', '2', '7', '5', '0', '8', '8', '5', '4', '8', '3', '6', '4', '4', '0', '0', '4', '1', '6', '0', '3', '4', '3', '4', '3', '6', '9', '8', '2', '0', '4', '1', '8', '6', '5', '7', '5', '8', '0', '8', '4', '9', '5', '6', '1', '7'>' requested here
+  320 |    static_assert( 21888242871839275222246405745257275088548364400416034343698204186575808495617_i512 == abs(21888242871839275222246405745257275088548364400416034343698204186575808495617_i512));
+      |                                                                                                ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:326:93: note: in instantiation of function template specialization 'bn256::operator""_i512<'2', '1', '8', '8', '8', '2', '4', '2', '8', '7', '1', '8', '3', '9', '2', '7', '5', '2', '2', '2', '2', '4', '6', '4', '0', '5', '7', '4', '5', '2', '5', '7', '2', '7', '5', '0', '8', '8', '6', '9', '6', '3', '1', '1', '1', '5', '7', '2', '9', '7', '8', '2', '3', '6', '6', '2', '6', '8', '9', '0', '3', '7', '8', '9', '4', '6', '4', '5', '2', '2', '6', '2', '0', '8', '5', '8', '3'>' requested here
+  326 |                21888242871839275222246405745257275088696311157297823662689037894645226208583_i512 ==
+      |                                                                                             ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:327:163: note: in instantiation of function template specialization 'bn256::operator""_i512<'4', '7', '9', '0', '9', '5', '1', '7', '6', '0', '1', '6', '6', '2', '2', '8', '4', '2', '4', '4', '1', '9', '8', '8', '0', '4', '5', '2', '1', '6', '6', '7', '8', '7', '4', '0', '7', '9', '6', '0', '1', '4', '0', '2', '1', '9', '8', '4', '3', '7', '1', '2', '5', '9', '1', '3', '8', '0', '6', '0', '1', '4', '2', '7', '3', '9', '7', '3', '2', '0', '5', '1', '2', '9', '2', '0', '4', '5', '9', '4', '6', '9', '8', '1', '8', '4', '3', '1', '7', '7', '2', '1', '6', '3', '1', '5', '1', '1', '4', '2', '1', '9', '6', '6', '9', '9', '7', '5', '9', '5', '6', '0', '7', '9', '0', '5', '1', '9', '1', '7', '3', '6', '9', '2', '5', '3', '0', '5', '2', '7', '1', '1', '3', '3', '2', '3', '7', '1', '5', '3', '2', '8', '3', '7', '8', '8', '3', '2', '8', '0', '7', '1', '1'>' requested here
+  327 |          479095176016622842441988045216678740796014021984371259138060142739732051292045946981843177216315114219669975956079051917369253052711332371532837883280711_i512);
+      |                                                                                                                                                                   ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:328:29: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '0', '0', '0'>' requested here
+  328 |    static_assert(divmod(1000_i512, 9_i512) == std::make_tuple(111_i512, 1_i512));
+      |                             ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:328:37: note: in instantiation of function template specialization 'bn256::operator""_i512<'9'>' requested here
+  328 |    static_assert(divmod(1000_i512, 9_i512) == std::make_tuple(111_i512, 1_i512));
+      |                                     ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:328:66: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '1', '1'>' requested here
+  328 |    static_assert(divmod(1000_i512, 9_i512) == std::make_tuple(111_i512, 1_i512));
+      |                                                                  ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/int512.h:328:74: note: in instantiation of function template specialization 'bn256::operator""_i512<'1'>' requested here
+  328 |    static_assert(divmod(1000_i512, 9_i512) == std::make_tuple(111_i512, 1_i512));
+      |                                                                          ^
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:80:52: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '4', '7', '9', '4', '6', '7', '5', '6', '8', '8', '1', '7', '8', '9', '3', '1', '9', '0', '0', '0', '7', '6', '5', '0', '3', '0', '8', '0', '3', '8', '0', '3', '4', '1', '0', '7', '2', '8'>' requested here
+   80 |             147946756881789319000765030803803410728_i512,
+      |                                                    ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:81:52: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '4', '7', '9', '4', '6', '7', '5', '6', '8', '8', '1', '7', '8', '9', '3', '1', '9', '0', '1', '0', '6', '9', '6', '3', '5', '3', '5', '3', '8', '1', '8', '9', '1', '0', '8', '4', '9', '1'>' requested here
+   81 |             147946756881789319010696353538189108491_i512
+      |                                                    ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:83:52: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '4', '7', '9', '4', '6', '7', '5', '6', '8', '8', '1', '7', '8', '9', '3', '1', '9', '0', '2', '0', '6', '2', '7', '6', '7', '6', '2', '7', '2', '5', '7', '4', '8', '0', '6', '2', '5', '4'>' requested here
+   83 |             147946756881789319020627676272574806254_i512,
+      |                                                    ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:84:53: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '4', '7', '9', '4', '6', '7', '5', '6', '8', '8', '1', '7', '8', '9', '3', '1', '8', '9', '9', '0', '8', '3', '3', '7', '0', '8', '0', '6', '9', '4', '1', '7', '7', '1', '2', '9', '6', '5'>' requested here
+   84 |             -147946756881789318990833708069417712965_i512
+      |                                                     ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:91:92: note: in instantiation of function template specialization 'bn256::operator""_i512<'4', '3', '7', '7', '6', '4', '8', '5', '7', '4', '3', '6', '7', '8', '5', '5', '0', '4', '4', '4', '4', '9', '2', '8', '1', '1', '4', '9', '0', '5', '1', '4', '5', '5', '0', '1', '7', '7', '0', '9', '6', '7', '2', '8', '8', '0', '0', '8', '3', '2', '0', '6', '8', '6', '8', '7', '3', '9', '6', '4', '0', '8', '3', '7', '3', '1', '5', '1', '6', '1', '6', '9', '9', '1', '2', '3', '4'>' requested here
+   91 |       .det_ = 43776485743678550444492811490514550177096728800832068687396408373151616991234_i512
+      |                                                                                            ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:95:39: note: in instantiation of function template specialization 'bn256::operator""_i512<'9', '9', '3', '1', '3', '2', '2', '7', '3', '4', '3', '8', '5', '6', '9', '7', '7', '6', '1'>' requested here
+   95 |    .vectors_ = { { 9931322734385697761_i512, 9931322734385697761_i512, 9931322734385697763_i512,
+      |                                       ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:95:91: note: in instantiation of function template specialization 'bn256::operator""_i512<'9', '9', '3', '1', '3', '2', '2', '7', '3', '4', '3', '8', '5', '6', '9', '7', '7', '6', '3'>' requested here
+   95 |    .vectors_ = { { 9931322734385697761_i512, 9931322734385697761_i512, 9931322734385697763_i512,
+      |                                                                                           ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:96:39: note: in instantiation of function template specialization 'bn256::operator""_i512<'9', '9', '3', '1', '3', '2', '2', '7', '3', '4', '3', '8', '5', '6', '9', '7', '7', '6', '4'>' requested here
+   96 |                    9931322734385697764_i512 },
+      |                                       ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:97:39: note: in instantiation of function template specialization 'bn256::operator""_i512<'4', '9', '6', '5', '6', '6', '1', '3', '6', '7', '1', '9', '2', '8', '4', '8', '8', '8', '1'>' requested here
+   97 |                  { 4965661367192848881_i512, 4965661367192848881_i512, 4965661367192848882_i512,
+      |                                       ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:97:91: note: in instantiation of function template specialization 'bn256::operator""_i512<'4', '9', '6', '5', '6', '6', '1', '3', '6', '7', '1', '9', '2', '8', '4', '8', '8', '8', '2'>' requested here
+   97 |                  { 4965661367192848881_i512, 4965661367192848881_i512, 4965661367192848882_i512,
+      |                                                                                           ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:98:40: note: in instantiation of function template specialization 'bn256::operator""_i512<'9', '9', '3', '1', '3', '2', '2', '7', '3', '4', '3', '8', '5', '6', '9', '7', '7', '6', '2'>' requested here
+   98 |                    -9931322734385697762_i512 },
+      |                                        ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:103:75: note: in instantiation of function template specialization 'bn256::operator""_i512<'7', '3', '4', '6', '5', '3', '4', '9', '5', '0', '4', '9', '3', '7', '3', '9', '7', '3', '6', '5', '8', '2', '5', '4', '4', '9', '0', '7', '2', '6', '7', '9', '8', '0', '2', '1', '3', '1', '4', '0', '6', '3', '3', '9', '9', '4', '2', '1', '8', '7', '9', '4', '4', '2', '1', '6', '5'>' requested here
+  103 |    .inverse_ = { 734653495049373973658254490726798021314063399421879442165_i512,
+      |                                                                           ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:105:58: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '4', '7', '9', '4', '6', '7', '5', '6', '8', '8', '1', '7', '8', '9', '3', '1', '9', '0', '0', '5', '7', '3', '0', '6', '9', '2', '1', '7', '0', '9', '9', '6', '2', '5', '9', '6', '0', '9'>' requested here
+  105 |                  -147946756881789319005730692170996259609_i512,
+      |                                                          ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:106:76: note: in instantiation of function template specialization 'bn256::operator""_i512<'1', '4', '6', '9', '3', '0', '6', '9', '9', '0', '0', '9', '8', '7', '4', '7', '9', '4', '7', '4', '6', '4', '4', '5', '5', '7', '3', '8', '3', '3', '5', '3', '8', '5', '3', '6', '1', '6', '4', '3', '7', '8', '8', '8', '1', '3', '7', '4', '9', '1', '4', '0', '8', '4', '1', '7', '0', '2'>' requested here
+  106 |                  1469306990098747947464455738335385361643788813749140841702_i512 },
+      |                                                                            ^
+In file included from /src/vendor/bn256/src/bn256.cpp:1:
+In file included from /src/vendor/bn256/src/curve.h:4:
+In file included from /src/vendor/bn256/src/lattice.h:2:
+/src/vendor/bn256/src/int512.h:271:23: warning: non-overlapping comparisons always evaluate to false [-Wtautological-overlap-compare]
+  271 |       if (digit < '0' && digit > '9')
+      |           ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/src/vendor/bn256/src/lattice.h:107:82: note: in instantiation of function template specialization 'bn256::operator""_i512<'0', 'x', '3', '0', '6', '4', '4', 'E', '7', '2', 'E', '1', '3', '1', 'A', '0', '2', '9', 'B', '8', '5', '0', '4', '5', 'B', '6', '8', '1', '8', '1', '5', '8', '5', 'D', '2', '8', '3', '3', 'E', '8', '4', '8', '7', '9', 'B', '9', '7', '0', '9', '1', '4', '3', 'E', '1', 'F', '5', '9', '3', 'F', '0', '0', '0', '0', '0', '0', '1'>' requested here
+  107 |    .det_     = 0x30644E72E131A029B85045B68181585D2833E84879B9709143E1F593F0000001_i512
+      |                                                                                  ^
+22 warnings generated.
+[367/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f64_isSignalingNaN.c.o
+[368/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_ui32.c.o
+[369/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_i32.c.o
+[370/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_ui64.c.o
+[371/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_i64.c.o
+[372/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_ui32_r_minMag.c.o
+[373/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_ui64_r_minMag.c.o
+[374/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_i32_r_minMag.c.o
+[375/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_i64_r_minMag.c.o
+[376/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_f16.c.o
+[377/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_f32.c.o
+[378/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_f64.c.o
+[379/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_to_f128.c.o
+[380/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_roundToInt.c.o
+[381/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_add.c.o
+[382/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_sub.c.o
+[383/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_mul.c.o
+[384/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_div.c.o
+[385/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_rem.c.o
+[386/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_eq.c.o
+[387/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_sqrt.c.o
+[388/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_le.c.o
+[389/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_lt.c.o
+[390/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_eq_signaling.c.o
+[391/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_le_quiet.c.o
+[392/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_isSignalingNaN.c.o
+[393/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80_lt_quiet.c.o
+[394/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_ui32.c.o
+[395/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_i32.c.o
+[396/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_ui64.c.o
+[397/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_i64.c.o
+[398/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_ui64_r_minMag.c.o
+[399/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_ui32_r_minMag.c.o
+[400/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_i32_r_minMag.c.o
+[401/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_i64_r_minMag.c.o
+[402/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_f16.c.o
+[403/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_f32.c.o
+[404/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_f64.c.o
+[405/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_to_f128M.c.o
+[406/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_roundToInt.c.o
+[407/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_add.c.o
+[408/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_sub.c.o
+[409/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_mul.c.o
+[410/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_rem.c.o
+[411/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_div.c.o
+[412/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_sqrt.c.o
+[413/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_le.c.o
+[414/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_eq.c.o
+[415/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_lt.c.o
+[416/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_eq_signaling.c.o
+[417/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_le_quiet.c.o
+[418/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/extF80M_lt_quiet.c.o
+[419/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_ui32.c.o
+[420/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_ui64.c.o
+[421/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_i32.c.o
+[422/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_ui32_r_minMag.c.o
+[423/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_i64.c.o
+[424/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_ui64_r_minMag.c.o
+[425/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_i32_r_minMag.c.o
+[426/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_i64_r_minMag.c.o
+[427/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_f16.c.o
+[428/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_f32.c.o
+[429/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_extF80.c.o
+[430/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_to_f64.c.o
+[431/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_add.c.o
+[432/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_roundToInt.c.o
+[433/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_sub.c.o
+[434/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_mulAdd.c.o
+[435/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_mul.c.o
+[436/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_div.c.o
+[437/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_rem.c.o
+[438/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_eq.c.o
+[439/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_sqrt.c.o
+[440/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_lt.c.o
+[441/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_le.c.o
+[442/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_eq_signaling.c.o
+[443/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_isSignalingNaN.c.o
+[444/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_le_quiet.c.o
+[445/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128_lt_quiet.c.o
+[446/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_ui64.c.o
+[447/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_ui32.c.o
+[448/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_i32.c.o
+[449/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_i64.c.o
+[450/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_ui32_r_minMag.c.o
+[451/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_ui64_r_minMag.c.o
+[452/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_i32_r_minMag.c.o
+[453/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_i64_r_minMag.c.o
+[454/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_f16.c.o
+[455/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_f32.c.o
+[456/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_extF80M.c.o
+[457/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_to_f64.c.o
+[458/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_roundToInt.c.o
+[459/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_add.c.o
+[460/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_sub.c.o
+[461/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_mul.c.o
+[462/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_mulAdd.c.o
+[463/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_div.c.o
+[464/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_sqrt.c.o
+[465/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_eq.c.o
+[466/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_rem.c.o
+[467/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_le.c.o
+[468/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_lt.c.o
+[469/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_eq_signaling.c.o
+[470/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_lt_quiet.c.o
+[471/766] Building C object vendor/softfloat/CMakeFiles/softfloat.dir/source/f128M_le_quiet.c.o
+[472/766] Linking CXX static library libraries/chain/transaction/libforge_chain_transaction.a
+[473/766] Generating CXX dyndep file libraries/chain/fork/CMakeFiles/forge_chain_fork.dir/CXX.dd
+[474/766] Linking CXX static library libraries/chain/savanna/libforge_chain_savanna.a
+[475/766] Building CXX object libraries/api/p2p/CMakeFiles/forge_api_p2p.dir/include/forge/api/p2p/binding.cppm.o
+[476/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/finality.cppm.o
+[477/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/abi.cppm.o
+[478/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/exceptions.cppm.o
+[479/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/finality.cpp.o
+[480/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/abi.cpp.o
+[481/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/finality_signer.cppm.o
+[482/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/json_schema.cppm.o
+[483/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/table_key.cppm.o
+[484/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/savanna_finality_verifier.cppm.o
+[485/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/table_key.cpp.o
+[486/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/savanna_finality_verifier.cpp.o
+[487/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/savanna_finality_trust_store.cpp.o
+[488/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/limits.cppm.o
+[489/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/limits.cpp.o
+[490/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/block_signer.cppm.o
+[491/766] Building CXX object libraries/chain/api/CMakeFiles/forge_chain_api.dir/include/forge/chain/api/info.cppm.o

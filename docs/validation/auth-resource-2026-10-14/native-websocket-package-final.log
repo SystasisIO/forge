@@ -2505,4 +2505,3 @@ clang++: warning: argument unused during compilation: '-c' [-Wunused-command-lin
 [271/271] Linking CXX executable forge_package_api_websocket_component
 
 Running test command: "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/forge/build-auth-resource/forge-package-api-websocket-component/forge_package_api_websocket_component"
-

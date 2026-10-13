@@ -37,14 +37,19 @@ patched Linux daemon/library/Forge cycle and the final macOS AppAuth browser,
 resume, post-expiry refresh and invalidate cycle PASS. See the
 [oidc-agent report](../donors/oidc-agent-upstream-report.md), still **NOT_SUBMITTED**.
 
-Native acceptance is closed, not an overall delivery verdict. The current
-full-catalog Linux package build and installed Forge verification remain
+Native acceptance is closed, not an overall delivery verdict. The
+full-catalog Linux package build was interrupted by Docker Desktop shutdown
+at 03:22 +05:00 on 2026-10-14; installed Forge verification remains
 **PENDING**. After the WebSocket observation repair (`1f9fddc6`) and notification
 race fix (`b099d6aa`), the latest regressions PASS: Linux 11/11, macOS 14/14,
 plus twenty-repeat suites on each platform. The original failed runs remain
-historical evidence. Current fixture cleanup is complete; the build container
-and generated build are intentionally retained for package validation.
-The feature remains on the local branch, with no development promotion,
+historical evidence. Current fixture cleanup is complete; generated build
+files are intentionally retained until package evidence is complete. Docker is
+stopped. On 2026-10-14 the user authorized GitHub Actions for the remaining
+Linux verification instead of restarting the resource-heavy local container.
+This authorization supersedes the earlier no-CI restriction for this feature;
+it does not waive the package gate or authorize promotion before final review.
+The feature remains on the feature branch, with no development promotion,
 Gate pin update, tag or release claimed.
 
 ## Scope
@@ -162,7 +167,7 @@ or Linux installed-package verdict.
 | macOS actual browser authorization and complete native lifecycle | PASS; current-run user browser attestation; processes exit 0 | [Authorize](../validation/auth-resource-2026-10-14/native-macos-accepted-authorize.jsonl); lifecycle logs below |
 | Linux actual patched daemon/library/Forge native lifecycle | PASS, including overrides, expiry renewal and encrypted reload | [Acquire](../validation/auth-resource-2026-10-14/linux/native-oct14/final-acquire-overrides.jsonl); lifecycle logs below |
 | Current fixture trust, Keychain, daemon and issuer cleanup | Complete; expected NOT_TRUSTED/absence checks | Confirmed cleanup results below |
-| Full-catalog Linux package build and installed Forge verification | PENDING; no final package/delivery verdict | `build-auth-resource/linux/oidc-forge-package.log` |
+| Full-catalog Linux package build and installed Forge verification | INTERRUPTED at step 491/766 by Docker shutdown; installed consumer PENDING | [Interrupted build](../validation/auth-resource-2026-10-14/linux/package-install-interrupted.log) |
 
 The historical package and SDK policy rows are macOS evidence, not Linux
 package/SDK PASS. A historical Linux SDK configure attempt failed because the
@@ -196,6 +201,32 @@ These scoped verdicts and native PASS do not declare whole-delivery CLEAN:
 Linux package/installed-consumer validation and final delivery review/ancestry
 remain pending. No Forge development push, Gate pin update, tag or release has been
 performed. Generated build evidence is retained for package validation.
+
+The interrupted package command returned 255 when the Docker API socket
+disappeared. Docker's host log records `Quitting whole Docker Desktop` and
+`requested backend shutdown`, not a compiler diagnostic. Before shutdown,
+four compiler processes were active; the observed slow translation units
+were existing Chain API modules. Their slowness was not diagnosed as an SDK
+incompatibility or a source failure. This run is not a package PASS, and no
+partial-install workaround was used. Free host disk after shutdown: 35 GiB.
+
+### Hosted Linux Verification
+
+The [Auth Resource workflow](../../.github/workflows/auth-resource.yml) runs
+only on `auth-api-resource-verification-v1`, using its immutable event SHA.
+The [phase script](../../.github/scripts/auth-resource.sh) builds the exact
+qualified dependencies, performs the existing full-catalog install, runs
+focused regressions and installed consumers, then composes a separate native
+driver against the real installed oidc-agent library. Its expected
+`setup_required` negative case is package/runtime evidence, not another live
+IdP login. The previously completed human login evidence remains separate.
+
+The standard public Ubuntu 26.04 runner uses `-j4` with a two-compiler Ninja
+pool, including nested package consumers: four locally observed 5.5 GiB
+compiler processes exceed its memory budget. This is a resource limit, not a
+smaller source graph. Jobs have finite deadlines and publish allowlisted test
+results and phase exit codes; raw logs, tokens and private configuration are
+not included in the artifact. Adding this workflow is not a passing CI result.
 
 ### Historical Post-Rebase Digests
 

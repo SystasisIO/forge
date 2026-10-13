@@ -1,0 +1,67 @@
+name: Auth Resource
+run-name: Auth Resource / ${{ github.ref_name }} / ${{ github.sha }}
+
+on:
+  push:
+    branches: [auth-api-resource-verification-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auth-resource-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  CTEST_PARALLEL_LEVEL: "1"
+
+jobs:
+  linux:
+    if: github.ref == 'refs/heads/auth-api-resource-verification-v1'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install pinned dependencies and genuine oidc-agent
+        timeout-minutes: 35
+        run: bash .github/scripts/auth-resource.sh dependencies
+
+      - name: Build and install the full Linux catalog
+        timeout-minutes: 90
+        run: bash .github/scripts/auth-resource.sh catalog
+
+      - name: Run Auth API WebSocket regressions and race repeats
+        timeout-minutes: 15
+        run: bash .github/scripts/auth-resource.sh regressions
+
+      - name: Verify installed package consumers including oidc-agent ABI fixture
+        timeout-minutes: 30
+        run: bash .github/scripts/auth-resource.sh packages
+
+      - name: Compose real installed native driver and check missing setup
+        timeout-minutes: 15
+        run: bash .github/scripts/auth-resource.sh native-negative
+
+      - name: Select sanitized evidence
+        if: always()
+        run: bash .github/scripts/auth-resource.sh evidence
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: auth-resource-linux-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-auth-resource/evidence/
+          if-no-files-found: warn
+          retention-days: 14
