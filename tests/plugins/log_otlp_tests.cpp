@@ -1055,4 +1055,32 @@ BOOST_AUTO_TEST_CASE(log_otlp_held_api_and_delayed_call_are_safe_after_plugin_an
                      log_otlp::exceptions::exporter_unavailable);
 }
 
+BOOST_AUTO_TEST_CASE(log_otlp_noarg_awaitables_are_safe_after_all_api_owners_and_runtime_are_destroyed) {
+   auto caller = forge::asio::runtime{{.worker_threads = 2}};
+   auto delayed_flush = std::optional<boost::asio::awaitable<void>>{};
+   auto delayed_metrics = std::optional<boost::asio::awaitable<log_otlp::metrics>>{};
+   auto retired_api = std::weak_ptr<log_otlp::api>{};
+   {
+      BOOST_REQUIRE(forge::configure_logging(forge::logging_config{}));
+      auto harness = plugin_harness{};
+      auto collector = otlp_concurrency_fixtures::controlled_collector{harness.runtime};
+      harness.configure(plugin_config(collector.endpoint(), {logger_route("plugin.noarg-delayed")}));
+      harness.provide_and_start();
+      auto handle = harness.apis.get<log_otlp::api>(log_otlp::api::ref());
+      auto api = handle.shared();
+      retired_api = api;
+      delayed_flush.emplace(api->flush());
+      delayed_metrics.emplace(api->metrics());
+      harness.plugin.request_stop();
+      // Both no-arg awaitables remain unstarted throughout shutdown. This scope
+      // then destroys every API handle, the registry, plugin and source runtime.
+      harness.shutdown();
+   }
+   BOOST_REQUIRE(retired_api.expired());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, std::move(*delayed_flush)),
+                     log_otlp::exceptions::exporter_unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(caller, std::move(*delayed_metrics)),
+                     log_otlp::exceptions::exporter_unavailable);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
