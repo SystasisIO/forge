@@ -16,6 +16,7 @@ import package.chain_api_component.write_e2e_p2p_admin_client;
 import package.chain_api_component.write_e2e_p2p_admin_server;
 import forge.api.core.registry;
 import forge.app.application;
+import forge.app.plugin_lifecycle;
 import forge.asio.blocking;
 import forge.config.core.value;
 import forge.net.p2p.protocol;

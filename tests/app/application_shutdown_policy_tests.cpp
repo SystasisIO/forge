@@ -290,6 +290,11 @@ template <typename Owner> struct policy_fixture {
       state->cleaned.notify();
       // Join worker execution before owner/signal destruction, also on failure.
       owner.runtime().stop();
+      // The co_spawn cancellation handler retains an executor whose allocator
+      // belongs to the still-live io_context. Retire it before owner teardown.
+      signal->slot().clear();
+      state->cancel_on_stop.reset();
+      state->cancel_on_cleanup.reset();
    }
 
    void wait_event(forge::asio::notification& event, std::uint64_t before) {
@@ -431,6 +436,27 @@ template <typename Owner> void joiner_policy() {
 
 BOOST_AUTO_TEST_CASE(plugin_shutdown_immediate_stop_cancellation_preserves_policy_and_retry) {
    immediate_cleanup_policy<plugin_owner>();
+}
+BOOST_AUTO_TEST_CASE(plugin_shutdown_policy_fixture_retires_pending_cancellation_before_context) {
+   auto pending = std::future<policy_result>{};
+   auto signal = std::weak_ptr<boost::asio::cancellation_signal>{};
+   {
+      auto fixture = policy_fixture<plugin_owner>{};
+      auto initialize = boost::asio::co_spawn(fixture.serial, fixture.owner.initialize(), boost::asio::use_future);
+      ready_policy(initialize);
+      fixture.state->hold_cleanup.store(true);
+      fixture.state->cancel_on_cleanup = fixture.signal;
+      signal = fixture.signal;
+      const auto entered = fixture.state->cleaning.epoch();
+      pending = fixture.inspect(fixture.owner.shutdown());
+      fixture.wait_event(fixture.state->cleaning, entered);
+      BOOST_CHECK(pending.wait_for(std::chrono::milliseconds{0}) == std::future_status::timeout);
+      // Exercise the fixture's assertion/timeout unwinding path deliberately.
+      fixture.owner.runtime().stop();
+   }
+   BOOST_REQUIRE(pending.wait_for(result_deadline) == std::future_status::ready);
+   BOOST_CHECK_THROW(static_cast<void>(pending.get()), std::future_error);
+   BOOST_CHECK(signal.expired());
 }
 BOOST_AUTO_TEST_CASE(application_runtime_shutdown_immediate_stop_cancellation_preserves_policy_and_retry) {
    immediate_cleanup_policy<runtime_owner>();

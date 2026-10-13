@@ -699,7 +699,10 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_saved_awaitables_outlive_facade_and_pl
    check(std::move(*typed_publish));
    check(std::move(*subscribe));
    check(std::move(*typed_subscribe));
-   check(std::move(*unsubscribe));
+   // Unsubscribe permits retained cleanup after stop, but the fixture's joined
+   // teardown has already released its native owner before this lazy call runs.
+   auto cleanup = boost::asio::co_spawn(runtime.context(), std::move(*unsubscribe), boost::asio::use_future);
+   BOOST_CHECK_THROW((void)joined(cleanup), facade::exceptions::plugin_not_initialized);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_lifecycle_handler_can_unsubscribe_itself_without_waiting_for_itself) {
