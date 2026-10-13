@@ -45,6 +45,20 @@ fetch_pin() {
    [[ "$(git -C "$source" rev-parse HEAD)" == "$commit" ]]
 }
 
+check_linkage() {
+   local binary="$1" linkage resolved
+   shift
+   env -u LD_LIBRARY_PATH -u LD_PRELOAD LC_ALL=C readelf -d "$binary"
+   linkage="$(env -u LD_LIBRARY_PATH -u LD_PRELOAD LC_ALL=C ldd -r "$binary" 2>&1)"
+   printf '%s\n' "$linkage"
+   [[ "$linkage" != *"not found"* && "$linkage" != *"undefined symbol:"* ]]
+   while (( $# )); do
+      resolved="$(printf '%s\n' "$linkage" | awk -v name="$1" '$1 == name && $2 == "=>" {print $3}')"
+      [[ -n "$resolved" && -f "$2" && "$(readlink -f "$resolved")" == "$(readlink -f "$2")" ]]
+      shift 2
+   done
+}
+
 if [[ "$phase" == dependencies ]]; then
    sudo apt-get update
    sudo apt-get install -y clang-22 clang-tools-22 g++-15 build-essential autoconf automake libtool \
@@ -87,10 +101,12 @@ fi
 
 eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 export PKG_CONFIG_PATH="$deps/lib/pkgconfig:$oidc/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
-export LD_LIBRARY_PATH="$deps/lib:$oidc/lib:$(brew --prefix openssl@3)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 readonly prefixes="$deps;$oidc;$glaze;$(brew --prefix);$(brew --prefix boost);$(brew --prefix libngtcp2);$(brew --prefix openssl@3)"
+# Private runtime paths belong to built binaries, not compiler/linker processes.
+readonly runtime_paths="$deps/lib;$oidc/lib;$(brew --prefix openssl@3)/lib"
 cmake_options=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX"
-   -DCMAKE_CXX_FLAGS=-stdlib=libstdc++ -DCMAKE_PREFIX_PATH="$prefixes" -Dglaze_DIR="$glaze/share/glaze")
+   -DCMAKE_CXX_FLAGS=-stdlib=libstdc++ -DCMAKE_PREFIX_PATH="$prefixes" -Dglaze_DIR="$glaze/share/glaze"
+   -DCMAKE_BUILD_RPATH="$runtime_paths")
 [[ "$(pkg-config --modversion jansson)" == 2.14.1 && "$(pkg-config --modversion cjose)" == 0.6.2.8 ]]
 [[ "$(pkg-config --modversion liboidc-agent)" == 5.3.8-systasis.1 ]]
 [[ "$(pkg-config --variable=pcfiledir liboidc-agent)" == "$oidc/lib/pkgconfig" ]]
@@ -98,6 +114,9 @@ pkg-config --validate liboidc-agent
 
 case "$phase" in
    dependencies)
+      # Check the shared library's own transitive paths, without executable RUNPATH help.
+      check_linkage "$deps/lib/libcjose.so" libjansson.so.4 "$deps/lib/libjansson.so" \
+         libcrypto.so.3 "$(brew --prefix openssl@3)/lib/libcrypto.so.3"
       printf 'jansson=2.14.1@ed5cae4ed0621ef409510f94270c9f8f263736d0\ncjose=0.6.2.8@e787ace6a203d483038a793fd58f958a2f9b48c1\noidc-agent=5.3.8-systasis.1 (vendored, Make install_lib-dev)\n' >> "$work/evidence/provenance.txt"
       ;;
    catalog)
@@ -136,11 +155,16 @@ case "$phase" in
             cmake -S "tests/package_$consumer" -B "$consumer_build" -G Ninja \
                -C "$build/tests/ForgePackageConsumerCache.cmake" -DCMAKE_BUILD_TYPE=Release \
                -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
-               -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE"
+               -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" -DCMAKE_BUILD_RPATH="$runtime_paths"
             # Explicit -j4: CTest build-and-test suppresses CMAKE_BUILD_PARALLEL_LEVEL.
             cmake --build "$consumer_build" -j4
+            if [[ "$consumer" == auth_liboauth2_component ]]; then
+               check_linkage "$consumer_build/forge_package_$consumer" \
+                  libcjose.so.0 "$deps/lib/libcjose.so" libjansson.so.4 "$deps/lib/libjansson.so" \
+                  libcrypto.so.3 "$(brew --prefix openssl@3)/lib/libcrypto.so.3"
+            fi
             cd "$consumer_build"
-            timeout --kill-after=5s 60s "./forge_package_$consumer"
+            env -u LD_LIBRARY_PATH -u LD_PRELOAD timeout --kill-after=5s 60s "./forge_package_$consumer"
          )
          printf 'forge_package_%s\tPASS\n' "$consumer" >> "$work/evidence/package-consumers.tsv"
       done
@@ -150,10 +174,11 @@ case "$phase" in
       cmake -S tests/auth/live -B "$native" "${cmake_options[@]}" \
          -DForge_DIR="$build/forge-package-install/lib/cmake/Forge"
       cmake --build "$native" --target forge_auth_live_oidc_agent -j4
-      ldd "$native/forge_auth_live_oidc_agent" | grep -F "$oidc/lib/liboidc-agent.so.5"
+      check_linkage "$native/forge_auth_live_oidc_agent" \
+         liboidc-agent.so.5 "$oidc/lib/liboidc-agent.so.5.3.8-systasis.1"
       [[ ! -e "$work/absent-agent.sock" ]]
       code=0
-      env -u LD_PRELOAD OIDC_SOCK="$work/absent-agent.sock" OIDC_REMOTE_SOCK="$work/absent-agent.sock" \
+      env -u LD_LIBRARY_PATH -u LD_PRELOAD OIDC_SOCK="$work/absent-agent.sock" OIDC_REMOTE_SOCK="$work/absent-agent.sock" \
          timeout --kill-after=5s 20s "$native/forge_auth_live_oidc_agent" --issuer https://forge-ci.invalid/issuer \
          --client forge-ci --run-id 00000000-0000-0000-0000-000000000001 \
          --account live-00000000-0000-0000-0000-000000000001 --flow acquire --timeout 5 \
