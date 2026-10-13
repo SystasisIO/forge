@@ -1,0 +1,9 @@
+{"accepted":false,"case":"invalid-jwt","completed":true,"status":401}
+{"accepted":false,"case":"jwks-503","completed":true,"request_seen":true,"status":401}
+{"accepted":false,"case":"jwks-unreachable","completed":true,"status":401}
+{"accepted":false,"case":"inactive","completed":true,"request_seen":true,"status":401}
+{"accepted":false,"case":"introspection-503","completed":true,"request_seen":true,"status":503}
+{"accepted":false,"case":"introspection-timeout","completed":true,"request_seen":true,"status":401}
+{"accepted":false,"case":"redirect-307","client_secret_forwarded":true,"completed":true,"post_forwarded":true,"request_seen":true,"status":401,"token_forwarded":true}
+{"accepted":false,"case":"redirect-308","client_secret_forwarded":true,"completed":true,"post_forwarded":true,"request_seen":true,"status":401,"token_forwarded":true}
+{"accepted":false,"backend_approved":false,"case":"summary","completed":true,"fixture_valid":true,"gap_reproduced":true,"http_503_control_preserved":true,"jwks_gap_reproduced":true,"redirect_forwarding_reproduced":true,"status":0,"timeout_gap_reproduced":true}
