@@ -259,6 +259,13 @@ at code-admission time. Runtime construction must still validate the exact bytes
 that will execute; a prior validation result is not a substitute for matching a
 trusted code digest.
 
+When using an externally owned context (`exec_ctx_by_backend = false`), call
+`backend::validate()` after construction and before admitting prepared code.
+It checks the parsed module's instantiation error and active data-segment bounds,
+without allocating an execution context or running the start function. Parsing
+and import resolution still belong to backend construction. This method does
+not enforce a product's required exports or import policy.
+
 ```cpp
 using validator = wasm::backend<
    std::nullptr_t,

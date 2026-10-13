@@ -5,6 +5,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 
 #include <exception>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -21,6 +22,8 @@ import forge.api.p2p.publication;
 import forge.api.transport.options;
 import forge.app.plugin;
 import forge.app.plugin_context;
+import forge.asio.notification;
+import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.exceptions;
@@ -34,6 +37,7 @@ import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.exceptions;
 
 #include "details/config.hxx"
+#include "details/publication_catalog.hxx"
 #include "details/plugin_impl.hxx"
 #include "details/api_impl.hxx"
 #include "details/managed_api_impl.hxx"

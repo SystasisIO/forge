@@ -30,6 +30,16 @@ part of this protocol library.
 Package component: `chain_protocol`. Public namespace:
 `forge::chain::protocol`.
 
+## Optional ABI metadata
+
+`forge.chain.protocol.abi_metadata` owns `abi_metadata`, `abi_root_def`,
+`abi_enum_def` and `abi_enum_value`. These are described JSON value records for
+the optional Abigen companion artifact, not extensions to the standard
+`abi_def` or its binary encoding. An enum value uses canonical decimal text to
+retain the full signed and unsigned 64-bit range. Abigen owns extraction;
+[Chain API](../api/README.md) owns validation and dynamic conversion.
+The metadata module has no Clang, network or runtime dependency.
+
 ## Modules
 
 - `forge.chain.protocol.types`: digest aliases, names, assets, symbols, IDs,

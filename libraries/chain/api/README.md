@@ -55,6 +55,111 @@ transports carry the same bytes without a transport-specific cursor DTO.
 Concrete controllers, state schemas, persistence, protocol publication and
 network policy remain in downstream products.
 
+## Dynamic ABI enum strings
+
+`forge.chain.api.abi` exports the standard ABI and its optional
+`forge.chain.protocol.abi_metadata` companion. Use the metadata overloads when
+Abigen-generated enum names must survive a dynamic JSON/raw boundary:
+
+```cpp
+import forge.chain.api.abi;
+import forge.codec.json;
+
+namespace protocol = forge::chain::protocol;
+namespace json = forge::codec::json;
+
+const auto abi = json::load<protocol::abi_def>("example.abi");
+const auto metadata = json::load<protocol::abi_metadata>("example.abi.metadata.json", {
+   .unknown_fields = json::unknown_field_policy::error,
+   .described_records = json::described_record_policy::exact,
+});
+if (!abi.ok() || !metadata.ok()) {
+   // Reject the package with the reported diagnostics.
+   return;
+}
+const auto input = json::read_value(R"({"shape":"circle"})");
+if (!input.ok()) {
+   return;
+}
+const auto bytes = forge::chain::api::abi_json_to_bin(
+   abi.value, metadata.value, "request", input.value);
+const auto output = forge::chain::api::abi_bin_to_json(
+   abi.value, metadata.value, "request", bytes);
+```
+
+The codec knows no concrete request or enum C++ type. It validates metadata
+against the ABI before conversion, follows aliases and containers, and uses
+the same recursive struct/optional/variant serializer. Metadata-enabled enums
+accept named JSON strings only; unknown names and binary integer values fail
+with a typed `abi_serialization_error` and an exact path. Missing or mismatched
+integer aliases, duplicate enum names/numbers and roots, invalid numeric ranges,
+unsupported versions and resource limits fail before encoding or decoding.
+
+`abi_serialization_limits::max_metadata_bytes` bounds aggregate metadata text
+and `max_metadata_entries` bounds roots, enums and named values. Existing
+string, recursion and deadline limits also apply. Parse artifact JSON with
+exact described records and unknown-field rejection before using the codec.
+The ordinary overloads retain their numeric enum behavior and Chain raw bytes.
+The codec does not authenticate metadata or bind it to WASM: the package owner
+must verify the artifact hashes and their provenance before use. Do not create
+a second manually maintained enum schema or log private payloads on failures.
+
+## Exact JSON scalar inputs
+
+Existing `abi_json_to_bin` calls retain their compatible conversions and exported
+function signatures. To reject scalar coercion at an external JSON boundary, use
+the overload with an explicit final policy:
+
+```cpp
+const auto bytes = forge::chain::api::abi_json_to_bin(
+   abi.value, metadata.value, "request", input.value, {},
+   forge::chain::api::abi_json_scalar_policy::exact);
+```
+
+The overload without enum metadata accepts the same final `limits, policy`
+arguments. `compatible` selects the original behavior explicitly. Binary output
+and `abi_bin_to_json` are unchanged.
+
+`exact` requires JSON booleans for `bool`, JSON integers within the declared
+signed/unsigned width for integers up to 64 bits and `varint32`/`varuint32`, and
+canonical decimal strings within range for `int128`/`uint128`. Numeric strings,
+fractional values, boolean-to-integer conversion and narrowing overflow fail
+with `invalid_json` before scalar packing. Floating-point inputs reuse Schema's
+finite, range and exact-representability checks; a value that cannot be represented
+exactly by `float32`/`float64` is rejected.
+
+The same checks apply through ABI aliases, optional fields, arrays, inherited
+records and variants in the existing serialization traversal. Omitted/null
+optional fields still mean absence. Diagnostics preserve the resolved ABI type,
+field/index path and binary offset. Unknown record keys remain rejected in both
+policies.
+
+This is a scalar policy, not a separate JSON parser or a new object schema.
+Positional record arrays retain the existing ABI behavior. Protocol-specific
+scalars such as names, timestamps, assets, keys, signatures, checksums and
+`float128` keep their existing canonical handlers and resource limits.
+
+## Total container element budget
+
+`abi_serialization_limits::max_total_container_elements` bounds the sum of dynamic
+and fixed array elements for one encoded or decoded ABI value. The existing
+`max_container_elements` still bounds each individual array. Aliases, optional
+arrays, nested arrays and arrays in separate record fields consume the same
+traversal budget. The overflow-safe check runs before allocating the output array
+or iterating its members; zero-width records therefore cannot expand without
+charging the budget merely because their binary payload is empty.
+
+The new field is appended and defaults to `std::numeric_limits<std::size_t>::max()`
+to preserve the previous default. A zero budget accepts empty arrays and scalars;
+an exact budget accepts exactly that aggregate number of elements. Exhaustion
+reports `size_limit` with the array's path and offset. Enum metadata remains
+bounded by its independent metadata limits.
+
+Consumers must rebuild against the updated `abi_serialization_limits` definition
+because the public C++ value layout grows. No ABI artifact, Raw wire, guest
+intrinsic or persisted record layout changes; existing source initializers can
+keep omitting the new field.
+
 ## Signing APIs
 
 `forge.chain.api.transaction_signer` is a transport-neutral `1.0` API with
@@ -292,7 +397,15 @@ The traversal and wire rules are adapted from Spring commit `e6a99f68`,
 `libraries/chain/abi_serializer.cpp` and
 `libraries/chain/include/eosio/chain/abi_serializer.hpp`. Supported ABI shapes
 include built-in Spring types, typedefs, struct inheritance, dynamic and fixed
-arrays, optional fields, trailing binary extensions and tagged variants.
+arrays, optional fields, trailing binary extensions and tagged variants. Optional
+and array modifiers compose directly, including `item[]?`, `uint8?[]` and
+`uint8[][2]?`, in roots, fields and typedefs. Null optional arrays remain distinct
+from present empty arrays; their bytes use the existing Raw presence flag and
+array length. This extends the pinned Spring parser's optional-array restriction
+to accept shapes generated by Forge Abigen.
+Adjacent optional layers, including aliases resolving to them, are rejected:
+JSON null cannot preserve the difference between an absent outer optional and
+a present outer optional containing an absent inner value.
 Public Forge names and error contracts are native; there are no EOSIO namespace
 aliases or compatibility modes.
 
@@ -308,6 +421,11 @@ re-encode existing JSON inputs and expectations with the existing codecs, not
 replace prefixes. See the [unreleased ABI migration note](../../../docs/releases/unreleased-chain-api-forge-crypto-text.md).
 
 `abi_serialization_limits` bounds recursion depth, elapsed serialization time,
-binary bytes, string/byte payloads and container elements. Failures throw
+binary bytes, string/byte payloads and container elements, including cumulative
+nested array elements. Root types are validated even for absent optional values;
+malformed, unknown and embedded binary-extension modifiers cannot hide behind
+null. Each modifier consumes recursion depth and retains deadline checks.
+Binary extensions remain trailing struct fields, and array elements cannot omit
+them even when the array is nested inside an optional. Failures throw
 `abi_serialization_error` with a structured `abi_diagnostic` containing a
 stable code, message, resolved type, logical JSON path and binary offset.

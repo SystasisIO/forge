@@ -11,7 +11,7 @@ function(forge_add_contract_project target)
    endif()
    cmake_parse_arguments(
       ARG
-      ""
+      "ABI_METADATA"
       "SOURCE_DIR;BINARY_DIR;CONTRACT;SOURCE_ROOT"
       ""
       ${ARGN}
@@ -112,6 +112,10 @@ function(forge_add_contract_project target)
    else()
       set(_artifact_dir "${_artifact_root}")
    endif()
+   set(_abi_metadata)
+   if(ARG_ABI_METADATA)
+      set(_abi_metadata "${_artifact_dir}/${ARG_CONTRACT}.abi.metadata.json")
+   endif()
    set(_prefix_path ${CMAKE_PREFIX_PATH})
    list(APPEND _prefix_path "${_contract_prefix}")
    list(REMOVE_DUPLICATES _prefix_path)
@@ -143,12 +147,14 @@ function(forge_add_contract_project target)
          "${_artifact_dir}/${ARG_CONTRACT}.wasm"
          "${_artifact_dir}/${ARG_CONTRACT}.abi"
          "${_artifact_dir}/${ARG_CONTRACT}.contract.json"
+         ${_abi_metadata}
    )
    set_target_properties(
       "${target}"
       PROPERTIES
          FORGE_CONTRACT_WASM_FILE "${_artifact_dir}/${ARG_CONTRACT}.wasm"
          FORGE_CONTRACT_ABI_FILE "${_artifact_dir}/${ARG_CONTRACT}.abi"
+         FORGE_CONTRACT_ABI_METADATA_FILE "${_abi_metadata}"
          FORGE_CONTRACT_MANIFEST_FILE "${_artifact_dir}/${ARG_CONTRACT}.contract.json"
          FORGE_CONTRACT_SDK_PREFIX "${_contract_prefix}"
    )
@@ -165,4 +171,12 @@ function(forge_add_contract_project target)
                "${_artifact_root}/${_configuration}/${ARG_CONTRACT}.contract.json"
       )
    endforeach()
+   if(_abi_metadata)
+      foreach(_configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+         string(TOUPPER "${_configuration}" _configuration_upper)
+         set_target_properties("${target}" PROPERTIES
+            "FORGE_CONTRACT_ABI_METADATA_FILE_${_configuration_upper}"
+            "${_artifact_root}/${_configuration}/${ARG_CONTRACT}.abi.metadata.json")
+      endforeach()
+   endif()
 endfunction()

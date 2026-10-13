@@ -29,6 +29,16 @@ When a TLS WebSocket is upgraded by `forge_net_http`, the connection retains the
 accepted `forge_net_tls` snapshot for its full lifetime. Rotating the HTTP
 server's provider therefore affects only later TLS connections.
 
+`connection::accept(request, buffered_input)` transfers owned bytes already read
+after the HTTP request into a private Beast `buffered_read_stream`. The request
+remains borrowed until acceptance completes; the input string is owned by the
+coroutine and copied once into the connection's buffer. These bytes are consumed
+before later socket reads, including input larger than Beast's 1536-byte handshake
+buffer. The HTTP server bounds this input with its existing request buffer limit
+and waits for its admission monitor to stop before handing off the stream.
+Direct callers must bound their input and stop every prior stream read before
+accepting. The existing `accept(request)` overload remains available.
+
 ## Examples
 
 ### Connect A Client

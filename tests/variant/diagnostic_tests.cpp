@@ -498,6 +498,28 @@ BOOST_AUTO_TEST_CASE(diagnostic_wide_integers_reuse_full_precision_variant_conve
    BOOST_CHECK(forge::variant_schema::encode_diagnostic(signed_value) == forge::variant{signed_value});
 }
 
+BOOST_AUTO_TEST_CASE(diagnostic_portable_arithmetic_preserves_scalar_kinds_and_limits) {
+   const auto signed_long = forge::variant_schema::encode_diagnostic(std::numeric_limits<long>::min());
+   BOOST_REQUIRE(signed_long.is_int64());
+   BOOST_TEST(signed_long.as_int64() == std::numeric_limits<long>::min());
+   const auto unsigned_long = forge::variant_schema::encode_diagnostic(std::numeric_limits<unsigned long>::max());
+   BOOST_REQUIRE(unsigned_long.is_uint64());
+   BOOST_TEST(unsigned_long.as_uint64() == std::numeric_limits<unsigned long>::max());
+   const auto signed_long_long = forge::variant_schema::encode_diagnostic(std::numeric_limits<long long>::min());
+   BOOST_REQUIRE(signed_long_long.is_int64());
+   BOOST_TEST(signed_long_long.as_int64() == std::numeric_limits<long long>::min());
+   const auto unsigned_long_long =
+       forge::variant_schema::encode_diagnostic(std::numeric_limits<unsigned long long>::max());
+   BOOST_REQUIRE(unsigned_long_long.is_uint64());
+   BOOST_TEST(unsigned_long_long.as_uint64() == std::numeric_limits<unsigned long long>::max());
+   const auto boolean = forge::variant_schema::encode_diagnostic(true);
+   BOOST_REQUIRE(boolean.is_bool());
+   BOOST_TEST(boolean.as_bool());
+   const auto floating = forge::variant_schema::encode_diagnostic(1.25F);
+   BOOST_REQUIRE(floating.is_double());
+   BOOST_TEST(floating.as_double() == 1.25);
+}
+
 BOOST_AUTO_TEST_CASE(diagnostic_long_double_uses_the_existing_double_value_storage) {
    const auto input = 1.0L + std::numeric_limits<long double>::epsilon();
    auto converted = forge::variant{};

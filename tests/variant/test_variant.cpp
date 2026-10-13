@@ -3,6 +3,7 @@
 #include <chrono>
 #include <flat_map>
 #include <forge/exceptions/macros.hpp>
+#include <limits>
 #include <string>
 
 import forge.variant.exceptions;
@@ -33,6 +34,21 @@ BOOST_DESCRIBE_STRUCT(described_variant_config, (), (name, limit, access))
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(variant_test_suite)
+BOOST_AUTO_TEST_CASE(variant_portable_integer_construction_preserves_full_ranges) {
+   const auto signed_long = forge::variant{std::numeric_limits<long>::min()};
+   BOOST_REQUIRE(signed_long.is_int64());
+   BOOST_TEST(signed_long.as_int64() == std::numeric_limits<long>::min());
+   const auto unsigned_long = forge::variant{std::numeric_limits<unsigned long>::max()};
+   BOOST_REQUIRE(unsigned_long.is_uint64());
+   BOOST_TEST(unsigned_long.as_uint64() == std::numeric_limits<unsigned long>::max());
+   const auto signed_long_long = forge::variant{std::numeric_limits<long long>::min()};
+   BOOST_REQUIRE(signed_long_long.is_int64());
+   BOOST_TEST(signed_long_long.as_int64() == std::numeric_limits<long long>::min());
+   const auto unsigned_long_long = forge::variant{std::numeric_limits<unsigned long long>::max()};
+   BOOST_REQUIRE(unsigned_long_long.is_uint64());
+   BOOST_TEST(unsigned_long_long.as_uint64() == std::numeric_limits<unsigned long long>::max());
+}
+
 BOOST_AUTO_TEST_CASE(boost_describe_struct_variant_roundtrip) {
    const described_variant_config original{"workspace", 42, described_access::write};
 

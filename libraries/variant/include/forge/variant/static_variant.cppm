@@ -46,7 +46,13 @@ struct from_static_variant {
    from_static_variant(variant& dv) : var(dv) {}
 
    template <typename T> void operator()(const T& v) const {
-      to_variant(v, var);
+      if constexpr (std::is_arithmetic_v<T>) {
+         // The constructor normalizes arithmetic types independently of the
+         // platform's fixed-width aliases and preserves their dynamic kind.
+         var = variant{v};
+      } else {
+         to_variant(v, var);
+      }
    }
 };
 

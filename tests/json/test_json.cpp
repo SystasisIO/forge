@@ -58,7 +58,14 @@ struct byte_payload {
    std::vector<std::uint8_t> value;
 };
 
+struct scalar_variant_config {
+   std::optional<std::variant<bool, std::int64_t, std::uint64_t, double, std::string>> value;
+
+   bool operator==(const scalar_variant_config&) const = default;
+};
+
 BOOST_DESCRIBE_STRUCT(byte_payload, (), (value))
+BOOST_DESCRIBE_STRUCT(scalar_variant_config, (), (value))
 
 } // namespace forge_json_tests
 
@@ -535,6 +542,33 @@ BOOST_AUTO_TEST_CASE(json_exact_described_records_validate_nested_fields_and_var
    BOOST_REQUIRE(!schema_set_duplicate.ok());
    BOOST_TEST(schema_set_duplicate.diagnostics.front().code == "json.duplicate");
    BOOST_TEST(schema_set_duplicate.diagnostics.front().path == "values[1]");
+}
+
+BOOST_AUTO_TEST_CASE(json_exact_scalar_variant_and_optional_described_record_roundtrip) {
+   const auto options = forge::codec::json::read_options{
+       .described_records = forge::codec::json::described_record_policy::exact,
+   };
+   const std::vector<std::string> values{
+       "[0,false]", "[0,true]", "[1,-9223372036854775808]", "[2,18446744073709551615]", "[3,1.25]", R"([4,"symbol"])"};
+   for (const auto& json : values) {
+      const auto scalar =
+          forge::codec::json::read<std::variant<bool, std::int64_t, std::uint64_t, double, std::string>>(json, options);
+      BOOST_REQUIRE(scalar.ok());
+      const auto encoded_scalar = forge::codec::json::write(scalar.value);
+      BOOST_REQUIRE(encoded_scalar.ok());
+      BOOST_TEST(encoded_scalar.text == json);
+
+      const auto object = forge::codec::json::read<forge_json_tests::scalar_variant_config>(
+          std::string{"{\"value\":"} + json + '}', options);
+      BOOST_REQUIRE(object.ok());
+      BOOST_REQUIRE(object.value.value.has_value());
+      BOOST_CHECK(*object.value.value == scalar.value);
+      const auto encoded = forge::codec::json::write(object.value);
+      BOOST_REQUIRE(encoded.ok());
+      const auto restored = forge::codec::json::read<forge_json_tests::scalar_variant_config>(encoded.text, options);
+      BOOST_REQUIRE(restored.ok());
+      BOOST_CHECK(restored.value == object.value);
+   }
 }
 
 BOOST_AUTO_TEST_CASE(json_exact_described_records_validate_schema_names_and_associative_entries) {

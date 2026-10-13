@@ -85,6 +85,24 @@ try {
 }
 ```
 
+### Throw With Typed Operational Data
+
+An exception may derive from `coded_exception` and own additional typed data,
+such as a retry delay. Its constructor accepts `(data, message, fields,
+source_location)`. Use `FORGE_THROW_EXCEPTION_WITH_DATA` to retain the concrete
+type and the throw site's location:
+
+```cpp
+FORGE_THROW_EXCEPTION_WITH_DATA(
+   service_errors::busy, retry_details{.after = std::chrono::milliseconds{250}},
+   "service is at capacity", forge::exceptions::ctx("phase", "admission"));
+```
+
+The macro forwards the data expression exactly once and supports move-only
+values. Data is not automatically logged or serialized into diagnostic context.
+Classify failures by their type/category/code, then read the concrete exception's
+typed data. Do not parse a retry decision from `what()` or diagnostic fields.
+
 ### Assert With Debug Context
 
 ```cpp

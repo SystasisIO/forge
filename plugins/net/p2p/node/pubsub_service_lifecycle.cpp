@@ -26,6 +26,7 @@ import forge.asio.gate;
 import forge.asio.notification;
 import forge.exceptions;
 import forge.net.p2p.exceptions;
+import forge.net.p2p.identity;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.node;
 import forge.plugins.net.p2p.node.config;

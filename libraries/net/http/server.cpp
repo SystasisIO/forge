@@ -8,6 +8,7 @@ module;
 #include <concepts>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,7 @@ module;
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <openssl/ssl.h>
 
 module forge.net.http.server;
@@ -849,7 +851,16 @@ class server_session final : public server_session_base, public std::enable_shar
    template <typename Result>
    awaitable<std::optional<Result>> handle_owned_operation(awaitable<Result> operation,
                                                            std::shared_ptr<request_read_ownership> read_ownership) {
+      if (stopping_) {
+         co_return std::nullopt;
+      }
       auto state = std::make_shared<owner_handler_state<Result>>(stream_.get_executor(), std::move(read_ownership));
+      owner_stop_ = [weak = std::weak_ptr{state}] {
+         if (auto active = weak.lock()) {
+            active->mark_disconnected();
+         }
+      };
+      auto clear_owner_stop = boost::scope::scope_exit{[this] { owner_stop_ = {}; }};
       auto self = this->shared_from_this();
       try {
          // The outer-stream monitor observes disconnects while user work runs; it must not inherit a socket I/O
@@ -1028,6 +1039,31 @@ class server_session final : public server_session_base, public std::enable_shar
       }
 
       auto handler = router_->match_websocket(context);
+      if (auto guard = router_->match_websocket_guarded(context)) {
+         auto result = websocket_upgrade_result{};
+         try {
+            auto ownership = std::make_shared<request_read_ownership>(stream_.get_executor());
+            auto admitted = co_await handle_owned_operation((*guard)(context), std::move(ownership));
+            if (!admitted) {
+               co_return true;
+            }
+            result = std::move(*admitted);
+         } catch (...) {
+            result.rejection =
+                make_text_response(context.request, status::service_unavailable, "WebSocket admission failed");
+         }
+         if (result.rejection || !result.handler) {
+            auto rejected = result.rejection
+                                ? std::move(*result.rejection)
+                                : make_text_response(context.request, status::forbidden, "WebSocket admission denied");
+            rejected.version(context.request.version());
+            rejected.keep_alive(false);
+            rejected.prepare_payload();
+            co_await write_response(rejected);
+            co_return true;
+         }
+         handler = std::move(result.handler);
+      }
       if (!handler.has_value()) {
          co_return false;
       }
@@ -1039,7 +1075,9 @@ class server_session final : public server_session_base, public std::enable_shar
          connection = forge::net::websocket::connection::create(std::move(stream_));
       }
       auto websocket_request = to_websocket_request(request_value);
-      co_await connection->accept(websocket_request);
+      auto buffered_input = beast::buffers_to_string(buffer_.data());
+      buffer_.consume(buffer_.size());
+      co_await connection->accept(websocket_request, std::move(buffered_input));
       (*handler)(connection);
       connection->start_read_loop();
       co_return true;
@@ -1047,6 +1085,9 @@ class server_session final : public server_session_base, public std::enable_shar
 
    void cancel_on_executor() {
       stopping_ = true;
+      if (owner_stop_) {
+         owner_stop_();
+      }
       auto ignored = boost::system::error_code{};
       stream_socket(stream_).cancel(ignored);
       stream_socket(stream_).shutdown(tcp::socket::shutdown_both, ignored);
@@ -1061,6 +1102,7 @@ class server_session final : public server_session_base, public std::enable_shar
    server_handler handler_;
    std::shared_ptr<router> router_;
    forge::net::tls::context_snapshot_ptr tls_snapshot_;
+   std::function<void()> owner_stop_;
    bool run_completed_ = false;
    bool stopping_ = false;
 };

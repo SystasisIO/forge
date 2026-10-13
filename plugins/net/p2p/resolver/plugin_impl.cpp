@@ -14,6 +14,7 @@ module;
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -35,6 +36,7 @@ import forge.api.p2p.publication;
 import forge.api.transport.connection;
 import forge.api.transport.options;
 import forge.asio.notification;
+import forge.asio.task;
 import forge.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.protocol;
@@ -45,7 +47,9 @@ import forge.plugins.net.p2p.node.exceptions;
 import forge.plugins.net.p2p.node.types;
 
 #include "details/config.hxx"
+#include "details/publication_catalog.hxx"
 #include "details/plugin_impl.hxx"
+#include "details/resolver_protocol.hxx"
 #include "details/managed_remote_invoker.hxx"
 
 namespace forge::plugins::net::p2p::resolver {

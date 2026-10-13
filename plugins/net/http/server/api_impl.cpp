@@ -50,6 +50,11 @@ boost::asio::awaitable<void> plugin::api_impl::mount_assets(forge::net::http::as
    co_return;
 }
 
+boost::asio::awaitable<void> plugin::api_impl::mount_routes(route_mount value) {
+   impl_->add(std::move(value));
+   co_return;
+}
+
 boost::asio::awaitable<void> plugin::api_impl::reload_tls() {
    co_await impl_->reload_tls();
 }

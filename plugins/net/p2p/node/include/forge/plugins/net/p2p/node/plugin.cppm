@@ -12,26 +12,11 @@ export module forge.plugins.net.p2p.node.plugin;
 
 import forge.plugins.net.p2p.node.config;
 
-import forge.api.core.exceptions;
-import forge.api.core.types;
-import forge.api.core.descriptor;
-import forge.api.core.error_projection;
-import forge.api.core.handle;
-import forge.api.core.connection;
 import forge.api.core.registry;
-import forge.api.core.binding;
-import forge.api.core.dispatcher;
-import forge.api.p2p.binding;
-import forge.api.p2p.publication;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
 import forge.config.core.component;
-import forge.net.p2p.node;
-import forge.net.p2p.dht;
-import forge.net.p2p.connection_gater;
-import forge.net.p2p.protocol;
-import forge.plugins.net.p2p.node.types;
 
 namespace forge::plugins::net::p2p::node::detail {
 struct pubsub_service;

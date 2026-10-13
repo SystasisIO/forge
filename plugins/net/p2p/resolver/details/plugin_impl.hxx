@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cache_record.hxx"
+#include "publication_catalog.hxx"
 
 namespace forge::plugins::net::p2p::resolver {
 

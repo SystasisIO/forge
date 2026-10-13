@@ -24,6 +24,7 @@ option(FORGE_ENABLE_LIBP2P_INTEROP "Run live go-libp2p/rust-libp2p interoperabil
 option(FORGE_ENABLE_ROCKSDB "Build RocksDB-backed optional FORGE features when RocksDB is available" ON)
 option(FORGE_ENABLE_MDBX "Build the vendored MDBX-backed FORGE database driver" ON)
 option(FORGE_ENABLE_TOOLING "Build optional Forge Contract Tooling host libraries" OFF)
+option(FORGE_ENABLE_S3 "Build the optional AWS SDK-backed S3 client" OFF)
 set(FORGE_ENABLE_OIDC_AGENT "AUTO" CACHE STRING "Build the oidc-agent authentication backend: AUTO, ON or OFF")
 set_property(CACHE FORGE_ENABLE_OIDC_AGENT PROPERTY STRINGS AUTO ON OFF)
 if(NOT FORGE_ENABLE_OIDC_AGENT MATCHES "^(AUTO|ON|OFF)$")
@@ -366,6 +367,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/asio/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/cli/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/http/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/s3/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/websocket/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/transport/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/tcp/include"
@@ -911,6 +913,10 @@ if(TARGET forge_rocksdb)
    list(APPEND FORGE_LEAF_TARGETS forge_rocksdb)
 endif()
 
+if(TARGET forge_net_s3)
+   list(APPEND FORGE_LEAF_TARGETS forge_net_s3)
+endif()
+
 if(TARGET forge_db_rocksdb)
    list(APPEND FORGE_LEAF_TARGETS forge_db_rocksdb)
 endif()
@@ -1049,6 +1055,10 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
 endif()
 if(TARGET forge_rocksdb)
    list(APPEND FORGE_BUILT_COMPONENTS rocksdb)
+endif()
+
+if(TARGET forge_net_s3)
+   list(APPEND FORGE_BUILT_COMPONENTS net_s3)
 endif()
 if(TARGET forge_db_rocksdb)
    list(APPEND FORGE_BUILT_COMPONENTS db_rocksdb)
@@ -1216,6 +1226,10 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/auth/oidc_agent/include/forge)
    endif()
 endif()
+if(TARGET forge_net_s3)
+   list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/net/s3/include/forge)
+endif()
+
 if(FORGE_CONTRACT_SDK_HOST_PROFILE)
    if(NOT TARGET Forge::forge_log
       OR NOT "forge_log" IN_LIST FORGE_LEAF_TARGETS

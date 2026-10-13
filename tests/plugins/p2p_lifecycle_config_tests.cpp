@@ -36,6 +36,7 @@ import forge.config.core.document;
 import forge.config.core.value;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.diagnostics;
+import forge.net.p2p.endpoint;
 import forge.net.p2p.identity;
 import forge.net.p2p.lifecycle;
 import forge.net.p2p.node;

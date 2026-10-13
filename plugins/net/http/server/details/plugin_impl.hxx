@@ -20,6 +20,7 @@ struct plugin::impl {
    std::vector<pending_binding> bindings;
    std::vector<middleware_descriptor> middleware;
    std::vector<forge::net::http::asset_bundle> asset_mounts;
+   std::vector<route_mount> route_mounts;
    std::unique_ptr<forge::net::http::server> server;
    std::shared_ptr<forge::plugins::crypto::secrets::api> secrets;
    std::shared_ptr<forge::net::tls::context_provider> tls_context_provider;
@@ -30,6 +31,7 @@ struct plugin::impl {
    void add(pending_binding value);
    void add(middleware_descriptor value);
    void add(forge::net::http::asset_mount value);
+   void add(route_mount value);
    [[nodiscard]] startup_snapshot close_publication();
    boost::asio::awaitable<std::shared_ptr<forge::net::tls::context_provider>> make_tls_context_provider();
    boost::asio::awaitable<void> reload_tls();

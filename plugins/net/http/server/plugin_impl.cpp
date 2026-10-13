@@ -6,6 +6,7 @@ module;
 #include <boost/scope/scope_exit.hpp>
 
 #include <coroutine>
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -31,6 +32,7 @@ import forge.plugins.crypto.secrets.types;
 import forge.plugins.net.http.server.exceptions;
 import forge.plugins.net.http.server.middleware;
 import forge.plugins.net.http.server.types;
+import forge.plugins.net.http.server.routes;
 
 #include "details/plugin_impl.hxx"
 #include "details/tls_secret_material.hxx"
@@ -148,6 +150,18 @@ void plugin::impl::add(forge::net::http::asset_mount value) {
    asset_mounts.push_back(std::move(bundle));
 }
 
+void plugin::impl::add(route_mount value) {
+   auto lock = std::scoped_lock{mutex};
+   if (publication_closed) {
+      FORGE_THROW_EXCEPTION(exceptions::publication_closed, "HTTP route publication is closed");
+   }
+   if (value.id.empty() || !value.apply || route_mounts.size() >= 128 ||
+       std::ranges::any_of(route_mounts, [&](const auto& saved) { return saved.id == value.id; })) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "Invalid or duplicate HTTP route mount");
+   }
+   route_mounts.push_back(std::move(value));
+}
+
 startup_snapshot plugin::impl::close_publication() {
    auto lock = std::scoped_lock{mutex};
    publication_closed = true;
@@ -155,6 +169,7 @@ startup_snapshot plugin::impl::close_publication() {
        .bindings = std::move(bindings),
        .middleware = std::move(middleware),
        .asset_mounts = std::move(asset_mounts),
+       .route_mounts = std::move(route_mounts),
    };
 }
 
@@ -224,6 +239,7 @@ void plugin::impl::reset_runtime() noexcept {
    bindings.clear();
    middleware.clear();
    asset_mounts.clear();
+   route_mounts.clear();
 }
 
 } // namespace forge::plugins::net::http::server

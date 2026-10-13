@@ -314,7 +314,7 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
       ("plugins/net/http/server/details/plugin_impl.hxx", plugin_impl_header,
        ("std::shared_ptr<forge::plugins::crypto::secrets::api>", "lifecycle_generation")),
       ("plugins/net/http/server/include/forge/plugins/net/http/server/api.cppm", plugin_api,
-       ("reload_tls", 'FORGE_API_CONTRACT("forge.plugins.net.http.server", 2, 0)')),
+       ("reload_tls", "mount_routes", 'FORGE_API_CONTRACT("forge.plugins.net.http.server", 2, 1)')),
    ):
       for token in tokens:
          if token not in source:

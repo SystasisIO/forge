@@ -126,8 +126,7 @@ class backend {
       // FIXME: should not hard code knowledge of null_backend here
       if (ctx.owns) {
          if constexpr (std::is_same_v<Impl, null_backend>) {
-            detail::check<exceptions::interpreter>((mod->error == nullptr), mod->error);
-            detail::validate_data_segments(*mod);
+            validate();
          } else {
             if (memory_alloc || !ctx->has_linear_memory()) {
                initialize(host);
@@ -138,6 +137,15 @@ class backend {
 
  public:
    backend() {}
+
+   // Check instantiation constraints without creating a context or executing start.
+   // Products with externally owned contexts use this before admitting prepared code.
+   void validate() const {
+      detail::check<exceptions::interpreter>(mod != nullptr, "backend has no module");
+      detail::check<exceptions::interpreter>((mod->error == nullptr), mod->error);
+      detail::validate_data_segments(*mod);
+   }
+
    backend(wasm_code&& code, host_t& host, wasm_allocator* alloc, const Options& options = Options{})
        : memory_alloc(alloc), mod(std::make_shared<module>()),
          ctx(new context_t{parse_module(code, options), detail::get_max_call_depth(options)}), mod_sharable{true},

@@ -6,6 +6,7 @@ module;
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <boost/describe.hpp>
 #include <boost/multi_index_container_fwd.hpp>
@@ -192,7 +193,21 @@ class variant {
       }
    }
    template <typename T> explicit variant(const T& val) {
-      to_variant(val, *this);
+      if constexpr (std::is_same_v<T, bool>) {
+         *this = variant{static_cast<bool>(val)};
+      } else if constexpr (std::is_integral_v<T>) {
+         if constexpr (sizeof(T) > sizeof(std::uint64_t)) {
+            to_variant(val, *this);
+         } else if constexpr (std::is_signed_v<T>) {
+            *this = variant{static_cast<std::int64_t>(val)};
+         } else {
+            *this = variant{static_cast<std::uint64_t>(val)};
+         }
+      } else if constexpr (std::is_floating_point_v<T>) {
+         *this = variant{static_cast<double>(val)};
+      } else {
+         to_variant(val, *this);
+      }
    }
    template <typename T> explicit variant(const T& val, const forge::yield_function_t& yield) {
       to_variant(val, *this, yield);

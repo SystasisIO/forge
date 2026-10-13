@@ -7,6 +7,8 @@ module;
 
 export module forge.plugins.net.http.server.types;
 
+import forge.api.http.error_renderer;
+
 import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;
@@ -39,6 +41,7 @@ struct config {
 struct publish_options {
    std::string base_path;
    bool require_mutual_tls = false;
+   forge::api::http::error_renderer error_renderer;
 };
 
 BOOST_DESCRIBE_ENUM(tls_mode, disabled, server, mutual)

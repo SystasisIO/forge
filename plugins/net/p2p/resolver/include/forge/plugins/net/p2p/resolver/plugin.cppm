@@ -10,26 +10,13 @@ module;
 
 export module forge.plugins.net.p2p.resolver.plugin;
 
-import forge.api.core.exceptions;
-import forge.api.core.types;
-import forge.api.core.descriptor;
-import forge.api.core.error_projection;
-import forge.api.core.handle;
-import forge.api.core.connection;
 import forge.api.core.registry;
 import forge.api.core.binding;
-import forge.api.core.dispatcher;
-import forge.api.p2p.publication;
-import forge.api.transport.options;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
-import forge.asio.task;
 import forge.config.core.component;
-import forge.net.p2p.identity;
 import forge.net.p2p.protocol;
-import forge.plugins.net.p2p.node.api;
-import forge.plugins.net.p2p.node.types;
 import forge.plugins.net.p2p.resolver.types;
 
 extern "C++" {
@@ -83,38 +70,5 @@ class plugin final : public forge::app::plugin {
 };
 
 [[nodiscard]] forge::net::p2p::protocol_id default_protocol();
-
-} // namespace forge::plugins::net::p2p::resolver
-
-namespace forge::plugins::net::p2p::resolver::detail {
-
-class publication_catalog;
-
-[[nodiscard]] std::shared_ptr<publication_catalog>
-make_publication_catalog(forge::asio::task::scheduler& scheduler);
-[[nodiscard]] forge::api::p2p::publication
-publish_catalog_api(const std::shared_ptr<publication_catalog>& catalog,
-                    forge::plugins::net::p2p::node::api& p2p, forge::api::core::binding_plan plan,
-                    forge::net::p2p::protocol_id protocol, forge::api::transport::options options,
-                    std::vector<entry> entries, std::size_t max_apis);
-[[nodiscard]] std::vector<entry>
-publication_catalog_snapshot(const std::shared_ptr<publication_catalog>& catalog);
-void request_close_publication_catalog(const std::shared_ptr<publication_catalog>& catalog) noexcept;
-boost::asio::awaitable<void>
-async_close_publication_catalog(const std::shared_ptr<publication_catalog>& catalog);
-
-} // namespace forge::plugins::net::p2p::resolver::detail
-
-namespace forge::plugins::net::p2p::resolver {
-
-[[nodiscard]] response query_resolver_protocol(const std::shared_ptr<plugin::impl>& owner, const query& request);
-
-[[nodiscard]] forge::api::core::binding_plan
-make_resolver_protocol_plan(forge::api::core::registry& registry, std::weak_ptr<plugin::impl> owner);
-
-[[nodiscard]] boost::asio::awaitable<std::vector<entry>>
-query_resolver_peer(forge::plugins::net::p2p::node::api& p2p, forge::net::p2p::peer_id peer,
-                    forge::net::p2p::protocol_id protocol,
-                    forge::plugins::net::p2p::node::remote_options options);
 
 } // namespace forge::plugins::net::p2p::resolver

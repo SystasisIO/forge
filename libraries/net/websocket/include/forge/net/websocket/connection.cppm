@@ -60,6 +60,8 @@ class connection final : public std::enable_shared_from_this<connection> {
    static ptr create(boost::beast::ssl_stream<boost::beast::tcp_stream> stream,
                      forge::net::tls::context_snapshot_ptr tls_context_snapshot);
    boost::asio::awaitable<void> accept(const boost::beast::http::request<boost::beast::http::string_body>& request);
+   boost::asio::awaitable<void> accept(const boost::beast::http::request<boost::beast::http::string_body>& request,
+                                       std::string buffered_input);
    boost::asio::awaitable<void> handshake(std::string host, std::string target);
    void start_read_loop();
 

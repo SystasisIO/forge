@@ -1,5 +1,9 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(FORGE_ENABLE_S3)
+   add_subdirectory(net_s3)
+endif()
+
 set(FORGE_VM_WASM_INTERPRET_DONOR_ROOT "" CACHE PATH "Pinned EOS VM checkout used to verify the native interpreter test port")
 add_subdirectory(vm_wasm)
 
@@ -136,6 +140,7 @@ target_sources(
 )
 
 target_link_libraries(test_forge forge Boost::included_unit_test_framework)
+target_include_directories(test_forge PRIVATE ${CMAKE_SOURCE_DIR}/libraries/crypto/symmetric)
 add_test(NAME test_forge COMMAND test_forge WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(test_forge_chrono unit/main.cpp chrono/test_chrono.cpp)
@@ -164,7 +169,7 @@ add_executable(
    unit/main.cpp
    exceptions/exception_tests.cpp
 )
-target_link_libraries(test_forge_exceptions forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_exceptions forge_exceptions Boost::included_unit_test_framework)
 add_test(NAME test_forge_exceptions COMMAND test_forge_exceptions WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -314,12 +319,18 @@ add_executable(
 )
 target_link_libraries(
    test_forge_chain_api
+   forge_codec_json
    forge_chain_api
    forge_api_http
    forge_codec_xml
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_chain_api COMMAND test_forge_chain_api WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+if(FORGE_ENABLE_TOOLING)
+   add_executable(test_forge_abi_metadata_artifact chain_api/abi_metadata_artifact.cpp)
+   target_link_libraries(test_forge_abi_metadata_artifact forge_chain_api forge_codec_json)
+endif()
 
 add_executable(
    test_forge_chain_portable_verified_client
@@ -379,6 +390,7 @@ add_executable(
    test_forge_plugins_net_http_server
    unit/main.cpp
    http_server_auth/bearer_auth_tests.cpp
+   http_server_auth/routes_tests.cpp
 )
 target_link_libraries(
    test_forge_plugins_net_http_server
@@ -1091,6 +1103,14 @@ add_executable(
 )
 target_link_libraries(test_forge_api_transport forge Boost::included_unit_test_framework)
 add_test(NAME test_forge_api_transport COMMAND test_forge_api_transport WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_http_error_renderer unit/main.cpp api/http_error_renderer_tests.cpp)
+target_link_libraries(test_forge_http_error_renderer forge_api_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_error_renderer COMMAND test_forge_http_error_renderer WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_http_parameters unit/main.cpp api/http_parameters_tests.cpp)
+target_link_libraries(test_forge_http_parameters forge_api_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_parameters COMMAND test_forge_http_parameters WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
    test_forge_http_websocket

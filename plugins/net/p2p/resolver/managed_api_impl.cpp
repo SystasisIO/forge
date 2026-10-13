@@ -10,6 +10,7 @@ module;
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -20,11 +21,15 @@ module;
 
 module forge.plugins.net.p2p.resolver.plugin;
 
+import forge.api.core.binding;
 import forge.api.core.connection;
 import forge.api.core.descriptor;
 import forge.api.core.types;
+import forge.api.p2p.publication;
 import forge.api.transport.connection;
+import forge.api.transport.options;
 import forge.asio.notification;
+import forge.asio.task;
 import forge.net.p2p.identity;
 import forge.plugins.net.p2p.resolver.exceptions;
 import forge.plugins.net.p2p.resolver.managed_api;

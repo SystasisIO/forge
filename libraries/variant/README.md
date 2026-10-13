@@ -31,6 +31,15 @@ It is the bridge between typed C++ values and generic codec/config/log shapes.
 
 Target: `forge_variant`.
 
+Static variants use `[index, payload]`. Arithmetic alternatives keep their
+dynamic scalar kind, including bool and full signed/unsigned 64-bit integers.
+Non-arithmetic alternatives retain their owning namespace `to_variant` adapter.
+
+Arithmetic constructors normalize standard signed and unsigned integers to the
+corresponding 64-bit storage, regardless of platform aliases such as `long`.
+Bool retains boolean storage; floating-point values use the existing double
+storage. Wider integer types retain their existing full-precision adapters.
+
 Dependencies: `forge_chrono`, `forge_core`, `forge_reflect`, `forge_schema`, Boost headers, Boost.MultiIndex and
 Boost.Multiprecision.
 

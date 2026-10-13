@@ -30,6 +30,15 @@ export namespace forge::net::http {
 
 using websocket_route_handler = std::function<void(std::shared_ptr<forge::net::websocket::connection>)>;
 
+struct websocket_upgrade_result {
+   websocket_route_handler handler;
+   std::optional<response> rejection;
+};
+
+// Runs before the handshake and may reject it. The accepted callback captures
+// verified application context without exposing credentials to a connection.
+using websocket_upgrade_handler = std::function<boost::asio::awaitable<websocket_upgrade_result>(route_context&)>;
+
 class router;
 
 class router {
@@ -50,6 +59,7 @@ class router {
    void patch_stream(std::string path, stream_route_handler handler);
    void del_stream(std::string path, stream_route_handler handler);
    void websocket(std::string path, websocket_route_handler handler);
+   void websocket_guarded(std::string path, websocket_upgrade_handler handler);
    void mount_assets(asset_mount value, forge::asio::compute::executor read_executor);
    void mount_assets(asset_bundle value);
    void reserve_path_prefix(std::string path);
@@ -62,6 +72,7 @@ class router {
    [[nodiscard]] bool can_handle_stream(route_context& context) const;
    [[nodiscard]] boost::asio::awaitable<stream_response> handle_stream(stream_request& request) const;
    [[nodiscard]] std::optional<websocket_route_handler> match_websocket(route_context& context) const;
+   [[nodiscard]] std::optional<websocket_upgrade_handler> match_websocket_guarded(route_context& context) const;
 
  private:
    friend struct detail::router_server_access;
@@ -89,6 +100,13 @@ class router {
       stream_route_handler handler;
    };
 
+   struct websocket_guarded_route_entry {
+      std::string path;
+      std::vector<std::string> segments;
+      bool parameterized = false;
+      websocket_upgrade_handler handler;
+   };
+
    struct middleware_entry {
       middleware_descriptor descriptor;
       std::vector<std::string> path_segments;
@@ -100,6 +118,7 @@ class router {
 
    std::vector<route_entry> routes_;
    std::vector<websocket_route_entry> websocket_routes_;
+   std::vector<websocket_guarded_route_entry> websocket_guarded_routes_;
    std::vector<stream_route_entry> stream_routes_;
    std::vector<asset_bundle> asset_mounts_;
    std::vector<std::string> reserved_path_prefixes_;
