@@ -203,6 +203,11 @@ add_test(NAME test_forge_log_configured_delivery
       $<TARGET_FILE:test_forge_log_configured_delivery>)
 set_tests_properties(test_forge_log_configured_delivery PROPERTIES TIMEOUT 65)
 
+add_executable(test_forge_log_configuration_lifecycle unit/main.cpp log/configuration_lifecycle_tests.cpp)
+target_link_libraries(test_forge_log_configuration_lifecycle PRIVATE forge_log Boost::included_unit_test_framework)
+add_test(NAME test_forge_log_configuration_lifecycle COMMAND test_forge_log_configuration_lifecycle)
+set_tests_properties(test_forge_log_configuration_lifecycle PROPERTIES TIMEOUT 35)
+
 add_executable(
    test_forge_otlp
    unit/main.cpp
