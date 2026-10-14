@@ -16,7 +16,7 @@ The signed-time range fix is closed, scoped vendor/adapter review is CLEAN, and
 the final normal/sanitizer fixture passes 131 checks. This is not a release
 verdict: **Linux native PASS** covers the cycle below; the Linux installed
 package gate is **CLOSED/PASS** at Forge `b279e367` in hosted run `38508037293`.
-Final documentation closure, promotion and retained-build cleanup remain pending.
+Both reviewers returned FINAL CLEAN; dev promoted to `08799dd6`, build/temporary ZIP removed. Gate pin next; stopped-container removal deferred.
 
 ## Modules
 
@@ -171,7 +171,10 @@ returned expected typed `setup_required`, exit 3; it is not a new IdP login
 or proof of a running patched daemon. The recorded human native cycle remains
 at `d5d29aac774eecd06a39371459cac5c5099c6c85`; runtime-fix evidence remains at
 `b099d6aaca417c06bb4922abadf604cbbcfde638`. SOURCE/CI/PACKAGE review is CLEAN;
-final documentation closure, promotion and retained-build cleanup remain pending. See the
+both reviewers subsequently returned FINAL CLEAN. Feature/dev promotion to
+`08799dd6bd90b46d85bac3185459d100ca065be2` and build/temporary ZIP removal are
+complete; stopped-container removal is deferred while Docker API is off.
+Gate pin is next, not done. The exact CI SHA remains `b279e367`. See the
 [iteration record](../../../docs/iterations/auth-api-resource-verification-v1.md)
 for the separate reruns and retained historical failures.
 Logs/hashes, exact commit links and reproduction commands are in the

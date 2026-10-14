@@ -22,7 +22,7 @@ The source fix preserves pending-write, cancellation and drain assertions.
 
 These local checks are separate from the subsequently authorized hosted CI.
 No upstream bug report, release or tag was created by them; a feature-branch
-push is not promotion to `dev` or a Gate pin update.
+push alone was not promotion to `dev` or a Gate pin update; later promotion is recorded below.
 
 ## Hosted CI Acceptance
 
@@ -52,5 +52,9 @@ Historical failed/cancelled runs and their fixes remain separate in the
 Human native PASS remains at `d5d29aac`; runtime-fix evidence remains at `b099d6aa`.
 The successful integrated CI includes development revision `84619cd2` via merge
 `a7c17ea6`; `9eac8072` is historical, not unchanged `origin/dev`.
-SOURCE/CI/PACKAGE review is CLEAN; final documentation closure, promotion and
-retained-build cleanup remain pending. Upstream reports remain NOT_SUBMITTED.
+Both reviewers returned FINAL CLEAN. Feature and `dev` were atomically promoted
+to `08799dd6bd90b46d85bac3185459d100ca065be2`, with remote refs confirmed.
+The build and temporary artifact ZIP were removed; these five safe files remain
+committed. Docker was not started; removal of stopped `forge-auth-resource-linux`
+alone is deferred while its API is off. Gate pin is next, not updated.
+The exact successful CI remains `b279e367`; upstream reports remain NOT_SUBMITTED.

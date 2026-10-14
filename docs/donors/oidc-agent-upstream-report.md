@@ -162,9 +162,11 @@ Preserve all scopes/audience/minimum-validity fields; no stripped-override, fabr
 expiry, raw-IPC or alternate-provider fallback. See the [adapter README](../../libraries/auth/oidc_agent/README.md).
 Source P2, Linux native and installed Linux package gates are closed.
 Human native evidence remains at Forge `d5d29aac`; runtime-fix evidence at `b099d6aa`.
-Both reviewers confirmed SOURCE/CI/PACKAGE CLEAN; final documentation closure,
-promotion and retained-build cleanup remain pending. Forge's published feature
-history records the vendor pin in `813735bc21e1030daaa57fa29d0918bd3bf7ba31`, not promoted to dev.
+Both reviewers returned FINAL CLEAN; feature and dev were atomically promoted to
+`08799dd6bd90b46d85bac3185459d100ca065be2`. Build/temporary ZIP removal is
+complete; stopped-container removal alone is deferred while Docker API is off.
+Gate pin is next, not updated; exact CI remains `b279e367`. Forge history records
+the vendor pin in `813735bc21e1030daaa57fa29d0918bd3bf7ba31`.
 Submit only after explicit approval; fork publication is not an upstream submission.
 Selected sanitized evidence is retained under `docs/validation`, outside generated
 build trees. No account files, private keys or raw token values are retained there.

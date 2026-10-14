@@ -1,7 +1,7 @@
 # Auth/API Resource Verification
 
 Date: 2026-10-14.
-Status: resource/native and hosted CI/package gates PASS; SOURCE/CI/PACKAGE review CLEAN. Final documentation closure, promotion and retained-build cleanup PENDING.
+Status: FINAL CLEAN from both reviewers; feature and dev atomically promoted to `08799dd6bd90b46d85bac3185459d100ca065be2`. Build/temporary ZIP removed; stopped-container removal deferred. Gate pin next, not done.
 Hosted Linux: run 38508037293 PASS at b279e367; 24/24 regressions, two suites repeated twenty times each, 14/14 installed consumers and installed native-negative PASS.
 Recorded local regressions: **Linux 11/11 PASS; macOS 14/14 PASS** before development integration; twenty-repeat suites PASS on each platform.
 Branch: `auth-api-resource-verification-v1`.
@@ -49,14 +49,17 @@ That expected `setup_required` exit 3 is not a new IdP login; human native
 evidence remains at `d5d29aac`, with runtime-fix evidence at `b099d6aa`.
 Both reviewers confirmed SOURCE/CI/PACKAGE CLEAN from the actual artifacts.
 
-The feature branch is published, not promoted to `dev`. Development revision
+The feature and `dev` branches were atomically pushed to
+`08799dd6bd90b46d85bac3185459d100ca065be2`, confirmed by fresh remote refs.
+Development revision
 `84619cd2` was merged into it in `a7c17ea6`, without rewriting published history;
 `9eac8072` is now a historical base. The local package run interrupted by Docker
 shutdown at 03:22 +05:00 remains **Historical INTERRUPTED**, not retroactive PASS.
 Earlier failed/cancelled CI attempts and RED evidence remain separate below.
-Temporary native fixture cleanup is complete; retained-build cleanup, final
-documentation closure and promotion remain pending. No Gate pin update, tag
-or release is claimed.
+Both reviewers returned FINAL CLEAN. Temporary native fixture cleanup and
+build/temporary artifact ZIP removal are complete; only removal of the stopped
+`forge-auth-resource-linux` container is deferred while Docker API is off.
+Gate pin is next, not updated; no tag or release is claimed.
 
 ## Scope
 
@@ -139,7 +142,7 @@ backend selection. Do not weaken acceptance to complete the adapter.
 ## Acceptance And Delivery
 
 The feature was integrated locally on a branch based on development commit
-`9eac8072575da0ccc1f1337aa456a1f0caecf25c`, not promoted to `dev`.
+`9eac8072575da0ccc1f1337aa456a1f0caecf25c`, before the later development promotion.
 The historical post-rebase snapshot was rebuilt with LLVM 22.1.8,
 Ninja and `-j4` on macOS arm64 and Linux aarch64. Integration removed duplicate
 trusted-context declarations while preserving upstream parameter-only DTO
@@ -207,10 +210,11 @@ Two independent reviewers found the integrated F3 and fixture source scopes
 clean after the cooldown correction. The final oidc-agent vendor (including
 Makefile/metadata) and adapter scope is CLEAN after the P2 bound fix.
 Both reviewers subsequently confirmed SOURCE/CI/PACKAGE CLEAN for the integrated
-revision and actual successful CI artifacts. The package gate is closed; final
-documentation closure, promotion and retained-build cleanup remain pending.
-The feature branch was pushed for CI; no promotion to `dev`, Gate pin update,
-tag or release has been performed.
+revision and actual successful CI artifacts, then both returned FINAL CLEAN.
+The package gate is closed; feature and `dev` refs are
+`08799dd6bd90b46d85bac3185459d100ca065be2`. Build and temporary ZIP cleanup
+is complete; stopped-container removal alone is deferred. Gate pin, tag and
+release have not been performed.
 
 The interrupted package command returned 255 when the Docker API socket
 disappeared. Docker's host log records `Quitting whole Docker Desktop` and
@@ -436,13 +440,15 @@ been substituted for them. The local full-catalog Linux package run is
 **Historical INTERRUPTED**, not running. Hosted run `38508037293` closes the
 Linux package gate at `b279e367`: regressions, installed consumers and the
 installed native-negative control PASS. Both reviewers confirmed SOURCE/CI/PACKAGE
-CLEAN; historical failures remain retained. Final documentation closure,
-authorized promotion and retained-build cleanup remain pending. Refresh development
-ancestry before promotion or a consuming-product pin update.
+CLEAN and subsequently FINAL CLEAN; historical failures remain retained.
+Atomic feature/dev promotion to `08799dd6bd90b46d85bac3185459d100ca065be2`
+is complete and remotely confirmed. The exact successful CI remains at
+`b279e367598dacb7dd90287a0d19b0dd8f7c39a8`; this closure changes documentation,
+not the tested code. Build/temporary ZIP removal is complete. Gate pin is next,
+not completed; stopped-container removal is deferred while Docker API is off.
 Selected sanitized acceptance and regression evidence is retained under
 `docs/validation`, including the five successful CI files outside generated builds.
-CI/package PASS and scoped CLEAN are not permission to
-promote to `dev` or update Gate. The authorized feature-branch push is separate.
+Forge promotion does not imply a Gate pin update, tag or release.
 
 ### Historical Interrupted Cleanup
 
@@ -471,9 +477,13 @@ owned `forge-auth-live` Compose container, data and network is confirmed complet
 These results were checked by the coordinator after the user confirmed the
 macOS trust-removal prompt.
 
-Retained local Linux build resources belong to the **INTERRUPTED** package run,
-not a running local build. Package validation is complete; final cleanup is still pending;
-this does not leave the current localhost certificate or native fixture active.
+After verifying no processes or open handles owned the generated build,
+the 18 GiB build and temporary artifact ZIP were removed. The five sanitized
+CI files are committed under `docs/validation`; reported free disk increased
+from 53 to 72 GiB. Docker was not started. The stopped
+`forge-auth-resource-linux` container was not removed because Docker API is off;
+only that container cleanup is deferred. The localhost trust/certificate and
+live native fixture remain removed.
 
 Credential migration is a scoped public source break, not a wire/storage reset.
 Document the mechanical consumer migration and preserve enum and field order
