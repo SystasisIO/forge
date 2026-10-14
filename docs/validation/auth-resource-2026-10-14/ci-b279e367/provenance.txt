@@ -1,0 +1,10 @@
+forge_sha=b279e367598dacb7dd90287a0d19b0dd8f7c39a8
+runner=ubuntu-26.04
+profile=full
+optional_rocksdb_tui_s3_tooling=OFF
+stdlib=libstdc++
+build_jobs=4
+compile_pool=2
+jansson=2.14.1@ed5cae4ed0621ef409510f94270c9f8f263736d0
+cjose=0.6.2.8@e787ace6a203d483038a793fd58f958a2f9b48c1
+oidc-agent=5.3.8-systasis.1 (vendored, Make install_lib-dev)

@@ -1,0 +1,68 @@
+ 1/24 Test   #1: test_forge_structure ................................   Passed   17.75 sec
+ 2/24 Test   #2: test_forge_net_plugin_structure .....................   Passed    0.20 sec
+ 3/24 Test   #3: test_forge_app_lifecycle_structure ..................   Passed    0.04 sec
+ 4/24 Test   #4: test_forge_contract_sdk_cmake_runtime_policy ........   Passed    0.00 sec
+ 5/24 Test   #5: test_forge_contract_sdk_relocation_runtime_policy ...   Passed    0.05 sec
+ 6/24 Test   #6: test_forge_contract_sdk_dependencies ................   Passed    0.00 sec
+ 7/24 Test  #50: test_forge_auth_credential ..........................   Passed    0.01 sec
+ 8/24 Test  #51: test_forge_auth_pairing .............................   Passed    0.01 sec
+ 9/24 Test  #52: test_forge_auth_session .............................   Passed    0.01 sec
+10/24 Test  #53: test_forge_auth_http ................................   Passed    0.01 sec
+11/24 Test  #54: test_forge_auth_token_verifier ......................   Passed    0.00 sec
+12/24 Test  #55: test_forge_auth_liboauth2 ...........................   Passed    4.27 sec
+13/24 Test  #56: test_forge_client_auth ..............................   Passed    0.00 sec
+14/24 Test  #58: test_forge_auth_oidc_agent ..........................   Passed    0.01 sec
+15/24 Test  #81: test_forge_http_stop_retry ..........................   Passed    0.11 sec
+16/24 Test  #84: test_forge_app ......................................   Passed    0.63 sec
+17/24 Test  #91: test_forge_api_core .................................   Passed    0.02 sec
+18/24 Test  #92: test_forge_api_transport ............................   Passed    0.42 sec
+19/24 Test  #93: test_forge_http_error_renderer ......................   Passed    0.00 sec
+20/24 Test  #94: test_forge_http_parameters ..........................   Passed    0.00 sec
+21/24 Test  #95: test_forge_http_websocket ...........................   Passed    3.44 sec
+22/24 Test  #96: test_forge_http_client_preparation ..................   Passed    1.70 sec
+23/24 Test  #97: test_forge_api_trusted_subject ......................   Passed    1.56 sec
+24/24 Test #245: test_forge_auth_liboauth2_patched_regression ........   Passed   23.14 sec
+100% tests passed out of 24
+Total Test time (real) =  53.42 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.86 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.10 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.99 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.09 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.02 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.12 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.91 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.00 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.02 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.89 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.07 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.86 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.05 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.09 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.87 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.96 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.12 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    3.82 sec
+    Test #55: test_forge_auth_liboauth2 ........   Passed    4.01 sec
+1/2 Test #55: test_forge_auth_liboauth2 ........   Passed    4.01 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.56 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.55 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.50 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.56 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.54 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.57 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.57 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.54 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.55 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.55 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.51 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.56 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.50 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.56 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.56 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.57 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.54 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.50 sec
+    Test #97: test_forge_api_trusted_subject ...   Passed    1.56 sec
+2/2 Test #97: test_forge_api_trusted_subject ...   Passed    1.55 sec
+100% tests passed out of 2
+Total Test time (real) = 110.76 sec

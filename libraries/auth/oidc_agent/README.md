@@ -14,8 +14,9 @@ Required fork source pin:
 [28d6f89701b64d5150b05d01f85b8a8eed54808e](https://github.com/SystasisIO/oidc-agent/commit/28d6f89701b64d5150b05d01f85b8a8eed54808e).
 The signed-time range fix is closed, scoped vendor/adapter review is CLEAN, and
 the final normal/sanitizer fixture passes 131 checks. This is not a release
-verdict: **Linux native PASS** covers the cycle below; installed Forge/package
-verification remains **PENDING**.
+verdict: **Linux native PASS** covers the cycle below; the Linux installed
+package gate is **CLOSED/PASS** at Forge `b279e367` in hosted run `38508037293`.
+Final documentation closure, promotion and retained-build cleanup remain pending.
 
 ## Modules
 
@@ -161,19 +162,24 @@ subsequent default cache request under UBSan. Scoped review includes the vendor
 Makefile/metadata and adapter and is CLEAN.
 
 Post-P2 daemon rebuild/install and the covered native cycle passed. Installed
-Linux Forge/catalog package verification remains **PENDING**; native PASS is
-not a release or full package verdict. The recorded native cycle ran at Forge
-`d5d29aac774eecd06a39371459cac5c5099c6c85`. Current HEAD
-`b099d6aaca417c06bb4922abadf604cbbcfde638` includes the WebSocket observation
-and notification race repairs: Linux 11/11 and macOS 14/14 regressions and
-twenty-repeat suites on each platform PASS. See the
+Linux Forge/catalog package verification is **CLOSED/PASS** at exact SHA
+`b279e367598dacb7dd90287a0d19b0dd8f7c39a8` in
+[run 38508037293](https://github.com/SystasisIO/forge/actions/runs/38508037293):
+24/24 regressions, two suites repeated twenty times each and 14/14 installed
+consumers PASS. The separate genuine installed-library native-negative check
+returned expected typed `setup_required`, exit 3; it is not a new IdP login
+or proof of a running patched daemon. The recorded human native cycle remains
+at `d5d29aac774eecd06a39371459cac5c5099c6c85`; runtime-fix evidence remains at
+`b099d6aaca417c06bb4922abadf604cbbcfde638`. SOURCE/CI/PACKAGE review is CLEAN;
+final documentation closure, promotion and retained-build cleanup remain pending. See the
 [iteration record](../../../docs/iterations/auth-api-resource-verification-v1.md)
 for the separate reruns and retained historical failures.
 Logs/hashes, exact commit links and reproduction commands are in the
 [upstream draft](../../../docs/donors/oidc-agent-upstream-report.md), which remains
 **NOT_SUBMITTED**. Published fork commits are not an upstream issue/PR submission.
 Selected sanitized evidence is preserved under `docs/validation`, outside
-generated builds; final Linux package evidence is still pending.
+generated builds, including the five successful CI files in the
+[evidence index](../../../docs/validation/auth-resource-2026-10-14/README.md#hosted-ci-acceptance).
 
 This leaf is not an OIDC agent process manager, account-config generator,
 browser flow, issuer validator or refresh-token store.

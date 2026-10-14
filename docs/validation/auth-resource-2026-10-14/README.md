@@ -1,6 +1,6 @@
 # Auth Resource Acceptance Evidence
 
-These are selected, sanitized local acceptance artifacts from 2026-10-14. They
+These are selected, sanitized local and hosted acceptance artifacts from 2026-10-14. They
 contain test results, timestamps and synthetic issuer counters, not tokens,
 passwords, private keys, encrypted account files or browser callback URLs.
 Generated build trees and disposable issuer state are not evidence archives.
@@ -24,27 +24,33 @@ These local checks are separate from the subsequently authorized hosted CI.
 No upstream bug report, release or tag was created by them; a feature-branch
 push is not promotion to `dev` or a Gate pin update.
 
-## Hosted CI Snapshot
+## Hosted CI Acceptance
 
-Reported status on 2026-10-14: [run 38483751720](https://github.com/SystasisIO/forge/actions/runs/38483751720)
-at `363423a83bb7f835e95baa0f40a03b3deb1b7d49` finished **FAILED**.
-Dependencies, catalog and regressions PASS; packages FAILED at the third
-consumer, `auth_oidc_agent`; the hosted native-negative phase was SKIPPED.
-The fixture `.pc` placed absolute `stub.a` before `main.o`, so GNU ld could not
-resolve `getAgentTokenResponse`, `getAgentTokenResponseForIssuer` and
-`secFreeAgentResponse`. Production source is unchanged; a test CMake fixture
-fix and fresh rerun are pending. Overall package/hosted acceptance is not PASS.
+[Run 38508037293](https://github.com/SystasisIO/forge/actions/runs/38508037293),
+[job 115669928164](https://github.com/SystasisIO/forge/actions/runs/38508037293/job/115669928164),
+is SUCCESS at exact SHA `b279e367598dacb7dd90287a0d19b0dd8f7c39a8`.
+Dependencies/catalog/regressions/packages/native-negative/evidence phases exit 0.
+The Linux package gate is CLOSED/PASS: 24/24 regressions (53.42 s), two suites
+repeated twenty times each (110.76 s), and 14/14 installed consumers.
+The genuine installed-library negative control returns expected typed
+`setup_required`, JSON `BLOCKED`, exit 3. It is not a new IdP login.
 
-Preserve [run 38480451537](https://github.com/SystasisIO/forge/actions/runs/38480451537)
-at `6fed3c48` as a dependency failure before Forge: Jansson 2.14.1's CMake
-compatibility `< 3.5` failed with CMake 4, corrected in `a45747bd`.
-[Run 38482513324](https://github.com/SystasisIO/forge/actions/runs/38482513324)
-at `a45747bd` passed dependencies but failed catalog configuration because
-dependency `LD_LIBRARY_PATH` shadowed system linker dependencies (`json_delete`);
-`363423a8` corrects that setup. None of the three failed runs is recategorized as PASS.
+Artifact `11870068970` was downloaded with a matching ZIP SHA-256:
+`b8d09602f9d02c358769904c949dc250502a3428e5da0f778bd1709ebc0b3ebb`.
+Its five sanitized files are preserved unchanged outside generated builds:
 
-Exact event SHAs and the phase boundaries are recorded in the
+| File | Evidence |
+| --- | --- |
+| [provenance.txt](ci-b279e367/provenance.txt) | Exact SHA, Ubuntu 26.04/libstdc++ profile and dependency pins |
+| [phases.tsv](ci-b279e367/phases.tsv) | All six phase exit codes 0 |
+| [regressions.txt](ci-b279e367/regressions.txt) | 24/24 tests and two twenty-repeat suites |
+| [package-consumers.tsv](ci-b279e367/package-consumers.tsv) | 14/14 installed consumers PASS |
+| [native-negative.json](ci-b279e367/native-negative.json) | Expected setup-required exit 3 through the genuine installed library |
+
+Historical failed/cancelled runs and their fixes remain separate in the
 [hosted verification section](../../iterations/auth-api-resource-verification-v1.md#hosted-linux-verification).
-The archived native PASS results remain separate from these hosted attempts.
-Preserve sanitized hosted phase results here when available, without raw logs,
-tokens or private configuration; no completed hosted/package PASS is claimed yet.
+Human native PASS remains at `d5d29aac`; runtime-fix evidence remains at `b099d6aa`.
+The successful integrated CI includes development revision `84619cd2` via merge
+`a7c17ea6`; `9eac8072` is historical, not unchanged `origin/dev`.
+SOURCE/CI/PACKAGE review is CLEAN; final documentation closure, promotion and
+retained-build cleanup remain pending. Upstream reports remain NOT_SUBMITTED.

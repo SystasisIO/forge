@@ -1,7 +1,7 @@
 # oidc-agent: Wrong Returned-Token Expiry And Audience-Only Cleanup
 
 Status: **NOT_SUBMITTED**. Evidence: 2026-10-14. Review: **CLEAN (vendor + adapter scope)**.
-Fork acceptance: **Linux native PASS (covered cycle)**; installed Forge verification: **PENDING**.
+Fork acceptance: **Linux native PASS (covered cycle)**; installed Linux package gate: **CLOSED/PASS** at Forge `b279e367`.
 Affected: upstream **5.3.8**, [f31513acaacaa7ebc115b3a329105d449b43ac99][baseline].
 The October 14 comparison found the relevant paths unchanged at
 [prerel 431dcd8a930e092a47de87b1782d24ff3727cae0][prerel]; this is not a blanket
@@ -87,7 +87,12 @@ reported typed `setup_required` (JSON status `BLOCKED`, driver exit 3), as expec
 These runs do **not prove Keycloak honored resource/audience**. Controlled fixtures
 prove outgoing overrides; the separate resource-server verifier enforces recipient policy.
 Post-P2 daemon [rebuild](../validation/auth-resource-2026-10-14/linux/oidc-patched-build-final.log)/[install](../validation/auth-resource-2026-10-14/linux/oidc-patched-install-final.log) PASS;
-installed Forge/package-consumer verification remains pending.
+installed Forge/package-consumer verification is **CLOSED/PASS** in
+[run 38508037293](https://github.com/SystasisIO/forge/actions/runs/38508037293) at
+`b279e367598dacb7dd90287a0d19b0dd8f7c39a8`: 24/24 regressions and 14/14 installed
+consumers PASS. The genuine installed-library negative control returned expected
+`setup_required`, exit 3, not a new IdP login. Five sanitized CI files and the
+artifact ZIP digest are in the [evidence index](../validation/auth-resource-2026-10-14/README.md#hosted-ci-acceptance).
 Separate Forge regression failures and repairs are recorded in the
 [iteration report](../iterations/auth-api-resource-verification-v1.md#linux-regression-follow-up).
 The final [Linux rerun](../validation/auth-resource-2026-10-14/linux/final-verified-regressions.log)
@@ -155,8 +160,11 @@ Use real [Make/install metadata](../../vendor/oidc-agent/test/token_response_exp
 sockets and existing C API remote routing. Client package discovery cannot attest it.
 Preserve all scopes/audience/minimum-validity fields; no stripped-override, fabricated
 expiry, raw-IPC or alternate-provider fallback. See the [adapter README](../../libraries/auth/oidc_agent/README.md).
-Source P2 and Linux native gates are closed; installed Forge verification remains pending.
-Forge records the pin in local `813735bc21e1030daaa57fa29d0918bd3bf7ba31`, not promoted to dev.
+Source P2, Linux native and installed Linux package gates are closed.
+Human native evidence remains at Forge `d5d29aac`; runtime-fix evidence at `b099d6aa`.
+Both reviewers confirmed SOURCE/CI/PACKAGE CLEAN; final documentation closure,
+promotion and retained-build cleanup remain pending. Forge's published feature
+history records the vendor pin in `813735bc21e1030daaa57fa29d0918bd3bf7ba31`, not promoted to dev.
 Submit only after explicit approval; fork publication is not an upstream submission.
 Selected sanitized evidence is retained under `docs/validation`, outside generated
 build trees. No account files, private keys or raw token values are retained there.
