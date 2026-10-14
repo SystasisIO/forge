@@ -292,6 +292,8 @@ queues, fixed fences, timeout/retry, cancellation and reentrancy. The configured
 delivery subprocess leaves a real stderr pipe unread while exercising HTTP,
 then resumes the reader and verifies drain and shutdown. It also checks that
 retirement exhaustion cannot truncate a new sink file.
+Separate private-owner barrier tests prove that shutdown waits for admitted
+configuration work and that prepared routes cannot publish after stop.
 The installed package consumer compiles macro calls from installed modules and
 headers. See the [migration note](../../docs/releases/unreleased-logging-macros.md)
 for the approved source/configuration break.

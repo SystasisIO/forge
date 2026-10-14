@@ -1,6 +1,7 @@
 # Nonblocking Log Delivery
 
-Status: implementation and acceptance in progress.
+Status: implementation complete; focused acceptance recorded below. Merge
+requires clean independent reviews of the exact delivery head.
 
 ## Contract
 
@@ -50,3 +51,32 @@ This implementation reuses Forge runtime ownership rather than importing an
 additional logging runtime or network exporter.
 
 Reference: https://opentelemetry.io/docs/specs/otel/logs/sdk/
+
+## Focused Acceptance (2026-10-14)
+
+Native macOS arm64, LLVM 22.1.8, CMake 3.31.6/Ninja, OpenSSL 3.6.4.
+Builds use `-j4`; no full CI, Linux or sanitizer result is claimed here.
+
+- Log, static teardown, configured delivery, private configuration lifecycle,
+  OTLP, HTTP observations and structure suites passed.
+- App and the OTLP plugin passed. Asio passed 20 consecutive full-suite runs
+  after replacing two pre-existing submit-versus-start test races with explicit
+  callback-entry/release barriers; Asio production code did not change.
+- Log, configured delivery and configuration lifecycle each passed 20 repeats.
+- Installed generic, log-only and OTLP-plugin package consumers passed. The
+  log-only consumer requests only `log`, disables OpenSSL discovery, and awaits
+  the public delivery contract on a Boost.Asio executor.
+- A real unread stderr pipe did not prevent HTTP responses. Releasing that pipe
+  allowed explicit drain; failed output was counted separately from delivery.
+- Deterministic private-owner barriers prove shutdown waits for admitted
+  preparation and rejects publication after stop. The FIFO fixture adds real
+  blocked-open coverage without claiming scheduler ordering as its proof.
+- `libraries/log/include/forge/log/macros.hpp` is byte-identical to the base.
+  `git diff --check` passed.
+
+Acceptance logs are retained under
+`.cache/acceptance/log-nonblocking-20261014/`; disposable build outputs are not
+part of the evidence. Review fixes cover configuration/stop atomicity and
+exception-safe retired-owner pruning. Explicit shutdown is still required for
+drain; destructor fallback cannot terminate a non-cooperative callback and may
+discard pending work. Direct synchronous sinks and OTLP retain their own owners.
