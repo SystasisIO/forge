@@ -2193,7 +2193,7 @@ if(TARGET forge_auth_oidc_agent)
       GENERATE
       OUTPUT "${FORGE_OIDC_AGENT_PACKAGE_CONFIG_DIR}/liboidc-agent.pc"
       CONTENT
-         "Name: liboidc-agent\nDescription: Forge package-test oidc-agent ABI\nVersion: ${OIDCAgent_VERSION}\nLibs: $<TARGET_FILE:forge_test_oidc_agent_package_stub>\nCflags: -I${FORGE_OIDC_AGENT_PACKAGE_INCLUDE_DIR}\n"
+         "Name: liboidc-agent\nDescription: Forge package-test oidc-agent ABI\nVersion: ${OIDCAgent_VERSION}\nLibs: -L$<TARGET_FILE_DIR:forge_test_oidc_agent_package_stub> -lforge_test_oidc_agent_package_stub\nCflags: -I${FORGE_OIDC_AGENT_PACKAGE_INCLUDE_DIR}\n"
    )
 endif()
 

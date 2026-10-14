@@ -2,8 +2,10 @@
 
 Date: 2026-10-14.
 Status: resource and final native gates PASS; current fixture cleanup complete; package verification and final delivery PENDING.
+Hosted Linux snapshot: run 38483751720 FAILED; dependencies/catalog/regressions PASS; packages FAILED; native-negative SKIPPED. Package acceptance remains PENDING.
 Current regressions: **Linux 11/11 PASS; macOS 14/14 PASS** after both repairs; twenty-repeat suites PASS on each platform.
 Branch: `auth-api-resource-verification-v1`.
+Published feature/workflow revision: `363423a83bb7f835e95baa0f40a03b3deb1b7d49`.
 Current reviewed runtime revision: `b099d6aaca417c06bb4922abadf604cbbcfde638`, not `dev`.
 Recorded native-cycle revision: `d5d29aac774eecd06a39371459cac5c5099c6c85`.
 Unchanged `origin/dev`: `9eac8072575da0ccc1f1337aa456a1f0caecf25c`.
@@ -37,8 +39,8 @@ patched Linux daemon/library/Forge cycle and the final macOS AppAuth browser,
 resume, post-expiry refresh and invalidate cycle PASS. See the
 [oidc-agent report](../donors/oidc-agent-upstream-report.md), still **NOT_SUBMITTED**.
 
-Native acceptance is closed, not an overall delivery verdict. The
-full-catalog Linux package build was interrupted by Docker Desktop shutdown
+Native acceptance is closed, not an overall delivery verdict. The local
+full-catalog Linux package build was **INTERRUPTED** by Docker Desktop shutdown
 at 03:22 +05:00 on 2026-10-14; installed Forge verification remains
 **PENDING**. After the WebSocket observation repair (`1f9fddc6`) and notification
 race fix (`b099d6aa`), the latest regressions PASS: Linux 11/11, macOS 14/14,
@@ -49,8 +51,16 @@ stopped. On 2026-10-14 the user authorized GitHub Actions for the remaining
 Linux verification instead of restarting the resource-heavy local container.
 This authorization supersedes the earlier no-CI restriction for this feature;
 it does not waive the package gate or authorize promotion before final review.
-The feature remains on the feature branch, with no development promotion,
-Gate pin update, tag or release claimed.
+The feature branch has been pushed for hosted CI, not promoted to `dev`.
+The latest reported run, `38483751720` at
+`363423a83bb7f835e95baa0f40a03b3deb1b7d49`, finished **FAILED**:
+dependencies, catalog and regressions PASS; packages failed at the third
+consumer, `auth_oidc_agent`; the hosted native-negative phase was SKIPPED.
+The failure is test-fixture static-library link ordering, with production
+source unchanged. A test CMake fixture fix and fresh rerun remain pending;
+there is no complete package or hosted CI PASS.
+Earlier hosted failures and their fixes are recorded below. No Gate pin update,
+tag or release is claimed.
 
 ## Scope
 
@@ -167,7 +177,8 @@ or Linux installed-package verdict.
 | macOS actual browser authorization and complete native lifecycle | PASS; current-run user browser attestation; processes exit 0 | [Authorize](../validation/auth-resource-2026-10-14/native-macos-accepted-authorize.jsonl); lifecycle logs below |
 | Linux actual patched daemon/library/Forge native lifecycle | PASS, including overrides, expiry renewal and encrypted reload | [Acquire](../validation/auth-resource-2026-10-14/linux/native-oct14/final-acquire-overrides.jsonl); lifecycle logs below |
 | Current fixture trust, Keychain, daemon and issuer cleanup | Complete; expected NOT_TRUSTED/absence checks | Confirmed cleanup results below |
-| Full-catalog Linux package build and installed Forge verification | INTERRUPTED at step 491/766 by Docker shutdown; installed consumer PENDING | [Interrupted build](../validation/auth-resource-2026-10-14/linux/package-install-interrupted.log) |
+| Local full-catalog Linux package build and installed Forge verification | INTERRUPTED at step 491/766 by Docker shutdown; installed consumer PENDING | [Interrupted build](../validation/auth-resource-2026-10-14/linux/package-install-interrupted.log) |
+| Hosted Linux catalog and installed consumers at `363423a8` | Run FAILED: dependencies/catalog/regressions PASS; packages FAILED at third consumer `auth_oidc_agent`; native-negative SKIPPED | [Run 38483751720](https://github.com/SystasisIO/forge/actions/runs/38483751720) |
 
 The historical package and SDK policy rows are macOS evidence, not Linux
 package/SDK PASS. A historical Linux SDK configure attempt failed because the
@@ -199,8 +210,9 @@ clean after the cooldown correction. The final oidc-agent vendor (including
 Makefile/metadata) and adapter scope is CLEAN after the P2 bound fix.
 These scoped verdicts and native PASS do not declare whole-delivery CLEAN:
 Linux package/installed-consumer validation and final delivery review/ancestry
-remain pending. No Forge development push, Gate pin update, tag or release has been
-performed. Generated build evidence is retained for package validation.
+remain pending. The feature branch was pushed for CI; no promotion to `dev`,
+Gate pin update, tag or release has been performed. Generated build evidence
+is retained for package validation.
 
 The interrupted package command returned 255 when the Docker API socket
 disappeared. Docker's host log records `Quitting whole Docker Desktop` and
@@ -226,7 +238,24 @@ pool, including nested package consumers: four locally observed 5.5 GiB
 compiler processes exceed its memory budget. This is a resource limit, not a
 smaller source graph. Jobs have finite deadlines and publish allowlisted test
 results and phase exit codes; raw logs, tokens and private configuration are
-not included in the artifact. Adding this workflow is not a passing CI result.
+not included in the artifact. Dependencies PASS alone does not establish
+catalog, installed-consumer or overall CI PASS.
+
+Reported hosted-run snapshot on 2026-10-14:
+
+| Run | Exact Event SHA | Observed Boundary / Follow-Up |
+| --- | --- | --- |
+| [38480451537](https://github.com/SystasisIO/forge/actions/runs/38480451537) | `6fed3c48908114a6b239834c1e3229862aa6e0e3` | FAILED in dependency preparation, before Forge: Jansson 2.14.1's CMake minimum/policy compatibility `< 3.5` was rejected by CMake 4. Fixed in `a45747bdc7c276404e8840ee7cc263b5caade884`; this failed run remains historical evidence. |
+| [38482513324](https://github.com/SystasisIO/forge/actions/runs/38482513324) | `a45747bdc7c276404e8840ee7cc263b5caade884` | Dependencies PASS; catalog configuration FAILED when dependency `LD_LIBRARY_PATH` shadowed system linker dependencies and system `ld` reported `json_delete`. Fixed in `363423a83bb7f835e95baa0f40a03b3deb1b7d49`; no catalog/package PASS from this run. |
+| [38483751720](https://github.com/SystasisIO/forge/actions/runs/38483751720) | `363423a83bb7f835e95baa0f40a03b3deb1b7d49` | Terminal FAILED: dependencies/catalog/regressions PASS; packages FAILED at the third consumer, `auth_oidc_agent`, under GNU ld. The fixture `.pc` placed absolute `stub.a` before `main.o`, leaving `getAgentTokenResponse`, `getAgentTokenResponseForIssuer` and `secFreeAgentResponse` unresolved. Production source unchanged; test CMake fixture fix/rerun pending. Native-negative SKIPPED. |
+
+The first failure is not a Forge compile/test result; the second is a catalog
+configuration failure, not completed package acceptance. The third completed
+catalog and regressions but failed test-fixture consumer linkage; it is not
+an overall package PASS. Keep all three failed attempts separate from their
+fixes and any later successful evidence. The skipped hosted native-negative
+phase does not change the separately archived human native PASS results.
+This snapshot claims no completed hosted CI PASS or fresh human native rerun.
 
 ### Historical Post-Rebase Digests
 
@@ -313,9 +342,11 @@ attempt lacked compiler runtime libraries and was NOT PASS, unlike the final run
 ### Current Native Acceptance
 
 The recorded native cycles below ran at Forge revision
-`d5d29aac774eecd06a39371459cac5c5099c6c85`, not the newer HEAD
-`b099d6aaca417c06bb4922abadf604cbbcfde638`. The newer revision includes both
-repairs and the passing regression reruns recorded separately below.
+`d5d29aac774eecd06a39371459cac5c5099c6c85`. The separately reviewed runtime
+revision `b099d6aaca417c06bb4922abadf604cbbcfde638` includes both repairs and
+the passing regression reruns recorded below. Published feature/workflow
+revision `363423a83bb7f835e95baa0f40a03b3deb1b7d49` is a separate hosted-CI
+revision, not the SHA of these recorded human native cycles.
 Parent pin commit
 `813735bc21e1030daaa57fa29d0918bd3bf7ba31` records the published oidc-agent
 [28d6f89701b64d5150b05d01f85b8a8eed54808e](https://github.com/SystasisIO/oidc-agent/commit/28d6f89701b64d5150b05d01f85b8a8eed54808e),
@@ -393,17 +424,21 @@ is closed; earlier failures are retained rather than recategorized as PASS.
 ### Remaining Delivery Gates
 
 User-mediated native gates are closed; service-account/resource tests have not
-been substituted for them. The full-catalog Linux package build is still running,
-and current-source installed Forge/package-consumer verification has no final
-verdict. Runtime regressions are repaired and their failed evidence retained.
-Complete Linux package validation and
+been substituted for them. The local full-catalog Linux package run is
+**INTERRUPTED**, not running. Hosted run `38483751720` is terminal FAILED:
+dependencies/catalog/regressions PASS, packages FAILED at the `auth_oidc_agent`
+test consumer, native-negative SKIPPED. Repair the test CMake fixture's static
+archive link ordering, then obtain a fresh passing package and native-negative
+rerun. Production source is unchanged by this fixture issue. Runtime regressions
+are repaired and their failed evidence retained. Complete hosted Linux validation and
 record its results, then obtain final delivery review
 and refresh development ancestry before any authorized promotion or pin update.
 Remove retained build resources only after their validation work is finished.
 Selected sanitized acceptance and regression evidence is retained under
 `docs/validation`, outside generated builds. Final Linux package evidence must
 join it before cleanup.
-Native PASS and scoped CLEAN are not overall delivery CLEAN or permission to push.
+Native PASS and scoped CLEAN are not overall delivery CLEAN or permission to
+promote to `dev` or update Gate. The authorized feature-branch push is separate.
 
 ### Historical Interrupted Cleanup
 
@@ -432,8 +467,8 @@ owned `forge-auth-live` Compose container, data and network is confirmed complet
 These results were checked by the coordinator after the user confirmed the
 macOS trust-removal prompt.
 
-The Linux build container and generated build remain intentionally retained for
-the running package build. Their final cleanup is pending after package validation;
+Retained local Linux build resources belong to the **INTERRUPTED** package run,
+not a running local build. Their final cleanup is pending after package validation;
 this does not leave the current localhost certificate or native fixture active.
 
 Credential migration is a scoped public source break, not a wire/storage reset.

@@ -17,8 +17,8 @@ if [[ "$phase" == evidence ]]; then
 import pathlib, re, sys
 work = pathlib.Path(sys.argv[1])
 ansi = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
-result = re.compile(r'^\s*\d+/\d+ Test\s+#\d+: test_forge_[a-z0-9_]+\s+\.+\s+(?:Passed|\*\*\*Failed|\*\*\*Timeout|\*\*\*Not Run)\s+[0-9.]+ sec\s*$')
-summary = re.compile(r'^(?:\d+% tests passed, \d+ tests failed out of \d+|Total Test time \(real\) =\s+[0-9.]+ sec)$')
+result = re.compile(r'^\s*(?:\d+/\d+ )?Test\s+#\d+: test_forge_[a-z0-9_]+\s+\.+\s+(?:Passed|\*\*\*Failed|\*\*\*Timeout|\*\*\*Not Run)\s+[0-9.]+ sec\s*$')
+summary = re.compile(r'^(?:\d+% tests passed(?:, \d+ tests failed)? out of \d+|Total Test time \(real\) =\s+[0-9.]+ sec)$')
 for name in ('regressions',):
     source = work / 'raw' / (name + '.log')
     lines = [ansi.sub('', line) for line in source.read_text(errors='replace').splitlines()] if source.exists() else []
