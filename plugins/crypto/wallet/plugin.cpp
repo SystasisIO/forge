@@ -32,7 +32,7 @@ import forge.raw.raw;
 namespace forge::plugins::crypto::wallet {
 namespace management = forge::crypto::wallet;
 
-plugin::plugin(plugin_options options) : impl_{std::make_shared<impl>(std::move(options))} {}
+plugin::plugin(plugin_options options) : impl_{std::make_shared<impl>(std::move(options), lifecycle_handle())} {}
 plugin::~plugin() = default;
 
 forge::app::plugin_descriptor plugin::descriptor(plugin_options options) {
@@ -52,7 +52,7 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.crypto.wallet");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    auto decoded = forge::config::core::decode<config>(view.source(), view.section());
    if (!decoded.ok()) {
       throw management::exceptions::invalid_request{"Invalid wallet configuration"};
@@ -62,22 +62,32 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<management::api>(std::make_shared<api_impl>(impl_));
    provider.install<provider_source>(std::make_shared<provider_source_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
    impl_->validate();
    if (!context.has_compute()) {
       throw management::exceptions::invalid_request{"Wallet plugin requires the application's bounded compute pool"};
    }
-   impl_->scheduler = &context.scheduler();
-   impl_->compute = context.compute();
+   const auto generation = impl_->lifecycle.snapshot().generation;
+   if (!impl_->lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      impl_->scheduler = &context.scheduler();
+      impl_->compute = context.compute();
+   })) {
+      throw management::exceptions::unavailable{"Wallet initialization was stopped"};
+   }
    for (const auto& startup : impl_->settings.wallets) {
-      if (!impl_->wallets.contains(startup.name)) {
-         impl_->wallets.emplace(startup.name, std::make_shared<wallet::provider>(startup.name));
+      auto candidate = std::make_shared<wallet::provider>(startup.name);
+      if (!impl_->lifecycle.try_admit(generation, [&] {
+         const auto lock = std::scoped_lock{impl_->mutex};
+         impl_->wallets.try_emplace(startup.name, candidate);
+      })) {
+         throw management::exceptions::unavailable{"Wallet initialization was stopped"};
       }
    }
    for (const auto& wallet : impl_->snapshot()) {
@@ -91,7 +101,7 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
    }
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    for (const auto& wallet : impl_->snapshot()) {
       wallet->startup();
    }
@@ -115,24 +125,23 @@ boost::asio::awaitable<void> plugin::startup() {
          co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::enable_terminal_cancellation{});
       }
    }
-   std::lock_guard lock{impl_->mutex};
-   impl_->started = true;
 }
 
-void plugin::request_stop() noexcept {
+void plugin::on_request_stop() noexcept {
    // Schema discovery instantiates and destroys plugins without initializing
    // them. Such an instance does not own injected providers' lifecycle.
-   if (!impl_->scheduler) {
-      return;
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      if (!impl_->scheduler) { return; }
    }
-   impl_->stopping.store(true, std::memory_order_release);
-   std::lock_guard lock{impl_->mutex};
+   // Common stop has serialized every map installer and prevents new ones.
+   // The stable map can be traversed without holding a lock across provider calls.
    for (const auto& [name, wallet] : impl_->wallets) {
       wallet->request_stop();
    }
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
+boost::asio::awaitable<void> plugin::on_shutdown() {
    request_stop();
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    for (const auto& wallet : impl_->snapshot()) {

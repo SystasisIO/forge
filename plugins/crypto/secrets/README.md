@@ -1,5 +1,17 @@
 # Secret Provider Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Configured material is an immutable, atomically published snapshot. Admitted
+crypto operations retain that snapshot and may finish after stop; new calls
+fail with the typed `exceptions::stopped`. Read-only status remains available.
+This does not promise immediate destruction of material retained by an API owner.
+
 `forge::plugins::crypto::secrets` provides a local-only secret operations API for
 `forge_app` applications. It lets application plugins request bounded secret
 retrieval, HKDF-SHA256 derivation and AES-GCM encryption/decryption by

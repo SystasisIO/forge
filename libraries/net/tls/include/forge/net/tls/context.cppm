@@ -90,6 +90,9 @@ class context_provider {
    context_provider& operator=(const context_provider&) = delete;
 
    [[nodiscard]] context_snapshot_ptr snapshot() const noexcept;
+   // Prepare with make_context before admission. Retain the returned owner until
+   // after any caller-owned publication lock has been released.
+   [[nodiscard]] context_snapshot_ptr exchange(context_snapshot_ptr prepared);
    void replace(context_options replacement);
 
  private:

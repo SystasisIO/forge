@@ -131,22 +131,28 @@ case "$phase" in
          test_forge_auth_token_verifier test_forge_auth_liboauth2 test_forge_client_auth test_forge_auth_oidc_agent
          test_forge_api_core test_forge_api_transport test_forge_http_error_renderer test_forge_http_parameters
          test_forge_http_client_preparation test_forge_http_websocket test_forge_api_trusted_subject
+         test_forge_http_stop_retry test_forge_app
          forge_auth_liboauth2_patched_qualification)
       cmake --build "$build" --target "${targets[@]}" -j4
       ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
-         -R '^test_forge_(structure|net_plugin_structure|contract_sdk_(cmake_runtime_policy|relocation_runtime_policy|dependencies)|auth_(credential|pairing|session|http|token_verifier|liboauth2|liboauth2_patched_regression|oidc_agent)|client_auth|api_core|api_transport|http_error_renderer|http_parameters|http_client_preparation|http_websocket|api_trusted_subject)$'
+         -R '^test_forge_(structure|net_plugin_structure|app_lifecycle_structure|app|contract_sdk_(cmake_runtime_policy|relocation_runtime_policy|dependencies)|auth_(credential|pairing|session|http|token_verifier|liboauth2|liboauth2_patched_regression|oidc_agent)|client_auth|api_core|api_transport|http_error_renderer|http_parameters|http_client_preparation|http_websocket|http_stop_retry|api_trusted_subject)$'
       ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --repeat until-fail:20 \
          -R '^test_forge_(auth_liboauth2|api_trusted_subject)$'
       ;;
    packages)
       consumers=(auth_oauth2_component auth_liboauth2_component auth_oidc_agent auth_credential_component
          auth_pairing_component auth_session_component auth_http_component api_core_component
-         api_transport_component api_http_component api_websocket_component net_http_component net_websocket_component)
+         api_transport_component api_http_component api_websocket_component net_http_component net_websocket_component
+         app_component)
       [[ -f "$build/forge-package-install/lib/cmake/Forge/ForgeConfig.cmake" ]]
       [[ -f "$build/tests/ForgePackageConsumerCache.cmake" ]]
       : > "$work/evidence/package-consumers.tsv"
       for consumer in "${consumers[@]}"; do
          consumer_build="$work/package-consumers/$consumer"
+         consumer_executable="forge_package_$consumer"
+         if [[ "$consumer" == app_component ]]; then
+            consumer_executable=forge_package_app
+         fi
          (
             # The ABI stub is confined to this fixture, never production or the native probe.
             if [[ "$consumer" == auth_oidc_agent ]]; then
@@ -164,9 +170,9 @@ case "$phase" in
                   libcrypto.so.3 "$(brew --prefix openssl@3)/lib/libcrypto.so.3"
             fi
             cd "$consumer_build"
-            env -u LD_LIBRARY_PATH -u LD_PRELOAD timeout --kill-after=5s 60s "./forge_package_$consumer"
+            env -u LD_LIBRARY_PATH -u LD_PRELOAD timeout --kill-after=5s 60s "./$consumer_executable"
          )
-         printf 'forge_package_%s\tPASS\n' "$consumer" >> "$work/evidence/package-consumers.tsv"
+         printf '%s\tPASS\n' "$consumer_executable" >> "$work/evidence/package-consumers.tsv"
       done
       ;;
    native-negative)

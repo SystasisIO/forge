@@ -50,6 +50,8 @@ import forge.db.mdbx.driver;
 #include "details/config.hxx"
 
 namespace forge::plugins::db::store {
+plugin::impl::impl(forge::app::plugin_lifecycle value) : lifecycle{std::move(value)} {}
+
 
 void plugin::impl::configure(config value) {
    detail::validate_config(value);
@@ -68,38 +70,27 @@ void plugin::impl::configure(config value) {
       configured.emplace(record->name, std::move(record));
    }
 
-   auto lock = std::unique_lock{mutex};
-   const auto state = current.load();
-   if (state == phase::starting || state == phase::ready || state == phase::started || state == phase::stopping ||
-       state == phase::stopped) {
-      FORGE_THROW_EXCEPTION(exceptions::stopped, "db store plugin cannot be configured after startup or stop");
+   const auto generation = lifecycle.snapshot().generation;
+   auto count = std::size_t{};
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      reject_started_setup();
+      settings = std::move(value);
+      enabled = true;
+      stores.swap(configured);
+      count = stores.size();
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "db store configuration was stopped");
    }
-
-   settings = std::move(value);
-   enabled = true;
-   stores.swap(configured);
-   current.store(phase::configured);
-   const auto count = stores.size();
-   lock.unlock();
    dlog("forge.db.store", "store configuration accepted",
         ("event", "configuration.accepted")("stores", count));
 }
 
-void plugin::impl::initialize() {
-   auto lock = std::scoped_lock{mutex};
-   if (current.load() == phase::registered) {
-      current.store(phase::initialized);
-      return;
-   }
-   if (current.load() == phase::configured) {
-      current.store(phase::initialized);
-   }
-}
+void plugin::impl::initialize() {}
 
 void plugin::impl::reject_started_setup() const {
    const auto state = current.load();
-   if (state == phase::starting || state == phase::ready || state == phase::started || state == phase::stopping ||
-       state == phase::stopped) {
+   if (state == phase::opening || state == phase::ready || state == phase::closed) {
       FORGE_THROW_EXCEPTION(exceptions::stopped, "db stores can only be added before startup");
    }
 }
@@ -135,14 +126,18 @@ void plugin::impl::add_store(std::string name, std::shared_ptr<forge::db::core::
    record->options = std::move(options);
    record->driver = std::move(driver);
 
-   auto lock = std::unique_lock{mutex};
-   reject_started_setup();
-   reject_duplicate_name(record->name);
    const auto object = record->options.object.has_value();
    const auto blob = record->options.blob.has_value();
    const auto revision = record->options.revision.has_value();
-   stores.emplace(record->name, record);
-   lock.unlock();
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      reject_started_setup();
+      reject_duplicate_name(record->name);
+      stores.emplace(record->name, record);
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "db store registration was stopped");
+   }
    dlog("forge.db.store", "external store registered",
         ("event", "store.registered")("store", record->name)("backend", "custom")("owns_driver", false)
         ("object", object)("blob", blob)("revision", revision));
@@ -150,26 +145,27 @@ void plugin::impl::add_store(std::string name, std::shared_ptr<forge::db::core::
 
 boost::asio::awaitable<void> plugin::impl::open() {
    auto pending = std::vector<pending_open>{};
-   auto restore_phase = phase::initialized;
+   auto restore_phase = phase::collecting;
+   const auto generation = lifecycle.snapshot().generation;
    {
       auto lock = std::scoped_lock{mutex};
       const auto state = current.load();
       if (state == phase::ready) {
          co_return;
       }
-      if (state == phase::stopping || state == phase::stopped) {
+      if (state == phase::closed) {
          FORGE_THROW_EXCEPTION(exceptions::stopped, "db store plugin is stopping");
       }
       if (!enabled) {
          current.store(phase::ready);
          co_return;
       }
-      if (state != phase::initialized) {
+      if (state != phase::collecting) {
          FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin is not initialized");
       }
 
       restore_phase = state;
-      current.store(phase::starting);
+      current.store(phase::opening);
       pending.reserve(stores.size());
       for (const auto& [name, record] : stores) {
          auto item = pending_open{
@@ -227,35 +223,39 @@ boost::asio::awaitable<void> plugin::impl::open() {
          }
       }
 
-      auto lock = std::scoped_lock{mutex};
-      const auto state = current.load();
-      if (state == phase::stopping || state == phase::stopped) {
-         FORGE_THROW_EXCEPTION(exceptions::stopped, "db store plugin is stopping");
-      }
-      if (state != phase::starting) {
-         FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin initialization state changed");
-      }
-      for (auto& item : pending) {
-         failed = &item;
-         const auto found = stores.find(item.name);
-         if (found == stores.end()) {
-            FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store is no longer registered",
-                                  forge::exceptions::ctx("store", item.name));
+      if (!lifecycle.try_admit(generation, [&] {
+         auto lock = std::scoped_lock{mutex};
+         const auto state = current.load();
+         if (state == phase::closed) {
+            FORGE_THROW_EXCEPTION(exceptions::stopped, "db store plugin is stopping");
          }
-         auto& record = found->second;
-         record->owns_driver = item.owns_driver;
-         record->driver = std::move(item.driver);
-         record->objects = std::move(item.objects);
-         record->blobs = std::move(item.blobs);
-         record->revisions = std::move(item.revisions);
-         record->opened = true;
-         record->started = false;
+         if (state != phase::opening) {
+            FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin initialization state changed");
+         }
+         for (auto& item : pending) {
+            failed = &item;
+            const auto found = stores.find(item.name);
+            if (found == stores.end()) {
+               FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store is no longer registered",
+                                     forge::exceptions::ctx("store", item.name));
+            }
+            auto& record = found->second;
+            record->owns_driver = item.owns_driver;
+            record->driver = std::move(item.driver);
+            record->objects = std::move(item.objects);
+            record->blobs = std::move(item.blobs);
+            record->revisions = std::move(item.revisions);
+            record->opened = true;
+            record->started = false;
+         }
+         current.store(phase::ready);
+      })) {
+         FORGE_THROW_EXCEPTION(exceptions::stopped, "db store opening was stopped");
       }
-      current.store(phase::ready);
    } catch (...) {
+      const auto stopping = lifecycle.snapshot().stop_requested;
       auto lock = std::unique_lock{mutex};
-      const auto stopping = current.load() == phase::stopping || current.load() == phase::stopped;
-      if (current.load() == phase::starting) {
+      if (current.load() == phase::opening) {
          current.store(restore_phase);
       }
       lock.unlock();
@@ -288,34 +288,29 @@ boost::asio::awaitable<void> plugin::impl::open() {
 }
 
 void plugin::impl::start() {
-   auto lock = std::unique_lock{mutex};
-   const auto state = current.load();
-   if (state == phase::started) {
-      return;
-   }
-   if (state != phase::ready) {
-      FORGE_THROW_EXCEPTION(exceptions::startup_failed, "db store plugin is not ready");
-   }
-   for (auto& [_, record] : stores) {
-      if (!record->opened) {
-         FORGE_THROW_EXCEPTION(exceptions::startup_failed, "db store is not ready",
-                               forge::exceptions::ctx("store", record->name));
+   const auto generation = lifecycle.snapshot().generation;
+   auto count = std::size_t{};
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (current.load() != phase::ready) {
+         FORGE_THROW_EXCEPTION(exceptions::startup_failed, "db store composition is not ready");
       }
-      record->started = true;
+      for (const auto& [_, record] : stores) {
+         if (!record->opened) {
+            FORGE_THROW_EXCEPTION(exceptions::startup_failed, "db store is not ready",
+                                  forge::exceptions::ctx("store", record->name));
+         }
+      }
+      for (auto& [_, record] : stores) { record->started = true; }
+      count = stores.size();
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "db store startup was stopped");
    }
-   current.store(phase::started);
-   const auto count = stores.size();
-   lock.unlock();
    ilog("forge.db.store", "store plugin started", ("event", "plugin.started")("stores", count));
 }
 
-void plugin::impl::request_stop() noexcept {
-   auto lock = std::scoped_lock{mutex};
-   if (current.load() == phase::stopped) {
-      return;
-   }
-   current.store(phase::stopping);
-}
+// Existing handles remain available for dependent plugins' persistence drain.
+void plugin::impl::request_stop() noexcept {}
 
 boost::asio::awaitable<void> plugin::impl::close() {
    auto owned = std::vector<std::shared_ptr<forge::db::core::driver>>{};
@@ -335,28 +330,41 @@ boost::asio::awaitable<void> plugin::impl::close() {
             .revisions = std::move(record->revisions),
          });
          if (record->owns_driver && record->driver) {
-            owned.push_back(std::move(record->driver));
+            owned.push_back(record->driver);
          } else {
             retired.back().driver = std::move(record->driver);
+            record->owns_driver = false;
          }
-         record->owns_driver = false;
          record->opened = false;
          record->started = false;
       }
-      current.store(phase::stopped);
+      current.store(phase::closed);
    }
    // Backend destruction can emit diagnostics and must not run under the plugin mutex.
    retired.clear();
 
    auto first_error = std::exception_ptr{};
    for (auto& driver : owned) {
+      auto released = false;
       try {
          co_await driver->async_close();
+         released = true;
       } catch (const forge::db::core::exceptions::driver_busy&) {
          // Existing sessions keep the backend and any managed lane alive.
+         released = true;
       } catch (...) {
          if (!first_error) {
             first_error = std::current_exception();
+         }
+      }
+      if (released) {
+         const auto lock = std::scoped_lock{mutex};
+         for (auto& [_, record] : stores) {
+            if (record->owns_driver && record->driver == driver) {
+               // The local batch pins this owner until after the mutex is released.
+               record->driver.reset();
+               record->owns_driver = false;
+            }
          }
       }
    }
@@ -406,7 +414,7 @@ opened_store plugin::impl::require_setup_store(const std::string& name) const {
 
    const auto& record = found->second;
    const auto state = current.load();
-   if ((state != phase::ready && state != phase::started && state != phase::stopping) || record->driver == nullptr ||
+   if ((state != phase::ready) || record->driver == nullptr ||
        !record->opened) {
       FORGE_THROW_EXCEPTION(exceptions::stopped, "db store is not ready", forge::exceptions::ctx("store", name));
    }
@@ -429,7 +437,7 @@ opened_store plugin::impl::require_started_store(const std::string& name) const 
 
    const auto& record = found->second;
    const auto state = current.load();
-   if ((state != phase::started && state != phase::stopping) || record->driver == nullptr || !record->opened ||
+   if ((state != phase::ready) || record->driver == nullptr || !record->opened ||
        !record->started) {
       FORGE_THROW_EXCEPTION(exceptions::stopped, "db store is not started", forge::exceptions::ctx("store", name));
    }

@@ -43,7 +43,7 @@ jobs:
         run: bash .github/scripts/auth-resource.sh catalog
 
       - name: Run Auth API WebSocket regressions and race repeats
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: bash .github/scripts/auth-resource.sh regressions
 
       - name: Verify installed package consumers including oidc-agent ABI fixture

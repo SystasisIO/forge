@@ -23,8 +23,9 @@ import forge.raw.raw;
 namespace forge::plugins::crypto::wallet {
 namespace management = forge::crypto::wallet;
 
-plugin::impl::impl(plugin_options options)
-    : settings{std::move(options.initial_config)}, allow_http_management{options.allow_http_management} {
+plugin::impl::impl(plugin_options options, forge::app::plugin_lifecycle state)
+    : lifecycle{std::move(state)}, settings{std::move(options.initial_config)},
+      allow_http_management{options.allow_http_management} {
    for (auto& wallet : options.wallets) {
       if (!wallet || !wallets.emplace(wallet->name(), wallet).second) {
          throw management::exceptions::invalid_request{"Duplicate or missing wallet provider"};
@@ -92,33 +93,50 @@ void plugin::impl::authorize(const forge::api::auth::authenticated_caller& calle
    if (!allowed(caller, wallet, operation)) {
       throw management::exceptions::permission_denied{"Wallet operation is not permitted"};
    }
-   if (stopping.load(std::memory_order_acquire)) {
+   const auto state = lifecycle.snapshot();
+   if (state.stop_requested || state.phase != forge::app::lifecycle_phase::started) {
       throw management::exceptions::unavailable{"Wallet service is stopping"};
    }
 }
 
 std::shared_ptr<provider> plugin::impl::find(std::string name, bool create) {
-   std::lock_guard lock{mutex};
-   if (stopping.load(std::memory_order_acquire) || !scheduler) {
+   const auto state = lifecycle.snapshot();
+   auto found = std::shared_ptr<provider>{};
+   auto owner = static_cast<forge::asio::task::scheduler*>(nullptr);
+   auto executor = forge::asio::compute::executor{};
+   if (!lifecycle.try_admit(state.generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (!scheduler) {
+         throw management::exceptions::unavailable{"Wallet service is unavailable"};
+      }
+      if (const auto item = wallets.find(name); item != wallets.end()) { found = item->second; }
+      owner = scheduler;
+      executor = compute;
+   })) {
       throw management::exceptions::unavailable{"Wallet service is unavailable"};
    }
-   const auto found = wallets.find(name);
-   if (found != wallets.end()) {
-      return found->second;
+   if (found) { return found; }
+   if (!create) { throw management::exceptions::not_found{"Wallet is not open"}; }
+
+   auto candidate = std::make_shared<provider>(name);
+   candidate->initialize(settings.directory, *owner, std::move(executor), 300, settings.max_pending);
+   candidate->startup();
+   if (!lifecycle.try_admit(state.generation, forge::app::lifecycle_phase::started, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (const auto item = wallets.find(name); item != wallets.end()) {
+         found = item->second;
+         return;
+      }
+      if (wallets.size() >= settings.max_wallets) {
+         throw management::exceptions::resource_exhausted{"Wallet limit reached"};
+      }
+      wallets.emplace(std::move(name), candidate);
+      found = candidate;
+   })) {
+      candidate->request_stop();
+      throw management::exceptions::unavailable{"Wallet creation was stopped"};
    }
-   if (!create) {
-      throw management::exceptions::not_found{"Wallet is not open"};
-   }
-   if (wallets.size() >= settings.max_wallets) {
-      throw management::exceptions::resource_exhausted{"Wallet limit reached"};
-   }
-   auto wallet = std::make_shared<provider>(std::move(name));
-   wallet->initialize(settings.directory, *scheduler, compute, 300, settings.max_pending);
-   if (started) {
-      wallet->startup();
-   }
-   wallets.emplace(wallet->name(), wallet);
-   return wallet;
+   return found;
 }
 
 std::vector<std::shared_ptr<provider>> plugin::impl::snapshot() const {

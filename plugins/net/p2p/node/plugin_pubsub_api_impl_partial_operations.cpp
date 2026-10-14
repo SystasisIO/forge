@@ -67,24 +67,24 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::group_owned(std::shared_pt
    auto source = std::shared_ptr<forge::net::p2p::node>{};
    auto topic = std::shared_ptr<topic_state>{};
    auto record = std::shared_ptr<partial_record>{};
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       source = self->require_node_locked();
       record = self->require_partial_locked(token);
       topic = self->topics.at(token.subject().value);
       ++topic->participants;
       ++self->active_operations;
-   }
+   });
    auto completed = boost::scope::scope_exit{[&] { self->finish_partial_operation(topic, record); }};
    auto ticket = co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
        topic->transition.acquire(), boost::asio::use_awaitable);
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       static_cast<void>(self->require_node_locked());
       if (self->require_partial_locked(token) != record) {
          FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "Partial owner changed while waiting");
       }
-   }
+   });
 
    if (advertise) { co_await self->operations.advertise_partial(source, std::move(token), std::move(group)); }
    else { co_await self->operations.forget_partial(source, std::move(token), std::move(group)); }
@@ -95,24 +95,24 @@ boost::asio::awaitable<std::vector<forge::net::p2p::peer_id>> plugin::pubsub_api
    auto source = std::shared_ptr<forge::net::p2p::node>{};
    auto topic = std::shared_ptr<topic_state>{};
    auto record = std::shared_ptr<partial_record>{};
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       source = self->require_node_locked();
       record = self->require_partial_locked(token);
       topic = self->topics.at(token.subject().value);
       ++topic->participants;
       ++self->active_operations;
-   }
+   });
    auto completed = boost::scope::scope_exit{[&] { self->finish_partial_operation(topic, record); }};
    auto ticket = co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
        topic->transition.acquire(), boost::asio::use_awaitable);
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       static_cast<void>(self->require_node_locked());
       if (self->require_partial_locked(token) != record) {
          FORGE_THROW_EXCEPTION(exceptions::subscription_not_found, "Partial owner changed while waiting");
       }
-   }
+   });
 
    co_return co_await self->operations.partial_peers(source, std::move(token));
 }
@@ -123,14 +123,14 @@ boost::asio::awaitable<void> plugin::pubsub_api_impl::send_owned(std::shared_ptr
    auto source = std::shared_ptr<forge::net::p2p::node>{};
    auto topic = std::shared_ptr<topic_state>{};
    auto record = std::shared_ptr<partial_record>{};
-   {
+   self->admit_operation([&] {
       const auto lock = std::scoped_lock{self->mutex};
       source = self->require_node_locked();
       record = self->require_partial_locked(token);
       topic = self->topics.at(token.subject().value);
       ++topic->participants;
       ++self->active_operations;
-   }
+   });
    auto completed = boost::scope::scope_exit{[&] { self->finish_partial_operation(topic, record); }};
    // Admission above owns this send, not the topic transition. A concurrent downgrade must be
    // able to signal record.stop while native I/O is blocked; native rechecks the exact token.

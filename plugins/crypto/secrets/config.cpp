@@ -3,6 +3,8 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <memory>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -179,6 +181,7 @@ config decode_config(const forge::config::core::component_view& view) {
 }
 
 void apply_config(plugin::impl& state, forge::config::core::component_view view) {
+   const auto generation = state.lifecycle.snapshot().generation;
    auto decoded = decode_config(view);
    require_aes_update_limit(decoded.default_max_plaintext_bytes, "default-max-plaintext-bytes");
    require_aes_update_limit(decoded.default_max_ciphertext_bytes, "default-max-ciphertext-bytes");
@@ -212,8 +215,14 @@ void apply_config(plugin::impl& state, forge::config::core::component_view view)
                                    .max_aad_bytes = max_aad,
                                });
    }
-   state.secrets = std::move(loaded);
-   state.stopping = false;
+   auto candidate = std::shared_ptr<const std::map<std::string, loaded_secret>>{
+       std::make_shared<std::map<std::string, loaded_secret>>(std::move(loaded))};
+   auto retired = std::shared_ptr<const std::map<std::string, loaded_secret>>{};
+   if (!state.lifecycle.try_admit(generation, [&] {
+      retired = std::atomic_exchange_explicit(&state.secrets, candidate, std::memory_order_acq_rel);
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::stopped, "Secrets configuration was stopped");
+   }
 }
 
 } // namespace forge::plugins::crypto::secrets

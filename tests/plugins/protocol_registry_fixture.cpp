@@ -63,7 +63,7 @@ void protocol_registry_fixture::wait(std::future<void>& done) {
 }
 
 protocol_registry_fixture::protocol_registry_fixture(std::size_t max_slots)
-    : owner{std::make_shared<detail::protocol_registry>(max_slots)}, state_{std::make_shared<state>()}, runtime_{} {
+    : owner{std::make_shared<detail::protocol_registry>(max_slots, lifecycle)}, state_{std::make_shared<state>()}, runtime_{} {
    operations = std::make_shared<const detail::protocol_operations>(detail::protocol_operations{
        .install = [state = state_](auto protocol, auto handler) { install(state, std::move(protocol), std::move(handler)); },
        .remove = [state = state_](const auto& protocol) { return remove(state, protocol); },
@@ -161,6 +161,14 @@ std::optional<bool> protocol_registry_fixture::last_remove_result() const {
 forge::api::p2p::publication protocol_registry_fixture::publish(forge::net::p2p::protocol_id protocol) {
    return owner->publish(forge::api::p2p::api_binding{nullptr,
        forge::api::core::binding().serve(apis_).build(), std::move(protocol), {}, {}, {}});
+}
+boost::asio::awaitable<void> protocol_registry_fixture::incoming(forge::net::p2p::protocol_id protocol) {
+   auto handler = forge::net::p2p::node::protocol_handler{};
+   {
+      const auto lock = std::scoped_lock{state_->mutex};
+      handler = state_->routes.at(protocol);
+   }
+   return handler(forge::net::p2p::node::incoming_protocol_stream{.protocol = std::move(protocol)});
 }
 void protocol_registry_fixture::run(boost::asio::awaitable<void> operation) {
    auto done = boost::asio::co_spawn(runtime_.context(), std::move(operation), boost::asio::use_future);

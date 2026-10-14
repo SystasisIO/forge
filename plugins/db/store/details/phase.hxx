@@ -3,14 +3,10 @@
 namespace forge::plugins::db::store {
 
 enum class phase : std::uint8_t {
-   registered,
-   configured,
-   initialized,
-   starting,
+   collecting,
+   opening,
    ready,
-   started,
-   stopping,
-   stopped,
+   closed,
 };
 
 } // namespace forge::plugins::db::store

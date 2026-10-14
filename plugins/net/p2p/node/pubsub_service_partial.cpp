@@ -93,12 +93,14 @@ boost::asio::awaitable<void> pubsub_service::restore_full_owned(std::shared_ptr<
    }
    if (ordinary) { static_cast<void>(co_await self->operations.subscribe(source, topic->subject, full_dispatch(self))); }
    else { co_await self->operations.unsubscribe(source, topic->subject); }
+   auto retired_join_error = std::exception_ptr{};
+   auto retired_leave_error = std::exception_ptr{};
    {
       const auto lock = std::scoped_lock{self->mutex};
       topic->joined = ordinary;
       topic->native_dirty = ordinary;
-      topic->join_error = {};
-      topic->leave_error = {};
+      std::swap(retired_join_error, topic->join_error);
+      std::swap(retired_leave_error, topic->leave_error);
    }
 }
 
@@ -107,10 +109,11 @@ boost::asio::awaitable<void> pubsub_service::receive_partial_owned(std::weak_ptr
    const auto self = owner.lock();
    if (!self) { co_return; }
    auto record = std::shared_ptr<partial_record>{};
-   {
+   const auto generation = self->lifecycle.snapshot().generation;
+   if (!self->lifecycle.try_admit(generation, forge::app::lifecycle_phase::started, [&] {
       const auto lock = std::scoped_lock{self->mutex};
       record = self->admit_partial_event_locked(expected, event.registration);
-   }
+   })) { co_return; }
    if (!record) { co_return; }
    auto completed = boost::scope::scope_exit{[&] {
       record.reset(); // Last user captures retire outside mutex, before publishing completion.
@@ -135,10 +138,11 @@ boost::asio::awaitable<void> pubsub_service::gossip_partial_owned(std::weak_ptr<
    const auto self = owner.lock();
    if (!self) { co_return; }
    auto record = std::shared_ptr<partial_record>{};
-   {
+   const auto generation = self->lifecycle.snapshot().generation;
+   if (!self->lifecycle.try_admit(generation, forge::app::lifecycle_phase::started, [&] {
       const auto lock = std::scoped_lock{self->mutex};
       record = self->admit_partial_event_locked(expected, event.registration);
-   }
+   })) { co_return; }
    if (!record) { co_return; }
    auto completed = boost::scope::scope_exit{[&] {
       record.reset(); // Last user captures retire outside mutex, before publishing completion.

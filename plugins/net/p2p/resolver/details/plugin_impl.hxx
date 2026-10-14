@@ -6,7 +6,8 @@
 namespace forge::plugins::net::p2p::resolver {
 
 struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
-   impl();
+   explicit impl(forge::app::plugin_lifecycle state);
+   const forge::app::plugin_lifecycle lifecycle;
    ~impl();
 
    mutable std::mutex mutex;
@@ -19,8 +20,7 @@ struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
    forge::api::p2p::publication resolver_protocol_publication;
    std::map<std::string, cache_record> cache;
    std::vector<std::weak_ptr<detail::managed_remote_invoker>> managed_remotes;
-   bool initialized = false;
-   bool stopping = false;
+   std::vector<std::shared_ptr<detail::managed_remote_invoker>> closing_remotes;
 
    [[nodiscard]] std::shared_ptr<forge::plugins::net::p2p::node::api> require_p2p() const;
    [[nodiscard]] std::chrono::milliseconds query_deadline(resolve_options value) const;

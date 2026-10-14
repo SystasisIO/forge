@@ -4,6 +4,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/describe.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <forge/api/core/macros.hpp>
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,7 +31,6 @@ import forge.app.exceptions;
 import forge.app.application;
 import forge.app.events;
 import forge.app.diagnostics;
-import forge.app.signals;
 import forge.app.service_registry;
 import forge.app.connect_context;
 import forge.app.plugin_context;
@@ -79,6 +80,19 @@ FORGE_API(::app_test_contract::sample_api, FORGE_API_CONTRACT("sample", 1, 0), F
 namespace {
 
 using app_test_contract::sample_api;
+
+std::string lifecycle_error(const forge::app::lifecycle_snapshot& snapshot) {
+   if (!snapshot.failure) {
+      return {};
+   }
+   try {
+      std::rethrow_exception(snapshot.failure->exception);
+   } catch (const forge::exceptions::base& error) {
+      return error.message();
+   } catch (const std::exception& error) {
+      return error.what();
+   }
+}
 
 template <typename Context>
 concept exposes_api_installer = requires(Context& context) {
@@ -146,17 +160,17 @@ class sample_api_consumer_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       api_ = context.apis().get<sample_api>({.id = {"sample"}, .major = 1});
       log_->entries.push_back("api.initialize:" + std::to_string(static_cast<bool>(api_)));
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -243,12 +257,12 @@ class test_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       log_->entries.push_back("initialize:" + id_);
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:" + id_);
       if (fail_startup_) {
          throw forge::app::exceptions::startup_failed{"startup failed"};
@@ -256,7 +270,7 @@ class test_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("shutdown:" + id_);
       co_return;
    }
@@ -289,13 +303,13 @@ class configurable_plugin final : public forge::app::plugin {
       };
    }
 
-   boost::asio::awaitable<void> configure(forge::config::core::component_view view) override {
+   boost::asio::awaitable<void> on_configure(forge::config::core::component_view view) override {
       bind_port_ = view.get_or<std::uint16_t>("bind-port", 0);
       log_->entries.push_back("configure:" + std::to_string(bind_port_));
       co_return;
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       if (bind_port_ == 0) {
          throw forge::app::exceptions::config_failed{"not configured"};
       }
@@ -303,12 +317,12 @@ class configurable_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:configurable");
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("shutdown:configurable");
       co_return;
    }
@@ -461,29 +475,29 @@ class shell_config_plugin final : public forge::app::plugin {
       return descriptor;
    }
 
-   boost::asio::awaitable<void> configure(forge::config::core::component_view view) override {
+   boost::asio::awaitable<void> on_configure(forge::config::core::component_view view) override {
       port_ = view.get_or<std::uint16_t>("port", 0);
       log_->entries.push_back("plugin.configure:" + std::to_string(port_));
       co_return;
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       log_->entries.push_back("plugin.initialize:" + std::to_string(port_));
       context.events().publish(forge::app::event_severity::info, "shell.plugin", "initialized");
       co_return;
    }
 
-   boost::asio::awaitable<void> after_initialize() override {
+   boost::asio::awaitable<void> on_after_initialize() override {
       log_->entries.push_back("plugin.after_initialize:" + std::to_string(port_));
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("plugin.startup");
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("plugin.shutdown");
       co_return;
    }
@@ -506,22 +520,22 @@ class shell_dependency_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       log_->entries.push_back("initialize:" + id_);
       co_return;
    }
 
-   boost::asio::awaitable<void> after_initialize() override {
+   boost::asio::awaitable<void> on_after_initialize() override {
       log_->entries.push_back("after_initialize:" + id_);
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:" + id_);
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("shutdown:" + id_);
       if (fail_shutdown_once_) {
          fail_shutdown_once_ = false;
@@ -548,31 +562,31 @@ class connected_service_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       services_ = context.services();
       initialized_ = true;
       log_->entries.push_back("plugin.initialize");
       co_return;
    }
 
-   boost::asio::awaitable<void> after_initialize() override {
+   boost::asio::awaitable<void> on_after_initialize() override {
       log_->entries.push_back("plugin.after_initialize");
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       const auto service = services_.get<connected_service>();
       log_->entries.push_back("plugin.startup:" + std::to_string(service->value));
       co_return;
    }
 
-   void request_stop() noexcept override {
+   void on_request_stop() noexcept override {
       if (initialized_) {
          log_->entries.push_back("plugin.request_stop");
       }
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       const auto service = services_.get<connected_service>();
       log_->entries.push_back("plugin.shutdown:" + std::to_string(service->value));
       co_return;
@@ -596,22 +610,22 @@ class scheduler_cleanup_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       scheduler_ = &context.scheduler();
       log_->entries.push_back("initialize:cleanup");
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:cleanup");
       co_return;
    }
 
-   void request_stop() noexcept override {
+   void on_request_stop() noexcept override {
       log_->entries.push_back("request_stop:cleanup");
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       auto handle = scheduler_->submit(forge::asio::task::task{
          .priority = forge::asio::task::priority{1},
          .name = "cleanup-flush",
@@ -640,18 +654,18 @@ class compute_cleanup_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       BOOST_REQUIRE(context.has_compute());
       compute_ = context.compute();
       log_->entries.push_back("initialize:compute-cleanup");
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await compute_.execute({.name = "plugin-finalize"},
                                 [this] { log_->entries.push_back("cleanup.compute.work"); });
       log_->entries.push_back("shutdown:compute-cleanup");
@@ -674,17 +688,17 @@ class failing_initialize_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       log_->entries.push_back("initialize:init-fail");
       throw forge::app::exceptions::initialize_failed{"initialize failed"};
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:init-fail");
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("shutdown:init-fail");
       co_return;
    }
@@ -705,29 +719,29 @@ class failing_after_initialize_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       initialized_ = true;
       log_->entries.push_back("initialize:after-init-fail");
       co_return;
    }
 
-   boost::asio::awaitable<void> after_initialize() override {
+   boost::asio::awaitable<void> on_after_initialize() override {
       log_->entries.push_back("after_initialize:after-init-fail");
       throw forge::app::exceptions::initialize_failed{"after initialize failed"};
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:after-init-fail");
       co_return;
    }
 
-   void request_stop() noexcept override {
+   void on_request_stop() noexcept override {
       if (initialized_) {
          log_->entries.push_back("request_stop:after-init-fail");
       }
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       log_->entries.push_back("shutdown:after-init-fail");
       co_return;
    }
@@ -750,18 +764,18 @@ class slow_shutdown_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       context_ = &context;
       log_->entries.push_back("initialize:slow");
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       log_->entries.push_back("startup:slow");
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       auto timer = boost::asio::steady_timer{context_->scheduler().runtime_context().context()};
       timer.expires_after(std::chrono::milliseconds{100});
       co_await timer.async_wait(boost::asio::use_awaitable);
@@ -1079,10 +1093,10 @@ class daemon_test_application final : public forge::app::application_shell {
       state_->runtime_threads = context.shell.runtime.worker_threads;
       state_->blocking_tasks = context.shell.scheduler.max_blocking_tasks;
       state_->queue_depth = context.shell.scheduler.max_pending_tasks;
-      state_->data_dir = context.data_dir;
+      state_->data_dir = context.environment.data_dir();
       state_->config_path = context.config_path;
       state_->dotenv_path = context.dotenv_path;
-      state_->profile = context.profile;
+      state_->profile = context.environment.profile();
    }
 
  protected:
@@ -1166,13 +1180,12 @@ int run_test_daemon(std::vector<std::string> args, daemon_test_state& state, for
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(event_bus_bounds_queues_and_keeps_critical_ring) {
-   auto bus = forge::app::event_bus{forge::app::event_bus_options{
-       .max_subscription_events = 1,
+BOOST_AUTO_TEST_CASE(event_journal_bounds_history_and_keeps_critical_ring) {
+   auto bus = forge::app::event_journal{forge::app::event_journal_options{
        .max_critical_events = 2,
        .max_recent_events = 3,
+       .max_record_bytes = 128,
    }};
-   auto subscription = bus.subscribe(forge::app::event_filter{.topic = "app"});
 
    bus.publish(forge::app::event_severity::info, "app.start", "first");
    bus.publish(forge::app::event_severity::info, "app.start", "dropped");
@@ -1180,11 +1193,9 @@ BOOST_AUTO_TEST_CASE(event_bus_bounds_queues_and_keeps_critical_ring) {
    bus.publish(forge::app::event_severity::critical, "system", "critical-b");
    bus.publish(forge::app::event_severity::critical, "system", "critical-c");
 
-   BOOST_TEST(bus.metrics().dropped == 1);
-   auto first = subscription.poll();
-   BOOST_REQUIRE(first.has_value());
-   BOOST_TEST(first->message == "first");
-   BOOST_TEST(!subscription.poll().has_value());
+   bus.publish(forge::app::event_severity::info, "oversized", std::string(128, 'x'));
+   BOOST_TEST(bus.metrics().published == 6U);
+   BOOST_TEST(bus.metrics().dropped == 1U);
 
    const auto critical = bus.critical_events();
    BOOST_REQUIRE_EQUAL(critical.size(), 2);
@@ -1224,9 +1235,8 @@ BOOST_AUTO_TEST_CASE(plugin_registry_orders_dependencies_and_rejects_bad_graphs)
 BOOST_AUTO_TEST_CASE(application_runtime_rolls_back_and_shutdown_is_idempotent) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, events};
    auto log = lifecycle_log{};
 
    auto registry = forge::app::plugin_registry{};
@@ -1235,7 +1245,7 @@ BOOST_AUTO_TEST_CASE(application_runtime_rolls_back_and_shutdown_is_idempotent) 
 
    auto app = forge::app::application_runtime{context, registry.instantiate_enabled({})};
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, app.startup()), forge::app::exceptions::startup_failed);
-   BOOST_CHECK(app.state() == forge::app::application_state::stopped);
+   BOOST_CHECK(app.state() == forge::app::lifecycle_phase::stopped);
    BOOST_REQUIRE_EQUAL(log.entries.size(), 6);
    BOOST_TEST(log.entries[0] == "initialize:a");
    BOOST_TEST(log.entries[1] == "initialize:b");
@@ -1251,9 +1261,8 @@ BOOST_AUTO_TEST_CASE(application_runtime_rolls_back_and_shutdown_is_idempotent) 
 BOOST_AUTO_TEST_CASE(application_runtime_rejects_startup_after_shutdown) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, events};
    auto log = lifecycle_log{};
 
    auto registry = forge::app::plugin_registry{};
@@ -1263,24 +1272,23 @@ BOOST_AUTO_TEST_CASE(application_runtime_rejects_startup_after_shutdown) {
    forge::asio::blocking::run(runtime, app.startup());
    forge::asio::blocking::run(runtime, app.shutdown());
 
-   BOOST_CHECK(app.state() == forge::app::application_state::stopped);
+   BOOST_CHECK(app.state() == forge::app::lifecycle_phase::stopped);
    BOOST_REQUIRE_EQUAL(log.entries.size(), 3);
    BOOST_TEST(log.entries[0] == "initialize:a");
    BOOST_TEST(log.entries[1] == "startup:a");
    BOOST_TEST(log.entries[2] == "shutdown:a");
 
-   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, app.startup()), std::logic_error);
-   BOOST_CHECK(app.state() == forge::app::application_state::stopped);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, app.startup()), forge::app::exceptions::invalid_state);
+   BOOST_CHECK(app.state() == forge::app::lifecycle_phase::stopped);
    BOOST_REQUIRE_EQUAL(log.entries.size(), 3);
 }
 
 BOOST_AUTO_TEST_CASE(application_runtime_records_diagnostics_and_events) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto diagnostics = forge::app::diagnostics_store{};
-   auto context = forge::app::plugin_context{scheduler, signals, events, &diagnostics};
+   auto context = forge::app::plugin_context{scheduler, events, &diagnostics};
    auto log = lifecycle_log{};
 
    auto registry = forge::app::plugin_registry{};
@@ -1292,22 +1300,21 @@ BOOST_AUTO_TEST_CASE(application_runtime_records_diagnostics_and_events) {
    auto snapshot = diagnostics.snapshot(events);
    BOOST_REQUIRE_EQUAL(snapshot.plugins.size(), 1U);
    BOOST_TEST(snapshot.plugins.front().id == "a");
-   BOOST_TEST(static_cast<int>(snapshot.plugins.front().state) == static_cast<int>(forge::app::lifecycle_state::started));
+   BOOST_CHECK(snapshot.plugins.front().lifecycle.phase == forge::app::lifecycle_phase::started);
    BOOST_TEST(snapshot.events.published >= 4U);
    BOOST_TEST(!snapshot.recent_events.empty());
 
    forge::asio::blocking::run(runtime, app.shutdown());
    snapshot = diagnostics.snapshot(events);
-   BOOST_TEST(static_cast<int>(snapshot.plugins.front().state) == static_cast<int>(forge::app::lifecycle_state::stopped));
+   BOOST_CHECK(snapshot.plugins.front().lifecycle.phase == forge::app::lifecycle_phase::stopped);
 }
 
 BOOST_AUTO_TEST_CASE(application_runtime_records_failed_plugin_diagnostics) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto diagnostics = forge::app::diagnostics_store{};
-   auto context = forge::app::plugin_context{scheduler, signals, events, &diagnostics};
+   auto context = forge::app::plugin_context{scheduler, events, &diagnostics};
    auto log = lifecycle_log{};
 
    auto registry = forge::app::plugin_registry{};
@@ -1317,18 +1324,18 @@ BOOST_AUTO_TEST_CASE(application_runtime_records_failed_plugin_diagnostics) {
    BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, app.startup()), forge::app::exceptions::startup_failed);
 
    const auto snapshot = diagnostics.snapshot(events);
-   BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(forge::app::lifecycle_state::failed));
+   BOOST_CHECK(snapshot.lifecycle.phase == forge::app::lifecycle_phase::stopped);
+   BOOST_REQUIRE(snapshot.lifecycle.failure.has_value());
    BOOST_REQUIRE_EQUAL(snapshot.plugins.size(), 1U);
-   BOOST_TEST(static_cast<int>(snapshot.plugins.front().state) == static_cast<int>(forge::app::lifecycle_state::failed));
-   BOOST_TEST(snapshot.plugins.front().last_error == "startup failed");
+   BOOST_CHECK(snapshot.plugins.front().lifecycle.phase == forge::app::lifecycle_phase::stopped);
+   BOOST_TEST(lifecycle_error(snapshot.plugins.front().lifecycle) == "startup failed");
 }
 
 BOOST_AUTO_TEST_CASE(application_runtime_collects_and_applies_plugin_config_before_initialize) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
-   auto context = forge::app::plugin_context{scheduler, signals, events};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, events};
    auto log = lifecycle_log{};
 
    auto plugins = std::vector<std::unique_ptr<forge::app::plugin>>{};
@@ -1398,8 +1405,8 @@ BOOST_AUTO_TEST_CASE(application_shell_rejects_ingestion_only_fields_before_conf
 
    BOOST_CHECK_EXCEPTION(
       app.configure(document),
-      std::invalid_argument,
-      [](const std::invalid_argument& error) {
+      forge::app::exceptions::config_failed,
+      [](const forge::app::exceptions::config_failed& error) {
          const auto message = std::string_view{error.what()};
          return message.find("http.removed-output") != std::string_view::npos &&
                 message.find("http removed-output was removed") != std::string_view::npos;
@@ -1456,7 +1463,7 @@ BOOST_AUTO_TEST_CASE(application_shell_retries_failed_dependent_shutdown_before_
          return std::string{error.what()} == "dependent shutdown failed";
       });
 
-   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::application_state::started));
+   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::lifecycle_phase::stopping));
    BOOST_CHECK(!app.scheduler().snapshot().stopped);
    const auto first_attempt = std::vector<std::string>{
       "initialize:store",
@@ -1470,13 +1477,14 @@ BOOST_AUTO_TEST_CASE(application_shell_retries_failed_dependent_shutdown_before_
    BOOST_TEST(log.entries == first_attempt, boost::test_tools::per_element());
 
    const auto failed_snapshot = app.diagnostics().snapshot(app.events());
-   BOOST_TEST(static_cast<int>(failed_snapshot.state) == static_cast<int>(forge::app::lifecycle_state::failed));
-   BOOST_TEST(failed_snapshot.last_transition == "shutdown");
-   BOOST_TEST(failed_snapshot.last_error == "dependent shutdown failed");
+   BOOST_CHECK(failed_snapshot.lifecycle.phase == forge::app::lifecycle_phase::stopping);
+   BOOST_REQUIRE(failed_snapshot.lifecycle.failure.has_value());
+   BOOST_CHECK(failed_snapshot.lifecycle.failure->operation == forge::app::lifecycle_operation::shutdown);
+   BOOST_TEST(lifecycle_error(failed_snapshot.lifecycle) == "dependent shutdown failed");
 
    forge::asio::blocking::run(app.runtime(), app.shutdown());
 
-   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::application_state::stopped));
+   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::lifecycle_phase::stopped));
    BOOST_CHECK(app.scheduler().snapshot().stopped);
    const auto expected = std::vector<std::string>{
       "initialize:store",
@@ -1497,7 +1505,7 @@ BOOST_AUTO_TEST_CASE(application_shell_rolls_back_started_plugins_on_startup_fai
    auto app = shell_failure_application{log};
 
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), forge::app::exceptions::startup_failed);
-   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::application_state::stopped));
+   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::lifecycle_phase::stopped));
 
    const auto expected = std::vector<std::string>{
       "initialize:store",
@@ -1510,8 +1518,8 @@ BOOST_AUTO_TEST_CASE(application_shell_rolls_back_started_plugins_on_startup_fai
    BOOST_TEST(log.entries == expected, boost::test_tools::per_element());
 
    const auto snapshot = app.diagnostics().snapshot(app.events());
-   BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(forge::app::lifecycle_state::failed));
-   BOOST_TEST(snapshot.last_error == "startup failed");
+   BOOST_CHECK(snapshot.lifecycle.phase == forge::app::lifecycle_phase::stopped);
+   BOOST_TEST(lifecycle_error(snapshot.lifecycle) == "startup failed");
 }
 
 BOOST_AUTO_TEST_CASE(application_shell_keeps_scheduler_available_until_shutdown_finishes) {
@@ -1555,7 +1563,7 @@ BOOST_AUTO_TEST_CASE(application_shell_configures_on_its_single_worker_without_n
       bool rejected = false;
       try {
          co_await app->async_configure({});
-      } catch (const std::logic_error&) {
+      } catch (const forge::app::exceptions::invalid_state&) {
          rejected = true;
       }
       BOOST_CHECK(rejected);
@@ -1592,8 +1600,20 @@ BOOST_AUTO_TEST_CASE(application_shell_stops_compute_before_waiting_for_schedule
    }};
    forge::asio::blocking::run(app.runtime(), app.startup());
 
-   auto compute_started = std::atomic_bool{false};
-   auto delayed_ran = std::atomic_bool{false};
+   auto gate_mutex = std::mutex{};
+   auto gate_ready = std::condition_variable{};
+   auto compute_started = false;
+   auto compute_stop_seen = false;
+   auto release_compute = false;
+   auto probe_ran = std::atomic_bool{false};
+   const auto release_work = [&] {
+      {
+         const auto lock = std::scoped_lock{gate_mutex};
+         release_compute = true;
+      }
+      gate_ready.notify_all();
+   };
+   auto release = boost::scope::scope_exit{release_work};
    auto scheduled = app.scheduler().submit(forge::asio::task::awaitable{
       .priority = forge::asio::task::priority{1},
       .name = "scheduled-compute",
@@ -1602,45 +1622,63 @@ BOOST_AUTO_TEST_CASE(application_shell_stops_compute_before_waiting_for_schedule
             co_await app.compute().execute(
                {.name = "cooperative-shutdown"},
                [&](forge::asio::compute::context& context) {
-                  compute_started.store(true, std::memory_order_release);
-                  while (!context.stop_requested()) {
-                     std::this_thread::sleep_for(std::chrono::milliseconds{1});
-                  }
-                  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                  auto stop = std::stop_callback{context.stop_token(), [&] {
+                     {
+                        const auto lock = std::scoped_lock{gate_mutex};
+                        compute_stop_seen = true;
+                     }
+                     gate_ready.notify_all();
+                  }};
+                  auto lock = std::unique_lock{gate_mutex};
+                  compute_started = true;
+                  gate_ready.notify_all();
+                  // Only the test releases this gate; teardown guards release
+                  // it on failure, so no expiry can race the drain-phase probe.
+                  gate_ready.wait(lock, [&] { return release_compute; });
                });
          } catch (const forge::asio::exceptions::canceled&) {
          }
 
+         // Shutdown must let the sole runtime worker run this continuation.
          auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
          timer.expires_after(std::chrono::milliseconds{10});
          co_await timer.async_wait(boost::asio::use_awaitable);
       },
    });
-   auto delayed = app.scheduler().submit_after(
-      forge::asio::task::task{
-         .priority = forge::asio::task::priority{1},
-         .name = "must-not-start-during-compute-drain",
-         .work = [&] { delayed_ran.store(true, std::memory_order_release); },
-      },
-      std::chrono::milliseconds{10});
-
-   forge::asio::blocking::run(app.runtime(), [&]() -> boost::asio::awaitable<void> {
-      auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
-      for (auto attempt = 0;
-           attempt < 500 && !compute_started.load(std::memory_order_acquire);
-           ++attempt) {
-         timer.expires_after(std::chrono::milliseconds{1});
-         co_await timer.async_wait(boost::asio::use_awaitable);
-      }
-      co_return;
-   }());
-   BOOST_REQUIRE(compute_started.load(std::memory_order_acquire));
+   auto started = false;
+   {
+      auto lock = std::unique_lock{gate_mutex};
+      started = gate_ready.wait_for(lock, std::chrono::seconds{5}, [&] { return compute_started; });
+   }
+   if (!started) {
+      release_work();
+   }
+   BOOST_REQUIRE(started);
 
    auto shutdown = std::async(std::launch::async, [&] {
       forge::asio::blocking::run(app.runtime(), app.shutdown());
    });
+   // Release before std::future's destructor joins its async thread on unwind.
+   auto finish_compute = boost::scope::scope_exit{release_work};
+   auto stopping_compute = false;
+   {
+      auto lock = std::unique_lock{gate_mutex};
+      stopping_compute = gate_ready.wait_for(lock, std::chrono::seconds{5}, [&] { return compute_stop_seen; });
+   }
+   // Compute cannot finish until release_work(). Thus these checks observe the
+   // drain phase even if the test thread is descheduled for an arbitrary time.
+   BOOST_CHECK(stopping_compute);
+   BOOST_CHECK(app.scheduler().snapshot().stopped);
+   auto probe = app.scheduler().submit(forge::asio::task::task{
+      .priority = forge::asio::task::priority{1},
+      .name = "must-not-start-during-compute-drain",
+      .work = [&] { probe_ran.store(true, std::memory_order_release); },
+   });
+   BOOST_CHECK(!probe.accepted());
+   release_work();
+
    const auto completed_without_fallback =
-      shutdown.wait_for(std::chrono::milliseconds{250}) == std::future_status::ready;
+      shutdown.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
    if (!completed_without_fallback) {
       // Keep the regression finite on broken implementations: a second caller
       // can run the continuation that the sole runtime worker is blocking.
@@ -1657,9 +1695,8 @@ BOOST_AUTO_TEST_CASE(application_shell_stops_compute_before_waiting_for_schedule
 
    BOOST_CHECK(completed_without_fallback);
    BOOST_CHECK(app.scheduler().snapshot().stopped);
-   BOOST_CHECK(!delayed_ran.load(std::memory_order_acquire));
-   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), delayed.wait()),
-                     forge::asio::exceptions::canceled);
+   BOOST_CHECK(!probe_ran.load(std::memory_order_acquire));
+   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), probe.wait()), forge::asio::exceptions::rejected);
    forge::asio::blocking::run(app.runtime(), scheduled.wait());
 }
 
@@ -1668,11 +1705,12 @@ BOOST_AUTO_TEST_CASE(application_shell_initialize_failure_transitions_to_stopped
    auto app = shell_initialize_failure_application{log};
 
    BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.initialize()), forge::app::exceptions::initialize_failed);
-   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::application_state::stopped));
-   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), std::logic_error);
+   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::lifecycle_phase::stopped));
+   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), forge::app::exceptions::invalid_state);
 
    const auto expected = std::vector<std::string>{
       "initialize:init-fail",
+      "shutdown:init-fail",
    };
    BOOST_TEST(log.entries == expected, boost::test_tools::per_element());
 }
@@ -1687,8 +1725,8 @@ BOOST_AUTO_TEST_CASE(application_shell_after_initialize_failure_cleans_up_and_pr
       [](const auto& error) {
          return error.message() == "after initialize failed";
       });
-   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::application_state::stopped));
-   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), std::logic_error);
+   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::lifecycle_phase::stopped));
+   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), app.startup()), forge::app::exceptions::invalid_state);
 
    const auto expected = std::vector<std::string>{
       "initialize:after-init-fail",
@@ -1699,13 +1737,15 @@ BOOST_AUTO_TEST_CASE(application_shell_after_initialize_failure_cleans_up_and_pr
    BOOST_TEST(log.entries == expected, boost::test_tools::per_element());
 
    const auto snapshot = app.diagnostics().snapshot(app.events());
-   BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(forge::app::lifecycle_state::failed));
+   BOOST_CHECK(snapshot.lifecycle.phase == forge::app::lifecycle_phase::stopped);
+   BOOST_REQUIRE(snapshot.lifecycle.failure.has_value());
    BOOST_REQUIRE_EQUAL(snapshot.plugins.size(), 1U);
    BOOST_TEST(snapshot.plugins.front().id == "after-init-fail");
-   BOOST_TEST(static_cast<int>(snapshot.plugins.front().state) ==
-              static_cast<int>(forge::app::lifecycle_state::failed));
-   BOOST_TEST(snapshot.plugins.front().last_transition == "after_initialize");
-   BOOST_TEST(snapshot.plugins.front().last_error == "after initialize failed");
+   BOOST_CHECK(snapshot.plugins.front().lifecycle.phase == forge::app::lifecycle_phase::stopped);
+   BOOST_REQUIRE(snapshot.plugins.front().lifecycle.failure.has_value());
+   BOOST_CHECK(snapshot.plugins.front().lifecycle.failure->operation ==
+               forge::app::lifecycle_operation::after_initialize);
+   BOOST_TEST(lifecycle_error(snapshot.plugins.front().lifecycle) == "after initialize failed");
 }
 
 BOOST_AUTO_TEST_CASE(application_shell_after_initialize_is_idempotent) {
@@ -1854,7 +1894,7 @@ BOOST_AUTO_TEST_CASE(run_application_executes_lifecycle_and_custom_stop_waiter) 
 
    const auto exit_code = forge::app::run_application(app, forge::config::core::document{}, options);
    BOOST_TEST(exit_code == 0);
-   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::application_state::stopped));
+   BOOST_TEST(static_cast<int>(app.state()) == static_cast<int>(forge::app::lifecycle_phase::stopped));
 
    const auto expected = std::vector<std::string>{
       "initialize:store",
@@ -2560,8 +2600,7 @@ BOOST_AUTO_TEST_CASE(application_service_registry_reports_exact_typed_errors) {
                                          forge::asio::runtime&,
                                          forge::asio::task::scheduler&,
                                          forge::api::core::registry&,
-                                         forge::app::signal_bus&,
-                                         forge::app::event_bus&,
+                                         forge::app::event_journal&,
                                          forge::app::diagnostics_store&>);
 
    auto apis = forge::api::core::registry{};
@@ -2691,10 +2730,10 @@ BOOST_AUTO_TEST_CASE(application_connect_failure_rolls_back_before_destroying_se
          return error.message() == "connect failed";
       });
 
-   BOOST_TEST(static_cast<int>(app->state()) == static_cast<int>(forge::app::application_state::stopped));
+   BOOST_TEST(static_cast<int>(app->state()) == static_cast<int>(forge::app::lifecycle_phase::stopped));
    BOOST_CHECK_THROW(static_cast<void>(app->services().get<connected_service>()),
                      forge::app::exceptions::service_missing);
-   BOOST_CHECK_THROW(forge::asio::blocking::run(app->runtime(), app->startup()), std::logic_error);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(app->runtime(), app->startup()), forge::app::exceptions::invalid_state);
 
    const auto expected = std::vector<std::string>{
       "plugin.initialize",

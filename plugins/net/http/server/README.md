@@ -1,5 +1,21 @@
 # HTTP Server Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Startup publishes the server/TLS provider together through the shared generation
+guard; a rejected late server is asynchronously stopped. Contribution windows
+remain backend-owned. Secrets-triggered reentrant shutdown rejects TLS reload
+before replacement. Reload prepares a complete context outside locks, then
+checks generation and exchanges the prepared snapshot atomically under shared
+admission. Stop during preparation prevents replacement. Retired snapshots and
+user captures stay outside lifecycle/plugin locks. Failed server cleanup retains
+the server and its dependencies for an explicit shutdown retry.
+
 `forge::plugins::net::http::server` owns one configured `forge_net_http` server and exposes a
 local-only API for application plugins to publish typed HTTP APIs and middleware
 before startup. It composes the server's TLS identity from the local Crypto
@@ -246,7 +262,8 @@ class object_http_plugin final : public forge::app::plugin {
       return "1.0.0";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+ protected:
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<forge::plugins::net::http::server::api>(
          {.id = {"forge.plugins.net.http.server"}, .major = 2});
 

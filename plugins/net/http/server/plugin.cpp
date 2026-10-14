@@ -172,7 +172,7 @@ namespace http = forge::net::http;
 
 } // namespace
 
-plugin::plugin() : impl_{std::make_shared<impl>()} {}
+plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
 
 plugin::~plugin() = default;
 
@@ -188,19 +188,20 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.net.http.server");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    auto settings = decode_config(view);
    const auto lock = std::scoped_lock{impl_->mutex};
    impl_->settings = std::move(settings);
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
+   const auto generation = impl_->lifecycle.snapshot().generation;
    auto requires_tls_secrets = false;
    {
       const auto lock = std::scoped_lock{impl_->mutex};
@@ -219,30 +220,29 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
       }
    }
 
-   {
+   if (!impl_->lifecycle.try_admit(generation, [&] {
       const auto lock = std::scoped_lock{impl_->mutex};
       impl_->runtime = &context.scheduler().runtime_context();
       impl_->file_read_executor = context.has_compute() ? context.compute() : forge::asio::compute::executor{};
       impl_->apis = &context.apis().registry_ref();
       impl_->secrets = std::move(secrets);
-      impl_->stopping = false;
-      ++impl_->lifecycle_generation;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP initialization was stopped");
    }
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    auto runtime = static_cast<forge::asio::runtime*>(nullptr);
    auto settings = config{};
-   auto startup_generation = std::uint64_t{};
+   const auto startup_generation = impl_->lifecycle.snapshot().generation;
    {
       const auto lock = std::scoped_lock{impl_->mutex};
-      if (impl_->runtime == nullptr || impl_->apis == nullptr || impl_->stopping) {
+      if (impl_->runtime == nullptr || impl_->apis == nullptr) {
          FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP server plugin is not initialized");
       }
       runtime = impl_->runtime;
       settings = impl_->settings;
-      startup_generation = impl_->lifecycle_generation;
    }
    auto snapshot = impl_->close_publication();
    auto router = forge::net::http::router{};
@@ -271,48 +271,44 @@ boost::asio::awaitable<void> plugin::startup() {
       } catch (...) {
          FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP TLS material could not be loaded or validated");
       }
-      {
-         const auto lock = std::scoped_lock{impl_->mutex};
-         if (impl_->stopping || impl_->lifecycle_generation != startup_generation) {
-            FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP server startup was superseded by shutdown");
-         }
-         impl_->tls_context_provider = tls_context_provider;
-      }
-      server_config.tls_context_provider = std::move(tls_context_provider);
+      server_config.tls_context_provider = tls_context_provider;
    }
    auto server = std::make_unique<forge::net::http::server>(*runtime, std::move(server_config), std::move(router));
    co_await server->async_start();
-   auto accept_server = false;
-   {
+   const auto accept_server = impl_->lifecycle.try_admit(startup_generation, [&] {
       const auto lock = std::scoped_lock{impl_->mutex};
-      accept_server = !impl_->stopping && impl_->lifecycle_generation == startup_generation;
-      if (accept_server) {
-         impl_->server = std::move(server);
-      }
-   }
+      impl_->server = std::move(server);
+      impl_->tls_context_provider = std::move(tls_context_provider);
+   });
    if (!accept_server) {
       co_await server->async_stop();
       FORGE_THROW_EXCEPTION(exceptions::startup_failed, "HTTP server startup was superseded by shutdown");
    }
 }
 
-void plugin::request_stop() noexcept {
+void plugin::on_request_stop() noexcept {
    auto lock = std::scoped_lock{impl_->mutex};
-   impl_->stopping = true;
-   ++impl_->lifecycle_generation;
+   impl_->publication_closed = true;
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
-   auto server = std::unique_ptr<forge::net::http::server>{};
+boost::asio::awaitable<void> plugin::on_shutdown() {
+   auto* server = static_cast<forge::net::http::server*>(nullptr);
    {
       auto lock = std::scoped_lock{impl_->mutex};
-      impl_->stopping = true;
-      ++impl_->lifecycle_generation;
-      server = std::move(impl_->server);
+      impl_->publication_closed = true;
+      server = impl_->server.get();
    }
    if (server) {
       co_await server->async_stop();
    }
+   // Hooks are serialized by the common lifecycle. Retain the owner across a
+   // failed stop; only a successful attempt can retire it outside the mutex.
+   auto retired = std::unique_ptr<forge::net::http::server>{};
+   {
+      const auto lock = std::scoped_lock{impl_->mutex};
+      retired = std::move(impl_->server);
+   }
+   retired.reset();
    impl_->reset_runtime();
 }
 

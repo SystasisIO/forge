@@ -21,6 +21,7 @@ import forge.config.core.document;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.migration;
+import forge.app.application_environment;
 import forge.app.application_shell;
 export import forge.app.connect_context;
 import forge.app.plugin_registry;
@@ -39,6 +40,7 @@ class application_builder {
    application_builder& operator=(const application_builder&) = delete;
 
    application_builder& name(std::string value);
+   application_builder& environment(application_environment value);
    application_builder& runtime(forge::asio::runtime_options value);
    application_builder& scheduler(forge::asio::task::scheduler::options value);
    application_builder& compute(forge::asio::compute::pool::options value);

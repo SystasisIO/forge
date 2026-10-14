@@ -31,7 +31,8 @@ import forge.plugins.net.p2p.node.protocol_registration;
 
 namespace forge::plugins::net::p2p::node::detail {
 
-protocol_registry::protocol_registry(std::size_t max_slots) : max_slots_{max_slots} {
+protocol_registry::protocol_registry(std::size_t max_slots, forge::app::plugin_lifecycle lifecycle)
+    : lifecycle_{std::move(lifecycle)}, max_slots_{max_slots} {
    configure({}, max_slots);
 }
 protocol_registry::~protocol_registry() { request_close(); }
@@ -102,17 +103,23 @@ void protocol_registry::finish_attach(const std::shared_ptr<protocol_slot>& slot
    auto failure = std::exception_ptr{};
    try { if (operations) { slot->attach(operations); } } catch (...) { failure = std::current_exception(); }
    auto retired = std::shared_ptr<protocol_slot::generation>{};
+   auto pending = std::shared_ptr<protocol_slot::generation>{};
    auto closing = false;
    {
       const auto lock = std::scoped_lock{mutex_};
       const auto row = find(slot->protocol());
       if (row != slots_.end() && row->slot == slot) {
          row->attaching = false;
-         if (failure) { row->closing = true; retired = slot->replace({}); }
+         if (failure) {
+            row->closing = true;
+            retired = slot->replace({});
+            pending = std::move(row->pending);
+         }
          closing = row->closing;
       }
    }
    if (retired && retired->api) { request_close_api_publication_generation(retired->api); }
+   if (pending && pending->api) { request_close_api_publication_generation(pending->api); }
    if (closing) {
       try { detach(slot); } catch (...) { if (!failure) { failure = std::current_exception(); } }
    }
@@ -142,6 +149,8 @@ void protocol_registry::attach(std::shared_ptr<const protocol_operations> operat
 
 protocol_registration protocol_registry::register_raw(forge::net::p2p::protocol_id protocol,
     forge::net::p2p::node::protocol_handler handler, const protocol_registration* previous) {
+   const auto state = lifecycle_.snapshot();
+   if (!state.admission_open) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed"); }
    if (!handler) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "empty raw protocol handler"); }
    if (!previous) { retry_closing(protocol); }
    auto generation = std::make_shared<protocol_slot::generation>();
@@ -156,7 +165,7 @@ protocol_registration protocol_registry::register_raw(forge::net::p2p::protocol_
       require_available(protocol);
       auto row = find(protocol);
       if (previous) {
-         if (row == slots_.end() || row->closing || row->attaching || !row->slot->current() ||
+         if (row == slots_.end() || row->closing || row->attaching || row->pending || !row->slot->current() ||
              row->slot->current()->api || !protocol_registration_access::matches(
                  *previous, shared_from_this(), row->slot->current())) {
             FORGE_THROW_EXCEPTION(exceptions::route_conflict, "raw replacement requires its active owner");
@@ -165,7 +174,7 @@ protocol_registration protocol_registry::register_raw(forge::net::p2p::protocol_
       } else {
          if (row != slots_.end()) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol is already claimed"); }
          if (slots_.size() >= max_slots_) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol claim limit reached"); }
-         slot = std::make_shared<protocol_slot>(std::move(protocol));
+         slot = std::make_shared<protocol_slot>(std::move(protocol), lifecycle_);
          fresh = true;
       }
       const auto weak = weak_from_this();
@@ -183,14 +192,37 @@ protocol_registration protocol_registry::register_raw(forge::net::p2p::protocol_
              const auto generation = weak_generation.lock();
              return slot && generation && slot->current() == generation;
           });
-      if (fresh) { slots_.push_back({.slot = slot, .attaching = true}); operations = operations_; }
-      retired = slot->replace(generation);
+      if (fresh) {
+         slots_.push_back({.slot = slot, .pending = generation, .attaching = true});
+         operations = operations_;
+      } else { find(slot->protocol())->pending = generation; }
    }
-   if (fresh) { finish_attach(slot, operations); }
+   try {
+      if (fresh) { finish_attach(slot, operations); }
+      if (!lifecycle_.try_admit(state.generation, [&] {
+         const auto lock = std::scoped_lock{mutex_};
+         require_available(slot->protocol());
+         const auto row = find(slot->protocol());
+         if (row == slots_.end() || row->slot != slot || row->closing || row->attaching || row->pending != generation) {
+            FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol preparation was retired");
+         }
+         // Only the live pointer exchange is guarded. Both generations remain
+         // pinned until native/user retirement can run outside these locks.
+         retired = slot->replace(generation);
+         row->pending.reset();
+      })) {
+         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol admission is closed");
+      }
+   } catch (...) {
+      result.close();
+      throw;
+   }
    return result;
 }
 
 forge::api::p2p::publication protocol_registry::publish(forge::api::p2p::api_binding binding) {
+   const auto state = lifecycle_.snapshot();
+   if (!state.admission_open) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "API publication admission is closed"); }
    const auto protocol = binding.protocol();
    retry_closing(protocol);
    auto api = make_api_publication_generation(std::move(binding));
@@ -207,13 +239,13 @@ forge::api::p2p::publication protocol_registry::publish(forge::api::p2p::api_bin
       if (!executor_) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "API owner executor is unavailable"); }
       const auto row = find(protocol);
       if (row != slots_.end()) {
-         if (row->closing || row->attaching || !row->slot->current() || !row->slot->current()->api) {
+         if (row->closing || row->attaching || row->pending || !row->slot->current() || !row->slot->current()->api) {
             FORGE_THROW_EXCEPTION(exceptions::route_conflict, "API protocol is already claimed or closing");
          }
          slot = row->slot;
       } else {
          if (slots_.size() >= max_slots_) { FORGE_THROW_EXCEPTION(exceptions::route_conflict, "protocol claim limit reached"); }
-         slot = std::make_shared<protocol_slot>(protocol);
+         slot = std::make_shared<protocol_slot>(protocol, lifecycle_);
          fresh = true;
       }
       const auto weak = weak_from_this();
@@ -238,11 +270,30 @@ forge::api::p2p::publication protocol_registry::publish(forge::api::p2p::api_bin
          if (const auto owner = weak.lock()) { owner->retire_generation(retired); }
       });
       generations_.push_back({.identity = api.get(), .value = api});
-      if (fresh) { slots_.push_back({.slot = slot, .attaching = true}); operations = operations_; }
-      retired = slot->replace(generation);
+      if (fresh) {
+         slots_.push_back({.slot = slot, .pending = generation, .attaching = true});
+         operations = operations_;
+      } else { row->pending = generation; }
+   }
+   try {
+      if (fresh) { finish_attach(slot, operations); }
+      if (!lifecycle_.try_admit(state.generation, [&] {
+         const auto lock = std::scoped_lock{mutex_};
+         require_available(slot->protocol());
+         const auto row = find(slot->protocol());
+         if (row == slots_.end() || row->slot != slot || row->closing || row->attaching || row->pending != generation) {
+            FORGE_THROW_EXCEPTION(exceptions::route_conflict, "API publication preparation was retired");
+         }
+         retired = slot->replace(generation);
+         row->pending.reset();
+      })) {
+         FORGE_THROW_EXCEPTION(exceptions::route_conflict, "API publication admission is closed");
+      }
+   } catch (...) {
+      result.close();
+      throw;
    }
    if (retired && retired->api) { request_close_api_publication_generation(retired->api); }
-   if (fresh) { finish_attach(slot, operations); }
    return result;
 }
 
@@ -254,6 +305,10 @@ void protocol_registry::close_generation(std::shared_ptr<protocol_slot> slot,
       const auto lock = std::scoped_lock{mutex_};
       const auto row = find(slot->protocol());
       if (row != slots_.end() && row->slot == slot) {
+         if (generation && row->pending == generation) {
+            row->pending.reset(); // generation pins its captures through this lock.
+            if (!slot->current()) { row->closing = true; }
+         }
          if (generation && slot->current() == generation) {
             retired = slot->replace({});
             row->closing = true;
@@ -288,6 +343,8 @@ void protocol_registry::request_close() noexcept {
    while (!closing.empty()) {
       auto row = closing.begin();
       auto retired = row->slot->replace({});
+      auto pending = std::move(row->pending);
+      if (pending && pending->api) { request_close_api_publication_generation(pending->api); }
       if (retired && retired->api) { request_close_api_publication_generation(retired->api); }
       try { row->slot->detach(); closing.erase(row); }
       catch (...) {
@@ -336,8 +393,8 @@ void protocol_registry::prune_generations_locked() noexcept {
    generations_.remove_if([](const auto& row) { return row.value.expired(); });
 }
 
-std::shared_ptr<protocol_registry> make_protocol_registry(std::size_t max_slots) {
-   return std::make_shared<protocol_registry>(max_slots);
+std::shared_ptr<protocol_registry> make_protocol_registry(std::size_t max_slots, forge::app::plugin_lifecycle lifecycle) {
+   return std::make_shared<protocol_registry>(max_slots, std::move(lifecycle));
 }
 forge::api::p2p::publication publish_api_publication(const std::shared_ptr<protocol_registry>& registry,
     forge::api::p2p::api_binding binding) { return registry->publish(std::move(binding)); }

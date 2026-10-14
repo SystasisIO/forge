@@ -44,7 +44,7 @@ import forge.plugins.log.otlp.types;
 
 namespace forge::plugins::log::otlp {
 
-plugin::plugin() : impl_{std::make_shared<impl>()} {}
+plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
 
 plugin::~plugin() = default;
 
@@ -60,18 +60,24 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.log.otlp");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
-   impl_->settings = decode_config(view);
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
+   auto settings = decode_config(view);
+   const auto generation = impl_->lifecycle.snapshot().generation;
+   if (!impl_->lifecycle.try_admit(generation, [&] { std::swap(impl_->settings, settings); })) {
+      FORGE_THROW_EXCEPTION(exceptions::startup_failed, "OTLP configuration was stopped");
+   }
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
-   impl_->runtime = &context.scheduler().runtime_context();
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
+   const auto generation = impl_->lifecycle.snapshot().generation;
+   auto* runtime = &context.scheduler().runtime_context();
+   auto resolve_headers = decltype(impl_->resolve_headers){};
    if (impl_->settings.export_enabled) {
       auto secrets = std::shared_ptr<forge::plugins::crypto::secrets::api>{};
       const auto needs_secrets =
@@ -83,7 +89,7 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
                               {.id = {"forge.plugins.crypto.secrets"}, .major = 1, .min_revision = 0})
                           .shared();
          }
-         impl_->resolve_headers = [secrets = std::move(secrets)](const std::vector<header>& headers)
+         resolve_headers = [secrets = std::move(secrets)](const std::vector<header>& headers)
              -> boost::asio::awaitable<std::vector<std::pair<std::string, forge::crypto::core::secret_bytes>>> {
             auto resolved = std::vector<std::pair<std::string, forge::crypto::core::secret_bytes>>{};
             resolved.reserve(headers.size());
@@ -115,14 +121,16 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
          FORGE_THROW_EXCEPTION(exceptions::startup_failed, "OTLP secret headers require the local Crypto Secrets API");
       }
    }
-   impl_->reset_admission();
+   if (!impl_->lifecycle.try_admit(generation, [&] {
+      impl_->runtime = runtime;
+      impl_->resolve_headers.swap(resolve_headers);
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::startup_failed, "OTLP initialization was stopped");
+   }
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::after_initialize() {
-   if (impl_->started) {
-      co_return;
-   }
+boost::asio::awaitable<void> plugin::on_after_initialize() {
    const auto configure_route = [](const logger_route& route) {
       auto logger = forge::logger::get(route.name);
       logger.set_name(route.name);
@@ -134,7 +142,6 @@ boost::asio::awaitable<void> plugin::after_initialize() {
       configure_route(route);
    }
    if (!impl_->settings.export_enabled) {
-      impl_->started = true;
       co_return;
    }
    if (impl_->runtime == nullptr) {
@@ -147,7 +154,6 @@ boost::asio::awaitable<void> plugin::after_initialize() {
          impl_->detach_sink();
          impl_->sink.reset();
          impl_->clear_exporter();
-         impl_->started = false;
       }};
       auto options = make_exporter_options(impl_->settings);
       if (impl_->resolve_headers) {
@@ -206,7 +212,6 @@ boost::asio::awaitable<void> plugin::after_initialize() {
          }
       }
       impl_->publish_exporter(std::move(exporter));
-      impl_->started = true;
       rollback.set_active(false);
    } catch (const exceptions::startup_failed&) {
       throw;
@@ -216,16 +221,17 @@ boost::asio::awaitable<void> plugin::after_initialize() {
    }
 }
 
-boost::asio::awaitable<void> plugin::startup() {
-   // Direct plugin consumers may not use application_runtime's phase barrier.
-   co_await after_initialize();
+boost::asio::awaitable<void> plugin::on_startup() {
+   // Exporter setup belongs to the framework's after_initialize barrier.
+   co_return;
 }
 
-void plugin::request_stop() noexcept {
-   // Producers and management callers remain live until reverse shutdown reaches OTLP.
+void plugin::on_request_stop() noexcept {
+   // Common lifecycle closes management admission. Logger sinks remain attached
+   // until reverse shutdown reaches OTLP so dependent cleanup can still log.
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
+boost::asio::awaitable<void> plugin::on_shutdown() {
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    auto state = impl_;
    auto exporter = state->take_exporter();
@@ -240,7 +246,6 @@ boost::asio::awaitable<void> plugin::shutdown() {
    }
    state->detach_sink();
    state->sink.reset();
-   state->started = false;
    state->runtime = nullptr;
    state->resolve_headers = {};
    co_await state->wait_for_calls();

@@ -12,6 +12,8 @@
 
 namespace forge::plugins::net::http::server {
 struct plugin::impl {
+   explicit impl(forge::app::plugin_lifecycle lifecycle);
+   const forge::app::plugin_lifecycle lifecycle;
    mutable std::mutex mutex;
    config settings;
    forge::asio::runtime* runtime = nullptr;
@@ -24,9 +26,7 @@ struct plugin::impl {
    std::unique_ptr<forge::net::http::server> server;
    std::shared_ptr<forge::plugins::crypto::secrets::api> secrets;
    std::shared_ptr<forge::net::tls::context_provider> tls_context_provider;
-   std::uint64_t lifecycle_generation = 0;
    bool publication_closed = false;
-   bool stopping = false;
 
    void add(pending_binding value);
    void add(middleware_descriptor value);

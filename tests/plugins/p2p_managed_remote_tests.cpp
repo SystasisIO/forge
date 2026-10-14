@@ -109,15 +109,15 @@ class dependency_plugin : public forge::app::plugin {
       return "test";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -172,7 +172,7 @@ class secrets_plugin final : public dependency_plugin {
    explicit secrets_plugin(std::shared_ptr<const forge::tests::p2p::identity_fixture> identity)
        : dependency_plugin{"forge.plugins.crypto.secrets"}, identity_{std::move(identity)} {}
 
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override {
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override {
       provider.install<crypto_secrets::api>(std::make_shared<secrets_api>(identity_));
       co_return;
    }
@@ -207,7 +207,7 @@ class publisher_plugin final : public forge::app::plugin {
       return "test";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto resolver = context.apis().get<forge::plugins::net::p2p::resolver::api>(
           {.id = {"forge.plugins.net.p2p.resolver"}, .major = 2, .min_revision = 0});
       auto plan = forge::api::core::binding()
@@ -220,11 +220,11 @@ class publisher_plugin final : public forge::app::plugin {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_await publication_.async_close();
       co_return;
    }

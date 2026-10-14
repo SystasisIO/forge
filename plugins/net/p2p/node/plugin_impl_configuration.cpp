@@ -71,8 +71,10 @@ std::shared_ptr<const detail::configuration_snapshot> plugin::impl::configuratio
 }
 
 std::shared_ptr<const detail::configuration_snapshot> plugin::impl::configuration_candidate_base() const {
+   const auto state = lifecycle.snapshot();
    const auto lock = std::scoped_lock{configuration_mutex};
-   if (stop_requested.load(std::memory_order_acquire) || phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+   if (state.stop_requested || startup_configuration || state.phase == forge::app::lifecycle_phase::starting ||
+       state.phase == forge::app::lifecycle_phase::started) {
       FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration is frozen after startup or stop");
    }
    return configuration;
@@ -82,10 +84,10 @@ void plugin::impl::commit_configuration(std::shared_ptr<const detail::configurat
                                          std::shared_ptr<const detail::configuration_snapshot> candidate) {
    candidate->validate_candidate();
    auto reserved = candidate->reserved_protocols();
-   {
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
       const auto lock = std::scoped_lock{configuration_mutex};
-      if (configuration != previous || stop_requested.load(std::memory_order_acquire) ||
-          phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+      if (configuration != previous || startup_configuration) {
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration changed or is frozen");
       }
       if (providers_bound && ((!candidate->peer_store_name.empty() && !stores) ||
@@ -100,6 +102,8 @@ void plugin::impl::commit_configuration(std::shared_ptr<const detail::configurat
       // previous/candidate retain all callback owners until after unlocking.
       detail::configure_protocol_registry(protocols, std::move(reserved), candidate->options.limits.max_protocol_handlers);
       configuration.swap(candidate);
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration admission is closed");
    }
 }
 
@@ -115,24 +119,30 @@ void plugin::impl::commit_diagnostics_configuration(
    candidate->declarative = std::move(value);
    candidate->validate_candidate();
    auto published = std::shared_ptr<const detail::configuration_snapshot>{std::move(candidate)};
-   {
+   const auto state = lifecycle.snapshot();
+   if (state.phase != forge::app::lifecycle_phase::started) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P diagnostics require a started plugin");
+   }
+   if (!lifecycle.try_admit(state.generation, forge::app::lifecycle_phase::started, [&] {
       const auto lock = std::scoped_lock{configuration_mutex};
-      if (configuration != previous || stop_requested.load(std::memory_order_acquire) ||
-          phase.load(std::memory_order_relaxed) != lifecycle_phase::started) {
+      if (configuration != previous) {
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P diagnostics configuration changed or is frozen");
       }
       // Retain the original native options and all typed callback contributions.
       configuration.swap(published);
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P diagnostics admission is closed");
    }
 }
 
 bool plugin::impl::begin_startup(forge::net::p2p::node::options& prepared,
                                 std::shared_ptr<const detail::configuration_snapshot>& frozen) {
    auto previous = std::shared_ptr<const detail::configuration_snapshot>{};
+   const auto state = lifecycle.snapshot();
+   if (state.stop_requested) { return false; }
    {
       const auto lock = std::scoped_lock{configuration_mutex};
-      if (stop_requested.load(std::memory_order_acquire)) { return false; }
-      if (phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+      if (startup_configuration || state.phase != forge::app::lifecycle_phase::starting) {
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P node startup has already begun");
       }
       if (!providers_bound || !runtime) {
@@ -145,15 +155,14 @@ bool plugin::impl::begin_startup(forge::net::p2p::node::options& prepared,
       previous = configuration;
    }
    auto candidate = previous->prepare_options();
-   {
+   if (!lifecycle.try_admit(state.generation, forge::app::lifecycle_phase::starting, [&] {
       const auto lock = std::scoped_lock{configuration_mutex};
-      if (stop_requested.load(std::memory_order_acquire)) { return false; }
-      if (configuration != previous || phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+      if (configuration != previous || startup_configuration) {
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration changed during startup preparation");
       }
-      phase.store(lifecycle_phase::starting, std::memory_order_release);
+      startup_configuration = previous;
       ++setup_operations;
-   }
+   })) { return false; }
    static_assert(std::is_nothrow_move_assignable_v<forge::net::p2p::node::options>);
    prepared = std::move(candidate);
    frozen = std::move(previous);

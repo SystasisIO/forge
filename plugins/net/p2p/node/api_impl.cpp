@@ -85,12 +85,13 @@ plugin::api_impl::publish_api(forge::api::core::binding_plan plan, forge::net::p
 forge::api::p2p::publication
 plugin::api_impl::publish_api(forge::api::core::binding_plan plan, forge::net::p2p::protocol_id protocol,
                               forge::api::transport::options options) {
+   const auto state = impl_->lifecycle.snapshot();
+   if (!state.admission_open) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P API publications are closed");
+   }
    options.max_item_size = std::min(options.max_item_size, options.max_frame_size);
    auto binding =
        forge::api::p2p::api().use(std::move(plan)).protocol_id(protocol).session_options(std::move(options)).build();
-   if (impl_->stop_requested.load(std::memory_order_acquire)) {
-      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P API publications are closed");
-   }
    return detail::publish_api_publication(impl_->protocols, std::move(binding));
 }
 

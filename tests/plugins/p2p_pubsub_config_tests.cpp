@@ -21,6 +21,8 @@ module;
 
 module forge.plugins.net.p2p.node.plugin;
 
+import forge.app.exceptions;
+import forge.app.plugin_lifecycle;
 import forge.asio.runtime;
 import forge.codec.yaml;
 import forge.config.core.component;
@@ -141,6 +143,24 @@ template<class T> T run(forge::asio::runtime& runtime, boost::asio::awaitable<T>
 void configure(forge::asio::runtime& runtime, np::plugin& plugin,
                const forge::config::core::document& document) {
    run(runtime, plugin.configure({document, std::string{section}}));
+}
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto owner = np::plugin{};
+   configure(runtime, owner, document);
+}
+
+void check_repeated_config(forge::asio::runtime& runtime, np::plugin& plugin,
+                           const forge::config::core::document& document) {
+   const auto before = plugin.lifecycle().snapshot();
+   BOOST_CHECK_THROW(configure(runtime, plugin, document), forge::app::exceptions::invalid_state);
+   const auto after = plugin.lifecycle().snapshot();
+   BOOST_CHECK(after.phase == before.phase);
+   BOOST_TEST(after.epoch == before.epoch);
+   BOOST_TEST(after.generation == before.generation);
+   BOOST_TEST(after.completed_operations == before.completed_operations);
+   BOOST_TEST(after.admission_open == before.admission_open);
+   BOOST_TEST(after.failure.has_value() == before.failure.has_value());
 }
 } // namespace
 
@@ -272,21 +292,27 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_real_yaml_strict_mode_wire_fields_and_typ
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto plugin = np::plugin{};
    BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+   check_repeated_config(runtime, plugin, document);
    for (const auto* key : {"wir", "wire.max-rpc", "wire.max-data-size", "wire.max-topics",
                            "preferred", "signature-policy-wrong", "validation.max-attempt"}) {
       auto invalid = document;
       invalid.set(std::string{section} + ".pubsub." + key, std::uint64_t{7});
-      BOOST_TEST_CONTEXT(key) { BOOST_CHECK_THROW(configure(runtime, plugin, invalid), np::exceptions::invalid_config); }
+      BOOST_TEST_CONTEXT(key) {
+         BOOST_CHECK_THROW(configure_fresh(runtime, invalid), np::exceptions::invalid_config);
+         check_repeated_config(runtime, plugin, invalid);
+      }
    }
    for (const auto& field : fields) {
       for (const auto& invalid_value : {value{std::int64_t{-1}}, value{1.5}, value{true}}) {
          auto invalid = document;
          invalid.set(std::string{section} + ".pubsub.wire." + field.name, invalid_value);
-         BOOST_CHECK_THROW(configure(runtime, plugin, invalid), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, invalid), np::exceptions::invalid_config);
+         check_repeated_config(runtime, plugin, invalid);
       }
    }
    document.set(std::string{section} + ".pubsub.preferred-version", "v1-9");
-   BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
+   check_repeated_config(runtime, plugin, document);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_config_first_group_configuration_is_frozen_after_stop) {
@@ -302,10 +328,11 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_first_group_configuration_is_frozen_after
       auto candidate = accepted;
       candidate.set(std::string{section} + ".pubsub." + key, setting);
       candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-      BOOST_TEST_CONTEXT(key) { BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict); }
+      BOOST_TEST_CONTEXT(key) { check_repeated_config(runtime, plugin, candidate); }
    }
+   BOOST_CHECK_THROW(run(runtime, plugin.startup()), forge::app::exceptions::invalid_state);
    run(runtime, plugin.shutdown());
-   BOOST_CHECK_THROW(configure(runtime, plugin, accepted), np::exceptions::route_conflict);
+   check_repeated_config(runtime, plugin, accepted);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_config_validation_extensions_defaults_mapping_and_removal) {
@@ -331,19 +358,18 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_validation_extensions_defaults_mapping_an
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_config_validation_extensions_native_bounds_types_and_overflow) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    for (const auto& field : group_fields) {
       BOOST_TEST_CONTEXT(field.path) {
          auto document = document_with();
          document.set(std::string{section} + ".pubsub." + field.path, field.sample);
-         BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
+         BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
          document.set(std::string{section} + ".pubsub." + field.path, std::uint64_t{0});
          if (std::string_view{field.path} == "idontwant.threshold") {
-            BOOST_CHECK_NO_THROW(configure(runtime, plugin, document));
-         } else { BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config); }
+            BOOST_CHECK_NO_THROW(configure_fresh(runtime, document));
+         } else { BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config); }
          for (const auto& invalid : {value{std::int64_t{-1}}, value{1.5}, value{true}}) {
             document.set(std::string{section} + ".pubsub." + field.path, invalid);
-            BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
          }
          auto settings = np::pubsub_config{};
          field.configured(settings) = (std::numeric_limits<std::uint64_t>::max)();
@@ -357,14 +383,14 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_validation_extensions_native_bounds_types
    for (const auto& field : retry_fields) {
       auto document = document_with();
       document.set(std::string{section} + ".pubsub." + field.path, std::uint64_t{0});
-      BOOST_CHECK_THROW(configure(runtime, plugin, document), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, document), np::exceptions::invalid_config);
       auto settings = np::pubsub_config{};
       settings.validation.*(field.configured) = (std::numeric_limits<std::uint64_t>::max)();
       BOOST_CHECK_THROW(mapped(settings), np::exceptions::invalid_config);
    }
    const auto inconsistent = document_with({{"validation", value::object_type{
        {"retry-initial-delay-ms", std::uint64_t{750}}, {"retry-max-delay-ms", std::uint64_t{749}}}}});
-   BOOST_CHECK_THROW(configure(runtime, plugin, inconsistent), np::exceptions::invalid_config);
+   BOOST_CHECK_THROW(configure_fresh(runtime, inconsistent), np::exceptions::invalid_config);
 }
 
 BOOST_AUTO_TEST_CASE(p2p_pubsub_config_retry_clock_bounds_reject_during_resource_free_preflight) {
@@ -382,7 +408,7 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_retry_clock_bounds_reject_during_resource
       auto boundary = accepted;
       boundary.set(std::string{section} + ".pubsub." + field.path,
                    static_cast<std::uint64_t>(maximum.count()));
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, boundary));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, boundary));
       BOOST_TEST((mapped(decoded(boundary)).limits.*(field.native)).count() == maximum.count());
       if (maximum < std::chrono::milliseconds::max()) {
          for (const auto invalid : {maximum + 1ms, std::chrono::milliseconds::max()}) {
@@ -390,10 +416,11 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_retry_clock_bounds_reject_during_resource
             candidate.set(std::string{section} + ".pubsub." + field.path,
                           static_cast<std::uint64_t>(invalid.count()));
             candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-            BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+            BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
+            check_repeated_config(runtime, plugin, candidate);
          }
       }
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, accepted));
+      check_repeated_config(runtime, plugin, accepted);
    }
    run(runtime, plugin.shutdown());
 }
@@ -422,7 +449,10 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_validation_extensions_real_yaml_and_no_al
                            "heartbeat-interval-ms", "gossip-factor"}) {
       auto invalid = document;
       invalid.set(std::string{section} + ".pubsub." + key, std::uint64_t{7});
-      BOOST_TEST_CONTEXT(key) { BOOST_CHECK_THROW(configure(runtime, plugin, invalid), np::exceptions::invalid_config); }
+      BOOST_TEST_CONTEXT(key) {
+         BOOST_CHECK_THROW(configure_fresh(runtime, invalid), np::exceptions::invalid_config);
+         check_repeated_config(runtime, plugin, invalid);
+      }
    }
 }
 
@@ -436,12 +466,14 @@ BOOST_AUTO_TEST_CASE(p2p_pubsub_config_validation_extensions_frozen_after_stop) 
       auto candidate = accepted;
       candidate.set(std::string{section} + ".pubsub." + field.path, field.sample);
       candidate.set(std::string{section} + ".diagnostics.max-peers", std::uint64_t{2});
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict);
+      check_repeated_config(runtime, plugin, candidate);
    }
    for (const auto& field : retry_fields) {
       auto candidate = accepted;
       candidate.set(std::string{section} + ".pubsub." + field.path, field.sample);
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::route_conflict);
+      check_repeated_config(runtime, plugin, candidate);
    }
+   BOOST_CHECK_THROW(run(runtime, plugin.startup()), forge::app::exceptions::invalid_state);
    run(runtime, plugin.shutdown());
+   check_repeated_config(runtime, plugin, accepted);
 }

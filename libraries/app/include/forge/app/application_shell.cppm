@@ -2,8 +2,11 @@ module;
 
 #include <boost/asio/awaitable.hpp>
 
+#include <cstdint>
+#include <exception>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 
 export module forge.app.application_shell;
@@ -29,16 +32,17 @@ import forge.config.core.document;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.migration;
-import forge.app.application;
+import forge.app.application_environment;
 import forge.app.diagnostics;
 import forge.app.events;
+import forge.app.plugin_lifecycle;
 import forge.app.plugin_registry;
-import forge.app.signals;
 
 export namespace forge::app {
 
 struct application_shell_options {
    std::string name = "forge-app";
+   application_environment environment{};
    forge::asio::runtime_options runtime{};
    forge::asio::task::scheduler::options scheduler{};
    std::optional<forge::asio::compute::pool::options> compute;
@@ -47,11 +51,13 @@ struct application_shell_options {
 class application_context {
  public:
    application_context(forge::asio::runtime& runtime, forge::asio::task::scheduler& scheduler,
-                       forge::api::core::registry& apis, service_view services, signal_bus& signals, event_bus& events,
-                       diagnostics_store& diagnostics, forge::asio::compute::executor compute = {});
+                       forge::api::core::registry& apis, service_view services, event_journal& events,
+                       const diagnostics_store& diagnostics, application_environment environment = {},
+                       forge::asio::compute::executor compute = {});
    application_context(forge::asio::runtime& runtime, forge::asio::task::scheduler& scheduler,
-                       forge::api::core::registry& apis, signal_bus& signals, event_bus& events,
-                       diagnostics_store& diagnostics, forge::asio::compute::executor compute = {});
+                       forge::api::core::registry& apis, event_journal& events,
+                       const diagnostics_store& diagnostics, application_environment environment = {},
+                       forge::asio::compute::executor compute = {});
 
    [[nodiscard]] forge::asio::runtime& runtime() noexcept;
    [[nodiscard]] forge::asio::task::scheduler& scheduler() noexcept;
@@ -62,9 +68,9 @@ class application_context {
    template <typename Service> [[nodiscard]] std::shared_ptr<Service> service() const {
       return services_.get<Service>();
    }
-   [[nodiscard]] signal_bus& signals() noexcept;
-   [[nodiscard]] event_bus& events() noexcept;
-   [[nodiscard]] diagnostics_store& diagnostics() noexcept;
+   [[nodiscard]] const application_environment& environment() const noexcept;
+   [[nodiscard]] event_journal& events() noexcept;
+   [[nodiscard]] const diagnostics_store& diagnostics() const noexcept;
 
  private:
    forge::asio::runtime* runtime_ = nullptr;
@@ -72,9 +78,9 @@ class application_context {
    forge::asio::compute::executor compute_;
    forge::api::core::registry* apis_ = nullptr;
    service_view services_;
-   signal_bus* signals_ = nullptr;
-   event_bus* events_ = nullptr;
-   diagnostics_store* diagnostics_ = nullptr;
+   const application_environment environment_;
+   event_journal* events_ = nullptr;
+   const diagnostics_store* diagnostics_ = nullptr;
 };
 
 class configure_context {
@@ -88,10 +94,12 @@ class configure_context {
    const forge::config::core::document* document_ = nullptr;
 };
 
-class application_shell : public application_base {
+class application_shell {
  public:
    explicit application_shell(application_shell_options options = {});
-   ~application_shell() override;
+   // Complete async shutdown before destruction; destruction only closes
+   // admission and marks the observer's owner as gone.
+   virtual ~application_shell();
 
    application_shell(const application_shell&) = delete;
    application_shell& operator=(const application_shell&) = delete;
@@ -99,22 +107,25 @@ class application_shell : public application_base {
    [[nodiscard]] forge::config::core::component_registry describe_config();
    void configure(const forge::config::core::document& document);
    boost::asio::awaitable<void> async_configure(forge::config::core::document document);
-   boost::asio::awaitable<void> initialize() final;
-   boost::asio::awaitable<void> startup() final;
-   boost::asio::awaitable<void> shutdown() final;
-   void request_stop() noexcept final;
+   boost::asio::awaitable<void> initialize();
+   boost::asio::awaitable<void> startup();
+   // The accepted owner joins cleanup despite cancellation; joiners may cancel
+   // their wait. Caller cancellation state/throw policy and lazy entry are preserved.
+   boost::asio::awaitable<void> shutdown();
+   void request_stop() noexcept;
 
    [[nodiscard]] int run();
-   [[nodiscard]] application_state state() const noexcept;
+   [[nodiscard]] lifecycle_phase state() const noexcept;
+   [[nodiscard]] lifecycle_observer lifecycle() const noexcept;
+   [[nodiscard]] const application_environment& environment() const noexcept;
    [[nodiscard]] forge::asio::runtime& runtime() noexcept;
    [[nodiscard]] forge::asio::task::scheduler& scheduler() noexcept;
    [[nodiscard]] bool has_compute() const noexcept;
    [[nodiscard]] forge::asio::compute::executor compute() const;
    [[nodiscard]] forge::api::core::registry& apis() noexcept;
    [[nodiscard]] service_view services() const noexcept;
-   [[nodiscard]] signal_bus& signals() noexcept;
-   [[nodiscard]] event_bus& events() noexcept;
-   [[nodiscard]] diagnostics_store& diagnostics() noexcept;
+   [[nodiscard]] event_journal& events() noexcept;
+   [[nodiscard]] const diagnostics_store& diagnostics() const noexcept;
 
  protected:
    virtual void on_describe_config(forge::config::core::component_registry& registry) const;
@@ -127,10 +138,13 @@ class application_shell : public application_base {
 
  private:
    void ensure_plugins_registered();
-   void instantiate_plugins(const forge::config::core::document& document);
+   void instantiate_plugins(const forge::config::core::document& document, std::uint64_t generation);
    [[nodiscard]] forge::config::core::component_registry collect_config();
    [[nodiscard]] forge::config::core::document make_effective_config(const forge::config::core::document& document);
-   boost::asio::awaitable<void> apply_effective_config(forge::config::core::document document);
+   boost::asio::awaitable<void> apply_effective_config(forge::config::core::document document,
+                                                     std::uint64_t generation);
+   boost::asio::awaitable<void> rollback(std::exception_ptr failure);
+   boost::asio::awaitable<void> shutdown_owned(std::stop_token stop = {});
 
    struct impl;
    std::unique_ptr<impl> impl_;

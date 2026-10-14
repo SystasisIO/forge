@@ -3,7 +3,8 @@
 namespace forge::plugins::crypto::wallet {
 
 struct plugin::impl {
-   explicit impl(plugin_options options);
+   explicit impl(plugin_options options, forge::app::plugin_lifecycle state);
+   const forge::app::plugin_lifecycle lifecycle;
    void authorize(const forge::api::auth::authenticated_caller& caller, std::string_view wallet,
                   forge::crypto::wallet::operation operation) const;
    bool allowed(const forge::api::auth::authenticated_caller& caller, std::string_view wallet,
@@ -25,8 +26,6 @@ struct plugin::impl {
    forge::asio::task::scheduler* scheduler = nullptr;
    forge::asio::compute::executor compute;
    forge::api::core::handle<forge::plugins::net::http::server::api> http;
-   std::atomic_bool stopping = false;
-   bool started = false;
 };
 
 } // namespace forge::plugins::crypto::wallet

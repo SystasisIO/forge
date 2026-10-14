@@ -41,4 +41,11 @@ using service_already_published = forge::exceptions::coded_exception<code, code:
 using service_publication_closed = forge::exceptions::coded_exception<code, code::service_publication_closed>;
 using service_registry_detached = forge::exceptions::coded_exception<code, code::service_registry_detached>;
 
+// Framework normalization of a successful hook whose admission was closed.
+// Preserve invalid_state code/catch compatibility without late-phase inference.
+class operation_stopped final : public invalid_state {
+ public:
+   using invalid_state::invalid_state;
+};
+
 } // namespace forge::app::exceptions

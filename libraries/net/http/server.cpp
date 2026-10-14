@@ -551,15 +551,9 @@ class server_session final : public server_session_base, public std::enable_shar
 
    awaitable<void> async_cancel() override {
       auto self = this->shared_from_this();
-      static_cast<void>(self);
-      co_await asio::dispatch(executor_, use_awaitable);
-      cancel_on_executor();
-      while (!run_completed_) {
-         auto [error] = co_await run_completion_.async_wait(asio::as_tuple(use_awaitable));
-         if (error && error != asio::error::operation_aborted) {
-            throw boost::system::system_error{error};
-         }
-      }
+      // dispatch() does not migrate the caller's associated executor. The
+      // entire check/register/wake loop must share complete_run()'s strand.
+      co_await asio::co_spawn(executor_, self->async_cancel_on_executor(), use_awaitable);
    }
 
    awaitable<void> run() {
@@ -584,6 +578,16 @@ class server_session final : public server_session_base, public std::enable_shar
    }
 
  private:
+   awaitable<void> async_cancel_on_executor() {
+      cancel_on_executor();
+      while (!run_completed_) {
+         auto [error] = co_await run_completion_.async_wait(asio::as_tuple(use_awaitable));
+         if (error && error != asio::error::operation_aborted) {
+            throw boost::system::system_error{error};
+         }
+      }
+   }
+
    void complete_run() noexcept {
       run_completed_ = true;
       try {
@@ -1291,6 +1295,9 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
    tcp::acceptor acceptor;
    asio::steady_timer accept_loop_completion;
    asio::steady_timer stop_completion;
+   // Only the active attempt owns this slot. Joined callers retain its result
+   // across failure/retry, independently of the server's drain state.
+   std::shared_ptr<std::exception_ptr> stop_attempt;
    asio::steady_timer tls_handshake_completion;
    std::vector<std::weak_ptr<detail::server_session_base>> sessions;
    std::vector<std::weak_ptr<forge::net::tls::beast_tls_stream>> pending_tls_handshakes;
@@ -1414,12 +1421,15 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
       sessions.clear();
    }
 
-   awaitable<void> wait_until_stopped() {
-      while (!stopped.load(std::memory_order_acquire)) {
+   awaitable<void> wait_until_stop_attempt_finished(std::shared_ptr<std::exception_ptr> pending) {
+      while (stop_attempt == pending) {
          auto [error] = co_await stop_completion.async_wait(asio::as_tuple(use_awaitable));
          if (error && error != asio::error::operation_aborted) {
             throw boost::system::system_error{error};
          }
+      }
+      if (*pending) {
+         std::rethrow_exception(*pending);
       }
    }
 
@@ -1444,6 +1454,7 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
       started = false;
       stopping = false;
       stopped.store(true, std::memory_order_release);
+      stop_attempt.reset();
       try {
          stop_completion.cancel();
       } catch (...) {
@@ -1496,7 +1507,7 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
    }
 
    void stop_on_executor() {
-      if (stopped.load(std::memory_order_acquire) || stopping) {
+      if (stopped.load(std::memory_order_acquire) || stop_attempt) {
          return;
       }
       auto self = shared_from_this();
@@ -1525,11 +1536,13 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
       if (stopped.load(std::memory_order_acquire)) {
          co_return;
       }
-      if (stopping) {
-         co_await wait_until_stopped();
+      if (stop_attempt) {
+         co_await wait_until_stop_attempt_finished(stop_attempt);
          co_return;
       }
 
+      auto pending = std::make_shared<std::exception_ptr>();
+      stop_attempt = pending;
       stopping = true;
       auto ignored = boost::system::error_code{};
       acceptor.cancel(ignored);
@@ -1542,7 +1555,14 @@ struct server::impl : std::enable_shared_from_this<server::impl> {
          co_await wait_until_tls_handshakes_complete();
          co_await async_cancel_sessions();
       } catch (...) {
-         complete_stop();
+         // Admission remains closed and sessions remain owned until a retry
+         // actually drains them. Publish failure before releasing this attempt.
+         *pending = std::current_exception();
+         stop_attempt.reset();
+         try {
+            stop_completion.cancel();
+         } catch (...) {
+         }
          throw;
       }
       complete_stop();
@@ -1661,8 +1681,9 @@ boost::asio::awaitable<void> server::async_stop() {
       co_return;
    }
    auto impl = impl_;
-   co_await asio::dispatch(impl->acceptor_executor, use_awaitable);
-   co_await impl->async_stop_on_executor();
+   // Keep all attempt ownership/result publication on the acceptor strand,
+   // including continuations after draining a session's different executor.
+   co_await asio::co_spawn(impl->acceptor_executor, impl->async_stop_on_executor(), use_awaitable);
 }
 
 std::uint16_t server::port() const {

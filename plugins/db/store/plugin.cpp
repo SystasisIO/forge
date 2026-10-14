@@ -31,7 +31,7 @@ import forge.plugins.db.store.exceptions;
 
 namespace forge::plugins::db::store {
 
-plugin::plugin() : impl_{std::make_shared<impl>()} {}
+plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
 plugin::~plugin() = default;
 
 forge::app::plugin_id plugin::id() const {
@@ -46,23 +46,23 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.db.store");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    impl_->configure(detail::decode_config(view));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
    static_cast<void>(context);
    impl_->initialize();
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::after_initialize() {
+boost::asio::awaitable<void> plugin::on_after_initialize() {
    try {
       co_await impl_->open();
    } catch (const exceptions::invalid_config&) {
@@ -80,9 +80,11 @@ boost::asio::awaitable<void> plugin::after_initialize() {
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    try {
       impl_->start();
+   } catch (const exceptions::stopped&) {
+      throw;
    } catch (const exceptions::invalid_config&) {
       throw;
    } catch (const exceptions::duplicate_store&) {
@@ -96,11 +98,11 @@ boost::asio::awaitable<void> plugin::startup() {
    co_return;
 }
 
-void plugin::request_stop() noexcept {
+void plugin::on_request_stop() noexcept {
    impl_->request_stop();
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
+boost::asio::awaitable<void> plugin::on_shutdown() {
    co_await impl_->close();
 }
 

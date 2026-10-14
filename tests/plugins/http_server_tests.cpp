@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <concepts>
@@ -92,6 +93,7 @@ import forge.net.http.router;
 import forge.net.http.stream;
 import forge.net.http.types;
 import forge.net.http.upload;
+import forge.net.tls.context;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.net.http.server.types;
@@ -302,17 +304,17 @@ class http_cache_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
       co_await http->publish<http_cache_api>(http_server::publish_options{
           .base_path = state_->base_path, .require_mutual_tls = state_->require_mutual_tls});
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -332,7 +334,7 @@ class http_asset_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
       co_await http->mount_assets(raw_http::asset_mount{
           .path = state_->mount_path,
@@ -340,11 +342,11 @@ class http_asset_publisher_plugin final : public forge::app::plugin {
       });
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -364,16 +366,16 @@ class http_stream_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
       co_await http->publish<http_stream_api>(http_server::publish_options{.base_path = state_->base_path});
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -393,16 +395,16 @@ class http_empty_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
       co_await http->publish<http_empty_api>(http_server::publish_options{.base_path = state_->base_path});
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -422,7 +424,7 @@ class http_middleware_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
       auto state = state_;
       co_await http->use(http_server::middleware_descriptor{
@@ -470,11 +472,11 @@ class http_middleware_plugin final : public forge::app::plugin {
       });
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -492,17 +494,17 @@ class duplicate_http_cache_publisher_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto http = context.apis().get<http_server::api>(http_server::api::ref());
       co_await http->publish<http_cache_api>(http_server::publish_options{.base_path = "/api"});
       co_await http->publish<http_cache_api>(http_server::publish_options{.base_path = "/api"});
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 };
@@ -517,17 +519,17 @@ class late_http_publish_plugin final : public forge::app::plugin {
       return "1";
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       auto http = context_->apis().get<http_server::api>(http_server::api::ref());
       co_await http->publish<http_cache_api>(http_server::publish_options{.base_path = "/late"});
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       context_ = &context;
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -654,20 +656,20 @@ class http_tls_secrets_plugin final : public forge::app::plugin {
       return "test";
    }
 
-   boost::asio::awaitable<void> provide(forge::api::core::provider& provider) override {
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override {
       provider.install<crypto_secrets::api>(std::make_shared<http_tls_secrets_api>(state_));
       co_return;
    }
 
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context&) override {
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context&) override {
       co_return;
    }
 
-   boost::asio::awaitable<void> startup() override {
+   boost::asio::awaitable<void> on_startup() override {
       co_return;
    }
 
-   boost::asio::awaitable<void> shutdown() override {
+   boost::asio::awaitable<void> on_shutdown() override {
       co_return;
    }
 
@@ -1117,6 +1119,43 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_rejects_malformed_material_an
    BOOST_CHECK(plugin_tls_request_succeeds(port));
 
    forge::asio::blocking::run(app.runtime(), app.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(prepared_tls_rotation_rejected_after_lifecycle_stop) {
+   auto lifecycle = forge::app::plugin_lifecycle{};
+   const auto generation = lifecycle.snapshot().generation;
+   auto options = forge::net::tls::context_options{};
+   options.verification = forge::net::tls::peer_verification::none;
+   options.use_default_verify_paths = false;
+   auto provider = forge::net::tls::context_provider{options};
+   const auto original = provider.snapshot();
+   auto candidate = forge::net::tls::context_snapshot_ptr{};
+   auto retired = forge::net::tls::context_snapshot_ptr{};
+   auto error = std::exception_ptr{};
+   auto accepted = true;
+   auto prepared = std::barrier{2};
+   auto publish = std::barrier{2};
+   auto rotation = std::thread{[&] {
+      try { candidate = forge::net::tls::make_context(options); }
+      catch (...) { error = std::current_exception(); }
+      prepared.arrive_and_wait();
+      publish.arrive_and_wait();
+      if (error) { return; }
+      try {
+         accepted = lifecycle.try_admit(generation, [&] { retired = provider.exchange(std::move(candidate)); });
+      } catch (...) { error = std::current_exception(); }
+   }};
+   prepared.arrive_and_wait();
+   const auto first_stop = lifecycle.request_stop();
+   lifecycle.complete_stop();
+   publish.arrive_and_wait();
+   rotation.join();
+   BOOST_CHECK(first_stop);
+   BOOST_CHECK(!error);
+   BOOST_CHECK(!accepted);
+   BOOST_CHECK(candidate);
+   BOOST_CHECK(!retired);
+   BOOST_CHECK_EQUAL(provider.snapshot().get(), original.get());
 }
 
 BOOST_AUTO_TEST_CASE(http_server_plugin_publishes_typed_api_under_configured_base_path) {

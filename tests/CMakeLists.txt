@@ -24,6 +24,10 @@ add_test(
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/net_plugins_tests.py
 )
 add_test(
+   NAME test_forge_app_lifecycle_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/app_lifecycle_tests.py
+)
+add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
    COMMAND
       ${CMAKE_COMMAND}
@@ -1023,6 +1027,15 @@ target_link_libraries(test_forge_tls forge Boost::included_unit_test_framework O
 add_test(NAME test_forge_tls COMMAND test_forge_tls WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
+   test_forge_http_stop_retry
+   unit/main.cpp
+   http/server_stop_retry_tests.cpp
+)
+target_link_libraries(test_forge_http_stop_retry forge_net_http forge_asio Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_stop_retry COMMAND test_forge_http_stop_retry WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_stop_retry PROPERTIES TIMEOUT 60)
+
+add_executable(
    test_forge_yamux
    unit/main.cpp
    yamux/yamux_tests.cpp
@@ -1042,9 +1055,17 @@ add_executable(
    test_forge_app
    unit/main.cpp
    app/app_tests.cpp
+   app/plugin_lifecycle_tests.cpp
+   app/application_environment_tests.cpp
+   app/application_shell_lifecycle_tests.cpp
+   app/application_cancellation_tests.cpp
+   app/application_shutdown_policy_tests.cpp
+   app/diagnostics_tests.cpp
+   app/app_observability_tests.cpp
 )
 target_link_libraries(test_forge_app forge_app Boost::included_unit_test_framework)
 add_test(NAME test_forge_app COMMAND test_forge_app WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_app PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_schema
@@ -2121,12 +2142,29 @@ set(FORGE_PACKAGE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/forge-package-install")
 set(FORGE_PACKAGE_DIR "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake/Forge")
 set(FORGE_PACKAGE_CONSUMER_PREFIX_PATH ${CMAKE_PREFIX_PATH})
 list(REMOVE_DUPLICATES FORGE_PACKAGE_CONSUMER_PREFIX_PATH)
+set(FORGE_PACKAGE_OPENSSL_CACHE_CONTENT "")
+# Consumer discovery must not mix a different OpenSSL ABI with the producer's
+# headers and native crypto dependencies.
+foreach(FORGE_PACKAGE_OPENSSL_VARIABLE IN ITEMS
+   OPENSSL_INCLUDE_DIR OPENSSL_SSL_LIBRARY OPENSSL_CRYPTO_LIBRARY OPENSSL_ROOT_DIR
+)
+   if(${FORGE_PACKAGE_OPENSSL_VARIABLE})
+      set(FORGE_PACKAGE_OPENSSL_CACHE_TYPE PATH)
+      if(FORGE_PACKAGE_OPENSSL_VARIABLE MATCHES "_LIBRARY$")
+         set(FORGE_PACKAGE_OPENSSL_CACHE_TYPE FILEPATH)
+      endif()
+      string(APPEND FORGE_PACKAGE_OPENSSL_CACHE_CONTENT
+         "set(${FORGE_PACKAGE_OPENSSL_VARIABLE} [==[${${FORGE_PACKAGE_OPENSSL_VARIABLE}}]==] CACHE ${FORGE_PACKAGE_OPENSSL_CACHE_TYPE} \"Exact producer OpenSSL dependency\" FORCE)\n"
+      )
+   endif()
+endforeach()
 set(FORGE_PACKAGE_CONSUMER_CACHE "${CMAKE_BINARY_DIR}/tests/ForgePackageConsumerCache.cmake")
 string(
    CONCAT FORGE_PACKAGE_CONSUMER_CACHE_CONTENT
    "set(Forge_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Exact Forge test package\" FORCE)\n"
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Package dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Exact Glaze package\" FORCE)\n"
+   "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
    "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
@@ -2150,6 +2188,7 @@ string(
    "set(Forge_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Exact Forge test package\" FORCE)\n"
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_EXPLICIT_GLAZE_DIR_PREFIX_PATH}]==] CACHE STRING \"Shared dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Explicit Glaze package hint\" FORCE)\n"
+   "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Expected shared dependency prefixes\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
@@ -3116,6 +3155,17 @@ add_custom_target(
       --build-generator ${CMAKE_GENERATOR}
       --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
       --test-command forge_package_plugins_log_otlp
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
+   test_forge_package_app_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_app_component
+      ${CMAKE_BINARY_DIR}/forge-package-app
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_app
    DEPENDS test_forge_package_install
 )
 add_custom_target(
@@ -4216,6 +4266,17 @@ add_test(
       --test-command forge_package_plugins_log_otlp
 )
 set_tests_properties(test_forge_package_plugins_log_otlp PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_app_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_app_component
+      ${CMAKE_BINARY_DIR}/forge-package-app
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_app
+)
+set_tests_properties(test_forge_package_app_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_plugins_db_store
    COMMAND ${CMAKE_CTEST_COMMAND}

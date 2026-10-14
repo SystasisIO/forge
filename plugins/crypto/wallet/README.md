@@ -1,5 +1,17 @@
 # Crypto Wallet plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Shared stop closes provider/map admission. Provider initialization, startup
+and stop calls stay outside the plugin mutex. The providers' key state,
+revocation generations, bounded gates and expiry-task drain remain separate
+resource contracts. Schema-only instances do not stop injected providers.
+
 `forge.plugins.crypto.wallet.plugin::plugin` implements `forge.crypto.wallet.api`
 using the existing encrypted Forge keystore and application task scheduler.
 Its descriptor is opt-in. HTTP publication additionally requires an existing

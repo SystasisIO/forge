@@ -31,7 +31,7 @@ application plugins need to contribute behavior to it.
 1. Register official plugin descriptors in the application plugin registry.
 2. Let `forge::app::application_shell` collect schema-driven config for the app
    and registered plugins.
-3. During `initialize()`, application plugins acquire local plugin APIs from
+3. During `on_initialize()`, application plugins acquire local plugin APIs from
    `plugin_context::apis()`.
 4. During startup, infrastructure plugins close contribution windows, start
    their owned resources and expose the composed runtime behavior.
@@ -70,6 +70,7 @@ target_link_libraries(app PRIVATE
 | [`forge::plugins::net::p2p::node`](net/p2p/node/README.md) | `forge_plugins_net_p2p_node` | `plugins.net.p2p.node` | Owns one P2P node with focused connectivity, DHT, PubSub, diagnostics and host-event APIs. |
 | [`forge::plugins::net::p2p::resolver`](net/p2p/resolver/README.md) | `forge_plugins_net_p2p_resolver` | `plugins.net.p2p.resolver` | Publishes and resolves peer API metadata over the P2P node. |
 | [`forge::plugins::chain::signer`](chain/signer/README.md) | `forge_plugins_chain_signer` | `plugins.chain.signer` | Composes named transaction and finality providers behind typed Chain signer APIs and exact caller/action policy. |
+| [`forge::plugins::crypto::wallet`](crypto/wallet/README.md) | `forge_plugins_crypto_wallet` | `plugins.crypto.wallet` | Owns bounded encrypted wallet providers and authorized local management. |
 | [`forge::plugins::crypto::secrets`](crypto/secrets/README.md) | `forge_plugins_crypto_secrets` | `plugins.crypto.secrets` | Provides bounded secret retrieval, derivation and symmetric encryption operations. |
 | [`forge::plugins::log::otlp`](log/otlp/README.md) | `forge_plugins_log_otlp` | `plugins.log.otlp` | Exports configured FORGE logger routes to OTLP/HTTP JSON. |
 | [`forge::plugins::db::store`](db/store/README.md) | `forge_plugins_db_store` | `plugins.db.store` | Owns configured named DB stores and exposes optional Object, Blob and Revision layers over one Core driver. |
@@ -83,6 +84,29 @@ in small consumers:
 find_package(Forge REQUIRED COMPONENTS plugins_net_http_server)
 target_link_libraries(app PRIVATE Forge::forge_plugins_net_http_server)
 ```
+
+## Lifecycle Migration
+
+The approved clean source break makes public `configure/provide/initialize/
+after_initialize/startup/request_stop/shutdown` final framework wrappers.
+Derived plugins override only protected `on_configure`, `on_provide`,
+`on_initialize`, `on_after_initialize`, `on_startup`, `on_request_stop` and
+`on_shutdown`, retaining their arguments. Every stop hook is `noexcept`.
+Calls through the public wrappers retain their names; never call a hook directly.
+
+Configure, provide and initialize are one-shot input operations. Repeated input
+is a typed lifecycle error, not a silent config update. Direct `startup()` first
+ensures the same `after_initialize()` preparation barrier used by the application.
+Startup and shutdown are joined/idempotent; failed shutdown permits cleanup retry.
+
+The private implementation copies `lifecycle_handle()`; public `lifecycle()`
+returns a read-only observer. `snapshot().admission_open` permits resource setup
+and is not running readiness. Running-only APIs use the guard overload requiring
+`lifecycle_phase::started` while copying their resource. Installation is
+synchronous only: no await, lifecycle reentry, virtual calls, teardown or user
+callbacks. Lock order is lifecycle then private resource mutex; retired owners
+are released after both locks are gone. Backend readiness and cleanup barriers
+are not replaced by common lifecycle phases. No extra scheduler is introduced.
 
 ## Public Module Shape
 

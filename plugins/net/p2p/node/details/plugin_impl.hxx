@@ -11,7 +11,6 @@
 
 #include "configuration_policy.hxx"
 #include "configuration_snapshot.hxx"
-#include "lifecycle_phase.hxx"
 #include "object_dht_record_store_adapter.hxx"
 #include "protocol_registry.hxx"
 #include "peer_contributions.hxx"
@@ -20,10 +19,12 @@
 namespace forge::plugins::net::p2p::node {
 
 struct plugin::impl {
-   impl();
+   explicit impl(forge::app::plugin_lifecycle state);
+   const forge::app::plugin_lifecycle lifecycle;
    ~impl();
 
    std::shared_ptr<const detail::configuration_snapshot> configuration;
+   std::shared_ptr<const detail::configuration_snapshot> startup_configuration;
    forge::plugins::db::store::api* stores = nullptr;
    forge::plugins::crypto::secrets::api* secrets = nullptr;
    std::shared_ptr<forge::plugins::db::store::store_handle> peer_state_store;
@@ -34,8 +35,6 @@ struct plugin::impl {
    std::shared_ptr<detail::pubsub_service> pubsub;
    std::shared_ptr<forge::net::p2p::node> node;
    forge::asio::runtime* runtime = nullptr;
-   std::atomic_bool stop_requested = false;
-   std::atomic<lifecycle_phase> phase = lifecycle_phase::idle;
    mutable std::mutex configuration_mutex;
    bool providers_bound = false;
    std::optional<std::string> bound_peer_store_name;
@@ -53,8 +52,6 @@ struct plugin::impl {
                                     std::shared_ptr<const detail::configuration_snapshot>& frozen);
    void finish_setup() noexcept;
    void request_stop() noexcept;
-   void mark_started() noexcept;
-   void mark_stopped() noexcept;
    [[nodiscard]] bool is_started() const noexcept;
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> ensure_node(forge::net::p2p::node::options options);
    [[nodiscard]] std::shared_ptr<forge::net::p2p::node> node_snapshot() const noexcept;

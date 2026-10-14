@@ -62,12 +62,26 @@ forge::config::core::document valid_private_document() {
    return document;
 }
 
+template<class T> T run(forge::asio::runtime& runtime, boost::asio::awaitable<T> operation) {
+   auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
+   if (result.wait_for(5s) != std::future_status::ready) { std::terminate(); }
+   return result.get();
+}
+
 void configure(forge::asio::runtime& runtime, np::plugin& plugin,
                const forge::config::core::document& document) {
-   auto result = boost::asio::co_spawn(runtime.context(),
-       plugin.configure({document, std::string{section}}), boost::asio::use_future);
-   if (result.wait_for(5s) != std::future_status::ready) { std::terminate(); }
-   result.get();
+   run(runtime, plugin.configure({document, std::string{section}}));
+}
+
+void configure_fresh(forge::asio::runtime& runtime, const forge::config::core::document& document) {
+   auto plugin = np::plugin{};
+   auto failure = std::exception_ptr{};
+   try { configure(runtime, plugin, document); }
+   catch (...) { failure = std::current_exception(); }
+   // Failed input closes admission too. Each validation probe owns and joins
+   // its real cleanup before the next independent candidate is exercised.
+   run(runtime, plugin.shutdown());
+   if (failure) { std::rethrow_exception(failure); }
 }
 
 forge::config::core::document yaml_candidate(std::string_view text) {
@@ -142,8 +156,7 @@ BOOST_AUTO_TEST_CASE(p2p_private_network_config_mapping_reconstructs_and_rejects
 
 BOOST_AUTO_TEST_CASE(p2p_private_network_config_strict_yaml_requires_reference_and_rejects_inline_key) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
-   configure(runtime, plugin, valid_private_document());
+   configure_fresh(runtime, valid_private_document());
    for (const auto* yaml : {
             "private-network: {}\n", "private-network: swarm\n", "private-network: []\n",
             "private-network:\n  psk-secret: ''\n", "private-network:\n  psk-secret: []\n",
@@ -154,32 +167,31 @@ BOOST_AUTO_TEST_CASE(p2p_private_network_config_strict_yaml_requires_reference_a
             "private-network:\n  psk-secret: private/swarm\n  internet-egress: 18446744073709551616\n",
             "private-netwrok: {}\n", "relay:\n  auto-discovery-enabld: false\n"}) {
       BOOST_TEST_CONTEXT(yaml) {
-         BOOST_CHECK_THROW(configure(runtime, plugin, yaml_candidate(yaml)), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, yaml_candidate(yaml)), np::exceptions::invalid_config);
       }
    }
 }
 
 BOOST_AUTO_TEST_CASE(p2p_private_network_config_cross_policy_requires_explicit_tcp_direct_only_and_no_relays) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto valid = valid_private_document();
-   configure(runtime, plugin, valid);
+   configure_fresh(runtime, valid);
    for (const auto* path : {"direct-preferred", "relay-only"}) {
       auto candidate = valid;
       candidate.set(std::string{section} + ".path.policy", path);
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
    }
    for (const auto* flag : {"client-enabled", "server-enabled", "auto-discovery-enabled"}) {
       auto candidate = valid;
       candidate.set(std::string{section} + ".relay." + flag, true);
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
    }
    for (const auto* field : {"max-connections", "max-streams-per-connection", "max-queued-bytes",
                             "max-inbound-queued-bytes", "max-inbound-queued-packets"}) {
       for (const auto number : {std::uint64_t{0}, std::uint64_t{1}}) {
          auto candidate = valid;
          candidate.set(std::string{section} + ".quic." + field, number);
-         BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+         BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
       }
    }
    const auto identity = forge::tests::p2p::make_identity_fixture("private-config-endpoint");
@@ -188,14 +200,13 @@ BOOST_AUTO_TEST_CASE(p2p_private_network_config_cross_policy_requires_explicit_t
       auto candidate = valid;
       candidate.set(std::string{section} + "." + field,
           value::array_type{value{"/ip4/127.0.0.1/udp/4001/quic-v1/p2p/" + peer}});
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
    }
-   BOOST_CHECK_NO_THROW(configure(runtime, plugin, valid));
+   BOOST_CHECK_NO_THROW(configure_fresh(runtime, valid));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_private_network_config_rendezvous_rejects_quic_and_accepts_tcp_for_both_egress_policies) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
-   auto plugin = np::plugin{};
    const auto identity = forge::tests::p2p::make_identity_fixture("private-config-rendezvous");
    const auto peer = p2p::make_peer_id_from_certificate_pem(identity.certificate_pem).to_string();
    for (const auto* egress : {"deny-external", "allow-internet"}) {
@@ -208,8 +219,8 @@ BOOST_AUTO_TEST_CASE(p2p_private_network_config_rendezvous_rejects_quic_and_acce
                                 {"namespaces", value::array_type{value{"stage7"}}}}});
       };
       set_point("/ip4/127.0.0.1/tcp/4001/p2p/" + peer);
-      BOOST_CHECK_NO_THROW(configure(runtime, plugin, candidate));
+      BOOST_CHECK_NO_THROW(configure_fresh(runtime, candidate));
       set_point("/ip4/127.0.0.1/udp/4001/quic-v1/p2p/" + peer);
-      BOOST_CHECK_THROW(configure(runtime, plugin, candidate), np::exceptions::invalid_config);
+      BOOST_CHECK_THROW(configure_fresh(runtime, candidate), np::exceptions::invalid_config);
    }
 }

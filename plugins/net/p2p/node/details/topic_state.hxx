@@ -13,7 +13,6 @@ struct topic_state {
    std::size_t participants = 0;
    bool joined = false;
    bool native_dirty = false;
-   bool gate_closed = false;
    bool shutdown_attempted = false;
    std::exception_ptr join_error;
    std::exception_ptr leave_error;

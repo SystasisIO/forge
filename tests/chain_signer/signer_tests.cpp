@@ -13,6 +13,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -33,8 +34,9 @@ import forge.api.core.registry;
 import forge.api.core.trusted_invocation;
 import forge.api.core.types;
 import forge.app.events;
+import forge.app.exceptions;
 import forge.app.plugin_context;
-import forge.app.signals;
+import forge.app.plugin_lifecycle;
 import forge.asio.blocking;
 import forge.asio.notification;
 import forge.asio.runtime;
@@ -323,7 +325,7 @@ class signer_harness {
          scheduler_{runtime_}, plugin_{std::move(options)} {
       auto provider = forge::api::core::installer{apis_};
       forge::asio::blocking::run(runtime_, plugin_.provide(provider));
-      auto context = forge::app::plugin_context{scheduler_, apis_, signals_, events_};
+      auto context = forge::app::plugin_context{scheduler_, apis_, events_};
       forge::asio::blocking::run(runtime_, plugin_.initialize(context));
       forge::asio::blocking::run(runtime_, plugin_.startup());
    }
@@ -367,8 +369,7 @@ class signer_harness {
    forge::asio::runtime runtime_;
    forge::asio::task::scheduler scheduler_;
    forge::api::core::registry apis_;
-   forge::app::signal_bus signals_;
-   forge::app::event_bus events_;
+   forge::app::event_journal events_;
    chain_signer::plugin plugin_;
 };
 
@@ -1149,6 +1150,89 @@ BOOST_AUTO_TEST_CASE(block_signing_preserves_unavailable_after_plugin_stop) {
                      chain_api::exceptions::unavailable);
 }
 
+BOOST_AUTO_TEST_CASE(signer_stop_errors_remain_retryable) {
+   auto material = make_transaction_material("writer-key", "chain-signer-stopped-error-contract");
+   auto counted = std::make_shared<counting_provider>(material.provider);
+   const auto chain = test_digest("chain-signer-stopped-error-chain");
+   auto options = plugin_options(exact_config(material, chain, true), counted);
+   options.providers.push_back({.name = "key-0", .value = counted});
+   options.initial_config.block_profiles.push_back(exact_block_profile(chain, {material}, true));
+   auto harness = signer_harness{std::move(options)};
+   const auto describes = counted->describes.load();
+   const auto signs = counted->signs.load();
+   harness.plugin().request_stop();
+   const auto transaction = allowed_transaction(chain);
+   const auto block = protocol::block_sign_request{
+       .chain = chain, .header = allowed_block_header(), .keys = {material.public_key}};
+   auto denied_transaction = transaction;
+   denied_transaction.chain = test_digest("chain-signer-stopped-other-chain");
+   auto denied_block = block;
+   denied_block.chain = denied_transaction.chain;
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.transactions()->sign(transaction, {})),
+                     chain_api::exceptions::unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(block, {})),
+                     chain_api::exceptions::unavailable);
+   BOOST_CHECK_THROW(
+       forge::asio::blocking::run(harness.runtime(), harness.transactions()->sign(denied_transaction, {})),
+       chain_api::exceptions::unavailable);
+   BOOST_CHECK_THROW(forge::asio::blocking::run(harness.runtime(), harness.blocks()->sign(denied_block, {})),
+                     chain_api::exceptions::unavailable);
+   for (const auto& response : {dispatch_transaction(harness, transaction, {}, {}, 701U),
+                                dispatch_block(harness, block, {}, {}, 702U),
+                                dispatch_transaction(harness, denied_transaction, {}, {}, 703U),
+                                dispatch_block(harness, denied_block, {}, {}, 704U)}) {
+      BOOST_REQUIRE(response.kind == forge::api::core::frame_kind::error);
+      const auto error = forge::api::core::unpack_body<forge::api::core::error_payload>(response.payload);
+      BOOST_TEST(error.error == "unavailable");
+      BOOST_TEST(error.retryable);
+      BOOST_CHECK(error.status_code == forge::api::core::status::unavailable);
+      BOOST_TEST(error.identity.category == "forge.chain.api");
+      BOOST_TEST(error.identity.code == static_cast<std::uint32_t>(chain_api::exceptions::code::unavailable));
+   }
+   BOOST_TEST(counted->describes.load() == describes);
+   BOOST_TEST(counted->signs.load() == signs);
+}
+
+BOOST_AUTO_TEST_CASE(signer_unpublished_runtime_is_retryable_before_and_after_stop) {
+   const auto material = make_transaction_material("writer-key", "chain-signer-unpublished-runtime");
+   auto counted = std::make_shared<counting_provider>(material.provider);
+   const auto chain = test_digest("chain-signer-unpublished-runtime-chain");
+   auto options = plugin_options(exact_config(material, chain, true), counted);
+   options.providers.push_back({.name = "key-0", .value = counted});
+   options.initial_config.block_profiles.push_back(exact_block_profile(chain, {material}, true));
+
+   auto runtime =
+       forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1, .thread_name = "signer-unpublished"}};
+   auto apis = forge::api::core::registry{};
+   auto plugin = chain_signer::plugin{std::move(options)};
+   auto provider = forge::api::core::installer{apis};
+   forge::asio::blocking::run(runtime, plugin.provide(provider));
+   const auto transactions = apis.get<chain_api::transaction_signer>(chain_api::transaction_signer::ref());
+   const auto blocks = apis.get<chain_api::block_signer>(chain_api::block_signer::ref());
+   const auto finality = apis.get<chain_api::finality_signer>(chain_api::finality_signer::ref());
+   const auto block = protocol::block_sign_request{
+       .chain = chain, .header = allowed_block_header(), .keys = {material.public_key}};
+   const auto describes = counted->describes.load();
+   const auto signs = counted->signs.load();
+
+   // Deterministically cover the missing publication, rather than depending on the race winner.
+   for (const auto stopped : {false, true}) {
+      if (stopped) { plugin.request_stop(); }
+      const auto state = plugin.lifecycle().snapshot();
+      BOOST_TEST(state.stop_requested == stopped);
+      BOOST_TEST(state.admission_open == !stopped);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, transactions->sign(allowed_transaction(chain), {})),
+                        chain_api::exceptions::unavailable);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, blocks->sign(block, {})),
+                        chain_api::exceptions::unavailable);
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, finality->identity()),
+                        chain_api::exceptions::unavailable);
+   }
+   BOOST_TEST(counted->describes.load() == describes);
+   BOOST_TEST(counted->signs.load() == signs);
+   BOOST_CHECK_NO_THROW(forge::asio::blocking::run(runtime, plugin.shutdown()));
+}
+
 BOOST_AUTO_TEST_CASE(transaction_policy_enforces_the_signed_packed_size) {
    const auto material = make_transaction_material("writer-key", "chain-signer-packed-limit-key");
    const auto chain = test_digest("chain-signer-packed-limit-chain");
@@ -1642,12 +1726,11 @@ BOOST_AUTO_TEST_CASE(initialize_and_stop_race_publishes_only_a_closed_admission)
           forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1, .thread_name = "chain-signer-race"}};
       auto scheduler = forge::asio::task::scheduler{runtime};
       auto apis = forge::api::core::registry{};
-      auto signals = forge::app::signal_bus{};
-      auto events = forge::app::event_bus{};
+      auto events = forge::app::event_journal{};
       auto plugin = chain_signer::plugin{plugin_options(exact_config(material, chain, true), material.provider)};
       auto provider = forge::api::core::installer{apis};
       forge::asio::blocking::run(runtime, plugin.provide(provider));
-      auto context = forge::app::plugin_context{scheduler, apis, signals, events};
+      auto context = forge::app::plugin_context{scheduler, apis, events};
 
       auto start = std::barrier{2};
       auto stopper = std::thread{[&] {
@@ -1655,13 +1738,35 @@ BOOST_AUTO_TEST_CASE(initialize_and_stop_race_publishes_only_a_closed_admission)
          plugin.request_stop();
       }};
       start.arrive_and_wait();
-      BOOST_CHECK_NO_THROW(forge::asio::blocking::run(runtime, plugin.initialize(context)));
+      auto initialize_error = std::exception_ptr{};
+      try { forge::asio::blocking::run(runtime, plugin.initialize(context)); }
+      catch (...) { initialize_error = std::current_exception(); }
       stopper.join();
 
+      const auto state = plugin.lifecycle().snapshot();
+      BOOST_TEST(state.stop_requested);
+      BOOST_TEST(!state.admission_open);
+      if (initialize_error) {
+         auto expected = false;
+         try { std::rethrow_exception(initialize_error); }
+         catch (const forge::app::exceptions::invalid_state&) { expected = true; }
+         catch (const chain_signer::exceptions::invalid_lifecycle&) { expected = true; }
+         catch (...) {}
+         BOOST_TEST(expected);
+         BOOST_TEST(!state.completed(forge::app::lifecycle_operation::initialize));
+      } else { BOOST_TEST(state.completed(forge::app::lifecycle_operation::initialize)); }
       BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, plugin.startup()),
-                        chain_signer::exceptions::invalid_lifecycle);
+                        forge::app::exceptions::invalid_state);
       const auto transactions = apis.get<chain_api::transaction_signer>(chain_api::transaction_signer::ref());
       BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, transactions->sign(allowed_transaction(chain), {})),
+                        chain_api::exceptions::unavailable);
+      const auto blocks = apis.get<chain_api::block_signer>(chain_api::block_signer::ref());
+      const auto block = protocol::block_sign_request{
+          .chain = chain, .header = allowed_block_header(), .keys = {material.public_key}};
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, blocks->sign(block, {})),
+                        chain_api::exceptions::unavailable);
+      const auto finality = apis.get<chain_api::finality_signer>(chain_api::finality_signer::ref());
+      BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, finality->identity()),
                         chain_api::exceptions::unavailable);
       BOOST_CHECK_NO_THROW(forge::asio::blocking::run(runtime, plugin.shutdown()));
    }

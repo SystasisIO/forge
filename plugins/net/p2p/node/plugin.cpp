@@ -132,7 +132,7 @@ void clear_text(std::string& value) noexcept {
 
 } // namespace
 
-plugin::plugin() : impl_{std::make_shared<impl>()} {}
+plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
 plugin::~plugin() { request_stop(); }
 
 forge::app::plugin_id plugin::id() const {
@@ -147,7 +147,7 @@ std::optional<forge::config::core::component_descriptor> plugin::describe_config
    return forge::config::core::describe_component<config>("plugins.net.p2p.node");
 }
 
-boost::asio::awaitable<void> plugin::configure(forge::config::core::component_view view) {
+boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
    const auto config = decode_config(view);
    apply_config(*impl_, config);
    dlog("forge.plugins.net.p2p.node", "P2P plugin configuration committed",
@@ -156,7 +156,7 @@ boost::asio::awaitable<void> plugin::configure(forge::config::core::component_vi
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provider) {
+boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
    provider.install<dht_api>(std::make_shared<dht_api_impl>(impl_));
    provider.install<configuration_api>(std::make_shared<configuration_api_impl>(impl_));
@@ -168,8 +168,9 @@ boost::asio::awaitable<void> plugin::provide(forge::api::core::provider& provide
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& context) {
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
    const auto previous = impl_->configuration_candidate_base();
+   const auto generation = impl_->lifecycle.snapshot().generation;
    auto* runtime = &context.scheduler().runtime_context();
    auto* stores = static_cast<forge::plugins::db::store::api*>(nullptr);
    auto* secrets = static_cast<forge::plugins::crypto::secrets::api*>(nullptr);
@@ -184,11 +185,9 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
                         {.id = {"forge.plugins.crypto.secrets"}, .major = 1, .min_revision = 0})
                     .operator->();
    }
-   {
+   if (!impl_->lifecycle.try_admit(generation, [&] {
       const auto lock = std::scoped_lock{impl_->configuration_mutex};
-      if (impl_->configuration != previous || impl_->providers_bound ||
-          impl_->stop_requested.load(std::memory_order_acquire) ||
-          impl_->phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+      if (impl_->configuration != previous || impl_->providers_bound || impl_->startup_configuration) {
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P configuration changed during dependency binding");
       }
       detail::bind_protocol_registry_executor(impl_->protocols, runtime->context().get_executor());
@@ -196,28 +195,32 @@ boost::asio::awaitable<void> plugin::initialize(forge::app::plugin_context& cont
       impl_->stores = stores;
       impl_->secrets = secrets;
       impl_->providers_bound = true;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P dependency binding was stopped");
    }
    dlog("forge.plugins.net.p2p.node", "P2P plugin dependencies bound",
         ("event", "dependencies.bound")("stores", stores != nullptr)("secrets", secrets != nullptr));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::after_initialize() {
+boost::asio::awaitable<void> plugin::on_after_initialize() {
    const auto state = impl_;
    auto active = false;
    auto joined = boost::scope::scope_exit{[&] { if (active) { state->finish_setup(); } }};
    const auto previous = state->configuration_candidate_base();
+   const auto generation = state->lifecycle.snapshot().generation;
    auto name = previous->peer_store_name;
-   {
+   if (!state->lifecycle.try_admit(generation, [&] {
       const auto lock = std::scoped_lock{state->configuration_mutex};
       if (state->configuration != previous || !state->providers_bound || state->bound_peer_store_name ||
-          state->stop_requested.load(std::memory_order_acquire) ||
-          state->phase.load(std::memory_order_relaxed) != lifecycle_phase::idle) {
+          state->startup_configuration) {
          FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P peer store binding changed or is frozen");
       }
       state->bound_peer_store_name.emplace(std::move(name));
       ++state->setup_operations;
       active = true;
+   })) {
+      FORGE_THROW_EXCEPTION(exceptions::route_conflict, "P2P peer store binding was stopped");
    }
    if (previous->peer_store_name.empty()) {
       if (!previous->options.allow_insecure_test_mode) {
@@ -228,10 +231,15 @@ boost::asio::awaitable<void> plugin::after_initialize() {
    auto store = std::make_shared<forge::plugins::db::store::store_handle>(
        co_await state->stores->store(previous->peer_store_name));
    detail::p2p_state_schema::register_objects(*store);
-   state->peer_state_store = std::move(store);
+   if (!state->lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{state->configuration_mutex};
+      state->peer_state_store = std::move(store);
+   })) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P peer store setup was stopped");
+   }
 }
 
-boost::asio::awaitable<void> plugin::startup() {
+boost::asio::awaitable<void> plugin::on_startup() {
    const auto state = impl_;
    auto active = false;
    auto joined = boost::scope::scope_exit{[&] { if (active) { state->finish_setup(); } }};
@@ -247,11 +255,11 @@ boost::asio::awaitable<void> plugin::startup() {
       auto certificate_result = co_await state->secrets->get_bytes(
           {.secret_id = frozen->certificate_secret, .purpose = "p2p.identity.certificate"});
       auto certificate = forge::crypto::core::secret_bytes{std::move(certificate_result.bytes)};
-      if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+      if (state->lifecycle.snapshot().stop_requested) { co_return; }
       auto private_key_result = co_await state->secrets->get_bytes(
           {.secret_id = frozen->private_key_secret, .purpose = "p2p.identity.private-key"});
       auto private_key = forge::crypto::core::secret_bytes{std::move(private_key_result.bytes)};
-      if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+      if (state->lifecycle.snapshot().stop_requested) { co_return; }
       options.certificate_pem = std::string{certificate.span().begin(), certificate.span().end()};
       options.private_key_pem = std::string{private_key.span().begin(), private_key.span().end()};
    }
@@ -259,14 +267,14 @@ boost::asio::awaitable<void> plugin::startup() {
       auto result = co_await state->secrets->get_bytes({
           .secret_id = frozen->declarative.private_network->psk_secret, .purpose = "p2p.private-network.psk"});
       auto material = forge::crypto::core::secret_bytes{std::move(result.bytes)};
-      if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+      if (state->lifecycle.snapshot().stop_requested) { co_return; }
       if (material.size() != forge::net::pnet::pre_shared_key_size) {
          FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P private-network PSK secret must decode to exactly 32 bytes");
       }
       options.private_network->protector = std::make_shared<const forge::net::pnet::protector>(
           forge::net::pnet::pre_shared_key{material.span()});
    }
-   if (state->stop_requested.load(std::memory_order_acquire)) { co_return; }
+   if (state->lifecycle.snapshot().stop_requested) { co_return; }
    if (state->peer_state_store) {
       state->peer_state = co_await object_peer_state_adapter::async_open(
           state->stores, *state->peer_state_store, options.peer_state, frozen->reset_incompatible_peer_state);
@@ -312,12 +320,12 @@ boost::asio::awaitable<void> plugin::startup() {
       }
    }
 
-   if (state->stop_requested.load(std::memory_order_acquire)) {
+   if (state->lifecycle.snapshot().stop_requested) {
       co_return;
    }
 
    auto node = state->ensure_node(std::move(options));
-   if (state->stop_requested.load(std::memory_order_acquire)) {
+   if (state->lifecycle.snapshot().stop_requested) {
       node->stop();
       co_return;
    }
@@ -328,29 +336,28 @@ boost::asio::awaitable<void> plugin::startup() {
       startup_failure = std::current_exception();
    }
    if (startup_failure) {
-      if (!state->stop_requested.load(std::memory_order_acquire)) {
+      if (!state->lifecycle.snapshot().stop_requested) {
          std::rethrow_exception(startup_failure);
       }
       co_await node->async_stop();
       co_return;
    }
-   if (state->stop_requested.load(std::memory_order_acquire)) {
+   if (state->lifecycle.snapshot().stop_requested) {
       node->request_stop();
       co_await node->async_stop();
       co_return;
    }
    state->pubsub->initialize(frozen->pubsub, node);
-   state->mark_started();
-   if (state->is_started()) {
+   if (!state->lifecycle.snapshot().stop_requested) {
       ilog("forge.plugins.net.p2p.node", "P2P plugin APIs ready", ("event", "api.ready"));
    }
 }
 
-void plugin::request_stop() noexcept {
+void plugin::on_request_stop() noexcept {
    impl_->request_stop();
 }
 
-boost::asio::awaitable<void> plugin::shutdown() {
+boost::asio::awaitable<void> plugin::on_shutdown() {
    // The child owns cleanup independently of cancellation of its caller. The
    // explicit argument keeps state alive without a capturing coroutine lambda.
    co_await boost::asio::co_spawn(
@@ -389,6 +396,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
              }
           }
           auto failure = std::exception_ptr{};
+          auto pubsub_closed = false;
           auto registry_closed = false;
           auto peer_state_closed = false;
           try {
@@ -407,6 +415,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
              }
              try {
                 co_await detail::pubsub_service::shutdown_owned(state->pubsub);
+                pubsub_closed = true;
              } catch (...) {
                 failure = std::current_exception();
              }
@@ -418,7 +427,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
              }
              auto node = state->node_snapshot();
              peer_state_closed = !node && !state->peer_state && state->dht_state.empty();
-             if (node) {
+             if (pubsub_closed && registry_closed && node) {
                 try {
                    co_await node->async_stop();
                    peer_state_closed = true;
@@ -427,7 +436,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
                       failure = std::current_exception();
                    }
                 }
-             } else {
+             } else if (pubsub_closed && registry_closed && !node) {
                 peer_state_closed = true;
                 for (auto& [_, persistence] : state->dht_state) {
                    try {
@@ -450,7 +459,7 @@ boost::asio::awaitable<void> plugin::shutdown() {
                    }
                 }
              }
-             if (registry_closed && peer_state_closed) {
+             if (pubsub_closed && registry_closed && peer_state_closed) {
                 auto empty = std::shared_ptr<forge::net::p2p::node>{};
                 std::atomic_compare_exchange_strong_explicit(&state->node, &node, empty, std::memory_order_acq_rel,
                                                              std::memory_order_acquire);
@@ -460,25 +469,22 @@ boost::asio::awaitable<void> plugin::shutdown() {
                 state->stores = nullptr;
                 state->secrets = nullptr;
              }
-             if (registry_closed && peer_state_closed) {
-                state->mark_stopped();
-             }
           } catch (...) {
              if (!failure) { failure = std::current_exception(); }
           }
           {
              const auto lock = std::scoped_lock{state->configuration_mutex};
              attempt->error = failure;
-             attempt->terminal = registry_closed && peer_state_closed;
+             attempt->terminal = pubsub_closed && registry_closed && peer_state_closed;
              attempt->done = true;
           }
           attempt->completed.notify();
-          if (registry_closed && peer_state_closed) {
+          if (pubsub_closed && registry_closed && peer_state_closed) {
              ilog("forge.plugins.net.p2p.node", "P2P plugin APIs stopped", ("event", "api.stopped"));
           }
           if (failure) {
              elog("forge.plugins.net.p2p.node", "P2P plugin shutdown failed",
-                  ("event", "api.shutdown_failed")("terminal", registry_closed && peer_state_closed));
+                  ("event", "api.shutdown_failed")("terminal", pubsub_closed && registry_closed && peer_state_closed));
           }
           if (failure) { std::rethrow_exception(failure); }
        }(impl_),

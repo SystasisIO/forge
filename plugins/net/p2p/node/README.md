@@ -1,5 +1,17 @@
 # P2P Node Plugin
 
+## Lifecycle Migration
+
+Public lifecycle entry points are final framework wrappers; implementations use
+protected `on_*` hooks with unchanged arguments. See the
+[shared migration contract](../../../README.md#lifecycle-migration). No compatibility aliases
+or plugin-local schedulers are provided.
+
+Running-node APIs require canonical `phase == started`, not general setup
+admission. Configuration retains the actual frozen startup snapshot; it is not
+a second lifecycle phase. Setup joins, publication drains, PubSub resource states
+and retryable native/persistence cleanup ownership remain backend responsibilities.
+
 `forge::plugins::net::p2p::node` owns one shared `forge_net_p2p` node and exposes typed
 contribution APIs for protocol handlers and API-over-P2P publication, consumer
 PubSub, bounded read-only diagnostics and native host events.
@@ -132,8 +144,9 @@ contributions and changes after startup or stop are typed conflicts.
 PubSub policy, including application scoring and tracer callbacks. It requires
 explicit `pubsub.enabled: true`; it does not turn on native support implicitly.
 Options use the same immutable candidate preparation, validation and commit/freeze
-path. Pre-start YAML updates retain a supplied native contribution; they cannot
-disable PubSub and silently discard its callbacks. Consumer topic policies and
+path. The one-shot YAML input establishes declarative PubSub admission before
+typed composition; it cannot be repeated to disable PubSub and discard supplied
+callbacks. Consumer topic policies and
 quotas remain declarative, while supplied native options replace the native
 defaults derived from that declaration. Native bounds and capability errors remain
 authoritative: for example, Partial needs both declarative `partial-messages`
@@ -151,12 +164,11 @@ Native `validate_declaration(profile)` checks declaration policy only;
 `validate(profile)` still requires every value callback. Neither executes
 application callbacks. No permissive placeholder policies are installed.
 
-After startup, only diagnostics bounds may change through the existing
-`plugin::configure` lifecycle entry point. The complete configuration must still
-decode and validate, and its frozen node/PubSub declarative portion must be
-structurally unchanged. A mixed or invalid update fails atomically; it cannot
-rebuild the node, overwrite typed contributions or change network policy.
-Configuration after stop is rejected. The read-only diagnostics API has no setter.
+Configuration input is one-shot through the shared `plugin::configure` wrapper.
+Repeated input or post-start diagnostics-only reconfiguration is no longer
+accepted. Supply diagnostics bounds before initialization/startup; the read-only
+diagnostics API has no setter. Pre-start typed Configuration API contributions
+still use immutable candidates and freeze with the owned startup snapshot.
 
 Candidate preparation, callback copies and destruction occur outside the
 configuration mutex. Commit compares the previous snapshot and admission again;
@@ -166,10 +178,9 @@ Gater callbacks must be nonblocking and thread-safe; callback captures must own
 their consumer state rather than borrow a destroyed application object.
 
 `initialize()` binds available DB Store and Secrets providers exactly once.
-Later pre-start changes cannot introduce an unbound dependency, but references
-to an already bound Secrets provider may change or be cleared. `after_initialize()`
-fixes the exact Store name, including empty, before awaiting its handle; policy
-updates remain allowed. Production startup requires the initialized Store.
+`after_initialize()` fixes the exact Store name, including empty, before
+awaiting its handle. Pre-start typed contributions cannot introduce an unbound
+dependency; lifecycle configuration input is not repeated. Production startup requires the initialized Store.
 The explicit empty-store test path can start after `initialize()` alone.
 No PEM or opened persistence handle is stored in the policy snapshot.
 
@@ -181,8 +192,13 @@ runtime or claim that the earlier shared DB driver setup was resource-free.
 For consumer PubSub, stop closes admission and signals owned Partial operations.
 Awaited shutdown joins admitted operations, callbacks and callback-capture
 destruction, then performs local native topic cleanup before native `async_stop()`
-and persistence/provider release. Native full-topic unsubscribe remains usable
-after `request_stop()`; cleanup does not require running-node admission.
+and persistence/provider release. Retained PubSub APIs require the shared
+`started` phase; backend initialization alone does not admit operations during
+startup or after common stop. Existing subscription/Partial cleanup remains
+usable after `request_stop()` until joined cleanup begins. A failed topic leave
+retains its native owner and callbacks for a subsequent shutdown retry; only
+unfinished native leaves are retried. Native node/persistence ownership is not
+released until PubSub and protocol cleanup both succeed.
 
 ### Connection Operations
 
@@ -316,7 +332,7 @@ does not assert that stock Go/Rust peers accept that maximum.
 Algorithmic mesh/history/gossip tuning remains in the native defaults and the
 full typed `configuration_api::set_pubsub_options` path instead of duplicating
 every internal parameter in YAML. A typed contribution remains the authoritative
-complete native snapshot across pre-start configure calls, including callbacks;
+complete native snapshot until startup, including callbacks;
 it is not reduced to callback-only enrichment.
 
 Other optional groups follow the native responsibility boundaries:
@@ -365,8 +381,9 @@ and plugin stop. Stop reaches active retired callbacks before waiting for them.
 Disable requests stop but does not wait for its own callback; shutdown joins
 admitted callbacks and capture destruction. Keep stop callbacks nonblocking.
 Native wrappers hold weak references to consumer state, not a second queue or
-network loop. Concurrent component shutdowns observe one completion/error;
-cleanup failures remain retained and rethrown.
+network loop. Concurrent component shutdowns observe the same attempt's
+completion/error. A later shutdown retries retained failures without rewriting
+the error already delivered to earlier waiters.
 
 Receive-side donor mapping: pinned Go pubsub `0ed6f6fd`,
 `pubsub.go:1390-1430`, replaces per-topic state on each subscribed update and
@@ -391,7 +408,8 @@ and `pubsub::score_snapshot` values. Unknown DHT profiles retain native
 with `exceptions::plugin_not_initialized`; reads remain admitted after
 `request_stop()` until detach. A read copies the native owner and, for a default
 snapshot, its configured options before releasing the configuration mutex and
-delegating. A concurrent diagnostics-only update cannot alter that read's bounds.
+delegating. Explicit per-read bounds do not change the immutable configured defaults;
+diagnostics-only YAML reconfiguration is rejected.
 Returned value snapshots remain usable after plugin shutdown. There is no
 adapter-owned routing/score cache, event queue, HTTP endpoint or logging sink.
 
@@ -515,8 +533,8 @@ per protocol ID; they are operational record-store bounds, not a physical disk
 quota. Record size and per-key provider capacity remain derived from the profile,
 not duplicated configuration knobs. Invalid values and unsupported ObjectDB page
 sizes are rejected before identity-secret reads or P2P adapter transactions.
-The same effective page limits reach the ObjectDB adapter. Removing an override
-before startup restores the default; startup freezes the complete policy.
+The same effective page limits reach the ObjectDB adapter. Omitting an override
+from the one-shot input retains the default; startup freezes the complete composed policy.
 
 The named DB Store must provide an Object layer dedicated to P2P peer and DHT
 record state.
@@ -749,8 +767,8 @@ or listener. Secrets permission/not-found errors retain their typed category.
 ### DNS, Dialing And Paths
 
 `dns` and `dial` are sparse overlays of the existing native resolver, address
-expander and dial scheduler. Omitted fields retain native defaults; removing a
-group in a pre-start reconfiguration restores those defaults. There is no
+expander and dial scheduler. Omitted fields and groups retain native defaults in
+the one-shot configuration input; changing YAML requires a fresh plugin instance. There is no
 plugin-owned resolver, discovery loop or separate timeout policy.
 
 ```yaml
@@ -1041,8 +1059,8 @@ import forge.plugins.net.p2p.node.api;
 import forge.plugins.net.p2p.node.plugin;
 
 class catalog_p2p_plugin final : public forge::app::plugin {
- public:
-   boost::asio::awaitable<void> initialize(forge::app::plugin_context& context) override {
+ protected:
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
       auto p2p = context.apis().get<forge::plugins::net::p2p::node::api>(
          {.id = {"forge.plugins.net.p2p.node"}, .major = 3});
 

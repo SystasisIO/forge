@@ -39,8 +39,21 @@ import forge.plugins.net.p2p.node.types;
 
 namespace forge::plugins::net::p2p::node::detail {
 
-std::shared_ptr<forge::net::p2p::node> pubsub_service::require_node_locked() const {
-   if (stopping) {
+void pubsub_service::admit_operation(const std::function<void()>& install) const {
+   const auto state = lifecycle.snapshot();
+   if (!state.admission_open) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
+   }
+   if (state.phase != forge::app::lifecycle_phase::started) {
+      FORGE_THROW_EXCEPTION(exceptions::plugin_not_initialized, "P2P PubSub plugin is not running");
+   }
+   if (!lifecycle.try_admit(state.generation, forge::app::lifecycle_phase::started, install)) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
+   }
+}
+
+std::shared_ptr<forge::net::p2p::node> pubsub_service::require_node_locked(bool cleanup) const {
+   if (stopping && !cleanup) {
       FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
    }
    if (!initialized || !source) {
@@ -53,9 +66,12 @@ std::shared_ptr<forge::net::p2p::node> pubsub_service::require_node_locked() con
 }
 
 std::shared_ptr<forge::net::p2p::node> pubsub_service::begin_operation() {
-   const auto lock = std::scoped_lock{mutex};
-   auto current = require_node_locked();
-   ++active_operations;
+   auto current = std::shared_ptr<forge::net::p2p::node>{};
+   admit_operation([&] {
+      const auto lock = std::scoped_lock{mutex};
+      current = require_node_locked();
+      ++active_operations;
+   });
    return current;
 }
 
@@ -97,17 +113,21 @@ void pubsub_service::ensure_topic_allowed_locked(const forge::net::p2p::pubsub::
 }
 
 void pubsub_service::initialize(pubsub_config value, std::shared_ptr<forge::net::p2p::node> current) {
-   const auto lock = std::scoped_lock{mutex};
-   if (stopping) {
-      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
+   const auto generation = lifecycle.snapshot().generation;
+   if (!lifecycle.try_admit(generation, [&] {
+      const auto lock = std::scoped_lock{mutex};
+      if (stopping) {
+         FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub admission is closed");
+      }
+      if (initialized || !current) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P PubSub is already initialized or has no node");
+      }
+      settings = std::move(value);
+      source = std::move(current);
+      initialized = true;
+   })) {
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::canceled, "P2P PubSub initialization was stopped");
    }
-   if (initialized || !current) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_config, "P2P PubSub is already initialized or has no node");
-   }
-   // Policy was validated in the immutable node configuration candidate.
-   settings = std::move(value);
-   source = std::move(current);
-   initialized = true;
 }
 
 void pubsub_service::request_stop() noexcept {
@@ -117,22 +137,8 @@ void pubsub_service::request_stop() noexcept {
    }
    // Active retired records also subscribe to this shared stop source.
    partial_stop.request_stop();
-   // No allocations or callbacks under mutex. Stopping prevents new topics from entering.
-   for (;;) {
-      auto topic = std::shared_ptr<topic_state>{};
-      {
-         const auto lock = std::scoped_lock{mutex};
-         for (const auto& [_, current] : topics) {
-            if (!current->gate_closed) {
-               current->gate_closed = true;
-               topic = current;
-               break;
-            }
-         }
-      }
-      if (!topic) { break; }
-      topic->transition.close();
-   }
+   // Keep transition gates usable for retained cleanup tokens. Normal waiters
+   // recheck common admission after acquiring; shutdown joins all participants.
    changed.notify();
 }
 
@@ -145,29 +151,35 @@ boost::asio::awaitable<void> pubsub_service::shutdown_joined(std::shared_ptr<pub
    co_await boost::asio::this_coro::throw_if_cancelled(false);
    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
    self->request_stop();
+   auto candidate = std::make_shared<shutdown_attempt>();
+   auto attempt = std::shared_ptr<shutdown_attempt>{};
    auto leader = false;
    {
       const auto lock = std::scoped_lock{self->mutex};
-      if (!self->shutdown_running && !self->shutdown_done) {
-         self->shutdown_running = true;
+      if (!self->shutdown || (self->shutdown->done && !self->shutdown->terminal)) {
+         self->shutdown.swap(candidate);
+         for (const auto& [_, topic] : self->topics) { topic->shutdown_attempted = false; }
          leader = true;
       }
+      attempt = self->shutdown;
    }
+   // Previous exception captures and unused candidates retire unlocked.
+   candidate.reset();
    if (!leader) {
       for (;;) {
-         const auto epoch = self->changed.epoch();
+         const auto epoch = attempt->completed.epoch();
          auto done = false;
          auto error = std::exception_ptr{};
          {
             const auto lock = std::scoped_lock{self->mutex};
-            done = self->shutdown_done;
-            error = self->shutdown_error;
+            done = attempt->done;
+            error = attempt->error;
          }
          if (done) {
             if (error) { std::rethrow_exception(error); }
             co_return;
          }
-         (void)co_await self->changed.async_wait(epoch);
+         (void)co_await attempt->completed.async_wait(epoch);
       }
    }
 
@@ -207,21 +219,30 @@ boost::asio::awaitable<void> pubsub_service::shutdown_joined(std::shared_ptr<pub
          auto leave = false;
          {
             const auto lock = std::scoped_lock{self->mutex};
-            handlers.swap(topic->handlers);
-            partial = std::move(topic->partial);
+            partial = topic->partial;
             leave = topic->native_dirty;
          }
-         handlers.clear();
-         if (partial) { partial->stop.request_stop(); partial.reset(); }
-         if (!leave) { continue; }
+         if (partial) { partial->stop.request_stop(); }
          auto error = std::exception_ptr{};
-         try { co_await self->operations.unsubscribe(source, topic->subject); }
-         catch (...) { error = std::current_exception(); }
+         if (leave) {
+            try { co_await self->operations.unsubscribe(source, topic->subject); }
+            catch (...) { error = std::current_exception(); }
+         }
+         auto retired_error = std::exception_ptr{};
          {
             const auto lock = std::scoped_lock{self->mutex};
+            std::swap(retired_error, topic->leave_error);
             topic->leave_error = error;
-            if (!error) { topic->native_dirty = false; topic->joined = false; }
+            if (!error) {
+               topic->native_dirty = false;
+               topic->joined = false;
+               handlers.swap(topic->handlers);
+               partial = std::move(topic->partial);
+            }
          }
+         // Failed topics keep their captures and native owner for retry.
+         handlers.clear();
+         partial.reset();
          if (error && !failure) { failure = error; }
       }
    } catch (...) {
@@ -235,15 +256,15 @@ boost::asio::awaitable<void> pubsub_service::shutdown_joined(std::shared_ptr<pub
          self->initialized = false;
       }
    }
-   // Dispose callback captures and the source before publishing actual shutdown completion.
    retired.clear();
    source.reset();
    {
       const auto lock = std::scoped_lock{self->mutex};
-      self->shutdown_error = failure;
-      self->shutdown_done = true;
-      self->shutdown_running = false;
+      attempt->error = failure;
+      attempt->terminal = !failure;
+      attempt->done = true;
    }
+   attempt->completed.notify();
    self->changed.notify();
    if (failure) { std::rethrow_exception(failure); }
 }

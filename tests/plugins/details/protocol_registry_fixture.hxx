@@ -33,9 +33,11 @@ class protocol_registry_fixture {
    [[nodiscard]] std::size_t removals() const;
    [[nodiscard]] std::optional<bool> last_remove_result() const;
    [[nodiscard]] forge::api::p2p::publication publish(forge::net::p2p::protocol_id protocol);
+   [[nodiscard]] boost::asio::awaitable<void> incoming(forge::net::p2p::protocol_id protocol);
    void run(boost::asio::awaitable<void> operation);
    [[nodiscard]] static forge::net::p2p::node::protocol_handler handler();
 
+   forge::app::plugin_lifecycle lifecycle;
    std::shared_ptr<detail::protocol_registry> owner;
    std::shared_ptr<const detail::protocol_operations> operations;
 

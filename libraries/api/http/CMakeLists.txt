@@ -21,6 +21,7 @@ target_link_libraries(
       forge_net_transport
       forge_codec_json
       forge_codec_xml
+      forge_exceptions
       forge_raw
       forge_reflect
       forge_schema

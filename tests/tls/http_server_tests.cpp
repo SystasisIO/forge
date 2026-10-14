@@ -53,7 +53,6 @@ import forge.api.http.binding;
 import forge.api.http.proxy;
 import forge.app.events;
 import forge.app.plugin_context;
-import forge.app.signals;
 import forge.chain.api.block_signer;
 import forge.chain.api.exceptions;
 import forge.chain.api.transaction_signer;
@@ -576,8 +575,7 @@ BOOST_AUTO_TEST_CASE(http_mtls_roundtrips_transaction_and_block_signer_with_one_
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto registry = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = signer::plugin{signer::plugin_options{
        .providers = {{.name = "k1", .value = provider}},
        .initial_config = std::move(settings),
@@ -585,7 +583,7 @@ BOOST_AUTO_TEST_CASE(http_mtls_roundtrips_transaction_and_block_signer_with_one_
    }};
    auto installer = forge::api::core::installer{registry};
    forge::asio::blocking::run(runtime, plugin.provide(installer));
-   auto plugin_context = forge::app::plugin_context{scheduler, registry, signals, events};
+   auto plugin_context = forge::app::plugin_context{scheduler, registry, events};
    forge::asio::blocking::run(runtime, plugin.initialize(plugin_context));
    forge::asio::blocking::run(runtime, plugin.startup());
 
@@ -692,8 +690,7 @@ BOOST_AUTO_TEST_CASE(http_mtls_wallet_lifecycle_authorization_and_secret_redacti
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto registry = forge::api::core::registry{};
-   auto signals = forge::app::signal_bus{};
-   auto events = forge::app::event_bus{};
+   auto events = forge::app::event_journal{};
    auto plugin = wallet_plugin::plugin{
        {.initial_config = {
             .directory = path,
@@ -709,7 +706,7 @@ BOOST_AUTO_TEST_CASE(http_mtls_wallet_lifecycle_authorization_and_secret_redacti
    auto installer = forge::api::core::installer{registry};
    forge::asio::blocking::run(runtime, plugin.provide(installer));
    auto compute = forge::asio::compute::pool{{.worker_threads = 2}};
-   auto context = forge::app::plugin_context{scheduler, registry, signals, events, nullptr, {}, compute.get_executor()};
+   auto context = forge::app::plugin_context{scheduler, registry, events, nullptr, {}, compute.get_executor()};
    forge::asio::blocking::run(runtime, plugin.initialize(context));
    forge::asio::blocking::run(runtime, plugin.startup());
    auto stop = boost::scope::scope_exit{[&] { forge::asio::blocking::run(runtime, plugin.shutdown()); }};

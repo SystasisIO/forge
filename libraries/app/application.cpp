@@ -1,62 +1,67 @@
 module;
 
+#include "details/lifecycle_log.hxx"
+
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
 #include <exception>
 #include <memory>
-#include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
 
 module forge.app.application;
 
-import forge.config.core.component;
-import forge.config.core.document;
-import forge.api.core.exceptions;
-import forge.api.core.types;
-import forge.api.core.descriptor;
-import forge.api.core.error_projection;
-import forge.api.core.handle;
-import forge.api.core.connection;
-import forge.api.core.registry;
-import forge.api.core.binding;
-import forge.api.core.dispatcher;
-import forge.exceptions;
 import forge.app.events;
-import forge.app.signals;
+import forge.app.exceptions;
+import forge.app.plugin_lifecycle;
 
 namespace forge::app {
 namespace {
 
-std::string exception_message() {
+void publish_lifecycle_event(plugin_context& context, event_severity severity, const plugin& owner,
+                             const char* transition, std::exception_ptr failure = {}) noexcept {
    try {
-      throw;
-   } catch (const forge::exceptions::base& error) {
-      return error.message();
-   } catch (const std::exception& error) {
-      return error.what();
+      const auto id = owner.id();
+      context.events().publish(severity, "app.plugin." + id.value + "." + transition,
+                               failure ? "lifecycle operation failed" : transition);
    } catch (...) {
-      return "unknown error";
+      // History is best effort; lifecycle and cleanup never depend on it.
    }
-}
-
-void publish_lifecycle_event(plugin_context* context, event_severity severity, const plugin_id& id,
-                             const char* transition, std::string message = {}) {
-   if (message.empty()) {
-      message = transition;
-   }
-   context->events().publish(severity, "app.plugin." + id.value + "." + transition, std::move(message));
 }
 
 } // namespace
 
 application_runtime::application_runtime(plugin_context& context, std::vector<std::unique_ptr<plugin>> plugins,
                                          diagnostics_store* diagnostics)
-    : context_{&context}, diagnostics_{diagnostics}, plugins_{std::move(plugins)} {}
+    : application_runtime{context, std::move(plugins), plugin_lifecycle{}, diagnostics} {
+   owns_lifecycle_ = true;
+   if (diagnostics) {
+      diagnostics->bind_application(lifecycle());
+   }
+}
+
+application_runtime::application_runtime(plugin_context& context, std::vector<std::unique_ptr<plugin>> plugins,
+                                         plugin_lifecycle lifecycle, diagnostics_store* diagnostics)
+    : context_{&context}, plugins_{std::move(plugins)}, lifecycle_{std::move(lifecycle)} {
+   if (diagnostics) {
+      for (const auto& value : plugins_) {
+         diagnostics->bind_plugin(value->id().value, value->version(), value->lifecycle());
+      }
+   }
+}
 
 application_runtime::~application_runtime() {
    request_stop();
+   if (owns_lifecycle_) {
+      lifecycle_.abandon_owner();
+   }
 }
 
 config::core::component_registry application_runtime::describe_config() const {
@@ -69,11 +74,7 @@ config::core::component_registry application_runtime::describe_config() const {
    return registry;
 }
 
-boost::asio::awaitable<void> application_runtime::configure(const config::core::document& document) {
-   if (state_ != application_state::created) {
-      throw std::logic_error{"app runtime must be configured before initialize"};
-   }
-
+boost::asio::awaitable<void> application_runtime::configure_plugins(const config::core::document& document) {
    for (auto& value : plugins_) {
       auto section = value->id().value;
       if (auto descriptor = value->describe_config()) {
@@ -83,238 +84,268 @@ boost::asio::awaitable<void> application_runtime::configure(const config::core::
    }
 }
 
-boost::asio::awaitable<void> application_runtime::provide(forge::api::core::provider& provider) {
-   if (state_ != application_state::created) {
-      throw std::logic_error{"app runtime must provide APIs before initialize"};
+boost::asio::awaitable<void> application_runtime::configure(const config::core::document& document) {
+   auto operation = co_await lifecycle_.begin(lifecycle_operation::configure);
+   if (!operation) {
+      co_return;
    }
-
-   for (auto& value : plugins_) {
-      const auto id = value->id();
-      const auto version = value->version();
+   detail::log_application_operation(lifecycle_.snapshot(), "configure", true);
+   auto failure = std::exception_ptr{};
+   try {
+      co_await configure_plugins(document);
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   failure = operation.complete(failure);
+   detail::log_application_operation(lifecycle_.snapshot(), "configure", false, failure);
+   if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+      co_await boost::asio::this_coro::throw_if_cancelled(false);
       try {
-         publish_lifecycle_event(context_, event_severity::info, id, "providing");
-         co_await value->provide(provider);
-         publish_lifecycle_event(context_, event_severity::info, id, "provided");
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
       } catch (...) {
-         const auto message = exception_message();
-         if (diagnostics_) {
-            diagnostics_->set_plugin_state(id.value, version, lifecycle_state::failed, "provide", message);
-         }
-         publish_lifecycle_event(context_, event_severity::error, id, "failed", message);
+         failure = std::current_exception();
+      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
+      std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<void> application_runtime::provide_plugins(forge::api::core::provider& provider) {
+   for (auto& value : plugins_) {
+      try {
+         publish_lifecycle_event(*context_, event_severity::info, *value, "providing");
+         co_await value->provide(provider);
+         publish_lifecycle_event(*context_, event_severity::info, *value, "provided");
+      } catch (...) {
+         publish_lifecycle_event(*context_, event_severity::error, *value, "failed", std::current_exception());
+         throw;
+      }
+   }
+}
+
+boost::asio::awaitable<void> application_runtime::provide(forge::api::core::provider& provider) {
+   auto operation = co_await lifecycle_.begin(lifecycle_operation::provide);
+   if (!operation) {
+      co_return;
+   }
+   detail::log_application_operation(lifecycle_.snapshot(), "provide", true);
+   auto failure = std::exception_ptr{};
+   try {
+      co_await provide_plugins(provider);
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   failure = operation.complete(failure);
+   detail::log_application_operation(lifecycle_.snapshot(), "provide", false, failure);
+   if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+      co_await boost::asio::this_coro::throw_if_cancelled(false);
+      try {
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
+      std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<void> application_runtime::initialize_plugins() {
+   for (auto& value : plugins_) {
+      try {
+         publish_lifecycle_event(*context_, event_severity::info, *value, "initializing");
+         co_await value->initialize(*context_);
+      } catch (...) {
+         publish_lifecycle_event(*context_, event_severity::error, *value, "failed", std::current_exception());
+         throw;
+      }
+   }
+   for (auto& value : plugins_) {
+      try {
+         co_await value->after_initialize();
+         publish_lifecycle_event(*context_, event_severity::info, *value, "initialized");
+      } catch (...) {
+         publish_lifecycle_event(*context_, event_severity::error, *value, "failed", std::current_exception());
          throw;
       }
    }
 }
 
 boost::asio::awaitable<void> application_runtime::initialize() {
-   if (state_ != application_state::created) {
+   auto operation = co_await lifecycle_.begin_joined(lifecycle_operation::initialize);
+   if (!operation) {
       co_return;
    }
-
-   auto has_after_initialize_failure = false;
-   auto failed_plugin_id = std::string{};
-   auto failed_plugin_version = std::string{};
-   auto failed_plugin_message = std::string{};
+   detail::log_application_operation(lifecycle_.snapshot(), "initialize", true);
    auto failure = std::exception_ptr{};
-   auto failure_message = std::string{};
    try {
-      for (auto& value : plugins_) {
-         const auto id = value->id();
-         const auto version = value->version();
-         try {
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::initializing, "initialize");
-            }
-            publish_lifecycle_event(context_, event_severity::info, id, "initializing");
-            context_->signals().plugin_initializing(plugin_signal{.plugin = id.value});
-            co_await value->initialize(*context_);
-            ++initialized_count_;
-         } catch (...) {
-            const auto message = exception_message();
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::failed, "initialize", message);
-            }
-            publish_lifecycle_event(context_, event_severity::error, id, "failed", message);
-            throw;
-         }
-      }
-
-      for (auto index = std::size_t{0}; index < initialized_count_; ++index) {
-         auto& value = plugins_[index];
-         const auto id = value->id();
-         const auto version = value->version();
-         try {
-            co_await value->after_initialize();
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::initialized, "after_initialize");
-            }
-            context_->signals().plugin_initialized(plugin_signal{.plugin = id.value});
-            publish_lifecycle_event(context_, event_severity::info, id, "initialized");
-         } catch (...) {
-            const auto message = exception_message();
-            has_after_initialize_failure = true;
-            failed_plugin_id = id.value;
-            failed_plugin_version = version;
-            failed_plugin_message = message;
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::failed, "after_initialize",
-                                              message);
-            }
-            publish_lifecycle_event(context_, event_severity::error, id, "failed", message);
-            throw;
-         }
-      }
-      state_ = application_state::initialized;
+      co_await initialize_plugins();
    } catch (...) {
-      failure_message = exception_message();
-      if (diagnostics_) {
-         diagnostics_->set_application_state(lifecycle_state::failed, "initialize", failure_message);
-      }
       failure = std::current_exception();
    }
-
+   failure = operation.complete(failure);
+   detail::log_application_operation(lifecycle_.snapshot(), "initialize", false, failure);
    if (failure) {
-      request_stop();
-      auto cleanup_succeeded = true;
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+      co_await boost::asio::this_coro::throw_if_cancelled(false);
       try {
-         co_await shutdown();
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
       } catch (...) {
-         cleanup_succeeded = false;
+         failure = std::current_exception();
       }
-      if (diagnostics_ && has_after_initialize_failure) {
-         diagnostics_->set_plugin_state(std::move(failed_plugin_id), std::move(failed_plugin_version),
-                                        lifecycle_state::failed, "after_initialize",
-                                        std::move(failed_plugin_message));
-      }
-      if (diagnostics_) {
-         diagnostics_->set_application_state(lifecycle_state::failed, "initialize", std::move(failure_message));
-      }
-      if (cleanup_succeeded) {
-         state_ = application_state::stopped;
-      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
       std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<void> application_runtime::startup_plugins() {
+   for (auto& value : plugins_) {
+      try {
+         publish_lifecycle_event(*context_, event_severity::info, *value, "starting");
+         co_await value->startup();
+         publish_lifecycle_event(*context_, event_severity::info, *value, "started");
+      } catch (...) {
+         publish_lifecycle_event(*context_, event_severity::error, *value, "failed", std::current_exception());
+         throw;
+      }
    }
 }
 
 boost::asio::awaitable<void> application_runtime::startup() {
-   if (state_ == application_state::stopped) {
-      throw std::logic_error{"app runtime cannot startup after shutdown"};
-   }
-   if (state_ == application_state::created) {
+   if (!lifecycle_.snapshot().completed(lifecycle_operation::initialize)) {
       co_await initialize();
    }
-   if (state_ == application_state::started) {
+   auto operation = co_await lifecycle_.begin(lifecycle_operation::startup);
+   if (!operation) {
       co_return;
    }
-
-   auto has_startup_failure = false;
-   auto failed_plugin_id = std::string{};
-   auto failed_plugin_version = std::string{};
-   auto failed_plugin_message = std::string{};
+   detail::log_application_operation(lifecycle_.snapshot(), "startup", true);
    auto failure = std::exception_ptr{};
-   auto failure_message = std::string{};
    try {
-      for (auto& value : plugins_) {
-         const auto id = value->id();
-         const auto version = value->version();
-         try {
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::starting, "startup");
-            }
-            publish_lifecycle_event(context_, event_severity::info, id, "starting");
-            context_->signals().plugin_starting(plugin_signal{.plugin = id.value});
-            co_await value->startup();
-            ++started_count_;
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::started, "startup");
-            }
-            context_->signals().plugin_started(plugin_signal{.plugin = id.value});
-            publish_lifecycle_event(context_, event_severity::info, id, "started");
-         } catch (...) {
-            const auto message = exception_message();
-            has_startup_failure = true;
-            failed_plugin_id = id.value;
-            failed_plugin_version = version;
-            failed_plugin_message = message;
-            if (diagnostics_) {
-               diagnostics_->set_plugin_state(id.value, version, lifecycle_state::failed, "startup", message);
-            }
-            publish_lifecycle_event(context_, event_severity::error, id, "failed", message);
-            throw;
-         }
-      }
-      state_ = application_state::started;
+      co_await startup_plugins();
    } catch (...) {
-      failure_message = exception_message();
-      if (diagnostics_) {
-         diagnostics_->set_application_state(lifecycle_state::failed, "startup", failure_message);
-      }
       failure = std::current_exception();
    }
-
+   failure = operation.complete(failure);
+   detail::log_application_operation(lifecycle_.snapshot(), "startup", false, failure);
    if (failure) {
+      const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+      co_await boost::asio::this_coro::throw_if_cancelled(false);
       try {
-         co_await shutdown();
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, rollback(failure),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
       } catch (...) {
+         failure = std::current_exception();
       }
-      if (diagnostics_ && has_startup_failure) {
-         diagnostics_->set_plugin_state(std::move(failed_plugin_id), std::move(failed_plugin_version),
-                                        lifecycle_state::failed, "startup", std::move(failed_plugin_message));
-      }
-      if (diagnostics_) {
-         diagnostics_->set_application_state(lifecycle_state::failed, "startup", std::move(failure_message));
-      }
+      co_await boost::asio::this_coro::throw_if_cancelled(throws);
       std::rethrow_exception(failure);
    }
 }
 
-boost::asio::awaitable<void> application_runtime::shutdown() {
-   const auto had_initialized_plugins = initialized_count_ > 0;
-   while (initialized_count_ > 0) {
-      auto& value = plugins_[initialized_count_ - 1];
-      const auto id = value->id();
-      const auto version = value->version();
-      try {
-         if (diagnostics_) {
-            diagnostics_->set_plugin_state(id.value, version, lifecycle_state::stopping, "shutdown");
-         }
-         publish_lifecycle_event(context_, event_severity::info, id, "stopping");
-         context_->signals().plugin_stopping(plugin_signal{.plugin = id.value});
-         co_await value->shutdown();
-      } catch (...) {
-         const auto failure = std::current_exception();
-         const auto message = exception_message();
-         if (diagnostics_) {
-            diagnostics_->set_plugin_state(id.value, version, lifecycle_state::failed, "shutdown", message);
-            diagnostics_->set_application_state(lifecycle_state::failed, "shutdown", message);
-         }
-         publish_lifecycle_event(context_, event_severity::error, id, "failed", message);
-         std::rethrow_exception(failure);
-      }
-
-      if (started_count_ == initialized_count_) {
-         --started_count_;
-      }
-      --initialized_count_;
-      if (diagnostics_) {
-         diagnostics_->set_plugin_state(id.value, version, lifecycle_state::stopped, "shutdown");
-      }
-      context_->signals().plugin_stopped(plugin_signal{.plugin = id.value});
-      publish_lifecycle_event(context_, event_severity::info, id, "stopped");
+boost::asio::awaitable<void> application_runtime::rollback(std::exception_ptr failure) {
+   // Run on an independently spawned, uncancelled coroutine thread.
+   try {
+      co_await shutdown_owned();
+   } catch (...) {
+      std::throw_with_nested(exceptions::shutdown_failed{"application rollback failed"});
    }
-   if (had_initialized_plugins || state_ != application_state::created) {
-      state_ = application_state::stopped;
+   std::rethrow_exception(failure);
+}
+
+boost::asio::awaitable<void> application_runtime::shutdown_plugins() {
+   for (auto index = plugins_.size(); index > 0; --index) {
+      auto& value = plugins_[index - 1];
+      if (value->lifecycle().snapshot().phase == lifecycle_phase::stopped) {
+         continue;
+      }
+      try {
+         publish_lifecycle_event(*context_, event_severity::info, *value, "stopping");
+         co_await value->shutdown();
+         publish_lifecycle_event(*context_, event_severity::info, *value, "stopped");
+      } catch (...) {
+         publish_lifecycle_event(*context_, event_severity::error, *value, "failed", std::current_exception());
+         // A failed dependent still owns its dependencies. Retain the reverse
+         // dependency barrier and retry it before tearing those dependencies down.
+         throw;
+      }
    }
 }
 
-void application_runtime::request_stop() noexcept {
+boost::asio::awaitable<void> application_runtime::shutdown() {
+   const auto throws = co_await boost::asio::this_coro::throw_if_cancelled();
+   co_await boost::asio::this_coro::throw_if_cancelled(false);
+   auto failure = std::exception_ptr{};
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   try {
+      auto stop = std::stop_source{};
+      if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+         static_cast<void>(stop.request_stop());
+      }
+      if (cancellation.slot().is_connected()) {
+         cancellation.slot().assign([stop](boost::asio::cancellation_type_t type) mutable {
+            if (type != boost::asio::cancellation_type::none) {
+               static_cast<void>(stop.request_stop());
+            }
+         });
+      }
+      co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor, shutdown_owned(stop.get_token()),
+          boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   cancellation.slot().clear();
+   co_await boost::asio::this_coro::throw_if_cancelled(throws);
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
+}
+
+boost::asio::awaitable<void> application_runtime::shutdown_owned(std::stop_token stop) {
+   request_stop();
+   auto operation = co_await lifecycle_.begin(lifecycle_operation::shutdown, std::move(stop));
+   if (!operation) {
+      co_return;
+   }
+   detail::log_application_operation(lifecycle_.snapshot(), "shutdown", true);
+   auto failure = std::exception_ptr{};
+   try {
+      co_await shutdown_plugins();
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   failure = operation.complete(failure);
+   detail::log_application_operation(lifecycle_.snapshot(), "shutdown", false, failure);
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
+}
+
+void application_runtime::stop_plugins() noexcept {
    for (auto& value : plugins_) {
       value->request_stop();
    }
 }
 
-application_state application_runtime::state() const noexcept {
-   return state_;
+void application_runtime::request_stop() noexcept {
+   const auto before = lifecycle_.snapshot();
+   if (lifecycle_.request_stop()) {
+      stop_plugins();
+      lifecycle_.complete_stop();
+      detail::log_application_stop(lifecycle_.snapshot(), before.phase != lifecycle_phase::created &&
+                                  before.phase != lifecycle_phase::configured);
+   }
+}
+
+lifecycle_phase application_runtime::state() const noexcept {
+   return lifecycle_.snapshot().phase;
+}
+
+lifecycle_observer application_runtime::lifecycle() const noexcept {
+   return lifecycle_.observer();
 }
 
 std::size_t application_runtime::plugin_count() const noexcept {
