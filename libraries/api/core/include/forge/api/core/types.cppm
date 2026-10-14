@@ -9,6 +9,8 @@ module;
 
 export module forge.api.core.types;
 
+import forge.raw.enum_wire_type;
+
 export namespace forge::api::core {
 
 using bytes = std::vector<std::uint8_t>;
@@ -259,3 +261,32 @@ BOOST_DESCRIBE_STRUCT(response, (), (api, method, meta, codec, body, error))
 BOOST_DESCRIBE_STRUCT(frame, (), (kind, id, api, method, meta, codec, payload))
 
 } // namespace forge::api::core
+
+export namespace forge::raw {
+
+template <> struct enum_wire_type<api::core::frame_kind> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+template <> struct enum_wire_type<api::core::method_kind> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+template <> struct enum_wire_type<api::core::stream_direction> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+template <> struct enum_wire_type<api::core::capability> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+template <> struct enum_wire_type<api::core::surface> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+template <> struct enum_wire_type<api::core::status> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+
+} // namespace forge::raw

@@ -777,6 +777,7 @@ add_subdirectory(libraries/raw)
 add_subdirectory(libraries/compression)
 add_subdirectory(libraries/chain)
 add_subdirectory(libraries/vm)
+add_subdirectory(libraries/execution)
 add_subdirectory(libraries/db/ids)
 add_subdirectory(libraries/db/core)
 add_subdirectory(libraries/db/object)
@@ -804,6 +805,7 @@ set(
    forge_chain_fork
    forge_chain_savanna
    forge_vm_wasm_interpret
+   forge_execution_wasm
    forge_db_ids
    forge_db_core
    forge_db_object
@@ -827,6 +829,13 @@ set(
    forge_crypto_bn256
    forge_asio
 )
+
+if(FORGE_CONTRACT_SDK_HOST_PROFILE)
+   add_subdirectory(libraries/api/core)
+   add_subdirectory(libraries/net/http)
+   add_subdirectory(libraries/api/wasm)
+endif()
+list(APPEND FORGE_LEAF_TARGETS forge_api_core_values forge_net_http_values forge_api_wasm)
 
 if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    add_subdirectory(libraries/db/blob)
@@ -985,6 +994,7 @@ set(
    chain_fork
    chain_savanna
    vm_wasm_interpret
+   execution_wasm
    db_core
    db_object
    config_core
@@ -1006,6 +1016,9 @@ set(
    crypto_bls
    crypto_bn256
    asio
+   api_core_values
+   net_http_values
+   api_wasm
 )
 if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    list(

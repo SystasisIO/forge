@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <flat_map>
@@ -15,11 +16,14 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
+import forge.api.core.types;
 import forge.exceptions;
 import forge.codec.hex;
 import forge.crypto.digest.sha256;
+import forge.net.http.method;
 import forge.raw.datastream;
 import forge.raw.exceptions;
 import forge.raw.raw;
@@ -228,6 +232,115 @@ forge::datastream<const std::uint8_t*>& operator>>(forge::datastream<const std::
    return stream;
 }
 
+namespace forge::tests::native_wire_baseline {
+
+enum class described_narrow_mode : std::int16_t {
+   negative = -2,
+   positive = 0x1234,
+};
+
+enum class plain_narrow_mode : std::int16_t {
+   negative = -2,
+   positive = 0x1234,
+};
+
+struct status_fixture {
+   api::core::status value;
+   std::uint16_t number;
+   std::string_view hex;
+};
+
+constexpr auto status_fixtures = std::array{
+   status_fixture{api::core::status::ok, 0, "0000000000000000"},
+   status_fixture{api::core::status::invalid_argument, 400, "9001000000000000"},
+   status_fixture{api::core::status::unauthenticated, 401, "9101000000000000"},
+   status_fixture{api::core::status::permission_denied, 403, "9301000000000000"},
+   status_fixture{api::core::status::not_found, 404, "9401000000000000"},
+   status_fixture{api::core::status::conflict, 409, "9901000000000000"},
+   status_fixture{api::core::status::failed_precondition, 412, "9c01000000000000"},
+   status_fixture{api::core::status::resource_exhausted, 429, "ad01000000000000"},
+   status_fixture{api::core::status::deadline_exceeded, 504, "f801000000000000"},
+   status_fixture{api::core::status::unavailable, 503, "f701000000000000"},
+   status_fixture{api::core::status::internal, 500, "f401000000000000"},
+   status_fixture{api::core::status::bad_gateway, 502, "f601000000000000"},
+};
+
+constexpr auto error_hex = std::string_view{
+   "0145"              // error
+   "036d7367"          // message
+   "01"                // retryable
+   "9901000000000000"  // status_code: native described enum, int64
+   "03636174"          // identity.category
+   "04030201"          // identity.code
+   "0103726177"        // details_codec: present codec_id{"raw"}
+   "01030080ff"        // details: present bytes{0x00, 0x80, 0xff}
+};
+
+constexpr auto default_error_hex = std::string_view{
+   "00"                // error
+   "00"                // message
+   "00"                // retryable
+   "f401000000000000"  // status_code: internal
+   "00"                // identity.category
+   "00000000"          // identity.code
+   "00"                // details_codec: absent
+   "00"                // details: absent
+};
+
+template <typename T> void check_fixture(const T& value, std::string_view hex) {
+   const auto expected = forge::codec::hex::decode(hex);
+   const auto encoded = forge::raw::pack(value);
+   BOOST_CHECK_EQUAL(forge::codec::hex::encode(encoded), hex);
+   BOOST_CHECK_EQUAL(encoded.size(), expected.size());
+   BOOST_CHECK_EQUAL(forge::raw::pack_size(value), expected.size());
+   // Decode the independent fixture, not the encoder's output.
+   BOOST_CHECK(forge::raw::unpack<T>(expected) == value);
+   BOOST_CHECK(forge::raw::unpack_exact<T>(expected) == value);
+}
+
+template <typename T> void check_truncated_fixture(std::string_view hex) {
+   const auto expected = forge::codec::hex::decode(hex);
+   for (auto size = std::size_t{}; size < expected.size(); ++size) {
+      BOOST_TEST_CONTEXT("prefix bytes=" << size) {
+         const auto prefix = std::span<const std::uint8_t>{expected}.first(size);
+         BOOST_CHECK_THROW(forge::raw::unpack_exact<T>(prefix), forge::raw::exceptions::range_error);
+      }
+   }
+}
+
+template <typename T> void check_trailing_fixture(const T& value, std::string_view hex) {
+   auto trailing = forge::codec::hex::decode(hex);
+   trailing.push_back(0x7fU);
+   // Only unpack_exact promises to reject trailing bytes.
+   BOOST_CHECK(forge::raw::unpack<T>(trailing) == value);
+   BOOST_CHECK_THROW(forge::raw::unpack_exact<T>(trailing), forge::raw::exceptions::codec_error);
+}
+
+api::core::error_payload sample_error() {
+   return {
+      .error = "E",
+      .message = "msg",
+      .retryable = true,
+      .status_code = api::core::status::conflict,
+      .identity = {.category = "cat", .code = 0x01020304U},
+      .details_codec = api::core::codec_id{.value = "raw"},
+      .details = api::core::bytes{0x00U, 0x80U, 0xffU},
+   };
+}
+
+enum class legacy_override_mode : std::uint16_t { value = 400 };
+
+BOOST_DESCRIBE_ENUM(described_narrow_mode, negative, positive)
+BOOST_DESCRIBE_ENUM(legacy_override_mode, value)
+
+} // namespace forge::tests::native_wire_baseline
+
+namespace forge::raw {
+template <> struct enum_wire_type<forge::tests::native_wire_baseline::legacy_override_mode> {
+   using type = std::int32_t;
+};
+}
+
 BOOST_AUTO_TEST_SUITE(raw_test_suite)
 
 template <typename Stream>
@@ -288,6 +401,200 @@ BOOST_AUTO_TEST_CASE(boost_describe_enum_uses_old_reflected_enum_int64_layout) {
    const auto unpacked = forge::raw::unpack<described_mode>(packed);
    BOOST_CHECK(unpacked == described_mode::write);
 }
+
+BOOST_AUTO_TEST_SUITE(native_wire_values_baseline)
+
+namespace baseline = forge::tests::native_wire_baseline;
+
+BOOST_AUTO_TEST_CASE(all_api_status_constants_keep_native_int64_bytes) {
+   static_assert(std::same_as<std::underlying_type_t<forge::api::core::status>, std::uint16_t>);
+   static_assert(std::same_as<forge::raw::enum_wire_type_t<forge::api::core::status>, std::int64_t>);
+
+   for (const auto& fixture : baseline::status_fixtures) {
+      BOOST_TEST_CONTEXT("status=" << fixture.number) {
+         BOOST_CHECK_EQUAL(static_cast<std::uint16_t>(fixture.value), fixture.number);
+         BOOST_CHECK_EQUAL(forge::raw::pack(fixture.value).size(), 8U);
+         baseline::check_fixture(fixture.value, fixture.hex);
+         baseline::check_truncated_fixture<forge::api::core::status>(fixture.hex);
+         baseline::check_trailing_fixture(fixture.value, fixture.hex);
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(api_status_array_keeps_underlying_object_bytes) {
+   using status = forge::api::core::status;
+   const auto value = std::array<status, 2>{status::invalid_argument, status::bad_gateway};
+   // std::array copies enum object bytes; it does not call the scalar described-enum codec.
+   baseline::check_fixture(value, "9001f601");
+   BOOST_CHECK_EQUAL(forge::raw::pack(value).size(), 4U);
+   baseline::check_truncated_fixture<std::array<status, 2>>("9001f601");
+   baseline::check_trailing_fixture(value, "9001f601");
+}
+
+BOOST_AUTO_TEST_CASE(api_status_vector_keeps_size_prefix_and_int64_elements) {
+   using status = forge::api::core::status;
+   const auto value = std::vector<status>{status::invalid_argument, status::bad_gateway};
+   constexpr auto hex = std::string_view{"02" "9001000000000000" "f601000000000000"};
+   baseline::check_fixture(value, hex);
+   BOOST_CHECK_EQUAL(forge::raw::pack(value).size(), 17U);
+   baseline::check_truncated_fixture<std::vector<status>>(hex);
+   baseline::check_trailing_fixture(value, hex);
+}
+
+BOOST_AUTO_TEST_CASE(api_status_c_array_keeps_size_prefix_and_int64_elements) {
+   using status = forge::api::core::status;
+   const status value[2]{status::invalid_argument, status::bad_gateway};
+   const auto expected = forge::codec::hex::decode("029001000000000000f601000000000000");
+   BOOST_CHECK(forge::raw::pack(value) == expected);
+   status decoded[2]{};
+   forge::raw::unpack_exact(expected, decoded);
+   BOOST_CHECK(decoded[0] == value[0]);
+   BOOST_CHECK(decoded[1] == value[1]);
+   auto wrong_count = expected;
+   wrong_count.front() = 1;
+   BOOST_CHECK_THROW(forge::raw::unpack_exact(wrong_count, decoded), forge::raw::exceptions::codec_error);
+}
+
+BOOST_AUTO_TEST_CASE(native_default_enum_codecs_keep_width_and_signedness) {
+   baseline::check_fixture(baseline::described_narrow_mode::negative, "feffffffffffffff");
+   baseline::check_fixture(baseline::described_narrow_mode::positive, "3412000000000000");
+   baseline::check_fixture(baseline::plain_narrow_mode::negative, "feff");
+   baseline::check_fixture(baseline::plain_narrow_mode::positive, "3412");
+   static_assert(!forge::raw::shared_enum_wire_v<baseline::legacy_override_mode>);
+   baseline::check_fixture(baseline::legacy_override_mode::value, "90010000");
+}
+
+BOOST_AUTO_TEST_CASE(http_method_constants_keep_native_int32_bytes) {
+   using method = forge::net::http::method;
+   static_assert(sizeof(std::underlying_type_t<method>) == 4U);
+   static_assert(std::is_signed_v<std::underlying_type_t<method>>);
+
+   struct fixture {
+      method value;
+      int number;
+      std::string_view hex;
+   };
+   constexpr auto fixtures = std::array{
+      fixture{method::unknown, 0, "00000000"},
+      fixture{method::delete_, 1, "01000000"},
+      fixture{method::get, 2, "02000000"},
+      fixture{method::head, 3, "03000000"},
+      fixture{method::options, 4, "04000000"},
+      fixture{method::patch, 5, "05000000"},
+      fixture{method::post, 6, "06000000"},
+      fixture{method::put, 7, "07000000"},
+   };
+   for (const auto& item : fixtures) {
+      BOOST_TEST_CONTEXT("HTTP method=" << item.number) {
+         BOOST_CHECK_EQUAL(static_cast<int>(item.value), item.number);
+         BOOST_CHECK_EQUAL(forge::raw::pack(item.value).size(), 4U);
+         baseline::check_fixture(item.value, item.hex);
+         baseline::check_truncated_fixture<method>(item.hex);
+         baseline::check_trailing_fixture(item.value, item.hex);
+      }
+   }
+   baseline::check_fixture(static_cast<method>(-1), "ffffffff");
+}
+
+BOOST_AUTO_TEST_CASE(enum_decoding_does_not_validate_named_enumerators) {
+   // These codecs check byte structure, not membership in the enum declaration.
+   baseline::check_fixture(static_cast<forge::api::core::status>(0xffffU), "ffff000000000000");
+   baseline::check_fixture(static_cast<forge::net::http::method>(8), "08000000");
+}
+
+BOOST_AUTO_TEST_CASE(api_error_defaults_identity_and_codec_id_keep_field_order) {
+   const auto defaults = forge::api::core::error_payload{};
+   BOOST_CHECK(!defaults.retryable);
+   BOOST_CHECK(defaults.status_code == forge::api::core::status::internal);
+   BOOST_CHECK_EQUAL(defaults.identity.code, 0U);
+   BOOST_CHECK(!defaults.details_codec.has_value());
+   BOOST_CHECK(!defaults.details.has_value());
+   baseline::check_fixture(defaults, baseline::default_error_hex);
+   baseline::check_fixture(forge::api::core::error_identity{.category = "cat", .code = 0x01020304U},
+                           "03636174" "04030201");
+   baseline::check_fixture(forge::api::core::codec_id{.value = "raw"}, "03726177");
+   baseline::check_fixture(baseline::sample_error(), baseline::error_hex);
+   BOOST_CHECK_EQUAL(forge::raw::pack(baseline::sample_error()).size(), 33U);
+}
+
+BOOST_AUTO_TEST_CASE(api_error_optional_presence_is_independent_and_empty_is_present) {
+   auto value = baseline::sample_error();
+   value.details_codec.reset();
+   value.details.reset();
+   baseline::check_fixture(value, "0145036d736701" "9901000000000000" "0363617404030201" "0000");
+
+   value.details_codec = forge::api::core::codec_id{.value = "raw"};
+   baseline::check_fixture(value, "0145036d736701" "9901000000000000" "0363617404030201" "0103726177" "00");
+
+   value.details_codec.reset();
+   value.details = forge::api::core::bytes{0x00U, 0x80U, 0xffU};
+   baseline::check_fixture(value, "0145036d736701" "9901000000000000" "0363617404030201" "00" "01030080ff");
+
+   value.details_codec = forge::api::core::codec_id{};
+   value.details = forge::api::core::bytes{};
+   baseline::check_fixture(value, "0145036d736701" "9901000000000000" "0363617404030201" "0100" "0100");
+
+   const auto absent = forge::codec::hex::decode(baseline::default_error_hex);
+   forge::raw::unpack_exact(absent, value);
+   BOOST_CHECK(value == forge::api::core::error_payload{});
+   BOOST_CHECK(!value.details_codec.has_value());
+   BOOST_CHECK(!value.details.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(response_nested_error_keeps_outer_and_inner_field_order) {
+   const auto value = forge::api::core::response{
+      .api = {.id = {.value = "svc"}, .major = 0x1234U, .min_revision = 0x5678U},
+      .method = "run",
+      .meta = {{.key = "k", .value = "v"}},
+      .codec = {.value = "raw"},
+      .body = {0xaaU, 0xbbU},
+      .error = baseline::sample_error(),
+   };
+   constexpr auto hex = std::string_view{
+      "03737663"          // api.id
+      "3412"              // api.major
+      "7856"              // api.min_revision
+      "0372756e"          // method
+      "01016b0176"        // meta
+      "03726177"          // codec
+      "02aabb"            // body
+      "01"                // error: present
+      "0145036d736701"    // error.error, message, retryable
+      "9901000000000000"  // error.status_code
+      "0363617404030201"  // error.identity
+      "0103726177"        // error.details_codec
+      "01030080ff"        // error.details
+   };
+   baseline::check_fixture(value, hex);
+   baseline::check_truncated_fixture<forge::api::core::response>(hex);
+   baseline::check_trailing_fixture(value, hex);
+}
+
+BOOST_AUTO_TEST_CASE(api_error_rejects_truncation_noncanonical_flags_and_bad_lengths) {
+   baseline::check_truncated_fixture<forge::api::core::error_payload>(baseline::error_hex);
+   baseline::check_truncated_fixture<forge::api::core::error_payload>(baseline::default_error_hex);
+   baseline::check_trailing_fixture(baseline::sample_error(), baseline::error_hex);
+   baseline::check_trailing_fixture(forge::api::core::error_payload{}, baseline::default_error_hex);
+
+   for (const auto offset : {6U, 23U, 28U}) {
+      BOOST_TEST_CONTEXT("bool/optional offset=" << offset) {
+         auto invalid = forge::codec::hex::decode(baseline::error_hex);
+         invalid.at(offset) = 0x02U;
+         BOOST_CHECK_THROW(forge::raw::unpack_exact<forge::api::core::error_payload>(invalid),
+                           forge::raw::exceptions::codec_error);
+      }
+   }
+
+   const auto overflow = forge::raw::bytes{0xffU, 0xffU, 0xffU, 0xffU, 0x10U};
+   BOOST_CHECK_THROW(forge::raw::unpack_exact<forge::api::core::error_payload>(overflow),
+                     forge::raw::exceptions::codec_error);
+   auto short_details = forge::codec::hex::decode(baseline::error_hex);
+   short_details.at(29U) = 0x04U;
+   BOOST_CHECK_THROW(forge::raw::unpack_exact<forge::api::core::error_payload>(short_details),
+                     forge::raw::exceptions::range_error);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_CASE(boost_describe_derived_types_pack_base_first_then_local_members) {
    described_child value;

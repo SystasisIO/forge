@@ -33,6 +33,7 @@ set(
    chain_fork
    chain_savanna
    vm_wasm_interpret
+   execution_wasm
    tooling_testing
    tooling_abi
    tooling_attributes
@@ -56,6 +57,8 @@ set(
    config_core
    config_program_options
    config_env
+   api_core_values
+   api_wasm
    api_core
    api_auth
    api_stream
@@ -100,6 +103,7 @@ set(
    auth_http
    app
    net_http
+   net_http_values
    net_s3
    api_http
    net_websocket
@@ -199,6 +203,11 @@ macro(_forge_add_component component)
          _forge_add_component(raw)
          _forge_add_component(variant)
       elseif("${component}" STREQUAL "vm_wasm_interpret")
+         _forge_add_component(exceptions)
+      elseif("${component}" STREQUAL "execution_wasm")
+         _forge_add_component(vm_wasm_interpret)
+         _forge_add_component(chain_protocol)
+         _forge_add_component(raw)
          _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "tooling_testing")
          if(NOT Forge_BUILT_WITH_TOOLING)
@@ -341,7 +350,15 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "config_env")
          _forge_add_component(config_core)
          _forge_add_component(schema)
+      elseif("${component}" STREQUAL "api_core_values" OR "${component}" STREQUAL "net_http_values")
+         _forge_add_component(raw)
+      elseif("${component}" STREQUAL "api_wasm")
+         _forge_add_component(api_core_values)
+         _forge_add_component(net_http_values)
+         _forge_add_component(raw)
+         _forge_add_component(exceptions)
       elseif("${component}" STREQUAL "api_core")
+         _forge_add_component(api_core_values)
          _forge_add_component(exceptions)
          _forge_add_component(raw)
       elseif("${component}" STREQUAL "api_stream")
@@ -531,6 +548,7 @@ macro(_forge_add_component component)
          _forge_add_component(config_program_options)
          _forge_add_component(codec_yaml)
       elseif("${component}" STREQUAL "net_http")
+         _forge_add_component(net_http_values)
          _forge_add_component(log)
          _forge_add_component(api_core)
          _forge_add_component(asio)
@@ -738,6 +756,7 @@ foreach(_forge_component IN LISTS _FORGE_COMPONENTS)
       NOT "${_forge_component}" STREQUAL "tui"
       AND NOT "${_forge_component}" STREQUAL "tooling_attributes"
       AND NOT "${_forge_component}" STREQUAL "crypto_bn256"
+      AND NOT "${_forge_component}" STREQUAL "net_http_values"
    )
       set(_FORGE_NEEDS_BOOST TRUE)
    endif()

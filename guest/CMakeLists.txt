@@ -548,7 +548,16 @@ install(
 install(DIRECTORY libraries/eosio/include/ DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/include")
 install(DIRECTORY "${_generated_dir}/include/" DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/include")
 install(
-   DIRECTORY "${_forge_contract_boost_include}/boost/pfr"
+   DIRECTORY
+      "${_forge_contract_boost_include}/boost/pfr"
+      "${_forge_contract_boost_include}/boost/describe"
+      "${_forge_contract_boost_include}/boost/mp11"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/include/boost"
+)
+install(
+   FILES
+      "${_forge_contract_boost_include}/boost/describe.hpp"
+      "${_forge_contract_boost_include}/boost/mp11.hpp"
    DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/include/boost"
 )
 install(
@@ -595,8 +604,33 @@ install(
    FILES
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/raw/include/forge/raw/stream.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/raw/include/forge/raw/varint_value.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/raw/include/forge/raw/enum_wire_type.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/raw/include/forge/raw/codec.cppm"
    DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/raw"
+)
+install(
+   FILES "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/core/include/forge/api/core/types.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/api/core"
+)
+install(
+   FILES "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/net/http/include/forge/net/http/method.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/net/http"
+)
+install(
+   FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/payload.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/continuation.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/effect.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/step.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/event.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/context.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/http_command.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/capability.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/limits.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/exceptions.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/validation.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/codec.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/api/wasm"
 )
 install(
    FILES "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/db/ids/include/forge/db/ids/typed_id.cppm"

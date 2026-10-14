@@ -74,6 +74,8 @@ file(MAKE_DIRECTORY "${_prefix}/sysroot/lib")
 foreach(_archive IN ITEMS
    libforge_guest_runtime.a
    libforge_guest_raw.a
+   libforge_guest_net_http_values.a
+   libforge_guest_api_wasm.a
    libforge_guest_codec_base64.a
    libforge_guest_codec_base58.a
    libforge_guest_codec_hex.a
@@ -123,6 +125,8 @@ set(_separator "")
 foreach(_archive IN ITEMS
    libforge_guest_runtime.a
    libforge_guest_raw.a
+   libforge_guest_net_http_values.a
+   libforge_guest_api_wasm.a
    libforge_guest_codec_base64.a
    libforge_guest_codec_base58.a
    libforge_guest_codec_hex.a
@@ -232,25 +236,28 @@ if(NOT _source_helper_result EQUAL 0)
    message(FATAL_ERROR "source helper failed to resolve the nested-libdir SDK prefix")
 endif()
 
-file(APPEND "${_prefix}/sysroot/lib/libforge_guest_raw.a" "tampered")
-execute_process(
-   COMMAND
-      "${CMAKE_COMMAND}"
-      -S "${_consumer}"
-      -B "${FORGE_CONTRACT_TEST_ROOT}/tampered-build"
-      -DForgeContract_DIR=${_config_dir}
-      -DRepeatedDependency_DIR=${_repeated_dependency}
-      -DCMAKE_TOOLCHAIN_FILE=${_config_dir}/ForgeContractToolchain.cmake
-      -DEXPECTED_PREFIX=${_prefix}
-      -DEXPECTED_PLUGIN=${_prefix}/${CMAKE_INSTALL_LIBDIR}/forge-contract/attr-plugin${CMAKE_SHARED_MODULE_SUFFIX}
-   RESULT_VARIABLE _tampered_result
-   OUTPUT_VARIABLE _tampered_output
-   ERROR_VARIABLE _tampered_error
-)
-if(_tampered_result EQUAL 0)
-   message(FATAL_ERROR "ForgeContractConfig accepted a foundation archive with a mismatched checksum")
-endif()
-string(FIND "${_tampered_output}${_tampered_error}" "archive checksum failed" _checksum_error)
-if(_checksum_error EQUAL -1)
-   message(FATAL_ERROR "ForgeContractConfig did not report the foundation checksum failure")
-endif()
+foreach(_tampered_archive IN ITEMS libforge_guest_raw.a libforge_guest_net_http_values.a libforge_guest_api_wasm.a)
+   file(APPEND "${_prefix}/sysroot/lib/${_tampered_archive}" "tampered")
+   execute_process(
+      COMMAND
+         "${CMAKE_COMMAND}"
+         -S "${_consumer}"
+         -B "${FORGE_CONTRACT_TEST_ROOT}/tampered-${_tampered_archive}-build"
+         -DForgeContract_DIR=${_config_dir}
+         -DRepeatedDependency_DIR=${_repeated_dependency}
+         -DCMAKE_TOOLCHAIN_FILE=${_config_dir}/ForgeContractToolchain.cmake
+         -DEXPECTED_PREFIX=${_prefix}
+         -DEXPECTED_PLUGIN=${_prefix}/${CMAKE_INSTALL_LIBDIR}/forge-contract/attr-plugin${CMAKE_SHARED_MODULE_SUFFIX}
+      RESULT_VARIABLE _tampered_result
+      OUTPUT_VARIABLE _tampered_output
+      ERROR_VARIABLE _tampered_error
+   )
+   if(_tampered_result EQUAL 0)
+      message(FATAL_ERROR "ForgeContractConfig accepted a foundation archive with a mismatched checksum")
+   endif()
+   string(FIND "${_tampered_output}${_tampered_error}" "archive checksum failed" _checksum_error)
+   if(_checksum_error EQUAL -1)
+      message(FATAL_ERROR "ForgeContractConfig did not report the foundation checksum failure")
+   endif()
+   file(WRITE "${_prefix}/sysroot/lib/${_tampered_archive}" "")
+endforeach()

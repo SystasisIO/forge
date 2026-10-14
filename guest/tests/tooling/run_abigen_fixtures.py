@@ -117,6 +117,190 @@ def by_name(values):
     return {value["name"]: value for value in values}
 
 
+def check_enum_wire_rejection(args, contract, source, output, definition, diagnostic, metadata):
+    artifacts = [
+        output / f"{source.stem}{suffix}"
+        for suffix in (".abi", ".dispatcher.cpp", ".abi.metadata.json")
+    ]
+    # A repeated run must inspect this invocation's outputs, not stale artifacts.
+    for artifact in artifacts:
+        artifact.unlink(missing_ok=True)
+    invoke(
+        args,
+        contract,
+        source,
+        output,
+        succeeds=False,
+        error_contains=diagnostic,
+        metadata=metadata,
+        compiler_arguments=(definition,),
+    )
+    for artifact in artifacts:
+        if artifact.exists():
+            raise RuntimeError(f"rejected shared enum fixture published an artifact: {artifact}")
+
+
+def run_enum_wire_fixtures(args):
+    # These modules only declare traits: no pack/unpack forces their instantiation.
+    # Each ordinary Abigen invocation performs discovery followed by the strict pass.
+    source = args.fixtures / "enum_wire_imported.cpp"
+    output = args.output / "enum-wire"
+    plain_output = output / "positive"
+    metadata_output = output / "positive-metadata"
+    plain = invoke(args, "enumwire", source, plain_output)
+    with_metadata = invoke(args, "enumwire", source, metadata_output, metadata=True)
+    assert plain == with_metadata, "shared enum ABI depends on metadata collection"
+
+    expected = {
+        "shared_status": ("int64", [("invalid_argument", "400"), ("bad_gateway", "502")]),
+        "signed8": ("int8", [("minimum", "-128"), ("maximum", "127")]),
+        "unsigned8": ("uint8", [("minimum", "0"), ("maximum", "255")]),
+        "signed16": ("int16", [("minimum", "-32768"), ("maximum", "32767")]),
+        "unsigned16": ("uint16", [("minimum", "0"), ("maximum", "65535")]),
+        "signed32": ("int32", [("minimum", "-2147483648"), ("maximum", "2147483647")]),
+        "unsigned32": ("uint32", [("minimum", "0"), ("maximum", "4294967295")]),
+        "signed64": ("int64", [("minimum", "-9223372036854775808"), ("maximum", "9223372036854775807")]),
+        "unsigned64": ("uint64", [("minimum", "0"), ("maximum", "18446744073709551615")]),
+        "legacy_status": ("uint16", [("value", "7")]),
+        "opted_out_status": ("uint8", [("value", "9")]),
+        "plain_status": ("uint16", [("value", "11")]),
+    }
+    assert {entry["new_type_name"]: entry["type"] for entry in plain["types"]} == {
+        name: wire_type for name, (wire_type, _) in expected.items()
+    }, "imported enum aliases do not match their explicit shared/default wire types"
+    assert set(by_name(plain["actions"])) == {"submit"}
+    assert by_name(plain["actions"])["submit"]["type"] == "submit"
+    structs = by_name(plain["structs"])
+    assert structs["submit"]["fields"] == [{"name": "value", "type": "payload"}]
+    assert structs["payload"]["fields"] == [
+        {"name": "scalar", "type": "shared_status"},
+        {"name": "fixed", "type": "uint16[2]"},
+        {"name": "sequence", "type": "shared_status[]"},
+        {"name": "narrow_fixed", "type": "int16[2]"},
+        {"name": "s8", "type": "signed8"},
+        {"name": "u8", "type": "unsigned8"},
+        {"name": "s16", "type": "signed16"},
+        {"name": "u16", "type": "unsigned16"},
+        {"name": "s32", "type": "signed32"},
+        {"name": "u32", "type": "unsigned32"},
+        {"name": "s64", "type": "signed64"},
+        {"name": "u64", "type": "unsigned64"},
+        {"name": "legacy", "type": "legacy_status"},
+        {"name": "opted_out", "type": "opted_out_status"},
+        {"name": "plain", "type": "plain_status"},
+        {"name": "plain_fixed", "type": "plain_status[2]"},
+    ], "shared std::array must retain underlying object bytes, independent of scalar aliases"
+    metadata_path = metadata_output / "enum_wire_imported.abi.metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["version"] == "forge::abi-metadata/1.0"
+    assert metadata["roots"] == []
+    assert by_name(metadata["enums"]) == {
+        name: {
+            "name": name,
+            "type": wire_type,
+            "values": [{"name": label, "value": value} for label, value in values],
+        }
+        for name, (wire_type, values) in expected.items()
+    }, "enum metadata must preserve exact signed/unsigned limits as decimal strings"
+    for directory in (plain_output, metadata_output):
+        assert (directory / "enum_wire_imported.dispatcher.cpp").is_file()
+
+    access_source = args.fixtures / "enum_wire_access.cpp"
+    access_expected = {
+        "public_inherited": "41",
+        "public_using_private": "42",
+        "public_using_protected": "43",
+    }
+    access_baseline = None
+    for raw_access in (False, True):
+        for collect_metadata in (False, True):
+            mode = "metadata" if collect_metadata else "no-metadata"
+            access_output = output / f"public-access-raw-{int(raw_access)}-{mode}"
+            access = invoke(
+                args, "accesswire", access_source, access_output,
+                metadata=collect_metadata,
+                compiler_arguments=(f"-DFORGE_TEST_ENUM_WIRE_RAW_ACCESS={int(raw_access)}",),
+            )
+            if access_baseline is None:
+                access_baseline = access
+            assert access == access_baseline, "Raw trait instantiation or metadata changed public access ABI"
+            assert {entry["new_type_name"]: entry["type"] for entry in access["types"]} == {
+                name: "int64" for name in access_expected
+            }, "public inheritance and public using must expose the shared int64 contract"
+            assert set(by_name(access["actions"])) == {"submit"}
+            assert by_name(access["actions"])["submit"]["type"] == "submit"
+            access_structs = by_name(access["structs"])
+            assert access_structs["submit"]["fields"] == [{"name": "value", "type": "access_payload"}]
+            assert access_structs["access_payload"]["fields"] == [
+                {"name": "inherited", "type": "public_inherited"},
+                {"name": "private_base", "type": "public_using_private"},
+                {"name": "protected_base", "type": "public_using_protected"},
+            ]
+            assert (access_output / "enum_wire_access.dispatcher.cpp").is_file()
+            if collect_metadata:
+                access_metadata = json.loads(
+                    (access_output / "enum_wire_access.abi.metadata.json").read_text(encoding="utf-8")
+                )
+                assert access_metadata["version"] == "forge::abi-metadata/1.0"
+                assert access_metadata["roots"] == []
+                assert by_name(access_metadata["enums"]) == {
+                    name: {"name": name, "type": "int64", "values": [{"name": "value", "value": value}]}
+                    for name, value in access_expected.items()
+                }
+
+    invalid_cases = [
+        (1, "bad_flag", "shared marker must be a public static constexpr bool"),
+        (2, "mutable_flag", "shared marker must be a public static constexpr bool"),
+        (3, "missing_type", "shared enum wire contract requires a public type alias"),
+        (4, "non_type_alias", "shared enum wire contract requires a public type alias"),
+        (5, "floating_type", "shared enum wire type must be a signed or unsigned integer"),
+        (6, "boolean_type", "shared enum wire type must be a signed or unsigned integer"),
+        (7, "wide_type", "shared enum wire integer width must be 8, 16, 32, or 64 bits"),
+        (8, "signed_overflow", "enumerator is out of range for the shared enum wire type"),
+        (9, "signed_underflow", "enumerator is out of range for the shared enum wire type"),
+        (10, "unsigned_negative", "enumerator is out of range for the shared enum wire type"),
+        (11, "unsigned_to_signed64", "enumerator is out of range for the shared enum wire type"),
+        (12, "platform_long", "shared enum wire type must use a fixed-width intN_t or uintN_t alias"),
+        (13, "platform_unsigned_long", "shared enum wire type must use a fixed-width intN_t or uintN_t alias"),
+        (14, "platform_size", "shared enum wire type must use a fixed-width intN_t or uintN_t alias"),
+        (15, "char_underlying", "shared enum underlying type must be a supported signed or unsigned 8, 16, 32, or 64-bit integer"),
+        (16, "private_shared_base", "shared marker must be a public static constexpr bool"),
+        (17, "protected_shared_base", "shared marker must be a public static constexpr bool"),
+        (18, "private_type_base", "shared enum wire contract requires a public type alias"),
+        (19, "protected_type_base", "shared enum wire contract requires a public type alias"),
+        (20, "private_shared_using", "shared marker must be a public static constexpr bool"),
+        (21, "protected_shared_using", "shared marker must be a public static constexpr bool"),
+        (22, "private_type_using", "shared enum wire contract requires a public type alias"),
+        (23, "protected_type_using", "shared enum wire contract requires a public type alias"),
+    ]
+    for collect_metadata in (False, True):
+        mode = "metadata" if collect_metadata else "no-metadata"
+        for case, name, reason in invalid_cases:
+            diagnostic = (
+                "invalid shared enum wire contract for "
+                f"'forge::tests::tooling::enum_wire::{name}': {reason}"
+            )
+            check_enum_wire_rejection(
+                args,
+                "badwire",
+                args.fixtures / "enum_wire_invalid.cpp",
+                output / f"invalid-{case}-{name}-{mode}",
+                f"-DFORGE_TEST_ENUM_WIRE_FAILURE={case}",
+                diagnostic,
+                collect_metadata,
+            )
+        for case, name in ((1, "direct"), (2, "alias"), (3, "std-array"), (4, "vector")):
+            check_enum_wire_rejection(
+                args,
+                "carraywire",
+                args.fixtures / "enum_wire_c_array.cpp",
+                output / f"c-array-{case}-{name}-{mode}",
+                f"-DFORGE_TEST_ENUM_WIRE_C_ARRAY_CASE={case}",
+                "C-style array of shared enum has count-prefixed Raw bytes, not fixed[N] ABI encoding",
+                collect_metadata,
+            )
+
+
 def check_features(abi):
     assert abi["version"] == "eosio::abi/1.3"
     assert {entry["new_type_name"]: entry["type"] for entry in abi["types"]} == {
@@ -279,8 +463,12 @@ def main():
     parser.add_argument("--fixtures", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--metadata-codec", type=pathlib.Path)
+    parser.add_argument("--enum-wire-only", action="store_true", help="run only imported enum wire fixtures")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    run_enum_wire_fixtures(args)
+    if args.enum_wire_only:
+        return
     manifest = check_donor_manifest(args.fixtures)
     run_donor_fixtures(args, manifest)
 

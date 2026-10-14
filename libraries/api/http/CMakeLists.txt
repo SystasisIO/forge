@@ -16,6 +16,7 @@ target_link_libraries(
    forge_api_http PUBLIC
       forge_api_auth
       forge_api_core
+      forge_api_core_values
       forge_asio
       forge_net_http
       forge_net_transport

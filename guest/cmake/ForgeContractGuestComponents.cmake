@@ -8,11 +8,63 @@ forge_contract_register_guest_component(
    MODULES
       forge/raw/stream.cppm
       forge/raw/varint_value.cppm
+      forge/raw/enum_wire_type.cppm
       forge/raw/codec.cppm
    MODULE_NAMES
       forge.raw.stream
       forge.raw.varint_value
+      forge.raw.enum_wire_type
       forge.raw.codec
+)
+
+forge_contract_register_guest_component(
+   ID forge.api.core_values
+   TARGET forge_api_core_values
+   PUBLIC_LIBRARIES forge.raw
+   MODULES forge/api/core/types.cppm
+   MODULE_NAMES forge.api.core.types
+)
+
+forge_contract_register_guest_component(
+   ID forge.net.http_values
+   TARGET forge_net_http_values
+   ARCHIVE libforge_guest_net_http_values.a
+   PUBLIC_LIBRARIES forge.raw
+   MODULES forge/net/http/method.cppm
+   MODULE_NAMES forge.net.http.method
+)
+
+forge_contract_register_guest_component(
+   ID forge.api.wasm
+   TARGET forge_api_wasm
+   ARCHIVE libforge_guest_api_wasm.a
+   PUBLIC_LIBRARIES forge.raw forge.api.core_values forge.net.http_values
+   MODULES
+      forge/api/wasm/payload.cppm
+      forge/api/wasm/continuation.cppm
+      forge/api/wasm/effect.cppm
+      forge/api/wasm/step.cppm
+      forge/api/wasm/event.cppm
+      forge/api/wasm/context.cppm
+      forge/api/wasm/http_command.cppm
+      forge/api/wasm/capability.cppm
+      forge/api/wasm/limits.cppm
+      forge/api/wasm/exceptions.cppm
+      forge/api/wasm/validation.cppm
+      forge/api/wasm/codec.cppm
+   MODULE_NAMES
+      forge.api.wasm.payload
+      forge.api.wasm.continuation
+      forge.api.wasm.effect
+      forge.api.wasm.step
+      forge.api.wasm.event
+      forge.api.wasm.context
+      forge.api.wasm.http_command
+      forge.api.wasm.capability
+      forge.api.wasm.limits
+      forge.api.wasm.exceptions
+      forge.api.wasm.validation
+      forge.api.wasm.codec
 )
 
 forge_contract_register_guest_component(

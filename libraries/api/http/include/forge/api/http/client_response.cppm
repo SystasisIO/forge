@@ -252,7 +252,8 @@ request_options_for_arguments(const route& route, const Tuple& value, const std:
       auto decoded = forge::codec::json::read<forge::api::core::error_payload>(
           value.body(),
           forge::codec::json::read_options{.source_name = "http.error",
-                                           .unknown_fields = forge::codec::json::unknown_field_policy::ignore});
+                                           .unknown_fields = forge::codec::json::unknown_field_policy::error,
+                                           .described_records = forge::codec::json::described_record_policy::exact});
       if (decoded.ok()) {
          return std::move(decoded.value);
       }
@@ -268,7 +269,7 @@ request_options_for_arguments(const route& route, const Tuple& value, const std:
    }
    return forge::api::core::error_payload{
        .error = "http_error",
-       .message = value.body().empty() ? "HTTP API request failed" : value.body(),
+       .message = "HTTP API request failed",
        .retryable = false,
        .status_code = core_status_from_http(value.result_int()),
        .identity =
@@ -286,7 +287,8 @@ template <typename Response>
       auto decoded = forge::codec::json::read<Response>(
           response_value.body(),
           forge::codec::json::read_options{.source_name = "http.response",
-                                           .unknown_fields = forge::codec::json::unknown_field_policy::error});
+                                           .unknown_fields = forge::codec::json::unknown_field_policy::error,
+                                           .described_records = forge::codec::json::described_record_policy::exact});
       if (!decoded.ok()) {
          if (!decoded.diagnostics.empty()) {
             const auto& diagnostic = decoded.diagnostics.front();

@@ -58,9 +58,11 @@ function when present. Calling an export does not compile a source-language
 contract. The input is already WASM. The interpreter translates it to donor
 bitcode; the x86_64 JIT translates it to native code inside the process.
 
-The backend and its execution context are not concurrent objects. Do not call
-one backend from multiple threads. Give every concurrently executing lane its
-own backend/context, `wasm_allocator`, mutable host state, and deadline guard.
+Legacy backend operations and execution contexts require external synchronization.
+`with_invocation` rejects overlapping scoped calls rather than queuing them;
+it does not make concurrent legacy operations safe. Give every concurrently
+executing lane its own compiled module, context, linear memory, mutable host
+state, and deadline guard.
 Host-function registration is static per `registered_host_functions` type and
 must finish during process startup before backend construction.
 
@@ -252,6 +254,53 @@ Do not call `initialize` concurrently with execution. If a product intentionally
 wants stateful WASM memory across calls, it must define and test that lifecycle
 instead of using the isolated-invocation recipe.
 
+## Cookbook: Exclusive Invocation Scope
+
+For isolated calls, prepare a backend with `exec_ctx_by_backend = false`, validate
+the module and the product's import/export policy, then use:
+
+```cpp
+vm.with_invocation(&host, options, std::chrono::milliseconds{50}, stop_token, [&] {
+   vm.call(host, "env", "apply", receiver);
+});
+```
+
+The zero-argument body runs after initialization and the start function. One
+watchdog covers initialization, start, and body. Each scope owns fresh context,
+globals, and linear memory, including active data initialization. The supported
+MVP table is immutable from guest code; its compiled element initialization is
+retained without sharing the module between concurrent instances. Context and
+allocator references are detached on every exit, after the watchdog is joined.
+
+Admission rejects overlapping or reentrant scopes with `exceptions::busy`,
+shared compiled-module ownership with `exceptions::shared_instance`, and an
+owned or already attached context/allocator with `exceptions::invocation_state`.
+`share()` also rejects an active invocation. Independent concurrent calls must
+use independently compiled modules with distinct code allocators.
+
+Deadline expiry reports `exceptions::timeout`; requested stop reports
+`exceptions::canceled`. Guest execution traps, deadline, and cancellation permit
+a later scope with fresh state. An exception escaping a host callback, even one
+using a VM exception type, or an unknown native body failure marks the instance
+unusable. Subsequent scopes and sharing report `exceptions::unusable`; discard
+that backend. A caught host exception still poisons the scope and is rethrown at
+its boundary. The original host exception takes precedence over racing stop or
+deadline. This is not rollback for external host side effects.
+
+Code-page protection failures are native failures, not guest traps. If disabling
+code pages fails, the watchdog terminates the process: it cannot safely promise
+to interrupt an endless guest. If restoring access fails after the watchdog has
+joined, the invocation reports `exceptions::allocation`, taking precedence over
+any racing execution or host exception, and permanently marks the backend
+unusable. Later invocation, execution, initialization, or sharing attempts must
+not reuse that backend. Restoration never throws from a cleanup destructor.
+
+Cancellation uses the existing code-page watchdog mechanism, not native thread
+preemption. Host callbacks and the native body must return in bounded time;
+blocking native work is not interrupted by disabling guest code pages. Legacy
+`timed_run`, `initialize`, and externally attached-context APIs remain available
+with their original caller-managed lifetime and synchronization obligations.
+
 ## Cookbook: Validation Without Execution
 
 `null_backend` parses and validates a module without executing it. This is useful
@@ -359,6 +408,9 @@ Stable exception categories live in `forge::vm::wasm::interpret::exceptions`:
 - `memory`, `pointer_out_of_bounds`, `stack_memory`, and `allocation` for
   guarded-memory/runtime failures;
 - `timeout` for deadline interruption;
+- `canceled` for stop-token interruption;
+- `busy`, `shared_instance`, and `invocation_state` for rejected scoped admission;
+- `unusable` for a backend discarded after a host/native failure;
 - `exit` for an explicit VM exit;
 - `interpreter` for execution traps not represented by a narrower category.
 

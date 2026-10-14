@@ -2,12 +2,15 @@ module;
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -143,7 +146,10 @@ class backend {
    void validate() const {
       detail::check<exceptions::interpreter>(mod != nullptr, "backend has no module");
       detail::check<exceptions::interpreter>((mod->error == nullptr), mod->error);
-      detail::validate_data_segments(*mod);
+      if constexpr (Impl::is_jit)
+         detail::validate_data_segments(*mod->jit_mod);
+      else
+         detail::validate_data_segments(*mod);
    }
 
    backend(wasm_code&& code, host_t& host, wasm_allocator* alloc, const Options& options = Options{})
@@ -237,6 +243,14 @@ class backend {
    // Shares compiled module with another backend which never compiles
    // module itself.
    void share(const backend& from) {
+      detail::check<exceptions::busy>(!from._invocation_active.test_and_set(std::memory_order_acquire),
+                                      "cannot share an active invocation");
+      auto source_admission = scope_guard{[&]() { from._invocation_active.clear(std::memory_order_release); }};
+      detail::check<exceptions::busy>(!_invocation_active.test_and_set(std::memory_order_acquire),
+                                      "cannot replace an active invocation");
+      auto target_admission = scope_guard{[&]() { _invocation_active.clear(std::memory_order_release); }};
+      detail::check<exceptions::unusable>(!from._invocation_unusable && !_invocation_unusable,
+                                         "cannot share a discarded backend");
       assert(from.mod_sharable); // `from` backend's mod is sharable
       assert(!mod_sharable);     // `to` backend's mod must not be sharable
       mod = from.mod;
@@ -277,6 +291,7 @@ class backend {
 
    // Only dynamic options matter.  Parser options will be ignored.
    inline backend& initialize(host_t* host, const Options& new_options) {
+      detail::check<exceptions::unusable>(!_invocation_unusable, "backend must be discarded after a host/native failure");
       ctx->set_max_call_depth(detail::get_max_call_depth(new_options));
       ctx->set_max_pages(detail::get_max_pages(new_options));
       initialize(host);
@@ -284,6 +299,7 @@ class backend {
    }
 
    inline backend& initialize(host_t* host = nullptr) {
+      detail::check<exceptions::unusable>(!_invocation_unusable, "backend must be discarded after a host/native failure");
       initialized = false;
       ctx->reset();
       ctx->execute_start(host, interpret_visitor(*ctx));
@@ -293,6 +309,64 @@ class backend {
 
    inline backend& initialize(host_t& host) {
       return initialize(&host);
+   }
+
+   template <typename F>
+   void with_invocation(host_t* host, const Options& options, std::chrono::steady_clock::duration budget,
+                        std::stop_token stop, F&& body) {
+      static_assert(!std::is_same_v<Impl, null_backend>, "invocation requires an executing backend");
+      // A one-shot per-instance try-lock also rejects reentrant calls on the invoking thread.
+      detail::check<exceptions::busy>(!_invocation_active.test_and_set(std::memory_order_acquire),
+                                      "backend invocation is already active");
+      auto admission = scope_guard{[&]() { _invocation_active.clear(std::memory_order_release); }};
+      detail::check<exceptions::unusable>(!_invocation_unusable, "backend must be discarded after a host/native failure");
+      detail::check<exceptions::invocation_state>(mod != nullptr && !ctx.owns && ctx.get() == nullptr && memory_alloc == nullptr,
+                                                 "invocation requires a prepared backend with no attached context or memory");
+      detail::check<exceptions::shared_instance>(mod.use_count() == 1, "invocation requires exclusive compiled module ownership");
+      if constexpr (!std::is_same_v<host_t, standalone_function_t>)
+         detail::check<exceptions::invocation_state>(host != nullptr, "stateful invocation requires a host instance");
+      detail::check<exceptions::canceled>(!stop.stop_requested(), "execution canceled");
+      detail::check<exceptions::timeout>(budget > std::chrono::steady_clock::duration::zero(), "execution timed out");
+      validate();
+
+      auto memory = wasm_allocator{};
+      auto context = context_t{*mod, detail::get_max_call_depth(options)};
+      auto detach = scope_guard{[&]() {
+         initialized = false;
+         ctx.reset(nullptr, false);
+         memory_alloc = nullptr;
+         context.set_wasm_allocator(nullptr);
+      }};
+      ctx.reset(&context, false);
+      memory_alloc = &memory;
+      context.set_wasm_allocator(&memory);
+      try {
+         timed_run(watchdog{budget, stop}, [&]() {
+            detail::check<exceptions::canceled>(!stop.stop_requested(), "execution canceled");
+            initialize(host, options);
+            detail::check<exceptions::canceled>(!stop.stop_requested(), "execution canceled");
+            std::invoke(std::forward<F>(body));
+         });
+         if (context.has_host_failure()) {
+            _invocation_unusable = true;
+            if (context.host_failure())
+               std::rethrow_exception(context.host_failure());
+            detail::fail<exceptions::unusable>("native failure crossed a host callback");
+         }
+      } catch (...) {
+         // A failed code protection transition outranks a racing host exception.
+         if (_code_protection_failure)
+            std::rethrow_exception(_code_protection_failure);
+         // Host exceptions retain their original type, even if a deadline raced with them.
+         if (context.has_host_failure()) {
+            _invocation_unusable = true;
+            if (context.host_failure())
+               std::rethrow_exception(context.host_failure());
+         } else if (!is_reusable_guest_failure(std::current_exception())) {
+            _invocation_unusable = true;
+         }
+         throw;
+      }
    }
 
    template <typename... Args> inline bool call_indirect(host_t* host, uint32_t func_index, Args&&... args) {
@@ -365,6 +439,7 @@ class backend {
    }
 
    template <typename Watchdog, typename F> inline void timed_run(Watchdog&& wd, F&& f) {
+      detail::check<exceptions::unusable>(!_invocation_unusable, "backend must be discarded after a host/native failure");
       // timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a
       // SEGV too -- is a thread local
       //  so that upon a SEGV the signal handling code can discern if the thread that caused the SEGV has a timed_run
@@ -373,9 +448,15 @@ class backend {
       std::atomic<bool>& _timed_out = timed_run_has_timed_out;
       std::atomic<std::size_t>& _timeout_count = timed_run_timeout_count;
       auto local_timed_out = std::atomic<bool>{false};
-      auto reenable_code = scope_guard{[&]() {
+      auto local_reason = std::atomic<watchdog::interruption>{watchdog::interruption::deadline};
+      auto execution_failure = std::exception_ptr{};
+      const auto interrupted = [&]() {
+         if (local_reason.load(std::memory_order_acquire) == watchdog::interruption::canceled)
+            throw exceptions::canceled{"execution canceled"};
+         throw exceptions::timeout{"execution timed out"};
+      };
+      auto reset_timeout_state = scope_guard{[&]() noexcept {
          if (local_timed_out.load(std::memory_order_acquire)) {
-            mod->allocator.enable_code(Impl::is_jit);
             const auto previous = _timeout_count.fetch_sub(1, std::memory_order_acq_rel);
             assert(previous > 0U);
             _timed_out.store(previous > 1U, std::memory_order_release);
@@ -384,23 +465,49 @@ class backend {
       try {
          {
             auto wd_guard =
-                std::forward<Watchdog>(wd).scoped_run([this, &_timed_out, &_timeout_count, &local_timed_out]() {
+                std::forward<Watchdog>(wd).scoped_run([this, &_timed_out, &_timeout_count, &local_timed_out, &local_reason](
+                                                         watchdog::interruption reason = watchdog::interruption::deadline) noexcept {
+                   local_reason.store(reason, std::memory_order_release);
                    local_timed_out.store(true, std::memory_order_release);
                    _timeout_count.fetch_add(1, std::memory_order_acq_rel);
                    _timed_out.store(true, std::memory_order_release);
-                   mod->allocator.disable_code();
+                   try {
+                      mod->allocator.disable_code();
+                   } catch (...) {
+                      // Without code protection an endless guest cannot be stopped.
+                      // Preserve fail-fast behavior rather than promise cancellation.
+                      std::terminate();
+                   }
                 });
             std::forward<F>(f)();
          }
-         if (local_timed_out.load(std::memory_order_acquire))
-            throw exceptions::timeout{"execution timed out"};
-      } catch (exceptions::memory&) {
-         if (local_timed_out.load(std::memory_order_acquire)) {
-            throw exceptions::timeout{"execution timed out"};
-         } else {
+      } catch (...) {
+         execution_failure = std::current_exception();
+      }
+      // Restoration happens after the callback is joined, never in noexcept cleanup.
+      if (local_timed_out.load(std::memory_order_acquire)) {
+         try {
+            mod->allocator.enable_code(Impl::is_jit);
+         } catch (...) {
+            _invocation_unusable = true;
+            if (!_code_protection_failure)
+               _code_protection_failure = std::current_exception();
+         }
+      }
+      // Preserve a nested restoration failure even if the native body caught it.
+      if (_code_protection_failure)
+         std::rethrow_exception(_code_protection_failure);
+      if (execution_failure) {
+         try {
+            std::rethrow_exception(execution_failure);
+         } catch (const exceptions::memory&) {
+            if (local_timed_out.load(std::memory_order_acquire))
+               interrupted();
             throw;
          }
       }
+      if (local_timed_out.load(std::memory_order_acquire))
+         interrupted();
    }
 
    template <typename Watchdog> inline void execute_all(Watchdog&& wd, host_t& host) {
@@ -435,12 +542,31 @@ class backend {
    }
 
  private:
+   static bool is_reusable_guest_failure(const std::exception_ptr& error) {
+      try {
+         std::rethrow_exception(error);
+      } catch (const exceptions::interpreter&) {
+      } catch (const exceptions::memory&) {
+      } catch (const exceptions::stack_memory&) {
+      } catch (const exceptions::pointer_out_of_bounds&) {
+      } catch (const exceptions::invalid_element&) {
+      } catch (const exceptions::timeout&) {
+      } catch (const exceptions::canceled&) {
+      } catch (const exceptions::exit&) {
+      } catch (...) {
+         return false;
+      }
+      return true;
+   }
+
    static void require_hostless_call() {
       detail::check<exceptions::interpreter>(std::is_same_v<host_t, standalone_function_t>,
                                              "stateful host instance is required");
    }
 
    void require_execution_ready() const {
+      detail::check<exceptions::interpreter>(ctx.get() != nullptr, "backend has no execution context");
+      detail::check<exceptions::unusable>(!_invocation_unusable, "backend must be discarded after a host/native failure");
       detail::check<exceptions::allocation>((memory_alloc != nullptr || !ctx->has_linear_memory()),
                                             "linear memory requires an allocator");
       detail::check<exceptions::interpreter>(initialized, "backend is not initialized");
@@ -475,5 +601,8 @@ class backend {
    bool initialized = false;
    uint32_t initial_max_call_depth = 0;
    uint32_t initial_max_pages = 0;
+   mutable std::atomic_flag _invocation_active = ATOMIC_FLAG_INIT;
+   bool _invocation_unusable = false;
+   std::exception_ptr _code_protection_failure;
 };
 } // namespace forge::vm::wasm::interpret

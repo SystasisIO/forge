@@ -619,6 +619,13 @@ struct registered_operation {
    }
    auto document =
        forge::mutable_variant_object{}("openapi", "3.1.0")("info", std::move(metadata))("paths", std::move(paths));
+   document("x-forge-json-profile", forge::mutable_variant_object{}("canonical", true)(
+       "description",
+       "Typed HTTP JSON bodies use exact decoding: required fields, unknown fields, numeric ranges and "
+       "variant array shape are checked. Explicit schema rules and custom codecs can differ from these "
+       "generated schemas. JSON Schema integer/const use mathematical numeric equality; native exact "
+       "decoding also depends on the parsed token kind. This document describes canonical client values, "
+       "not identical acceptance of every noncanonical JSON spelling."));
    if (!info.servers.empty()) {
       auto servers = forge::variants{};
       servers.reserve(info.servers.size());

@@ -74,6 +74,48 @@ Macro header: `<forge/api/http/macros.hpp>`.
 deterministic document. Duplicate verb/path pairs and reused operation IDs with
 incompatible request or response schemas are rejected as typed protocol errors.
 
+### JSON Schema Fidelity
+
+Generated integer schemas carry exact C++ minimum/maximum bounds, including
+uint64 maximum `18446744073709551615`, without conversion through floating point.
+Existing `int32`, `uint32`, `int64` and `uint64` format labels are unchanged; bounds,
+not recognition of a vendor format label, enforce the narrower integer domain.
+An indexed `std::variant` is `oneOf` complete two-item arrays: each branch binds
+its constant index to the corresponding payload schema. Overlapping payload
+shapes remain distinct because their indexes differ. The JSON wire stays
+`[index, payload]`.
+
+Typed JSON requests, success responses and error envelopes use the existing exact JSON decoder.
+Integers must have the correct type and fit their destination; missing required
+members, unknown members and malformed indexed variants are rejected before the
+service receives them. Explicit schema rules remain responsible for their own
+defaults and constraints. Raw, XML and the standalone JSON codec's defaults are
+unchanged. Custom scalar adapters retain their own canonical representation.
+
+This is an explicitly approved input-compatibility break. Clients must send
+numeric JSON values rather than numeric strings, all required members, and
+exactly `[index, payload]` for indexed variants. Neither missing values nor
+overflow are repaired by defaulting, truncation or wrapping. Optional members
+still accept omission or null, and absent explicit `body<T>` wrappers retain
+`present == false`. Path/query/header/cookie text conversion is unchanged.
+Malformed typed JSON yields the binding's existing validation error response.
+An absent required JSON body is rejected; bodyless requests with all required
+fields bound from the route remain valid. A malformed error envelope maps to
+the generic HTTP API failure without copying its raw body into the exception.
+
+The [Python qualification](../../../tests/api/openapi_python/README.md) uses an
+actual pinned generator and unmodified Pydantic v2 models. Its consumer validates
+the original JSON against the exported schema before calling the generated model;
+this rejects boolean variant indexes even when stock Pydantic accepts them as
+integer literals. The report separates raw-model behavior from this validated
+consumer, schema and HTTP codec verdicts. JSON Schema mathematical integer
+equality still differs from exact token handling. This is qualified coverage,
+not universal accepted-input language equality or support for arbitrary custom
+schema rules/adapters. The `x-forge-json-profile` annotation documents this
+boundary; it is not an extra validator.
+Server-supplied fixed arguments remain excluded from client parameters/bodies;
+ordinary nested fields are not recursively removed.
+
 ## Live Streaming
 
 HTTP/1.1 supports server-stream and client-stream methods. Server streams use a

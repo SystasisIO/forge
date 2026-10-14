@@ -248,6 +248,29 @@ add_custom_target(
 
 set(_tooling_output "${CMAKE_CURRENT_BINARY_DIR}/tooling")
 set(_tooling_build_dir "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Contract libraries own sources below their source or binary directory.
+# Stage these sibling tooling fixtures as configure-time generated module inputs.
+set(_enum_wire_module_root "${CMAKE_CURRENT_BINARY_DIR}/enum-wire/include")
+set(_enum_wire_modules)
+foreach(_leaf values invalid)
+   set(_module "${_enum_wire_module_root}/forge/tests/tooling/enum_wire/${_leaf}.cppm")
+   configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/../tooling/enum_wire/include/forge/tests/tooling/enum_wire/${_leaf}.cppm"
+      "${_module}"
+      COPYONLY
+   )
+   set_source_files_properties("${_module}" PROPERTIES GENERATED TRUE)
+   list(APPEND _enum_wire_modules "${_module}")
+endforeach()
+forge_add_contract_library(
+   forge_tests_tooling_enum_wire
+   ID forge.tests.tooling.enum_wire
+   MODULE_BASE_DIRS "${_enum_wire_module_root}"
+   MODULE_SOURCES ${_enum_wire_modules}
+   PUBLIC_LIBRARIES Forge::forge_raw
+)
+
 add_custom_target(
    forge_contract_tooling_fixtures ALL
    COMMAND
@@ -261,7 +284,7 @@ add_custom_target(
       --build-dir "${_tooling_build_dir}"
       --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/../tooling"
       --output "${_tooling_output}"
-   DEPENDS hello
+   DEPENDS hello forge_tests_tooling_enum_wire
    VERBATIM
 )
 

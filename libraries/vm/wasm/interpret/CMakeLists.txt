@@ -5,6 +5,7 @@ add_library(
    signals.cpp
    types.cpp
    watchdog.cpp
+   watchdog_stop_callback.cpp
 )
 
 if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

@@ -18,6 +18,8 @@ module;
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Support/DynamicLibrary.h>
 
+#include "details/enum_wire_resolver.hxx"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -314,8 +316,9 @@ bool is_global_function(const clang::FunctionDecl& declaration) {
 
 class type_encoder {
  public:
-   type_encoder(clang::ASTContext& context, schema& output, std::set<std::string>& source_record_codecs)
-       : context_(context), output_(output), source_record_codecs_(source_record_codecs) {}
+   type_encoder(clang::ASTContext& context, clang::Sema& sema, schema& output,
+                std::set<std::string>& source_record_codecs)
+       : context_(context), output_(output), source_record_codecs_(source_record_codecs), enum_wire_(context, sema) {}
 
    std::string encode(clang::QualType input) {
       auto type = input.getNonReferenceType().getUnqualifiedType();
@@ -351,8 +354,13 @@ class type_encoder {
          return encode_builtin(*builtin);
       }
       if (const auto* enumeration = type->getAs<clang::EnumType>()) {
-         const auto* declaration = enumeration->getDecl();
-         const auto target = encode(declaration->getIntegerType());
+         const auto* declaration = enumeration->getDecl()->getDefinitionOrSelf();
+         const auto wire = enum_wire_.resolve(*declaration);
+         if (!wire.valid) {
+            output_.failed = true;
+            return {};
+         }
+         const auto target = encode(wire.type);
          if (declaration->getIdentifier() == nullptr ||
              context_.getSourceManager().isInSystemHeader(declaration->getLocation())) {
             return target;
@@ -361,7 +369,7 @@ class type_encoder {
          add_alias(name, target, declaration->getLocation(), declaration_identity(*declaration));
          if (output_.collect_metadata &&
              std::ranges::none_of(output_.metadata.enums, [&](const auto& entry) { return entry.name == name; })) {
-            const auto integer_type = encode(declaration->getIntegerType().getCanonicalType());
+            const auto integer_type = encode(wire.type.getCanonicalType());
             static constexpr auto metadata_integer_types = std::array<std::string_view, 8>{
                 "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"};
             if (std::ranges::find(metadata_integer_types, integer_type) == metadata_integer_types.end()) {
@@ -384,6 +392,19 @@ class type_encoder {
          return name;
       }
       if (const auto* array = context_.getAsConstantArrayType(type)) {
+         const auto element = array->getElementType().getDesugaredType(context_);
+         if (const auto* enumeration = element->getAs<clang::EnumType>()) {
+            const auto wire = enum_wire_.resolve(*enumeration->getDecl());
+            if (!wire.valid) {
+               output_.failed = true;
+               return {};
+            }
+            if (wire.shared) {
+               fail("C-style array of shared enum has count-prefixed Raw bytes, not fixed[N] ABI encoding",
+                    enumeration->getDecl()->getLocation());
+               return {};
+            }
+         }
          return encode(array->getElementType()) + '[' + llvm::toString(array->getSize(), 10, false) + ']';
       }
       if (const auto* record = type->getAs<clang::RecordType>()) {
@@ -528,6 +549,23 @@ class type_encoder {
       }
    }
 
+   std::optional<std::string> shared_enum_array_element(clang::QualType input) {
+      const auto element = input.getDesugaredType(context_);
+      if (const auto* enumeration = element->getAs<clang::EnumType>()) {
+         const auto* declaration = enumeration->getDecl();
+         const auto wire = enum_wire_.resolve(*declaration);
+         if (!wire.valid) {
+            output_.failed = true;
+            return std::string{};
+         }
+         if (wire.shared) {
+            // std::array copies enum object bytes, independently of the scalar wire trait.
+            return encode(declaration->getIntegerType().getCanonicalType());
+         }
+      }
+      return std::nullopt;
+   }
+
    std::string encode_location(clang::TypeLoc input) {
       const auto location = unwrap(input);
       const auto specialization = location.getAs<clang::TemplateSpecializationTypeLoc>();
@@ -555,7 +593,8 @@ class type_encoder {
          return encode_location(type_argument(0)) + '?';
       }
       if (is_std_template(*declaration, "array") && specialization.getNumArgs() >= 2U) {
-         return encode_location(type_argument(0)) + '[' +
+         const auto element = shared_enum_array_element(type_argument(0).getType());
+         return (element.has_value() ? *element : encode_location(type_argument(0))) + '[' +
                 std::to_string(integral_argument(specialization.getArgLoc(1))) + ']';
       }
       if ((is_std_template(*declaration, "pair") || is_std_template(*declaration, "map")) &&
@@ -797,7 +836,8 @@ class type_encoder {
          if (is_std_template(*specialization->getSpecializedTemplate(), "array") && arguments.size() >= 2U &&
              arguments[0].getKind() == clang::TemplateArgument::Type &&
              arguments[1].getKind() == clang::TemplateArgument::Integral) {
-            return encode(arguments[0].getAsType()) + '[' +
+            const auto element = shared_enum_array_element(arguments[0].getAsType());
+            return (element.has_value() ? *element : encode(arguments[0].getAsType())) + '[' +
                    std::to_string(arguments[1].getAsIntegral().getZExtValue()) + ']';
          }
          if (is_std_template(*specialization->getSpecializedTemplate(), "pair") && arguments.size() >= 2U) {
@@ -1083,13 +1123,14 @@ class type_encoder {
    clang::ASTContext& context_;
    schema& output_;
    std::set<std::string>& source_record_codecs_;
+   forge::tooling::abi::detail::enum_wire_resolver enum_wire_;
 };
 
 class visitor final : public clang::RecursiveASTVisitor<visitor> {
  public:
    visitor(clang::ASTContext& context, clang::Sema& sema, schema& output, std::set<std::string>& source_record_codecs,
            std::string_view contract_name, std::filesystem::path source)
-       : context_(context), sema_(sema), output_(output), encoder_(context, output, source_record_codecs),
+       : context_(context), sema_(sema), output_(output), encoder_(context, sema, output, source_record_codecs),
          contract_name_(contract_name), source_(std::move(source)) {}
 
    bool VisitCXXRecordDecl(clang::CXXRecordDecl* declaration) {
@@ -1577,7 +1618,7 @@ class consumer final : public clang::ASTConsumer {
           visitor{context, compiler_.getSema(), output_, source_record_codecs_, contract_name_, source_};
       contract_visitor.TraverseDecl(context.getTranslationUnitDecl());
       if (is_dispatch_source_) {
-         auto encoder = type_encoder{context, output_, source_record_codecs_};
+         auto encoder = type_encoder{context, compiler_.getSema(), output_, source_record_codecs_};
          for (const auto& name : output_.requested_roots) {
             const auto* declaration = find_root(context, name);
             if (declaration == nullptr) {

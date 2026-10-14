@@ -149,11 +149,6 @@ std::string_view field_name(field value) noexcept {
    return {};
 }
 
-bool is_idempotent(method value) noexcept {
-   return value == method::get || value == method::head || value == method::put || value == method::delete_ ||
-          value == method::options;
-}
-
 std::ostream& operator<<(std::ostream& stream, method value) {
    switch (value) {
    case method::delete_:
