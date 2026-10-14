@@ -4,9 +4,10 @@
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from check_structure import check_net_plugin_families, check_plugin_descriptor_ownership
+from check_structure import check_net_plugin_families, check_plugin_descriptor_ownership, check_tls_context_ownership
 
 
 class NetPluginTests(unittest.TestCase):
@@ -195,6 +196,32 @@ class NetPluginTests(unittest.TestCase):
                  "struct first {};\nBOOST_DESCRIBE_STRUCT(first, (), ())\n"
                  "/* struct later {}; */\n")
       self.assertEqual(self.errors(), [])
+
+
+class HttpTlsOwnershipTests(unittest.TestCase):
+   def test_extracted_http_owners_keep_negative_tls_checks(self):
+      root = Path(__file__).resolve().parents[2]
+      original_read = Path.read_text
+      for relative in (
+         "server_impl.cpp", "server_session_model.cpp", "beast_body_reader_source.cpp",
+         "request_read_ownership.cpp", "details/server_session_model.hxx",
+         "details/beast_body_reader_source.hxx", "details/request_read_ownership.hxx",
+      ):
+         path = root / "libraries/net/http" / relative
+         for token, message in (
+            ("stream_.socket().async_read_some", "disconnect monitor must read the outer HTTP/TLS stream"),
+            ("async_wait([&stream", "TLS shutdown deadline must not outlive the stream by reference"),
+         ):
+            with self.subTest(path=relative, token=token):
+               def mutated_read(candidate, *args, **kwargs):
+                  text = original_read(candidate, *args, **kwargs)
+                  return text + "\n" + token if candidate == path else text
+
+               errors = []
+               with patch.object(Path, "read_text", mutated_read):
+                  check_tls_context_ownership(root, errors)
+               expected = f"libraries/net/http/{relative}: {message}"
+               self.assertIn(expected, errors)
 
 
 if __name__ == "__main__":

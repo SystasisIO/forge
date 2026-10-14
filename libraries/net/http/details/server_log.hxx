@@ -20,6 +20,7 @@ class server_log {
       const char* category = "none";
       bool expected = false;
       bool client = false;
+      bool tls = false;
    };
 
    // One strand-owned observation per parsed/partially received request.
@@ -30,6 +31,7 @@ class server_log {
       bool enabled = false;
       bool active = false;
       bool sent = false;
+      bool sent_bytes_known = true;
       bool aborted = false;
       unsigned method = 0;
       unsigned status = 0;
@@ -42,23 +44,27 @@ class server_log {
 
    static error classify(std::exception_ptr failure) noexcept;
    static error classify(const boost::system::error_code& failure) noexcept;
+   static unsigned upgrade_rejection_status(const boost::system::error_code& failure) noexcept;
    static void emit(event value, std::exception_ptr failure = {}, std::uint16_t port = 0,
                     bool tls = false) noexcept;
 
    void reject(rejection value) noexcept;
    void handshake_failed(const boost::system::error_code& failure) noexcept;
    void handshake_failed(std::exception_ptr failure) noexcept;
+   void session_failed(std::exception_ptr failure) noexcept;
    void flush() noexcept;
 
  private:
    struct summary {
       std::uint64_t tls_failed = 0;
       std::uint64_t tls_closed = 0;
+      std::uint64_t tls_session_failed = 0;
       std::uint64_t tls_rejected = 0;
       std::uint64_t tls_context_missing = 0;
       std::uint64_t header_rejected = 0;
       std::uint64_t body_rejected = 0;
       error last_tls_error;
+      error last_session_error;
    };
 
    void record_tls_failure(error failure) noexcept;

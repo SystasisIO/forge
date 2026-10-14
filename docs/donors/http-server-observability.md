@@ -13,6 +13,16 @@ workspace-relative; the named Spring/EOSIO files are clean against these heads.
 
 ## Adopted And Rejected Patterns
 
+The local transport backend is Boost.Beast 1.90. Its
+`boost/beast/websocket/impl/accept.hpp` (`build_response`, `response_op`) maps
+server handshake rejection to HTTP 400, except unsupported WebSocket version
+(426). It returns that typed validation error only after a successful HTTP
+response write; an I/O error takes precedence. Forge observes that outcome
+without duplicating handshake validation or changing response construction.
+The accept API does not expose a byte count: upgrade logs mark it unavailable,
+rather than inventing a serialized response size. Real socket regressions
+check missing-key rejection, unsupported version and repeated malformed input.
+
 Adopt significant listener and TLS setup/teardown records, typed failure
 classification, and separate diagnostic logging for ordinary request rejection.
 Spring/EOSIO resource-limit records expose counts rather than entire request

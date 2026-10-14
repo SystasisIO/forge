@@ -338,7 +338,7 @@ awaitable<void> server_session::model<Stream>::run() {
       if (typed.client && typed.code == static_cast<int>(exceptions::code::payload_too_large)) {
          log_->reject(server_log::rejection::body_limit);
       }
-      server_log::emit(server_log::event::session_failed, error);
+      log_->session_failed(error);
       complete_run();
       throw;
    }
@@ -876,7 +876,18 @@ awaitable<bool> server_session::model<Stream>::try_upgrade(const beast_http::req
    auto websocket_request = to_websocket_request(request_value);
    auto buffered_input = beast::buffers_to_string(buffer_.data());
    buffer_.consume(buffer_.size());
-   co_await connection->accept(websocket_request, std::move(buffered_input));
+   access_.sent_bytes_known = false;
+   try {
+      co_await connection->accept(websocket_request, std::move(buffered_input));
+   } catch (const boost::system::system_error& error) {
+      if (const auto status = server_log::upgrade_rejection_status(error.code()); status != 0) {
+         access_.status = status;
+         access_.sent = true;
+         access_.failure = server_log::classify(error.code());
+         access_.finish();
+      }
+      throw;
+   }
    access_.status = 101;
    access_.sent = true;
    access_.finish();

@@ -3,6 +3,7 @@
 #include <boost/asio/error.hpp>
 #include <boost/beast/core/error.hpp>
 #include <boost/beast/http/error.hpp>
+#include <boost/beast/websocket/error.hpp>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/system/system_error.hpp>
 #include <forge/log/macros.hpp>
@@ -40,9 +41,37 @@ server_log::error server_log::classify(const boost::system::error_code& failure)
                        failure == boost::asio::error::broken_pipe ||
                        failure == boost::asio::ssl::error::stream_truncated ||
                        failure == boost::beast::http::error::end_of_stream ||
-                       failure == boost::beast::error::timeout || failure == boost::asio::error::timed_out,
+                       failure == boost::beast::error::timeout || failure == boost::asio::error::timed_out ||
+                       failure == boost::beast::websocket::error::closed,
            .client = failure.category() ==
-                     boost::beast::http::make_error_code(boost::beast::http::error::bad_method).category()};
+                     boost::beast::http::make_error_code(boost::beast::http::error::bad_method).category() ||
+                     failure == boost::beast::websocket::condition::handshake_failed ||
+                     failure == boost::beast::websocket::condition::protocol_violation ||
+                     failure == boost::beast::websocket::error::message_too_big,
+           .tls = failure.category() == boost::asio::error::get_ssl_category()};
+}
+
+unsigned server_log::upgrade_rejection_status(const boost::system::error_code& failure) noexcept {
+   namespace websocket = boost::beast::websocket;
+   if (failure.category() != websocket::make_error_code(websocket::error::no_sec_key).category()) {
+      return 0;
+   }
+   // Beast returns these server-validation errors only after its refusal write succeeds.
+   // Transport/write failures take precedence. Do not infer status for other errors.
+   switch (static_cast<websocket::error>(failure.value())) {
+   case websocket::error::bad_http_version:
+   case websocket::error::bad_method:
+   case websocket::error::no_host:
+   case websocket::error::no_connection:
+   case websocket::error::no_connection_upgrade:
+   case websocket::error::no_upgrade:
+   case websocket::error::no_upgrade_websocket:
+   case websocket::error::no_sec_key:
+   case websocket::error::bad_sec_key:
+   case websocket::error::no_sec_version: return 400;
+   case websocket::error::bad_sec_version: return 426;
+   default: return 0;
+   }
 }
 
 server_log::error server_log::classify(std::exception_ptr failure) noexcept {
@@ -132,6 +161,7 @@ void server_log::request::finish(std::exception_ptr error_value) noexcept {
       dlog("forge.net.http.server", "HTTP request ${outcome}",
            ("event", "http.request.finished")("method", method)("status", status)
            ("duration_us", duration)("received_bytes", received_bytes)("sent_bytes", sent_bytes)
+           ("sent_bytes_known", sent_bytes_known)
            ("response_chunks", response_chunks)("outcome", completed ? "completed" : "aborted")
            ("error_code", failure.code)("error_category", failure.category));
    } catch (...) {
@@ -162,6 +192,23 @@ void server_log::handshake_failed(std::exception_ptr failure) noexcept {
    record_tls_failure(classify(std::move(failure)));
 }
 
+void server_log::session_failed(std::exception_ptr failure) noexcept {
+   const auto error = classify(failure);
+   if (!error.tls || error.expected) {
+      emit(event::session_failed, std::move(failure));
+      return;
+   }
+   try {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         increment(_pending.tls_session_failed);
+         _pending.last_session_error = error;
+      }
+      flush(false);
+   } catch (...) {
+   }
+}
+
 void server_log::record_tls_failure(error failure) noexcept {
    try {
       {
@@ -187,7 +234,8 @@ void server_log::flush(bool force) noexcept {
          if (!force && now < _next_summary) {
             return;
          }
-         if (_pending.tls_failed == 0 && _pending.tls_closed == 0 && _pending.tls_rejected == 0 &&
+         if (_pending.tls_failed == 0 && _pending.tls_closed == 0 &&
+             _pending.tls_session_failed == 0 && _pending.tls_rejected == 0 &&
              _pending.tls_context_missing == 0 && _pending.header_rejected == 0 && _pending.body_rejected == 0) {
             return;
          }
@@ -195,10 +243,13 @@ void server_log::flush(bool force) noexcept {
          _next_summary = now + summary_interval;
       }
       // Fixed counters, no peer/category-key map, and no sink calls under the mutex.
-      if (values.tls_failed || values.tls_context_missing) {
+      if (values.tls_failed || values.tls_session_failed || values.tls_context_missing) {
          wlog("forge.net.http.server", "HTTP admission summary",
               ("event", "http.admission.summary")("tls_failed", values.tls_failed)
               ("tls_closed", values.tls_closed)("tls_rejected", values.tls_rejected)
+              ("tls_session_failed", values.tls_session_failed)
+              ("session_error_code", values.last_session_error.code)
+              ("session_error_category", values.last_session_error.category)
               ("tls_context_missing", values.tls_context_missing)("header_rejected", values.header_rejected)
               ("body_rejected", values.body_rejected)("error_code", values.last_tls_error.code)
               ("error_category", values.last_tls_error.category));
@@ -206,6 +257,9 @@ void server_log::flush(bool force) noexcept {
          dlog("forge.net.http.server", "HTTP admission summary",
               ("event", "http.admission.summary")("tls_failed", values.tls_failed)
               ("tls_closed", values.tls_closed)("tls_rejected", values.tls_rejected)
+              ("tls_session_failed", values.tls_session_failed)
+              ("session_error_code", values.last_session_error.code)
+              ("session_error_category", values.last_session_error.category)
               ("tls_context_missing", values.tls_context_missing)("header_rejected", values.header_rejected)
               ("body_rejected", values.body_rejected)("error_code", values.last_tls_error.code)
               ("error_category", values.last_tls_error.category));

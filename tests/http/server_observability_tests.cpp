@@ -1,6 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <coroutine>
@@ -52,6 +53,8 @@ namespace http = forge::net::http;
 constexpr auto deadline = std::chrono::seconds{3};
 constexpr auto logger_name = "forge.net.http.server";
 constexpr auto secret = "access-token-private-key-body-cookie-904736";
+constexpr auto websocket_url_marker = "websocket-url-token-582914";
+constexpr auto websocket_header_marker = "websocket-header-token-763802";
 constexpr auto terminal_event = "http.request.finished";
 
 std::string field(const forge::log_record& record, const std::string& key) {
@@ -120,6 +123,8 @@ struct log_fixture {
       for (const auto& record : captured->records()) {
          BOOST_TEST(record.logger == logger_name);
          BOOST_CHECK(forge::format_json_log_record(record).find(secret) == std::string::npos);
+         BOOST_CHECK(forge::format_json_log_record(record).find(websocket_url_marker) == std::string::npos);
+         BOOST_CHECK(forge::format_json_log_record(record).find(websocket_header_marker) == std::string::npos);
          BOOST_CHECK(record.exception_chain.empty());
          for (const auto& value : record.fields) {
             BOOST_CHECK(value.key != "target" && value.key != "uri" && value.key != "headers" &&
@@ -171,6 +176,27 @@ wire::request<wire::string_body> request(wire::verb method = wire::verb::post) {
    }
    result.prepare_payload();
    return result;
+}
+
+wire::request<wire::string_body> rejected_websocket_request(bool bad_version = false) {
+   auto result = request(wire::verb::get);
+   result.target(std::string{"/ws/"} + websocket_url_marker + "?token=" + websocket_url_marker);
+   result.set(wire::field::connection, "Upgrade");
+   result.set(wire::field::upgrade, "websocket");
+   result.set(wire::field::sec_websocket_version, bad_version ? "12" : "13");
+   result.set(wire::field::authorization, std::string{"Bearer "} + websocket_header_marker);
+   result.set("X-Private-Header", websocket_header_marker);
+   if (bad_version) {
+      // Keep the key valid so Beast reaches its distinct bad_sec_version/426 branch.
+      result.set(wire::field::sec_websocket_key, "dGhlIHNhbXBsZSBub25jZQ==");
+   }
+   return result;
+}
+
+http::router websocket_rejection_router(std::atomic_uint& accepted) {
+   auto router = http::router{};
+   router.websocket("/ws/:id", [&accepted](auto) { accepted.fetch_add(1, std::memory_order_relaxed); });
+   return router;
 }
 
 exchange_result send(std::uint16_t port, wire::request<wire::string_body> message = request()) {
@@ -468,6 +494,76 @@ BOOST_AUTO_TEST_CASE(http_peer_reset_cancels_active_stream_and_stays_debug) {
    BOOST_REQUIRE(records.size() == 1);
    require_terminal(records[0], "aborted", 200);
    BOOST_TEST(field(records[0], "response_chunks") == "0");
+   for (const auto& record : logs.captured->records()) {
+      BOOST_CHECK(record.level != forge::log_level::warn && record.level != forge::log_level::error);
+   }
+   logs.require_redacted();
+}
+
+BOOST_AUTO_TEST_CASE(http_websocket_missing_key_rejections_do_not_flood_errors_with_access_disabled) {
+   auto logs = log_fixture{};
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto accepted = std::atomic_uint{0};
+   auto server = http::server{runtime, config(false), websocket_rejection_router(accepted)};
+   server.start();
+   for (auto index = 0; index != 8; ++index) {
+      // Use HTTP directly: a WebSocket client would generate the missing key for us.
+      const auto result = send(server.port(), rejected_websocket_request());
+      BOOST_CHECK(!result.error);
+      BOOST_TEST(result.status == 400);
+   }
+   server.stop();
+   BOOST_TEST(accepted.load(std::memory_order_relaxed) == 0U);
+   BOOST_TEST(logs.events(terminal_event).empty());
+   for (const auto& record : logs.captured->records()) {
+      BOOST_CHECK(record.level != forge::log_level::warn && record.level != forge::log_level::error);
+   }
+   logs.require_redacted();
+}
+
+BOOST_AUTO_TEST_CASE(http_websocket_missing_key_records_sent_400_once_with_unknown_byte_count) {
+   auto logs = log_fixture{};
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto accepted = std::atomic_uint{0};
+   auto server = http::server{runtime, config(), websocket_rejection_router(accepted)};
+   server.start();
+   for (auto index = std::size_t{0}; index != 8; ++index) {
+      const auto result = send(server.port(), rejected_websocket_request());
+      BOOST_CHECK(!result.error);
+      BOOST_TEST(result.status == 400);
+      BOOST_REQUIRE(logs.captured->wait_for(terminal_event, index + 1));
+   }
+   server.stop();
+   BOOST_TEST(accepted.load(std::memory_order_relaxed) == 0U);
+   const auto records = logs.events(terminal_event);
+   BOOST_REQUIRE(records.size() == 8);
+   for (const auto& record : records) {
+      require_terminal(record, "completed", 400);
+      // async_accept exposes only an error code, even after writing the rejection.
+      BOOST_TEST(field(record, "sent_bytes_known") == "false");
+   }
+   for (const auto& record : logs.captured->records()) {
+      BOOST_CHECK(record.level != forge::log_level::warn && record.level != forge::log_level::error);
+   }
+   logs.require_redacted();
+}
+
+BOOST_AUTO_TEST_CASE(http_websocket_bad_version_records_sent_426_with_unknown_byte_count) {
+   auto logs = log_fixture{};
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto accepted = std::atomic_uint{0};
+   auto server = http::server{runtime, config(), websocket_rejection_router(accepted)};
+   server.start();
+   const auto result = send(server.port(), rejected_websocket_request(true));
+   BOOST_CHECK(!result.error);
+   BOOST_TEST(result.status == 426);
+   BOOST_REQUIRE(logs.captured->wait_for(terminal_event));
+   server.stop();
+   BOOST_TEST(accepted.load(std::memory_order_relaxed) == 0U);
+   const auto records = logs.events(terminal_event);
+   BOOST_REQUIRE(records.size() == 1);
+   require_terminal(records[0], "completed", 426);
+   BOOST_TEST(field(records[0], "sent_bytes_known") == "false");
    for (const auto& record : logs.captured->records()) {
       BOOST_CHECK(record.level != forge::log_level::warn && record.level != forge::log_level::error);
    }

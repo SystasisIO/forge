@@ -262,7 +262,7 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
       for token in tokens:
          if token not in source:
             errors.append(f"{path.relative_to(root)}: TLS server invariant is missing ({token})")
-   for path in (root / "libraries/net/http").glob("server*.cpp"):
+   for path in source_files(root, ("libraries/net/http",)):
       source = path.read_text(errors="ignore")
       if "stream_.socket().async_read_some" in source:
          errors.append(f"{path.relative_to(root)}: disconnect monitor must read the outer HTTP/TLS stream")

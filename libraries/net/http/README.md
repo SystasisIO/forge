@@ -91,6 +91,11 @@ producer, partial send, rejected send guard or observed disconnect is aborted;
 a successfully sent error response is completed with its actual HTTP status.
 WebSocket upgrade completion reports status 101 after successful acceptance,
 not after the upgraded application's lifetime.
+Beast reports a rejected upgrade only after its HTTP refusal has been written:
+these records therefore retain the actual 400/426 status and completed outcome,
+while transport failures stay aborted. Its accept operation exposes no byte
+count, so upgrade records explicitly set `sent_bytes_known=false`; zero is not
+presented as a measured handshake size.
 
 No raw target/URI, route parameters, header, body, peer identity, certificate,
 key material or configuration dump is logged. Route strings are deliberately
@@ -100,7 +105,7 @@ ownership or cleanup outcomes, and sinks are never called under HTTP observation
 mutexes. Core logging is synchronous, so sinks still need to be bounded and
 nonblocking; exception isolation is not a latency guarantee.
 
-TLS failures and TLS/header/body resource rejections use fixed, saturating
+TLS handshake/session failures and TLS/header/body resource rejections use fixed, saturating
 counters instead of one warning per connection or an unbounded peer-keyed map.
 `http.admission.summary` is emitted at most once per five seconds on subsequent
 activity, plus a final pending summary before `http.drained`. There is no timer
