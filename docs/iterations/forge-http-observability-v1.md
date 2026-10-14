@@ -1,6 +1,7 @@
 # HTTP Observability And Executable App Examples
 
-Status: implementation and focused acceptance in progress.
+Status: implementation complete; focused native acceptance and two independent
+code reviews passed. Integration targets `dev`; no release version change.
 
 ## Scope
 
@@ -37,3 +38,49 @@ audit authority or proof that a remote application consumed bytes. Library
 readiness and product production-readiness are separate claims.
 
 See the [donor traceability](../donors/http-server-observability.md).
+
+## Acceptance Receipt (2026-10-14)
+
+Code revision: `180127a9f12499ba84ee2dc8d77e28d1fc713ceb`, based on
+`1dfce5eeb2d8ebc8fb577d8565033c642b090a2e`. Native arm64 macOS 26.1,
+Homebrew LLVM 22.1.8, CMake 3.31.6, Ninja, OpenSSL 3. Debug configuration used
+`-O1 -gline-tables-only`; every build was coordinator-owned with `-j4`.
+
+- PASS: 17 focused/structural CTest entries: App, executable README example and
+  source correspondence, logger/shutdown, HTTP observability, HTTP plugin
+  lifecycle/auth, TLS, shutdown retry, WebSocket/streaming, client preparation,
+  parameter binding/error rendering and the three structure gates.
+- PASS: five suites repeated 20 times each: HTTP observability, HTTP plugin
+  lifecycle, TLS, shutdown retry and the App README example.
+- PASS: installed `net_http`, `api_http`, `plugins_net_http_server` and `app`
+  component consumers. Exact registered consumer projects/options were used,
+  with separate explicit `cmake --build --parallel 4` steps and execution of
+  their registered binaries. The HTTP component consumer starts/stops a real
+  listener, rather than merely instantiating a config DTO.
+- PASS: 13 HTTP observation cases, including real malformed WebSocket upgrade
+  responses (400/426), streaming producer/guard failures, reset, redaction,
+  disabled access logging and throwing sinks. A separate TLS regression proves
+  eight malformed records after successful HTTPS responses produce bounded
+  summaries, not per-session ERROR records.
+- PASS: negative structural mutations detect raw-socket reads and unsafe TLS
+  timer captures in seven extracted implementation/header owners.
+- PASS: `git diff --check`. Two independent Sol 6.1 xHigh read-only reviews of
+  the exact code revision returned CLEAN after review fixes. Reviewers did not
+  run duplicate builds; test evidence was collected by the coordinator.
+
+Review fixes addressed WebSocket failure classification/actual refusal status,
+post-handshake TLS flood logging and coverage of the extracted TLS owners.
+Shared private polymorphic classes use the repository's existing ordinary C++
+linkage pattern; no duplicate-symbol linker suppression was added.
+
+Forge logging remains synchronous. A user-supplied blocking sink can delay its
+caller; this is an inherited, documented sink contract, not a new HTTP latency
+guarantee. Exception isolation and avoiding sink calls under observation mutexes
+do not make an arbitrary sink asynchronous. Applications own bounded sinks and
+export queues; HTTP does not introduce a second logger runtime.
+
+Full CI, Linux and sanitizer matrices, and a live OTLP collector were not run.
+No claim is made about external telemetry delivery or whole-product readiness.
+Local raw logs are retained under
+`.cache/acceptance/http-observability-20261014/`; only this task's inactive
+`build/http-observability` is eligible for removal after integration.
