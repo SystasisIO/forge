@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.31)
+project(ForgeApiWasmParity LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+find_package(Forge CONFIG REQUIRED COMPONENTS api_wasm execution_wasm chain_api codec_json codec_hex)
+find_package(ForgeContract CONFIG REQUIRED)
+add_subdirectory(../protocol protocol)
+foreach(input WASM ABI METADATA)
+   if(NOT EXISTS "${API_WASM_${input}}")
+      message(FATAL_ERROR "API_WASM_${input} must name a built SDK fixture")
+   endif()
+endforeach()
+add_executable(api_wasm_parity main.cpp)
+target_link_libraries(api_wasm_parity PRIVATE api_wasm_fixture_protocol
+   Forge::forge_execution_wasm Forge::forge_chain_api Forge::forge_codec_json Forge::forge_codec_hex)
+target_compile_definitions(api_wasm_parity PRIVATE
+   API_WASM_WASM="${API_WASM_WASM}" API_WASM_ABI="${API_WASM_ABI}"
+   API_WASM_METADATA="${API_WASM_METADATA}")
+enable_testing()
+add_test(NAME api_wasm_parity COMMAND api_wasm_parity)

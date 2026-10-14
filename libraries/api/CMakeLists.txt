@@ -1,4 +1,5 @@
 add_subdirectory(core)
+add_subdirectory(wasm)
 add_subdirectory(auth)
 add_subdirectory(http)
 add_subdirectory(stream)

@@ -39,6 +39,14 @@ add_test(NAME test_forge_vm_wasm_prepared_validation
    COMMAND test_forge_vm_wasm_prepared_validation --catch_system_errors=no)
 set_tests_properties(test_forge_vm_wasm_prepared_validation PROPERTIES LABELS vm_wasm_interpret TIMEOUT 10)
 
+add_executable(test_forge_vm_wasm_invocation main.cpp invocation_scope_tests.cpp)
+if(FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY)
+   target_compile_definitions(test_forge_vm_wasm_invocation PRIVATE FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY=1)
+endif()
+target_link_libraries(test_forge_vm_wasm_invocation PRIVATE forge_vm_wasm_interpret Boost::included_unit_test_framework)
+add_test(NAME test_forge_vm_wasm_invocation COMMAND test_forge_vm_wasm_invocation --catch_system_errors=no)
+set_tests_properties(test_forge_vm_wasm_invocation PROPERTIES LABELS vm_wasm_interpret TIMEOUT 30)
+
 add_executable(
    test_forge_vm_wasm_interpret_internal
    main.cpp

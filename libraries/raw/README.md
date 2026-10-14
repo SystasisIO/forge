@@ -24,6 +24,7 @@ modern FORGE modules and Boost.Describe for structure traversal.
 - `forge.raw.datastream` — buffer/vector/size-counting streams.
 - `forge.raw.varint` — signed/unsigned variable-width integer wrappers.
 - `forge.raw.enum_type` — enum support.
+- `forge.raw.enum_wire_type` — explicit shared enum wire metadata.
 - `forge.raw.raw` — `pack`, `unpack`, `pack_size`.
 - `forge/raw/serialization.hpp` — macro-only explicit-instantiation helpers for
   application/domain DTOs.
@@ -43,6 +44,45 @@ per-container and byte limits, capped by the frame size, and charges successful
 nested container allocations to the parent's remaining cumulative budget.
 Calling ordinary top-level `unpack_exact` independently for each nested frame
 would reset that budget and is not suitable for untrusted framed input.
+
+## Shared Enum Wire Types
+
+Native described enums retain their signed 64-bit default; portable
+`forge.raw.codec` retains the C++ underlying type by default. Existing
+`enum_wire_type` specializations without a `shared` member keep that behavior.
+For a type compiled for both native and WASM, explicitly opt in beside the enum
+declaration, after ordinary declarations:
+
+```cpp
+import forge.raw.enum_wire_type;
+
+enum class result_code : std::uint16_t { ok = 0, rejected = 400 };
+
+namespace forge::raw {
+template <> struct enum_wire_type<result_code> {
+   using type = std::int64_t;
+   static constexpr bool shared = true;
+};
+}
+```
+
+The native codec, portable codec and Abigen then use this one declaration for
+scalar enum encoding, including vector/optional/variant elements. Wire types
+must use fixed-width `intN_t` or `uintN_t` aliases (8/16/32/64 bits), not
+platform-sized `long` or `size_t`. The underlying enum type must also be a
+supported signed or unsigned integer; plain `char`, character-code types,
+`bool` and extended integers are excluded. Shared scalar
+packing rejects values outside the wire range; unpacking rejects values outside
+the C++ underlying range instead of truncating them. Unnamed representable
+values remain allowed by Raw; protocol membership validation is separate.
+
+Historical array layouts are not normalized: direct `std::array<Enum, N>`
+stores the underlying object representation, so its generated ABI uses the
+underlying integer element, without scalar symbolic enum metadata. C-style
+`Enum[N]` includes a count prefix; Abigen rejects shared-enum C-arrays because
+the fixed-array ABI cannot express both that prefix and the exact count.
+Use `std::array` or `std::vector` for a shared contract. Non-opted-in legacy
+types and their serialization defaults are unchanged.
 
 ## Examples
 

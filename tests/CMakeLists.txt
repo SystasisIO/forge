@@ -6,6 +6,8 @@ endif()
 
 set(FORGE_VM_WASM_INTERPRET_DONOR_ROOT "" CACHE PATH "Pinned EOS VM checkout used to verify the native interpreter test port")
 add_subdirectory(vm_wasm)
+add_subdirectory(execution_wasm)
+add_subdirectory(api_wasm)
 
 set(FORGE_STRUCTURE_CHECK ${CMAKE_CURRENT_SOURCE_DIR}/structure/check_structure.py)
 add_custom_target(
@@ -234,7 +236,10 @@ target_sources(
       FILE_SET CXX_MODULES
       FILES json/exact_types.cppm
 )
-target_link_libraries(test_forge_codec_json forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_codec_json
+   forge_codec_json forge_chain_protocol forge_crypto_digest forge_raw
+   Boost::included_unit_test_framework
+)
 add_test(NAME test_forge_codec_json COMMAND test_forge_codec_json WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 foreach(_codec IN ITEMS base64 base58 hex)
@@ -254,12 +259,60 @@ add_executable(
 )
 target_link_libraries(
    test_forge_raw
+   forge_api_core_values
    forge_codec_hex
    forge_crypto_digest
+   forge_net_http_values
    forge_raw
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_raw COMMAND test_forge_raw WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_wire_values_codec_only
+   unit/main.cpp
+   api/wire_values_baseline_tests.cpp
+)
+target_link_libraries(test_forge_wire_values_codec_only
+   forge_api_core_values forge_raw forge_codec_hex Boost::included_unit_test_framework
+)
+add_test(NAME test_forge_wire_values_codec_only
+   COMMAND test_forge_wire_values_codec_only
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_executable(test_forge_openapi_wire_baseline
+   unit/main.cpp
+   api/openapi_wire_baseline_tests.cpp
+)
+target_link_libraries(test_forge_openapi_wire_baseline
+   forge_api_http forge_codec_json Boost::included_unit_test_framework
+)
+add_test(NAME test_forge_openapi_wire_baseline
+   COMMAND test_forge_openapi_wire_baseline
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_executable(test_forge_openapi_parity_fixture api/openapi_parity.cpp)
+target_link_libraries(test_forge_openapi_parity_fixture PRIVATE forge_api_http forge_codec_json)
+set(FORGE_OPENAPI_PARITY_PYTHON "" CACHE FILEPATH
+   "Python with pinned OpenAPI qualification dependencies (optional; never auto-installed)")
+if(FORGE_OPENAPI_PARITY_PYTHON)
+   add_test(NAME test_forge_openapi_python_harness
+      COMMAND ${FORGE_OPENAPI_PARITY_PYTHON} -B -m unittest discover
+         -s ${CMAKE_CURRENT_SOURCE_DIR}/api/openapi_python -p test_*.py
+   )
+   add_test(NAME test_forge_openapi_python_parity
+      COMMAND ${FORGE_OPENAPI_PARITY_PYTHON} -B
+         ${CMAKE_CURRENT_SOURCE_DIR}/api/openapi_python/qualify.py
+         --fixture $<TARGET_FILE:test_forge_openapi_parity_fixture>
+         --work-dir ${CMAKE_BINARY_DIR}/openapi-python-parity
+   )
+   set_tests_properties(test_forge_openapi_python_parity PROPERTIES
+      TIMEOUT 180 FIXTURES_SETUP forge_openapi_generated_models)
+   set_tests_properties(test_forge_openapi_python_harness PROPERTIES
+      TIMEOUT 120 FIXTURES_REQUIRED forge_openapi_generated_models
+      ENVIRONMENT "FORGE_OPENAPI_TEST_ARTIFACTS=${CMAKE_BINARY_DIR}/openapi-python-parity")
+endif()
 
 add_executable(
    test_forge_db_ids
@@ -1188,7 +1241,10 @@ add_executable(
    api/api_tests.cpp
    api/api_module_smoke_tests.cpp
 )
-target_link_libraries(test_forge_api_core forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_api_core
+   forge_api_core forge_asio forge_crypto_digest forge_raw forge_reflect forge_variant
+   Boost::included_unit_test_framework
+)
 add_test(NAME test_forge_api_core COMMAND test_forge_api_core WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
@@ -1206,6 +1262,11 @@ add_test(NAME test_forge_http_error_renderer COMMAND test_forge_http_error_rende
 add_executable(test_forge_http_parameters unit/main.cpp api/http_parameters_tests.cpp)
 target_link_libraries(test_forge_http_parameters forge_api_http Boost::included_unit_test_framework)
 add_test(NAME test_forge_http_parameters COMMAND test_forge_http_parameters WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_http_strict_json unit/main.cpp api/http_strict_json_tests.cpp)
+target_link_libraries(test_forge_http_strict_json PRIVATE forge_api_http forge_net_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_strict_json COMMAND test_forge_http_strict_json WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_strict_json PROPERTIES TIMEOUT 120)
 
 add_executable(
    test_forge_http_websocket
@@ -2434,6 +2495,42 @@ add_custom_target(
       --test-command forge_package_config_program_options_component
    DEPENDS test_forge_package_install
 )
+set(execution_package_command ${CMAKE_CTEST_COMMAND}
+   --build-and-test
+   ${CMAKE_CURRENT_SOURCE_DIR}/package_execution_wasm_component
+   ${CMAKE_BINARY_DIR}/forge-package-execution-wasm-component
+   --build-generator ${CMAKE_GENERATOR}
+   --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      -DCMAKE_DISABLE_FIND_PACKAGE_Clang=ON
+      -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=ON
+   --test-command forge_package_execution_wasm_component
+)
+add_custom_target(test_forge_package_execution_wasm_component
+   COMMAND ${execution_package_command} DEPENDS test_forge_package_install)
+add_test(NAME test_forge_package_execution_wasm_component COMMAND ${execution_package_command})
+set_tests_properties(test_forge_package_execution_wasm_component PROPERTIES DEPENDS test_forge_package_install)
+
+foreach(values_component IN ITEMS api_core_values net_http_values api_wasm)
+   set(values_package_command ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_${values_component}_component
+      ${CMAKE_BINARY_DIR}/forge-package-${values_component}-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+         -DCMAKE_DISABLE_FIND_PACKAGE_Ngtcp2=ON
+         -DCMAKE_DISABLE_FIND_PACKAGE_glaze=ON
+         -DCMAKE_DISABLE_FIND_PACKAGE_Notcurses=ON
+      --test-command forge_package_${values_component}_component
+   )
+   add_custom_target(test_forge_package_${values_component}_component
+      COMMAND ${values_package_command}
+      DEPENDS test_forge_package_install
+   )
+   add_test(NAME test_forge_package_${values_component}_component COMMAND ${values_package_command})
+   set_tests_properties(test_forge_package_${values_component}_component PROPERTIES DEPENDS test_forge_package_install)
+endforeach()
+
 add_custom_target(
    test_forge_package_api_core_component
    COMMAND ${CMAKE_CTEST_COMMAND}

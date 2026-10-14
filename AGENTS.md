@@ -220,6 +220,20 @@ class service_node {
 
 ## Contract Build Boundary
 
+- `forge::api::wasm` owns portable host/guest values and pure bounded
+  validation. It reuses canonical API errors, HTTP method values and Raw;
+  it must not depend on HTTP runtime, VM, Asio, auth, DB or product modules.
+- The WASM effect response type describes the whole result. HTTP body rules
+  are separate host-selected capability policy. Serializable context facts
+  are not authentication or authorization capabilities.
+- `forge::execution` is an empty family root. `forge::execution::wasm` owns
+  bounded pure SDK action invocation over `forge_vm_wasm_interpret`, not a
+  scheduler, cache policy, persistence, networking or Chain authorization.
+- A production WASM invocation must exclusively own its compiled code
+  allocator. Shared backend modules do not isolate watchdog cancellation.
+- Production SDK adapters consume the canonical intrinsic registry; testhost
+  implementations and duplicate intrinsic signature registries are forbidden.
+
 - `libraries/tooling` is an empty host-library family. It has no aggregate
   target or module. ABI generation, attributes, validation, manifests and the
   deterministic contract test host are independent optional package

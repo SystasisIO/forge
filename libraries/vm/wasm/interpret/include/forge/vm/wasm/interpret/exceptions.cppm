@@ -27,6 +27,11 @@ enum class code : std::uint32_t {
    pointer_out_of_bounds = 4010000,
    timeout = 4010001,
    exit = 4010002,
+   canceled = 4010003,
+   busy = 4010004,
+   shared_instance = 4010005,
+   unusable = 4010006,
+   invocation_state = 4010007,
    span = 4020000,
    profile = 4030000,
 };
@@ -47,6 +52,11 @@ using link = ::forge::exceptions::coded_exception<code, code::link>;
 using pointer_out_of_bounds = ::forge::exceptions::coded_exception<code, code::pointer_out_of_bounds>;
 using timeout = ::forge::exceptions::coded_exception<code, code::timeout>;
 using exit = ::forge::exceptions::coded_exception<code, code::exit>;
+using canceled = ::forge::exceptions::coded_exception<code, code::canceled>;
+using busy = ::forge::exceptions::coded_exception<code, code::busy>;
+using shared_instance = ::forge::exceptions::coded_exception<code, code::shared_instance>;
+using unusable = ::forge::exceptions::coded_exception<code, code::unusable>;
+using invocation_state = ::forge::exceptions::coded_exception<code, code::invocation_state>;
 using span = ::forge::exceptions::coded_exception<code, code::span>;
 using profile = ::forge::exceptions::coded_exception<code, code::profile>;
 

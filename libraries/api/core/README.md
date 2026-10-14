@@ -1,5 +1,23 @@
 # forge_api_core
 
+## Values Component
+
+`forge_api_core_values` (package component `api_core_values`) owns the canonical
+`forge.api.core.types` module. Consumers that only need API identifiers, frames
+or error values can link this component without the API runtime or Boost.Asio.
+The module name, `forge::api::core` namespace and native Raw layout are unchanged.
+`forge_api_core` publicly depends on this values component.
+
+The same module is available to Contract SDK consumers without the API runtime.
+Its enum wire metadata explicitly preserves native signed 64-bit scalar
+encoding in WASM and generated ABI. The values target depends on Raw metadata
+and Boost headers, not Asio; native Raw retains its existing support dependencies.
+
+```cmake
+find_package(Forge CONFIG REQUIRED COMPONENTS api_core_values)
+target_link_libraries(protocol PUBLIC Forge::forge_api_core_values)
+```
+
 ## Trusted Invocation Lifetime
 
 `forge.api.core.invocation_context` composes the existing immutable

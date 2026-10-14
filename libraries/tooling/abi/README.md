@@ -112,6 +112,37 @@ other underlying types are rejected only when metadata is requested.
 The runtime consumer is the existing
 [Chain API ABI codec](../../chain/api/README.md).
 
+### Explicit shared enum wire types
+
+Abigen resolves the existing `forge::raw::enum_wire_type<Enum>` through Clang
+semantic lookup, including lazy specializations from imported modules. A
+public `static constexpr bool shared = true` opts in. Its public `type` alias
+controls the scalar enum ABI alias and numeric enum metadata. Neither a codec
+instantiation nor a hand-maintained enum list is required for discovery.
+
+The wire alias must lead through its typedef chain to a standard fixed-width
+`intN_t` or `uintN_t` declaration, with matching signedness and 8-, 16-, 32- or
+64-bit width. `<cstdint>` may expose these names through the global C typedefs.
+Direct `long`, `unsigned long`, `size_t` and aliases over those platform-sized
+types are rejected even if their current target width is supported. A standard
+`std::int64_t` alias remains valid when its canonical target type is `long`.
+The shared enum underlying type must also be a supported signed or unsigned
+8-, 16-, 32- or 64-bit integer, not `bool`, plain `char`, wide character types
+or a 128-bit integer. Every enumerator must fit the selected wire type; this
+check runs even without `--metadata`. Malformed markers and type aliases are
+errors, not a fallback to the underlying type.
+
+With no `shared` member or with `shared = false`, existing Abigen underlying
+encoding and metadata behavior remain unchanged. Abigen does not apply the
+legacy native described-enum `int64_t` default to unopted enums.
+
+`std::array<Enum, N>` of a shared enum still serializes enum object bytes. Its
+ABI element is therefore the underlying builtin, not the scalar wire alias;
+scalar enum metadata does not describe these array elements. Raw C-style
+`Enum[N]` includes a count prefix and is rejected for shared enums rather than
+misreported as fixed `Enum[N]` ABI, including through aliases and nesting.
+Unopted array encodings are not changed by this opt-in.
+
 ## Dependencies
 
 - `forge_chain_protocol` and `forge_codec_json` for canonical ABI values;

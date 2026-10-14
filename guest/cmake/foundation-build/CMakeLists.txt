@@ -74,10 +74,51 @@ forge_guest_add_implementation_archive(
    MODULES
       "${_raw}/include/forge/raw/stream.cppm"
       "${_raw}/include/forge/raw/varint_value.cppm"
+      "${_raw}/include/forge/raw/enum_wire_type.cppm"
       "${_raw}/include/forge/raw/codec.cppm"
    SOURCES
       "${_raw}/stream.cpp"
       "${_raw}/codec.cpp"
+)
+
+set(_http "${FORGE_SOURCE_DIR}/libraries/net/http")
+forge_guest_add_implementation_archive(
+   forge_guest_net_http_values
+   MODULE_DIRS "${_http}/include"
+   MODULES "${_http}/include/forge/net/http/method.cppm"
+   SOURCES "${_http}/method.cpp"
+   DEPENDENCIES forge_guest_raw_modules
+)
+
+set(_api_core "${FORGE_SOURCE_DIR}/libraries/api/core")
+add_library(forge_guest_api_core_values_modules OBJECT)
+target_sources(forge_guest_api_core_values_modules PUBLIC
+   FILE_SET CXX_MODULES
+   BASE_DIRS "${_api_core}/include"
+   FILES "${_api_core}/include/forge/api/core/types.cppm"
+)
+forge_guest_configure_target(forge_guest_api_core_values_modules)
+target_link_libraries(forge_guest_api_core_values_modules PRIVATE forge_guest_raw_modules)
+
+set(_api_wasm "${FORGE_SOURCE_DIR}/libraries/api/wasm")
+forge_guest_add_implementation_archive(
+   forge_guest_api_wasm
+   MODULE_DIRS "${_api_wasm}/include"
+   MODULES
+      "${_api_wasm}/include/forge/api/wasm/payload.cppm"
+      "${_api_wasm}/include/forge/api/wasm/continuation.cppm"
+      "${_api_wasm}/include/forge/api/wasm/effect.cppm"
+      "${_api_wasm}/include/forge/api/wasm/step.cppm"
+      "${_api_wasm}/include/forge/api/wasm/event.cppm"
+      "${_api_wasm}/include/forge/api/wasm/context.cppm"
+      "${_api_wasm}/include/forge/api/wasm/http_command.cppm"
+      "${_api_wasm}/include/forge/api/wasm/capability.cppm"
+      "${_api_wasm}/include/forge/api/wasm/limits.cppm"
+      "${_api_wasm}/include/forge/api/wasm/exceptions.cppm"
+      "${_api_wasm}/include/forge/api/wasm/validation.cppm"
+      "${_api_wasm}/include/forge/api/wasm/codec.cppm"
+   SOURCES "${_api_wasm}/validation.cpp"
+   DEPENDENCIES forge_guest_raw_modules forge_guest_api_core_values_modules forge_guest_net_http_values_modules
 )
 
 set(_db_ids "${FORGE_SOURCE_DIR}/libraries/db/ids")

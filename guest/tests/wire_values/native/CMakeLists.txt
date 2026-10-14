@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.31)
+project(ForgeWireValuesParity LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+find_package(Forge CONFIG REQUIRED COMPONENTS api_core_values net_http_values raw chain_api tooling_testing codec_json codec_hex)
+find_package(ForgeContract CONFIG REQUIRED)
+add_subdirectory(../protocol protocol)
+foreach(input WASM ABI METADATA)
+   if(NOT EXISTS "${WIRE_VALUES_${input}}")
+      message(FATAL_ERROR "WIRE_VALUES_${input} must name the installed-SDK guest artifact")
+   endif()
+endforeach()
+add_executable(wire_values_parity main.cpp)
+target_link_libraries(wire_values_parity PRIVATE wire_values_protocol Forge::forge_chain_api
+   Forge::forge_tooling_testing Forge::forge_codec_json Forge::forge_codec_hex Forge::forge_raw)
+target_compile_definitions(wire_values_parity PRIVATE
+   WIRE_VALUES_WASM="${WIRE_VALUES_WASM}" WIRE_VALUES_ABI="${WIRE_VALUES_ABI}"
+   WIRE_VALUES_METADATA="${WIRE_VALUES_METADATA}")
+enable_testing()
+add_test(NAME wire_values_parity COMMAND wire_values_parity)

@@ -8,6 +8,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -169,7 +170,12 @@ template <typename Variant, std::size_t... Index>
 [[nodiscard]] forge::variants variant_schemas(std::index_sequence<Index...>) {
    auto output = forge::variants{};
    output.reserve(sizeof...(Index));
-   (output.push_back(make_json_schema<std::variant_alternative_t<Index, Variant>>()), ...);
+   (output.emplace_back(forge::mutable_variant_object{}("type", "array")(
+        "prefixItems",
+        forge::variants{forge::variant{forge::mutable_variant_object{}("type", "integer")(
+                            "const", static_cast<std::uint64_t>(Index))},
+                        make_json_schema<std::variant_alternative_t<Index, Variant>>()})(
+        "minItems", std::uint64_t{2})("maxItems", std::uint64_t{2})), ...);
    return output;
 }
 
@@ -197,6 +203,12 @@ template <typename T> [[nodiscard]] forge::variant make_json_schema() {
       }
       if constexpr (std::unsigned_integral<value_type>) {
          schema("minimum", std::uint64_t{0});
+         if constexpr (sizeof(value_type) <= sizeof(std::uint64_t)) {
+            schema("maximum", static_cast<std::uint64_t>(std::numeric_limits<value_type>::max()));
+         }
+      } else if constexpr (sizeof(value_type) <= sizeof(std::int64_t)) {
+         schema("minimum", static_cast<std::int64_t>(std::numeric_limits<value_type>::min()))(
+             "maximum", static_cast<std::int64_t>(std::numeric_limits<value_type>::max()));
       }
       return forge::variant{std::move(schema)};
    } else if constexpr (std::floating_point<value_type>) {
@@ -241,13 +253,8 @@ template <typename T> [[nodiscard]] forge::variant make_json_schema() {
       }
    } else if constexpr (variant_traits<value_type>::value) {
       constexpr auto size = std::variant_size_v<value_type>;
-      auto payloads = variant_schemas<value_type>(std::make_index_sequence<size>{});
-      return forge::variant{forge::mutable_variant_object{}("type", "array")(
-          "prefixItems",
-          forge::variants{forge::variant{forge::mutable_variant_object{}("type", "integer")(
-                              "minimum", std::uint64_t{0})("maximum", static_cast<std::uint64_t>(size - 1U))},
-                          forge::variant{forge::mutable_variant_object{}("oneOf", std::move(payloads))}})(
-          "minItems", std::uint64_t{2})("maxItems", std::uint64_t{2})};
+      return forge::variant{forge::mutable_variant_object{}(
+          "oneOf", variant_schemas<value_type>(std::make_index_sequence<size>{}))};
    } else if constexpr (forge::reflect::is_described_object_v<value_type>) {
       auto properties = forge::mutable_variant_object{};
       auto required = forge::variants{};

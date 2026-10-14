@@ -9,6 +9,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <forge/vm/wasm/interpret/opcode_macros.hpp>
 #include <iostream>
 #include <limits>
@@ -167,6 +168,12 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
    inline auto get_wasm_allocator() {
       return _wasm_alloc;
    }
+   bool has_host_failure() const noexcept {
+      return _host_failure != nullptr || _host_call_active;
+   }
+   std::exception_ptr host_failure() const noexcept {
+      return _host_failure;
+   }
    inline char* linear_memory() {
       return _linear_memory;
    }
@@ -242,6 +249,21 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
    }
 
  protected:
+   void invoke_host(host_type* host, uint32_t function) {
+      const auto previous = _host_call_active;
+      _host_call_active = true;
+      try {
+         _rhf(host, get_interface(), function);
+      } catch (...) {
+         _host_call_active = previous;
+         if (!_host_failure)
+            _host_failure = std::current_exception();
+         throw;
+      }
+      // A signal leaving the host call skips this assignment; that failure also forbids reuse.
+      _host_call_active = previous;
+   }
+
    template <typename Func_type, typename... Args> static void type_check_args(const Func_type& ft, Args&&...) {
       detail::check<exceptions::interpreter>((sizeof...(Args) == ft.param_types.size()), "wrong number of arguments");
       uint32_t i = 0;
@@ -265,12 +287,16 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
 
    char* _linear_memory = nullptr;
    module* _mod = nullptr;
-   wasm_allocator* _wasm_alloc;
+   wasm_allocator* _wasm_alloc = nullptr;
    uint32_t _max_pages = max_pages;
    detail::host_invoker_t<Host> _rhf;
    std::error_code _error_code;
    operand_stack _os;
    std::vector<init_expr> _globals;
+
+ private:
+   std::exception_ptr _host_failure;
+   bool _host_call_active = false;
 };
 
 struct jit_visitor {
@@ -343,7 +369,7 @@ class jit_execution_context : public frame_info_holder<EnableBacktrace>,
             assert(!"Unexpected type in param_types.");
          }
       }
-      _rhf(_host, get_interface(), _mod->jit_mod->import_functions[index]);
+      this->invoke_host(_host, _mod->jit_mod->import_functions[index]);
       native_value result{uint64_t{0}};
       // guarantee that the junk bits are zero, to avoid problems.
       auto set_result = [&result](auto val) { std::memcpy(&result, &val, sizeof(val)); };
@@ -686,7 +712,7 @@ template <typename Host> class execution_context : public execution_context_base
          type_check(ft);
          inc_pc();
          push_call(activation_frame{nullptr, 0});
-         _rhf(_state.host, get_interface(), _mod->import_functions[index]);
+         this->invoke_host(_state.host, _mod->import_functions[index]);
          pop_call();
       } else {
          // const auto& ft = _mod->types[_mod->functions[index - _mod->get_imported_functions_size()]];
@@ -919,7 +945,7 @@ template <typename Host> class execution_context : public execution_context_base
 
       if (func_index < _mod->get_imported_functions_size()) {
          ::forge::vm::wasm::interpret::invoke_with_signal_handler(
-             [&]() { _rhf(_state.host, get_interface(), _mod->import_functions[func_index]); }, &handle_signal,
+             [&]() { this->invoke_host(_state.host, _mod->import_functions[func_index]); }, &handle_signal,
              _mod->allocator, base_type::get_wasm_allocator());
       } else {
          _state.pc = _mod->get_function_pc(func_index);

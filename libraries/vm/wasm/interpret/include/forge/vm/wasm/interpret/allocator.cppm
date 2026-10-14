@@ -366,26 +366,27 @@ class growable_allocator {
       _code_size = _offset - ((char*)code_base - _base);
       if constexpr (IsJit) {
          auto& jit_alloc = jit_allocator::instance();
-         void* executable_code = jit_alloc.alloc(_code_size);
-         int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
-         detail::check<exceptions::allocation>((err == 0), "mprotect failed");
-         std::memcpy(executable_code, _code_base, _code_size);
-         _code_base = (char*)executable_code;
-         enable_code(IsJit);
+         _code_base = static_cast<char*>(jit_alloc.alloc(_code_size));
+         // Own the JIT block before either protection transition can fail.
          _is_jit = true;
+         int err = mprotect(_code_base, _code_size, PROT_READ | PROT_WRITE);
+         detail::check<exceptions::allocation>((err == 0), "mprotect failed");
+         std::memcpy(_code_base, code_base, _code_size);
+         enable_code(IsJit);
          _offset = (char*)code_base - _base;
       }
    }
 
    // Sets protection on code pages to allow them to be executed.
    void enable_code(bool is_jit) {
-      mprotect(_code_base, _code_size, is_jit ? PROT_EXEC : (PROT_READ | PROT_WRITE));
+      const auto error = mprotect(_code_base, _code_size, is_jit ? PROT_EXEC : (PROT_READ | PROT_WRITE));
+      detail::check<exceptions::allocation>((error == 0), "failed to enable code page access");
    }
    // Make code pages unexecutable so deadline timer can kill an
    // execution (in both JIT and Interpreter)
    void disable_code() {
       const auto error = mprotect(_code_base, _code_size, PROT_NONE);
-      detail::check<exceptions::allocation>((error == 0), "mprotect failed");
+      detail::check<exceptions::allocation>((error == 0), "failed to disable code page access");
    }
 
    const void* get_code_start() const {

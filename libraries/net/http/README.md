@@ -26,6 +26,11 @@ still owns HTTP mechanics; the plugin owns app lifecycle/config composition.
 
 ## Public Modules
 
+- `forge.net.http.method` owns `method` and `is_idempotent()` in the public
+  `forge_net_http_values` target (package component `net_http_values`). It has
+  no transport, Asio, TLS or HTTP runtime dependency. It uses Raw metadata to
+  preserve signed 32-bit scalar encoding across native/WASM/ABI. `forge.net.http.types`
+  re-exports this module, so existing imports keep working.
 - `forge.net.http.types` — FORGE-owned Beast-like request/response wrappers, HTTP
   method/status enums and endpoint DTO state.
 - `forge.net.http.body`, `forge.net.http.stream` — FORGE-owned chunk, reader, writer and

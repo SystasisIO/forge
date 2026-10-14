@@ -1379,7 +1379,12 @@ def check_vm_wasm_interpret_boundaries(root: Path, errors: list[str]) -> None:
 
    details = component / "details"
    if details.exists():
-      errors.append(f"{details.relative_to(root)}: vm_wasm_interpret must not install or compile private source headers")
+      for path in details.iterdir():
+         if path.suffix != ".hxx" or not (component / f"{path.stem}.cpp").is_file():
+            errors.append(f"{path.relative_to(root)}: private VM declaration needs an exact implementation pair")
+      cmake = (component / "CMakeLists.txt").read_text()
+      if re.search(r"(?:FILE_SET|install\s*\()[^)]*details", cmake, re.DOTALL):
+         errors.append(f"{details.relative_to(root)}: private VM headers must not be installed or exported")
 
    include = component / "include" / "forge" / "vm" / "wasm" / "interpret"
    allowed_headers = {"host_function.hpp", "opcode_macros.hpp"}
@@ -2565,6 +2570,29 @@ def check_auth_chain_signer_boundaries(root: Path, errors: list[str]) -> None:
             )
 
 
+def check_execution_wasm_boundaries(root: Path, errors: list[str]) -> None:
+   family = root / "libraries/execution"
+   if not family.exists():
+      return
+   if {path.name for path in family.iterdir()} != {"CMakeLists.txt", "README.md", "wasm"}:
+      errors.append("libraries/execution: family root must remain a dispatcher")
+   leaf = family / "wasm"
+   public = leaf / "include/forge/execution/wasm"
+   for source in leaf.glob("*.cpp"):
+      pairs = [public / f"{source.stem}.cppm", leaf / "details" / f"{source.stem}.hxx"]
+      if sum(path.exists() for path in pairs) != 1:
+         errors.append(f"{source.relative_to(root)}: execution unit needs exactly one matching declaration")
+   forbidden = re.compile(r"\b(?:import\s+forge\.(?:net|asio|app|tooling|db)(?:\.|\s*;)|namespace\s+forge::execution\s*\{)")
+   for path in source_files(root, ("libraries/execution",)):
+      if forbidden.search(path.read_text()):
+         errors.append(f"{path.relative_to(root)}: execution substrate must not own product/runtime policy")
+   cmake = (leaf / "CMakeLists.txt").read_text()
+   if re.search(r"\bforge_(?:tooling|net|asio|app|db)(?:_|\b)", cmake):
+      errors.append("libraries/execution/wasm: runtime/testhost dependencies are forbidden")
+   if "FORGE_CONTRACT_INTRINSICS" not in (leaf / "intrinsics.cpp").read_text():
+      errors.append("libraries/execution/wasm: production imports must consume the canonical SDK registry")
+
+
 def check_modules(root: Path, files: list[Path], errors: list[str]) -> None:
    declarations: dict[str, list[tuple[Path, int]]] = defaultdict(list)
    imports: list[tuple[str, Path, int]] = []
@@ -2664,6 +2692,32 @@ def check_app_lifecycle_ownership(root: Path, errors: list[str]) -> None:
             errors.append(f"{path.relative_to(root)}: override on_{name}, not guarded {name}")
 
 
+def check_api_wasm_boundaries(root: Path, errors: list[str]) -> None:
+   leaf = root / "libraries/api/wasm"
+   public = leaf / "include/forge/api/wasm"
+   required = ("payload", "continuation", "effect", "step", "event", "context",
+               "http_command", "codec", "validation")
+   for name in required:
+      if not (public / f"{name}.cppm").is_file():
+         errors.append(f"libraries/api/wasm: missing public {name} component")
+   cmake = (leaf / "CMakeLists.txt").read_text() if (leaf / "CMakeLists.txt").exists() else ""
+   for dependency in ("forge_api_core_values", "forge_net_http_values", "forge_raw"):
+      if dependency not in cmake:
+         errors.append(f"libraries/api/wasm: missing canonical dependency {dependency}")
+   forbidden = r"\bforge_(?:vm(?:_\w+)?|execution(?:_\w+)?|asio|app|auth(?:_\w+)?|db(?:_\w+)?|plugins(?:_\w+)?|tooling(?:_\w+)?|api_(?:core|http|auth|stream|transport|quic|p2p|websocket)|net_(?:http|tls|tcp|quic|p2p|transport|websocket))\b"
+   if re.search(forbidden, cmake):
+      errors.append("libraries/api/wasm: protocol target must not depend on host runtime")
+   for path in source_files(root, ("libraries/api/wasm",)):
+      source = path.read_text(errors="ignore")
+      if re.search(r"\bimport\s+(?:forge\.(?:vm|execution|asio|app|auth|db|plugins|tooling)(?:\.|;)|(?:turbine|storlane|spine|gate)\.)", source):
+         errors.append(f"{path.relative_to(root)}: forbidden runtime/product import")
+      if re.search(r"enum\s+class\s+(?:status|method)\b", source):
+         errors.append(f"{path.relative_to(root)}: canonical API/HTTP enums must not be copied")
+   registry = (root / "guest/cmake/ForgeContractGuestComponents.cmake").read_text()
+   if "ID forge.api.wasm" not in registry:
+      errors.append("guest component registry: api.wasm is not available to installed SDK consumers")
+
+
 def main() -> int:
    if len(sys.argv) != 2:
       print("usage: check_structure.py <repository-root>", file=sys.stderr)
@@ -2684,6 +2738,8 @@ def main() -> int:
    check_p2p_scoped_peer_mutations(root, errors)
    check_pairing(root, errors)
    check_vm_wasm_interpret_boundaries(root, errors)
+   check_execution_wasm_boundaries(root, errors)
+   check_api_wasm_boundaries(root, errors)
    check_vm_wasm_interpret_identities(root, files, errors)
    check_contract_tooling_boundaries(root, files, errors)
    check_plugin_impl_ownership(root, errors)

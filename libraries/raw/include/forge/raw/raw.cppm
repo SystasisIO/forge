@@ -46,13 +46,6 @@ import forge.variant.value;
 
 export namespace forge::raw {
 
-template <typename Enum> struct enum_wire_type {
-   static_assert(std::is_enum_v<Enum>);
-   using type = std::int64_t;
-};
-
-template <typename Enum> using enum_wire_type_t = typename enum_wire_type<Enum>::type;
-
 template <std::size_t Size>
 using UInt = boost::multiprecision::number<boost::multiprecision::cpp_int_backend<
     Size, Size, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void>>;
@@ -432,7 +425,11 @@ template <typename T>
 struct codec_traits<T> {
    template <typename Stream> static void pack(Stream& stream, const T& value) {
       if constexpr (forge::reflect::is_described_enum_v<T>) {
-         forge::raw::pack(stream, static_cast<enum_wire_type_t<T>>(value));
+         if constexpr (shared_enum_wire_v<T>) {
+            detail::pack_enum(stream, value);
+         } else {
+            forge::raw::pack(stream, static_cast<enum_wire_type_t<T>>(value));
+         }
       } else {
          forge::reflect::for_each_member<T>([&](const char*, auto member) { forge::raw::pack(stream, value.*member); });
       }
@@ -440,9 +437,13 @@ struct codec_traits<T> {
 
    template <typename Stream> static void unpack(Stream& stream, T& value) {
       if constexpr (forge::reflect::is_described_enum_v<T>) {
-         auto encoded = enum_wire_type_t<T>{};
-         forge::raw::unpack(stream, encoded);
-         value = static_cast<T>(encoded);
+         if constexpr (shared_enum_wire_v<T>) {
+            detail::unpack_enum(stream, value);
+         } else {
+            auto encoded = enum_wire_type_t<T>{};
+            forge::raw::unpack(stream, encoded);
+            value = static_cast<T>(encoded);
+         }
       } else {
          forge::reflect::for_each_member<T>([&](const char*, auto member) {
             using member_type = std::remove_reference_t<decltype(value.*member)>;

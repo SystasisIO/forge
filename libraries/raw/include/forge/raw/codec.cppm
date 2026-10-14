@@ -26,6 +26,7 @@ export module forge.raw.codec;
 
 export import forge.raw.stream;
 export import forge.raw.varint_value;
+export import forge.raw.enum_wire_type;
 
 namespace forge::raw::detail {
 
@@ -282,19 +283,41 @@ template <typename Stream> void unpack(Stream& stream, unsigned __int128& value)
    detail::read_object(stream, value);
 }
 
+namespace detail {
+
+template <typename T>
+using enum_codec_type_t = std::conditional_t<shared_enum_wire_v<T>, enum_wire_type_t<T>, std::underlying_type_t<T>>;
+
+template <typename Stream, typename T> void pack_enum(Stream& stream, T value) {
+   using wire = enum_codec_type_t<T>;
+   const auto underlying = static_cast<std::underlying_type_t<T>>(value);
+   if constexpr (shared_enum_wire_v<T>) {
+      require(std::in_range<wire>(underlying), "enum value is outside its wire range");
+   }
+   write_object(stream, static_cast<wire>(underlying));
+}
+
+template <typename Stream, typename T> void unpack_enum(Stream& stream, T& value) {
+   auto encoded = enum_codec_type_t<T>{};
+   read_object(stream, encoded);
+   if constexpr (shared_enum_wire_v<T>) {
+      require(std::in_range<std::underlying_type_t<T>>(encoded), "enum wire value is outside its underlying range");
+   }
+   value = static_cast<T>(encoded);
+}
+
+} // namespace detail
+
 template <typename Stream, typename T>
    requires(std::is_enum_v<T> && !detail::traits_packable<Stream, T>)
 void pack(Stream& stream, const T& value) {
-   const auto encoded = static_cast<std::underlying_type_t<T>>(value);
-   detail::write_object(stream, encoded);
+   detail::pack_enum(stream, value);
 }
 
 template <typename Stream, typename T>
    requires(std::is_enum_v<T> && !detail::traits_unpackable<Stream, T>)
 void unpack(Stream& stream, T& value) {
-   auto encoded = std::underlying_type_t<T>{};
-   detail::read_object(stream, encoded);
-   value = static_cast<T>(encoded);
+   detail::unpack_enum(stream, value);
 }
 
 template <typename Stream> void pack(Stream& stream, const std::byte& value) {

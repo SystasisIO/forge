@@ -2,6 +2,7 @@ add_library(
    forge_tooling_abi STATIC
    command.cpp
    compilation_metadata.cpp
+   enum_wire_resolver.cpp
    generator.cpp
 )
 forge_target_modules_at(forge_tooling_abi tooling/abi)

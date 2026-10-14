@@ -1099,7 +1099,8 @@ class binding_builder {
       case body_codec::json: {
          auto decoded = forge::codec::json::read<T>(
              body, forge::codec::json::read_options{.source_name = std::string{source_name},
-                                                    .unknown_fields = forge::codec::json::unknown_field_policy::error});
+                                                    .unknown_fields = forge::codec::json::unknown_field_policy::error,
+                                                    .described_records = forge::codec::json::described_record_policy::exact});
          if (!decoded.ok()) {
             FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
                                   diagnostic_message(decoded.diagnostics, "HTTP API JSON request body is invalid"));
@@ -1125,8 +1126,10 @@ class binding_builder {
                                                                    const route_options& options,
                                                                    std::string_view name) {
       if constexpr (is_plain_codec_body_argument_v<Argument>) {
-         return uses_request_body(context.request.method()) && !context.request.body().empty() &&
-                !route_value(context, options, name).has_value();
+         const auto required_json = options.request_body_codec == body_codec::json &&
+                                    !is_optional<std::remove_cvref_t<Argument>>::value;
+         return uses_request_body(context.request.method()) && (required_json || !context.request.body().empty()) &&
+                !query_uses_field(options, name) && !route_value(context, options, name).has_value();
       } else {
          static_cast<void>(context);
          static_cast<void>(options);
@@ -1140,7 +1143,8 @@ class binding_builder {
                                                                           const route_options& options,
                                                                           std::string_view name) {
       if constexpr (is_plain_codec_body_argument_v<Argument>) {
-         return uses_request_body(context.request.method()) && !route_value(context, options, name).has_value();
+         return uses_request_body(context.request.method()) && !query_uses_field(options, name) &&
+                !route_value(context, options, name).has_value();
       } else {
          static_cast<void>(context);
          static_cast<void>(options);
@@ -1333,6 +1337,12 @@ class binding_builder {
       } else {
          if constexpr (is_plain_codec_body_argument_v<clean>) {
             if (decode_plain_codec_body && plain_codec_body != nullptr && plain_codec_body->has_value() &&
+                plain_codec_body->value().empty() && options.request_body_codec == body_codec::json &&
+                !is_optional<clean>::value) {
+               FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                     "HTTP API JSON request body is required");
+            }
+            if (decode_plain_codec_body && plain_codec_body != nullptr && plain_codec_body->has_value() &&
                 !plain_codec_body->value().empty()) {
                require_request_content_type(stream.context.request, options.request_body_codec);
                auto result =
@@ -1398,6 +1408,38 @@ class binding_builder {
    }
 
    template <typename Request>
+   static void require_plain_json_body(const route_context& context, const route_options& options) {
+      if (options.request_body_codec != body_codec::json || !uses_request_body(context.request.method())) {
+         return;
+      }
+      auto required = false;
+      const auto route_bound = [&](std::string_view name) {
+         return context.route_params.contains(std::string{name}) || query_uses_field(options, name);
+      };
+      const auto rules = forge::schema::rules<Request>::define();
+      if (!rules.fields().empty()) {
+         for (const auto& field : rules.fields()) {
+            required = required || ((!field.optional || field.required) && !route_bound(field.member_name));
+         }
+      } else {
+         if constexpr (forge::reflect::is_described_object_v<Request>) {
+            forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
+               using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
+               if constexpr (!is_optional<member_type>::value) {
+                  required = required || !route_bound(name);
+               }
+            });
+         } else if constexpr (!std::same_as<Request, std::tuple<>> && !is_optional<Request>::value) {
+            required = true;
+         }
+      }
+      if (required) {
+         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                               "HTTP API JSON request body is required");
+      }
+   }
+
+   template <typename Request>
    static void bind_route_query_headers(Request& request, const route_context& context, const route_options& options,
                                         bool body_was_decoded) {
       if constexpr (forge::reflect::is_described_object_v<Request>) {
@@ -1454,6 +1496,8 @@ class binding_builder {
             require_request_content_type(context.request, options.request_body_codec);
             request = decode_request_body<Request>(context.request.body(), options.request_body_codec);
             whole_request_body_was_decoded = true;
+         } else if (validate_schema) {
+            require_plain_json_body<Request>(context, options);
          }
       }
       bind_route_query_headers(request, context, options, whole_request_body_was_decoded);
@@ -1498,6 +1542,8 @@ class binding_builder {
                   require_request_content_type(stream.context.request, options.request_body_codec);
                   request = decode_request_body<Request>(text, options.request_body_codec);
                   bind_route_query_headers(request, stream.context, options, true);
+               } else {
+                  require_plain_json_body<Request>(stream.context, options);
                }
             }
          }

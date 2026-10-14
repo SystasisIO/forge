@@ -10,6 +10,8 @@ module;
 
 export module forge.net.http.types;
 
+export import forge.net.http.method;
+
 export namespace forge::net::http {
 
 enum class field {
@@ -34,19 +36,6 @@ enum class field {
    transfer_encoding,
    user_agent,
 };
-
-enum class method {
-   unknown,
-   delete_,
-   get,
-   head,
-   options,
-   patch,
-   post,
-   put,
-};
-
-[[nodiscard]] bool is_idempotent(method value) noexcept;
 
 enum class status : unsigned {
    continue_ = 100,
