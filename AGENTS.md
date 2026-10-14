@@ -590,6 +590,12 @@ implementation-library namespaces. For plugin family/role decisions, follow
   check-config, print-effective-config, generated config and signal policy.
   Product `main(...)` functions should be thin factories for an
   `application_shell`, not generic config frameworks.
+- `run_daemon(...)` owns final configured logging shutdown by default, after
+  cleanup and final producer/destructor records. Never close global logging
+  from an individual shell or `run_application(...)`. External process hosts
+  using multiple/nested daemon calls must opt out via `shutdown_logging=false`
+  and drain once after every producer stops. Do not report drain failures through
+  the closed logger or a potentially blocked stderr fallback.
 - `run_application(...)` remains the lower-level lifecycle runner for tests,
   embedded hosts and custom shells that already own a merged
   `forge::config::core::document`.

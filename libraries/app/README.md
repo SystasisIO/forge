@@ -508,6 +508,46 @@ process environment, parse daemon and app/plugin CLI, merge defaults, handle
 `--help`, `--check-config`, `--print-effective-config` and `--configure`, then
 call `run_application(...)`.
 
+### Logging shutdown ownership
+
+`run_daemon(...)` owns configured process-wide logging by default. It finishes
+application cleanup, final runner/daemon records and owned application/factory
+destructors before calling `forge::async_shutdown_logging()`. This applies to
+normal execution, bootstrap/startup/shutdown failures and CLI-only exits such as
+`--help` and `--check-config`. No extra shutdown call is needed in a normal
+daemon's `main()`; logging macros are unchanged.
+
+`daemon_options::logging_shutdown_timeout` is a separate nonnegative budget,
+defaulting to five seconds. Zero checks the delivery fence without waiting;
+negative values are rejected. Failure to drain increments `log_failure_count()`
+and turns a successful exit into code `1`, while preserving an existing nonzero
+code or exception. The failure path does not log or write to stderr, which may
+itself be the blocked output. A completed fence means accepted records have
+finished delivery attempts, not that every output succeeded or reached durable
+storage; inspect `logging_delivery_metrics()` for failed/dropped records.
+
+An owning daemon retains the application until cleanup completes, even if the
+application shutdown budget expires. It then reports the timeout as failure.
+Neither budget can forcibly terminate non-cooperative C++ callbacks. The logging
+budget bounds the drain wait, not process termination: a blocked callback can
+still delay the logging owner's final worker join.
+The budget starts after the daemon body returns or unwinds. Existing CLI
+stdout/stderr output (including error diagnostics) remains synchronous and can
+block before this boundary; it is not an asynchronous logging sink.
+
+`application_shell::shutdown()` and both `run_application(...)` overloads do
+**not** close process-wide logging. Several shells can share it safely. An
+external process host using repeated, nested or concurrent `run_daemon()` calls
+must set `daemon_options::shutdown_logging = false` for those calls and perform
+one final logging shutdown after all its producers have stopped. In this mode,
+the existing owning runner's asynchronous cleanup-after-timeout behavior is
+unchanged. Do not mix a process-owning daemon with independently running shells;
+the daemon cannot infer external producers' lifetimes. Configured logging is
+not restartable after its final shutdown.
+
+OTLP and directly attached sinks keep their own lifecycle. The daemon drains
+the configured async console/file/JSONL owner, not arbitrary external exporters.
+
 The complete factory and thin `main()` are shown above; no additional options
 type or manual signal bridge is needed.
 

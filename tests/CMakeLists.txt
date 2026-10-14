@@ -1103,6 +1103,13 @@ target_link_libraries(test_forge_app forge_app Boost::included_unit_test_framewo
 add_test(NAME test_forge_app COMMAND test_forge_app WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_app PROPERTIES TIMEOUT 120)
 
+add_executable(test_forge_app_daemon_logging app/daemon_logging_helper.cpp)
+target_link_libraries(test_forge_app_daemon_logging PRIVATE forge_app forge_log forge_asio)
+add_test(NAME test_forge_app_daemon_logging
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/app/check_daemon_logging.py
+      $<TARGET_FILE:test_forge_app_daemon_logging>)
+set_tests_properties(test_forge_app_daemon_logging PROPERTIES TIMEOUT 180)
+
 # App README example: compile the documented program and test its real factory.
 add_executable(forge_app_readme_example app/readme_example.cpp app/readme_example_main.cpp)
 target_link_libraries(forge_app_readme_example PRIVATE forge_app)
