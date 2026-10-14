@@ -9,6 +9,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 import forge.app.application_builder;
 import forge.app.application_shell;
