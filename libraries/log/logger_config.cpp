@@ -1,7 +1,11 @@
 module;
 
+#include <boost/asio/awaitable.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,11 +18,18 @@ module forge.log.logger_config;
 
 import forge.log.exceptions;
 import forge.variant.value;
+import forge.asio.compute;
+import forge.asio.notification;
+
+#include "details/configured_sink_runtime.hxx"
 
 namespace forge {
 namespace {
 
 void validate_sink_config(const sink_config& config) {
+   if (config.max_records == 0 || config.max_bytes == 0) {
+      throw log::exceptions::invalid_config{"logging queue limits must be positive"};
+   }
    const auto args = config.args.is_null() ? variant_object{} : config.args.get_object();
    if (config.type == "console") {
       if (args.contains("stream")) {
@@ -63,36 +74,6 @@ void validate_config(const logging_config& config) {
    }
 }
 
-std::shared_ptr<sink> create_sink(const sink_config& config) {
-   const auto args = config.args.is_null() ? variant_object{} : config.args.get_object();
-   if (config.type == "console") {
-      auto stream = console_stream::by_level;
-      if (args.contains("stream")) {
-         const auto name = args["stream"].as_string();
-         if (name == "std_error") {
-            stream = console_stream::standard_error;
-         } else if (name == "std_out") {
-            stream = console_stream::standard_out;
-         } else if (name != "by_level") {
-            throw log::exceptions::invalid_config{"unknown console sink stream"};
-         }
-      }
-      return std::make_shared<console_sink>(stream);
-   }
-   if (config.type == "file" || config.type == "jsonl") {
-      if (!args.contains("path")) {
-         throw log::exceptions::invalid_config{"file sink requires path"};
-      }
-      const auto path = std::filesystem::path{args["path"].as_string()};
-      const auto append = !args.contains("append") || args["append"].as_bool();
-      if (config.type == "jsonl") {
-         return std::make_shared<jsonl_sink>(path, append);
-      }
-      return std::make_shared<file_sink>(path, append);
-   }
-   throw log::exceptions::invalid_config{"unknown logging sink type"};
-}
-
 } // namespace
 
 log_config& log_config::get() {
@@ -110,18 +91,24 @@ void log_config::update_logger(const std::string& name, logger& log) {
 }
 
 bool configure_logging(const logging_config& config) {
+   if (detail::configured_sink_runtime::terminated()) {
+      return false;
+   }
    static_cast<void>(logger::get());
    return log_config::configure_logging(config);
 }
 
 bool log_config::configure_logging(const logging_config& config) {
    try {
+      if (detail::configured_sink_runtime::terminated()) {
+         return false;
+      }
       // Validate the whole document before constructors may open or truncate files.
       validate_config(config);
-      auto sinks = std::unordered_map<std::string, std::shared_ptr<sink>>{};
-      for (const auto& value : config.sinks) {
-         sinks.emplace(value.name, create_sink(value));
-      }
+      // Declared before every prepared route/output: its destructor reports
+      // completion only after publication or complete rollback/teardown.
+      auto operation = detail::configured_sink_runtime::get().begin_configuration(config.sinks);
+      auto sinks = operation.prepare(config.sinks);
 
       auto loggers = std::unordered_map<std::string, logger>{};
       auto parent = logger{default_logger_name};
@@ -152,16 +139,46 @@ bool log_config::configure_logging(const logging_config& config) {
 
       auto retired_default = logger{parent};
       {
+         // Lock order is runtime -> registry. Stop and publication share the
+         // same boundary; slow preparation and retired teardown hold neither.
+         auto publication = operation.acquire_publication();
          std::lock_guard lock(get().log_mutex);
          get().logger_map.swap(loggers);
          retired_default = std::move(logger::default_logger());
       }
       // Retired routes and their sinks must be destroyed after unlocking.
       return true;
-   } catch (const std::exception& error) {
-      std::cerr << "logging configuration failed: " << error.what() << '\n';
+   } catch (...) {
+      report_log_failure();
       return false;
    }
+}
+
+namespace {
+boost::asio::awaitable<bool> delivery_unavailable() {
+   co_return false;
+}
+} // namespace
+
+boost::asio::awaitable<bool> async_flush_logging(std::chrono::milliseconds timeout) {
+   if (detail::configured_sink_runtime::terminated()) {
+      return delivery_unavailable();
+   }
+   return detail::configured_sink_runtime::get().flush(timeout);
+}
+
+boost::asio::awaitable<bool> async_shutdown_logging(std::chrono::milliseconds timeout) {
+   if (detail::configured_sink_runtime::terminated()) {
+      return delivery_unavailable();
+   }
+   return detail::configured_sink_runtime::get().shutdown(timeout);
+}
+
+async_sink_metrics logging_delivery_metrics() {
+   if (detail::configured_sink_runtime::terminated()) {
+      return {.closed = true};
+   }
+   return detail::configured_sink_runtime::get().snapshot();
 }
 
 logging_config logging_config::default_config() {

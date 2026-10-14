@@ -102,8 +102,10 @@ key material or configuration dump is logged. Route strings are deliberately
 omitted, rather than attempting to sanitize a request-controlled path. Logging
 is observational and noexcept: sink failures cannot change response, resource
 ownership or cleanup outcomes, and sinks are never called under HTTP observation
-mutexes. Core logging is synchronous, so sinks still need to be bounded and
-nonblocking; exception isolation is not a latency guarantee.
+mutexes. Configured console/file/JSONL delivery uses Forge Log's bounded
+asynchronous adapter; OTLP owns its existing asynchronous queue. Direct custom
+sinks must still be nonblocking or explicitly adapted. Record preparation is
+synchronous; exception isolation is not a hard latency guarantee.
 
 TLS handshake/session failures and TLS/header/body resource rejections use fixed, saturating
 counters instead of one warning per connection or an unbounded peer-keyed map.

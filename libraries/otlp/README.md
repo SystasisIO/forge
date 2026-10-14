@@ -6,7 +6,7 @@ minimal crash-spool records on the next start.
 
 ## Responsibility
 
-- `forge_log` owns log records, structured fields, redaction and synchronous sink
+- `forge_log` owns log records, structured fields, redaction and sink
   mechanics.
 - `forge_net_http` owns HTTP client mechanics.
 - `forge_asio` owns runtime scheduling, timers and cancellation.
@@ -106,8 +106,9 @@ tests or supervised helpers may disable it to exit cleanly after capture.
   arbitrary log messages from signal handlers.
 - Custom headers and endpoints are operator-controlled config and should not be
   copied from untrusted remote input.
-- Queue overflow policy is explicit. Prefer dropping or blocking according to
-  the application risk profile rather than growing queues without bounds.
+- Queue overflow drops the new record and increments metrics; logging never
+  waits for collector progress or free queue space. Do not wrap this sink in
+  `forge.log.async_sink`: OTLP already owns its bounded queue.
 
 ## Concurrency And Shutdown
 

@@ -1,5 +1,6 @@
 module;
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <source_location>
 #include <string>
@@ -68,6 +69,7 @@ class logger {
 [[nodiscard]] logger resolve_log_logger(const std::string& name);
 [[nodiscard]] logger resolve_log_logger(const char* name);
 void report_log_failure() noexcept;
+[[nodiscard]] std::uint64_t log_failure_count() noexcept;
 void emit_log(logger& route, log_level level, std::string message, std::source_location location);
 void emit_log(logger& route, log_level level, std::string message, log_fields fields, std::source_location location);
 void emit_log(logger& route, log_level level, log_record record, std::source_location location);

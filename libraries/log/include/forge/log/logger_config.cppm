@@ -1,5 +1,8 @@
 module;
 #include <boost/describe.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <chrono>
+#include <cstddef>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -9,6 +12,7 @@ module;
 export module forge.log.logger_config;
 
 import forge.log.logger;
+export import forge.log.async_sink;
 export import forge.log.record;
 import forge.variant.described;
 import forge.variant.value;
@@ -19,6 +23,9 @@ struct sink_config {
    std::string name;
    std::string type;
    variant args;
+   bool asynchronous = true;
+   std::size_t max_records = 8192;
+   std::size_t max_bytes = 8 * 1024 * 1024;
 };
 
 struct logger_config {
@@ -49,7 +56,13 @@ struct log_config {
 
 bool configure_logging(const logging_config& config);
 
-BOOST_DESCRIBE_STRUCT(sink_config, (), (name, type, args))
+// Process-wide configured delivery. Direct synchronous sinks and OTLP retain
+// their own lifecycle. Call shutdown after producers, not per application.
+boost::asio::awaitable<bool> async_flush_logging(std::chrono::milliseconds timeout = std::chrono::seconds{5});
+boost::asio::awaitable<bool> async_shutdown_logging(std::chrono::milliseconds timeout = std::chrono::seconds{5});
+[[nodiscard]] async_sink_metrics logging_delivery_metrics();
+
+BOOST_DESCRIBE_STRUCT(sink_config, (), (name, type, args, asynchronous, max_records, max_bytes))
 BOOST_DESCRIBE_STRUCT(logger_config, (), (name, level, enabled, sinks))
 BOOST_DESCRIBE_STRUCT(logging_config, (), (sinks, loggers))
 

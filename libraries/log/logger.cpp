@@ -1,8 +1,7 @@
 module;
 #include <memory>
-#include <iostream>
 #include <atomic>
-#include <cstdio>
+#include <cstdint>
 #include <chrono>
 #include <mutex>
 #include <optional>
@@ -28,6 +27,8 @@ import forge.variant.value;
 namespace forge {
 
 namespace {
+
+std::atomic<std::uint64_t> log_failures{0};
 
 std::string current_thread_id() {
    auto out = std::ostringstream{};
@@ -306,12 +307,13 @@ logger resolve_log_logger(const char* name) {
 }
 
 void report_log_failure() noexcept {
-   // Allocation-free, non-recursive and bounded even when the sink repeatedly
-   // fails. Exception text can contain secrets and must not reach this path.
-   static auto reported = std::atomic_flag{};
-   if (!reported.test_and_set(std::memory_order_relaxed)) {
-      static_cast<void>(std::fputs("Forge logging failed; records may be lost\n", stderr));
-   }
+   // Even an emergency stderr write can block the emitting I/O thread.
+   // Diagnostics consume this counter without recursively logging the failure.
+   log_failures.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t log_failure_count() noexcept {
+   return log_failures.load(std::memory_order_relaxed);
 }
 
 void emit_log(logger& route, log_level level, std::string message, std::source_location location) {

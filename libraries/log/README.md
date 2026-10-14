@@ -1,13 +1,17 @@
 # Forge Log
 
-`forge_log` provides synchronous structured logging. Use
+`forge_log` provides structured logging with bounded asynchronous configured
+output. Use
 `tlog/dlog/ilog/wlog/elog` for application events: logger names, message
 templates, structured fields and callsite metadata reach the same record/sink
 path. Use direct `log_record` construction when an event needs explicit
 timestamps, thread metadata, component, exception chain or stacktrace.
 
-The core owns no executor, queue, transport or runtime. Console, text-file and
-JSONL sinks run synchronously. Optional OTLP delivery belongs to
+Macros prepare records synchronously, without changing their interface.
+Configured console, text-file and JSONL output crosses a bounded queue onto a
+dedicated Forge Asio compute worker. Direct sink objects remain synchronous;
+`forge.log.async_sink` adapts a custom blocking sink with explicit worker
+ownership. No HTTP/P2P I/O worker performs configured output. Optional OTLP delivery belongs to
 [Forge OTLP](../otlp/README.md) and its
 [plugin](../../plugins/log/otlp/README.md).
 
@@ -22,9 +26,11 @@ Target: `forge_log`; installed target: `Forge::forge_log`; package component:
   sinks, thread names and FORGE-owned stacktrace snapshots.
 - `forge.log.logger_config`: built-in sink configuration and named logger policy.
 - `forge.log.exceptions`: typed configuration and file errors.
+- `forge.log.async_sink`: bounded FIFO adapter, delivery counters, flush fences
+  and deadline-aware shutdown waits on an externally owned compute executor.
 - `forge/log/macros.hpp`: macro-only header; modules cannot export macros.
 
-Public dependencies are Core, Exceptions, Reflect, Variant/Schema and Boost
+Public dependencies are Core, Exceptions, Reflect, Variant/Schema, Asio and Boost
 headers. Chrono, Boost.DLL and the optional stacktrace backend are private.
 Boost.DLL supplies the default process name for thread metadata.
 
@@ -54,7 +60,8 @@ user callsite, including file, line and function. `FORGE_DISABLE_LOGGING`
 removes every level and every argument expression at preprocessing time.
 Macros are best-effort: exceptions from route resolution, message/field
 preparation or delivery do not escape into the instrumented operation. The
-emergency path prints one fixed warning per process, never exception text.
+emergency path increments `log_failure_count()`, never exception text or an
+emergency stderr write that could block the caller.
 Do not put required application side effects in logging arguments. Direct APIs
 retain ordinary eager argument evaluation and may throw during preparation.
 
@@ -92,9 +99,8 @@ their previous routes after configuration replacement.
 Registry creation/update reads route state directly while holding the routing
 mutex; it must not call the public locking getters/setters from inside that
 lock. Retired handles and sinks are released after unlocking, including on
-parent replacement, registry update and configuration replacement. No executor,
-background worker, additional runtime dependency or asynchronous delivery is
-introduced by this synchronization.
+parent replacement, registry update and configuration replacement. Configured
+asynchronous adapters never join their worker from those paths.
 
 ## Diagnostic fields and redaction
 
@@ -185,6 +191,57 @@ warnings/errors). The default configuration uses the stderr console route at
 info level. A direct `console_sink(bool)` preserves the existing by-level or
 stdout behavior; `console_sink(console_stream)` selects an explicit stream.
 
+Every configured sink defaults to `asynchronous=true`, `max_records=8192`, and
+`max_bytes=8*1024*1024`. Limits include the record inside the output callback;
+the byte estimate includes owned strings, fields, trace frames and container
+storage, not allocator bookkeeping or process-wide memory. Saturation rejects
+the new record immediately and counts it. `asynchronous=false` is an explicit
+synchronous option for controlled CLI/test callers, not a safe server default.
+`logging_delivery_metrics()` aggregates configured generations, including
+completed retired sinks. Direct sinks and OTLP have their own counters.
+
+The process-scoped configured worker retains at most 64 asynchronous sinks
+across current and still-used retired configurations. Idle owner-only adapters
+are reclaimed during configuration. Capacity is reserved before opening files;
+exhaustion rejects the new configuration and preserves the active routes.
+One blocked configured sink can delay delivery to others, but not producers;
+use separately owned dedicated executors when output isolation is required.
+
+### Flush and ownership
+
+```cpp
+import forge.log.logger_config;
+
+// After all producers and application shutdown logs, while an await executor lives:
+const bool drained = co_await forge::async_shutdown_logging(std::chrono::seconds{5});
+// false means delivery is still pending, NOT that its callback was terminated.
+```
+
+`async_flush_logging(timeout)` captures fences for the currently retained
+adapters at call time. It waits only for those accepted records, including
+failed delivery attempts, not for a moving empty queue or downstream durability.
+`async_shutdown_logging(timeout)` first closes admission in every generation,
+then waits for their fences and shuts down the dedicated compute owner.
+Repeated/concurrent waits are supported. A timeout/cancel only ends that wait;
+retry after the output recovers. New configurations after shutdown are rejected;
+late records are dropped rather than synchronously replayed. Shutdown is owned
+by the process, not an individual `application_shell` sharing global log routes.
+Explicitly synchronous sinks (`asynchronous=false`) and directly attached sinks
+are outside this asynchronous delivery lifecycle; their caller owns completion.
+
+Custom adapters take a `forge::asio::compute::executor` from a dedicated pool.
+Close/drain the adapter before stopping that pool; keep it alive until every
+callback returns. `async_sink` destruction closes admission without joining.
+The configured owner's process-exit fallback joins workers but may discard
+pending work. Neither a deadline nor a destructor can safely kill an arbitrary
+non-returning C++ callback: such a callback can still prevent final worker join.
+No detached thread or forced cancellation hides that limitation.
+
+Async output callbacks must not log back into async sinks: those reentrant
+records are counted and suppressed to avoid cross-worker feedback loops.
+Do not wrap the OTLP sink again; its existing bounded queue already isolates
+network waits. HTTP logging uses this same infrastructure, not a second queue.
+
 Sink/logger names must be non-empty and unique, including the default logger.
 All names, references, types and arguments are validated before any sink opens
 a file. Structural validation failures keep the previous routes and files.
@@ -200,7 +257,7 @@ snapshots, but does not cancel an already captured delivery: that snapshot keeps
 the sink alive until delivery completes. Custom sinks must synchronize their
 own mutable state when multiple logging threads call them. File/JSONL sinks lock their own output; console
 output is synchronized across all console sinks for a complete record.
-Sink failures are contained and reported by the same bounded emergency path.
+Direct sink failures are contained and counted by the emergency counter.
 A sink is not invoked recursively while it is already delivering on that
 thread, even through a different route. Other sinks still receive the nested
 event. Sink callbacks must remain short; this guard is not an asynchronous
@@ -209,7 +266,7 @@ queue and does not make synchronous file/console output non-blocking.
 Thread names are released at normal thread exit. Late static-destructor logs
 use the `shutdown` fallback instead of accessing destroyed thread-local state.
 `test_forge_log_shutdown` exercises the real macro path after TLS teardown and
-checks that throwing sinks produce only the fixed emergency message.
+checks that throwing sinks increment the counter without fallback I/O.
 
 ## Tests and migration
 
@@ -230,6 +287,11 @@ deadlock regression into a bounded failure; a race-detector run remains useful
 in addition to ordinary functional tests.
 
 OTLP and plugin tests cover delivery through the existing exporter.
+Async tests cover blocked callbacks, concurrent producers, full/oversized
+queues, fixed fences, timeout/retry, cancellation and reentrancy. The configured
+delivery subprocess leaves a real stderr pipe unread while exercising HTTP,
+then resumes the reader and verifies drain and shutdown. It also checks that
+retirement exhaustion cannot truncate a new sink file.
 The installed package consumer compiles macro calls from installed modules and
 headers. See the [migration note](../../docs/releases/unreleased-logging-macros.md)
 for the approved source/configuration break.

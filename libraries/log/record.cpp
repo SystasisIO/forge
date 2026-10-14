@@ -329,6 +329,9 @@ void console_sink::log(const log_record& record) {
    const auto text = format_text_log_record(record);
    std::lock_guard lock(console_mutex());
    out << text << '\n';
+   if (!out) {
+      throw log::exceptions::io_error{"console log write failed"};
+   }
 }
 
 class file_sink::impl : public locked_file {
@@ -344,6 +347,9 @@ void file_sink::log(const log_record& record) {
    const auto lock = std::scoped_lock{impl_->mutex};
    impl_->stream << format_text_log_record(record) << '\n';
    impl_->stream.flush();
+   if (!impl_->stream) {
+      throw log::exceptions::io_error{"file log write failed"};
+   }
 }
 
 class jsonl_sink::impl : public locked_file {
@@ -359,6 +365,9 @@ void jsonl_sink::log(const log_record& record) {
    const auto lock = std::scoped_lock{impl_->mutex};
    impl_->stream << format_json_log_record(record) << '\n';
    impl_->stream.flush();
+   if (!impl_->stream) {
+      throw log::exceptions::io_error{"JSONL log write failed"};
+   }
 }
 
 } // namespace forge

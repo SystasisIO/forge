@@ -43,7 +43,7 @@ struct shutdown_probe {
 
    ~shutdown_probe() {
       emit();
-      if (sink->calls != 2 || sink->last_thread_name != "shutdown") {
+      if (sink->calls != 2 || sink->last_thread_name != "shutdown" || forge::log_failure_count() != 2) {
          std::_Exit(2);
       }
       std::fputs("static destructor delivered\n", stdout);
