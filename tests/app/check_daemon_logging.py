@@ -61,6 +61,8 @@ def diagnostic(entries, mode, console=False):
         assert len(matches) == 1, (mode, fields)
         assert "path" in matches[0] and matches[0]["path"] == path, matches
         assert matches[0].get("operation") == operation, matches
+        if name == "invalid-cli" and not console:
+            assert matches[0].get("reason") == "integer has invalid syntax", matches
 
 
 def reports(output):

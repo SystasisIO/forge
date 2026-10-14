@@ -19,6 +19,7 @@ import forge.config.core.decode;
 import forge.config.core.document;
 import forge.config.core.value;
 import forge.schema.diagnostic;
+import forge.schema.exceptions;
 import forge.schema.value_kind;
 import forge.schema.object;
 import forge.schema.enums;
@@ -208,11 +209,12 @@ parse_result parse(int argc, const char* const* argv, const config::core::compon
                      result.document.set(target, cli_value(field.kind, variables[full_name].as<std::string>()));
                   }
                } catch (const std::exception& error) {
+                  const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error);
                   result.diagnostics.push_back(schema::diagnostic{
                       .path = target,
                       .code = "program_options.convert",
                       .level = schema::severity::error,
-                      .message = error.what(),
+                      .message = typed ? typed->message() : "command line option has an invalid value",
                   });
                }
                break;
@@ -220,11 +222,12 @@ parse_result parse(int argc, const char* const* argv, const config::core::compon
          }
       }
    } catch (const std::exception& error) {
+      const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error);
       result.diagnostics.push_back(schema::diagnostic{
           .path = {},
           .code = "program_options.parse",
           .level = schema::severity::error,
-          .message = error.what(),
+          .message = typed ? typed->message() : "command line options could not be parsed",
       });
    }
    return result;
@@ -253,11 +256,12 @@ pre_scan_result pre_scan_reserved(int argc, const char* const* argv, const std::
             set_reserved_value(result, *option, consume_required_value(index, argc, argv, argument, *option));
          }
       } catch (const std::exception& error) {
+         const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error);
          result.diagnostics.push_back(schema::diagnostic{
              .path = option->path,
              .code = "program_options.convert",
              .level = schema::severity::error,
-             .message = error.what(),
+             .message = typed ? typed->message() : "command line option has an invalid value",
          });
       }
    }

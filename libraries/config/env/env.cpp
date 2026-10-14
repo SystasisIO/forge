@@ -34,6 +34,7 @@ import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.migration;
 import forge.schema.diagnostic;
+import forge.schema.exceptions;
 import forge.schema.value_kind;
 import forge.schema.object;
 import forge.schema.enums;
@@ -726,8 +727,10 @@ read_result<config::core::document> read_variables(const std::vector<environment
          result.value.set(path, convert_value(selected_entry.binding.field.kind, selected_entry.value),
                           selected_entry.location);
       } catch (const std::exception& error) {
-         result.diagnostics.push_back(make_diagnostic(path, "env.convert", schema::severity::error, error.what(),
-                                                      selected_entry.location));
+         const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error);
+         result.diagnostics.push_back(make_diagnostic(
+             path, "env.convert", schema::severity::error,
+             typed ? typed->message() : "environment variable has an invalid value", selected_entry.location));
       }
    }
 

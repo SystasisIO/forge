@@ -75,11 +75,63 @@ BOOST_AUTO_TEST_CASE(program_options_reports_conversion_errors) {
    auto registry = forge::config::core::component_registry{};
    registry.add(forge::config::core::describe_component<http_config>("http"));
 
-   const char* argv[] = {"tool", "--http.tls-enabled=maybe"};
+   const char* argv[] = {"tool", "--http.tls-enabled=conversion-secret-marker"};
    const auto parsed = forge::config::program_options::parse(2, argv, registry);
    BOOST_TEST(!parsed.ok());
    BOOST_REQUIRE_EQUAL(parsed.diagnostics.size(), 1U);
    BOOST_TEST(parsed.diagnostics.front().code == "program_options.convert");
+   BOOST_TEST(parsed.diagnostics.front().path == "http.tls-enabled");
+   BOOST_TEST(parsed.diagnostics.front().message == "boolean has invalid syntax");
+}
+
+BOOST_AUTO_TEST_CASE(program_options_preserves_integer_conversion_reason_and_canonical_path) {
+   auto registry = forge::config::core::component_registry{};
+   registry.add(forge::config::core::describe_component<http_config>("http"));
+
+   const char* argv[] = {"tool", "--http.port=conversion-secret-marker"};
+   const auto parsed = forge::config::program_options::parse(2, argv, registry);
+   BOOST_TEST(!parsed.ok());
+   BOOST_REQUIRE_EQUAL(parsed.diagnostics.size(), 1U);
+   BOOST_TEST(parsed.diagnostics.front().code == "program_options.convert");
+   BOOST_TEST(parsed.diagnostics.front().path == "http.bind-port");
+   BOOST_TEST(parsed.diagnostics.front().message == "integer has invalid syntax");
+}
+
+BOOST_AUTO_TEST_CASE(program_options_prescan_preserves_typed_reason_without_exception_formatting) {
+   const auto reserved = std::vector<forge::config::program_options::reserved_option>{
+      {.name = "runtime-threads", .path = "daemon.runtime-threads", .kind = forge::schema::value_kind::unsigned_integer},
+   };
+   const char* argv[] = {"tool", "--runtime-threads=conversion-secret-marker"};
+   const auto parsed = forge::config::program_options::pre_scan_reserved(2, argv, reserved);
+   BOOST_TEST(!parsed.ok());
+   BOOST_REQUIRE_EQUAL(parsed.diagnostics.size(), 1U);
+   BOOST_TEST(parsed.diagnostics.front().code == "program_options.convert");
+   BOOST_TEST(parsed.diagnostics.front().path == "daemon.runtime-threads");
+   BOOST_TEST(parsed.diagnostics.front().message == "integer has invalid syntax");
+}
+
+BOOST_AUTO_TEST_CASE(program_options_prescan_omits_untyped_exception_text) {
+   const auto reserved = std::vector<forge::config::program_options::reserved_option>{
+      {.name = "missing-value-secret-marker", .path = "daemon.profile", .kind = forge::schema::value_kind::string},
+   };
+   const char* argv[] = {"tool", "--missing-value-secret-marker"};
+   const auto parsed = forge::config::program_options::pre_scan_reserved(2, argv, reserved);
+   BOOST_TEST(!parsed.ok());
+   BOOST_REQUIRE_EQUAL(parsed.diagnostics.size(), 1U);
+   BOOST_TEST(parsed.diagnostics.front().code == "program_options.convert");
+   BOOST_TEST(parsed.diagnostics.front().path == "daemon.profile");
+   BOOST_TEST(parsed.diagnostics.front().message == "command line option has an invalid value");
+}
+
+BOOST_AUTO_TEST_CASE(program_options_parse_omits_unknown_argument_text) {
+   const auto registry = forge::config::core::component_registry{};
+   const char* argv[] = {"tool", "--unknown-option-secret-marker=secret-value"};
+   const auto parsed = forge::config::program_options::parse(2, argv, registry);
+   BOOST_TEST(!parsed.ok());
+   BOOST_REQUIRE_EQUAL(parsed.diagnostics.size(), 1U);
+   BOOST_TEST(parsed.diagnostics.front().code == "program_options.parse");
+   BOOST_TEST(parsed.diagnostics.front().path.empty());
+   BOOST_TEST(parsed.diagnostics.front().message == "command line options could not be parsed");
 }
 
 BOOST_AUTO_TEST_CASE(program_options_prescans_reserved_options_and_filters_application_args) {

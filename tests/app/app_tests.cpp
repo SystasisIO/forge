@@ -2325,6 +2325,30 @@ BOOST_AUTO_TEST_CASE(run_daemon_reports_invalid_action_flag_type_as_diagnostic) 
    BOOST_TEST(state.log.entries.empty());
 }
 
+BOOST_AUTO_TEST_CASE(run_daemon_preserves_exact_cli_and_env_conversion_reasons_without_values) {
+   {
+      auto state = daemon_test_state{};
+      auto errors = daemon_diagnostic_capture{};
+      BOOST_TEST(run_test_daemon({"testd", "--runtime-threads=conversion-secret-marker", "--check-config"}, state) == 1);
+      const auto text = errors.text();
+      BOOST_TEST(text.find("code=program_options.convert\n") != std::string::npos);
+      BOOST_TEST(text.find("path=daemon.runtime-threads\n") != std::string::npos);
+      BOOST_TEST(text.find("reason=integer has invalid syntax\n") != std::string::npos);
+      BOOST_TEST(text.find("conversion-secret-marker") == std::string::npos);
+   }
+   {
+      auto value = env_var_guard{"FORGE_TESTD_SERVICE_WORKERS", "conversion-secret-marker"};
+      auto state = daemon_test_state{};
+      auto errors = daemon_diagnostic_capture{};
+      BOOST_TEST(run_test_daemon({"testd", "--check-config"}, state, {}, true) == 1);
+      const auto text = errors.text();
+      BOOST_TEST(text.find("code=env.convert\n") != std::string::npos);
+      BOOST_TEST(text.find("path=service.workers\n") != std::string::npos);
+      BOOST_TEST(text.find("reason=integer has invalid syntax\n") != std::string::npos);
+      BOOST_TEST(text.find("conversion-secret-marker") == std::string::npos);
+   }
+}
+
 BOOST_AUTO_TEST_CASE(run_daemon_print_effective_config_redacts_secret_fields) {
    auto state = daemon_test_state{};
    const auto dir = make_temp_dir("forge-daemon-print");
