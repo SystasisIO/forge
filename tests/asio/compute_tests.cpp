@@ -21,6 +21,7 @@
 #endif
 
 #include <boost/test/unit_test.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -579,7 +580,8 @@ BOOST_AUTO_TEST_CASE(compute_supports_pre_pending_and_running_cancellation) {
    forge::asio::blocking::run(runtime, pool.shutdown());
 }
 
-BOOST_AUTO_TEST_CASE(compute_shutdown_waits_for_running_work_and_runs_worker_hooks_once) {
+BOOST_AUTO_TEST_CASE(compute_shutdown_waits_for_running_work_and_runs_worker_hooks_once,
+                     * boost::unit_test::timeout(20)) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
    auto starts = std::atomic_size_t{0};
    auto stops = std::atomic_size_t{0};
@@ -587,6 +589,12 @@ BOOST_AUTO_TEST_CASE(compute_shutdown_waits_for_running_work_and_runs_worker_hoo
    auto worker_indexes = std::map<std::thread::id, std::size_t>{};
    auto worker_names = std::map<std::thread::id, std::string>{};
    auto mismatched_worker = std::atomic_bool{false};
+   auto started = std::make_shared<std::promise<void>>();
+   auto started_result = started->get_future();
+   auto release = std::make_shared<std::promise<void>>();
+   auto released = release->get_future().share();
+   auto finished = std::make_shared<std::atomic_bool>(false);
+   auto callback_timed_out = std::make_shared<std::atomic_bool>(false);
    auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{
        .worker_threads = 2,
        .thread_name = "forge-cpu-test",
@@ -607,43 +615,119 @@ BOOST_AUTO_TEST_CASE(compute_shutdown_waits_for_running_work_and_runs_worker_hoo
               stops.fetch_add(1, std::memory_order_relaxed);
            },
    }};
+   // Declared after the pool so every failure releases its callback before join.
+   auto unblock = boost::scope::scope_exit{[release] { release->set_value(); }};
    BOOST_CHECK_EQUAL(starts.load(std::memory_order_relaxed), 2U);
 
-   auto finished = std::atomic_bool{false};
-   auto operation = forge::asio::blocking::run(runtime, pool.get_executor().submit({.name = "ignore-stop"}, [&] {
-      std::this_thread::sleep_for(std::chrono::milliseconds{30});
-      finished.store(true, std::memory_order_release);
-   }));
-   forge::asio::blocking::run(runtime, pool.shutdown());
+   auto submitted = boost::asio::co_spawn(
+       runtime.context(),
+       pool.get_executor().submit({.name = "ignore-stop"}, [started, released, finished, callback_timed_out] {
+          started->set_value();
+          if (released.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+             callback_timed_out->store(true, std::memory_order_release);
+          } else {
+             released.get();
+          }
+          finished->store(true, std::memory_order_release);
+       }),
+       boost::asio::use_future);
+   BOOST_REQUIRE(submitted.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   auto operation = submitted.get();
+   BOOST_REQUIRE(started_result.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   started_result.get();
+   // Submission is not proof of execution. Stop only after the callback entered,
+   // and before release, so the running operation's cancellation is deterministic.
+   pool.request_stop();
+   BOOST_CHECK(operation.stop_requested());
+   auto shutdown = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
+   BOOST_CHECK(shutdown.wait_for(std::chrono::milliseconds{20}) == std::future_status::timeout);
+   BOOST_CHECK(!finished->load(std::memory_order_acquire));
+   BOOST_CHECK_EQUAL(stops.load(std::memory_order_relaxed), 0U);
+   BOOST_CHECK_EQUAL(pool.snapshot().running, 1U);
+   release->set_value();
+   unblock.set_active(false);
+   BOOST_REQUIRE(shutdown.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   shutdown.get();
 
-   BOOST_CHECK(finished.load(std::memory_order_acquire));
+   BOOST_CHECK(finished->load(std::memory_order_acquire));
+   BOOST_CHECK(!callback_timed_out->load(std::memory_order_acquire));
    BOOST_CHECK_EQUAL(stops.load(std::memory_order_relaxed), 2U);
    BOOST_CHECK(!mismatched_worker.load(std::memory_order_relaxed));
    for (const auto& [thread, name] : worker_names) {
       static_cast<void>(thread);
       BOOST_CHECK_EQUAL(name, "forge-cpu-test");
    }
-   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, std::move(operation).wait()),
-                     forge::asio::exceptions::canceled);
+   auto completed = boost::asio::co_spawn(runtime.context(), std::move(operation).wait(), boost::asio::use_future);
+   BOOST_REQUIRE(completed.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(completed.get(), forge::asio::exceptions::canceled);
+   BOOST_CHECK_EQUAL(pool.snapshot().canceled, 1U);
+   BOOST_CHECK_EQUAL(pool.snapshot().failed, 0U);
+   BOOST_CHECK_EQUAL(pool.snapshot().running, 0U);
 }
 
-BOOST_AUTO_TEST_CASE(compute_shutdown_is_concurrent_and_idempotent) {
+BOOST_AUTO_TEST_CASE(compute_shutdown_is_concurrent_and_idempotent, * boost::unit_test::timeout(20)) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
-   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
-   auto finished = std::atomic_bool{false};
-   auto operation = forge::asio::blocking::run(runtime, pool.get_executor().submit({.name = "shutdown-race"}, [&] {
-      std::this_thread::sleep_for(std::chrono::milliseconds{30});
-      finished.store(true, std::memory_order_release);
-   }));
+   auto starts = std::atomic_size_t{0};
+   auto stops = std::atomic_size_t{0};
+   auto started = std::make_shared<std::promise<void>>();
+   auto started_result = started->get_future();
+   auto release = std::make_shared<std::promise<void>>();
+   auto released = release->get_future().share();
+   auto finished = std::make_shared<std::atomic_bool>(false);
+   auto callback_timed_out = std::make_shared<std::atomic_bool>(false);
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{
+       .worker_threads = 1,
+       .on_worker_start = [&](std::size_t) { starts.fetch_add(1, std::memory_order_relaxed); },
+       .on_worker_stop = [&](std::size_t) { stops.fetch_add(1, std::memory_order_relaxed); },
+   }};
+   auto unblock = boost::scope::scope_exit{[release] { release->set_value(); }};
+   auto submitted = boost::asio::co_spawn(
+       runtime.context(),
+       pool.get_executor().submit({.name = "shutdown-race"}, [started, released, finished, callback_timed_out] {
+          started->set_value();
+          if (released.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+             callback_timed_out->store(true, std::memory_order_release);
+          } else {
+             released.get();
+          }
+          finished->store(true, std::memory_order_release);
+       }),
+       boost::asio::use_future);
+   BOOST_REQUIRE(submitted.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   auto operation = submitted.get();
+   BOOST_REQUIRE(started_result.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   started_result.get();
+   pool.request_stop();
+   BOOST_CHECK(operation.stop_requested());
 
    auto first = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
    auto second = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
+   BOOST_CHECK(first.wait_for(std::chrono::milliseconds{20}) == std::future_status::timeout);
+   BOOST_CHECK(second.wait_for(std::chrono::milliseconds{20}) == std::future_status::timeout);
+   BOOST_CHECK(!finished->load(std::memory_order_acquire));
+   BOOST_CHECK_EQUAL(stops.load(std::memory_order_relaxed), 0U);
+   BOOST_CHECK_EQUAL(pool.snapshot().running, 1U);
+   release->set_value();
+   unblock.set_active(false);
+   BOOST_REQUIRE(first.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
    first.get();
+   BOOST_REQUIRE(second.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
    second.get();
 
-   BOOST_CHECK(finished.load(std::memory_order_acquire));
-   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, std::move(operation).wait()),
-                     forge::asio::exceptions::canceled);
+   BOOST_CHECK(finished->load(std::memory_order_acquire));
+   BOOST_CHECK(!callback_timed_out->load(std::memory_order_acquire));
+   BOOST_CHECK_EQUAL(starts.load(std::memory_order_relaxed), 1U);
+   BOOST_CHECK_EQUAL(stops.load(std::memory_order_relaxed), 1U);
+   auto completed = boost::asio::co_spawn(runtime.context(), std::move(operation).wait(), boost::asio::use_future);
+   BOOST_REQUIRE(completed.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(completed.get(), forge::asio::exceptions::canceled);
+   auto repeated = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
+   BOOST_REQUIRE(repeated.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   repeated.get();
+   BOOST_CHECK_EQUAL(stops.load(std::memory_order_relaxed), 1U);
+   BOOST_CHECK_EQUAL(pool.snapshot().canceled, 1U);
+   BOOST_CHECK_EQUAL(pool.snapshot().failed, 0U);
+   BOOST_CHECK_EQUAL(pool.snapshot().running, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(compute_pool_destructor_waits_for_owned_work) {

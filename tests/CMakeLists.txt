@@ -182,6 +182,7 @@ add_executable(
    log/log_tests.cpp
    log/log_disabled_tests.cpp
    log/concurrency_tests.cpp
+   log/async_tests.cpp
 )
 target_link_libraries(test_forge_log forge_log Boost::included_unit_test_framework)
 add_executable(test_forge_log_shutdown log/shutdown_helper.cpp)
@@ -194,6 +195,18 @@ add_test(NAME test_forge_log_shutdown
 set_tests_properties(test_forge_log_shutdown PROPERTIES TIMEOUT 15)
 add_test(NAME test_forge_log COMMAND test_forge_log WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_log PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_log_configured_delivery log/configured_delivery_helper.cpp)
+target_link_libraries(test_forge_log_configured_delivery PRIVATE forge_log forge_net_http forge_asio)
+add_test(NAME test_forge_log_configured_delivery
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/log/check_configured_delivery.py
+      $<TARGET_FILE:test_forge_log_configured_delivery>)
+set_tests_properties(test_forge_log_configured_delivery PROPERTIES TIMEOUT 65)
+
+add_executable(test_forge_log_configuration_lifecycle unit/main.cpp log/configuration_lifecycle_tests.cpp)
+target_link_libraries(test_forge_log_configuration_lifecycle PRIVATE forge_log Boost::included_unit_test_framework)
+add_test(NAME test_forge_log_configuration_lifecycle COMMAND test_forge_log_configuration_lifecycle)
+set_tests_properties(test_forge_log_configuration_lifecycle PROPERTIES TIMEOUT 35)
 
 add_executable(
    test_forge_otlp
@@ -2339,6 +2352,18 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
+   test_forge_package_log_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_log_component
+      ${CMAKE_BINARY_DIR}/forge-package-log-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+      --test-command forge_package_log_component
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
    test_forge_package_cli_component
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -3375,6 +3400,18 @@ add_test(
       --test-command forge_package_asio_component
 )
 set_tests_properties(test_forge_package_asio_component PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_log_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_log_component
+      ${CMAKE_BINARY_DIR}/forge-package-log-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+      --test-command forge_package_log_component
+)
+set_tests_properties(test_forge_package_log_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_cli_component
    COMMAND ${CMAKE_CTEST_COMMAND}

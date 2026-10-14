@@ -6,6 +6,9 @@ add_library(
    logger_impl.cpp
    sink_delivery.cpp
    logger_config.cpp
+   async_sink.cpp
+   async_sink_impl.cpp
+   configured_sink_runtime.cpp
 )
 forge_target_modules(forge_log log)
 
@@ -18,6 +21,7 @@ target_link_libraries(
       forge_reflect
       forge_variant
       Boost::headers
+      forge_asio
    PRIVATE
       forge_chrono
       Boost::dll

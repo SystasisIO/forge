@@ -422,9 +422,15 @@ implementation-library namespaces. For plugin family/role decisions, follow
   redaction must never fall back to raw serialization.
 - External logging integrations must be optional adapters, not core dependencies.
 - Do not log secrets, passphrases, private keys, token values, or raw key material.
-- `forge_log` is synchronous in core. It must not import `forge_asio`, own a
-  background queue or encode runtime policy; async logging belongs in a future
-  adapter.
+- Logging macros and record preparation retain their synchronous interface.
+  Blocking output must cross the bounded `forge.log.async_sink` adapter on
+  dedicated Forge Asio compute workers, never an HTTP/P2P I/O executor.
+  Queue admission must not wait for downstream output or free queue space;
+  overflow is counted, not turned into an unbounded queue or synchronous fallback.
+  Worker ownership, flush fences and shutdown must be explicit. A timeout stops
+  waiting; it cannot safely terminate an arbitrary C++ sink callback. No detached
+  logging threads or forced callback termination are allowed. OTLP already owns
+  an asynchronous export queue and must not be automatically double-buffered.
 - Stack traces are diagnostic snapshots behind FORGE-owned public types. Prefer
   `std::stacktrace` when available, private Boost.Stacktrace fallback otherwise,
   and expose neither backend type from public modules.
