@@ -36,6 +36,7 @@ struct config {
    std::string tls_client_ca_secret;
    std::uint64_t tls_handshake_timeout_ms = 10'000;
    std::uint64_t tls_max_pending_handshakes = 64;
+   bool access_log = false;
 };
 
 struct publish_options {
@@ -48,7 +49,7 @@ BOOST_DESCRIBE_ENUM(tls_mode, disabled, server, mutual)
 BOOST_DESCRIBE_STRUCT(config, (),
                       (bind_address, port, api_base_path, max_request_body_bytes, max_header_bytes, read_timeout_ms,
                        idle_timeout_ms, tls_mode_value, tls_certificate_chain_secret, tls_private_key_secret,
-                       tls_client_ca_secret, tls_handshake_timeout_ms, tls_max_pending_handshakes))
+                       tls_client_ca_secret, tls_handshake_timeout_ms, tls_max_pending_handshakes, access_log))
 BOOST_DESCRIBE_STRUCT(publish_options, (), (base_path, require_mutual_tls))
 
 } // namespace forge::plugins::net::http::server
@@ -92,6 +93,9 @@ export template <> struct forge::schema::rules<forge::plugins::net::http::server
       schema.field<&forge::plugins::net::http::server::config::tls_max_pending_handshakes>("tls.max-pending-handshakes")
           .default_value(std::uint64_t{64})
           .range(1, 1'000'000);
+      schema.field<&forge::plugins::net::http::server::config::access_log>("access-log")
+          .default_value(false)
+          .description("Opt-in redacted HTTP completion records at DEBUG; no headers, targets or payloads");
       return schema;
    }
 };

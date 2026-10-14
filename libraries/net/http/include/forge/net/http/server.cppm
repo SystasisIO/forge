@@ -30,6 +30,8 @@ struct server_config {
    std::shared_ptr<forge::net::tls::context_provider> tls_context_provider;
    std::chrono::milliseconds handshake_timeout{10'000};
    std::uint64_t max_pending_tls_handshakes = 64;
+   // Requires DEBUG on forge.net.http.server; never includes request/response content.
+   bool access_log = false;
 };
 
 using server_handler = std::function<boost::asio::awaitable<response>(route_context&)>;

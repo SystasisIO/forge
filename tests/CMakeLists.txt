@@ -408,6 +408,29 @@ add_test(
 )
 
 add_executable(
+   test_forge_http_server_lifecycle
+   unit/main.cpp
+   plugins/http_server_tests.cpp
+   plugins/config_assertions.cpp
+   quic_p2p/libp2p_identity_fixture.cpp
+)
+target_link_libraries(test_forge_http_server_lifecycle PRIVATE
+   forge_plugins_net_http_server forge_plugins_crypto_secrets forge_net_p2p
+   forge_log Boost::included_unit_test_framework OpenSSL::SSL)
+add_test(NAME test_forge_http_server_lifecycle COMMAND test_forge_http_server_lifecycle
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_server_lifecycle PROPERTIES TIMEOUT 180)
+
+add_executable(test_forge_http_server_observability
+   unit/main.cpp
+   http/server_observability_tests.cpp)
+target_link_libraries(test_forge_http_server_observability PRIVATE
+   forge_net_http forge_log Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_server_observability COMMAND test_forge_http_server_observability
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_server_observability PROPERTIES TIMEOUT 120)
+
+add_executable(
    test_forge_plugins_descriptor_surfaces
    package_plugins_descriptor_surfaces/main.cpp
 )
@@ -1066,6 +1089,19 @@ add_executable(
 target_link_libraries(test_forge_app forge_app Boost::included_unit_test_framework)
 add_test(NAME test_forge_app COMMAND test_forge_app WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_app PROPERTIES TIMEOUT 120)
+
+# App README example: compile the documented program and test its real factory.
+add_executable(forge_app_readme_example app/readme_example.cpp app/readme_example_main.cpp)
+target_link_libraries(forge_app_readme_example PRIVATE forge_app)
+
+add_executable(test_forge_app_readme_example unit/main.cpp app/readme_example.cpp app/readme_example_tests.cpp)
+target_link_libraries(test_forge_app_readme_example PRIVATE forge_app Boost::included_unit_test_framework)
+add_test(NAME test_forge_app_readme_example COMMAND test_forge_app_readme_example WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_app_readme_example PROPERTIES TIMEOUT 30)
+add_test(
+   NAME test_forge_app_readme_correspondence
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/app/check_readme_example.py ${PROJECT_SOURCE_DIR}
+)
 
 add_executable(
    test_forge_schema

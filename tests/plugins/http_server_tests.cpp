@@ -94,6 +94,7 @@ import forge.net.http.stream;
 import forge.net.http.types;
 import forge.net.http.upload;
 import forge.net.tls.context;
+import forge.log.logger;
 import forge.plugins.crypto.secrets.types;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.net.http.server.types;
@@ -111,6 +112,7 @@ import forge.variant.containers;
 import forge.variant.described;
 
 #include "details/config_assertions.hxx"
+#include "details/http_log_capture.hxx"
 
 using forge::tests::plugins::require_field;
 
@@ -917,6 +919,8 @@ BOOST_AUTO_TEST_CASE(http_server_config_is_described_from_schema) {
    BOOST_TEST(require_field(*descriptor, "tls.client-ca-secret").has_default);
    BOOST_TEST(require_field(*descriptor, "tls.handshake-timeout-ms").has_default);
    BOOST_TEST(require_field(*descriptor, "tls.max-pending-handshakes").has_default);
+   BOOST_TEST(require_field(*descriptor, "access-log").has_default);
+   BOOST_TEST(!std::get<bool>(require_field(*descriptor, "access-log").default_value.storage));
    BOOST_TEST(http_server::api::ref().major == 2U);
    BOOST_TEST(plugin.version() == "2.0.0");
 }
@@ -991,6 +995,7 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_requires_secrets_api_only_when_tls_i
 }
 
 BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_uses_distinct_secret_purposes_and_preserves_active_context) {
+   auto logs = forge::tests::plugins::http_log_capture{"forge.plugins.net.http.server", true};
    auto state = std::make_shared<http_tls_secret_state>();
    auto app = http_tls_server_application{state};
    auto config = forge::config::core::document{};
@@ -1031,6 +1036,22 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_uses_distinct_secret_purposes
    BOOST_CHECK_NO_THROW(forge::asio::blocking::run(app.runtime(), api->reload_tls()));
 
    forge::asio::blocking::run(app.runtime(), app.shutdown());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(app.runtime(), api->reload_tls()),
+                     http_server::exceptions::tls_reload_failed);
+   BOOST_TEST(logs.count("http.tls.reload.applied", forge::log_level::info) == 2U);
+   BOOST_TEST(logs.count("http.tls.reload.failed", forge::log_level::error) == 1U);
+   BOOST_TEST(logs.count("http.tls.reload.rejected", forge::log_level::debug) == 1U);
+   BOOST_TEST(logs.throwing->calls.load() == 4U);
+   for (const auto& record : logs.captured->snapshot()) {
+      auto text = record.message;
+      for (const auto& field : record.fields) {
+         text += field.value;
+      }
+      for (const auto* forbidden : {"http/test-certificate", "http/test-private-key", "http/test-client-ca",
+                                    "BEGIN", "http-sink-secret-marker"}) {
+         BOOST_TEST(text.find(forbidden) == std::string::npos);
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(http_server_plugin_tls_reload_preserves_live_context_and_cannot_publish_after_shutdown) {
@@ -1159,12 +1180,14 @@ BOOST_AUTO_TEST_CASE(prepared_tls_rotation_rejected_after_lifecycle_stop) {
 }
 
 BOOST_AUTO_TEST_CASE(http_server_plugin_publishes_typed_api_under_configured_base_path) {
+   auto logs = forge::tests::plugins::http_log_capture{"forge.net.http.server"};
    const auto port = reserve_loopback_port();
    auto state = std::make_shared<http_publish_state>();
    auto app = http_server_application{state};
    auto config = forge::config::core::document{};
    config.set("plugins.net.http.server.port", std::uint64_t{port});
    config.set("plugins.net.http.server.api-base-path", std::string{"/api"});
+   config.set("plugins.net.http.server.access-log", true);
 
    app.configure(config);
    forge::asio::blocking::run(app.runtime(), app.startup());
@@ -1177,6 +1200,14 @@ BOOST_AUTO_TEST_CASE(http_server_plugin_publishes_typed_api_under_configured_bas
    BOOST_TEST(chunk.bytes == "alpha:7:9");
 
    forge::asio::blocking::run(app.runtime(), app.shutdown());
+   BOOST_TEST(logs.count("http.request.finished", forge::log_level::debug) >= 1U);
+   for (const auto& record : logs.captured->snapshot()) {
+      BOOST_TEST(record.message.find("alpha") == std::string::npos);
+      for (const auto& field : record.fields) {
+         BOOST_TEST(field.value.find("alpha") == std::string::npos);
+         BOOST_TEST(field.value.find("/api") == std::string::npos);
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(http_server_sensitive_publication_refuses_plaintext_listener) {

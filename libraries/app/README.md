@@ -28,7 +28,8 @@ for applications with substantial state or custom lifecycle hooks.
 - Do not use `forge_app` as a generic dependency injection container.
 - Do not parse `argv`, YAML or JSON inside plugins. Use `run_daemon(...)` for
   normal foreground daemons, or use `forge_config_program_options`, `forge_codec_yaml` and
-  `forge_codec_json` before `application_shell::configure(...)` in custom hosts.
+   `forge_codec_json` before `application_shell::async_configure(...)` in coroutine
+   hosts (`configure(...)` is the blocking boundary for external threads).
 - Do not put security authority into UI/events/diagnostics. They are
   observability surfaces, not permission boundaries.
 - Do not invent hook names that repeat the application context. The shell
@@ -78,14 +79,15 @@ shell-owned.
 
 ## Production Shape
 
-`application_shell` makes lifecycle methods non-overridable:
+`application_shell` makes lifecycle methods non-overridable. Inside an existing
+coroutine, configuration must be awaited, not run through the blocking wrapper.
+This shows the happy-path order, not a replacement for the runner's failure cleanup:
 
 ```cpp
 boost::asio::awaitable<void> run_configured_app(
    forge::app::application_shell& app,
    const forge::config::core::document& document) {
-   app.describe_config();
-   app.configure(document);
+   co_await app.async_configure(document);
    co_await app.initialize();
    co_await app.startup();
    app.request_stop();
@@ -123,296 +125,353 @@ default-constructed view throws typed `exceptions::service_registry_detached`;
 `try_get<T>()` returns empty. A view does not own the registry and must not
 outlive the `application_shell` that produced it.
 
+## Complete Builder Example
+
+The following three files form a complete foreground daemon, not pseudocode.
+They are compiled by `forge_app_readme_example`; the focused
+`test_forge_app_readme_example` uses the same implementation and factory.
+Link the leaf target `forge_app` (installed consumers: `Forge::forge_app`).
+
+The application owns `service_config`. The small product-owned status plugin
+owns `status_config` and publishes an immutable, process-local batch limit.
+The connect callback consumes that API, caps the requested batch size and
+publishes `service_settings` before plugin startup. This example has no
+background jobs or external resources; plugins that own such resources must
+cancel and join them in their protected cleanup hooks. App already records
+canonical lifecycle state and history; plugins must not duplicate it.
+
+Declarations come first. Reflection and schema/API metadata stay together at
+the bottom of the declaration file. The local-only API uses the current
+`contract<..., surface::local>` and `FORGE_API` identity metadata; it has no
+remote binding or generated wire methods.
+
+[readme_example.hxx](../../tests/app/readme_example.hxx):
+
+<!-- app-readme-example: readme_example.hxx -->
+```cpp
+#pragma once
+
+#include <boost/asio/awaitable.hpp>
+#include <boost/describe.hpp>
+#include <forge/api/core/macros.hpp>
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+
+import forge.app.application_builder;
+import forge.app.application_environment;
+import forge.app.application_shell;
+import forge.app.daemon;
+import forge.app.plugin;
+import forge.app.plugin_context;
+import forge.app.plugin_registry;
+import forge.api.core.exceptions;
+import forge.api.core.types;
+import forge.api.core.descriptor;
+import forge.api.core.error_projection;
+import forge.api.core.registry;
+import forge.api.core.binding;
+import forge.api.core.handle;
+import forge.api.core.connection;
+import forge.api.core.dispatcher;
+import forge.config.core.component;
+import forge.schema.object;
+
+namespace service_example {
+
+struct service_config {
+   std::uint16_t batch_size = 16;
+};
+
+struct status_config {
+   std::uint16_t batch_limit = 32;
+};
+
+struct service_settings {
+   std::uint16_t batch_size = 16;
+   std::filesystem::path data_path;
+   std::string profile;
+};
+
+class status_api : public forge::api::core::contract<status_api, forge::api::core::surface::local> {
+ public:
+   virtual ~status_api() = default;
+   [[nodiscard]] virtual std::uint16_t batch_limit() const noexcept = 0;
+};
+
+class status_plugin final : public forge::app::plugin {
+ public:
+   [[nodiscard]] static forge::app::plugin_descriptor descriptor();
+   forge::app::plugin_id id() const override;
+   std::string version() const override;
+   std::optional<forge::config::core::component_descriptor> describe_config() const override;
+
+ protected:
+   boost::asio::awaitable<void> on_configure(forge::config::core::component_view view) override;
+   boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override;
+   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override;
+   boost::asio::awaitable<void> on_startup() override;
+   boost::asio::awaitable<void> on_shutdown() override;
+
+ private:
+   class api_impl;
+   std::uint16_t batch_limit_ = 32;
+};
+
+class status_plugin::api_impl final : public status_api {
+ public:
+   explicit api_impl(std::uint16_t batch_limit);
+   std::uint16_t batch_limit() const noexcept override;
+
+ private:
+   const std::uint16_t batch_limit_;
+};
+
+std::unique_ptr<forge::app::application_shell> make_application(const forge::app::daemon_context& context);
+forge::app::daemon_options daemon_options();
+
+BOOST_DESCRIBE_STRUCT(service_config, (), (batch_size))
+BOOST_DESCRIBE_STRUCT(status_config, (), (batch_limit))
+
+} // namespace service_example
+
+template <> struct forge::schema::rules<service_example::service_config> {
+   static forge::schema::object_schema<service_example::service_config> define() {
+      auto schema = forge::schema::object<service_example::service_config>();
+      schema.field<&service_example::service_config::batch_size>("batch-size").default_value(16).range(1, 64);
+      return schema;
+   }
+};
+
+template <> struct forge::schema::rules<service_example::status_config> {
+   static forge::schema::object_schema<service_example::status_config> define() {
+      auto schema = forge::schema::object<service_example::status_config>();
+      schema.field<&service_example::status_config::batch_limit>("batch-limit").default_value(32).range(1, 64);
+      return schema;
+   }
+};
+
+FORGE_API(::service_example::status_api, FORGE_API_CONTRACT("service.status", 1, 0))
+```
+
+[readme_example.cpp](../../tests/app/readme_example.cpp):
+
+<!-- app-readme-example: readme_example.cpp -->
+```cpp
+#include "readme_example.hxx"
+
+#include <algorithm>
+#include <utility>
+
+import forge.app.connect_context;
+import forge.config.core.decode;
+
+namespace service_example {
+
+forge::app::plugin_descriptor status_plugin::descriptor() {
+   return {
+      .id = {"status"},
+      .factory = [] { return std::make_unique<status_plugin>(); },
+   };
+}
+
+forge::app::plugin_id status_plugin::id() const {
+   return {"status"};
+}
+
+std::string status_plugin::version() const {
+   return "1";
+}
+
+std::optional<forge::config::core::component_descriptor> status_plugin::describe_config() const {
+   return forge::config::core::describe_component<status_config>("status");
+}
+
+boost::asio::awaitable<void> status_plugin::on_configure(forge::config::core::component_view view) {
+   batch_limit_ = view.get_or<std::uint16_t>("batch-limit", 32);
+   co_return;
+}
+
+boost::asio::awaitable<void> status_plugin::on_provide(forge::api::core::provider& provider) {
+   provider.install<status_api>(std::make_shared<api_impl>(batch_limit_));
+   co_return;
+}
+
+boost::asio::awaitable<void> status_plugin::on_initialize(forge::app::plugin_context&) {
+   co_return;
+}
+
+boost::asio::awaitable<void> status_plugin::on_startup() {
+   co_return;
+}
+
+boost::asio::awaitable<void> status_plugin::on_shutdown() {
+   co_return;
+}
+
+status_plugin::api_impl::api_impl(std::uint16_t batch_limit) : batch_limit_{batch_limit} {}
+
+std::uint16_t status_plugin::api_impl::batch_limit() const noexcept {
+   return batch_limit_;
+}
+
+std::unique_ptr<forge::app::application_shell> make_application(const forge::app::daemon_context& context) {
+   auto settings = std::make_shared<service_settings>();
+   settings->data_path = context.environment.resolve_data_path("service");
+   settings->profile = context.environment.profile();
+
+   auto builder = forge::app::application_builder{};
+   builder.name(context.shell.name)
+      .environment(context.environment)
+      .runtime(context.shell.runtime)
+      .scheduler(context.shell.scheduler)
+      .config<service_config>("service", [settings](const service_config& config) {
+         settings->batch_size = config.batch_size;
+      })
+      .connect([settings](forge::app::connect_context& connect) {
+         const auto status = connect.api<status_api>();
+         settings->batch_size = std::min(settings->batch_size, status->batch_limit());
+         connect.publish(settings);
+      })
+      .plugin(status_plugin::descriptor());
+   if (context.shell.compute) {
+      builder.compute(*context.shell.compute);
+   }
+   return std::move(builder).build();
+}
+
+forge::app::daemon_options daemon_options() {
+   return {
+      .name = "service",
+      .display_name = "Service daemon",
+      .default_data_dir_name = "service",
+      .env_prefix = "SERVICE",
+   };
+}
+
+} // namespace service_example
+```
+
+[readme_example_main.cpp](../../tests/app/readme_example_main.cpp):
+
+<!-- app-readme-example: readme_example_main.cpp -->
+```cpp
+#include "readme_example.hxx"
+
+int main(int argc, char** argv) {
+   return forge::app::run_daemon(service_example::make_application, argc, argv, service_example::daemon_options());
+}
+```
+
+The factory forwards the daemon's immutable environment, runtime and scheduler
+options, plus compute options when present. It does not reconstruct host paths
+or invent a second application-options type. Callback state is captured by
+value through `shared_ptr`, not by reference to factory-local variables.
+
+`environment()` is a const host-facts view, not a plugin configuration store.
+A relative `data-dir` is made absolute and frozen during daemon bootstrap;
+`resolve_data_path(...)` uses that base even if the working directory changes.
+Without an explicit base, relative path resolution fails with typed
+`config_failed`. The environment does not create directories, resolve symlinks
+or provide a filesystem sandbox. Plugins receive the same immutable environment
+through their context.
+
 ## App And Plugin Config
 
-A plugin owns its own config. The application owns only app-level config. The
-shell merges defaults from every registered descriptor with the input document
-before calling `on_configure(...)` and plugin `configure(...)`.
+The shell merges defaults from all registered descriptors before configuring
+the application and plugins. Typed component settings remain plugin-owned;
+shared host paths/profile remain in `application_environment`.
 
 Coroutine hosts use `co_await shell.async_configure(document)` on their existing
 runtime. It owns the input document and follows the same defaults, validation
 and created-state requirements as `configure(document)`. The synchronous method
-is the blocking convenience boundary for callers outside the runtime; do not
-call it from a runtime worker. Configuration/lifecycle calls remain serialized
-by the host, not a concurrent reconfiguration API.
+is the blocking convenience boundary for external callers; never call it from
+a runtime worker. Configuration is one-shot, not concurrent reconfiguration.
 
-```cpp
-#include <boost/describe.hpp>
-
-#include <cstdint>
-
-import forge.app.events;
-import forge.app.plugin_context;
-import forge.app.plugin;
-import forge.app.plugin_registry;
-import forge.app.application_shell;
-import forge.config.core.document;
-import forge.schema.object;
-
-struct http_config {
-   std::uint16_t bind_port = 8080;
-   bool tls_enabled = false;
-};
-
-BOOST_DESCRIBE_STRUCT(http_config, (), (bind_port, tls_enabled))
-
-template <>
-struct forge::schema::rules<http_config> {
-   static forge::schema::object_schema<http_config> define() {
-      auto schema = forge::schema::object<http_config>();
-      schema.field<&http_config::bind_port>("bind-port").default_value(8080).range(1, 65'535);
-      schema.field<&http_config::tls_enabled>("tls-enabled").default_value(false);
-      return schema;
-   }
-};
-
-class http_plugin final : public forge::app::plugin {
- public:
-   forge::app::plugin_id id() const override { return forge::app::plugin_id{"http"}; }
-   std::string version() const override { return "1"; }
-
-   std::optional<forge::config::core::component_descriptor> describe_config() const override {
-      return forge::config::core::describe_component<http_config>("http");
-   }
-
-   boost::asio::awaitable<void> on_configure(forge::config::core::component_view view) override {
-      bind_port_ = view.get_or<std::uint16_t>("bind-port", 8080);
-      tls_enabled_ = view.get_or<bool>("tls-enabled", false);
-      co_return;
-   }
-
-   boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
-      context.events().publish(forge::app::event_severity::info, "http.initialize", "configured");
-      co_return;
-   }
-
-   boost::asio::awaitable<void> on_startup() override { co_return; }
-   boost::asio::awaitable<void> on_shutdown() override { co_return; }
-
- private:
-   std::uint16_t bind_port_ = 8080;
-   bool tls_enabled_ = false;
-};
-```
+The complete example separates the plugin's settings section
+`status.batch-limit` from its shell-owned selection key
+`plugins.status.enabled`. All `on_*` plugin hooks are protected; guarded public
+lifecycle entrypoints are not extension points.
 
 ## Plugin Enable/Disable
 
-Every registered plugin gets a shell-owned selection key:
+Every registered descriptor gets a shell-owned selection key. For the example:
+
+```yaml
+service:
+   batch-size: 48
+status:
+   batch-limit: 8
+plugins:
+   status:
+      enabled: true
+```
+
+The resulting connected service has batch size 8. Its required status API means
+disabling `status` makes the connect phase fail and triggers cleanup; selection
+does not magically make a required dependency optional.
+
+For the official HTTP server, the owning leaf is `net.http.server`, not
+`net.http`:
 
 ```yaml
 plugins:
    net:
-     http:
-        enabled: true
-   metrics:
-      enabled: false
+      http:
+         server:
+            enabled: true
 ```
+
+That YAML applies only when the application registers
+`forge::plugins::net::http::server::plugin::descriptor()`; HTTP is not a
+dependency of this minimal example.
 
 The default comes from `plugin_descriptor.enabled_by_default`. Disabled plugins
-are not configured, initialized, started or shut down. If an enabled plugin
-depends on a disabled plugin, the shell fails before lifecycle side effects.
+are not configured, initialized, started or shut down. If a descriptor-declared
+dependency is disabled, selection fails before lifecycle side effects.
+Use typed API/service optional lookup only when application policy actually
+permits the capability to be absent.
+
+## Derived Shells And Embedded Hosts
+
+Use a derived `application_shell` only when substantial state or customization
+cannot be expressed cleanly through builder callbacks. Put its `on_*` overrides
+under `protected:` and pass real `application_shell_options` to the base
+constructor. Do not duplicate shell-owned runtime, diagnostics, contexts or
+registries.
+
+`run_daemon(...)` is the production foreground entrypoint above.
+`run_application(...)` is the lower-level runner for hosts that already own a
+merged document. It centralizes stop and cleanup on both success and failure;
+destruction is not async cleanup. For example, using the same factory:
 
 ```cpp
-void on_register_plugins(forge::app::plugin_registry& registry) override {
-   registry.register_plugin(forge::app::plugin_descriptor{
-      .id = forge::app::plugin_id{"store"},
-      .factory = [] { return std::make_unique<store_plugin>(); },
-   });
-   registry.register_plugin(forge::app::plugin_descriptor{
-      .id = forge::app::plugin_id{"api"},
-      .dependencies = {forge::app::plugin_id{"store"}},
-      .factory = [] { return std::make_unique<api_plugin>(); },
-   });
-   registry.register_plugin(forge::app::plugin_descriptor{
-      .id = forge::app::plugin_id{"metrics"},
-      .enabled_by_default = false,
-      .factory = [] { return std::make_unique<metrics_plugin>(); },
-   });
-}
+#include "readme_example.hxx"
 
-auto document = forge::config::core::document{};
-document.set("plugins.metrics.enabled", true);
-document.set("plugins.api.enabled", false);
-app.configure(document);
-```
+#include <utility>
 
-## Application Shell Example
-
-The derived app declares only application-specific hooks. It does not store
-`plugin_context`, `application_runtime`, diagnostics, event journal and API registry
-as repeated boilerplate members.
-
-```cpp
-struct service_config {
-   std::uint16_t workers = 2;
-};
-
-BOOST_DESCRIBE_STRUCT(service_config, (), (workers))
-
-template <>
-struct forge::schema::rules<service_config> {
-   static forge::schema::object_schema<service_config> define() {
-      auto schema = forge::schema::object<service_config>();
-      schema.field<&service_config::workers>("workers").default_value(2).range(1, 64);
-      return schema;
-   }
-};
-
-class service_application final : public forge::app::application_shell {
- public:
-   service_application()
-       : forge::app::application_shell{forge::app::application_shell_options{
-            .name = "service",
-            .runtime = {.worker_threads = 2, .thread_name = "service"},
-         }} {}
-
- protected:
-   void on_describe_config(forge::config::core::component_registry& registry) const override {
-      registry.add(forge::config::core::describe_component<service_config>("service"));
-   }
-
-   boost::asio::awaitable<void> on_configure(forge::app::configure_context& context) override {
-      workers_ = context.view("service").get_or<std::uint16_t>("workers", 2);
-      co_return;
-   }
-
-   void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(forge::app::plugin_descriptor{
-         .id = forge::app::plugin_id{"http"},
-         .factory = [] {
-            return std::make_unique<http_plugin>();
-         },
-      });
-   }
-
-   boost::asio::awaitable<void> on_provide(forge::app::application_context& context) override {
-      context.events().publish(
-         forge::app::event_severity::info,
-         "service.configure",
-         "worker slots: " + std::to_string(workers_));
-      co_return;
-   }
-
- private:
-   std::uint16_t workers_ = 0;
-};
-```
-
-## Application Builder Example
-
-`application_builder` is the normal production path when callbacks are enough.
-It does not define a second lifecycle: `build()` returns
-`std::unique_ptr<forge::app::application_shell>`, and the generated shell still
-owns config merge, plugin lifecycle, rollback, API registry, events and
-diagnostics.
-
-```cpp
-import forge.app.events;
-import forge.app.plugin_context;
-import forge.app.plugin;
-import forge.app.application_shell;
-import forge.app.application_builder;
-import forge.asio.runtime;
-
-auto workers = std::uint16_t{0};
-auto builder = forge::app::application_builder{};
-
-builder.name("service")
-   .runtime(forge::asio::runtime_options{.worker_threads = 2, .thread_name = "service"})
-   .config<service_config>("service", [&](const service_config& config) {
-      workers = config.workers;
-   })
-   .provide([&](forge::app::application_context& context) {
-      context.events().publish(
-         forge::app::event_severity::info,
-         "service.configure",
-         "worker slots: " + std::to_string(workers));
-   })
-   .connect([](forge::app::connect_context& context)
-               -> boost::asio::awaitable<void> {
-      auto resolver = context.api<resolver_api>();
-      auto client = co_await make_client(*resolver);
-      context.publish(std::move(client));
-   })
-   .after_initialize([](const forge::app::application_context& context) {
-      // APIs are installed and every plugin has completed initialize().
-      auto apis = context.api_view();
-      auto client = context.service<connected_client>();
-   })
-   .plugin(forge::app::plugin_descriptor{
-      .id = forge::app::plugin_id{"http"},
-      .factory = [] {
-         return std::make_unique<http_plugin>();
-      },
-   })
-   .run_foreground([](forge::app::application_shell&) {
-      return 0;
-   });
-
-std::unique_ptr<forge::app::application_shell> app = std::move(builder).build();
-```
-
-Use the subclass form only when the application has substantial state or
-non-trivial lifecycle customization that the builder callbacks cannot express
-cleanly.
-
-## Running The Shell
-
-Config can come from YAML, JSON, environment adapters or CLI. The shell only
-receives a neutral `forge::config::core::document`.
-
-```cpp
-import forge.asio.blocking;
-import forge.config.core.document;
-
-auto app = service_application{};
-
-auto document = forge::config::core::document{};
-document.set("service.workers", 4U);
-document.set("http.bind-port", 9090U);
-
-app.configure(document);
-forge::asio::blocking::run(app.runtime(), app.startup());
-app.request_stop();
-forge::asio::blocking::run(app.runtime(), app.shutdown());
-```
-
-`startup()` calls `initialize()` automatically when the shell is still in the
-created state. Tests may call `initialize()` explicitly when they need to assert
-API publication before plugin initialization.
-
-For production foreground daemons prefer `run_application(...)`. It
-standardizes the common flow: configure, startup, wait, request stop, shutdown.
-
-```cpp
-import forge.app.application_shell;
 import forge.app.runner;
 import forge.config.core.document;
 
-auto app = service_application{};
-auto document = forge::config::core::document{};
-document.set("service.workers", 4U);
+int run_embedded_service() {
+   auto context = forge::app::daemon_context{};
+   context.shell.name = "embedded-service";
+   context.environment = forge::app::application_environment{"./service-data", "embedded"};
+   context.shell.environment = context.environment;
 
-auto options = forge::app::run_options{
-   .handle_sigint = true,
-   .handle_sigterm = true,
-   .shutdown_timeout = std::chrono::seconds{10},
-};
-
-return forge::app::run_application(app, document, options);
+   auto document = forge::config::core::document{};
+   document.set("service.batch-size", 8U);
+   return forge::app::run_application(service_example::make_application(context), document);
+}
 ```
 
-Tests and embedders can replace OS signals with a custom async waiter:
-
-```cpp
-options.handle_sigint = false;
-options.handle_sigterm = false;
-options.wait_for_stop = [](forge::app::application_shell& app) -> boost::asio::awaitable<void> {
-   auto timer = boost::asio::steady_timer{app.runtime().context()};
-   timer.expires_after(std::chrono::milliseconds{50});
-   co_await timer.async_wait(boost::asio::use_awaitable);
-};
-```
+A custom host may set `run_options::wait_for_stop` to its own awaited stop
+operation and disable the two OS signal options. Do not replace the runner
+with an unowned detached task. `startup()` initializes automatically when needed;
+tests may initialize explicitly to inspect API publication before startup.
 
 ## Optional Compute Pool
 
@@ -449,26 +508,8 @@ process environment, parse daemon and app/plugin CLI, merge defaults, handle
 `--help`, `--check-config`, `--print-effective-config` and `--configure`, then
 call `run_application(...)`.
 
-```cpp
-int main(int argc, char** argv) {
-   return forge::app::run_daemon(
-      [](const forge::app::daemon_context& context) {
-         return std::make_unique<service_application>(service_application_options{
-            .data_dir = context.environment.data_dir(),
-            .profile = context.environment.profile(),
-            .shell = context.shell,
-         });
-      },
-      argc,
-      argv,
-      forge::app::daemon_options{
-         .name = "service",
-         .display_name = "Service daemon",
-         .default_data_dir_name = "service",
-         .env_prefix = "SERVICE",
-      });
-}
-```
+The complete factory and thin `main()` are shown above; no additional options
+type or manual signal bridge is needed.
 
 The factory is intentional. `application_shell` creates its runtime and
 scheduler in the constructor, so early daemon config such as
@@ -484,20 +525,19 @@ Built-in daemon YAML:
 ```yaml
 daemon:
    profile: dev_local
-   data-dir: /home/user/.forge/service
-   config: /home/user/.forge/service/config.yml
-   dotenv: /home/user/.forge/service/.env
+   data-dir: ./service-data
    runtime-threads: 2
    scheduler-queue-depth: 4096
    shutdown-timeout-ms: 10000
 
 service:
-   workers: 4
+   batch-size: 16
+status:
+   batch-limit: 32
 
 plugins:
-   net:
-     http:
-        enabled: true
+   status:
+      enabled: true
 ```
 
 The merge order is fixed:
@@ -517,36 +557,14 @@ parent directories for `.env`.
 same registry. Secret fields from schema descriptors are never printed as real
 values.
 
-## Signal Bridge
+## Process Signals
 
-`request_stop()` remains synchronous and `noexcept`; that makes it safe to call
-from OS signal bridges and platform service callbacks. Use the runner for
-normal foreground daemons; write a manual bridge only when embedding FORGE into a
-larger host runtime.
-
-```cpp
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/signal_set.hpp>
-#include <boost/asio/use_awaitable.hpp>
-
-#include <csignal>
-#include <memory>
-
-auto app = service_application{};
-auto signals = std::make_shared<boost::asio::signal_set>(
-   app.runtime().context(),
-   SIGINT,
-   SIGTERM);
-
-boost::asio::co_spawn(
-   app.runtime().context(),
-   [&app, signals]() -> boost::asio::awaitable<void> {
-      co_await signals->async_wait(boost::asio::use_awaitable);
-      app.request_stop();
-   },
-   boost::asio::detached);
-```
+`run_daemon(...)` delegates SIGINT/SIGTERM waiting to the lifecycle runner.
+`request_stop()` is synchronous and `noexcept`, but it signals intent rather
+than joining cleanup. Those properties do not make it POSIX async-signal-safe;
+do not call it from a raw signal handler. An embedding host should await its
+own stop notification through `run_options::wait_for_stop`, then let the runner
+request stop and finish shutdown while the owner remains alive.
 
 ## APIs
 
@@ -557,37 +575,15 @@ a read-only API view through `application_context::api_view()`. This keeps
 lifecycle in `forge_app` and contract/version/error semantics in
 `forge_api_core`.
 
-```cpp
-#include <forge/api/core/macros.hpp>
+The complete example installs its local-only `status_api` during protected
+`on_provide(...)` and consumes it during builder `connect(...)`. The API owns an
+immutable value, not a pointer back into plugin resources. More substantial
+resource-backed APIs must keep their owner alive and preserve stop admission;
+an API handle alone is not permission to access already-released resources.
 
-class cache : public forge::api::core::contract<cache> {
- public:
-   virtual ~cache() = default;
-   virtual boost::asio::awaitable<models::chunk> read(protocol::read_chunk request) = 0;
-};
-
-FORGE_API(cache, FORGE_API_CONTRACT("cache", 1, 8), FORGE_API_METHOD(read))
-
-boost::asio::awaitable<void> on_provide(forge::app::application_context& context) override {
-   context.apis().install<cache>(std::make_shared<cache_impl>());
-   co_return;
-}
-
-boost::asio::awaitable<void> on_initialize(forge::app::plugin_context& context) override {
-   cache_ = context.apis().get<cache>({.id = {"cache"}, .major = 1, .min_revision = 8});
-   co_return;
-}
-```
-
-Infrastructure plugins should publish narrow APIs instead of leaking their
-transport/runtime internals:
-
-```cpp
-boost::asio::awaitable<void> on_provide(forge::api::core::provider& provider) override {
-   provider.install<node_admin_api>(std::make_shared<node_admin_api_impl>(impl_));
-   co_return;
-}
-```
+Infrastructure plugins should likewise publish narrow typed capabilities
+instead of transport/runtime internals. See [API Core](../api/core/README.md)
+for contract, method and remote-binding examples.
 
 The private implementation declaration lives in its exact `details/*.hxx`
 pair; consumers only see the published API interface.
@@ -669,16 +665,6 @@ not `stopped`. On plugin cleanup failure, keep the same owner, scheduler, comput
 pool and connected services alive for another shutdown attempt; the shell
 releases these facilities only after plugin cleanup succeeds.
 
-```cpp
-#include <forge/exceptions/macros.hpp>
-
-try {
-   app.configure(document);
-   forge::asio::blocking::run(app.runtime(), app.startup());
-} FORGE_CAPTURE_AND_RETHROW(
-   "application startup failed",
-   forge::exceptions::ctx("component", "service"))
-```
 
 The app should still call `request_stop()` and `shutdown()` from the outer
 entrypoint cleanup path. Stop closes admission without waiting for cleanup;
@@ -698,14 +684,6 @@ runtime, API registry and diagnostics. That is an escape hatch, not the normal
 daemon pattern. Prefer `application_shell` or `application_builder` for new
 services.
 
-```cpp
-auto runtime = forge::app::application_runtime{context, std::move(plugins), &diagnostics};
-boost::asio::awaitable<void> run_runtime(forge::app::application_runtime& runtime) {
-   co_await runtime.configure(document);
-   co_await runtime.startup();
-   co_await runtime.shutdown();
-}
-```
 
 ## Typical Mistakes
 
@@ -753,6 +731,20 @@ order, config collection, shell-owned default merge, configure-before-initialize
 after-initialize ordering and failure cleanup, startup rollback, reverse shutdown
 and diagnostics.
 
-Executable lifecycle coverage lives in `test_forge_app`. Consumer snippets stay in
-this README and the runtime docs so they cannot drift behind an unbuilt example
-tree.
+The complete example is compiled separately as `forge_app_readme_example`.
+`test_forge_app_readme_example` exercises that same factory, schema/defaults,
+local API consumption, immutable environment, coroutine configuration on one
+runtime worker, required-plugin selection and runner cleanup after a wait
+failure. It links only `forge_app`, not the whole FORGE umbrella.
+
+`test_forge_app_readme_correspondence` runs
+[check_readme_example.py](../../tests/app/check_readme_example.py). It compares
+the three marked README blocks and the runtime document's `main()` block exactly
+against the fixture files. This is a small App-specific drift guard, not a
+general documentation framework or a substitute for compiling/running tests.
+
+Acceptance targets: `forge_app_readme_example` and
+`test_forge_app_readme_example`; CTest names:
+`test_forge_app_readme_example` and `test_forge_app_readme_correspondence`.
+These names describe executable coverage, not a claim that any build or test
+has passed.

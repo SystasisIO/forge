@@ -20,6 +20,7 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/socket_base.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -65,6 +66,7 @@ import forge.crypto.digest.sha256;
 import forge.crypto.signer.configured_provider;
 import forge.crypto.wallet.api;
 import forge.crypto.pki.x509;
+import forge.log.logger;
 import forge.net.http.body;
 import forge.net.http.client;
 import forge.net.http.exceptions;
@@ -81,6 +83,8 @@ import forge.net.websocket.connection;
 import forge.plugins.chain.signer.plugin;
 import forge.plugins.chain.signer.types;
 import forge.plugins.crypto.wallet.plugin;
+
+#include "../plugins/details/http_log_capture.hxx"
 
 namespace {
 
@@ -353,6 +357,23 @@ class tls_http_connection {
       return error;
    }
 
+   [[nodiscard]] boost::system::error_code inject_malformed_record_then_wait_for_close() {
+      // A TLS 1.3 application record cannot contain only one byte of ciphertext.
+      const auto record = std::array<unsigned char, 6>{0x17, 0x03, 0x03, 0x00, 0x01, 0x00};
+      auto& transport = beast::get_lowest_layer(stream());
+      asio::write(transport.socket(), asio::buffer(record));
+
+      // Drain the fatal alert through TCP, not SSL, and wait for the server to close.
+      auto received = std::array<unsigned char, 4096>{};
+      auto error = boost::system::error_code{};
+      io_.restart();
+      transport.expires_after(std::chrono::seconds{2});
+      asio::async_read(transport, asio::buffer(received),
+                       [&](boost::system::error_code failure, std::size_t) { error = failure; });
+      io_.run();
+      return error;
+   }
+
  private:
    [[nodiscard]] beast::ssl_stream<beast::tcp_stream>& stream() noexcept {
       return *stream_;
@@ -431,6 +452,76 @@ BOOST_AUTO_TEST_CASE(http_server_accepts_tls_1_3_before_parsing_http) {
    BOOST_TEST(result.response.body() == "ready");
 
    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(http_server_malformed_tls_records_after_handshake_use_bounded_summaries) {
+   auto logs = forge::tests::plugins::http_log_capture{"forge.net.http.server"};
+   const auto identity = make_identity();
+   auto provider = std::make_shared<forge::net::tls::context_provider>(server_options(identity));
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto server = forge::net::http::server{
+       runtime,
+       {.tls_context_provider = provider,
+        .handshake_timeout = std::chrono::seconds{1},
+        .max_pending_tls_handshakes = 4,
+        .access_log = false},
+       ready_router(),
+   };
+   server.start();
+   const auto port = wait_for_port(server);
+   constexpr auto attempts = std::size_t{8};
+   const auto started = std::chrono::steady_clock::now();
+   for (auto index = std::size_t{0}; index != attempts; ++index) {
+      auto connection = tls_http_connection{port};
+      // A keep-alive response proves the server completed its handshake and entered HTTP.
+      const auto response = connection.get(true);
+      BOOST_REQUIRE(response.protocol == "TLSv1.3");
+      BOOST_REQUIRE(response.response.result() == beast_http::status::ok);
+      BOOST_REQUIRE(response.response.keep_alive());
+      BOOST_REQUIRE(connection.inject_malformed_record_then_wait_for_close() == asio::error::eof);
+   }
+   server.stop();
+
+   const auto field = [](const forge::log_record& record, std::string_view key) -> std::string {
+      for (const auto& value : record.fields) {
+         if (value.key == key) {
+            return value.value;
+         }
+      }
+      return {};
+   };
+   auto summaries = std::size_t{0};
+   auto failures = std::size_t{0};
+   auto drained = false;
+   for (const auto& record : logs.captured->snapshot()) {
+      const auto event = field(record, "event");
+      BOOST_CHECK(record.level != forge::log_level::error);
+      BOOST_TEST(event != "http.request.finished");
+      if (record.level == forge::log_level::warn) {
+         BOOST_TEST(event == "http.admission.summary");
+      }
+      if (event == "http.drained") {
+         drained = true;
+      }
+      if (event == "http.admission.summary") {
+         BOOST_CHECK(!drained);
+         BOOST_CHECK(record.level == forge::log_level::warn);
+         BOOST_TEST(field(record, "tls_failed") == "0");
+         BOOST_TEST(field(record, "tls_closed") == "0");
+         const auto count = field(record, "tls_session_failed");
+         BOOST_REQUIRE(!count.empty());
+         failures += std::stoull(count);
+         BOOST_TEST(field(record, "session_error_code") != "0");
+         ++summaries;
+      }
+   }
+   BOOST_TEST(drained);
+   BOOST_TEST(failures == attempts);
+   BOOST_TEST(summaries >= 1U);
+   const auto elapsed = std::chrono::steady_clock::now() - started;
+   const auto windows = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() / 5;
+   // One immediate summary, at most one per interval, and a final drain flush.
+   BOOST_TEST(summaries <= 2U + static_cast<std::size_t>(windows));
 }
 
 BOOST_AUTO_TEST_CASE(http_client_options_verify_hostname_and_certificate_pin) {

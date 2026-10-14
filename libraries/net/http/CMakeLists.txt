@@ -17,6 +17,12 @@ add_library(
    file.cpp
    assets.cpp
    server.cpp
+   server_impl.cpp
+   server_session.cpp
+   server_session_model.cpp
+   beast_body_reader_source.cpp
+   server_log.cpp
+   request_read_ownership.cpp
 )
 forge_target_modules_at(forge_net_http net/http)
 
@@ -35,4 +41,6 @@ target_link_libraries(
       Boost::asio
       Boost::beast
       Boost::url
+   PRIVATE
+      forge_log
 )

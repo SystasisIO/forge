@@ -48,6 +48,75 @@ Target: `forge_net_http`.
 
 Dependencies: `forge_asio`, `forge_net_tls`, `forge_net_websocket`, `forge_codec_json`,
 `forge_schema`, Boost.Asio, Boost.Beast and Boost.URL.
+Server observations additionally use `forge_log` as a private implementation dependency.
+
+## Server Observability
+
+The substrate uses the named FORGE logger `forge.net.http.server`. `http.listening`
+is INFO only after socket listen and accept-loop publication; `http.drained` is
+INFO only after accept, pending TLS handshakes and owned HTTP/WebSocket handlers
+have joined. Repeated start/stop calls do not emit duplicate lifecycle successes.
+Cleanup after an already stopped runtime emits `http.closed_after_runtime_stop`,
+not a claim that live handlers have drained. Failures use numeric typed codes and
+fixed error families (`forge`, `boost`, `std`, `unknown`), never exception text or
+captured exception context. Expected cancellation, timeout and disconnect are
+DEBUG; an HTTP 4xx status alone is not an operational error.
+
+Request access logging is disabled by default. Both the option and logger DEBUG
+level must be enabled:
+
+```cpp
+import forge.log.logger;
+import forge.net.http.server;
+
+auto route = forge::logger::get("forge.net.http.server");
+route.set_log_level(forge::log_level::debug);
+forge::logger::update("forge.net.http.server", route);
+
+auto options = forge::net::http::server_config{};
+options.access_log = true;
+// Pass options to server(runtime, options, handler_or_router).
+// Configure FORGE sinks through the application's ordinary logging setup.
+```
+
+Each received request has one DEBUG `http.request.finished` record. It contains
+the numeric FORGE method enum (`unknown` for unsupported/incomplete methods),
+status, monotonic `duration_us`, Beast-reported `received_bytes`/`sent_bytes`,
+successfully written `response_chunks`, and `outcome=completed|aborted`.
+Byte counts include HTTP framing/headers; speculative reads of pipelined input
+are not attributed to the active request. `status=0` means no response status was
+chosen, including a parser failure. Streaming completion is observed once after
+the whole send and its send guard settle, not at headers or per chunk. A failed
+producer, partial send, rejected send guard or observed disconnect is aborted;
+a successfully sent error response is completed with its actual HTTP status.
+WebSocket upgrade completion reports status 101 after successful acceptance,
+not after the upgraded application's lifetime.
+Beast reports a rejected upgrade only after its HTTP refusal has been written:
+these records therefore retain the actual 400/426 status and completed outcome,
+while transport failures stay aborted. Its accept operation exposes no byte
+count, so upgrade records explicitly set `sent_bytes_known=false`; zero is not
+presented as a measured handshake size.
+
+No raw target/URI, route parameters, header, body, peer identity, certificate,
+key material or configuration dump is logged. Route strings are deliberately
+omitted, rather than attempting to sanitize a request-controlled path. Logging
+is observational and noexcept: sink failures cannot change response, resource
+ownership or cleanup outcomes, and sinks are never called under HTTP observation
+mutexes. Core logging is synchronous, so sinks still need to be bounded and
+nonblocking; exception isolation is not a latency guarantee.
+
+TLS handshake/session failures and TLS/header/body resource rejections use fixed, saturating
+counters instead of one warning per connection or an unbounded peer-keyed map.
+`http.admission.summary` is emitted at most once per five seconds on subsequent
+activity, plus a final pending summary before `http.drained`. There is no timer
+or background logging worker. TLS failures/context loss make the summary WARN;
+expected disconnects and resource rejections alone stay DEBUG. Summary state is
+copied/reset under its mutex and delivered only after releasing that mutex.
+
+Focused capture/redaction/stream/error fixtures live in
+[`tests/http/server_observability_tests.cpp`](../../../tests/http/server_observability_tests.cpp).
+Existing TLS and shutdown-retry fixtures remain the compatibility gates for
+snapshot lifetime, handshake bounds and real drain semantics.
 
 HTTPS client connections acquire their OpenSSL context from `forge_net_tls`; the
 client keeps that immutable snapshot for the lifetime of its TLS connection.

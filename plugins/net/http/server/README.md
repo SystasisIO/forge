@@ -97,6 +97,7 @@ the application mount.
 - `forge_config_core`
 - `forge_schema`
 - `forge_plugins_crypto_secrets` for TLS-enabled runtime composition
+- `forge_log` for observational TLS reload outcomes
 - Boost.Asio
 
 ## Config
@@ -113,6 +114,7 @@ plugins:
            max-header-bytes: 65536
            read-timeout-ms: 30000
            idle-timeout-ms: 120000
+           access-log: false
            tls:
               mode: disabled
               handshake-timeout-ms: 10000
@@ -191,10 +193,6 @@ struct item_response {
    std::string title;
 };
 
-BOOST_DESCRIBE_STRUCT(item_request, (), (id))
-BOOST_DESCRIBE_STRUCT(update_item_request, (), (id, title))
-BOOST_DESCRIBE_STRUCT(item_response, (), (id, title))
-
 class catalog_api : public forge::api::core::contract<catalog_api> {
  public:
    virtual boost::asio::awaitable<item_response>
@@ -203,6 +201,10 @@ class catalog_api : public forge::api::core::contract<catalog_api> {
    virtual boost::asio::awaitable<item_response>
    update_item(update_item_request request) = 0;
 };
+
+BOOST_DESCRIBE_STRUCT(item_request, (), (id))
+BOOST_DESCRIBE_STRUCT(update_item_request, (), (id, title))
+BOOST_DESCRIBE_STRUCT(item_response, (), (id, title))
 
 FORGE_API(catalog_api,
    FORGE_API_CONTRACT("example.catalog", 1, 0),
@@ -300,6 +302,27 @@ Register the infrastructure plugin once:
 registry.register_plugin(forge::plugins::net::http::server::plugin::descriptor());
 ```
 
+## Logging
+
+App owns the plugin lifecycle records. The HTTP substrate owns actual listener,
+session and request outcomes through `forge.net.http.server`; the plugin does
+not repeat them. Optional `access-log: true` enables redacted request completion
+records; the `forge.net.http.server` logger must also allow DEBUG. It does not
+log request targets, headers, bodies, client-supplied IDs or arbitrary exception
+text. Streaming completion is recorded once, not per chunk.
+
+The `forge.plugins.net.http.server` logger records `http.tls.reload.applied` at
+INFO only after a real context swap. Lifecycle/unavailable reload rejection is
+DEBUG; preparation failure is ERROR (`http.tls.reload.failed`) and does not
+publish the failed replacement. Records contain only fixed events and numeric
+error codes/categories, never secret names or PEM. Concurrent reload/stop may
+finish in a different order from log delivery; logs are not authority for the
+current context. Sink failures do not alter the API outcome.
+
+All records use Forge macros and normal sink routing, including OTLP when the
+application configures it. Neither HTTP nor this plugin owns an exporter or
+guarantees remote delivery before exporter startup or after exporter shutdown.
+
 ## Security And Boundaries
 
 - The plugin is not an authority boundary. Authentication, authorization,
@@ -333,5 +356,7 @@ registry.register_plugin(forge::plugins::net::http::server::plugin::descriptor()
 
 - `test_forge_plugins`
 - `test_forge_plugins_net_http_server`
+- `test_forge_http_server_lifecycle` (focused existing lifecycle/TLS fixtures,
+  reload redaction and failing-sink checks)
 - `test_forge_http_websocket`
 - `test_forge_api_core`

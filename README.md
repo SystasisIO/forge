@@ -130,6 +130,10 @@ Use `forge_app` and official plugins when several application plugins need one
 shared runtime service, such as an HTTP server, a P2P node, a signer, a secrets
 service or an OTLP exporter.
 
+Start with the [compiled App example](libraries/app/README.md#examples): it uses
+`application_builder`, `run_daemon`, protected plugin hooks and the shared host
+environment. The documented source is checked against the executable fixture.
+
 ```cpp
 registry.register_plugin(forge::plugins::net::http::server::plugin::descriptor());
 registry.register_plugin(forge::plugins::chain::signer::plugin::descriptor());

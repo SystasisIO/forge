@@ -125,6 +125,7 @@ forge::net::http::server_config to_server_config(const config& value) {
        .handshake_timeout =
            std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(value.tls_handshake_timeout_ms)},
        .max_pending_tls_handshakes = value.tls_max_pending_handshakes,
+       .access_log = value.access_log,
    };
 }
 
