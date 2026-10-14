@@ -22,6 +22,11 @@ struct lifecycle_log {
    std::string_view id;
    int exit_code = 0;
    bool has_exit_code = false;
+   // Optional daemon diagnostics must already be normalized to trusted
+   // schema paths and fixed code/reason vocabulary, never parser input.
+   std::string_view diagnostic_code;
+   std::string_view diagnostic_path;
+   std::string_view diagnostic_reason;
 };
 
 void emit_lifecycle_log(const lifecycle_log& value) noexcept;

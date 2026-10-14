@@ -153,6 +153,7 @@ struct observed_state {
    std::atomic_bool fail_startup = false;
    std::atomic_bool fail_invalid_startup = false;
    std::atomic_bool fail_configuration = false;
+   std::atomic_bool cancel_configuration = false;
    std::atomic_bool range_configuration_error = false;
    std::atomic_bool configured_secret = false;
 };
@@ -202,6 +203,9 @@ class observed_application final : public forge::app::application_shell {
                                                      .default_value = std::string{}, .secret = true}}});
    }
    boost::asio::awaitable<void> on_configure(forge::app::configure_context& context) override {
+      if (state_->cancel_configuration.load()) {
+         FORGE_THROW_EXCEPTION(forge::app::exceptions::operation_stopped, "callback-secret-marker");
+      }
       if (state_->fail_configuration.load()) {
          throw std::invalid_argument{"callback-secret-marker"};
       }
@@ -483,13 +487,8 @@ BOOST_AUTO_TEST_CASE(app_observability_daemon_dry_modes_have_no_ready_or_service
 
 BOOST_AUTO_TEST_CASE(app_observability_cli_known_validation_reason_survives_without_echoing_callback_secret) {
    auto logs = log_capture{};
-   auto errors = std::ostringstream{};
-   auto* previous = std::cerr.rdbuf(errors.rdbuf());
-   struct restore_errors {
-      ~restore_errors() { std::cerr.rdbuf(previous); }
-      std::streambuf* previous;
-   } restore{previous};
    for (const auto known_reason : {true, false}) {
+      const auto before = logs.captured->snapshot().size();
       auto state = std::make_shared<observed_state>();
       state->range_configuration_error.store(known_reason);
       state->fail_configuration.store(!known_reason);
@@ -499,14 +498,77 @@ BOOST_AUTO_TEST_CASE(app_observability_cli_known_validation_reason_survives_with
       auto args = std::vector<std::string>{"observability", "--check-config", "--service.token=config-secret-marker"};
       auto argv = std::vector<char*>{};
       for (auto& argument : args) { argv.push_back(argument.data()); }
-      errors.str({});
       BOOST_CHECK_EQUAL(forge::app::run_daemon(
           [state](const auto&) { return std::make_unique<observed_application>(state); },
           static_cast<int>(argv.size()), argv.data(), options), 1);
-      BOOST_CHECK(errors.str().find("application.configure") != std::string::npos);
-      BOOST_CHECK(errors.str().find(known_reason ? "allowed maximum" : "application configuration failed") != std::string::npos);
-      BOOST_CHECK(errors.str().find("callback-secret-marker") == std::string::npos);
-      BOOST_CHECK(errors.str().find("config-secret-marker") == std::string::npos);
+      const auto records = logs.captured->snapshot();
+      auto text = std::string{};
+      for (auto index = before; index < records.size(); ++index) {
+         text += records[index].message;
+         for (const auto& item : records[index].fields) {
+            text += '\n' + item.key + '=' + item.value;
+         }
+      }
+      BOOST_CHECK(text.find("application.configure") != std::string::npos);
+      BOOST_CHECK(text.find(known_reason ? "allowed maximum" : "application configuration failed") != std::string::npos);
+      BOOST_CHECK(text.find("callback-secret-marker") == std::string::npos);
+      BOOST_CHECK(text.find("config-secret-marker") == std::string::npos);
    }
    assert_no_secrets(logs.captured->snapshot());
+}
+
+BOOST_AUTO_TEST_CASE(app_observability_daemon_parser_diagnostics_redact_input_and_survive_sink_failure) {
+   auto logs = log_capture{true};
+   const auto failures = forge::log_failure_count();
+   for (auto args : std::vector<std::vector<std::string>>{
+          {"observability", "--check-config", "--config-secret-marker=exception-secret-marker"},
+          {"observability", "--check-config", "--runtime-threads=exception-secret-marker"},
+          {"observability", "--check-config", "--config=/path-secret-marker/nonexistent.yml"}}) {
+      auto state = std::make_shared<observed_state>();
+      auto options = forge::app::daemon_options{.name = "observability", .read_yaml = true,
+                                               .read_dotenv = false, .read_process_env = false};
+      options.shutdown_logging = false;
+      auto argv = std::vector<char*>{};
+      for (auto& argument : args) { argv.push_back(argument.data()); }
+      BOOST_CHECK_EQUAL(forge::app::run_daemon(
+          [state](const auto&) { return std::make_unique<observed_application>(state); },
+          static_cast<int>(argv.size()), argv.data(), options), 1);
+      BOOST_CHECK_EQUAL(state->startups.load(), 0);
+   }
+   const auto records = logs.captured->snapshot();
+   BOOST_CHECK_GE(count_event(records, "daemon.config.failed"), 3U);
+   BOOST_CHECK_GT(logs.failing->calls.load(), 0);
+   BOOST_CHECK_GT(forge::log_failure_count(), failures);
+   assert_no_secrets(records);
+}
+
+BOOST_AUTO_TEST_CASE(app_observability_daemon_check_config_preserves_typed_cancellation) {
+   auto logs = log_capture{};
+   auto state = std::make_shared<observed_state>();
+   state->cancel_configuration.store(true);
+   auto options = forge::app::daemon_options{.name = "observability", .read_yaml = false,
+                                            .read_dotenv = false, .read_process_env = false};
+   options.shutdown_logging = false;
+   auto args = std::vector<std::string>{"observability", "--check-config"};
+   auto argv = std::vector<char*>{};
+   for (auto& argument : args) { argv.push_back(argument.data()); }
+   BOOST_CHECK_EQUAL(forge::app::run_daemon(
+       [state](const auto&) { return std::make_unique<observed_application>(state); },
+       static_cast<int>(argv.size()), argv.data(), options), 1);
+   const auto records = logs.captured->snapshot();
+   const auto expected_code = std::to_string(forge::app::exceptions::operation_stopped{"test"}.code().value());
+   auto found = 0;
+   for (const auto& record : records) {
+      if (field(record, "event") != "daemon.canceled") { continue; }
+      ++found;
+      BOOST_CHECK(record.level.value == forge::log_level::warn);
+      BOOST_CHECK_EQUAL(field(record, "operation"), "check_config");
+      BOOST_CHECK_EQUAL(field(record, "error_category"), "forge");
+      BOOST_CHECK_EQUAL(field(record, "error_code"), expected_code);
+      BOOST_CHECK_EQUAL(field(record, "code"), "config.validation");
+      BOOST_CHECK_EQUAL(field(record, "path"), "application.configure");
+      BOOST_CHECK_EQUAL(field(record, "reason"), "application configuration failed");
+   }
+   BOOST_CHECK_EQUAL(found, 1);
+   assert_no_secrets(records);
 }

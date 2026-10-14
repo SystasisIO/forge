@@ -70,6 +70,7 @@ import forge.schema.value_kind;
 import forge.schema.object;
 import forge.schema.enums;
 import forge.schema.exceptions;
+import forge.log.logger;
 
 namespace app_test_contract {
 
@@ -399,6 +400,36 @@ struct stream_capture {
    std::ostream& stream_;
    std::ostringstream buffer_;
    std::streambuf* old_ = nullptr;
+};
+
+class daemon_diagnostic_sink final : public forge::sink {
+ public:
+   void log(const forge::log_record& record) override {
+      const auto lock = std::scoped_lock{mutex_};
+      text_ += record.message + '\n';
+      for (const auto& field : record.fields) {
+         text_ += field.key + '=' + field.value + '\n';
+      }
+   }
+
+   std::string text() const {
+      const auto lock = std::scoped_lock{mutex_};
+      return text_;
+   }
+
+ private:
+   mutable std::mutex mutex_;
+   std::string text_;
+};
+
+struct daemon_diagnostic_capture {
+   daemon_diagnostic_capture() { route_.add_sink(sink_); }
+   ~daemon_diagnostic_capture() { route_.remove_sink(sink_); }
+   std::string text() const { return sink_->text(); }
+
+ private:
+   forge::logger route_ = forge::logger::get("forge.app.daemon");
+   std::shared_ptr<daemon_diagnostic_sink> sink_ = std::make_shared<daemon_diagnostic_sink>();
 };
 
 std::filesystem::path make_temp_dir(std::string name) {
@@ -2203,7 +2234,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_help_ignores_malformed_explicit_config) {
 
 BOOST_AUTO_TEST_CASE(run_daemon_explicit_missing_config_is_error_for_check_config) {
    auto state = daemon_test_state{};
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    const auto exit_code = run_test_daemon(
       {
@@ -2221,7 +2252,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_explicit_missing_config_is_error_for_check_confi
 
 BOOST_AUTO_TEST_CASE(run_daemon_explicit_missing_dotenv_is_error_when_dotenv_source_enabled) {
    auto state = daemon_test_state{};
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    auto options = forge::app::daemon_options{};
    options.env_prefix = "FORGE_TESTD";
@@ -2250,7 +2281,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_reports_bootstrap_type_error_as_diagnostic) {
       R"(daemon:
   runtime-threads: four
 )");
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    auto exit_code = -1;
    BOOST_CHECK_NO_THROW(exit_code = run_test_daemon(
@@ -2277,7 +2308,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_reports_invalid_action_flag_type_as_diagnostic) 
       R"(daemon:
   check-config: maybe
 )");
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    auto exit_code = -1;
    BOOST_CHECK_NO_THROW(exit_code = run_test_daemon(
@@ -2332,7 +2363,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_print_effective_config_rejects_ingestion_only_fi
 )"
    );
    auto output = stream_capture{std::cout};
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    const auto exit_code = run_test_daemon(
       {
@@ -2347,7 +2378,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_print_effective_config_rejects_ingestion_only_fi
    BOOST_TEST(output.text().empty());
    BOOST_TEST(errors.text().find("config.removed") != std::string::npos);
    BOOST_TEST(errors.text().find("http.removed-output") != std::string::npos);
-   BOOST_TEST(errors.text().find("http removed-output was removed") != std::string::npos);
+   BOOST_TEST(errors.text().find("configuration field was removed") != std::string::npos);
    BOOST_TEST(state.log.entries.empty());
 }
 
@@ -2381,7 +2412,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_configure_refuses_to_overwrite_existing_config) 
    const auto dir = make_temp_dir("forge-daemon-configure-overwrite");
    const auto config = dir / "generated.yml";
    write_text(config, "service:\n  workers: 3\n");
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    const auto exit_code = run_test_daemon(
       {
@@ -2418,7 +2449,7 @@ BOOST_AUTO_TEST_CASE(run_daemon_respects_plugin_selection_before_lifecycle) {
 
 BOOST_AUTO_TEST_CASE(run_daemon_returns_nonzero_for_invalid_config) {
    auto state = daemon_test_state{};
-   auto errors = stream_capture{std::cerr};
+   auto errors = daemon_diagnostic_capture{};
 
    const auto exit_code = run_test_daemon(
       {

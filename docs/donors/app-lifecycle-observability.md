@@ -197,6 +197,22 @@ or keep it alive solely for lifecycle records. Exporter lifecycle/drain policy
 and remote collector evidence are separate acceptance work; capture-sink tests
 prove neither network delivery nor commercial/production readiness.
 
+### Daemon Diagnostic Follow-Up
+
+The [daemon diagnostic change](../iterations/forge-app-daemon-diagnostics-v1.md)
+supersedes the separate CLI-error rendering boundary described above. Explicit
+help/effective-config results remain stdout output; early and operational errors
+use the same Forge logger routing. The existing lazy default async console is
+reused, with no new bootstrap worker or process-wide reconfiguration.
+
+Daemon diagnostic records may include a fixed diagnostic code, a schema-owned
+canonical field path and an allowlisted reason. They never forward raw parser
+messages, user-supplied paths/option names, config values or arbitrary exception
+text. Descriptor-provided free-form migration messages are not treated as safe
+logging vocabulary. Lifecycle classification remains typed and distinct from
+these safe diagnostic details. This is a Forge output-policy refinement, not a
+new donor compatibility claim; the earlier acceptance receipt is unchanged.
+
 ## Acceptance Gates
 
 The following requirements are exercised by the scoped acceptance suite:

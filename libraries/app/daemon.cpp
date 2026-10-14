@@ -291,23 +291,144 @@ void append_diagnostics(std::vector<forge::schema::diagnostic>& target,
    target.insert(target.end(), source.begin(), source.end());
 }
 
-void print_diagnostics(const std::vector<forge::schema::diagnostic>& diagnostics) {
-   for (const auto& entry : diagnostics) {
-      const auto severity = entry.level == forge::schema::severity::error ? "error" : "warning";
-      std::cerr << severity << ": " << entry.code;
-      if (!entry.path.empty()) {
-         std::cerr << " at " << entry.path;
-      }
-      if (!entry.message.empty()) {
-         std::cerr << ": " << entry.message;
-      }
-      std::cerr << '\n';
-   }
+void log_daemon_diagnostic(const char* event, const char* operation, const char* code,
+                           std::string_view path, const char* reason,
+                           forge::schema::severity severity = forge::schema::severity::error,
+                           std::exception_ptr error = {}) noexcept {
+   const auto level = severity == forge::schema::severity::error ? detail::lifecycle_log_level::error
+                      : severity == forge::schema::severity::warning ? detail::lifecycle_log_level::warning
+                                                                     : detail::lifecycle_log_level::info;
+   detail::emit_lifecycle_log({.logger = "forge.app.daemon", .event = event, .operation = operation,
+                              .level = level, .error = error, .canceled_event = "daemon.canceled",
+                              .diagnostic_code = code, .diagnostic_path = path, .diagnostic_reason = reason});
 }
 
-int fail_with_diagnostics(const std::vector<forge::schema::diagnostic>& diagnostics) {
-   log_daemon("daemon.config.failed", "config", detail::lifecycle_log_level::error);
-   print_diagnostics(diagnostics);
+int fail_with_diagnostic(const char* operation, const char* code, std::string_view path, const char* reason,
+                         std::exception_ptr error = {}) noexcept {
+   log_daemon_diagnostic("daemon.config.failed", operation, code, path, reason, forge::schema::severity::error, error);
+   return 1;
+}
+
+const char* known_validation_reason(std::string_view message) noexcept {
+   for (const auto* reason : {"daemon config value must be a string",
+                             "daemon config value must be an unsigned integer",
+                             "daemon config value must be a boolean",
+                             "boolean has invalid syntax", "integer has invalid syntax",
+                             "integer is outside target type range",
+                             "floating-point value has invalid syntax", "enum value is invalid",
+                             "expected boolean value", "expected signed integer value",
+                             "expected unsigned integer value", "expected floating point value",
+                             "config value has incompatible type",
+                             "value is above the allowed maximum",
+                             "value is below the allowed minimum",
+                             "logging shutdown timeout must not be negative"}) {
+      if (message == reason) {
+         return reason;
+      }
+   }
+   return nullptr;
+}
+
+const char* known_validation_reason(const std::exception& error) noexcept {
+   if (const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error)) {
+      return known_validation_reason(typed->message());
+   }
+   if (dynamic_cast<const std::invalid_argument*>(&error)) {
+      // Legacy configure callbacks sometimes forward only a schema reason.
+      // Return an exact known literal, never the exception's storage.
+      return known_validation_reason(std::string_view{error.what()});
+   }
+   return nullptr;
+}
+
+std::string diagnostic_schema_path(std::string_view input,
+                                    const forge::config::core::component_registry* registry) {
+   for (const auto& option : daemon_reserved_options()) {
+      if (input == option.path) {
+         return option.path;
+      }
+   }
+   if (registry) {
+      for (const auto& component : registry->components()) {
+         const auto prefix = component.section.empty() ? std::string{} : component.section + ".";
+         for (const auto& field : component.fields) {
+            const auto canonical = prefix + field.name;
+            if (input == canonical) {
+               return canonical;
+            }
+            for (const auto& alias : field.aliases) {
+               if (input == prefix + alias) {
+                  return canonical;
+               }
+            }
+         }
+      }
+   }
+   return {};
+}
+
+int fail_with_diagnostics(const std::vector<forge::schema::diagnostic>& diagnostics,
+                           const forge::config::core::component_registry* registry = nullptr) noexcept {
+   for (const auto& entry : diagnostics) {
+      try {
+         // Parser messages may contain input excerpts; even descriptor-provided
+         // migration text is not a reviewed logging vocabulary.
+         const auto* code = "daemon.diagnostic";
+         const auto* reason = "configuration input is invalid";
+         static constexpr std::pair<const char*, const char*> known_diagnostics[] = {
+            {"daemon.config_missing", "config file does not exist"},
+            {"daemon.dotenv_missing", ".env file does not exist"},
+            {"program_options.parse", "command line options could not be parsed"},
+            {"program_options.convert", "command line option has an invalid value"},
+            {"env.convert", "environment variable has an invalid value"},
+            {"env.unknown", "unknown environment variable with configured prefix"},
+            {"env.name_conflict", "environment variable names conflict"},
+            {"env.alias_conflict", "environment variable aliases conflict"},
+            {"env.duplicate", "duplicate environment variable; later value wins"},
+            {"env.deprecated", "configuration field is deprecated"},
+            {"env.prefix", "environment prefix must not be empty"},
+            {"env.parse", "dotenv input could not be parsed"},
+            {"env.load", "failed to open env file for reading"},
+            {"yaml.parse", "YAML input could not be parsed"},
+            {"yaml.document", "YAML config document root must be an object"},
+            {"yaml.depth", "YAML input exceeds configured maximum depth"},
+            {"yaml.type", "YAML value has an incompatible type"},
+            {"yaml.io", "YAML file could not be read or written"},
+            {"yaml.write", "YAML output could not be written"},
+            {"yaml.deadline", "YAML write deadline expired"},
+            {"yaml.max-bytes", "YAML output exceeds configured byte limit"},
+            {"config.removed", "configuration field was removed"},
+         };
+         for (const auto& [known_code, known_reason] : known_diagnostics) {
+            if (entry.code == known_code) {
+               code = known_code;
+               reason = known_reason;
+               break;
+            }
+         }
+
+         auto path = std::string{};
+         const auto safe_code = std::string_view{code};
+         if (safe_code == "daemon.config_missing" || safe_code.starts_with("yaml.")) {
+            path = "daemon.config";
+         } else if (safe_code == "daemon.dotenv_missing" || safe_code == "env.parse" || safe_code == "env.load") {
+            path = "daemon.dotenv";
+         } else if (safe_code == "program_options.convert" || safe_code == "env.convert" ||
+                    safe_code == "env.alias_conflict" || safe_code == "env.duplicate" ||
+                    safe_code == "env.deprecated" || safe_code == "config.removed") {
+            path = diagnostic_schema_path(entry.path, registry);
+         }
+         if (safe_code == "program_options.convert" || safe_code == "env.convert") {
+            if (const auto* fixed_reason = known_validation_reason(entry.message)) {
+               reason = fixed_reason;
+            }
+         }
+         log_daemon_diagnostic("daemon.config.failed", "config", code, path, reason, entry.level);
+      } catch (...) {
+         // Diagnostic allocation/routing failure cannot change the exit result.
+         forge::report_log_failure();
+      }
+   }
    return 1;
 }
 
@@ -320,60 +441,31 @@ bool has_errors(const std::vector<forge::schema::diagnostic>& diagnostics) {
    return false;
 }
 
-const char* known_validation_reason(const std::exception& error) noexcept {
-   auto message = std::string_view{};
-   if (const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error)) {
-      message = typed->message();
-   } else if (dynamic_cast<const std::invalid_argument*>(&error)) {
-      // Legacy configure callbacks sometimes forward only a schema reason as
-      // invalid_argument. Recognize exact fixed vocabulary, never echo what().
-      message = error.what();
-   } else {
-      return nullptr;
-   }
-   for (const auto* reason : {"daemon config value must be a string",
-                             "daemon config value must be an unsigned integer",
-                             "daemon config value must be a boolean",
-                             "boolean has invalid syntax", "integer has invalid syntax",
-                             "integer is outside target type range",
-                             "config value has incompatible type",
-                             "value is above the allowed maximum",
-                             "value is below the allowed minimum"}) {
-      if (message == reason) {
-         return reason;
-      }
-   }
-   return nullptr;
-}
-
-void append_bootstrap_diagnostic(std::vector<forge::schema::diagnostic>& diagnostics, const std::exception& error) {
-   auto path = std::string{"daemon"};
+int fail_with_bootstrap_diagnostic(const std::vector<forge::schema::diagnostic>& diagnostics,
+                                    const std::exception& error) noexcept {
+   fail_with_diagnostics(diagnostics);
    const auto* reason = known_validation_reason(error);
-   if (reason) {
-      if (const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error)) {
-         for (const auto& context : typed->context()) {
-            if (context.key != "path" || context.redacted) {
-               continue;
-            }
-            for (const auto& option : daemon_reserved_options()) {
-               if (context.value == option.path) {
-                  path = context.value;
+   auto path = std::string_view{"daemon"};
+   try {
+      if (reason) {
+         if (const auto* typed = dynamic_cast<const forge::exceptions::base*>(&error)) {
+            for (const auto& context : typed->context()) {
+               if (context.key != "path" || context.redacted) {
+                  continue;
+               }
+               for (const auto& option : daemon_reserved_options()) {
+                  if (context.value == option.path) {
+                     path = option.path;
+                  }
                }
             }
          }
       }
+   } catch (...) {
+      forge::report_log_failure();
    }
-   diagnostics.push_back(forge::schema::diagnostic{
-      .path = std::move(path),
-      .code = "daemon.bootstrap",
-      .level = forge::schema::severity::error,
-      .message = reason ? reason : "daemon bootstrap failed",
-   });
-}
-
-int fail_with_bootstrap_diagnostic(std::vector<forge::schema::diagnostic>& diagnostics, const std::exception& error) {
-   append_bootstrap_diagnostic(diagnostics, error);
-   return fail_with_diagnostics(diagnostics);
+   return fail_with_diagnostic("bootstrap", "daemon.bootstrap", path, reason ? reason : "daemon bootstrap failed",
+                               std::current_exception());
 }
 
 forge::config::core::document read_yaml_layer(const std::filesystem::path& path, bool required,
@@ -384,7 +476,7 @@ forge::config::core::document read_yaml_layer(const std::filesystem::path& path,
              .path = "daemon.config",
              .code = "daemon.config_missing",
              .level = forge::schema::severity::error,
-             .message = "config file does not exist: " + path.string(),
+             .message = "config file does not exist",
          });
       }
       return {};
@@ -407,7 +499,7 @@ forge::config::core::document read_dotenv_layer(const std::filesystem::path& pat
             .path = "daemon.dotenv",
             .code = "daemon.dotenv_missing",
             .level = forge::schema::severity::error,
-            .message = ".env file does not exist: " + path.string(),
+            .message = ".env file does not exist",
          });
       }
       return {};
@@ -541,9 +633,7 @@ std::string daemon_help(const daemon_options& options, const forge::config::core
 int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_options options) {
    log_daemon("daemon.config.begin", "config", detail::lifecycle_log_level::debug);
    if (!make_app) {
-      log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
-      std::cerr << "error: daemon factory is empty\n";
-      return 1;
+      return fail_with_diagnostic("factory", "daemon.factory", "", "daemon factory is empty");
    }
 
    auto diagnostics = std::vector<forge::schema::diagnostic>{};
@@ -567,9 +657,7 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
             options, forge::config::core::merge({daemon_defaults, daemon_cli.document}), working_dir);
          auto app = make_app(context);
          if (!app) {
-            log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
-            std::cerr << "error: daemon factory returned null application\n";
-            return 1;
+            return fail_with_diagnostic("factory", "daemon.factory", "", "daemon factory returned null application");
          }
          std::cout << daemon_help(options, app->describe_config());
          log_daemon("daemon.mode.complete", "help", detail::lifecycle_log_level::debug);
@@ -612,9 +700,7 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
       auto context = context_from_document(options, early_effective, working_dir);
       auto app = make_app(context);
       if (!app) {
-         log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
-         std::cerr << "error: daemon factory returned null application\n";
-         return 1;
+         return fail_with_diagnostic("factory", "daemon.factory", "", "daemon factory returned null application");
       }
 
       const auto app_registry = app->describe_config();
@@ -630,7 +716,7 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
          read_process_env_layer(registry, options, forge::config::env::unknown_variable_policy::warn, diagnostics);
       auto product_cli = read_product_cli_layer(daemon_cli.filtered_args, app_registry, options, diagnostics);
       if (has_errors(diagnostics)) {
-         return fail_with_diagnostics(diagnostics);
+         return fail_with_diagnostics(diagnostics, &registry);
       }
 
       auto effective = resolve_daemon_paths(
@@ -658,22 +744,20 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
 
       append_diagnostics(diagnostics, forge::config::core::validate_ingestion(effective, registry));
       if (has_errors(diagnostics)) {
-         return fail_with_diagnostics(diagnostics);
+         return fail_with_diagnostics(diagnostics, &registry);
       }
 
       log_daemon("daemon.config.accepted", "config", detail::lifecycle_log_level::debug);
 
       if (configure) {
          if (!options.allow_configure) {
-            log_daemon("daemon.config.failed", "generate_config", detail::lifecycle_log_level::error);
-            std::cerr << "error: --configure is disabled for this daemon\n";
-            return 1;
+            return fail_with_diagnostic("generate_config", "daemon.mode_disabled", "daemon.configure",
+                                        "--configure is disabled for this daemon");
          }
          const auto config_path = string_field(effective, "daemon.config", context.config_path.string());
          if (std::filesystem::exists(config_path)) {
-            log_daemon("daemon.config.failed", "generate_config", detail::lifecycle_log_level::error);
-            std::cerr << "error: refusing to overwrite existing config: " << config_path << '\n';
-            return 1;
+            return fail_with_diagnostic("generate_config", "daemon.config_exists", "daemon.config",
+                                        "refusing to overwrite existing config");
          }
          const auto parent = std::filesystem::path{config_path}.parent_path();
          if (!parent.empty()) {
@@ -687,21 +771,20 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
          auto saved = forge::codec::yaml::save_document(config_path, forge::config::core::redact(std::move(generated), registry));
          append_diagnostics(diagnostics, saved.diagnostics);
          if (!saved.ok()) {
-            return fail_with_diagnostics(diagnostics);
+            return fail_with_diagnostics(diagnostics, &registry);
          }
          log_daemon("daemon.mode.complete", "generate_config", detail::lifecycle_log_level::debug);
          return 0;
       }
       if (print_effective_config) {
          if (!options.allow_print_effective_config) {
-            log_daemon("daemon.config.failed", "print_config", detail::lifecycle_log_level::error);
-            std::cerr << "error: --print-effective-config is disabled for this daemon\n";
-            return 1;
+            return fail_with_diagnostic("print_config", "daemon.mode_disabled", "daemon.print-effective-config",
+                                        "--print-effective-config is disabled for this daemon");
          }
          auto written = forge::codec::yaml::write_document(forge::config::core::redact(effective, registry));
          append_diagnostics(diagnostics, written.diagnostics);
          if (!written.ok()) {
-            return fail_with_diagnostics(diagnostics);
+            return fail_with_diagnostics(diagnostics, &registry);
          }
          std::cout << written.text;
          log_daemon("daemon.mode.complete", "print_config", detail::lifecycle_log_level::debug);
@@ -709,19 +792,15 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
       }
       if (check_config) {
          if (!options.allow_check_config) {
-            log_daemon("daemon.config.failed", "check_config", detail::lifecycle_log_level::error);
-            std::cerr << "error: --check-config is disabled for this daemon\n";
-            return 1;
+            return fail_with_diagnostic("check_config", "daemon.mode_disabled", "daemon.check-config",
+                                        "--check-config is disabled for this daemon");
          }
          try {
             app->configure(effective);
          } catch (const std::exception& error) {
-            log_daemon("daemon.config.failed", "check_config", detail::lifecycle_log_level::error,
-                       std::current_exception());
             const auto* reason = known_validation_reason(error);
-            std::cerr << "error: config.validation at application.configure: "
-                      << (reason ? reason : "application configuration failed") << '\n';
-            return 1;
+            return fail_with_diagnostic("check_config", "config.validation", "application.configure",
+                                        reason ? reason : "application configuration failed", std::current_exception());
          }
          log_daemon("daemon.mode.complete", "check_config", detail::lifecycle_log_level::debug);
          return 0;
@@ -738,11 +817,9 @@ int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_optio
          return forge::app::run_application(std::move(app), effective, std::move(run_options));
       } catch (const std::exception&) {
          log_daemon("daemon.run.failed", "run", detail::lifecycle_log_level::error, std::current_exception());
-         std::cerr << "error: application run failed\n";
          return 1;
       }
    } catch (const std::exception& error) {
-      log_daemon("daemon.config.failed", "bootstrap", detail::lifecycle_log_level::error, std::current_exception());
       return fail_with_bootstrap_diagnostic(diagnostics, error);
    }
 }

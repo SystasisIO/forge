@@ -42,6 +42,16 @@ class AppLifecycleTests(unittest.TestCase):
                  "enum class plugin_state {};\nvoid config_value();")
       self.assertEqual(len(self.errors()), 2)
 
+   def test_cli_stdout_is_not_a_diagnostic_sink(self):
+      self.write("libraries/app/daemon.cpp", 'void help() { std::cout << "Usage"; }')
+      self.assertEqual(self.errors(), [])
+
+   def test_direct_diagnostic_stream_fails(self):
+      for stream in ("cerr", "clog"):
+         with self.subTest(stream=stream):
+            self.write("libraries/app/daemon.cpp", f'void fail() {{ std::{stream} << "failed"; }}')
+            self.assertTrue(any("App diagnostics must use Forge logger" in error for error in self.errors()))
+
 
 if __name__ == "__main__":
    unittest.main()
