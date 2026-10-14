@@ -1170,6 +1170,7 @@ int run_test_daemon(std::vector<std::string> args, daemon_test_state& state, for
    }
    options.run.handle_sigint = false;
    options.run.handle_sigterm = false;
+   options.shutdown_logging = false;
    if (!options.run.wait_for_stop) {
       options.run.wait_for_stop = [](forge::app::application_shell&) -> boost::asio::awaitable<void> {
          co_return;

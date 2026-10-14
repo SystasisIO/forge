@@ -20,8 +20,11 @@ module forge.app.daemon;
 import forge.app.application_shell;
 import forge.app.runner;
 import forge.app.exceptions;
+import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.asio.task;
+import forge.log.logger;
+import forge.log.logger_config;
 import forge.config.core.key_path;
 import forge.config.core.value;
 import forge.config.core.document;
@@ -535,9 +538,7 @@ std::string daemon_help(const daemon_options& options, const forge::config::core
    return output;
 }
 
-} // namespace
-
-int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options options) {
+int run_daemon_impl(daemon_factory make_app, int argc, char** argv, daemon_options options) {
    log_daemon("daemon.config.begin", "config", detail::lifecycle_log_level::debug);
    if (!make_app) {
       log_daemon("daemon.config.failed", "factory", detail::lifecycle_log_level::error);
@@ -553,6 +554,9 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
    }
 
    try {
+      if (options.logging_shutdown_timeout < std::chrono::milliseconds::zero()) {
+         FORGE_THROW_EXCEPTION(exceptions::config_failed, "logging shutdown timeout must not be negative");
+      }
       // Factories and hooks must not change the base used by later config layers.
       const auto working_dir = std::filesystem::current_path();
       const auto daemon_defaults = dynamic_daemon_defaults(options);
@@ -726,6 +730,11 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       auto run_options = options.run;
       apply_run_options_from_document(run_options, effective);
       try {
+         if (options.shutdown_logging) {
+            // The borrowed runner waits cleanup even after an app timeout.
+            // Keep app ownership here so all destructor logs precede drain.
+            return forge::app::run_application(*app, effective, std::move(run_options));
+         }
          return forge::app::run_application(std::move(app), effective, std::move(run_options));
       } catch (const std::exception&) {
          log_daemon("daemon.run.failed", "run", detail::lifecycle_log_level::error, std::current_exception());
@@ -736,6 +745,52 @@ int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options op
       log_daemon("daemon.config.failed", "bootstrap", detail::lifecycle_log_level::error, std::current_exception());
       return fail_with_bootstrap_diagnostic(diagnostics, error);
    }
+}
+
+bool shutdown_daemon_logging(std::chrono::milliseconds timeout) noexcept {
+   try {
+      // This runtime only awaits logging fences. Blocking sink callbacks stay
+      // on the configured logging owner's dedicated compute workers.
+      auto runtime = forge::asio::runtime{
+          {.worker_threads = 1, .thread_name = "forge-log-shutdown"}};
+      const auto drained = forge::asio::blocking::run(runtime, forge::async_shutdown_logging(timeout));
+      if (!drained) {
+         forge::report_log_failure();
+      }
+      return drained;
+   } catch (...) {
+      // stderr may itself be the blocked output; never print or log here and
+      // never resurrect a logger after configured delivery admission closes.
+      forge::report_log_failure();
+      return false;
+   }
+}
+
+} // namespace
+
+int run_daemon(daemon_factory make_app, int argc, char** argv, daemon_options options) {
+   const auto shutdown_logging = options.shutdown_logging;
+   // The body rejects negative configuration. Cleanup still makes a bounded,
+   // nonwaiting attempt if that validation (or an earlier path) fails.
+   const auto timeout = options.logging_shutdown_timeout < std::chrono::milliseconds::zero()
+                            ? std::chrono::milliseconds::zero() : options.logging_shutdown_timeout;
+   auto exit_code = 0;
+   auto failure = std::exception_ptr{};
+   try {
+      // The body destroys its application before returning to the drain boundary.
+      exit_code = run_daemon_impl(std::move(make_app), argc, argv, std::move(options));
+   } catch (...) {
+      failure = std::current_exception();
+   }
+
+   // Moved-from std::function handles may still retain logging captures.
+   make_app = {};
+   options.run.wait_for_stop = {};
+   const auto drained = !shutdown_logging || shutdown_daemon_logging(timeout);
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
+   return exit_code == 0 && !drained ? 1 : exit_code;
 }
 
 } // namespace forge::app

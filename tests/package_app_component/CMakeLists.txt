@@ -7,4 +7,4 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Forge CONFIG REQUIRED COMPONENTS app)
 add_executable(forge_package_app main.cpp)
-target_link_libraries(forge_package_app PRIVATE Forge::forge_app)
+target_link_libraries(forge_package_app PRIVATE Forge::forge_app Forge::forge_log)

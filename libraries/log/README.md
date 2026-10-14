@@ -226,6 +226,11 @@ Repeated/concurrent waits are supported. A timeout/cancel only ends that wait;
 retry after the output recovers. New configurations after shutdown are rejected;
 late records are dropped rather than synchronously replayed. Shutdown is owned
 by the process, not an individual `application_shell` sharing global log routes.
+The standard `forge::app::run_daemon()` performs this shutdown automatically
+after its final application and daemon records. Embedded hosts using shells or
+`run_application()` retain explicit ownership. A daemon embedded in such a host
+sets `daemon_options::shutdown_logging = false`; the host drains logging once
+after all producers stop. See [App ownership](../app/README.md#logging-shutdown-ownership).
 Explicitly synchronous sinks (`asynchronous=false`) and directly attached sinks
 are outside this asynchronous delivery lifecycle; their caller owns completion.
 

@@ -117,6 +117,7 @@ BOOST_AUTO_TEST_CASE(selection_disables_the_descriptor_without_plugin_side_effec
 
 BOOST_AUTO_TEST_CASE(complete_daemon_uses_the_same_factory_and_cli_descriptors) {
    auto options = service_example::daemon_options();
+   options.shutdown_logging = false;
    options.read_yaml = false;
    options.read_dotenv = false;
    options.read_process_env = false;

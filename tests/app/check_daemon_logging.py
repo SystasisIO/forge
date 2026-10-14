@@ -1,0 +1,235 @@
+"""Exercise process logging ownership without relying on static-destructor drain."""
+
+import json
+import os
+from pathlib import Path
+import selectors
+import subprocess
+import sys
+import tempfile
+import time
+
+
+PREFIX = b"@@DAEMON_LOG "
+CASE_TIMEOUT = 20
+
+
+def reports(output):
+    result = []
+    for line in output.splitlines():
+        if line.startswith(PREFIX):
+            payload = line[len(PREFIX):]
+            assert not payload.startswith(b"ERROR"), payload.decode(errors="replace")
+            result.append(json.loads(payload))
+    return result
+
+
+def phase(items, name):
+    matches = [item for item in items if item["phase"] == name]
+    assert len(matches) == 1, (name, items)
+    return matches[0]
+
+
+def drained(item):
+    assert item["closed"] == 1 and item["queued"] == 0 and item["bytes"] == 0, item
+    assert item["accepted"] > 0 and item["accepted"] == item["delivered"], item
+    assert item["failed"] == 0 and item["dropped"] == 0 and item["premature"] == 0, item
+
+
+def records(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def marker(entries, message):
+    matches = [record for record in entries if record["message"] == message]
+    assert len(matches) == 1, (message, [record["message"] for record in entries])
+    if message != "seed":
+        assert matches[0]["fields"]["closed"] == "false", matches[0]
+
+
+def owning_result(mode, items, path):
+    item = phase(items, "DAEMON_RETURN")
+    expected_code = {
+        "nonzero": 17,
+        "config-failure": 1,
+        "startup-failure": 1,
+        "shutdown-failure": 1,
+        "invalid-cli": 1,
+        "delayed": 1,
+        "nonstd": -1,
+    }.get(mode, 0)
+    assert item["code"] == expected_code and item["threw"] == (mode == "nonstd"), item
+    drained(item)
+    assert item["factory"] == 1 and item["waiter"] == (mode != "nonzero"), item
+    assert item["destroyed"] == (mode != "invalid-cli"), item
+    entries = records(path)
+    marker(entries, "seed")
+    marker(entries, "factory.destroy/main")
+    if mode != "nonzero":
+        marker(entries, "waiter.destroy/main")
+    if mode != "invalid-cli":
+        marker(entries, "app.destroy/main")
+    if mode in {"normal", "nonzero", "startup-failure", "shutdown-failure", "nonstd", "delayed"}:
+        assert item["started"] == 1 and item["cleaned"] == 1, item
+        marker(entries, "cleanup.final/main")
+    if mode in {"help", "check", "print", "generate", "invalid-cli"}:
+        assert item["started"] == 0, item
+    if mode in {"help", "print", "generate", "invalid-cli"}:
+        assert item["configured"] == 0, item
+    if mode == "check":
+        assert item["configured"] == 1, item
+    if mode == "generate":
+        assert (path.parent / "config.yml").is_file()
+
+
+class ControlReader:
+    """Bounded OS reads, including partial lines, without blocking readline()."""
+
+    def __init__(self, process):
+        self.process = process
+        self.output = bytearray()
+        self.pending = bytearray()
+        self.items = []
+
+    def until(self, name):
+        deadline = time.monotonic() + CASE_TIMEOUT
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            while True:
+                matches = [item for item in self.items if item["phase"] == name]
+                if matches:
+                    assert len(matches) == 1, (name, self.items)
+                    return matches[0]
+                remaining = deadline - time.monotonic()
+                assert remaining > 0 and selector.select(remaining), ("control deadline", name, self.items)
+                chunk = os.read(self.process.stdout.fileno(), 65536)
+                assert chunk, ("control channel ended", name, self.items)
+                self.output.extend(chunk)
+                self.pending.extend(chunk)
+                assert len(self.pending) <= 1024 * 1024, "unbounded control line"
+                while b"\n" in self.pending:
+                    line, _, rest = self.pending.partition(b"\n")
+                    self.pending = bytearray(rest)
+                    self.items.extend(reports(line))
+
+
+def stop(process, command):
+    if process.poll() is None:
+        try:
+            # Also drains stderr: a logging worker must be released before its
+            # process owner can join, even when a parent-side assertion failed.
+            process.communicate(command, timeout=8)
+        except (subprocess.TimeoutExpired, BrokenPipeError):
+            process.kill()
+            process.communicate(timeout=5)
+
+
+def ordinary(binary, mode, path):
+    completed = subprocess.run([binary, mode, str(path)], capture_output=True, timeout=CASE_TIMEOUT)
+    expected_status = 17 if mode == "nonzero" else 1 if mode in {
+        "config-failure", "startup-failure", "shutdown-failure", "invalid-cli"
+    } else 0
+    assert completed.returncode == expected_status, (mode, completed.returncode, completed.stdout, completed.stderr)
+    items = reports(completed.stdout)
+    if mode in {"runner-reference", "runner-owned", "concurrent"}:
+        opened = phase(items, "EMBEDDED_OPEN")
+        assert opened["closed"] == 0 and opened["premature"] == 0, opened
+        drained(phase(items, "FINAL"))
+        entries = records(path)
+        marker(entries, "app.destroy/main")
+        if mode == "concurrent":
+            marker(entries, "concurrent.still.running/second")
+            marker(entries, "app.destroy/second")
+            marker(entries, "app.destroy/direct")
+        else:
+            marker(entries, "embedded.after.runner/main")
+    else:
+        owning_result(mode, items, path)
+
+
+def delayed(binary, mode, path):
+    process = subprocess.Popen([binary, mode, str(path)], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        reader = ControlReader(process)
+        held = reader.until("CLEANUP_HELD")
+        assert held["closed"] == 0 and held["cleaned"] == 0 and held["destroyed"] == 0, held
+        assert process.poll() is None, "cleanup barrier did not hold the process"
+        if mode == "delayed":
+            assert not any(item["phase"] == "DAEMON_RETURN" for item in reader.items), reader.items
+        else:
+            returned = reader.until("EXTERNAL_RETURN")
+            assert returned["code"] == 1 and returned["closed"] == 0, returned
+            assert returned["cleaned"] == 0 and returned["destroyed"] == 0, returned
+        stdout, stderr = process.communicate(b"release\n", timeout=CASE_TIMEOUT)
+        items = reports(bytes(reader.output) + stdout)
+        assert process.returncode == (1 if mode == "delayed" else 0), (process.returncode, items, stderr)
+        if mode == "delayed":
+            owning_result(mode, items, path)
+        else:
+            drained(phase(items, "FINAL"))
+            entries = records(path)
+            for message in (
+                "factory.destroy/main", "waiter.destroy/main", "cleanup.final/main", "app.destroy/main",
+                "factory.destroy/second", "waiter.destroy/second", "app.destroy/second",
+                "external.after.second/second", "external.after.tail/main",
+            ):
+                marker(entries, message)
+    finally:
+        stop(process, b"release\n")
+
+
+def blocked(binary, mode, path):
+    process = subprocess.Popen([binary, mode, str(path)], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        reader = ControlReader(process)
+        returned = reader.until("DAEMON_RETURN")
+        nonstd = mode == "timeout-nonstd"
+        expected_code = -1 if nonstd else 17 if mode == "timeout-nonzero" else 1
+        assert returned["code"] == expected_code and returned["threw"] == nonstd, returned
+        assert returned["closed"] == 1 and returned["queued"] > 0 and returned["bytes"] > 0, returned
+        assert returned["accepted"] > returned["delivered"] + returned["failed"], returned
+        assert returned["elapsed_ms"] < 3000 and returned["premature"] == 0, returned
+        assert returned["log_failures"] > 0, "drain failure was not counted"
+        assert returned["factory"] == 1 and returned["waiter"] == (mode != "timeout-nonzero"), returned
+        # No stderr reads happen until run_daemon has returned. The helper uses
+        # normal/nonstd exits, never a synchronous CLI diagnostic on this pipe.
+        stdout, stderr = process.communicate(b"drain\n", timeout=CASE_TIMEOUT)
+        items = reports(bytes(reader.output) + stdout)
+        recovered = phase(items, "RECOVERED")
+        assert recovered["closed"] == 1 and recovered["queued"] == 0 and recovered["bytes"] == 0, recovered
+        assert recovered["failed"] == 0 and recovered["accepted"] == recovered["delivered"], recovered
+        assert len(stderr) > 65536, "fixture did not fill an actual OS pipe"
+        assert b"Forge logging failed" not in stderr, "finalizer used emergency stderr"
+        expected_status = 0 if nonstd else expected_code
+        assert process.returncode == expected_status, (process.returncode, items)
+    finally:
+        stop(process, b"drain\n")
+
+
+def main():
+    binary = sys.argv[1]
+    cases = (
+        "normal", "nonzero", "config-failure", "startup-failure", "shutdown-failure", "nonstd",
+        "help", "check", "print", "generate", "invalid-cli", "runner-reference", "runner-owned", "concurrent",
+        "delayed", "external-delayed", "timeout", "timeout-nonstd", "timeout-nonzero", "timeout-zero",
+    )
+    with tempfile.TemporaryDirectory(prefix="forge-daemon-logging-") as directory:
+        for mode in cases:
+            if os.name == "nt" and (mode in {"delayed", "external-delayed"} or mode.startswith("timeout")):
+                print(f"SKIP {mode}: interactive fixture uses POSIX pipe polling", flush=True)
+                continue
+            path = Path(directory) / mode / "events.jsonl"
+            path.parent.mkdir()
+            if mode in {"delayed", "external-delayed"}:
+                delayed(binary, mode, path)
+            elif mode.startswith("timeout"):
+                blocked(binary, mode, path)
+            else:
+                ordinary(binary, mode, path)
+            print(f"PASS {mode}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

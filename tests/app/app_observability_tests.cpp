@@ -461,6 +461,7 @@ BOOST_AUTO_TEST_CASE(app_observability_daemon_dry_modes_have_no_ready_or_service
       auto state = std::make_shared<observed_state>();
       auto options = forge::app::daemon_options{.name = "observability", .read_yaml = false,
                                                .read_dotenv = false, .read_process_env = false};
+      options.shutdown_logging = false;
       auto args = std::vector<std::string>{"observability", mode, "--profile=profile-secret-marker",
                                            "--data-dir=/path-secret-marker"};
       auto argv = std::vector<char*>{};
@@ -494,6 +495,7 @@ BOOST_AUTO_TEST_CASE(app_observability_cli_known_validation_reason_survives_with
       state->fail_configuration.store(!known_reason);
       auto options = forge::app::daemon_options{.name = "observability", .read_yaml = false,
                                                .read_dotenv = false, .read_process_env = false};
+      options.shutdown_logging = false;
       auto args = std::vector<std::string>{"observability", "--check-config", "--service.token=config-secret-marker"};
       auto argv = std::vector<char*>{};
       for (auto& argument : args) { argv.push_back(argument.data()); }

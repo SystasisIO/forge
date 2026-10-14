@@ -172,6 +172,7 @@ int run_environment_daemon(forge::app::daemon_factory factory, std::vector<std::
    };
    options.run.handle_sigint = false;
    options.run.handle_sigterm = false;
+   options.shutdown_logging = false;
    options.run.shutdown_timeout = std::chrono::seconds{2};
    options.run.wait_for_stop = [state = std::move(state)](forge::app::application_shell& shell)
                                  -> boost::asio::awaitable<void> {

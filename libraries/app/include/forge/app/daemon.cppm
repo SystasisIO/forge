@@ -1,5 +1,6 @@
 module;
 
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -40,6 +41,15 @@ struct daemon_options {
    bool allow_print_effective_config = true;
 
    run_options run = {};
+
+   // Own configured process logging by default. Embedded/external process
+   // owners may opt out and must arrange their own logging shutdown.
+   // When enabled, application cleanup and owned destructor logs finish before
+   // drain, even after the app shutdown budget expires: it is not forced stop.
+   bool shutdown_logging = true;
+   // Nonnegative; zero checks the fence without waiting, not unlimited wait.
+   // A timeout cannot terminate a blocked sink callback.
+   std::chrono::milliseconds logging_shutdown_timeout = std::chrono::seconds{5};
 };
 
 using daemon_factory = std::function<std::unique_ptr<application_shell>(const daemon_context&)>;
