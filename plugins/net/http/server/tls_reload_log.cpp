@@ -1,11 +1,16 @@
-#include "details/tls_reload_log.hxx"
+module;
 
 #include <boost/system/system_error.hpp>
 #include <forge/log/macros.hpp>
+#include <exception>
 #include <system_error>
+
+module forge.plugins.net.http.server.plugin;
 
 import forge.exceptions;
 import forge.log.logger;
+
+#include "details/tls_reload_log.hxx"
 
 namespace forge::plugins::net::http::server::detail {
 
