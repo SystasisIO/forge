@@ -1,5 +1,7 @@
 #pragma once
 
+// Textual private types shared by implementation units have ordinary C++ linkage.
+extern "C++" {
 namespace forge::net::http::detail {
 
 class server_session {
@@ -25,3 +27,4 @@ class server_session {
 };
 
 } // namespace forge::net::http::detail
+}

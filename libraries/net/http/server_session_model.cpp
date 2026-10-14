@@ -67,8 +67,8 @@ import forge.net.websocket.connection;
 
 #include "details/server_session_model.hxx"
 
-namespace forge::net::http {
-namespace detail {
+extern "C++" {
+namespace forge::net::http::detail {
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -923,5 +923,5 @@ void server_session::model<Stream>::close_http_socket() {
 template class server_session::model<beast::tcp_stream>;
 template class server_session::model<forge::net::tls::beast_tls_stream>;
 
-} // namespace detail
-} // namespace forge::net::http
+} // namespace forge::net::http::detail
+}

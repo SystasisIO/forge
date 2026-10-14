@@ -3,6 +3,7 @@
 #include "server_session.hxx"
 #include "beast_body_reader_source.hxx"
 
+extern "C++" {
 namespace forge::net::http::detail {
 
 template <typename Stream>
@@ -82,3 +83,4 @@ extern template class server_session::model<boost::beast::tcp_stream>;
 extern template class server_session::model<forge::net::tls::beast_tls_stream>;
 
 } // namespace forge::net::http::detail
+}

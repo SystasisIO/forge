@@ -67,6 +67,7 @@ import forge.net.websocket.connection;
 
 #include "details/server_session_model.hxx"
 
+extern "C++" {
 namespace forge::net::http::detail {
 namespace beast = boost::beast;
 
@@ -92,3 +93,4 @@ std::shared_ptr<server_session> server_session::create(
 
 
 } // namespace forge::net::http::detail
+}
