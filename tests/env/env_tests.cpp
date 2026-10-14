@@ -276,7 +276,11 @@ BOOST_AUTO_TEST_CASE(env_reports_alias_conflicts_deprecated_fields_and_conversio
 
    BOOST_TEST(!parsed.ok());
    BOOST_REQUIRE(find_diagnostic(parsed.diagnostics, "env.alias_conflict") != nullptr);
-   BOOST_REQUIRE(find_diagnostic(parsed.diagnostics, "env.convert") != nullptr);
+   const auto* convert = find_diagnostic(parsed.diagnostics, "env.convert");
+   BOOST_REQUIRE(convert != nullptr);
+   BOOST_TEST(convert->path == "http.tls-enabled");
+   BOOST_TEST(convert->message == "boolean has invalid syntax");
+   BOOST_TEST(convert->line == 3U);
    const auto* deprecated = find_diagnostic(parsed.diagnostics, "env.deprecated");
    BOOST_REQUIRE(deprecated != nullptr);
    BOOST_TEST(static_cast<int>(deprecated->level) == static_cast<int>(forge::schema::severity::warning));
@@ -303,7 +307,7 @@ BOOST_AUTO_TEST_CASE(env_rejects_negative_text_for_unsigned_fields_before_decode
    const auto* convert = find_diagnostic(rejected.diagnostics, "env.convert");
    BOOST_REQUIRE(convert != nullptr);
    BOOST_TEST(convert->path == "counter.count");
-   BOOST_TEST(convert->message.find("expected unsigned integer value") != std::string::npos);
+   BOOST_TEST(convert->message == "integer has invalid syntax");
 
    const auto accepted = forge::config::env::read_document(
        "FORGE_COUNTER_COUNT=42\n", registry, forge::config::env::read_options{.prefix = "FORGE"});
@@ -311,6 +315,24 @@ BOOST_AUTO_TEST_CASE(env_rejects_negative_text_for_unsigned_fields_before_decode
    const auto decoded = forge::config::core::decode<unsigned_counter_config>(accepted.value, "counter");
    BOOST_TEST(decoded.ok());
    BOOST_TEST(decoded.value.count == 42U);
+}
+
+BOOST_AUTO_TEST_CASE(env_preserves_integer_conversion_reason_and_source_position) {
+   const auto registry = make_registry();
+   const auto variables = std::vector<forge::config::env::environment_variable>{
+      {.name = "FORGE_HTTP_BIND_PORT", .value = "conversion-secret-marker",
+       .location = {.source = "source-secret-marker", .line = 7, .column = 11}},
+   };
+   const auto parsed = forge::config::env::read_variables(
+       variables, registry, forge::config::env::read_options{.prefix = "FORGE"});
+   BOOST_TEST(!parsed.ok());
+   BOOST_REQUIRE_EQUAL(parsed.diagnostics.size(), 1U);
+   const auto& diagnostic = parsed.diagnostics.front();
+   BOOST_TEST(diagnostic.code == "env.convert");
+   BOOST_TEST(diagnostic.path == "http.bind-port");
+   BOOST_TEST(diagnostic.message == "integer has invalid syntax");
+   BOOST_TEST(diagnostic.line == 7U);
+   BOOST_TEST(diagnostic.column == 11U);
 }
 
 BOOST_AUTO_TEST_CASE(env_writes_dotenv_and_examples_with_secret_redaction) {

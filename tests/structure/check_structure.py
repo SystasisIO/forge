@@ -2649,6 +2649,8 @@ def check_app_lifecycle_ownership(root: Path, errors: list[str]) -> None:
       errors.append("libraries/app: synchronous lifecycle signal module must not return")
    for path in source_files(root, ("libraries/app",)):
       source = path.read_text(errors="ignore")
+      if path.suffix == ".cpp" and re.search(r"\bstd\s*::\s*(?:cerr|clog)\b", source):
+         errors.append(f"{path.relative_to(root)}: App diagnostics must use Forge logger, not direct stderr streams")
       for legacy in ("signal_bus", "event_subscription", "event_filter", "config_view",
                      "config_value", "application_state", "plugin_state", "set_plugin_state",
                      "set_application_state"):

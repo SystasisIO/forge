@@ -531,9 +531,24 @@ application shutdown budget expires. It then reports the timeout as failure.
 Neither budget can forcibly terminate non-cooperative C++ callbacks. The logging
 budget bounds the drain wait, not process termination: a blocked callback can
 still delay the logging owner's final worker join.
-The budget starts after the daemon body returns or unwinds. Existing CLI
-stdout/stderr output (including error diagnostics) remains synchronous and can
-block before this boundary; it is not an asynchronous logging sink.
+The budget starts after the daemon body returns or unwinds. Explicit CLI results
+(`--help` and `--print-effective-config`) still use synchronous stdout and can
+block before this boundary. They are command results, not log records.
+
+Daemon operational and early configuration errors use the `forge.app.daemon`
+logger exclusively. Before application logging configuration exists, the logger
+uses its existing lazy default: a bounded asynchronous console sink on stderr.
+The daemon does not reconfigure shared routes or synchronously print a fallback.
+Configured routes, levels, queue limits and delivery metrics apply to these
+diagnostics just like other logs. A disabled/failed/saturated sink can lose a
+diagnostic but cannot change the original failure into success. Diagnostic fields
+contain safe codes, recognized schema paths and reviewed reasons, not raw argv,
+config values, filesystem paths or callback exception text. Early records are not
+replayed to an OTLP exporter initialized later.
+
+This removes synchronous daemon diagnostic writes, not arbitrary blocking from
+user-supplied synchronous sinks or final joins of non-cooperative sink workers.
+The logging timeout remains a delivery-wait budget, not a hard process deadline.
 
 `application_shell::shutdown()` and both `run_application(...)` overloads do
 **not** close process-wide logging. Several shells can share it safely. An

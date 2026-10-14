@@ -5,6 +5,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/scope/scope_exit.hpp>
+#include <forge/exceptions/macros.hpp>
 #include <forge/log/macros.hpp>
 
 #include <atomic>
@@ -17,17 +18,20 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 #if !defined(_WIN32)
 #include <cerrno>
+#include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
 #endif
 
 import forge.app.application_shell;
 import forge.app.daemon;
+import forge.app.exceptions;
 import forge.app.plugin;
 import forge.app.plugin_context;
 import forge.app.plugin_registry;
@@ -57,6 +61,7 @@ struct nonstandard_failure {
 struct test_state {
    std::string mode;
    std::string id = "main";
+   std::size_t pipe_bytes = 0;
    std::atomic_int configured{0};
    std::atomic_int started{0};
    std::atomic_int cleaned{0};
@@ -72,6 +77,17 @@ struct test_state {
    std::shared_future<void> foreground = foreground_signal.get_future().share();
    std::promise<void> destroyed_signal;
    std::shared_future<void> destruction = destroyed_signal.get_future().share();
+
+   std::string_view scenario() const {
+      auto value = std::string_view{mode};
+      if (value.starts_with("timeout-")) { value.remove_prefix(8); }
+      if (value.starts_with("default-")) { value.remove_prefix(8); }
+      return value;
+   }
+
+   bool default_output() const {
+      return mode.starts_with("default-") || mode.starts_with("timeout-default-");
+   }
 
    void unblock() {
       released.store(true);
@@ -107,12 +123,45 @@ void report(const char* phase, const std::shared_ptr<test_state>& state, int res
              << ",\"accepted\":" << metrics.accepted << ",\"delivered\":" << metrics.delivered
              << ",\"failed\":" << metrics.failed << ",\"dropped\":" << metrics.dropped
              << ",\"log_failures\":" << forge::log_failure_count()
+             << ",\"pipe_bytes\":" << state->pipe_bytes
              << ",\"configured\":" << state->configured.load() << ",\"started\":" << state->started.load()
              << ",\"cleaned\":" << state->cleaned.load() << ",\"destroyed\":" << state->destroyed.load()
              << ",\"factory\":" << state->factory_destroyed.load()
              << ",\"waiter\":" << state->waiter_destroyed.load()
              << ",\"premature\":" << state->premature_close.load()
              << ",\"elapsed_ms\":" << elapsed_ms << "}\n" << std::flush;
+}
+
+std::size_t fill_stderr_pipe() {
+#if defined(_WIN32)
+   throw std::runtime_error{"blocked logging fixture requires POSIX pipes"};
+#else
+   const auto flags = ::fcntl(STDERR_FILENO, F_GETFL);
+   require(flags >= 0 && ::fcntl(STDERR_FILENO, F_SETFL, flags | O_NONBLOCK) == 0,
+           "could not make fixture stderr nonblocking");
+   auto restore = boost::scope::scope_exit{[flags] { ::fcntl(STDERR_FILENO, F_SETFL, flags); }};
+   const auto padding = std::string(4096, 'x');
+   auto size = padding.size();
+   auto total = std::size_t{0};
+   while (total < 8 * 1024 * 1024) {
+      const auto written = ::write(STDERR_FILENO, padding.data(), size);
+      if (written > 0) {
+         total += static_cast<std::size_t>(written);
+         continue;
+      }
+      if (written < 0 && errno == EINTR) { continue; }
+      require(written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK), "fixture pipe fill failed");
+      if (size > 1) {
+         // A PIPE_BUF-sized write can fail while a few bytes still fit.
+         size = 1;
+         continue;
+      }
+      require(total > 0, "fixture pipe was not initially empty");
+      require(::fcntl(STDERR_FILENO, F_SETFL, flags) == 0, "could not restore blocking stderr");
+      return total;
+   }
+   throw std::runtime_error{"stderr did not reach its bounded pipe capacity"};
+#endif
 }
 
 std::string read_command(std::stop_token stop = {}) {
@@ -172,8 +221,11 @@ class test_plugin final : public forge::app::plugin {
    boost::asio::awaitable<void> on_startup() override {
       ++_state->started;
       event(_state, "startup");
-      if (_state->mode == "startup-failure") {
-         throw std::runtime_error{"synthetic startup failure"};
+      if (_state->scenario() == "startup-failure") {
+         throw std::runtime_error{"fixture-secret-startup-marker"};
+      }
+      if (_state->scenario() == "typed-startup-failure") {
+         FORGE_THROW_EXCEPTION(forge::app::exceptions::startup_failed, "fixture-secret-typed-startup-marker");
       }
       co_return;
    }
@@ -189,8 +241,8 @@ class test_plugin final : public forge::app::plugin {
       }
       event(_state, "cleanup.final");
       ++_state->cleaned;
-      if (_state->mode == "shutdown-failure") {
-         throw std::runtime_error{"synthetic shutdown failure"};
+      if (_state->scenario() == "shutdown-failure") {
+         throw std::runtime_error{"fixture-secret-shutdown-marker"};
       }
    }
 
@@ -212,8 +264,8 @@ class test_application final : public forge::app::application_shell {
    boost::asio::awaitable<void> on_configure(forge::app::configure_context&) override {
       ++_state->configured;
       event(_state, "configure");
-      if (_state->mode == "config-failure") {
-         throw std::runtime_error{"synthetic configuration failure"};
+      if (_state->scenario() == "config-failure") {
+         throw std::runtime_error{"fixture-secret-configuration-marker"};
       }
       co_return;
    }
@@ -224,7 +276,7 @@ class test_application final : public forge::app::application_shell {
    }
    int on_run_foreground() override {
       event(_state, "foreground");
-      return _state->mode == "nonzero" || _state->mode == "timeout-nonzero" ? 17 : 0;
+      return _state->scenario() == "nonzero" ? 17 : 0;
    }
 
  private:
@@ -232,9 +284,15 @@ class test_application final : public forge::app::application_shell {
 };
 
 forge::app::daemon_factory factory(const std::shared_ptr<test_state>& state) {
+   if (state->scenario() == "factory-empty") { return {}; }
    // One shared_ptr keeps this callable small enough to exercise std::function
    // implementations that retain small callable captures after moving.
-   return [marker = std::make_shared<capture_marker>(state, true)](const forge::app::daemon_context& context) {
+   return [marker = std::make_shared<capture_marker>(state, true)](
+              const forge::app::daemon_context& context) -> std::unique_ptr<test_application> {
+      if (marker->state->scenario() == "factory-null") { return {}; }
+      if (marker->state->scenario() == "factory-throw") {
+         throw std::runtime_error{"fixture-secret-factory-marker"};
+      }
       return std::make_unique<test_application>(context.shell, marker->state);
    };
 }
@@ -250,11 +308,11 @@ forge::app::daemon_options settings(const std::shared_ptr<test_state>& state, bo
    options.run.handle_sigint = false;
    options.run.handle_sigterm = false;
    options.run.shutdown_timeout = state->mode == "delayed" || state->mode == "external-delayed" ? 20ms : 2s;
-   if (state->mode != "nonzero" && state->mode != "timeout-nonzero") {
+   if (state->scenario() != "nonzero") {
       options.run.wait_for_stop = [marker = std::make_shared<capture_marker>(state, false)](
                                       forge::app::application_shell&) -> boost::asio::awaitable<void> {
          event(marker->state, "waiter.run");
-         if (marker->state->mode == "nonstd" || marker->state->mode == "timeout-nonstd") {
+         if (marker->state->scenario() == "nonstd") {
             throw nonstandard_failure{};
          }
          co_return;
@@ -269,7 +327,7 @@ int invoke(const std::shared_ptr<test_state>& state, const std::filesystem::path
    if (state->mode == "check") { args.push_back("--check-config"); }
    if (state->mode == "print") { args.push_back("--print-effective-config"); }
    if (state->mode == "generate") { args.push_back("--configure"); }
-   if (state->mode == "invalid-cli") { args.push_back("--runtime-threads=invalid"); }
+   if (state->scenario() == "invalid-cli") { args.push_back("--runtime-threads=fixture-secret-cli-marker"); }
    if (state->mode == "delayed" || state->mode == "external-delayed") {
       args.push_back("--shutdown-timeout-ms=20");
    }
@@ -304,14 +362,6 @@ void drain_logging() {
 
 int owning_case(const std::shared_ptr<test_state>& state, const std::filesystem::path& directory) {
    const auto blocked = state->mode.starts_with("timeout");
-   if (blocked) {
-      for (int item = 0; item < 20000; ++item) {
-         ilog("fixture", std::string(1024, 'x'));
-      }
-      auto runtime = forge::asio::runtime{};
-      require(!forge::asio::blocking::run(runtime, forge::async_flush_logging(20ms)), "OS output did not block");
-      require(forge::logging_delivery_metrics().queued_records > 0, "blocked output has no pending records");
-   }
    const auto start = std::chrono::steady_clock::now();
    int result = -1;
    bool threw = false;
@@ -324,16 +374,18 @@ int owning_case(const std::shared_ptr<test_state>& state, const std::filesystem:
    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
    report("DAEMON_RETURN", state, result, threw, elapsed);
    require(!state->premature_close.load(), "logging closed before a final producer");
-   require(state->factory_destroyed == 1, "factory capture outlived daemon drain");
-   require(state->waiter_destroyed == (state->mode == "nonzero" || state->mode == "timeout-nonzero" ? 0 : 1),
+   require(state->factory_destroyed == (state->scenario() == "factory-empty" ? 0 : 1),
+           "factory capture outlived daemon drain");
+   require(state->waiter_destroyed == (state->scenario() == "nonzero" ? 0 : 1),
            "waiter capture outlived daemon drain");
    const auto metrics = forge::logging_delivery_metrics();
    require(metrics.closed, "owning daemon did not close configured logging");
    if (blocked) {
       require(metrics.queued_records > 0 && metrics.accepted > metrics.delivered + metrics.failed,
               "logging timeout falsely reported completed work");
-      require(elapsed < 3000, "logging timeout did not bound normal-body return");
-      require(threw || result == (state->mode == "timeout-nonzero" ? 17 : 1), "logging timeout lost failure result");
+      require(elapsed < 3000, "logging timeout did not bound daemon return");
+      require(metrics.failed == 0 && metrics.dropped == 0, "blocked diagnostics were lost");
+      require(threw || result == (state->scenario() == "nonzero" ? 17 : 1), "logging timeout lost failure result");
       require(read_command() == "drain", "expected parent to release OS output");
       drain_logging();
       report("RECOVERED", state, result, threw);
@@ -476,7 +528,10 @@ int main(int argc, char** argv) {
       require(argc == 3, "expected mode and log path");
       const auto state = make_state(argv[1]);
       const auto path = std::filesystem::path{argv[2]};
-      configure_output(path, state->mode.starts_with("timeout"));
+      const auto blocked = state->mode.starts_with("timeout");
+      if (blocked) { state->pipe_bytes = fill_stderr_pipe(); }
+      // Fresh default cases reach run_daemon before any logger lookup or setup.
+      if (!state->default_output()) { configure_output(path, blocked); }
       if (state->mode == "delayed" || state->mode == "external-delayed") {
          return interactive_case(state, path.parent_path());
       }

@@ -49,6 +49,40 @@ void emit_lifecycle_log(const lifecycle_log& value) noexcept {
          }
       }
 
+      if (!value.diagnostic_code.empty()) {
+         switch (level) {
+         case lifecycle_log_level::debug:
+            dlog(value.logger, "${event}: ${operation}; ${code} at ${path}: ${reason}",
+                 ("event", event)("operation", value.operation)("phase", value.phase)
+                 ("generation", value.generation)("epoch", value.epoch)("id", value.id)
+                 ("error_code", code)("error_category", category)
+                 ("code", value.diagnostic_code)("path", value.diagnostic_path)("reason", value.diagnostic_reason));
+            break;
+         case lifecycle_log_level::info:
+            ilog(value.logger, "${event}: ${operation}; ${code} at ${path}: ${reason}",
+                 ("event", event)("operation", value.operation)("phase", value.phase)
+                 ("generation", value.generation)("epoch", value.epoch)("id", value.id)
+                 ("error_code", code)("error_category", category)
+                 ("code", value.diagnostic_code)("path", value.diagnostic_path)("reason", value.diagnostic_reason));
+            break;
+         case lifecycle_log_level::warning:
+            wlog(value.logger, "${event}: ${operation}; ${code} at ${path}: ${reason}",
+                 ("event", event)("operation", value.operation)("phase", value.phase)
+                 ("generation", value.generation)("epoch", value.epoch)("id", value.id)
+                 ("error_code", code)("error_category", category)
+                 ("code", value.diagnostic_code)("path", value.diagnostic_path)("reason", value.diagnostic_reason));
+            break;
+         case lifecycle_log_level::error:
+            elog(value.logger, "${event}: ${operation}; ${code} at ${path}: ${reason}",
+                 ("event", event)("operation", value.operation)("phase", value.phase)
+                 ("generation", value.generation)("epoch", value.epoch)("id", value.id)
+                 ("error_code", code)("error_category", category)
+                 ("code", value.diagnostic_code)("path", value.diagnostic_path)("reason", value.diagnostic_reason));
+            break;
+         }
+         return;
+      }
+
       if (value.error || level == lifecycle_log_level::error) {
          if (level == lifecycle_log_level::warning) {
             wlog(value.logger, "${event}: ${operation}",

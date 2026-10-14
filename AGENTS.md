@@ -596,6 +596,13 @@ implementation-library namespaces. For plugin family/role decisions, follow
   using multiple/nested daemon calls must opt out via `shutdown_logging=false`
   and drain once after every producer stops. Do not report drain failures through
   the closed logger or a potentially blocked stderr fallback.
+- App operational and early bootstrap diagnostics use Forge logging macros,
+  never direct stderr streams. The logger's existing lazy default configuration
+  supplies bounded asynchronous console delivery before app configuration;
+  daemon code must not replace process-global routes or create an emergency
+  output worker. Keep stdout for explicit CLI results such as help/config.
+  Diagnostic fields must be sanitized against schema-owned vocabulary; never
+  forward raw argv, parser messages, resource paths or exception dumps to sinks.
 - `run_application(...)` remains the lower-level lifecycle runner for tests,
   embedded hosts and custom shells that already own a merged
   `forge::config::core::document`.
