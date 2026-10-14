@@ -243,31 +243,31 @@ def check_tls_context_ownership(root: Path, errors: list[str]) -> None:
    if "forge_crypto_pki" not in (tls_root / "CMakeLists.txt").read_text(errors="ignore"):
       errors.append("libraries/net/tls/CMakeLists.txt: TLS peer extraction must link forge_crypto_pki")
 
-   http_server_source = (root / "libraries/net/http/server.cpp").read_text(errors="ignore")
-   for token in (
-      "template <typename Stream>",
-      "server_session_base",
-      "tls_context_provider->snapshot()",
-      "async_handshake(asio::ssl::stream_base::server",
-      "max_pending_tls_handshakes",
-      "reserve_tls_handshake",
-      "release_tls_handshake",
-      "cancel_pending_tls_handshakes",
-      "wait_until_tls_handshakes_complete",
-      "stream_.async_read_some",
-      "tls_snapshot_",
-      "disarm_stream_expiry",
-      "close_after_response",
-      "stream.async_shutdown(asio::as_tuple",
-      "cancel_tls_shutdown_at_deadline",
-      "run_tls_shutdown(stream) || cancel_tls_shutdown_at_deadline(stream, deadline)",
+   for filename, tokens in (
+      ("server_impl.cpp", (
+         "detail::server_session::create", "tls_context_provider->snapshot()",
+         "async_handshake(asio::ssl::stream_base::server", "max_pending_tls_handshakes",
+         "reserve_tls_handshake", "release_tls_handshake", "cancel_pending_tls_handshakes",
+         "wait_until_tls_handshakes_complete",
+      )),
+      ("server_session_model.cpp", (
+         "template <typename Stream>", "stream_.async_read_some", "tls_snapshot_",
+         "disarm_stream_expiry", "close_after_response", "stream.async_shutdown(asio::as_tuple",
+         "cancel_tls_shutdown_at_deadline",
+         "run_tls_shutdown(stream) || cancel_tls_shutdown_at_deadline(stream, deadline)",
+      )),
    ):
-      if token not in http_server_source:
-         errors.append(f"libraries/net/http/server.cpp: TLS server invariant is missing ({token})")
-   if "stream_.socket().async_read_some" in http_server_source:
-      errors.append("libraries/net/http/server.cpp: disconnect monitor must read the outer HTTP/TLS stream")
-   if "async_wait([&stream" in http_server_source:
-      errors.append("libraries/net/http/server.cpp: TLS shutdown deadline must not outlive the stream by reference")
+      path = root / "libraries/net/http" / filename
+      source = path.read_text(errors="ignore")
+      for token in tokens:
+         if token not in source:
+            errors.append(f"{path.relative_to(root)}: TLS server invariant is missing ({token})")
+   for path in (root / "libraries/net/http").glob("server*.cpp"):
+      source = path.read_text(errors="ignore")
+      if "stream_.socket().async_read_some" in source:
+         errors.append(f"{path.relative_to(root)}: disconnect monitor must read the outer HTTP/TLS stream")
+      if "async_wait([&stream" in source:
+         errors.append(f"{path.relative_to(root)}: TLS shutdown deadline must not outlive the stream by reference")
 
    http_server_module = (root / "libraries/net/http/include/forge/net/http/server.cppm").read_text(errors="ignore")
    for token in ("forge.net.tls.context", "tls_context_provider", "handshake_timeout", "max_pending_tls_handshakes"):

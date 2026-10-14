@@ -173,30 +173,42 @@ mechanism. This is not permission to accept new inputs after configuration.
 
 ## Daemon Integration Example
 
-Most service `main(...)` functions should be thin:
+Normal product applications use `application_builder` to create an
+`application_shell`, then let `run_daemon(...)` own source merging, foreground
+waiting, stop and failure cleanup. The complete, compiled example is in the
+[App README](../../libraries/app/README.md#complete-builder-example).
+Its thin entrypoint is [readme_example_main.cpp](../../tests/app/readme_example_main.cpp):
 
+<!-- app-readme-example: readme_example_main.cpp -->
 ```cpp
-#include <memory>
-
-import forge.app.daemon;
+#include "readme_example.hxx"
 
 int main(int argc, char** argv) {
-   return forge::app::run_daemon(
-      [](const forge::app::daemon_context& context) {
-         return std::make_unique<service_application>(context.shell);
-      },
-      argc,
-      argv,
-      forge::app::daemon_options{
-         .name = "service",
-         .display_name = "Service daemon",
-         .default_data_dir_name = "service",
-         .env_prefix = "SERVICE",
-      });
+   return forge::app::run_daemon(service_example::make_application, argc, argv, service_example::daemon_options());
 }
 ```
 
-The app still owns product composition. FORGE owns the generic daemon flow:
+[readme_example.hxx](../../tests/app/readme_example.hxx) declares the typed
+application/plugin settings, local-only status API and plugin. Ordinary
+declarations precede a single bottom reflection/schema/API metadata block;
+plugin lifecycle overrides are protected. The current local API form is
+`contract<..., surface::local>` with `FORGE_API` identity metadata.
+
+[readme_example.cpp](../../tests/app/readme_example.cpp) contains the real
+`status_plugin::descriptor()`, protected configure/provide hooks and builder
+factory. The plugin publishes an immutable configured batch limit, not duplicate
+lifecycle events. Builder `connect(...)` consumes that local API, caps the
+application's requested batch size and publishes typed `service_settings`
+before startup. There are no undefined resolver/client types, alternate
+application-options records or unowned callback captures.
+
+The factory forwards `context.environment`, `context.shell.runtime` and
+`context.shell.scheduler`, plus `context.shell.compute` when present.
+Application and plugin `environment()` getters preserve the same frozen base
+and profile; relative data paths never silently fall back to the working directory.
+The environment does not create directories or act as a filesystem sandbox.
+
+The app owns product composition. FORGE owns the daemon flow:
 
 ```text
 collect descriptors -> defaults/YAML/.env/process-env/CLI merge -> configure -> startup
@@ -209,95 +221,38 @@ Daemon source precedence is intentionally fixed:
 schema defaults < daemon defaults < YAML < .env < process env < daemon CLI < app/plugin CLI
 ```
 
-## Shell Integration Example
+Secret fields must be marked with schema `secret()` metadata.
+`--print-effective-config` and `--configure` use descriptor-based redaction;
+do not publish raw config, tokens or exception text in events or diagnostics.
+Lifecycle logging is observational and emits bounded operation/phase metadata,
+not raw argv, secrets or automatic environment/path dumps.
 
-```cpp
-#include <boost/asio/awaitable.hpp>
+## Embedded Hosts
 
-#include <utility>
+A host that already owns a merged `config::core::document` may call
+`run_application(...)` instead of duplicating daemon adapters. The runner owns
+the success/failure cleanup path; keep the shell and runtime alive until cleanup
+finishes. For externally owned stop notifications, set
+`run_options::wait_for_stop` and disable SIGINT/SIGTERM handling.
+Do not detach a signal-wait coroutine or stop the runtime before shutdown joins.
 
-import forge.app.application_shell;
-import forge.app.plugin_registry;
-import forge.config.core.component;
-import forge.config.core.document;
-import forge.plugins.net.http.server.plugin;
+Inside an existing coroutine use
+`co_await app.async_configure(document)`; `app.configure(document)` is the
+blocking wrapper for callers outside runtime workers. Configure is one-shot,
+not reconfiguration. `startup()` ensures initialization when needed.
+Manual coroutine hosts must still arrange stop/shutdown on failure; prefer the
+runner when it fits.
 
-class service_application final : public forge::app::application_shell {
- public:
-   explicit service_application(forge::app::application_shell_options options = {})
-       : forge::app::application_shell{std::move(options)} {}
+Derived shells are an advanced escape hatch for substantial application state
+or customization. Their `on_*` hooks remain protected; the public lifecycle is
+shell-owned. They take real `application_shell_options`, not a parallel options
+type. `application_builder` uses that same lifecycle, not a second one.
 
- protected:
-   void on_register_plugins(forge::app::plugin_registry& registry) override {
-      registry.register_plugin(forge::plugins::net::http::server::plugin::descriptor());
-   }
-
-   void on_describe_config(forge::config::core::component_registry& registry) const override {
-      registry.add(forge::config::core::describe_component<service_config>("service"));
-   }
-};
-
-boost::asio::awaitable<void> run_service(service_application& app, const forge::config::core::document& document) {
-   co_await app.async_configure(document);
-   co_await app.startup();
-   app.request_stop();
-   co_await app.shutdown();
-}
-```
-
-Custom embedders may still own YAML/JSON/env/CLI adapters themselves and pass an
-already-merged document to `run_application(...)`. Normal foreground daemons
-should not duplicate this plumbing; use `run_daemon(...)`.
-
-For smaller applications and tests, `application_builder` creates an
-`application_shell` without introducing another lifecycle model:
-
-```cpp
-#include <boost/asio/awaitable.hpp>
-
-#include <memory>
-#include <utility>
-
-import forge.app.application_builder;
-import forge.app.application_environment;
-import forge.app.application_shell;
-import forge.app.connect_context;
-import forge.asio.compute;
-import forge.plugins.net.http.server.plugin;
-
-auto builder = forge::app::application_builder{};
-builder.name("service")
-   .environment(forge::app::application_environment{"./service-data", "dev_local"})
-   .compute(forge::asio::compute::pool::options{.worker_threads = 4})
-   .config<service_config>("service", [&](const service_config& config) {
-      configure_service(config);
-   })
-   .connect([](forge::app::connect_context& context)
-               -> boost::asio::awaitable<void> {
-      auto resolver = context.api<resolver_api>();
-      context.publish(co_await make_client(*resolver));
-   })
-   .plugin(forge::plugins::net::http::server::plugin::descriptor());
-
-std::unique_ptr<forge::app::application_shell> app = std::move(builder).build();
-app->configure(document);
-boost::asio::awaitable<void> start_then_stop(forge::app::application_shell& app) {
-   co_await app.startup();
-   app.request_stop();
-   co_await app.shutdown();
-}
-```
-
-In a daemon factory, use `.environment(context.environment)`,
-`.runtime(context.shell.runtime)` and `.scheduler(context.shell.scheduler)`
-instead of recreating those host options. Forward `context.shell.compute`
-through `.compute(*context.shell.compute)` when it is present. The application
-and plugin `environment()` getters then resolve data paths against the same
-base and preserve the daemon profile.
-
-Executable lifecycle coverage lives in `test_forge_app`. Consumer snippets stay in
-this document and the library README so they cannot drift behind an unbuilt
-example tree.
+The example targets are `forge_app_readme_example` (complete daemon) and
+`test_forge_app_readme_example` (focused executable test of the same factory).
+Both link the App leaf, not the whole FORGE umbrella. The App-specific
+`test_forge_app_readme_correspondence` compares the marked README/source files
+and this entrypoint mechanically; it is not a generic documentation framework.
 
 ## Failure And Rollback
 
@@ -370,6 +325,14 @@ Rejected:
 - [application_environment_tests.cpp](../../tests/app/application_environment_tests.cpp):
   absolute/fail-closed path resolution and daemon-to-shell/builder-to-plugin
   environment forwarding after a factory changes the working directory.
+- [readme_example_tests.cpp](../../tests/app/readme_example_tests.cpp):
+  `test_forge_app_readme_example` checks typed app/plugin config, the bounded
+  local value API, environment forwarding, one-worker async configuration,
+  required-plugin selection, normal shutdown and cleanup before propagating a
+  foreground wait failure.
+- [check_readme_example.py](../../tests/app/check_readme_example.py):
+  `test_forge_app_readme_correspondence` checks exact documentation/source
+  agreement for the complete example.
 - [diagnostics_tests.cpp](../../tests/app/diagnostics_tests.cpp): read-only
   canonical projection, concurrent bounded journal snapshots and clear/rebind
   retirement of reentrant failure destructors outside the registry lock.

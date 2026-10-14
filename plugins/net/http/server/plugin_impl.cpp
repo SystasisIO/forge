@@ -36,6 +36,7 @@ import forge.plugins.net.http.server.routes;
 
 #include "details/plugin_impl.hxx"
 #include "details/tls_secret_material.hxx"
+#include "details/tls_reload_log.hxx"
 
 namespace forge::plugins::net::http::server {
 plugin::impl::impl(forge::app::plugin_lifecycle value) : lifecycle{std::move(value)} {}
@@ -208,27 +209,28 @@ boost::asio::awaitable<std::shared_ptr<forge::net::tls::context_provider>> plugi
 }
 
 boost::asio::awaitable<void> plugin::impl::reload_tls() {
-   auto settings_copy = config{};
-   auto secrets_copy = std::shared_ptr<forge::plugins::crypto::secrets::api>{};
-   auto provider = std::shared_ptr<forge::net::tls::context_provider>{};
-   const auto reload_state = lifecycle.snapshot();
-   const auto reload_generation = reload_state.generation;
-   if (reload_state.phase != forge::app::lifecycle_phase::started) {
-      FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload requires a running server");
-   }
-   if (!lifecycle.try_admit(reload_generation, forge::app::lifecycle_phase::started, [&] {
-      const auto lock = std::scoped_lock{mutex};
-      if (settings.tls_mode_value == tls_mode::disabled || !tls_context_provider || !secrets) {
-         FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload is unavailable when TLS is disabled");
-      }
-      settings_copy = settings;
-      secrets_copy = secrets;
-      provider = tls_context_provider;
-   })) {
-      FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload was stopped");
-   }
-
    try {
+      auto settings_copy = config{};
+      auto secrets_copy = std::shared_ptr<forge::plugins::crypto::secrets::api>{};
+      auto provider = std::shared_ptr<forge::net::tls::context_provider>{};
+      const auto reload_state = lifecycle.snapshot();
+      const auto reload_generation = reload_state.generation;
+      if (reload_state.phase != forge::app::lifecycle_phase::started) {
+         FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload requires a running server");
+      }
+      if (!lifecycle.try_admit(reload_generation, forge::app::lifecycle_phase::started, [&] {
+             const auto lock = std::scoped_lock{mutex};
+             if (settings.tls_mode_value == tls_mode::disabled || !tls_context_provider || !secrets) {
+                FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed,
+                                      "HTTP TLS reload is unavailable when TLS is disabled");
+             }
+             settings_copy = settings;
+             secrets_copy = secrets;
+             provider = tls_context_provider;
+          })) {
+         FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload was stopped");
+      }
+
       auto material = co_await load_tls_secret_material(settings_copy, secrets_copy);
       auto replacement = make_tls_context_options(settings_copy, material);
       auto erase_replacement = boost::scope::scope_exit{[&] { clear_tls_context_options(replacement); }};
@@ -236,18 +238,23 @@ boost::asio::awaitable<void> plugin::impl::reload_tls() {
       auto retired = forge::net::tls::context_snapshot_ptr{};
 
       if (!lifecycle.try_admit(reload_generation, forge::app::lifecycle_phase::started, [&] {
-         const auto lock = std::scoped_lock{mutex};
-         if (tls_context_provider != provider) {
-            FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS provider was retired");
-         }
-         retired = provider->exchange(std::move(prepared));
-      })) {
+             const auto lock = std::scoped_lock{mutex};
+             if (tls_context_provider != provider) {
+                FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS provider was retired");
+             }
+             retired = provider->exchange(std::move(prepared));
+          })) {
          FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed, "HTTP TLS reload was stopped");
       }
       // Prepared and retired context owners are destroyed only after both locks.
+      detail::emit_tls_reload_log({.result = detail::tls_reload_log::outcome::applied, .error = {}});
    } catch (const exceptions::tls_reload_failed&) {
+      detail::emit_tls_reload_log(
+          {.result = detail::tls_reload_log::outcome::rejected, .error = std::current_exception()});
       throw;
    } catch (...) {
+      detail::emit_tls_reload_log(
+          {.result = detail::tls_reload_log::outcome::failed, .error = std::current_exception()});
       FORGE_THROW_EXCEPTION(exceptions::tls_reload_failed,
                             "HTTP TLS reload failed; the active TLS context was preserved");
    }
