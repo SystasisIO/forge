@@ -47,6 +47,33 @@ logger rather than copying donor synchronous stderr/exception dumping.
 
 ## Evidence
 
-Pending focused validation and independent review. Native logs are kept in the
-ignored `.cache/acceptance/app-daemon-diagnostics-20261014/` directory. Historical
-acceptance receipts describe their original revisions, not this change.
+Validation date: 2026-10-14. Base: `b40c8ca1`; reviewed implementation:
+`e387ee65855a7d0ac6bfcb1d4a586d06ed69e35e`. Native macOS arm64, LLVM 22.1.8,
+CMake 3.31.6/Ninja, Debug with `-O0 -g0` and assertions enabled. OpenSSL 3.6.4
+and the Boost prefix are pinned in the build cache; the first configure selected
+the incompatible Homebrew OpenSSL 4 headers. No crypto source or machine-global
+configuration was changed. All builds use `-j4`; no full CI was run.
+
+| Gate | Result |
+| --- | --- |
+| App, Log, Asio, OTLP/plugin, CLI/env, README and structure | 15/15 PASS |
+| Daemon subprocess fixture | 38/38 PASS, including lazy default logging and a real blocked stderr pipe |
+| Repeated App, Log and daemon fixture | 20 repetitions per suite PASS; 760 daemon subprocess scenarios |
+| Installed `app`, `config_env`, `config_program_options` consumers | 3/3 PASS |
+| Independent read-only reviews | Hypatia and Euler: CLEAN on implementation SHA above |
+| Source boundary | Only help/effective-config use stdout; no direct stderr diagnostics in App |
+| Compatibility boundary | Logging macros, public daemon API, shell and runner unchanged |
+
+Review found that CLI/env adapters stored formatted `what()` text in conversion
+diagnostics, preventing exact safe-reason classification. A regression first
+reproduced the lost reason. Adapters now retain typed exception `message()` and
+use fixed untyped fallbacks; no exception-string parsing is introduced. Tests
+assert exact bool/integer reasons, canonical paths, retained env source
+positions, typed cancellation and omission of untrusted values.
+
+Native logs are kept in the ignored
+`.cache/acceptance/app-daemon-diagnostics-20261014/` directory. Historical
+acceptance receipts remain unchanged. Full CI, Linux/Windows, sanitizers and
+external OTLP collector acceptance are not claimed by this task. Blocked-pipe
+tests release the reader after daemon return and then prove worker cleanup;
+they do not claim bounded process exit with a permanently blocked sink.
