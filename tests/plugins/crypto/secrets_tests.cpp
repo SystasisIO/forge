@@ -12,9 +12,12 @@
 #include <vector>
 
 import forge.api.core.registry;
+import forge.app.events;
 import forge.app.plugin;
+import forge.app.plugin_context;
 import forge.asio.blocking;
 import forge.asio.runtime;
+import forge.asio.task;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.config.core.document;
@@ -131,6 +134,11 @@ configured_api(forge::asio::runtime& runtime, crypto_secrets::plugin& plugin,
    auto registry = forge::api::core::registry{};
    auto installer = forge::api::core::installer{registry};
    forge::asio::blocking::run(runtime, plugin.provide(installer));
+   auto scheduler = forge::asio::task::scheduler{runtime};
+   auto events = forge::app::event_journal{};
+   auto context = forge::app::plugin_context{scheduler, registry, events};
+   forge::asio::blocking::run(runtime, plugin.initialize(context));
+   forge::asio::blocking::run(runtime, plugin.startup());
    return registry.get<crypto_secrets::api>(crypto_secrets::api::ref());
 }
 
@@ -157,6 +165,20 @@ configured_api(forge::asio::runtime& runtime, crypto_secrets::plugin& plugin,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(crypto_secrets_tests)
+
+BOOST_AUTO_TEST_CASE(crypto_secrets_configure_and_provide_do_not_open_material_admission) {
+   auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+   auto plugin = crypto_secrets::plugin{};
+   auto document = forge::config::core::document{};
+   forge::asio::blocking::run(runtime,
+                              plugin.configure(forge::config::core::component_view{document, crypto_secrets_section}));
+   auto registry = forge::api::core::registry{};
+   auto installer = forge::api::core::installer{registry};
+   forge::asio::blocking::run(runtime, plugin.provide(installer));
+   auto api = registry.get<crypto_secrets::api>(crypto_secrets::api::ref());
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, api->get_bytes({"uninitialized", "fixture.read"})),
+                     crypto_secrets::exceptions::stopped);
+}
 
 BOOST_AUTO_TEST_CASE(crypto_secrets_config_direct_defaults_match_schema_constants) try {
    const auto value = crypto_secrets::config{};

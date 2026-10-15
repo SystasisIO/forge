@@ -2228,6 +2228,26 @@ target_link_libraries(test_forge_crypto_secrets forge Boost::included_unit_test_
 target_include_directories(test_forge_crypto_secrets PRIVATE ${PROJECT_SOURCE_DIR}/plugins/crypto/secrets)
 add_test(NAME test_forge_crypto_secrets COMMAND test_forge_crypto_secrets WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_executable(test_forge_crypto_secrets_versions
+   unit/main.cpp
+   plugins/crypto/secrets_versions_tests.cpp
+   plugins/crypto/secrets_faults.cpp
+)
+target_link_libraries(test_forge_crypto_secrets_versions PRIVATE
+   ${CMAKE_DL_LIBS}
+   OpenSSL::Crypto
+   forge_plugins_crypto_secrets
+   forge_crypto_keystore
+   forge_crypto_symmetric
+   forge_config_env
+   forge_config_program_options
+   forge_codec_base64
+   forge_codec_json
+   Boost::included_unit_test_framework
+)
+add_test(NAME test_forge_crypto_secrets_versions
+   COMMAND test_forge_crypto_secrets_versions WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
 if(FORGE_HAS_ROCKSDB)
    add_executable(
       test_forge_rocksdb

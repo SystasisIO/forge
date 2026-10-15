@@ -4,6 +4,15 @@ add_library(
       api_impl.cpp
       config.cpp
       plugin_impl.cpp
+      plugin_impl_versions.cpp
+      version_store.cpp
+      version_store_operations.cpp
+      version_store_rules.cpp
+      version_payload.cpp
+      secret_operations.cpp
+      version_api_impl.cpp
+      version_write_api_impl.cpp
+      version_metadata_api_impl.cpp
       details/loaded_secret.hxx
 )
 forge_target_modules_at(forge_plugins_crypto_secrets plugins/crypto/secrets)
@@ -30,4 +39,7 @@ target_link_libraries(
       forge_codec_hex
       forge_crypto_keystore
       forge_crypto_symmetric
+      forge_crypto_digest
+      forge_raw
+      forge_asio
 )

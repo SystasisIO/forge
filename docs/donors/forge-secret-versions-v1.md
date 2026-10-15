@@ -2,7 +2,7 @@
 
 Date: 2026-10-15. Inspected Forge base:
 `8975f234dabf2cbfb91d766bf32194f3d8832a5b`.
-Status: source evidence for the [proposed design](../iterations/forge-secret-versions-v1.md),
+Status: source evidence for the [approved design](../iterations/forge-secret-versions-v1.md),
 not runtime acceptance.
 
 | Inspected owner | Accepted pattern | Target / required proof |
@@ -14,11 +14,12 @@ not runtime acceptance.
 | [encrypted container](../../libraries/crypto/keystore/encrypted_file.cpp), [container types](../../libraries/crypto/keystore/include/forge/crypto/keystore/types.cppm) | Existing FORGEKS1 authenticated header, scrypt ceilings, AES-GCM, secure plaintext buffers | Reuse encrypt_file/decrypt_file without crypto/wire changes; truncation/corruption/wrong-bootstrap tests |
 | [ownership](../../libraries/crypto/keystore/ownership_impl.cpp), [public ownership](../../libraries/crypto/keystore/include/forge/crypto/keystore/ownership.cppm) | Persistent sibling lock, process/inode checks, exclusive claim, private regular files | No second lock; process/fork/replaced-lock/mode tests |
 | [keystore store persistence](../../libraries/crypto/keystore/store_impl.cpp) | Bounded owner-only read, private directory chain, temp+file fsync+atomic publication+directory fsync, distinct post-publication durability_unknown | Extract shared persistence within keystore leaf; preserve old signing payload/API and existing tests; injected I/O failures |
-| [wallet plugin lifecycle](../../plugins/crypto/wallet/plugin.cpp), [admitted wallet work](../../plugins/crypto/wallet/details/provider_impl.hxx) | Application compute injection, bounded gate, isolated admitted compute wait, fault fence and retained ownership | Managed init/crypto/mutation use context.compute; stop/cancel/rename and shutdown-drain tests |
+| [wallet plugin lifecycle](../../plugins/crypto/wallet/plugin.cpp), [admitted wallet work](../../plugins/crypto/wallet/details/provider_impl.hxx) | Application compute injection, bounded gate, fault fence and retained ownership | Managed init/crypto/mutation use context.compute; stop/cancel/rename and shutdown-drain tests |
+| [App shutdown owner](../../libraries/app/plugin.cpp) | Separate cancellation-disconnected child coroutine preserves the native caller's filters/history and restores its throw policy | Common managed owned-call boundary; partial/total/history/throw-policy and post-rename cancellation probes |
 | [secure bytes](../../libraries/crypto/core/include/forge/crypto/core/secret_bytes.cppm), [secure strings](../../libraries/crypto/core/include/forge/crypto/core/secret_string.cppm) | Move-only material, diagnostic-secret hooks and explicit wiping | No plaintext on disk or in metadata/error/log output; bounded/wiped transient encoding |
 | [bootstrap password reader](../../libraries/crypto/keystore/password.cpp) | Owner-only regular file, no-follow, bounded single line, preserved non-newline whitespace, wiped errors | Separate external passphrase file; no plugin-local reader or managed-key recursion |
 | [HMAC](../../libraries/crypto/digest/include/forge/crypto/digest/hmac.cppm) | Existing keyed SHA-256 digest mechanism | Per-store encrypted receipt key and versioned canonical comparison; no raw or unkeyed material hash in metadata |
-| [Raw limits](../../libraries/raw/include/forge/raw/codec.cppm), [stream allocation budget](../../libraries/raw/include/forge/raw/stream.cppm) | Exact decode with per-container, cumulative element and per-byte-allocation limits | Explicit storage-specific budget; hostile counts/lengths fail before large allocation; no new codec |
+| [Raw limits](../../libraries/raw/include/forge/raw/codec.cppm), [stream allocation budget](../../libraries/raw/include/forge/raw/stream.cppm) | Exact decode with per-container/cumulative/per-byte limits; zero-buffer size counter and fixed-pointer packing | Storage-specific budgets; bounded exact wiped output; canonical managed-payload roundtrip rejects legacy enum narrowing without changing public Raw codecs |
 | [current tests](../../tests/plugins/crypto/secrets_tests.cpp), [installed consumer](../../tests/package_plugins_crypto_secrets/main.cpp) | Configured-source, purpose/operation, byte/KDF and local-API compatibility baseline | Retain baseline; add managed restart/replay/revoke/fault tests and installed imports |
 
 Rejected patterns:
@@ -29,6 +30,8 @@ Rejected patterns:
   exist in the keystore leaf and need one implementation.
 - Copying legacy `apply_config`'s final `try_admit` after a durable mutation:
   stop could otherwise leave disk changed and memory old.
+- Copying wallet's cancellation-state reset into a native local caller: it can
+  replace the caller's cancellation filters/history. Use the App child boundary.
 - Promoting a leftover temporary or falling back to an old backup when the
   stable file is corrupt: either can revive revoked authority.
 - Plaintext/idempotency journals, externally visible material hashes, automatic

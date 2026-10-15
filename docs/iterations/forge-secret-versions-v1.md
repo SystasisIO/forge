@@ -1,10 +1,10 @@
 # Immutable Secret Versions v1
 
-Date: 2026-10-15. Status: **design gate approved; implementation pending**.
+Date: 2026-10-15. Status: **design gate approved; stage 1 locally verified, integration pending**.
 
 This document specifies an additive, local-only versioned secret capability for
-`forge_plugins_crypto_secrets`. The names below are proposed interfaces, not
-APIs available in the current tree. The inspected base is
+`forge_plugins_crypto_secrets`. The interfaces below are implemented in the
+feature worktree. The inspected base is
 `8975f234dabf2cbfb91d766bf32194f3d8832a5b` (`origin/dev` at worktree creation).
 The [donor note](../donors/forge-secret-versions-v1.md) records current owners.
 
@@ -46,7 +46,7 @@ registry is a trusted host composition boundary, not a sandbox: a host able to
 acquire arbitrary handles is already trusted. A product must selectively expose
 its own administrative operations; these contracts cannot be published remotely.
 
-Proposed value records (the final reflection block follows declarations):
+Value records (the reflection block follows declarations):
 
 ```cpp
 struct version_ref {
@@ -218,7 +218,8 @@ second configuration precedence rule is introduced.
 The proposed config record contains `enabled`, `mode`, `path`,
 `bootstrap_passphrase_file`, `ceiling` (a `version_policy`), and the finite limit
 fields below. Paths are owned strings decoded by Config; the bootstrap file
-field and the versions subsection are Schema-secret in diagnostic descriptors.
+and store-path fields are Schema-secret in diagnostic descriptors. Policy and
+finite capacity settings remain visible as configuration metadata.
 The subsection is disabled by default. Enabling it requires an absolute store
 path, explicit `open_existing` (default) or `create_new` mode, a bootstrap
 passphrase-file path outside the
@@ -282,7 +283,12 @@ limits before allocation, not only after decoding. Reuse
 Per-byte allocation is capped at the largest allowed material/id/receipt field,
 aggregate elements at the computed schema maximum, and input at the payload
 limit. The schema has fixed nesting, and parsing rejects inconsistent per-field
-counts before publication. No Raw wire or public API extension is planned.
+counts before publication. A bounded canonical re-encoding must exactly match
+the decrypted input before live-resource conversion; this rejects narrowed enum
+integers and noncanonical encodings without changing the legacy Raw codec.
+Encoding first uses the existing zero-buffer `datastream<std::size_t>` counter,
+then an exact-size wiped buffer and fixed-pointer stream, with equal final
+lengths required. No Raw wire or public API extension is introduced.
 
 ## Storage And Durable Acknowledgement
 
@@ -310,7 +316,7 @@ accepted by the managed APIs.
 
 Extract the existing private-directory preparation, bounded owner-only read,
 and atomic write from `crypto/keystore/store_impl.cpp` into the same leaf's new
-`forge.crypto.keystore.persistence` module. Proposed synchronous functions are
+`forge.crypto.keystore.persistence` module. Its synchronous functions are
 `prepare_private_directory(path)`, `read_container(owner, max_bytes)` and
 `write_container(owner, bytes_span, replace)`. They use the existing ownership
 object, not another lock protocol. Both signing store and managed version store
@@ -399,7 +405,10 @@ versioned crypto execute through application-owned `context.compute()`.
 Enabling the managed store without a bounded compute executor is a typed
 configuration failure. Do not create a plugin-local pool, `std::async`, polling
 thread or additional runtime. The wallet provider's admitted-work gate and
-cancellation-isolated compute wait are the donor.
+compute admission are the donor. The shared App shutdown wrapper supplies the
+separate `co_spawn` child with a disconnected cancellation slot: managed waits
+retain caller cancellation masks/history and restore its throw policy. Do not
+copy a cancellation-state reset into the caller's native coroutine.
 
 Common Forge lifecycle owns admission. A managed mutation reserves an owner
 before I/O; once accepted, it completes commit or failure reconciliation even
@@ -424,7 +433,8 @@ side effect.
 New typed failures are additive enum values without renumbering old values:
 invalid version/request, revision conflict, idempotency conflict, revoked,
 store unavailable, busy/capacity, ownership lost and durability unknown.
-Error context uses fixed operation/category names only; no material, passphrase,
+Error context uses fixed operation/category names and persisted public secret ids;
+denied caller purposes are removed at the managed boundary. It includes no material, passphrase,
 raw input, HMAC, mutation token, encoded request, resource path or nested crypto
 exception message. Existing purpose/operation denial categories remain effective.
 
@@ -475,11 +485,11 @@ plus the repository structure/package gates selected by the coordinator. Exact
 target availability and baseline results must be recorded from the current
 configuration; no test/build success is claimed by this document.
 
-## Planned File Ownership
+## File Ownership
 
 Design-only changes: this file and the linked donor note.
 
-Runtime changes after the gate:
+Stage 1 runtime changes:
 
 - Existing secrets `plugin.cpp`, `plugin_impl.cpp`, `api_impl.cpp`, `config.cpp`,
   paired private headers, `plugin.cppm`, `exceptions.cppm`, `CMakeLists.txt` and
@@ -487,9 +497,13 @@ Runtime changes after the gate:
   `api.cppm` and old `types.cppm` require no serialized-layout change.
 - New public slices under secrets' existing public include directory:
   `version_types.cppm`, `version_api.cppm`, `version_write_api.cppm`,
-  `version_metadata_api.cppm`; declarations/value records only.
+  `version_metadata_api.cppm`; declarations/value records and public Schema
+  metadata. Schema rule bodies follow the existing `types.cppm` specialization
+  pattern; runtime implementation remains in `.cpp` files.
 - New paired private components in secrets: `details/version_store.hxx` +
-  `version_store.cpp`; `details/version_state.hxx` for its immutable state
+  `version_store.cpp`, `version_store_operations.cpp`, `version_store_rules.cpp`
+  and the private owned-call template aspect `details/version_store_owned.hxx`;
+  `details/version_catalog.hxx` for its immutable state
   records; `details/version_payload.hxx` + `version_payload.cpp` for bounded
   canonical serialization; `details/secret_operations.hxx` +
   `secret_operations.cpp` for shared existing crypto semantics; each concrete
@@ -500,21 +514,46 @@ Runtime changes after the gate:
   `plugin::version_write_api_impl` and `plugin::version_metadata_api_impl`.
 - Keystore `include/forge/crypto/keystore/persistence.cppm` +
   `persistence.cpp`, existing `store_impl.cpp`, CMake and README: shared
-  persistence extraction, with existing crypto format untouched.
+  persistence extraction, with existing crypto format untouched. The existing
+  descriptor RAII helper is shared as `details/unique_descriptor.hxx` +
+  `unique_descriptor.cpp`.
 - `tests/plugins/crypto/secrets_versions_tests.cpp`, existing
   `tests/plugins/crypto/secrets_tests.cpp`, keystore tests, installed consumer
   and `tests/CMakeLists.txt`: behavior, fault and compatibility gates.
 
 ## Gate And Evidence
 
-Stage 0 has inspected source contracts, rules and donors. Baseline configure,
-build and tests are **NOT_RUN by this implementer**; they are coordinated
-separately to avoid competing builds. No runtime files, vendor checkout, main
-checkout, commit, push or CI are changed by this design step.
-
 The coordinator approved contract/config/persistence boundaries, finite limits,
 the documented legacy scheduling boundary, and native move-only create material
-after independent design review. Runtime/test edits remain frozen while the
-coordinated unchanged-source baseline build is in progress. Test-first runtime
-implementation starts only after that freeze is released and the shared build
-budget is assigned.
+after independent design review. The separately recorded unchanged-source
+baseline released the source freeze before test-first runtime implementation.
+Legacy test fixtures now perform initialize/startup; runtime admission was not
+weakened to accommodate their earlier configure-only behavior.
+
+Stage 1 is implemented in the isolated feature worktree. Candidate 10 passed
+the coordinated native build and all five focused test targets:
+
+| Test group | Cases | Passed assertions |
+| --- | ---: | ---: |
+| Configured secrets | 23 | 74 |
+| Signing keystore | 15 | 62 |
+| Managed versions | 34 | 788 |
+| Wallet regression | 22 | 195 |
+| Wallet fault regression | 1 | 7 |
+| Total | 95 | 1126 |
+
+There were zero failed, skipped or aborted cases. Source/scope/diff hashes
+matched before and after the coordinated run. Coverage includes authenticated
+noncanonical enum rejection, inherited managed-handle PID rejection, reserved
+revoke capacity, cancellation/stop after rename, and caller cancellation-state
+preservation.
+
+The standalone `BUILD_TREE` package consumer also passed configure, build and
+execution (all exit codes zero). Through the enabled application lifecycle and
+exported modules it performed create, explicit-version read, safe metadata,
+revoke and reopen, retaining the durable revocation after restart.
+
+Installed SDK consumption and full downstream application acceptance remain
+separate gates after publishing and pinning the new immutable Forge revision;
+neither is claimed by this local evidence. This implementation does not modify
+vendor/main checkouts, publish commits, or run CI.
