@@ -128,8 +128,14 @@ def macos_toolchain():
 
 def backend(name, source, sanitize=False):
     build, prefix = WORK / (name + "-build"), WORK / (name + "-installed")
+    test_warning_policy = []
+    if sanitize and sys.platform == "darwin":
+        test_warning_policy.append(f"-DCMAKE_PROJECT_cjose_INCLUDE={FIXTURE / 'macos_upstream_test_warnings.cmake'}")
     run(name + "-configure", ["cmake", "-S", source, "-B", build, *cmake_options(prefix, sanitize),
+        *test_warning_policy,
         "-DCJOSE_BUILD_SHARED=ON", "-DCJOSE_BUILD_STATIC=ON", "-DCJOSE_BUILD_TESTS=ON", "-DCJOSE_MACOS_DYLIB=ON"])
+    if test_warning_policy and "QUALIFICATION_UPSTREAM_TEST_DEPRECATION_WARNING_ONLY" not in (RAW / (name + "-configure.log")).read_text(errors="replace"):
+        raise RuntimeError("upstream_test_warning_policy_not_applied")
     run(name + "-build", ["cmake", "--build", build, "-j4"])
     if not (build / "check_cjose").is_file():
         raise RuntimeError("missing_upstream_tests")

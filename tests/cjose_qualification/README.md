@@ -42,6 +42,28 @@ replacement pair works; only the next CI can do that. Sources:
 [Homebrew LLVM 22](https://formulae.brew.sh/formula/llvm@22),
 [Homebrew LLD 22](https://formulae.brew.sh/formula/lld@22).
 
+The macOS sanitizer backend build injects
+`macos_upstream_test_warnings.cmake` via `CMAKE_PROJECT_cjose_INCLUDE` and defers
+one target-local option until upstream defines `check_cjose`:
+`-Wno-error=deprecated-declarations`. The hook requires that target's existing
+`-Werror` to remain present. SDK deprecations stay warnings; other warnings stay
+errors. Production objects, installed public consumers, Linux, ordinary Q1
+builds and all sanitizer instrumentation are unchanged. No upstream source or
+test semantics are patched. Upstream has no dedicated warning-policy option.
+
+9b8907cf macOS diagnostics identify only two errors: SDK-deprecated `sprintf`
+calls in unchanged `check_jwk.c:1680,1714`, promoted by upstream `-Werror`.
+An ordinary build passing does not isolate an optimization-level cause: the
+sanitizer profile also changes feature/instrumentation flags, and
+`RelWithDebInfo` contributes flags after `CMAKE_C_FLAGS` (potentially including
+another `-O2`). The retained artifacts do not contain the full translation-unit
+command/preprocessed headers, so neither "O1 causes deprecation" nor a specific
+fortify/macro mechanism is claimed as established. This fix addresses the
+observed test-only SDK diagnostic, not an asserted runtime defect. References:
+[CMake project hook](https://cmake.org/cmake/help/latest/variable/CMAKE_PROJECT_PROJECT-NAME_INCLUDE.html),
+[CMake flag ordering](https://cmake.org/cmake/help/latest/variable/CMAKE_LANG_FLAGS_CONFIG.html),
+[Clang warning severity](https://clang.llvm.org/docs/UsersManual.html#options-to-control-error-and-warning-messages).
+
 ## Fixed Fixture Bounds
 
 These limits are defined before CI execution, not inferred from observations:
