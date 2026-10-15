@@ -107,3 +107,24 @@ BOOST_AUTO_TEST_CASE(sse_exact_event_and_line_limits_are_inclusive)
    BOOST_REQUIRE(event);
    BOOST_TEST(event->data == "abc");
 }
+
+BOOST_AUTO_TEST_CASE(sse_formatter_preserves_explicit_last_event_id_reset)
+{
+   auto input = forge::net::http::sse_decoder{};
+   input.append("id: 7\ndata: first\n\nid:\ndata: second\n\n");
+   const auto first = input.next();
+   const auto second = input.next();
+   BOOST_REQUIRE(first);
+   BOOST_REQUIRE(second);
+   BOOST_TEST(first->id == "7");
+   BOOST_TEST(second->id.empty());
+
+   auto output = forge::net::http::sse_decoder{};
+   output.append(forge::net::http::format_sse(*first) + forge::net::http::format_sse(*second));
+   const auto relayed_first = output.next();
+   const auto relayed_second = output.next();
+   BOOST_REQUIRE(relayed_first);
+   BOOST_REQUIRE(relayed_second);
+   BOOST_TEST(relayed_first->id == "7");
+   BOOST_TEST(relayed_second->id.empty());
+}

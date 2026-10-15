@@ -13,6 +13,7 @@ export namespace forge::net::http {
 struct sse_event {
    std::string data;
    std::string event;
+   // Complete logical last-event-id; an empty value resets a prior id.
    std::string id;
    std::optional<std::uint64_t> retry;
 };

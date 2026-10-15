@@ -51,6 +51,8 @@ constexpr glz::opts json_read_options{
     .error_on_unknown_keys = false,
 };
 
+constexpr glz::opts_validate json_complete_read_options{json_read_options};
+
 constexpr glz::opts json_lazy_options{
     .format = glz::JSON,
     .null_terminated = false,
@@ -366,7 +368,10 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 [[nodiscard]] read_result<codec_value> read_codec_value(std::string_view input, const read_options& options) {
    auto result = read_result<codec_value>{};
    auto parsed = codec_value{};
-   if (auto error = glz::read<json_read_options>(parsed, input)) {
+   const auto error = options.described_records == described_record_policy::exact
+                         ? glz::read<json_complete_read_options>(parsed, input)
+                         : glz::read<json_read_options>(parsed, input);
+   if (error) {
       result.diagnostics.push_back(make_error(options.source_name, "json.parse", glz::format_error(error, input)));
       return result;
    }

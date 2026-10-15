@@ -1183,7 +1183,14 @@ template <typename T>
    const auto nested_rules = rules<T>::define();
    for (std::size_t i = 0; i < values->size(); ++i) {
       const auto item_path = append_index(path, i);
-      if constexpr (std::constructible_from<T, std::string>) {
+      if constexpr (requires { { value_adapter<T>::decode((*values)[i]) } -> std::same_as<T>; }) {
+         try {
+            output.push_back(cast_input_to<T>((*values)[i], item_path, diagnostics));
+         } catch (const std::exception& error) {
+            diagnostics.push_back(make_path_error(item_path, "config.type", error.what()));
+         }
+         continue;
+      } else if constexpr (std::constructible_from<T, std::string>) {
          if (const auto* text = std::get_if<std::string>(&(*values)[i].storage)) {
             auto item = [&] {
                if constexpr (canonical_string_scalar<T>) {
@@ -1390,7 +1397,12 @@ void validate_exact_input_value(const input_value& input, std::string_view path,
       }
       using item_type = typename vector_item<clean_type>::type;
       for (std::size_t index = 0; index < values->size(); ++index) {
-         if constexpr (canonical_string_scalar<item_type>) {
+         if constexpr (requires {
+                          { value_adapter<item_type>::decode((*values)[index]) } -> std::same_as<item_type>;
+                       }) {
+            validate_exact_input_value<item_type>((*values)[index], append_index(path, index), diagnostics);
+            continue;
+         } else if constexpr (canonical_string_scalar<item_type>) {
             if (std::holds_alternative<std::string>((*values)[index].storage)) {
                const auto& text = std::get<std::string>((*values)[index].storage);
                try {
