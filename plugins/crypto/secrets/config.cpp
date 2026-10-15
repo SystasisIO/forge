@@ -1,5 +1,6 @@
 module;
 
+#include <boost/asio/awaitable.hpp>
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
@@ -195,6 +196,7 @@ void apply_config(plugin::impl& state, forge::config::core::component_view view)
        .max_scrypt_p = decoded.encrypted_file_max_scrypt_p,
        .max_scrypt_memory_bytes = decoded.encrypted_file_max_scrypt_memory_bytes,
    };
+   auto candidate_versions = state.configured_versions(view, decoded);
    for (auto& entry : decoded.secrets) {
       auto max_plaintext = resolved_limit(entry.max_plaintext_bytes, decoded.default_max_plaintext_bytes);
       auto max_ciphertext = resolved_limit(entry.max_ciphertext_bytes, decoded.default_max_ciphertext_bytes);
@@ -218,9 +220,12 @@ void apply_config(plugin::impl& state, forge::config::core::component_view view)
    auto candidate = std::shared_ptr<const std::map<std::string, loaded_secret>>{
        std::make_shared<std::map<std::string, loaded_secret>>(std::move(loaded))};
    auto retired = std::shared_ptr<const std::map<std::string, loaded_secret>>{};
+   auto retired_versions = std::shared_ptr<version_store>{};
    if (!state.lifecycle.try_admit(generation, [&] {
-      retired = std::atomic_exchange_explicit(&state.secrets, candidate, std::memory_order_acq_rel);
-   })) {
+          retired = std::atomic_exchange_explicit(&state.secrets, candidate, std::memory_order_acq_rel);
+          retired_versions =
+              std::atomic_exchange_explicit(&state.versions, candidate_versions, std::memory_order_acq_rel);
+       })) {
       FORGE_THROW_EXCEPTION(exceptions::stopped, "Secrets configuration was stopped");
    }
 }
