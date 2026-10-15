@@ -132,6 +132,29 @@ struct input_value {
    }
 };
 
+} // namespace forge::schema
+
+namespace forge::schema::detail {
+
+template <typename T> inline constexpr bool input_adapter_v = [] {
+   using value_type = std::remove_cvref_t<T>;
+   if constexpr (is_optional<value_type>::value) {
+      return input_adapter_v<typename is_optional<value_type>::value_type>;
+   } else if constexpr (requires(const input_value& input) {
+                           { value_adapter<value_type>::decode(input) } -> std::same_as<value_type>;
+                        }) {
+      return true;
+   } else if constexpr (is_vector<value_type>::value) {
+      return input_adapter_v<typename vector_item<value_type>::type>;
+   } else {
+      return false;
+   }
+}();
+
+} // namespace forge::schema::detail
+
+export namespace forge::schema {
+
 template <typename T>
 void validate_exact_input_value(const input_value& input, std::string_view path, std::vector<diagnostic>& diagnostics);
 
@@ -1107,7 +1130,7 @@ template <typename T>
          }
          return output;
       }
-   } else if constexpr (is_vector_enum<clean_type>::value) {
+   } else if constexpr (is_vector_enum<clean_type>::value && !detail::input_adapter_v<clean_type>) {
       using enum_type = typename vector_item<clean_type>::type;
       if (const auto* values = input.as_array()) {
          auto output = clean_type{};
@@ -1183,7 +1206,7 @@ template <typename T>
    const auto nested_rules = rules<T>::define();
    for (std::size_t i = 0; i < values->size(); ++i) {
       const auto item_path = append_index(path, i);
-      if constexpr (requires { { value_adapter<T>::decode((*values)[i]) } -> std::same_as<T>; }) {
+      if constexpr (detail::input_adapter_v<T>) {
          try {
             output.push_back(cast_input_to<T>((*values)[i], item_path, diagnostics));
          } catch (const std::exception& error) {
@@ -1397,9 +1420,7 @@ void validate_exact_input_value(const input_value& input, std::string_view path,
       }
       using item_type = typename vector_item<clean_type>::type;
       for (std::size_t index = 0; index < values->size(); ++index) {
-         if constexpr (requires {
-                          { value_adapter<item_type>::decode((*values)[index]) } -> std::same_as<item_type>;
-                       }) {
+         if constexpr (detail::input_adapter_v<item_type>) {
             validate_exact_input_value<item_type>((*values)[index], append_index(path, index), diagnostics);
             continue;
          } else if constexpr (canonical_string_scalar<item_type>) {
