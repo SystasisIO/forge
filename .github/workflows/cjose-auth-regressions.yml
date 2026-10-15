@@ -1,0 +1,68 @@
+name: CJOSE Auth Regressions
+run-name: CJOSE Q7 / ${{ github.ref_name }} / ${{ github.sha }}
+
+on:
+  push:
+    branches: [cjose-external-signing-qualification-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cjose-auth-regressions-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  CTEST_PARALLEL_LEVEL: "1"
+  Q7_INSTALLED_PACKAGE: "true"
+
+jobs:
+  existing-auth:
+    if: github.ref == 'refs/heads/cjose-external-signing-qualification-v1'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Pin old baseline and prepare shared toolchain and isolated dependencies
+        id: dependencies
+        timeout-minutes: 40
+        run: bash .github/scripts/cjose-auth-regressions.sh dependencies
+
+      - name: Existing auth tests against origin dev 8975f234 and system CJOSE 0.6.2.8
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        timeout-minutes: 125
+        run: bash .github/scripts/cjose-auth-regressions.sh baseline
+
+      - name: Same existing auth tests against candidate HEAD and its sole vendored static CJOSE
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        timeout-minutes: 125
+        run: bash .github/scripts/cjose-auth-regressions.sh candidate
+
+      - name: Compare actual case lists and fail closed on missing evidence or regressions
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/cjose-auth-regressions.sh compare
+
+      - name: Select sanitized whitelist evidence even after setup failure
+        if: always()
+        run: bash .github/scripts/cjose-auth-regressions.sh evidence
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cjose-auth-q7-linux-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-cjose-auth-regressions/evidence/
+          if-no-files-found: error
+          retention-days: 14

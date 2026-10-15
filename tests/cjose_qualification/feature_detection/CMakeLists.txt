@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+project(cjose_forge_feature_detection LANGUAGES C)
+find_package(cjose 0.8.1 EXACT CONFIG REQUIRED COMPONENTS static)
+message(STATUS "QUALIFICATION_INSTALLED_PACKAGE_FOUND")
+list(PREPEND CMAKE_MODULE_PATH "${FORGE_CMAKE_MODULES}")
+find_package(CJOSE REQUIRED)

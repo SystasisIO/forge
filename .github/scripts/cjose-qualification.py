@@ -1,0 +1,306 @@
+"""CI-only backend driver. Raw output is local; only allowlisted evidence uploads."""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+FIXTURE = ROOT / "tests/cjose_qualification"
+PINS = json.loads((FIXTURE / "pins.json").read_text())
+ARGS = argparse.ArgumentParser()
+ARGS.add_argument("phase", choices=("prepare", "baseline", "candidate", "consumers", "sanitizers", "evidence"))
+ARGS.add_argument("--work", type=pathlib.Path, required=True)
+OPTIONS = ARGS.parse_args()
+WORK = OPTIONS.work
+RAW = WORK / "raw"
+EVIDENCE = WORK / "evidence"
+RAW.mkdir(parents=True, exist_ok=True)
+EVIDENCE.mkdir(parents=True, exist_ok=True)
+
+
+def save(path, value):
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def run(label, command, *, cwd=ROOT, timeout=600, env=None, required=True):
+    started = time.monotonic()
+    record = {"label": label, "status": "RUNNING", "command": [str(x).replace(str(WORK), "$WORK").replace(str(ROOT), "$ROOT") for x in command]}
+    save(EVIDENCE / (label + ".json"), record)
+    with (RAW / (label + ".log")).open("wb") as output:
+        try:
+            result = subprocess.run([str(x) for x in command], cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            code = result.returncode
+        except subprocess.TimeoutExpired:
+            code = 124
+    record.update(exit=code, elapsed_seconds=round(time.monotonic() - started, 6), status="PASS" if code == 0 else "FAILED")
+    save(EVIDENCE / (label + ".json"), record)
+    print(f"{label}: exit={code}", flush=True)
+    if required and code != 0:
+        raise RuntimeError(label)
+    return code
+
+
+def capture(command):
+    return subprocess.check_output([str(x) for x in command], text=True, stderr=subprocess.DEVNULL).strip()
+
+
+def fetch(name, url, sha):
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError("non_immutable_ref")
+    source = WORK / (name + "-src")
+    run(name + "-init", ["git", "init", "--quiet", source])
+    run(name + "-fetch", ["git", "-C", source, "fetch", "--quiet", "--depth=1", url, sha])
+    run(name + "-checkout", ["git", "-C", source, "checkout", "--quiet", "--detach", "FETCH_HEAD"])
+    if capture(["git", "-C", source, "rev-parse", "HEAD"]) != sha:
+        raise RuntimeError("source_sha_mismatch")
+    return source
+
+
+def cmake_options(prefix, sanitize=False):
+    flags = "-O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer" if sanitize else "-O2 -g"
+    return ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_C_COMPILER={os.environ['CC']}",
+            f"-DCMAKE_PREFIX_PATH={WORK / 'deps'}", f"-DOPENSSL_ROOT_DIR={os.environ['OPENSSL_ROOT_DIR']}",
+            f"-DCMAKE_INSTALL_PREFIX={prefix}", "-DCMAKE_INSTALL_LIBDIR=lib", f"-DCMAKE_C_FLAGS={flags}",
+            f"-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib",
+            f"-DCMAKE_BUILD_RPATH={prefix / 'lib'};{WORK / 'deps/lib'};{os.environ['OPENSSL_ROOT_DIR']}/lib",
+            f"-DCMAKE_INSTALL_RPATH={WORK / 'deps/lib'};{os.environ['OPENSSL_ROOT_DIR']}/lib"]
+
+
+def backend(name, source, sanitize=False):
+    build, prefix = WORK / (name + "-build"), WORK / (name + "-installed")
+    run(name + "-configure", ["cmake", "-S", source, "-B", build, *cmake_options(prefix, sanitize),
+        "-DCJOSE_BUILD_SHARED=ON", "-DCJOSE_BUILD_STATIC=ON", "-DCJOSE_BUILD_TESTS=ON", "-DCJOSE_MACOS_DYLIB=ON"])
+    run(name + "-build", ["cmake", "--build", build, "-j4"])
+    if not (build / "check_cjose").is_file():
+        raise RuntimeError("missing_upstream_tests")
+    # Installing is independent of test success, allowing consumer diagnostics.
+    run(name + "-install", ["cmake", "--install", build])
+    suite(name + "-tests", build / "check_cjose", source / "test")
+
+
+def suite(name, binary, directory):
+    code = run(name, [binary], cwd=directory, timeout=360, required=False)
+    text = (RAW / (name + ".log")).read_text(errors="replace")
+    summaries = re.findall(r"Checks:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)", text)
+    cases = re.findall(r"(?:^|\n)[^\n]*?:\d+:([PFE]):([A-Za-z0-9_]+):([A-Za-z0-9_]+):\d+:", text)
+    ids = [case + ":" + test for _, case, test in cases]
+    failure_ids = [case + ":" + test for status, case, test in cases if status != "P"]
+    count, failures, errors = map(int, summaries[-1]) if summaries else (0, 0, 0)
+    save(EVIDENCE / (name + "-summary.json"), {"exit": code, "checks": count, "failures": failures,
+         "errors": errors, "test_ids": sorted(set(ids)), "failure_ids": sorted(set(failure_ids)),
+         "status": "PASS" if code == 0 and count > 0 and failures == errors == 0 else "FAILED"})
+    return code == 0 and count > 0 and failures == errors == 0
+
+
+def prepare():
+    # Source resolution never follows a branch, tag, or mutable fork HEAD.
+    entry = capture(["git", "ls-tree", "HEAD", "vendor/cjose"]).split()
+    if len(entry) != 4 or entry[:2] != ["160000", "commit"]:
+        raise RuntimeError("missing_candidate_gitlink")
+    candidate_sha = entry[2]
+    fetch("upstream", PINS["upstream_url"], PINS["upstream_sha"])
+    fetch("historical", PINS["upstream_url"], PINS["historical_sha"])
+    fetch("candidate", "https://github.com/SystasisIO/cjose.git", candidate_sha)
+    jansson = fetch("jansson", PINS["jansson_url"], PINS["jansson_sha"])
+    # A shallow fetch of the base into the fork allows an actual ancestry check.
+    run("candidate-base-fetch", ["git", "-C", WORK / "candidate-src", "fetch", "--quiet", "--deepen=1000",
+        "https://github.com/SystasisIO/cjose.git", candidate_sha])
+    run("candidate-ancestry", ["git", "-C", WORK / "candidate-src", "merge-base", "--is-ancestor", PINS["upstream_sha"], candidate_sha])
+    run("jansson-configure", ["cmake", "-S", jansson, "-B", WORK / "jansson-build", *cmake_options(WORK / "deps"),
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5", "-DJANSSON_BUILD_SHARED_LIBS=ON", "-DJANSSON_BUILD_DOCS=OFF", "-DJANSSON_EXAMPLES=OFF"])
+    run("jansson-build", ["cmake", "--build", WORK / "jansson-build", "-j4"])
+    run("jansson-install", ["cmake", "--install", WORK / "jansson-build"])
+    original = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (WORK / "upstream-src/test").glob("check_*") if p.is_file()}
+    save(EVIDENCE / "original-test-corpus.json", original)
+    manifest = {"forge_sha": os.environ["GITHUB_SHA"], "candidate_sha": candidate_sha, **PINS,
+        "runner_os": os.environ["RUNNER_OS"], "runner_image": os.environ.get("ImageVersion", "unavailable"),
+        "compiler": capture([os.environ["CC"], "--version"]).splitlines()[0],
+        "cmake": capture(["cmake", "--version"]).splitlines()[0], "check": capture(["pkg-config", "--modversion", "check"]),
+        "openssl": capture([pathlib.Path(os.environ["OPENSSL_ROOT_DIR"]) / "bin/openssl", "version"]),
+        "python_packages": capture([sys.executable, "-m", "pip", "freeze"]).splitlines(),
+        "macos_leak_sanitizer": "UNSUPPORTED" if sys.platform == "darwin" else "not_applicable",
+        "bounds": {"header": 1024, "payload": 65536, "token": 100000, "kid": 128, "signature": 64,
+                   "fuzz_runs": 20000, "fuzz_seconds": 60, "fuzz_rss_mb": 1024, "process_seconds": 15}}
+    save(EVIDENCE / "provenance.json", manifest)
+
+
+def candidate():
+    backend("candidate", WORK / "candidate-src")
+    build = WORK / "original-build"
+    run("original-configure", ["cmake", "-S", FIXTURE / "original_tests", "-B", build,
+        *cmake_options(WORK / "original-installed"), f"-DCANDIDATE_SOURCE={WORK / 'candidate-src'}",
+        f"-DORIGINAL_SOURCE={WORK / 'upstream-src'}", "-DCJOSE_BUILD_SHARED=ON", "-DCJOSE_BUILD_STATIC=ON", "-DCJOSE_MACOS_DYLIB=ON"])
+    run("original-build", ["cmake", "--build", build, "--target", "check_original", "-j4"])
+    suite("candidate-original-tests", build / "check_original", WORK / "upstream-src/test")
+
+
+def historical():
+    # Historical lane is diagnostic, not the acceptance base. Never rewrite it.
+    source = WORK / "historical-src"
+    build = source
+    run("historical-autoreconf", ["autoreconf", "-fi"], cwd=source)
+    build.mkdir(exist_ok=True)
+    env = dict(os.environ, PKG_CONFIG_PATH=f"{WORK / 'deps/lib/pkgconfig'}:{os.environ.get('PKG_CONFIG_PATH', '')}")
+    run("historical-configure", [source / "configure", f"--prefix={WORK / 'historical-installed'}",
+        f"--with-jansson={WORK / 'deps'}", f"--with-openssl={os.environ['OPENSSL_ROOT_DIR']}",
+        "--disable-doxygen-doc", f"LDFLAGS=-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib"], cwd=build, env=env)
+    run("historical-build", ["make", "-j4", "all", "check"], cwd=build, env=env, required=False)
+    if not (build / "test/check_cjose").is_file():
+        raise RuntimeError("missing_historical_tests")
+    suite("historical-tests", build / "test/check_cjose", source / "test")
+
+
+def feature_detection():
+    for name, expected in (("candidate", True), ("upstream", False)):
+        prefix = WORK / (name + "-installed")
+        label = name + "-feature-detection"
+        code = run(label, ["cmake", "-S", FIXTURE / "feature_detection", "-B", WORK / (label + "-build"),
+            *cmake_options(prefix), f"-Dcjose_DIR={prefix / 'lib/cmake/cjose'}",
+            f"-DFORGE_CMAKE_MODULES={ROOT / 'cmake'}"], required=False)
+        log = (RAW / (label + ".log")).read_text(errors="replace")
+        # Negative success must be the feature check, never a missing package,
+        # compiler, Jansson, or unrelated configuration failure.
+        cache = WORK / (label + "-build/CMakeCache.txt")
+        cache_text = cache.read_text() if cache.exists() else ""
+        passed = code == 0 if expected else (
+            code != 0 and "QUALIFICATION_INSTALLED_PACKAGE_FOUND" in log and
+            "FORGE_CJOSE_HAS_EXTERNAL_SIGNING:INTERNAL=" in cache_text and
+            "Forge requires the qualified CJOSE external-signing extension" in log)
+        save(EVIDENCE / (label + "-result.json"), {"status": "PASS" if passed else "FAILED",
+             "expected_configure_success": expected, "configure_exit": code})
+        if not passed:
+            raise RuntimeError("feature_detection")
+
+
+def consumers(sanitize=False):
+    name = "sanitized" if sanitize else "candidate"
+    if sanitize:
+        backend(name, WORK / "candidate-src", True)
+    else:
+        feature_detection()
+    for linkage in ("shared", "static"):
+        label = name + "-" + linkage
+        build, prefix = WORK / (label + "-consumer"), WORK / (name + "-installed")
+        run(label + "-configure", ["cmake", "-S", FIXTURE, "-B", build, *cmake_options(prefix, sanitize),
+            f"-Dcjose_DIR={prefix / 'lib/cmake/cjose'}", f"-DCJOSE_QUALIFICATION_LINKAGE={linkage}",
+            f"-DCJOSE_QUALIFICATION_SANITIZERS={'ON' if sanitize else 'OFF'}",
+            f"-DCJOSE_QUALIFICATION_FUZZ={'ON' if sanitize and linkage == 'static' else 'OFF'}"])
+        run(label + "-build", ["cmake", "--build", build, "-j4"])
+        run(label + "-qualify", [sys.executable, FIXTURE / "run.py", "--probe", build / "cjose_public_probe",
+            "--work", WORK / (label + "-cases"), "--evidence", EVIDENCE / (label + "-cases.json")], timeout=360)
+        run(label + "-linkage", [sys.executable, FIXTURE / "linkage.py", "--binary", build / "cjose_public_probe",
+            "--prefix", prefix, "--deps", WORK / "deps", "--linkage", linkage,
+            "--evidence", EVIDENCE / (label + "-linkage-tree.json")])
+        if sanitize and linkage == "static":
+            corpus = WORK / (label + "-cases/corpus")
+            fuzz_code = run("bounded-fuzz", [build / "cjose_profile_fuzz", corpus, "-runs=20000", "-max_total_time=60",
+                "-max_len=100001", "-rss_limit_mb=1024", "-timeout=2", f"-artifact_prefix={RAW}/"], timeout=90, required=False)
+            log = (RAW / "bounded-fuzz.log").read_text(errors="replace")
+            final = re.search(r"#(\d+)\s+DONE\s+cov: (\d+) ft: (\d+).*?rss: (\d+)Mb", log)
+            save(EVIDENCE / "bounded-fuzz-metrics.json", {"status": "PASS" if final and fuzz_code == 0 else "FAILED" if fuzz_code else "HARNESS_ERROR",
+                 "runs": int(final[1]) if final else None, "coverage_edges": int(final[2]) if final else None,
+                 "features": int(final[3]) if final else None, "peak_rss_mb": int(final[4]) if final else None})
+            # These are explicitly synthetic/public test inputs, not runtime
+            # credentials or logs. The fuzzer never receives a private key.
+            destination = EVIDENCE / "synthetic-fuzz-corpus"
+            destination.mkdir(exist_ok=True)
+            manifest = []
+            for path in sorted(corpus.iterdir()):
+                if not path.is_file() or not re.fullmatch(r"[A-Za-z0-9_-]+", path.name):
+                    raise RuntimeError("invalid_corpus_file")
+                value = path.read_bytes()
+                if len(value) > 100001:
+                    raise RuntimeError("unbounded_corpus_file")
+                digest = hashlib.sha256(value).hexdigest()
+                (destination / digest).write_bytes(value)
+                manifest.append({"sha256": digest, "size": len(value)})
+            save(EVIDENCE / "synthetic-fuzz-corpus-manifest.json", {"status": "PASS" if manifest else "HARNESS_ERROR",
+                 "data_class": "synthetic_public_test_inputs_only", "files": manifest})
+            if fuzz_code:
+                raise RuntimeError("bounded_fuzz_failed")
+
+
+def evidence():
+    required = ["upstream-tests-summary", "candidate-tests-summary", "candidate-original-tests-summary",
+        "candidate-feature-detection-result", "upstream-feature-detection-result", "candidate-shared-qualify", "candidate-static-qualify",
+        "sanitized-tests-summary", "sanitized-shared-qualify", "sanitized-static-qualify", "bounded-fuzz",
+        "candidate-shared-linkage", "candidate-static-linkage", "sanitized-shared-linkage", "sanitized-static-linkage", "bounded-fuzz-metrics",
+        "synthetic-fuzz-corpus-manifest"]
+    gates = {}
+    for name in required:
+        path = EVIDENCE / (name + ".json")
+        gates[name] = json.loads(path.read_text()).get("status", "HARNESS_ERROR") if path.exists() else "NOT_RUN"
+    base_file, candidate_file = EVIDENCE / "upstream-tests-summary.json", EVIDENCE / "candidate-original-tests-summary.json"
+    if base_file.exists() and candidate_file.exists():
+        base, patched = json.loads(base_file.read_text()), json.loads(candidate_file.read_text())
+        save(EVIDENCE / "q1-comparison.json", {"baseline_checks": base["checks"], "candidate_checks": patched["checks"],
+            "baseline_failures": base["failure_ids"], "candidate_failures": patched["failure_ids"],
+            "new_failures": sorted(set(patched["failure_ids"]) - set(base["failure_ids"])),
+            "same_check_count": base["checks"] == patched["checks"],
+            "same_test_ids": base["test_ids"] == patched["test_ids"]})
+        if not base["test_ids"] or base["checks"] != patched["checks"] or base["test_ids"] != patched["test_ids"]:
+            gates["same-original-tests"] = "HARNESS_ERROR"
+    diagnostics = []
+    for path in RAW.glob("*.log"):
+        # Compile/configure logs only, never probe stdout, runtime payloads,
+        # key files, sanitizer memory dumps or environment/caches.
+        if not re.search(r"(?:configure|build)\.log$", path.name):
+            continue
+        lines = path.read_text(errors="replace").splitlines()
+        selected = []
+        for line in lines:
+            if re.search(r"(?:fatal )?error:|CMake Error|Could NOT find", line):
+                line = line.replace(str(ROOT), "$ROOT").replace(str(WORK), "$WORK")
+                # Keep only static compiler/configuration diagnostics, not arbitrary
+                # lines emitted by execute_process or test commands.
+                if re.match(r"^(?:[^\s]+\.(?:c|h):\d+|CMake Error|\s*Could NOT find)", line):
+                    selected.append(re.sub(r"[^\x20-\x7e]", "?", line)[:400])
+        if selected:
+            diagnostics.append({"phase": path.stem, "diagnostics": selected[:20]})
+    save(EVIDENCE / "safe-build-diagnostics.json", diagnostics)
+    historical_path = EVIDENCE / "historical-tests-summary.json"
+    save(EVIDENCE / "summary.json", {"required": gates, "Q7": "COORDINATOR_OWNED",
+        "historical_diagnostic": json.loads(historical_path.read_text()) if historical_path.exists() else {"status": "NOT_RUN"},
+        "status": "PASS" if all(x == "PASS" for x in gates.values()) else "INCOMPLETE_OR_FAILED"})
+    return all(x == "PASS" for x in gates.values())
+
+
+def main():
+    if OPTIONS.phase == "prepare":
+        prepare()
+    elif OPTIONS.phase == "baseline":
+        # Both states execute even if one test suite fails; evidence still fails.
+        failed = False
+        try:
+            backend("upstream", WORK / "upstream-src")
+        except (RuntimeError, subprocess.SubprocessError, OSError):
+            failed = True
+        try:
+            historical()
+        except (RuntimeError, subprocess.SubprocessError, OSError):
+            save(EVIDENCE / "historical-diagnostic.json", {"status": "INCOMPLETE_OR_FAILED", "acceptance_base": False})
+        if failed:
+            return 1
+    elif OPTIONS.phase == "candidate":
+        candidate()
+    elif OPTIONS.phase in ("consumers", "sanitizers"):
+        consumers(OPTIONS.phase == "sanitizers")
+    else:
+        return 0 if evidence() else 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (RuntimeError, subprocess.SubprocessError, OSError):
+        # Never forward third-party exception text, commands, token or key bytes.
+        print("qualification phase failed; inspect sanitized evidence", file=sys.stderr)
+        sys.exit(1)
