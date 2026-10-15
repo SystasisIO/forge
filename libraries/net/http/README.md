@@ -176,6 +176,18 @@ steady-clock deadline. Preparation/transport use the earlier of it and
 `timeout`; the effective absolute deadline is preserved through the connection
 queue, retries and streamed response body, not restarted after acquisition.
 
+`request_options::max_response_body_bytes` bounds response payload bytes for all
+buffered and streamed APIs, including requests that upload a streamed body.
+The default remains 8 MiB; zero accepts only empty bodies. The complete `uint64_t`
+range is supported, without a separate unlimited mode. Set a suitable per-request
+limit for larger downloads and use a streamed response to avoid materializing it
+in memory. Content-Length is checked while parsing headers, before body allocation;
+chunked and EOF-delimited responses are bounded as bytes arrive. HEAD and no-body
+statuses retain their HTTP semantics, so a metadata Content-Length does not count
+as a received body. A response exceeding the bound raises the existing typed
+`exceptions::unavailable`, closes its transport, and is not an idempotent retry
+condition. The focused tests are [response body limits](../../../tests/http/response_body_limit_tests.cpp).
+
 Auth/token-provider composition belongs to the consumer, once per client, not
 to each API method. HTTP client preparation imports neither Auth nor API; the
 existing server router still uses API Core's canonical error payload. The new

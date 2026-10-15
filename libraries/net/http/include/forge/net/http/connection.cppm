@@ -25,6 +25,8 @@ struct request_options {
    std::chrono::milliseconds retry_backoff{50};
    // If set, transport uses the earlier of this absolute deadline and timeout.
    std::optional<std::chrono::steady_clock::time_point> deadline;
+   // Bounds response payload bytes for buffered and streamed reads; zero permits only an empty body.
+   std::uint64_t max_response_body_bytes = 8ULL * 1024 * 1024;
 };
 
 struct connection_metrics {
