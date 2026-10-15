@@ -178,10 +178,27 @@ int main() {
    require(invoke("checkjson", document_bytes) == document_bytes, "guest opaque JSON document bytes differ");
    const auto bounded_document = forge::codec::hex::decode("077b2278223a317d");
    require(invoke("jsonbound", forge::raw::pack(bounded_document)) == bounded_document,
-           "guest document byte bound rejected its exact boundary");
-   rejects<execution::exceptions::assertion_failed>([&] {
-      (void)invoke("jsonbound", forge::raw::pack(forge::raw::pack(forge::codec::json::document{"12345678"})));
-   }, "guest document byte bound ignored");
+           "guest document allocation bound rejected an object");
+   // max_bytes bounds the string payload allocation, excluding its length prefix.
+   const auto allocation_boundary = forge::codec::hex::decode("083132333435363738");
+   require(forge::raw::pack(forge::codec::json::document{"12345678"}) == allocation_boundary,
+           "document allocation boundary bytes differ");
+   require(forge::raw::unpack_exact<forge::codec::json::document>(allocation_boundary,
+                                                                  forge::raw::unpack_limits{.max_bytes = 8})
+                   .text == "12345678",
+           "native document allocation bound rejected its exact boundary");
+   require(invoke("jsonbound", forge::raw::pack(allocation_boundary)) == allocation_boundary,
+           "guest document allocation bound rejected its exact boundary");
+   const auto allocation_overflow = forge::codec::hex::decode("09313233343536373839");
+   rejects<forge::raw::exceptions::allocation_limit>(
+       [&] {
+          (void)forge::raw::unpack_exact<forge::codec::json::document>(allocation_overflow,
+                                                                       forge::raw::unpack_limits{.max_bytes = 8});
+       },
+       "native document allocation byte bound ignored");
+   rejects<execution::exceptions::assertion_failed>(
+       [&] { (void)invoke("jsonbound", forge::raw::pack(allocation_overflow)); },
+       "guest document allocation byte bound ignored");
    require(forge::raw::unpack_exact<forge::raw::bytes>(invoke("fresh", forge::raw::pack(std::uint8_t{10}))) == document_bytes,
            "independently constructed guest JSON document bytes differ");
    require(metadata.version == "forge::abi-metadata/1.1" && metadata.json_types &&
