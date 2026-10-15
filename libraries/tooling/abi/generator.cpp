@@ -2560,7 +2560,7 @@ artifacts generate(const request& options) {
    // Discover namespace-scope ABI records before the strict pass so contract code can use their generated codecs.
    auto discovery_compilation = clang::tooling::FixedCompilationDatabase{".", arguments};
    auto discovery_tool = clang::tooling::ClangTool{discovery_compilation, source_paths};
-   auto discovery = schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
+   auto discovery = ::schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
    auto discovery_found = false;
    auto discovery_dispatch_source_found = false;
    auto discovery_dependencies = source_dependencies{};
@@ -2585,7 +2585,7 @@ artifacts generate(const request& options) {
    if (!codec_prelude.empty()) {
       tool.mapVirtualFile(codec_prelude_path, codec_prelude);
    }
-   auto output = schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
+   auto output = ::schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
    auto found = false;
    auto dispatch_source_found = false;
    auto dependencies = source_dependencies{};
