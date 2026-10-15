@@ -5,6 +5,7 @@
 
 import forge.api.wasm.step;
 import forge.api.wasm.http_command;
+import forge.api.wasm.http_stream;
 import forge.api.wasm.context;
 import forge.api.wasm.codec;
 import forge.raw.codec;
@@ -22,6 +23,17 @@ int main() {
    }
    const auto decoded = forge::raw::unpack_exact<forge::api::wasm::step>(expected);
    forge::api::wasm::validate(decoded);
+   const auto open = forge::api::wasm::http_stream_open{{forge::net::http::method::get, "/items", {}}, "item", "END"};
+   forge::api::wasm::validate(open);
+   forge::api::wasm::validate(forge::api::wasm::http_stream_read{});
+   forge::api::wasm::validate(forge::api::wasm::http_stream_event{200, true, {}}, "item");
+   try {
+      auto invalid = open;
+      invalid.end_marker.clear();
+      forge::api::wasm::validate(invalid);
+      return 4;
+   } catch (const forge::api::wasm::exceptions::invalid_value&) {
+   }
    try {
       forge::api::wasm::validate(forge::api::wasm::payload{"", {}});
       return 3;

@@ -108,6 +108,16 @@ int main() {
       R"({"subject":{"issuer":"issuer","subject":"alice"},"facts":[{"type":"admission","data":"01"}]})",
       "010669737375657205616c696365010961646d697373696f6e0101");
    check(9, "checkctx", "context", wasm::context{}, R"({"subject":null,"facts":[]})", "0000");
+   check(11, "checkopen", "http_stream_open",
+         wasm::http_stream_open{{forge::net::http::method::get, "/x", {}}, "item", "END"},
+         R"({"request":{"method":2,"target":"/x","body":null},"event_type":"item","end_marker":"END"})",
+         "02000000022f7800046974656d03454e44");
+   check(12, "checkread", "http_stream_read", wasm::http_stream_read{wasm::payload{"item", {1, 2}}, true},
+         R"({"emission":{"type":"item","data":"0102"},"finish":true})", "01046974656d02010201");
+   check(13, "checkitem", "http_stream_event", wasm::http_stream_event{200, false, wasm::payload{"item", {1, 2}}},
+         R"({"status":200,"ended":false,"item":{"type":"item","data":"0102"}})", "c8000001046974656d020102");
+   check(14, "checkitem", "http_stream_event", wasm::http_stream_event{200, true, {}},
+         R"({"status":200,"ended":true,"item":null})", "c8000100");
 
    const auto valid = forge::codec::hex::decode("01057265706c790103");
    require(invoke("exact", forge::raw::pack(valid)) == valid, "exact guest decode changed bytes");
@@ -214,4 +224,83 @@ int main() {
    rejects<execution::exceptions::assertion_failed>([&] {
       (void)invoke("checkjson", forge::raw::bytes{10, 1});
    }, "truncated guest JSON document accepted");
+
+   // Real WASM invocations consume incremental typed host events. The terminal
+   // event is withheld until normalized emissions have actually been observed.
+   const auto prepared = wasm::decode<wasm::step>(invoke("streamstart", forge::raw::pack(fixture::stream_request{2})));
+   require(std::holds_alternative<wasm::awaiting>(prepared.result), "guest stream did not open");
+   auto waiting = std::get<wasm::awaiting>(prepared.result);
+   const auto first_waiting = waiting;
+   require(waiting.command.binding == "stream.open", "guest stream open binding differs");
+   const auto open = wasm::decode<wasm::http_stream_open>(waiting.command.request, "http_stream_open");
+   wasm::validate(open);
+   require(open.request.target == "/stream" && open.event_type == "stream_item" && open.end_marker == "END",
+           "guest stream open intent differs");
+   const auto resume_stream = [&](const wasm::awaiting& pending, const wasm::event& event) {
+      return wasm::decode<wasm::step>(invoke("streamnext", forge::raw::pack(std::tuple{pending.next, event})));
+   };
+   auto terminal_released = false;
+   auto emissions = 0U;
+   for (const auto number : {3U, 5U}) {
+      const auto item = wasm::http_stream_event{200, false, wasm::encode("stream_item", fixture::stream_item{number})};
+      const auto resumed = resume_stream(waiting, {wasm::encode("http_stream_event", item)});
+      require(std::holds_alternative<wasm::awaiting>(resumed.result), "guest stream completed before finish");
+      waiting = std::get<wasm::awaiting>(resumed.result);
+      require(waiting.command.binding == "stream.read", "guest stream read binding differs");
+      const auto read = wasm::decode<wasm::http_stream_read>(waiting.command.request, "http_stream_read");
+      wasm::validate(read);
+      require(!terminal_released && read.emission.has_value(), "guest emission waited for terminal event");
+      require(wasm::decode<fixture::stream_item>(*read.emission, "stream_item").value == number * 10U,
+              "guest stream normalized emission differs");
+      ++emissions;
+      require(read.finish == (emissions == 2), "guest stream finish intent differs");
+   }
+   require(!terminal_released && emissions == 2, "guest did not emit incrementally before terminal release");
+   rejects<execution::exceptions::assertion_failed>(
+       [&] {
+          (void)resume_stream(
+              waiting, {wasm::encode(
+                           "http_stream_event",
+                           wasm::http_stream_event{200, false, wasm::encode("stream_item", fixture::stream_item{1})})});
+       },
+       "guest accepted an item instead of the requested finish acknowledgement");
+   terminal_released = true;
+   const auto completed =
+       resume_stream(waiting, {wasm::encode("http_stream_event", wasm::http_stream_event{200, true, {}})});
+   require(std::holds_alternative<wasm::completed>(completed.result), "guest stream did not complete after finish");
+   const auto summary =
+       wasm::decode<fixture::stream_summary>(std::get<wasm::completed>(completed.result).output, "stream_summary");
+   require(terminal_released && summary.count == 2 && summary.sum == 8, "guest stream summary differs");
+
+   const auto short_stream = wasm::event{wasm::encode("http_stream_event", wasm::http_stream_event{200, true, {}})};
+   rejects<execution::exceptions::assertion_failed>([&] { (void)resume_stream(first_waiting, short_stream); },
+                                                    "guest accepted an incomplete stream");
+   const auto empty_event = wasm::event{wasm::encode("http_stream_event", wasm::http_stream_event{200, false, {}})};
+   rejects<execution::exceptions::assertion_failed>([&] { (void)resume_stream(first_waiting, empty_event); },
+                                                    "guest accepted a nonterminal event without an item");
+   const auto malformed = wasm::event{
+       wasm::encode("http_stream_event", wasm::http_stream_event{200, false, wasm::payload{"stream_item", {1}}})};
+   rejects<execution::exceptions::assertion_failed>([&] { (void)resume_stream(first_waiting, malformed); },
+                                                    "guest accepted a malformed typed item");
+   const auto failed = resume_stream(first_waiting, wasm::event{problem});
+   require(std::holds_alternative<forge::api::core::error_payload>(failed.result) &&
+               std::get<forge::api::core::error_payload>(failed.result) == problem,
+           "guest did not propagate a host stream error");
+   auto invalid_open = open;
+   invalid_open.end_marker = "bad\nmarker";
+   rejects<execution::exceptions::assertion_failed>([&] { (void)invoke("checkopen", forge::raw::pack(invalid_open)); },
+                                                    "guest accepted a hostile stream end marker");
+   rejects<execution::exceptions::assertion_failed>(
+       [&] { (void)invoke("checkitem", forge::raw::pack(wasm::http_stream_event{99, false, {}})); },
+       "guest accepted an invalid HTTP stream status");
+   const auto bounded_item = wasm::http_stream_event{200, false, wasm::encode("stream_item", fixture::stream_item{3})};
+   const auto bounded_item_bytes = forge::raw::pack(bounded_item);
+   require(invoke("streamlimit", bounded_item_bytes) == bounded_item_bytes,
+           "guest stream inclusive item bound rejected");
+   rejects<execution::exceptions::assertion_failed>(
+       [&] {
+          (void)invoke("streamlimit", forge::raw::pack(wasm::http_stream_event{
+                                          200, false, wasm::payload{"stream_item", {1, 2, 3, 4, 5}}}));
+       },
+       "guest stream payload bound ignored");
 }
