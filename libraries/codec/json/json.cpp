@@ -1,6 +1,7 @@
 module;
 
 #include <glaze/glaze.hpp>
+#include <forge/exceptions/macros.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -28,6 +29,7 @@ import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;
 import forge.schema.enums;
+import forge.schema.exceptions;
 import forge.variant.exceptions;
 import forge.variant.value;
 import forge.variant.conversion;
@@ -476,6 +478,60 @@ read_result<variant> read_value(std::string_view input, read_options options) {
 
 write_result write_value(const variant& input, write_options options) {
    return write_codec_value(from_variant_value(input), options);
+}
+
+document parse_document(std::string_view input, document_limits limits)
+{
+   if (input.size() > limits.max_bytes)
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   const auto decoded = read_value(input, {.max_depth = limits.max_depth});
+   if (!decoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document is invalid");
+   }
+
+   const auto encoded = write_value(decoded.value, {.max_bytes = limits.max_bytes});
+   if (!encoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   return document{encoded.text};
+}
+
+variant document_value(const document& input, document_limits limits)
+{
+   if (input.text.size() > limits.max_bytes)
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   auto decoded = read_value(input.text, {.max_depth = limits.max_depth});
+   if (!decoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document is invalid");
+   }
+
+   return std::move(decoded.value);
+}
+
+void to_variant(const document& input, variant& output)
+{
+   output = document_value(input);
+}
+
+void from_variant(const variant& input, document& output)
+{
+   const auto encoded = write_value(input, {.max_bytes = document_limits{}.max_bytes});
+   if (!encoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   output = parse_document(encoded.text);
 }
 
 read_result<config::core::document> read_document(std::string_view input, read_options options) {

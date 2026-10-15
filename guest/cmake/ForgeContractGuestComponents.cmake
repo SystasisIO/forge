@@ -2,6 +2,14 @@
 # The including build defines forge_contract_register_guest_component().
 
 forge_contract_register_guest_component(
+   ID forge.codec.json_values
+   TARGET forge_codec_json_values
+   PUBLIC_LIBRARIES forge.raw
+   MODULES forge/codec/json/document.cppm
+   MODULE_NAMES forge.codec.json.document
+)
+
+forge_contract_register_guest_component(
    ID forge.raw
    TARGET forge_raw
    ARCHIVE libforge_guest_raw.a

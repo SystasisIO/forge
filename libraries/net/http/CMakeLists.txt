@@ -26,6 +26,7 @@ add_library(
    connection.cpp
    client.cpp
    stream.cpp
+   sse.cpp
    router.cpp
    router_server_access.cpp
    stream_server_access.cpp
