@@ -64,7 +64,8 @@ struct binding_build_result {
 };
 
 [[nodiscard]] bool supports_field(schema::value_kind kind) {
-   return kind != schema::value_kind::object && kind != schema::value_kind::object_list;
+   return kind != schema::value_kind::object && kind != schema::value_kind::object_list &&
+          kind != schema::value_kind::dynamic;
 }
 
 [[nodiscard]] std::string trim(std::string_view input) {
@@ -305,6 +306,8 @@ template <typename T>
 
 [[nodiscard]] config::core::value convert_value(schema::value_kind kind, std::string_view input) {
    switch (kind) {
+   case schema::value_kind::dynamic:
+      throw std::invalid_argument{"dynamic environment values are not supported"};
    case schema::value_kind::boolean: {
       return parse_env_scalar<bool>(input, "expected boolean value");
    }

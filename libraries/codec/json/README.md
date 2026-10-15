@@ -15,6 +15,12 @@ limits. Native `to_variant/from_variant` adapters preserve the JSON value inside
 described DTOs: an object remains an object, rather than a quoted JSON string.
 Default document limits are 1 MiB and depth 128. Do not log document contents.
 
+The native document adapter also implements the explicit
+`schema::value_adapter<T>` hook, so schema-bound DTOs preserve nested JSON values
+and required null values. Schema owns only the validated value conversion
+boundary; it imports no JSON parser. Dynamic values are not exposed as raw CLI
+or environment strings.
+
 `forge_codec_json` is the JSON codec boundary. The public API is `namespace forge::codec::json`;
 The parser backend is an internal implementation detail and never leaks into
 module interfaces.

@@ -230,6 +230,7 @@ add_executable(
    test_forge_codec_json
    unit/main.cpp
    json/test_json.cpp
+   json/document_tests.cpp
 )
 target_sources(
    test_forge_codec_json

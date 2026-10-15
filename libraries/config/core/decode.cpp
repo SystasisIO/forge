@@ -103,6 +103,8 @@ value from_schema_value(const schema::input_value& input) {
 
 std::any value_to_any(const value& input, schema::value_kind kind) {
    switch (kind) {
+   case schema::value_kind::dynamic:
+      return input;
    case schema::value_kind::boolean:
       if (const auto* bool_value = std::get_if<bool>(&input.storage)) {
          return *bool_value;
@@ -212,6 +214,8 @@ std::string format_decode_diagnostics(std::string_view prefix, const decode_diag
 
 value any_to_value(schema::value_kind kind, const std::any& input) {
    switch (kind) {
+   case schema::value_kind::dynamic:
+      return std::any_cast<value>(input);
    case schema::value_kind::boolean:
       return schema::cast_any_to<bool>(input);
    case schema::value_kind::signed_integer:

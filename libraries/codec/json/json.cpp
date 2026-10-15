@@ -487,7 +487,8 @@ document parse_document(std::string_view input, document_limits limits)
       FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
    }
 
-   const auto decoded = read_value(input, {.max_depth = limits.max_depth});
+   const auto decoded = read_value(input, {.max_depth = limits.max_depth,
+                                         .described_records = described_record_policy::exact});
    if (!decoded.ok())
    {
       FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document is invalid");
@@ -509,7 +510,8 @@ variant document_value(const document& input, document_limits limits)
       FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
    }
 
-   auto decoded = read_value(input.text, {.max_depth = limits.max_depth});
+   auto decoded = read_value(input.text, {.max_depth = limits.max_depth,
+                                        .described_records = described_record_policy::exact});
    if (!decoded.ok())
    {
       FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document is invalid");
@@ -610,3 +612,23 @@ write_result save_document(const std::filesystem::path& path, const config::core
 }
 
 } // namespace forge::codec::json
+
+namespace forge::schema {
+
+input_value value_adapter<forge::codec::json::document>::encode(const forge::codec::json::document& input)
+{
+   const auto value = forge::codec::json::document_value(input);
+   return forge::config::core::to_schema_value(
+      forge::codec::json::to_config_value(forge::codec::json::from_variant_value(value)));
+}
+
+forge::codec::json::document value_adapter<forge::codec::json::document>::decode(const input_value& input)
+{
+   const auto value = forge::codec::json::to_variant_value(
+      forge::codec::json::from_config_value(forge::config::core::from_schema_value(input)));
+   auto output = forge::codec::json::document{};
+   forge::codec::json::from_variant(value, output);
+   return output;
+}
+
+} // namespace forge::schema
