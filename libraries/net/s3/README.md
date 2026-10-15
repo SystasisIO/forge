@@ -164,6 +164,40 @@ accepted for explicit local deployments/tests; deployment policy belongs to
 the application. S3 Express, directory buckets and multi-region/ARN behavior
 are not verified contracts of this leaf.
 
+For a private certificate authority (CA), set `config.ca_file` to a local file
+containing the trusted CA certificates in PEM format. It is passed directly to
+AWS SDK `caFile` for the configured endpoint and signing client. An empty value
+leaves the SDK's default trust configuration unchanged. Peer and hostname
+verification stay enabled; this option does not disable either check and does
+not change the process or operating system trust store.
+
+```cpp
+forge::net::s3::config config;
+config.endpoint = "https://storage.example.test";
+config.ca_file = "/etc/object-storage/private-ca.pem";
+// Set credentials and remaining limits before constructing the client.
+```
+
+NUL in the pathname, missing or unreadable files, directories and other special
+files are rejected as `exceptions::invalid_options` before SDK construction.
+The SDK's HTTP/TLS backend parses the PEM contents. Invalid PEM, an unrelated
+CA or a hostname mismatch rejects a read as `exceptions::transport`; a mutation
+without a confirmed result retains `exceptions::unknown_outcome` semantics.
+There is no fallback that retries without the configured CA file. Keep the file
+readable and its pathname and contents stable for the client's lifetime: the
+SDK may reopen it for later connections. The regular-file preflight does not
+protect against an adversarial pathname swap between checking and opening.
+Relative paths use the process working directory; prefer an absolute deployment
+path. Do not put credentials or private keys in the CA bundle.
+
+This option uses the pinned SDK's existing HTTP/TLS backend; no second TLS
+context or transport is created. The regression matrix targets the SDK libcurl
+HTTP backend. Whether explicit trust supplements or replaces default anchors
+depends on that backend; include all required anchors in the PEM bundle. Other
+HTTP/TLS backends need their own acceptance tests. Nonempty `ca_file` is rejected
+on Windows until a supporting backend has been validated; default trust with an
+empty value is unchanged. A CA-directory option is not provided.
+
 ## Tests and limits
 
 Build `test_forge_net_s3` and run `ctest -R '^test_forge_net_s3$'`. The loopback
@@ -176,6 +210,13 @@ the known upload identity, unknown mutation without retry, FIFO rejection and
 bounded shutdown, preflight and active
 cancellation, overload rejection, and shutdown with an active request. It runs the fixture and caller on a single Asio
 I/O thread while SDK requests use the dedicated worker pool.
+
+The TLS loopback fixture generates a private CA and server certificate through
+OpenSSL and calls the real SDK. On Linux/macOS it checks rejection without the
+private CA, success with `ca_file`, unrelated CA and hostname rejection,
+malformed/empty PEM, and preflight rejection of invalid paths and special files.
+On Windows it checks the explicit refusal of a configured CA file. It does not
+alter system trust or require a public network endpoint.
 
 These checks do not establish MinIO/AWS live compatibility, TLS deployment,
 actual URL authorization/expiry, large-file memory measurements, process-crash

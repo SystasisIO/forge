@@ -43,6 +43,7 @@ struct config {
    std::chrono::milliseconds request_timeout{30000};
    std::chrono::milliseconds operation_timeout{300000};
    std::chrono::seconds max_presign_lifetime{3600};
+   std::string ca_file;
 };
 
 struct request_options {
