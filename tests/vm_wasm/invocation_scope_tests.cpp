@@ -39,6 +39,10 @@ struct invocation_host {
    }
 };
 
+struct bounded_depth_options {
+   std::uint32_t max_call_depth = 1;
+};
+
 using host_functions = wasm::registered_host_functions<invocation_host>;
 
 void append_size(wasm::wasm_code& output, std::size_t value) {
@@ -174,6 +178,35 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_guest_traps_release_and_allow_fresh_reu
       backend.call(host, "env", "oob");
    }), wasm::exceptions::memory);
    backend.with_invocation(&host, {}, 2s, {}, [&] { check_fresh(backend, host); });
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_call_depth_guards_guest_and_import_frames, Impl, implementations) {
+   auto code = program(false);
+   auto pointer = registered_pointer(code);
+   auto limits = bounded_depth_options{};
+   auto backend =
+       wasm::backend<host_functions, Impl, bounded_depth_options>{pointer, code.size(), nullptr, limits, false, false};
+   auto ticks = 0;
+   auto host = invocation_host{[&] {
+      ++ticks;
+      return 0U;
+   }};
+   BOOST_CHECK_THROW(
+       backend.with_invocation(&host, limits, 2s, {}, [&] { (void)backend.call_with_return(host, "env", "indirect"); }),
+       wasm::exceptions::interpreter);
+   limits.max_call_depth = 2;
+   backend.with_invocation(&host, limits, 2s, {}, [&] {
+      const auto value = backend.call_with_return(host, "env", "indirect");
+      BOOST_REQUIRE(value.has_value());
+      BOOST_TEST(value->to_ui32() == 42U);
+   });
+   limits.max_call_depth = 1;
+   BOOST_CHECK_THROW(backend.with_invocation(&host, limits, 2s, {}, [&] { backend.call(host, "env", "wait"); }),
+                     wasm::exceptions::interpreter);
+   BOOST_TEST(ticks == 0);
+   limits.max_call_depth = 2;
+   backend.with_invocation(&host, limits, 2s, {}, [&] { backend.call(host, "env", "wait"); });
+   BOOST_TEST(ticks == 1);
 }
 
 BOOST_AUTO_TEST_CASE(invocation_admission_rejects_shared_owned_and_canceled_before_start) {

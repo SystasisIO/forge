@@ -761,6 +761,7 @@ template <typename Host> class execution_context : public execution_context_base
       return get_operand_stack().current_index();
    }
    inline void push_call(activation_frame&& el) {
+      detail::check<exceptions::interpreter>(_as.size() < _as.capacity(), "stack overflow");
       _as.push(std::move(el));
    }
    inline activation_frame pop_call() {
@@ -774,7 +775,7 @@ template <typename Host> class execution_context : public execution_context_base
       if constexpr (!Should_Exit)
          return_pc = _state.pc + 1;
 
-      _as.push(activation_frame{return_pc, _last_op_index});
+      push_call(activation_frame{return_pc, _last_op_index});
       _last_op_index = get_operand_stack().size() - _mod->get_function_type(index).param_types.size();
    }
 

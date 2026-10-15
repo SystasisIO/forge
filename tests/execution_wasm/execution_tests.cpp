@@ -137,6 +137,29 @@ BOOST_AUTO_TEST_CASE(typed_assertion_trap_and_start_deadline) {
    BOOST_CHECK_THROW((void)start.invoke({}, limits, stop.get_token()), execution::exceptions::canceled);
 }
 
+BOOST_AUTO_TEST_CASE(call_depth_overflow_is_a_guest_trap_and_preserves_reuse) {
+   // Apply recurses using action as a countdown, then echoes through host imports.
+   auto body = fixtures::bytes{0x20, 2, 0x50, 0x04, 0x40};
+   const auto echo = fixtures::echo();
+   body.insert(body.end(), echo.begin(), echo.end());
+   body.insert(body.end(), {0x05, 0x20, 0, 0x20, 1, 0x20, 2, 0x42, 1, 0x7d, 0x10, 5, 0x0b});
+   const auto code = fixtures::module(body);
+   auto limits = execution::compile_limits{};
+   limits.vm.max_call_depth = 4;
+   auto bounded = execution::compiled_module{code, limits};
+   const auto input = fixtures::bytes{42, 17};
+   // Eight recursive calls exhaust guest frames. Three fill the four frames
+   // exactly, so the first host import must fail before entering its callback.
+   for (const auto count : {8U, 3U}) {
+      BOOST_CHECK_THROW((void)bounded.invoke({.action = forge::chain::protocol::action_name{count}, .data = input}),
+                        execution::exceptions::trap);
+      BOOST_CHECK(bounded.invoke({.action = forge::chain::protocol::action_name{1}, .data = input}).data == input);
+   }
+   limits.vm.max_call_depth = 16;
+   auto sufficient = execution::compiled_module{code, limits};
+   BOOST_CHECK(sufficient.invoke({.action = forge::chain::protocol::action_name{8}, .data = input}).data == input);
+}
+
 BOOST_AUTO_TEST_CASE(canceled_instance_and_sibling_can_execute_again) {
    auto body = fixtures::bytes{0x20,2, 0x50, 0x04,0x40, 0x03,0x40, 0x0c,0, 0x0b, 0x0b};
    const auto echo = fixtures::echo();
