@@ -258,12 +258,16 @@ class beast_response_body_source final : public body_reader::source,
          }
       }
    } catch (const forge::exceptions::base&) {
+      cancel();
       throw;
    } catch (const boost::system::system_error& error) {
+      cancel();
       raise_transport_error(error);
    } catch (const std::exception& error) {
+      cancel();
       raise_transport_implementation_error(error);
    } catch (...) {
+      cancel();
       raise_transport_implementation_error();
    }
 
@@ -598,7 +602,8 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       tls_connected = true;
    }
 
-   awaitable<response> do_plain_request(forge::net::http::request request_value, transport_deadline deadline) {
+   awaitable<response> do_plain_request(forge::net::http::request request_value, transport_deadline deadline,
+                                        std::uint64_t max_response_body_bytes) {
       co_await ensure_plain_connected(deadline);
 
       ensure_host_header(request_value, endpoint);
@@ -607,17 +612,13 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_await boost::beast::http::async_write(*plain_stream, beast_request, use_awaitable);
 
       buffer.consume(buffer.size());
-      auto response_value = response{};
+      auto parser = beast_http::response_parser<beast_http::string_body>{};
+      parser.body_limit(max_response_body_bytes);
       if (request_value.method() == method::head) {
-         auto parser = boost::beast::http::response_parser<beast_http::string_body>{};
          parser.skip(true);
-         co_await boost::beast::http::async_read(*plain_stream, buffer, parser, use_awaitable);
-         response_value = to_http_response(parser.release());
-      } else {
-         auto beast_response = beast_http::response<beast_http::string_body>{};
-         co_await boost::beast::http::async_read(*plain_stream, buffer, beast_response, use_awaitable);
-         response_value = to_http_response(beast_response);
       }
+      co_await beast_http::async_read(*plain_stream, buffer, parser, use_awaitable);
+      auto response_value = to_http_response(parser.release());
 
       if (!response_value.keep_alive()) {
          close_plain();
@@ -626,7 +627,8 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_return response_value;
    }
 
-   awaitable<response> do_tls_request(forge::net::http::request request_value, transport_deadline deadline) {
+   awaitable<response> do_tls_request(forge::net::http::request request_value, transport_deadline deadline,
+                                      std::uint64_t max_response_body_bytes) {
       co_await ensure_tls_connected(deadline);
 
       ensure_host_header(request_value, endpoint);
@@ -635,17 +637,13 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_await boost::beast::http::async_write(*tls_stream, beast_request, use_awaitable);
 
       buffer.consume(buffer.size());
-      auto response_value = response{};
+      auto parser = beast_http::response_parser<beast_http::string_body>{};
+      parser.body_limit(max_response_body_bytes);
       if (request_value.method() == method::head) {
-         auto parser = boost::beast::http::response_parser<beast_http::string_body>{};
          parser.skip(true);
-         co_await boost::beast::http::async_read(*tls_stream, buffer, parser, use_awaitable);
-         response_value = to_http_response(parser.release());
-      } else {
-         auto beast_response = beast_http::response<beast_http::string_body>{};
-         co_await boost::beast::http::async_read(*tls_stream, buffer, beast_response, use_awaitable);
-         response_value = to_http_response(beast_response);
       }
+      co_await beast_http::async_read(*tls_stream, buffer, parser, use_awaitable);
+      auto response_value = to_http_response(parser.release());
 
       if (!response_value.keep_alive()) {
          close_tls();
@@ -655,7 +653,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
    }
 
    awaitable<response> do_plain_streaming_request(forge::net::http::request request_value, body_reader body,
-                                                  transport_deadline deadline) {
+                                                  transport_deadline deadline, std::uint64_t max_response_body_bytes) {
       auto results = co_await resolve(deadline);
       auto stream = beast::tcp_stream{strand};
       stream.expires_at(deadline);
@@ -665,17 +663,21 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_await write_streaming_request(stream, request_value, body, deadline);
 
       auto stream_buffer = beast::flat_buffer{};
-      auto beast_response = beast_http::response<beast_http::string_body>{};
+      auto parser = beast_http::response_parser<beast_http::string_body>{};
+      parser.body_limit(max_response_body_bytes);
+      if (request_value.method() == method::head) {
+         parser.skip(true);
+      }
       require_deadline(deadline);
       stream.expires_at(deadline);
-      co_await beast_http::async_read(stream, stream_buffer, beast_response, use_awaitable);
-      auto response_value = to_http_response(beast_response);
+      co_await beast_http::async_read(stream, stream_buffer, parser, use_awaitable);
+      auto response_value = to_http_response(parser.release());
       record_status(response_value);
       co_return response_value;
    }
 
    awaitable<response> do_tls_streaming_request(forge::net::http::request request_value, body_reader body,
-                                                transport_deadline deadline) {
+                                                transport_deadline deadline, std::uint64_t max_response_body_bytes) {
       auto results = co_await resolve(deadline);
       auto& tls_context_provider = *tls_context_provider_ptr;
       auto context_snapshot = tls_context_provider.snapshot();
@@ -699,17 +701,22 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_await write_streaming_request(*stream, request_value, body, deadline);
 
       auto stream_buffer = beast::flat_buffer{};
-      auto beast_response = beast_http::response<beast_http::string_body>{};
+      auto parser = beast_http::response_parser<beast_http::string_body>{};
+      parser.body_limit(max_response_body_bytes);
+      if (request_value.method() == method::head) {
+         parser.skip(true);
+      }
       require_deadline(deadline);
       expire_at(*stream, deadline);
-      co_await beast_http::async_read(*stream, stream_buffer, beast_response, use_awaitable);
-      auto response_value = to_http_response(beast_response);
+      co_await beast_http::async_read(*stream, stream_buffer, parser, use_awaitable);
+      auto response_value = to_http_response(parser.release());
       record_status(response_value);
       co_return response_value;
    }
 
    awaitable<response_stream> do_plain_stream_request(forge::net::http::request request_value,
-                                                      std::optional<body_reader> body, transport_deadline deadline) {
+                                                      std::optional<body_reader> body, transport_deadline deadline,
+                                                      std::uint64_t max_response_body_bytes) {
       auto results = co_await resolve(deadline);
       auto stream = beast::tcp_stream{strand};
       stream.expires_at(deadline);
@@ -727,6 +734,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
 
       auto stream_buffer = beast::flat_buffer{};
       auto parser = std::make_shared<beast_http::response_parser<beast_http::buffer_body>>();
+      parser->body_limit(max_response_body_bytes);
       if (request_value.method() == method::head) {
          parser->skip(true);
       }
@@ -741,7 +749,8 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
    }
 
    awaitable<response_stream> do_tls_stream_request(forge::net::http::request request_value,
-                                                    std::optional<body_reader> body, transport_deadline deadline) {
+                                                    std::optional<body_reader> body, transport_deadline deadline,
+                                                    std::uint64_t max_response_body_bytes) {
       auto results = co_await resolve(deadline);
       auto& tls_context_provider = *tls_context_provider_ptr;
       auto context_snapshot = tls_context_provider.snapshot();
@@ -773,6 +782,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
 
       auto stream_buffer = beast::flat_buffer{};
       auto parser = std::make_shared<beast_http::response_parser<beast_http::buffer_body>>();
+      parser->body_limit(max_response_body_bytes);
       if (request_value.method() == method::head) {
          parser->skip(true);
       }
@@ -787,15 +797,17 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
    }
 
    awaitable<response> streaming_request(forge::net::http::request request_value, body_reader body,
-                                         transport_deadline deadline) {
+                                         transport_deadline deadline, std::uint64_t max_response_body_bytes) {
       record_started();
       try {
          if (endpoint.secure()) {
-            auto result = co_await do_tls_streaming_request(std::move(request_value), std::move(body), deadline);
+            auto result = co_await do_tls_streaming_request(std::move(request_value), std::move(body), deadline,
+                                                            max_response_body_bytes);
             record_completed();
             co_return result;
          }
-         auto result = co_await do_plain_streaming_request(std::move(request_value), std::move(body), deadline);
+         auto result = co_await do_plain_streaming_request(std::move(request_value), std::move(body), deadline,
+                                                           max_response_body_bytes);
          record_completed();
          co_return result;
       } catch (const boost::system::system_error& error) {
@@ -811,15 +823,17 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
    }
 
    awaitable<response_stream> stream_request(forge::net::http::request request_value, std::optional<body_reader> body,
-                                             transport_deadline deadline) {
+                                             transport_deadline deadline, std::uint64_t max_response_body_bytes) {
       record_started();
       try {
          if (endpoint.secure()) {
-            auto result = co_await do_tls_stream_request(std::move(request_value), std::move(body), deadline);
+            auto result = co_await do_tls_stream_request(std::move(request_value), std::move(body), deadline,
+                                                         max_response_body_bytes);
             record_completed();
             co_return result;
          }
-         auto result = co_await do_plain_stream_request(std::move(request_value), std::move(body), deadline);
+         auto result = co_await do_plain_stream_request(std::move(request_value), std::move(body), deadline,
+                                                        max_response_body_bytes);
          record_completed();
          co_return result;
       } catch (const boost::system::system_error& error) {
@@ -841,7 +855,8 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
 
       for (;;) {
          try {
-            auto result = co_await stream_request(request_value, std::nullopt, deadline);
+            auto result =
+                co_await stream_request(request_value, std::nullopt, deadline, options.max_response_body_bytes);
             if (attempt > 0) {
                record_reconnect();
             }
@@ -879,11 +894,13 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
                require_deadline(deadline);
                record_started();
                if (endpoint.secure()) {
-                  if (operation->complete_response(co_await do_tls_request(original, deadline))) {
+                  if (operation->complete_response(
+                          co_await do_tls_request(original, deadline, options.max_response_body_bytes))) {
                      record_completed();
                   }
                } else {
-                  if (operation->complete_response(co_await do_plain_request(original, deadline))) {
+                  if (operation->complete_response(
+                          co_await do_plain_request(original, deadline, options.max_response_body_bytes))) {
                      record_completed();
                   }
                }
@@ -895,7 +912,8 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
                }
 
                const auto reset_connection = connection_reset_error(error.code()) || timeout_error(error.code()) ||
-                                             cancellation_error(error.code());
+                                             cancellation_error(error.code()) ||
+                                             error.code() == beast_http::error::body_limit;
                if (reset_connection) {
                   close_all();
                }
@@ -1314,7 +1332,8 @@ boost::asio::awaitable<response> connection::async_streaming_request(forge::net:
    auto implementation = impl_;
    const auto deadline = make_deadline(options);
    co_await asio::dispatch(implementation->strand, use_awaitable);
-   co_return co_await implementation->streaming_request(std::move(request_value), std::move(body), deadline);
+   co_return co_await implementation->streaming_request(std::move(request_value), std::move(body), deadline,
+                                                        options.max_response_body_bytes);
 } catch (const forge::exceptions::base&) {
    throw;
 } catch (const boost::system::system_error& error) {
@@ -1347,7 +1366,8 @@ boost::asio::awaitable<response_stream> connection::async_stream_request(forge::
    auto implementation = impl_;
    const auto deadline = make_deadline(options);
    co_await asio::dispatch(implementation->strand, use_awaitable);
-   co_return co_await implementation->stream_request(std::move(request_value), std::move(body), deadline);
+   co_return co_await implementation->stream_request(std::move(request_value), std::move(body), deadline,
+                                                     options.max_response_body_bytes);
 } catch (const forge::exceptions::base&) {
    throw;
 } catch (const boost::system::system_error& error) {

@@ -1124,6 +1124,13 @@ target_link_libraries(test_forge_http_stop_retry forge_net_http forge_asio Boost
 add_test(NAME test_forge_http_stop_retry COMMAND test_forge_http_stop_retry WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_http_stop_retry PROPERTIES TIMEOUT 60)
 
+add_executable(test_forge_http_response_body_limit unit/main.cpp http/response_body_limit_tests.cpp)
+target_link_libraries(test_forge_http_response_body_limit PRIVATE forge_net_http forge_net_tls forge_asio
+   Boost::included_unit_test_framework OpenSSL::Crypto)
+add_test(NAME test_forge_http_response_body_limit COMMAND test_forge_http_response_body_limit
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_response_body_limit PROPERTIES TIMEOUT 60)
+
 add_executable(
    test_forge_yamux
    unit/main.cpp
