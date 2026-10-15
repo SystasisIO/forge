@@ -1,5 +1,20 @@
 # forge_codec_json
 
+## Opaque shared JSON values
+
+`forge.codec.json.document` is a guest-safe owned `document { std::string text; }`.
+Link `Forge::forge_codec_json_values` when a shared protocol must carry arbitrary
+JSON without importing a parser, Variant, or native runtime into WASM. Raw encodes
+the document exactly as one string. Guest code treats the bytes as opaque; they
+do not prove that the text is valid JSON.
+
+Native code imports `forge.codec.json` and uses `parse_document(text, limits)` or
+`document_value(value, limits)`. These functions use the existing JSON backend,
+reject malformed/duplicate/deep/oversized input, and enforce explicit byte/depth
+limits. Native `to_variant/from_variant` adapters preserve the JSON value inside
+described DTOs: an object remains an object, rather than a quoted JSON string.
+Default document limits are 1 MiB and depth 128. Do not log document contents.
+
 `forge_codec_json` is the JSON codec boundary. The public API is `namespace forge::codec::json`;
 The parser backend is an internal implementation detail and never leaks into
 module interfaces.

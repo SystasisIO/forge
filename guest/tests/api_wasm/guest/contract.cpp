@@ -19,6 +19,12 @@ class [[forge::contract("wasmproto")]] wasmproto : public forge::contract::conte
    [[forge::action]] protocol::context checkctx(protocol::context value) { protocol::validate(value); return value; }
    [[forge::action]] protocol::http_command checkhttp(protocol::http_command value) { protocol::validate(value); return value; }
    [[forge::action]] protocol::http_response checkreply(protocol::http_response value) { protocol::validate(value); return value; }
+   [[forge::action]] fixture::json_request checkjson(fixture::json_request value) { return value; }
+   [[forge::action]] forge::codec::json::document jsonbound(std::vector<std::uint8_t> bytes) {
+      return forge::raw::unpack_exact<forge::codec::json::document>(bytes,
+         forge::raw::unpack_limits{.max_container_elements = 8, .max_total_container_elements = 8,
+                                  .max_bytes = 8, .first_container_elements = 8});
+   }
    [[forge::action]] fixture::request unbox(protocol::payload value) {
       return protocol::decode<fixture::request>(value, "request");
    }
@@ -84,6 +90,7 @@ class [[forge::contract("wasmproto")]] wasmproto : public forge::contract::conte
          case 8: return forge::raw::pack(protocol::context{
             protocol::subject_view{"issuer", "alice"}, {{"admission", {1}}}});
          case 9: return forge::raw::pack(protocol::context{});
+         case 10: return forge::raw::pack(fixture::json_request{{"{\"x\":1}"}, std::nullopt});
          default: forge::contract::check(false, "fixture case");
       }
       return {};

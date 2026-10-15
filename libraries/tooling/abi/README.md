@@ -112,6 +112,15 @@ other underlying types are rejected only when metadata is requested.
 The runtime consumer is the existing
 [Chain API ABI codec](../../chain/api/README.md).
 
+Shared `forge::codec::json::document` values are discovered by their canonical
+C++ type. Abigen emits the ordinary ABI alias `json_document -> string`; its
+wire bytes remain a Raw string. When such a value is reachable and metadata is
+requested, the optional sidecar uses `forge::abi-metadata/1.1` and generated
+`json_types` aliases. The metadata-aware ABI codec maps those aliases to JSON
+values using the existing native codec. Unmarked ABI aliases remain strings,
+and metadata without JSON documents retains version 1.0. This adds no Chain ABI
+builtin and does not make a guest JSON parser part of the SDK.
+
 ### Explicit shared enum wire types
 
 Abigen resolves the existing `forge::raw::enum_wire_type<Enum>` through Clang

@@ -98,3 +98,12 @@ BOOST_AUTO_TEST_CASE(sse_format_multiline_and_reject_metadata_injection)
    BOOST_CHECK_THROW(forge::net::http::format_sse({.data = "long"}, {.max_event_bytes = 3}),
                      forge::net::http::exceptions::payload_too_large);
 }
+
+BOOST_AUTO_TEST_CASE(sse_exact_event_and_line_limits_are_inclusive)
+{
+   auto decoder = forge::net::http::sse_decoder{{.max_line_bytes = 9, .max_event_bytes = 3, .max_buffer_bytes = 11}};
+   decoder.append("data: abc\n\n");
+   const auto event = decoder.next();
+   BOOST_REQUIRE(event);
+   BOOST_TEST(event->data == "abc");
+}

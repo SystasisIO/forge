@@ -390,6 +390,7 @@ add_executable(
    test_forge_chain_api
    unit/main.cpp
    chain_api/abi_tests.cpp
+   chain_api/json_document_tests.cpp
    chain_api/chain_api_tests.cpp
 )
 target_link_libraries(

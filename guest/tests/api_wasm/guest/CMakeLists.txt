@@ -6,4 +6,4 @@ forge_add_contract(wasmproto SOURCES contract.cpp LIBRARIES api_wasm_fixture_pro
    ABI_METADATA ABI_ROOT_TYPES
       forge::api::wasm::step forge::api::wasm::event forge::api::wasm::context
       forge::api::wasm::http_command forge::api::wasm::http_response
-      fixture::request fixture::access_result)
+      fixture::request fixture::access_result fixture::json_request)
