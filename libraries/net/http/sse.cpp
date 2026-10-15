@@ -213,10 +213,7 @@ std::string format_sse(const sse_event& event, sse_limits limits)
       append_line("event", event.event);
    }
 
-   if (!event.id.empty())
-   {
-      append_line("id", event.id);
-   }
+   append_line("id", event.id);
 
    if (event.retry)
    {

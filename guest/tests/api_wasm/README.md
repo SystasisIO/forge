@@ -10,6 +10,10 @@ that SDK, setting `API_WASM_WASM`, `API_WASM_ABI` and `API_WASM_METADATA` to the
 generated artifacts. Run `api_wasm_parity` through CTest. The runner uses the
 production `execution_wasm` adapter, not a mock guest serializer.
 
+When configuring `guest` directly, set
+`-DFORGE_CONTRACT_SOURCE_ROOT=<forge>/guest/tests/api_wasm` so the sibling
+`protocol` module is inside the contract source root.
+
 Checks compare hardcoded bytes, native Raw, separately constructed guest values
 and generated ABI conversion. They also exercise the validation implementation
 linked from the SDK archive, rejected malformed inputs, typed payload decoding,

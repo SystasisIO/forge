@@ -72,3 +72,14 @@ BOOST_AUTO_TEST_CASE(abi_json_document_rejects_invalid_wire_depth_bytes_and_mark
    BOOST_CHECK_THROW(forge::chain::api::abi_bin_to_json(invalid, metadata, "json_document", forge::raw::pack(1U)),
                      forge::chain::api::abi_serialization_error);
 }
+
+BOOST_AUTO_TEST_CASE(abi_json_document_rejects_trailing_wire_content)
+{
+   const auto abi = document_abi();
+   const auto metadata = document_metadata();
+   for (const auto& input : {std::string{"null garbage"}, std::string{"{}{}"}, std::string{"null\0garbage", 12}})
+   {
+      BOOST_CHECK_THROW(static_cast<void>(forge::chain::api::abi_bin_to_json(
+         abi, metadata, "json_document", forge::raw::pack(input))), forge::chain::api::abi_serialization_error);
+   }
+}
