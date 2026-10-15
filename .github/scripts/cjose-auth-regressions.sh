@@ -139,6 +139,18 @@ def collect(lane):
         require((raw / 'complete').read_text() == 'PASS\n')
     except Exception:
         result['status'] = 'HARNESS_ERROR'
+    cleanup = raw / 'cleanup.json'
+    if cleanup.is_file():
+        try:
+            data = read_json(cleanup)
+            counters = {'du_kib_before', 'du_kib_after', 'df_available_kib_before',
+                        'df_available_kib_after', 'removed_directory_count'}
+            require(set(data) == counters | {'status'})
+            require(data['status'] in {'COMPLETE', 'INCOMPLETE', 'SKIPPED_NOT_PASS', 'REFUSED_UNSAFE_PATH', 'ERROR'})
+            require(all(data[key] is None or type(data[key]) is int and data[key] >= 0 for key in counters))
+            result['cleanup'] = data
+        except Exception:
+            result['cleanup'] = {'status': 'HARNESS_ERROR'}
     return result
 
 
@@ -333,6 +345,74 @@ setup_snapshot() {
 
 stage() {
    printf '%s\n' "$1" > "$work/raw/$phase/last-step"
+}
+
+cleanup_passed_lane() {
+   # Reuse the real collector: exit=0 alone does not prove complete, unskipped cases.
+   bash "$root/.github/scripts/cjose-auth-regressions.sh" evidence > "$raw/cleanup-validation.log" 2>&1 || return 0
+   timeout --kill-after=5s 120s python3 - "$work" "$phase" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+work, lane = Path(sys.argv[1]), sys.argv[2]
+if lane not in {'baseline', 'candidate'}:
+    sys.exit(1)
+output = work / 'raw' / lane / 'cleanup.json'
+metrics = dict.fromkeys(('du_kib_before', 'du_kib_after', 'df_available_kib_before', 'df_available_kib_after'))
+metrics.update(status='INCOMPLETE', removed_directory_count=0)
+
+def save():
+    temporary = output.with_suffix('.tmp')
+    temporary.write_text(json.dumps(metrics, sort_keys=True) + '\n')
+    temporary.replace(output)
+
+def available():
+    result = subprocess.run(['df', '-Pk', str(work)], capture_output=True, text=True, timeout=5, check=True)
+    return int(result.stdout.splitlines()[-1].split()[3])
+
+def used(paths):
+    if not paths:
+        return 0
+    result = subprocess.run(['du', '-sk', *map(str, paths)], capture_output=True, text=True, timeout=30, check=True)
+    return sum(int(line.split()[0]) for line in result.stdout.splitlines())
+
+try:
+    if json.loads((work / 'evidence' / 'q7.json').read_text())[lane]['status'] != 'PASS':
+        metrics['status'] = 'SKIPPED_NOT_PASS'
+    else:
+        # No glob, recursive search, source path, shared dependency or evidence path.
+        names = [lane + '-build', lane + '-installed', lane + '-consumer']
+        if lane == 'candidate':
+            names.append('candidate-build-tree-consumer')
+        paths = [work / name for name in names]
+        expected = Path(os.environ['RUNNER_TEMP']) / 'forge-cjose-auth-regressions'
+        safe = (os.environ.get('CI') == 'true' and os.environ.get('RUNNER_OS') == 'Linux'
+                and work == expected and not work.is_symlink() and shutil.rmtree.avoids_symlink_attacks
+                and all(not path.is_symlink() and (not path.exists() or path.is_dir())
+                        and path.resolve() == work.resolve() / path.name for path in paths))
+        if not safe:
+            metrics['status'] = 'REFUSED_UNSAFE_PATH'
+        else:
+            existing = [path for path in paths if path.exists()]
+            metrics['df_available_kib_before'] = available()
+            metrics['du_kib_before'] = used(existing)
+            save()
+            for path in existing:
+                shutil.rmtree(path)
+                metrics['removed_directory_count'] += 1
+                save()
+            metrics['du_kib_after'] = used([path for path in paths if path.exists()])
+            metrics['df_available_kib_after'] = available()
+            metrics['status'] = 'COMPLETE'
+except Exception:
+    # Cleanup is not an auth gate; retain proofs and never emit raw exception text.
+    metrics['status'] = 'ERROR'
+save()
+PY
 }
 
 if [[ "$phase" == dependencies ]]; then
@@ -548,4 +628,7 @@ done
 )
 stage complete
 printf 'PASS\n' > "$raw/complete"
+if (( failed == 0 )); then
+   cleanup_passed_lane || true
+fi
 exit "$failed"

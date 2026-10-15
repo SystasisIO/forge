@@ -1,6 +1,7 @@
 # CJOSE External Signing Qualification (F0-B)
 
-Status: implementation candidate; CI and independent code review pending.
+Status: backend qualified with two independent `BACKEND_CLEAN` reviews;
+Forge OAuth/install regression gate Q7 is still pending. F0-B is not closed.
 This report does not approve integration into `dev`, a new signing service or
 the later Forge attestation API. No upstream issue or pull request is published.
 
@@ -13,7 +14,7 @@ the later Forge attestation API. No upstream issue or pull request is published.
 | Historical CJOSE | OpenIDC `0.6.2.8`, `e787ace6a203d483038a793fd58f958a2f9b48c1` |
 | Extension base | OpenIDC `0.8.1`, `6fdb5fe75a86acb9cd34ca2eb13d9e090a6df588` |
 | Maintained fork | [SystasisIO/cjose](https://github.com/SystasisIO/cjose), `external-signing-0.8-v1` |
-| Candidate | Exact immutable `vendor/cjose` gitlink; CI also records it in provenance |
+| Candidate | `84da8b54feb4e46ea1ddae6930f821e1510471b7`; exact immutable `vendor/cjose` gitlink |
 | Jansson | `2.14.1`, `ed5cae4ed0621ef409510f94270c9f8f263736d0` |
 
 Fresh upstream inspection found no public two-phase external-signing API in
@@ -81,13 +82,13 @@ claim that unrestricted CJOSE itself applies all product profile rules.
 
 | Gate | Evidence required | Current result |
 |---|---|---|
-| Q1 | Unmodified 0.8.1 tests and same suite plus extension on candidate; historical baseline separate | NOT_RUN |
-| Q2 | RFC signing-input/vector and bidirectional independent JWS interoperability | NOT_RUN |
-| Q3 | Public-only key, frozen input, substitution, encoding/length, completion/lifetime and independent states | NOT_RUN |
-| Q4 | Malformed JWS/header corpus, explicit profile rejection, no parser differential | NOT_RUN |
-| Q5 | Bounds, overflow, allocation failures, bounded fuzz, ASan/UBSan, measured resources | NOT_RUN |
-| Q7 | Existing Forge OAuth verifier and patched liboauth2 regressions against original and candidate dependency closure | NOT_RUN |
-| Q8a | Linux/macOS shared/static install, public consumer, old C ABI and extension feature detection | NOT_RUN |
+| Q1 | Unmodified 0.8.1 tests and same suite plus extension on candidate; historical baseline separate | PASS, both operating systems |
+| Q2 | RFC signing-input/vector and bidirectional independent JWS interoperability | PASS, both operating systems |
+| Q3 | Public-only key, frozen input, substitution, encoding/length, completion/lifetime and independent states | PASS, both operating systems |
+| Q4 | Malformed JWS/header corpus, explicit profile rejection, no parser differential | PASS, both operating systems |
+| Q5 | Bounds, overflow, allocation failures, bounded fuzz, ASan/UBSan, measured resources | PASS within stated instrumentation limits |
+| Q7 | Existing Forge OAuth verifier and patched liboauth2 regressions against original and candidate dependency closure | PENDING; not covered by standalone backend results |
+| Q8a | Linux/macOS shared/static install, public consumer, old C ABI and extension feature detection | PASS for standalone CJOSE; Forge package acceptance also requires Q7 |
 
 CI must record exact Forge/CJOSE SHAs, compiler/dependency versions, commands,
 exit codes, test counts and artifacts. Missing tests, baseline failures or
@@ -102,6 +103,44 @@ Q6 (async custody), Q8b (new Forge/guest packages), Q9a (Raw document boundary)
 and Q9b (signer profiles) remain NOT_RUN and outside F0-B. No GateOS/spinekd
 pin, plugin topology, public Forge API or production permission format changes
 in this branch. Integration is a separate decision after code review is CLEAN.
+
+## Executed Evidence
+
+[Backend CI 38726696956](https://github.com/SystasisIO/forge/actions/runs/38726696956)
+passed on Forge `ac580f71956e24bc862c29316b970eced57734a9` with the CJOSE
+candidate above. Both independent reviewers inspected the actual artifacts,
+source and corpus hashes, not only GitHub's green conclusion.
+
+| Evidence | Linux | macOS |
+|---|---|---|
+| Upstream / candidate / original suite against candidate / sanitizer suite | 122 / 127 / 122 / 127 PASS | 122 / 127 / 122 / 127 PASS |
+| Public C consumers, shared/static and ordinary/instrumented | 4 x 74 PASS | 4 x 74 PASS |
+| Injected allocation-failure positions, prepare / complete | 244 / 30 | 188 / 30 |
+| Bounded fuzz runs / peak resident memory | 20,000 / 497 MiB | 20,000 / 484 MiB |
+| Unchanged historical binary, old and candidate shared library | PASS, actual loaded library verified | PASS, actual loaded library verified |
+| Native/fallback package discovery and negative extension control | PASS | PASS |
+
+ASan/UBSan instrument CJOSE and the fixture, not the separately built
+Jansson/OpenSSL dependencies. macOS LeakSanitizer is unsupported and not
+claimed as tested. macOS uses verified LLVM/LLD 22.1.8; the sanitizer build
+keeps SDK-deprecated functions in upstream tests as visible warnings only for
+`check_cjose`. Production objects, assertions and instrumentation are unchanged.
+The [fixture README](../../tests/cjose_qualification/README.md) records these
+qualification policies and the observed setup failures.
+
+The original 122 test IDs and hashes of ten original test files are preserved.
+Five upstream-style tests exercise the new API; additional public-consumer
+cases supply interoperability, failure injection and bounded malformed inputs.
+These results do not qualify a future network signer or production permission
+profile. Q7 and its independent final review remain mandatory before F0-B closes.
+
+[Q7 run 38723943582](https://github.com/SystasisIO/forge/actions/runs/38723943582)
+confirmed the original Forge `8975f234` baseline: all 140 cases passed
+(liboauth2 18, token verifier 8, trusted subject 21, HTTP auth 7, patched-library
+regressions 86), with the installed package consumer and dependency linkage
+also passing. That run's candidate was the superseded Forge `7f1043eb` and
+stopped during configure on the Jansson release/ABI-version bug described
+below. It is not a regression-test result for the current candidate.
 
 ## Upstream Handoff
 
