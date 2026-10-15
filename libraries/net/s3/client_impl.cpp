@@ -501,6 +501,9 @@ struct client::impl::backend {
       native.retryStrategy = Aws::MakeShared<Aws::Client::DefaultRetryStrategy>("forge.s3", 0);
       native.executor = Aws::MakeShared<unused_executor>("forge.s3");
       native.verifySSL = true;
+      if (!options.ca_file.empty()) {
+         native.caFile = aws_string(options.ca_file);
+      }
       native.followRedirects = Aws::Client::FollowRedirectsPolicy::NEVER;
       native.checksumConfig.requestChecksumCalculation = Aws::Client::RequestChecksumCalculation::WHEN_REQUIRED;
       native.checksumConfig.responseChecksumValidation = Aws::Client::ResponseChecksumValidation::WHEN_SUPPORTED;
@@ -536,7 +539,7 @@ struct client::impl::backend {
          return;
       }
       const auto& error = outcome.GetError();
-      const auto status = static_cast<unsigned>(error.GetResponseCode());
+      const auto status = static_cast<int>(error.GetResponseCode());
       if (status == 404) {
          FORGE_THROW_EXCEPTION(exceptions::not_found, "S3 object or upload does not exist");
       }
@@ -594,6 +597,24 @@ client::impl::impl(asio::compute::executor executor, config options)
        _options.request_timeout > std::chrono::minutes{10} || _options.operation_timeout > std::chrono::hours{24} ||
        _options.max_presign_lifetime.count() <= 0 || _options.max_presign_lifetime > std::chrono::hours{24 * 7}) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 client configuration is invalid");
+   }
+   if (!_options.ca_file.empty()) {
+#ifdef _WIN32
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "Explicit S3 CA files are not supported on Windows");
+#else
+      if (_options.ca_file.find('\0') != std::string::npos) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 CA file pathname is invalid");
+      }
+      std::error_code error;
+      if (!std::filesystem::is_regular_file(_options.ca_file, error) || error) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 CA file must be a readable regular file");
+      }
+      // The SDK reopens the file; its owner must keep the pathname and contents stable.
+      std::ifstream file{_options.ca_file, std::ios::binary};
+      if (!file) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_options, "S3 CA file must be a readable regular file");
+      }
+#endif
    }
    _backend = std::make_unique<backend>(_options);
    _options.identity = {};

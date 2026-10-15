@@ -42,6 +42,8 @@ namespace http = boost::beast::http;
 namespace s3 = forge::net::s3;
 using tcp = asio::ip::tcp;
 
+asio::awaitable<void> exercise_tls(forge::asio::compute::pool& workers);
+
 void require(bool value, const char* message) {
    if (!value) {
       throw std::runtime_error{message};
@@ -320,6 +322,7 @@ struct endpoint : std::enable_shared_from_this<endpoint> {
 };
 
 asio::awaitable<void> exercise(std::shared_ptr<endpoint> server, forge::asio::compute::pool& workers) {
+   co_await exercise_tls(workers);
    s3::config config;
    config.endpoint = server->address();
    config.signing_endpoint = "https://download.example.test";
