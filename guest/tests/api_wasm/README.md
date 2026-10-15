@@ -15,3 +15,9 @@ and generated ABI conversion. They also exercise the validation implementation
 linked from the SDK archive, rejected malformed inputs, typed payload decoding,
 host-selected capabilities and arbitrary action arguments. Package isolation is
 tested separately by `tests/package_api_wasm_component`.
+
+The shared fixture also carries opaque `forge.codec.json.document` values.
+Literal native/guest bytes remain standard Raw strings, generated metadata
+marks only the canonical JSON alias, and the native ABI adapter restores JSON
+objects. Guest tests enforce Raw byte bounds and reject truncated strings;
+native codec/ABI tests own malformed JSON, depth and text-size validation.

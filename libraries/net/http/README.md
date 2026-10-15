@@ -703,6 +703,26 @@ and remain cancellable when the peer disconnects. Applications must also
 provide appropriate concurrency, backpressure and resource limits for those
 waits.
 
+### Incremental Server-Sent Events
+
+Import `forge.net.http.sse` to frame SSE independently of JSON or a provider API.
+`sse_decoder::append(bytes)` admits a bounded transport chunk; drain `next()`
+before appending more. The decoder supports fragmented UTF-8 BOM, CR/LF/CRLF,
+comments, multiline data, event names, persistent IDs, and numeric retry fields.
+`finish()` marks EOF; completed events can still be drained, while an event
+without its terminating blank line is discarded. The decoder owns no event queue.
+Line, event-data and input-buffer limits are explicit; violations raise typed
+`payload_too_large` errors. `format_sse(event, limits)` rejects metadata injection
+and bounds its encoded output. JSON decoding and terminal sentinels belong to
+the consuming API.
+
+Use `streaming_response::from_source` with `content_type = "text/event-stream"`
+and `FORGE_HTTP_RESPONSE_STREAM` for a macro-bound HTTP API. The same method may
+choose `application/json` and return one bounded JSON body when requested.
+The server pulls the next body only after the previous write completes. Producers
+still own cancellation, deadlines, concurrency and queue/event limits; do not
+buffer an entire response and present fabricated fragments as a live stream.
+
 ### Use The Client
 
 ```cpp

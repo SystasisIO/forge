@@ -171,4 +171,30 @@ int main() {
    require(invoke("resume", resumed) == resumed, "guest full-response/body capability distinction failed");
    const auto status_only = forge::raw::pack(wasm::http_response{404, std::nullopt});
    require(invoke("response", status_only) == status_only, "guest explicit status-only branch rejected");
+
+   const auto document_bytes = forge::codec::hex::decode("077b2278223a317d00");
+   require(forge::raw::pack(fixture::json_request{{"{\"x\":1}"}, std::nullopt}) == document_bytes,
+           "native opaque JSON document bytes differ");
+   require(invoke("checkjson", document_bytes) == document_bytes, "guest opaque JSON document bytes differ");
+   const auto bounded_document = forge::codec::hex::decode("077b2278223a317d");
+   require(invoke("jsonbound", forge::raw::pack(bounded_document)) == bounded_document,
+           "guest document byte bound rejected its exact boundary");
+   rejects<execution::exceptions::assertion_failed>([&] {
+      (void)invoke("jsonbound", forge::raw::pack(forge::raw::pack(forge::codec::json::document{"12345678"})));
+   }, "guest document byte bound ignored");
+   require(forge::raw::unpack_exact<forge::raw::bytes>(invoke("fresh", forge::raw::pack(std::uint8_t{10}))) == document_bytes,
+           "independently constructed guest JSON document bytes differ");
+   require(metadata.version == "forge::abi-metadata/1.1" && metadata.json_types &&
+           *metadata.json_types == std::vector<std::string>{"json_document"}, "generated JSON semantics metadata missing");
+   require(abi_api::abi_json_to_bin(abi, metadata, "json_request", json(R"({"parameters":{"x":1},"choice":null})")) ==
+           document_bytes, "generated JSON ABI marker did not preserve native bytes");
+   require(abi_api::abi_bin_to_json(abi, metadata, "json_request", document_bytes) ==
+           json(R"({"parameters":{"x":1},"choice":null})"), "generated JSON ABI marker did not restore object");
+   rejects<abi_api::abi_serialization_error>([&] {
+      (void)abi_api::abi_bin_to_json(abi, metadata, "json_request",
+         forge::raw::pack(fixture::json_request{{"{"}, std::nullopt}));
+   }, "malformed opaque JSON document reached native JSON output");
+   rejects<execution::exceptions::assertion_failed>([&] {
+      (void)invoke("checkjson", forge::raw::bytes{10, 1});
+   }, "truncated guest JSON document accepted");
 }
