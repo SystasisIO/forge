@@ -1,4 +1,4 @@
-add_executable(test_forge_api_wasm main.cpp wire_tests.cpp validation_tests.cpp)
-target_link_libraries(test_forge_api_wasm PRIVATE forge_api_wasm Boost::included_unit_test_framework)
+add_executable(test_forge_api_wasm main.cpp wire_tests.cpp validation_tests.cpp capability_tests.cpp)
+target_link_libraries(test_forge_api_wasm PRIVATE forge_api_wasm forge_codec_json Boost::included_unit_test_framework)
 add_test(NAME test_forge_api_wasm COMMAND test_forge_api_wasm --catch_system_errors=no)
 set_tests_properties(test_forge_api_wasm PROPERTIES TIMEOUT 30 LABELS api_wasm)

@@ -2,6 +2,10 @@ module;
 
 #include <cstdint>
 
+#if !defined(FORGE_CONTRACT_GUEST)
+#include <boost/describe.hpp>
+#endif
+
 export module forge.net.http.method;
 
 import forge.raw.enum_wire_type;
@@ -18,6 +22,10 @@ enum class method {
    post,
    put,
 };
+
+#if !defined(FORGE_CONTRACT_GUEST)
+BOOST_DESCRIBE_ENUM(method, unknown, delete_, get, head, options, patch, post, put)
+#endif
 
 [[nodiscard]] bool is_idempotent(method value) noexcept;
 

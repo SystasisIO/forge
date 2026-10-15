@@ -95,3 +95,7 @@ dependency isolation and real validation. `guest/tests/api_wasm` compares
 literal native, executed guest and generated ABI bytes for every variant,
 plus malformed inputs and a product-owned action/DTO example. See
 [the donor and acceptance note](../../../docs/donors/wasm-shared-execution.md).
+
+Capability policies support native Boost.Describe JSON encoding and value comparison,
+including nested HTTP body/status rules. This metadata does not change Raw field
+order or guest representation; validation and host selection remain mandatory.
