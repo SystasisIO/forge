@@ -22,6 +22,26 @@ compilation or Docker is required. Native Ubuntu/macOS builds use CMake,
 autotools runs in its generated source clone to avoid its known out-of-tree
 test-header lookup issue; no source patch is applied.
 
+macOS uses the version-gated Homebrew pair `llvm@22` / `lld@22`, both exactly
+22.1.8 as fixed in `pins.json`, instead of mutable unversioned LLVM plus the
+default system linker. All owned CMake executable/shared/module links and the
+historical autotools lane select the absolute `ld64.lld` path explicitly.
+Preflight checks exact compiler/linker versions, records binary SHA-256 and SDK
+version, and checks clang's `-###` plan selects that linker without executing a
+build. `macos-toolchain.json` PASS proves selection only, not sanitizer/runtime
+qualification; every existing macOS gate must still execute. Missing/mismatched
+tools fail, with no fallback, skip or sanitizer disable. Bottle/source hashes are
+not pinned by this version check; actual installed compiler/linker hashes are
+recorded for the run.
+
+This change follows 7f1043eb evidence: clang 23.1.0's sanitizer compiler-check
+failed at link time with `ld: invalid r_symbolnum=1` before CJOSE execution.
+That evidence does not prove the exact upstream defect or establish that the
+replacement pair works; only the next CI can do that. Sources:
+[LLVM Mach-O linker selection](https://lld.llvm.org/MachO/index.html#using-lld),
+[Homebrew LLVM 22](https://formulae.brew.sh/formula/llvm@22),
+[Homebrew LLD 22](https://formulae.brew.sh/formula/lld@22).
+
 ## Fixed Fixture Bounds
 
 These limits are defined before CI execution, not inferred from observations:
@@ -77,6 +97,33 @@ substitution, missing symbols or absent proof is FAIL, never SKIP. Platform load
 version/install-name incompatibility is a real failing result, not patched around
 by relinking, copying or renaming libraries. This is targeted ABI coverage, not
 an exhaustive compatibility proof for every old CJOSE function or platform.
+The historical public `jwk.h` includes OpenSSL headers; this consumer takes
+include requirements from the selected `OpenSSL::Crypto` target without adding
+a second direct crypto link or implementing cryptographic operations itself.
+
+### Package Feature Controls
+
+Each case calls `find_package(CJOSE QUIET MODULE)` exactly once, with no native
+prelookup. Candidate and unmodified upstream must both configure with exit 0 and
+`QUALIFICATION_FEATURE_RESULT_PASS`: native package discovery and the separate
+`FORGE_CJOSE_HAS_QUALIFIED_DEPENDENCIES` compile/link control must succeed. The
+extension probe must be defined; it and `CJOSE_FOUND` must be true only for the
+candidate. An unrelated compiler/package/dependency error cannot pass as a
+negative extension result.
+
+Only the candidate also exercises repeated native config lookup, quiet rejection
+of an unknown required component, successful recovery to the static component,
+and exact `FindJansson` 2.14.1 discovery. A separate candidate configure disables
+the lowercase native Jansson package with
+`CMAKE_DISABLE_FIND_PACKAGE_jansson=TRUE`; fallback discovery must find the same
+pinned dependency include/library prefix and exact header release version. The
+original upstream source/config remains unmodified and is never used for these
+candidate-only package recovery tests. All three configure results are required.
+Both candidate discovery modes also require a wrong `2.14.0 EXACT` request to
+return false, followed by successful exact 2.14.1 recovery. During native-config
+version checks, `CMAKE_INCLUDE_PATH` contains an unrelated 9.9.9 header decoy;
+the selected target's real header must remain authoritative. The decoy is never
+compiled and no alternate library is built.
 
 The independently pinned Python closure is in `requirements.txt`. Private
 ephemeral keys are generated/held only inside Python; C receives a strictly

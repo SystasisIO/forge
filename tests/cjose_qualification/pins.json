@@ -4,5 +4,6 @@
   "upstream_version": "0.8.1",
   "historical_sha": "e787ace6a203d483038a793fd58f958a2f9b48c1",
   "jansson_url": "https://github.com/akheron/jansson.git",
-  "jansson_sha": "ed5cae4ed0621ef409510f94270c9f8f263736d0"
+  "jansson_sha": "ed5cae4ed0621ef409510f94270c9f8f263736d0",
+  "macos_llvm_lld_version": "22.1.8"
 }

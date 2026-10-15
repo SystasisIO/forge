@@ -16,7 +16,7 @@ if [[ "$phase" == dependencies ]]; then
       sudo apt-get install -y clang cmake ninja-build pkg-config check libssl-dev autoconf automake libtool \
          > "$work/raw/apt-install.log" 2>&1
    elif [[ "$RUNNER_OS" == macOS ]]; then
-      brew install cmake ninja pkgconf check openssl@3 llvm autoconf automake libtool > "$work/raw/brew.log" 2>&1
+      brew install cmake ninja pkgconf check openssl@3 llvm@22 lld@22 autoconf automake libtool > "$work/raw/brew.log" 2>&1
    else
       exit 2
    fi
@@ -28,7 +28,8 @@ if [[ "$phase" == dependencies ]]; then
 fi
 
 if [[ "$RUNNER_OS" == macOS ]]; then
-   export CC="$(brew --prefix llvm)/bin/clang"
+   export CC="$(brew --prefix llvm@22)/bin/clang"
+   export CJOSE_QUALIFICATION_LINKER="$(brew --prefix lld@22)/bin/ld64.lld"
    export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
    export PKG_CONFIG_PATH="$(brew --prefix check)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
    export SDKROOT="$(xcrun --show-sdk-path)"

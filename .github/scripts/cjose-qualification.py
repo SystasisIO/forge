@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -65,12 +66,64 @@ def fetch(name, url, sha):
 
 def cmake_options(prefix, sanitize=False):
     flags = "-O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer" if sanitize else "-O2 -g"
-    return ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_C_COMPILER={os.environ['CC']}",
+    linker = macos_linker_flag()
+    options = ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_C_COMPILER={os.environ['CC']}",
             f"-DCMAKE_PREFIX_PATH={WORK / 'deps'}", f"-DOPENSSL_ROOT_DIR={os.environ['OPENSSL_ROOT_DIR']}",
             f"-DCMAKE_INSTALL_PREFIX={prefix}", "-DCMAKE_INSTALL_LIBDIR=lib", f"-DCMAKE_C_FLAGS={flags}",
-            f"-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib",
+            f"-DCMAKE_SHARED_LINKER_FLAGS={linker + ' ' if linker else ''}-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib",
             f"-DCMAKE_BUILD_RPATH={prefix / 'lib'};{WORK / 'deps/lib'};{os.environ['OPENSSL_ROOT_DIR']}/lib",
             f"-DCMAKE_INSTALL_RPATH={WORK / 'deps/lib'};{os.environ['OPENSSL_ROOT_DIR']}/lib"]
+    if linker:
+        options.extend([f"-DCMAKE_EXE_LINKER_FLAGS={linker}", f"-DCMAKE_MODULE_LINKER_FLAGS={linker}",
+                        f"-DCMAKE_OSX_SYSROOT={os.environ['SDKROOT']}"])
+    return options
+
+
+def macos_linker_flag():
+    return f"-fuse-ld={os.environ['CJOSE_QUALIFICATION_LINKER']}" if sys.platform == "darwin" else ""
+
+
+def macos_toolchain():
+    if sys.platform != "darwin":
+        return None
+    evidence = WORK / "evidence/macos-toolchain.json"
+    manifest = {"status": "FAILED", "stage": "version_check", "expected_version": PINS["macos_llvm_lld_version"]}
+    save(evidence, manifest)
+    cc, linker = pathlib.Path(os.environ["CC"]), pathlib.Path(os.environ["CJOSE_QUALIFICATION_LINKER"])
+    compiler_version = re.search(r"clang version (\d+\.\d+\.\d+)", capture([cc, "--version"]))
+    linker_version = re.search(r"LLD (\d+\.\d+\.\d+)", capture([linker, "--version"]))
+    if not compiler_version or not linker_version or compiler_version[1] != linker_version[1] or compiler_version[1] != PINS["macos_llvm_lld_version"]:
+        raise RuntimeError("macos_toolchain_version_mismatch")
+    manifest.update(compiler_version=compiler_version[1], linker_version=linker_version[1], stage="driver_selection")
+    save(evidence, manifest)
+    selected = None
+    default = None
+    # -### prints the driver plan without compiling, linking or creating output.
+    for label, extra in (("macos-default-linker-plan", []), ("macos-selected-linker-plan", [macos_linker_flag()])):
+        run(label, [cc, "-###", "-x", "c", "-", "-o", WORK / "unused-toolchain-output",
+                    "-O1", "-g", "-fsanitize=fuzzer-no-link,address,undefined", "-fno-omit-frame-pointer", *extra])
+        actual = None
+        for line in (RAW / (label + ".log")).read_text(errors="replace").splitlines():
+            try:
+                words = shlex.split(line)
+            except ValueError:
+                continue
+            if words and pathlib.Path(words[0]).name in ("ld", "ld64.lld"):
+                actual = pathlib.Path(words[0])
+        if extra:
+            selected = actual
+        else:
+            default = actual
+    if selected is None or selected.resolve() != linker.resolve():
+        raise RuntimeError("macos_linker_selection_not_proved")
+    manifest.update(status="PASS", stage="selected", compiler=str(cc), linker=str(linker),
+                    compiler_sha256=hashlib.sha256(cc.read_bytes()).hexdigest(),
+                    linker_sha256=hashlib.sha256(linker.read_bytes()).hexdigest(),
+                    driver_selected_linker=str(selected), driver_default_linker=str(default) if default else None,
+                    sdk_version=capture(["xcrun", "--show-sdk-version"]), sdk_root=os.environ["SDKROOT"],
+                    qualification="selection_only_runtime_gates_still_required")
+    save(evidence, manifest)
+    return manifest
 
 
 def backend(name, source, sanitize=False):
@@ -100,6 +153,7 @@ def suite(name, binary, directory):
 
 
 def prepare():
+    toolchain = macos_toolchain()
     # Source resolution never follows a branch, tag, or mutable fork HEAD.
     entry = capture(["git", "ls-tree", "HEAD", "vendor/cjose"]).split()
     if len(entry) != 4 or entry[:2] != ["160000", "commit"]:
@@ -122,6 +176,7 @@ def prepare():
     manifest = {"forge_sha": os.environ["GITHUB_SHA"], "candidate_sha": candidate_sha, **PINS,
         "runner_os": os.environ["RUNNER_OS"], "runner_image": os.environ.get("ImageVersion", "unavailable"),
         "compiler": capture([os.environ["CC"], "--version"]).splitlines()[0],
+        "macos_toolchain": toolchain,
         "cmake": capture(["cmake", "--version"]).splitlines()[0], "check": capture(["pkg-config", "--modversion", "check"]),
         "openssl": capture([pathlib.Path(os.environ["OPENSSL_ROOT_DIR"]) / "bin/openssl", "version"]),
         "python_packages": capture([sys.executable, "-m", "pip", "freeze"]).splitlines(),
@@ -148,9 +203,10 @@ def historical():
     run("historical-autoreconf", ["autoreconf", "-fi"], cwd=source)
     build.mkdir(exist_ok=True)
     env = dict(os.environ, PKG_CONFIG_PATH=f"{WORK / 'deps/lib/pkgconfig'}:{os.environ.get('PKG_CONFIG_PATH', '')}")
+    linker = macos_linker_flag()
     run("historical-configure", [source / "configure", f"--prefix={WORK / 'historical-installed'}",
         f"--with-jansson={WORK / 'deps'}", f"--with-openssl={os.environ['OPENSSL_ROOT_DIR']}",
-        "--disable-doxygen-doc", f"LDFLAGS=-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib"], cwd=build, env=env)
+        "--disable-doxygen-doc", f"LDFLAGS={linker + ' ' if linker else ''}-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib"], cwd=build, env=env)
     run("historical-build", ["make", "-j4", "all", "check"], cwd=build, env=env, required=False)
     run("historical-install", ["make", "-j4", "install"], cwd=build, env=env)
     if not (build / "test/check_cjose").is_file():
@@ -223,25 +279,38 @@ def legacy_abi():
 
 
 def feature_detection():
-    for name, expected in (("candidate", True), ("upstream", False)):
+    all_passed = True
+    for name, expected, fallback in (("candidate", True, False), ("upstream", False, False), ("candidate", True, True)):
         prefix = WORK / (name + "-installed")
-        label = name + "-feature-detection"
+        label = name + "-feature-detection" + ("-fallback" if fallback else "")
         code = run(label, ["cmake", "-S", FIXTURE / "feature_detection", "-B", WORK / (label + "-build"),
             *cmake_options(prefix), f"-Dcjose_DIR={prefix / 'lib/cmake/cjose'}",
+            f"-DEXPECT_EXTENSION={'ON' if expected else 'OFF'}",
+            f"-DEXPECT_JANSSON_FALLBACK={'ON' if fallback else 'OFF'}",
+            f"-DCMAKE_DISABLE_FIND_PACKAGE_jansson={'TRUE' if fallback else 'FALSE'}",
+            f"-DQUALIFICATION_DEPENDENCY_PREFIX={WORK / 'deps'}",
             f"-DFORGE_CMAKE_MODULES={ROOT / 'cmake'}"], required=False)
         log = (RAW / (label + ".log")).read_text(errors="replace")
-        # Negative success must be the feature check, never a missing package,
-        # compiler, Jansson, or unrelated configuration failure.
+        # Both cases configure successfully after a genuine dependency control.
+        # The upstream case proves a defined false extension result, not a
+        # missing package/compiler/Jansson or an unrelated configure failure.
         cache = WORK / (label + "-build/CMakeCache.txt")
         cache_text = cache.read_text() if cache.exists() else ""
-        passed = code == 0 if expected else (
-            code != 0 and "QUALIFICATION_INSTALLED_PACKAGE_FOUND" in log and
-            "FORGE_CJOSE_HAS_EXTERNAL_SIGNING:INTERNAL=" in cache_text and
-            "Forge requires the qualified CJOSE external-signing extension" in log)
+        control = re.search(r"(?m)^FORGE_CJOSE_HAS_QUALIFIED_DEPENDENCIES:[^=]+=(.*)$", cache_text)
+        extension = re.search(r"(?m)^FORGE_CJOSE_HAS_EXTERNAL_SIGNING:[^=]+=(.*)$", cache_text)
+        truthy = {"1", "ON", "TRUE", "YES"}
+        control_passed = control is not None and control[1].strip().upper() in truthy
+        extension_passed = extension is not None and extension[1].strip().upper() in truthy
+        passed = (code == 0 and "QUALIFICATION_FEATURE_RESULT_PASS" in log and control_passed and
+                  extension is not None and extension_passed == expected)
         save(EVIDENCE / (label + "-result.json"), {"status": "PASS" if passed else "FAILED",
-             "expected_configure_success": expected, "configure_exit": code})
-        if not passed:
-            raise RuntimeError("feature_detection")
+             "expected_configure_success": True, "expected_extension": expected, "configure_exit": code,
+             "jansson_fallback": fallback,
+             "dependency_control": control_passed, "extension_probe_defined": extension is not None,
+             "extension_available": extension_passed, "pass_marker": "QUALIFICATION_FEATURE_RESULT_PASS" in log})
+        all_passed = all_passed and passed
+    if not all_passed:
+        raise RuntimeError("feature_detection")
 
 
 def consumers(sanitize=False):
@@ -294,10 +363,12 @@ def consumers(sanitize=False):
 
 def evidence():
     required = ["upstream-tests-summary", "candidate-tests-summary", "candidate-original-tests-summary",
-        "candidate-feature-detection-result", "upstream-feature-detection-result", "candidate-shared-qualify", "candidate-static-qualify",
+        "candidate-feature-detection-result", "upstream-feature-detection-result", "candidate-feature-detection-fallback-result", "candidate-shared-qualify", "candidate-static-qualify",
         "sanitized-tests-summary", "sanitized-shared-qualify", "sanitized-static-qualify", "bounded-fuzz",
         "candidate-shared-linkage", "candidate-static-linkage", "sanitized-shared-linkage", "sanitized-static-linkage", "bounded-fuzz-metrics",
         "synthetic-fuzz-corpus-manifest", "legacy-abi-result"]
+    if sys.platform == "darwin":
+        required.append("macos-toolchain")
     gates = {}
     for name in required:
         path = EVIDENCE / (name + ".json")

@@ -7,7 +7,8 @@ import re
 import shlex
 
 LIMIT = 2 * 1024 * 1024
-VARIABLES = ("FORGE_CJOSE_HAS_EXTERNAL_SIGNING", "CMAKE_C_COMPILER_WORKS", "CMAKE_C_ABI_COMPILED", "CMAKE_C_COMPILER_ABI")
+VARIABLES = ("FORGE_CJOSE_HAS_QUALIFIED_DEPENDENCIES", "FORGE_CJOSE_HAS_EXTERNAL_SIGNING",
+             "CMAKE_C_COMPILER_WORKS", "CMAKE_C_ABI_COMPILED", "CMAKE_C_COMPILER_ABI")
 
 
 def compiler_invocations(text, replacements):
@@ -18,11 +19,14 @@ def compiler_invocations(text, replacements):
         except ValueError:
             continue
         compiler = next((i for i, word in enumerate(words) if re.fullmatch(r"(?:.*/)?(?:clang|cc)(?:-\d+)?", word)), None)
-        if compiler is None:
+        if compiler is None or not any(word.startswith("-") for word in words[compiler + 1:]):
             continue
         flags = [word for word in words[compiler + 1:] if re.fullmatch(
             r"(?:-O[0-3gs]|-g(?:[0-3])?|-f(?:no-)?(?:omit-frame-pointer|PIC|PIE)|-fsanitize=[a-z0-9,_-]+|"
             r"-std=[a-z0-9+]+|-mmacosx-version-min=[0-9.]+|-Wl,-(?:search_paths_first|headerpad_max_install_names)|-c)", word)]
+        for word in words[compiler + 1:]:
+            if word.startswith("-fuse-ld=") and pathlib.Path(word.split("=", 1)[1]).name == "ld64.lld":
+                flags.append(safe_line(word, replacements))
         invocations.append({"compiler": safe_line(words[compiler], replacements), "flags": flags[:24]})
     return invocations[:4]
 
@@ -110,7 +114,7 @@ def collect(work, root):
     replacements = ((work, "$WORK"), (root, "$ROOT"))
     logs = []
     for path in sorted((work / "raw").glob("*.log")):
-        if not re.search(r"(?:configure|build|feature-detection)\.log$", path.name):
+        if not re.search(r"(?:configure|build|feature-detection(?:-fallback)?)\.log$", path.name):
             continue
         diagnostics = static_errors(bounded_text(path), replacements)
         if diagnostics:
@@ -119,6 +123,7 @@ def collect(work, root):
     configure = []
     builds = {
         "candidate-feature-detection": "candidate-feature-detection-build",
+        "candidate-feature-detection-fallback": "candidate-feature-detection-fallback-build",
         "upstream-feature-detection": "upstream-feature-detection-build",
         "sanitized-configure": "sanitized-build",
         "sanitized-shared-configure": "sanitized-shared-consumer",

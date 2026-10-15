@@ -105,6 +105,19 @@ in this branch. Integration is a separate decision after code review is CLEAN.
 
 ## Upstream Handoff
 
+Qualification also reproduced two independent CMake packaging defects in
+unmodified 0.8.1. Keep their maintenance fix separate from the signing feature:
+
+| Defect | Reproducer / required regression |
+|---|---|
+| Repeated `find_package(cjose)` recreates the existing `cjose::cjose` alias | Find the installed candidate package twice in one configure; both calls must succeed and preserve the selected targets |
+| `FindJansson` treats the Jansson CMake package's ABI version as its release | Jansson source pin above installs package version `4.14.0`, but its public header declares release `2.14.1`; discovery must inspect the selected dependency, not fail an exact release requirement or find a different installation |
+
+Forge's feature detection separately compiles and links the selected dependency
+headers and original CJOSE API before probing the extension. The unmodified
+0.8.1 negative test must first pass that control and then reject the missing
+extension. An unrelated configure/link failure cannot satisfy this test.
+
 Proposed feature: expose owning preparation and verified completion for
 external ES256 signing while preserving the original signing API. Include
 the minimal CJOSE commit diff, a public-only key example, immutable-input and

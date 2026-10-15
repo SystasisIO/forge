@@ -100,6 +100,23 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result[0]["exit"], 1)
         self.assertEqual(result[0]["variable"], "CMAKE_C_ABI_COMPILED")
 
+    def test_dependency_control_and_explicit_macho_linker(self):
+        text = '''events:
+  -
+    kind: "try_compile-v1"
+    buildResult:
+      variable: "FORGE_CJOSE_HAS_QUALIFIED_DEPENDENCIES"
+      stdout: |
+        Configuration search path: /home/runner/.config/clang
+        /toolchain/bin/clang -O2 -g -fuse-ld=/toolchain/bin/ld64.lld -o cmTC_example test.c
+      exitCode: 0
+'''
+        result = DIAGNOSTICS.try_compile_events(text, ())
+        self.assertEqual(result[0]["variable"], "FORGE_CJOSE_HAS_QUALIFIED_DEPENDENCIES")
+        self.assertEqual(result[0]["exit"], 0)
+        self.assertEqual(len(result[0]["compiler_invocations"]), 1)
+        self.assertIn("-fuse-ld=/toolchain/bin/ld64.lld", result[0]["compiler_invocations"][0]["flags"])
+
 
 if __name__ == "__main__":
     unittest.main()
