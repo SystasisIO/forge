@@ -127,6 +127,7 @@ add_executable(
    variant/test_variant_estimated_size.cpp
    raw/test_raw.cpp
    json/test_json.cpp
+   json/document_tests.cpp
    crypto/test_base32.cpp
    crypto/test_blake2.cpp
    crypto/test_bls_legacy.cpp
@@ -241,6 +242,10 @@ target_link_libraries(test_forge_codec_json
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_codec_json COMMAND test_forge_codec_json WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_http_sse unit/main.cpp http/sse_tests.cpp)
+target_link_libraries(test_forge_http_sse PRIVATE forge_net_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_sse COMMAND test_forge_http_sse)
 
 foreach(_codec IN ITEMS base64 base58 hex)
    add_executable(test_forge_codec_${_codec} unit/main.cpp codec/${_codec}_tests.cpp)

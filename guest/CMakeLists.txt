@@ -617,6 +617,10 @@ install(
    DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/net/http"
 )
 install(
+   FILES "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/codec/json/include/forge/codec/json/document.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/codec/json"
+)
+install(
    FILES
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/payload.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/continuation.cppm"
