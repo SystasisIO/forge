@@ -39,6 +39,7 @@ target_link_libraries(
 target_link_libraries(
    forge_chain_api PRIVATE
       forge_asio
+      forge_codec_json
       forge_codec_hex
       forge_raw
       forge_schema

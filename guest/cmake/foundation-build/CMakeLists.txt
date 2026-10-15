@@ -101,6 +101,16 @@ forge_guest_configure_target(forge_guest_api_core_values_modules)
 target_link_libraries(forge_guest_api_core_values_modules PRIVATE forge_guest_raw_modules)
 
 set(_api_wasm "${FORGE_SOURCE_DIR}/libraries/api/wasm")
+
+add_library(forge_guest_codec_json_values_modules OBJECT)
+target_sources(forge_guest_codec_json_values_modules PUBLIC
+   FILE_SET CXX_MODULES
+   BASE_DIRS "${FORGE_SOURCE_DIR}/libraries/codec/json/include"
+   FILES "${FORGE_SOURCE_DIR}/libraries/codec/json/include/forge/codec/json/document.cppm"
+)
+forge_guest_configure_target(forge_guest_codec_json_values_modules)
+target_link_libraries(forge_guest_codec_json_values_modules PRIVATE forge_guest_raw_modules)
+
 forge_guest_add_implementation_archive(
    forge_guest_api_wasm
    MODULE_DIRS "${_api_wasm}/include"
@@ -112,6 +122,7 @@ forge_guest_add_implementation_archive(
       "${_api_wasm}/include/forge/api/wasm/event.cppm"
       "${_api_wasm}/include/forge/api/wasm/context.cppm"
       "${_api_wasm}/include/forge/api/wasm/http_command.cppm"
+      "${_api_wasm}/include/forge/api/wasm/http_stream.cppm"
       "${_api_wasm}/include/forge/api/wasm/capability.cppm"
       "${_api_wasm}/include/forge/api/wasm/limits.cppm"
       "${_api_wasm}/include/forge/api/wasm/exceptions.cppm"

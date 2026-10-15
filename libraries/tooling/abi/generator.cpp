@@ -723,6 +723,27 @@ class type_encoder {
          }
       }
       const auto qualified = record->getQualifiedNameAsString();
+      if (qualified == "forge::codec::json::document")
+      {
+         const auto name = std::string{"json_document"};
+         add_alias(name, "string", record->getLocation(), declaration_identity(*record));
+         if (output_.collect_metadata)
+         {
+            output_.metadata.version = "forge::abi-metadata/1.1";
+            if (!output_.metadata.json_types)
+            {
+               output_.metadata.json_types.emplace();
+            }
+
+            if (std::ranges::find(*output_.metadata.json_types, name) == output_.metadata.json_types->end())
+            {
+               output_.metadata.json_types->push_back(name);
+            }
+         }
+
+         return name;
+      }
+
       const auto* specialization = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
       if (specialization != nullptr && is_std_template(*specialization->getSpecializedTemplate(), "basic_string")) {
          return "string";
@@ -2130,6 +2151,10 @@ void canonicalize(schema& output) {
    std::ranges::sort(output.clauses, [](const auto& left, const auto& right) { return left.id < right.id; });
    std::ranges::sort(output.metadata.roots, {}, &protocol::abi_root_def::cpp_type);
    std::ranges::sort(output.metadata.enums, {}, &protocol::abi_enum_def::name);
+   if (output.metadata.json_types)
+   {
+      std::ranges::sort(*output.metadata.json_types);
+   }
 }
 
 void write_abi(const schema& input, const forge::tooling::abi::request& options) {
@@ -2535,7 +2560,7 @@ artifacts generate(const request& options) {
    // Discover namespace-scope ABI records before the strict pass so contract code can use their generated codecs.
    auto discovery_compilation = clang::tooling::FixedCompilationDatabase{".", arguments};
    auto discovery_tool = clang::tooling::ClangTool{discovery_compilation, source_paths};
-   auto discovery = schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
+   auto discovery = ::schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
    auto discovery_found = false;
    auto discovery_dispatch_source_found = false;
    auto discovery_dependencies = source_dependencies{};
@@ -2560,7 +2585,7 @@ artifacts generate(const request& options) {
    if (!codec_prelude.empty()) {
       tool.mapVirtualFile(codec_prelude_path, codec_prelude);
    }
-   auto output = schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
+   auto output = ::schema{.requested_roots = options.abi_root_types, .collect_metadata = !options.metadata.empty()};
    auto found = false;
    auto dispatch_source_found = false;
    auto dependencies = source_dependencies{};

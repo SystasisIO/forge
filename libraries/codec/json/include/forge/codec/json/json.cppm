@@ -27,6 +27,8 @@ module;
 
 export module forge.codec.json;
 
+export import forge.codec.json.document;
+
 import forge.config.core.key_path;
 import forge.config.core.value;
 import forge.config.core.document;
@@ -105,6 +107,11 @@ namespace detail {
 
 [[nodiscard]] read_result<variant> read_value(std::string_view input, read_options options = {});
 [[nodiscard]] write_result write_value(const variant& input, write_options options = {});
+
+[[nodiscard]] document parse_document(std::string_view input, document_limits limits = {});
+[[nodiscard]] variant document_value(const document& input, document_limits limits = {});
+void to_variant(const document& input, variant& output);
+void from_variant(const variant& input, document& output);
 [[nodiscard]] read_result<config::core::document> read_document(std::string_view input, read_options options = {});
 [[nodiscard]] write_result write_document(const config::core::document& input, write_options options = {});
 
@@ -408,3 +415,14 @@ template <typename T>
 }
 
 } // namespace forge::codec::json
+
+export namespace forge::schema {
+
+template <> struct value_adapter<forge::codec::json::document> {
+   static constexpr value_kind kind = value_kind::dynamic;
+
+   [[nodiscard]] static input_value encode(const forge::codec::json::document& input);
+   [[nodiscard]] static forge::codec::json::document decode(const input_value& input);
+};
+
+} // namespace forge::schema

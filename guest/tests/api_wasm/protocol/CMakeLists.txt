@@ -3,5 +3,5 @@ forge_add_contract_library(
    ID fixture.api_wasm
    MODULE_BASE_DIRS include
    MODULE_SOURCES include/fixture/api_wasm.cppm
-   PUBLIC_LIBRARIES Forge::forge_api_wasm
+   PUBLIC_LIBRARIES Forge::forge_api_wasm Forge::forge_codec_json_values
 )
