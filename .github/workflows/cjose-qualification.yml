@@ -60,6 +60,10 @@ jobs:
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         run: bash .github/scripts/cjose-qualification.sh consumers
 
+      - name: Q8a unchanged historical C binary with old and patched shared libraries
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash .github/scripts/cjose-qualification.sh legacy-abi
+
       - name: Q5 instrumented backend and bounded fuzz
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         run: bash .github/scripts/cjose-qualification.sh sanitizers

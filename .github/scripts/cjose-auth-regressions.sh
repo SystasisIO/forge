@@ -149,7 +149,7 @@ report = {'scope': 'F0-B-Q7-existing-auth-regressions', 'status': 'HARNESS_ERROR
           'gaps': ['unmodified-cjose-0.8.1-middle-state-NOT_RUN',
                    'HS256-dir-A256GCM-old-to-new-and-new-to-old-persisted-data-NOT_RUN',
                    'backend-C-harness-is-independent', 'F1-auth-attestation-out-of-scope']}
-stages = {'source-pin', 'dependency-setup', 'jansson-build', 'old-cjose-build', 'provenance',
+stages = {'source-pin', 'dependency-setup', 'dependency-checks', 'jansson-build', 'old-cjose-build', 'provenance',
           'configure', 'configured-version', 'focused-build', 'linkage', 'tests', 'catalog-build',
           'dev-install', 'consumer-configure', 'consumer-build', 'consumer-linkage', 'consumer-run',
           'build-tree-consumer-configure', 'build-tree-consumer-build', 'build-tree-consumer-run', 'complete'}
@@ -203,6 +203,55 @@ for lane in ('baseline', 'candidate'):
         report['gaps'].append(lane + '-default-dev-install-consumer-NOT_RUN-or-incomplete')
 if report['candidate']['build_tree_package'] != 'PASS':
     report['gaps'].append('candidate-build-tree-consumer-NOT_RUN-or-incomplete')
+# Only fixed setup commands write this stream; auth fixture/runtime logs never do.
+setup = work / 'raw' / 'dependencies' / 'setup.log'
+if setup.is_file():
+    with setup.open('rb') as stream:
+        stream.seek(max(0, setup.stat().st_size - 262144))
+        data = stream.read().decode('utf-8', errors='replace')
+    data = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', data)
+    data = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', data)
+    data = re.sub(r'[^\x09\x0a\x20-\x7e]', '', data)
+    setup_commands = {'apt-update', 'apt-install', 'brew-installer-download', 'brew-bootstrap',
+                      'brew-shellenv', 'brew-install', 'version-apt', 'version-brew',
+                      'prefix-brew', 'prefix-boost', 'version-clang'}
+    report['setup'] = {'commands': [], 'versions': {}, 'prefixes': {}}
+    exits = work / 'raw' / 'dependencies' / 'setup-exits.tsv'
+    if exits.is_file():
+        for line in exits.read_text().splitlines():
+            match = re.fullmatch(r'([a-z-]+)\t([0-9]{1,3})', line)
+            if match and match[1] in setup_commands:
+                report['setup']['commands'].append({'command': match[1], 'exit': int(match[2])})
+    sections = re.findall(r'^\[Q7 setup\] ([a-z-]+)\n(.*?)^\[Q7 setup-end\] \1 exit=[0-9]+$',
+                          data, re.MULTILINE | re.DOTALL)
+    brew_packages = {'boost', 'cmake', 'gmp', 'libngtcp2', 'ninja', 'openssl@3'}
+    apt_packages = {'clang-22', 'g++-15', 'libcurl4-openssl-dev', 'libpcre2-dev'}
+    for command, body in sections:
+        for line in body.splitlines():
+            if command == 'version-brew':
+                name, _, versions = line.partition(' ')
+                if name in brew_packages and re.fullmatch(r'[0-9][0-9a-zA-Z.+_~ -]{0,159}', versions):
+                    report['setup']['versions'][name] = versions
+            elif command == 'version-apt':
+                name, _, version = line.partition('\t')
+                if name in apt_packages and re.fullmatch(r'[0-9][0-9a-zA-Z.+:~_-]{0,159}', version):
+                    report['setup']['versions'][name] = version
+            elif command == 'version-clang' and re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,3}', line):
+                report['setup']['versions']['clang_driver'] = line
+            elif command in {'prefix-brew', 'prefix-boost'} and re.fullmatch(r'/home/linuxbrew/\.linuxbrew(?:/[a-zA-Z0-9._/@+-]+)?', line):
+                report['setup']['prefixes'][command.removeprefix('prefix-')] = line
+    sanitized = []
+    sensitive = re.compile(r'(?i)(?:(?<![a-zA-Z0-9])(?:authorization|cookie|token|secret|password|passwd|credentials?|'
+                           r'api[_-]?key|private[ _-]?key)(?![a-zA-Z0-9])|\bgh[pousr]_[a-zA-Z0-9_]+|\bgithub_pat_[a-zA-Z0-9_]+|'
+                           r'\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)')
+    for line in data.splitlines():
+        if sensitive.search(line):
+            sanitized.append('[sensitive setup line withheld]')
+        else:
+            line = re.sub(r'https?://[^\s<>\"\x27]+', '[URL_REDACTED]', line)
+            sanitized.append(line.replace(str(root), '$SOURCE').replace(str(work), '$WORK'))
+    diagnostic = ('\n'.join(sanitized) + '\n').encode()[-262144:].decode('ascii')
+    (work / 'evidence' / 'dependencies-setup.txt').write_text(diagnostic)
 # These logs have a dedicated writer used only for configure/build/install, never
 # for test execution. Keep useful compiler context without uploading runtime logs.
 for lane in ('dependencies', 'baseline', 'candidate'):
@@ -224,7 +273,17 @@ fi
 [[ "${CI:-}" == true && "${RUNNER_OS:-}" == Linux ]]
 [[ "${GITHUB_SHA:?}" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 exec 3>&1
-trap 'code=$?; printf "%s\texit=%d\n" "$phase" "$code" >> "$work/raw/phases.tsv"; printf "Q7 %s exit=%d (compile diagnostics in artifacts; runtime logs withheld)\n" "$phase" "$code" >&3' EXIT
+finish() {
+   local code=$?
+   trap - EXIT
+   if [[ "$phase" == dependencies && ! -f "$work/raw/dependencies/setup-versions-captured" ]]; then
+      setup_snapshot || true
+   fi
+   printf '%s\texit=%d\n' "$phase" "$code" >> "$work/raw/phases.tsv"
+   printf 'Q7 %s exit=%d (setup/compile diagnostics in artifacts; runtime logs withheld)\n' "$phase" "$code" >&3
+   exit "$code"
+}
+trap finish EXIT
 exec > "$work/raw/$phase.log" 2>&1
 mkdir -p "$work/raw/$phase"
 unset LD_LIBRARY_PATH LD_PRELOAD CMAKE_PREFIX_PATH CMAKE_MODULE_PATH
@@ -247,6 +306,31 @@ compile_only() {
    "$@" >> "$work/raw/$phase/compile.log" 2>&1
 }
 
+setup_only() {
+   local command="$1" code=0
+   shift
+   printf '\n[Q7 setup] %s\n' "$command" >> "$work/raw/dependencies/setup.log"
+   "$@" >> "$work/raw/dependencies/setup.log" 2>&1 || code=$?
+   printf '\n[Q7 setup-end] %s exit=%d\n' "$command" "$code" >> "$work/raw/dependencies/setup.log"
+   printf '%s\t%d\n' "$command" "$code" >> "$work/raw/dependencies/setup-exits.tsv"
+   return "$code"
+}
+
+setup_snapshot() {
+   # Capture partial installations too, before assertions or an early setup exit.
+   # Probe failures are diagnostic only; the original setup exit is preserved.
+   setup_only version-apt dpkg-query -W '-f=${Package}\t${Version}\n' \
+      clang-22 g++-15 libcurl4-openssl-dev libpcre2-dev || true
+   if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+      setup_only version-brew /home/linuxbrew/.linuxbrew/bin/brew list --versions \
+         boost cmake gmp libngtcp2 ninja openssl@3 || true
+      setup_only prefix-brew /home/linuxbrew/.linuxbrew/bin/brew --prefix || true
+      setup_only prefix-boost /home/linuxbrew/.linuxbrew/bin/brew --prefix boost || true
+   fi
+   setup_only version-clang "$CC" -dumpversion || true
+   printf 'captured\n' > "$work/raw/dependencies/setup-versions-captured"
+}
+
 stage() {
    printf '%s\n' "$1" > "$work/raw/$phase/last-step"
 }
@@ -265,16 +349,24 @@ if [[ "$phase" == dependencies ]]; then
    [[ "${Q7_INSTALLED_PACKAGE:-true}" == true ]]
    printf 'required\n' > "$work/raw/package-requested"
    stage dependency-setup
-   sudo apt-get update
-   sudo apt-get install -y clang-22 clang-tools-22 g++-15 build-essential autoconf automake libtool \
+   setup_only apt-update sudo apt-get update
+   setup_only apt-install sudo apt-get install -y clang-22 clang-tools-22 g++-15 build-essential autoconf automake libtool \
       pkg-config python3 libcurl4-openssl-dev libpcre2-dev ca-certificates
    if ! command -v brew >/dev/null 2>&1; then
-      NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      setup_only brew-installer-download curl -fsSL --output "$work/brew-install.sh" \
+         https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
+      setup_only brew-bootstrap env NONINTERACTIVE=1 /bin/bash "$work/brew-install.sh"
    fi
+   setup_only brew-shellenv /home/linuxbrew/.linuxbrew/bin/brew shellenv
    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-   brew install boost cmake gmp libngtcp2 ninja openssl@3
-   [[ "$(brew list --versions boost)" == 'boost 1.90.0' ]]
-   [[ "$($CC -dumpversion)" == 22.* ]]
+   setup_only brew-install brew install boost cmake gmp libngtcp2 ninja openssl@3
+   setup_snapshot
+   stage dependency-checks
+   # Both revisions share this installation; canonical find_package(Boost 1.90)
+   # enforces the minimum. Do not pin Homebrew's display string or patch version.
+   if [[ "$($CC -dumpversion)" != 22.* ]]; then
+      exit 1
+   fi
    # -j4 remains the scheduler budget; two compiler jobs avoid runner OOMs.
    printf '%s\n' 'set(CMAKE_JOB_POOLS "q7_compile=2;q7_link=1" CACHE STRING "CI RAM bound" FORCE)' \
       'set(CMAKE_JOB_POOL_COMPILE q7_compile CACHE STRING "CI RAM bound" FORCE)' \

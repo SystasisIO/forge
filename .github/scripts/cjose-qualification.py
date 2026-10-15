@@ -15,7 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/cjose_qualification"
 PINS = json.loads((FIXTURE / "pins.json").read_text())
 ARGS = argparse.ArgumentParser()
-ARGS.add_argument("phase", choices=("prepare", "baseline", "candidate", "consumers", "sanitizers", "evidence"))
+ARGS.add_argument("phase", choices=("prepare", "baseline", "candidate", "legacy-abi", "consumers", "sanitizers", "evidence"))
 ARGS.add_argument("--work", type=pathlib.Path, required=True)
 OPTIONS = ARGS.parse_args()
 WORK = OPTIONS.work
@@ -152,9 +152,74 @@ def historical():
         f"--with-jansson={WORK / 'deps'}", f"--with-openssl={os.environ['OPENSSL_ROOT_DIR']}",
         "--disable-doxygen-doc", f"LDFLAGS=-Wl,-rpath,{WORK / 'deps/lib'} -Wl,-rpath,{os.environ['OPENSSL_ROOT_DIR']}/lib"], cwd=build, env=env)
     run("historical-build", ["make", "-j4", "all", "check"], cwd=build, env=env, required=False)
+    run("historical-install", ["make", "-j4", "install"], cwd=build, env=env)
     if not (build / "test/check_cjose").is_file():
         raise RuntimeError("missing_historical_tests")
     suite("historical-tests", build / "test/check_cjose", source / "test")
+
+
+def legacy_abi():
+    result = {"status": "FAILED", "reason": "prerequisites", "runs": [],
+              "historical_sha": PINS["historical_sha"], "compiled_against": "0.6.2.8"}
+    target = EVIDENCE / "legacy-abi-result.json"
+    save(target, result)
+    prefix, build = WORK / "historical-installed", WORK / "legacy-abi-build"
+    library_name = "libcjose.dylib" if sys.platform == "darwin" else "libcjose.so"
+    if not (prefix / "include/cjose/version.h").is_file() or not (prefix / "lib" / library_name).is_file():
+        result["reason"] = "missing_historical_install"
+        save(target, result)
+        raise RuntimeError("missing_historical_install")
+    result["reason"] = "configure"
+    save(target, result)
+    run("legacy-abi-configure", ["cmake", "-S", FIXTURE / "legacy_abi", "-B", build,
+        *cmake_options(prefix), f"-DHISTORICAL_PREFIX={prefix}"])
+    # The only compile/link step: both later executions use this exact binary.
+    result["reason"] = "compile_and_link"
+    save(target, result)
+    run("legacy-abi-build", ["cmake", "--build", build, "--target", "cjose_legacy_consumer", "-j4"])
+    binary = build / "cjose_legacy_consumer"
+    binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+    result.update(reason="execution", binary_sha256=binary_hash, compile_count=1)
+    save(target, result)
+    passed = True
+    for name, version in (("historical", "0.6.2.8"), ("candidate", "0.8.1")):
+        selected = WORK / (name + "-installed")
+        library = selected / "lib" / library_name
+        if not library.is_file():
+            result["runs"].append({"name": name, "status": "FAILED", "reason": "missing_shared_library"})
+            passed = False
+            continue
+        # Never mutate os.environ or the runner/global loader environment.
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("LD_", "DYLD_"))}
+        variable = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+        env[variable] = os.pathsep.join(map(str, (selected / "lib", WORK / "deps/lib", pathlib.Path(os.environ["OPENSSL_ROOT_DIR"]) / "lib")))
+        label = "legacy-abi-" + name
+        code = run(label, [binary, library.resolve(), version], env=env, timeout=15, required=False)
+        log = (RAW / (label + ".log")).read_text(errors="replace")
+        expected = {"status": "PASS", "header_version": "0.6.2.8", "runtime_version": version,
+                    "loaded_expected_library": True, "legacy_constants_checked": 33, "rfc_import_verify_export": True}
+        # Loader diagnostics stay raw/local; upload only a fixed-schema result.
+        try:
+            reported = json.loads(log)
+        except (ValueError, TypeError):
+            reported = None
+        unchanged = hashlib.sha256(binary.read_bytes()).hexdigest() == binary_hash
+        ok = code == 0 and reported == expected and unchanged
+        item = {"name": name, "status": "PASS" if ok else "FAILED", "exit": code,
+                "expected_runtime_version": version, "loaded_expected_library": bool(ok),
+                "binary_unchanged": unchanged, "binary_sha256": binary_hash,
+                "library_file": library.resolve().name, "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest()}
+        if isinstance(reported, dict) and reported.get("stage") in (
+            "arguments", "historical_headers", "loaded_library", "runtime_version", "legacy_constants",
+            "legacy_header_api", "rfc_import_verify_export"):
+            item["failed_stage"] = reported["stage"]
+        result["runs"].append(item)
+        passed = passed and ok
+        save(target, result)
+    result.update(status="PASS" if passed and len(result["runs"]) == 2 else "FAILED", reason="completed")
+    save(target, result)
+    if result["status"] != "PASS":
+        raise RuntimeError("legacy_abi_not_proved")
 
 
 def feature_detection():
@@ -232,7 +297,7 @@ def evidence():
         "candidate-feature-detection-result", "upstream-feature-detection-result", "candidate-shared-qualify", "candidate-static-qualify",
         "sanitized-tests-summary", "sanitized-shared-qualify", "sanitized-static-qualify", "bounded-fuzz",
         "candidate-shared-linkage", "candidate-static-linkage", "sanitized-shared-linkage", "sanitized-static-linkage", "bounded-fuzz-metrics",
-        "synthetic-fuzz-corpus-manifest"]
+        "synthetic-fuzz-corpus-manifest", "legacy-abi-result"]
     gates = {}
     for name in required:
         path = EVIDENCE / (name + ".json")
@@ -247,24 +312,8 @@ def evidence():
             "same_test_ids": base["test_ids"] == patched["test_ids"]})
         if not base["test_ids"] or base["checks"] != patched["checks"] or base["test_ids"] != patched["test_ids"]:
             gates["same-original-tests"] = "HARNESS_ERROR"
-    diagnostics = []
-    for path in RAW.glob("*.log"):
-        # Compile/configure logs only, never probe stdout, runtime payloads,
-        # key files, sanitizer memory dumps or environment/caches.
-        if not re.search(r"(?:configure|build)\.log$", path.name):
-            continue
-        lines = path.read_text(errors="replace").splitlines()
-        selected = []
-        for line in lines:
-            if re.search(r"(?:fatal )?error:|CMake Error|Could NOT find", line):
-                line = line.replace(str(ROOT), "$ROOT").replace(str(WORK), "$WORK")
-                # Keep only static compiler/configuration diagnostics, not arbitrary
-                # lines emitted by execute_process or test commands.
-                if re.match(r"^(?:[^\s]+\.(?:c|h):\d+|CMake Error|\s*Could NOT find)", line):
-                    selected.append(re.sub(r"[^\x20-\x7e]", "?", line)[:400])
-        if selected:
-            diagnostics.append({"phase": path.stem, "diagnostics": selected[:20]})
-    save(EVIDENCE / "safe-build-diagnostics.json", diagnostics)
+    run("select-static-diagnostics", [sys.executable, ROOT / ".github/scripts/cjose-qualification-diagnostics.py",
+        "--work", WORK, "--root", ROOT])
     historical_path = EVIDENCE / "historical-tests-summary.json"
     save(EVIDENCE / "summary.json", {"required": gates, "Q7": "COORDINATOR_OWNED",
         "historical_diagnostic": json.loads(historical_path.read_text()) if historical_path.exists() else {"status": "NOT_RUN"},
@@ -290,6 +339,8 @@ def main():
             return 1
     elif OPTIONS.phase == "candidate":
         candidate()
+    elif OPTIONS.phase == "legacy-abi":
+        legacy_abi()
     elif OPTIONS.phase in ("consumers", "sanitizers"):
         consumers(OPTIONS.phase == "sanitizers")
     else:

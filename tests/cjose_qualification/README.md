@@ -56,6 +56,28 @@ These are test literals, not future product wire contracts.
 | Q5 | Exact minima/maxima/overflow cases; malformed nesting; fail-once allocator sweeps for prepare/complete, recovery and no partial credential, ASan/UBSan backend+fixture, bounded libFuzzer decode/profile/prepare/complete. Measured per-case elapsed time, per-operation RPC latency and child peak RSS; fuzz run/coverage/RSS report. |
 | Q8a | Native install and genuine public C consumers linked separately to shared/static installed targets on both operating systems. Feature macro version 1 and all five functions used. Real dependency-tree resolution requires one selected CJOSE shared library (or none for static), one OpenSSL libcrypto, one pinned Jansson. Forge FindCJOSE configure accepts candidate but rejects unmodified 0.8.1 for missing extension, not a missing package. |
 
+### Historical Binary ABI Gate
+
+The additional required `legacy-abi` phase is **binary compatibility**, not a
+recompiled-source substitute. After `make install` from the generated historical
+clone, `legacy_abi/CMakeLists.txt` builds `legacyconsumer.c` once, exclusively
+against installed 0.6.2.8 public headers and shared library. A preprocessor guard
+rejects modern macro headers. The consumer references and checks all 33 historical
+`CJOSE_HDR_*` external data symbols and exercises public header APIs and the RFC
+7515 A.3 public-key import/JWS import/verify/export path.
+
+The driver runs the unchanged binary first with 0.6.2.8, then with patched 0.8.1.
+Only each subprocess receives `LD_LIBRARY_PATH` or `DYLD_LIBRARY_PATH`; inherited
+loader overrides are removed, and no runner/global environment is changed. Native
+`dladdr(cjose_jws_import)` and each legacy constant's address must resolve to the
+exact selected installed library after realpath normalization. Version checks,
+binary SHA-256 before/after both runs, selected library hash and fixed-schema
+status are retained in `legacy-abi-result.json`. Missing install, failed loader
+substitution, missing symbols or absent proof is FAIL, never SKIP. Platform loader
+version/install-name incompatibility is a real failing result, not patched around
+by relinking, copying or renaming libraries. This is targeted ABI coverage, not
+an exhaustive compatibility proof for every old CJOSE function or platform.
+
 The independently pinned Python closure is in `requirements.txt`. Private
 ephemeral keys are generated/held only inside Python; C receives a strictly
 allowlisted public JWK, never a private field or a private-key file. The C
@@ -82,6 +104,15 @@ corpus is retained by content hash for reproduction; it contains only public
 RFC vectors and generated, non-production fixture inputs, never private keys
 or production credentials. No environment dump or runtime token log is selected.
 Do not upload entire work directories.
+
+`safe-build-diagnostics.json` also selects feature-detection CMake errors and
+bounded multiline error context. `feature-trycompile-diagnostics.json` contains
+only selected feature/compiler-ABI/compiler-works try-compile errors and
+allowlisted compiler invocation flags from owned `CMakeConfigureLog.yaml` files,
+including sanitizer compiler checks. Source buffers, full compile commands,
+environment values and runtime logs are excluded; sensitive diagnostic lines
+are omitted. Pure-Python selector regressions run with
+`python3 -B tests/cjose_qualification/test_diagnostics.py`, without a compiler.
 
 Ubuntu LeakSanitizer is enabled; macOS LeakSanitizer is unsupported and marked
 explicitly. Jansson/OpenSSL are not ASan/UBSan-instrumented; the candidate CJOSE

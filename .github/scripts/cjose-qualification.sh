@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly phase="${1:?usage: cjose-qualification.sh <dependencies|prepare|baseline|candidate|consumers|sanitizers|evidence>}"
-case "$phase" in dependencies|prepare|baseline|candidate|consumers|sanitizers|evidence) ;; *) exit 2 ;; esac
+readonly phase="${1:?usage: cjose-qualification.sh <dependencies|prepare|baseline|candidate|legacy-abi|consumers|sanitizers|evidence>}"
+case "$phase" in dependencies|prepare|baseline|candidate|legacy-abi|consumers|sanitizers|evidence) ;; *) exit 2 ;; esac
 [[ "${CI:-}" == true && "${GITHUB_ACTIONS:-}" == true ]]
 [[ "${GITHUB_SHA:?}" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 readonly work="${RUNNER_TEMP:?}/forge-cjose-qualification"
