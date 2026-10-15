@@ -11,6 +11,7 @@ export import forge.api.wasm.context;
 export import forge.api.wasm.event;
 export import forge.api.wasm.exceptions;
 export import forge.api.wasm.http_command;
+export import forge.api.wasm.http_stream;
 export import forge.api.wasm.limits;
 export import forge.api.wasm.step;
 
@@ -31,6 +32,10 @@ void validate(const subject_view& value, const limits& bounds = {});
 void validate(const context& value, const limits& bounds = {});
 void validate(const http_command& value, const limits& bounds = {});
 void validate(const http_response& value, const limits& bounds = {});
+void validate(const http_stream_open& value, const limits& bounds = {});
+void validate(const http_stream_read& value, const limits& bounds = {});
+void validate(const http_stream_event& value, const limits& bounds = {});
+void validate(const http_stream_event& value, std::string_view expected_item_type, const limits& bounds = {});
 void validate(const core::error_payload& value, const limits& bounds = {});
 
 void validate(const capability& allowed, const limits& bounds = {});

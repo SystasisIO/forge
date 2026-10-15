@@ -55,6 +55,7 @@ forge_contract_register_guest_component(
       forge/api/wasm/event.cppm
       forge/api/wasm/context.cppm
       forge/api/wasm/http_command.cppm
+      forge/api/wasm/http_stream.cppm
       forge/api/wasm/capability.cppm
       forge/api/wasm/limits.cppm
       forge/api/wasm/exceptions.cppm
@@ -68,6 +69,7 @@ forge_contract_register_guest_component(
       forge.api.wasm.event
       forge.api.wasm.context
       forge.api.wasm.http_command
+      forge.api.wasm.http_stream
       forge.api.wasm.capability
       forge.api.wasm.limits
       forge.api.wasm.exceptions

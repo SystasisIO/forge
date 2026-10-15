@@ -629,6 +629,7 @@ install(
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/event.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/context.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/http_command.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/http_stream.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/capability.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/limits.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/exceptions.cppm"

@@ -122,6 +122,7 @@ forge_guest_add_implementation_archive(
       "${_api_wasm}/include/forge/api/wasm/event.cppm"
       "${_api_wasm}/include/forge/api/wasm/context.cppm"
       "${_api_wasm}/include/forge/api/wasm/http_command.cppm"
+      "${_api_wasm}/include/forge/api/wasm/http_stream.cppm"
       "${_api_wasm}/include/forge/api/wasm/capability.cppm"
       "${_api_wasm}/include/forge/api/wasm/limits.cppm"
       "${_api_wasm}/include/forge/api/wasm/exceptions.cppm"
