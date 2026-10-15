@@ -1,5 +1,16 @@
 # forge_schema
 
+## Validated value adapters
+
+A format or value owner may specialize `forge::schema::value_adapter<T>` with
+`kind`, `static input_value encode(const T&)`, and `static T decode(const input_value&)`.
+The adapter must validate its value and enforce its own bounds. Schema uses the
+same adapter for typed encoding, decoding and exact-input validation without
+importing the format backend. `value_kind::dynamic` supports an arbitrary owned
+value, including a required null; dynamic fields are excluded from raw CLI and
+environment string ingestion. The native JSON document adapter is one consumer;
+its guest value module depends on no Schema or parser runtime.
+
 `forge_schema` describes typed configuration and codec rules for Boost.Describe
 objects. It is intentionally small: metadata, defaults, basic validation and
 diagnostics. It is not a full business validation framework.

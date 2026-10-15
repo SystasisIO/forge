@@ -415,3 +415,14 @@ template <typename T>
 }
 
 } // namespace forge::codec::json
+
+export namespace forge::schema {
+
+template <> struct value_adapter<forge::codec::json::document> {
+   static constexpr value_kind kind = value_kind::dynamic;
+
+   [[nodiscard]] static input_value encode(const forge::codec::json::document& input);
+   [[nodiscard]] static forge::codec::json::document decode(const input_value& input);
+};
+
+} // namespace forge::schema

@@ -37,6 +37,17 @@ import forge.schema.scalar;
 
 namespace forge::schema::detail {
 
+template <typename T> inline constexpr bool dynamic_value_v = [] {
+   using value_type = std::remove_cvref_t<T>;
+   if constexpr (is_optional<value_type>::value) {
+      return dynamic_value_v<typename is_optional<value_type>::value_type>;
+   } else if constexpr (requires { value_adapter<value_type>::kind; }) {
+      return value_adapter<value_type>::kind == value_kind::dynamic;
+   } else {
+      return false;
+   }
+}();
+
 template <std::floating_point Float, std::integral Integer>
 [[nodiscard]] constexpr bool integer_exactly_representable(Integer value) {
    using unsigned_type = std::make_unsigned_t<Integer>;
@@ -594,7 +605,9 @@ template <typename T> class object_schema {
       auto output = input_value::object_type{};
       for (const auto& field : *fields_) {
          auto value = encoder(field, input, append_path(base_path, field.name));
-         if (!std::holds_alternative<std::monostate>(value.storage)) {
+         const auto preserve_null = field.kind == value_kind::dynamic &&
+            (!field.optional || (field.read_validation_any && field.read_validation_any(input).has_value()));
+         if (!std::holds_alternative<std::monostate>(value.storage) || preserve_null) {
             set_input_path(output, field.name, std::move(value));
          }
       }
@@ -1008,6 +1021,8 @@ template <typename T>
          return clean_type{};
       }
       return cast_input_to<item_type>(input, path, diagnostics);
+   } else if constexpr (requires { { value_adapter<clean_type>::decode(input) } -> std::same_as<clean_type>; }) {
+      return value_adapter<clean_type>::decode(input);
    } else if constexpr (std::same_as<clean_type, bool>) {
       if (const auto* value = std::get_if<bool>(&input.storage)) {
          return *value;
@@ -1220,6 +1235,12 @@ void validate_exact_input_value(const input_value& input, std::string_view path,
    if constexpr (is_optional<clean_type>::value) {
       if (!std::holds_alternative<std::monostate>(input.storage)) {
          validate_exact_input_value<typename is_optional<clean_type>::value_type>(input, path, diagnostics);
+      }
+   } else if constexpr (requires { { value_adapter<clean_type>::decode(input) } -> std::same_as<clean_type>; }) {
+      try {
+         static_cast<void>(value_adapter<clean_type>::decode(input));
+      } catch (const std::exception& error) {
+         diagnostics.push_back(make_path_error(std::string{path}, "config.type", error.what()));
       }
    } else if constexpr (std::same_as<clean_type, bool>) {
       if (!std::holds_alternative<bool>(input.storage)) {
@@ -1437,6 +1458,8 @@ template <typename T> [[nodiscard]] input_value to_input_value(const T& input, s
          return input_value{};
       }
       return to_input_value(*input, path);
+   } else if constexpr (requires { { value_adapter<clean_type>::encode(input) } -> std::same_as<input_value>; }) {
+      return value_adapter<clean_type>::encode(input);
    } else if constexpr (std::same_as<clean_type, bool>) {
       return input_value{input};
    } else if constexpr (signed_integral_value<clean_type> && !std::same_as<clean_type, bool>) {
@@ -1511,7 +1534,12 @@ template <typename T> [[nodiscard]] input_value to_input_value(const T& input, s
                                                                            boost::describe::mod_inherited>;
          boost::mp11::mp_for_each<members>([&](auto descriptor) {
             auto value = to_input_value(input.*descriptor.pointer, append_path(path, descriptor.name));
-            if (!std::holds_alternative<std::monostate>(value.storage)) {
+            using member_type = std::remove_cvref_t<decltype(input.*descriptor.pointer)>;
+            auto preserve_null = detail::dynamic_value_v<member_type>;
+            if constexpr (is_optional<member_type>::value) {
+               preserve_null = preserve_null && (input.*descriptor.pointer).has_value();
+            }
+            if (!std::holds_alternative<std::monostate>(value.storage) || preserve_null) {
                object.emplace(descriptor.name, std::move(value));
             }
          });
