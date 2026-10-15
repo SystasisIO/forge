@@ -11,6 +11,7 @@
 #include <vector>
 
 import fixture.api_wasm;
+import forge.api.wasm.codec;
 import forge.execution.wasm.compiled_module;
 import forge.chain.api.abi;
 import forge.chain.protocol.values;
