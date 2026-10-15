@@ -908,7 +908,7 @@ if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS)
    # The build-tree package keeps its dependency beside the Forge export;
    # installed consumers discover the normal adjacent cjose package instead.
    if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose/cjoseConfig.cmake")
-      find_package(cjose 0.8.1 EXACT CONFIG REQUIRED COMPONENTS static
+      _forge_require_package(cjose 0.8.1 EXACT CONFIG COMPONENTS static
          PATHS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose" NO_DEFAULT_PATH)
    endif()
    _forge_require_package(OAuth2Dependencies)

@@ -64,6 +64,10 @@ The backend itself has no OAuth/libcurl/PCRE2 dependency. Installed Forge
 consumers require the extended API by header feature level and linked public
 symbols, not merely `0.8.1`. Host-only optional OAuth configuration enables
 this backend; the Contract SDK profile does not pull it into guest code.
+Build-tree lookup uses Forge's existing `_forge_require_package` mechanism,
+preserving the outer lookup's optional/QUIET behavior. Missing dependencies
+must yield `Forge_FOUND=FALSE` for an optional lookup rather than an
+unconditional configure failure; Q7 includes explicit negative consumers.
 
 ## Qualification Contract
 

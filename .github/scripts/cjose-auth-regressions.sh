@@ -65,7 +65,24 @@ def collect(lane):
     source = work / 'baseline-source' if lane == 'baseline' else root
     raw = work / 'raw' / lane
     result = {'status': 'HARNESS_ERROR', 'tests': {}, 'installed_package': 'NOT_RUN',
-              'build_tree_package': 'NOT_RUN' if lane == 'candidate' else 'NOT_REQUIRED'}
+              'build_tree_package': 'NOT_RUN' if lane == 'candidate' else 'NOT_REQUIRED',
+              'build_tree_optional_dependency': 'NOT_RUN' if lane == 'candidate' else 'NOT_REQUIRED',
+              'installed_optional_dependency': 'NOT_RUN' if lane == 'candidate' else 'NOT_REQUIRED'}
+    if lane == 'candidate':
+        for kind in ('build-tree', 'installed'):
+            field = kind.replace('-', '_') + '_optional_dependency'
+            exit_path = raw / (kind + '-optional-dependency.exit')
+            if exit_path.is_file():
+                try:
+                    code = exit_path.read_text()
+                    require(re.fullmatch(r'[0-9]{1,3}\n', code))
+                    if int(code) != 0:
+                        result[field] = 'FAIL'
+                    else:
+                        require((raw / (kind + '-optional-dependency.ok')).read_text() == 'PASS\n')
+                        result[field] = 'PASS'
+                except Exception:
+                    result[field] = 'HARNESS_ERROR'
     try:
         codes = {}
         for line in (raw / 'exits.tsv').read_text().splitlines():
@@ -136,6 +153,9 @@ def collect(lane):
             result['status'] = 'HARNESS_ERROR'
         if lane == 'candidate' and result['build_tree_package'] != 'PASS':
             result['status'] = 'HARNESS_ERROR'
+        if lane == 'candidate' and any(result[field] != 'PASS' for field in (
+                'build_tree_optional_dependency', 'installed_optional_dependency')):
+            result['status'] = 'HARNESS_ERROR'
         require((raw / 'complete').read_text() == 'PASS\n')
     except Exception:
         result['status'] = 'HARNESS_ERROR'
@@ -164,7 +184,8 @@ report = {'scope': 'F0-B-Q7-existing-auth-regressions', 'status': 'HARNESS_ERROR
 stages = {'source-pin', 'dependency-setup', 'dependency-checks', 'jansson-build', 'old-cjose-build', 'provenance',
           'configure', 'configured-version', 'focused-build', 'linkage', 'tests', 'catalog-build',
           'dev-install', 'consumer-configure', 'consumer-build', 'consumer-linkage', 'consumer-run',
-          'build-tree-consumer-configure', 'build-tree-consumer-build', 'build-tree-consumer-run', 'complete'}
+          'build-tree-consumer-configure', 'build-tree-consumer-build', 'build-tree-consumer-run',
+          'build-tree-optional-dependency-configure', 'installed-optional-dependency-configure', 'complete'}
 report['phases'] = {}
 for lane in ('dependencies', 'baseline', 'candidate'):
     path = work / 'raw' / lane / 'last-step'
@@ -215,6 +236,9 @@ for lane in ('baseline', 'candidate'):
         report['gaps'].append(lane + '-default-dev-install-consumer-NOT_RUN-or-incomplete')
 if report['candidate']['build_tree_package'] != 'PASS':
     report['gaps'].append('candidate-build-tree-consumer-NOT_RUN-or-incomplete')
+for kind in ('build_tree', 'installed'):
+    if report['candidate'][kind + '_optional_dependency'] != 'PASS':
+        report['gaps'].append('candidate-' + kind.replace('_', '-') + '-optional-dependency-NOT_RUN-or-failed')
 # Only fixed setup commands write this stream; auth fixture/runtime logs never do.
 setup = work / 'raw' / 'dependencies' / 'setup.log'
 if setup.is_file():
@@ -347,6 +371,23 @@ stage() {
    printf '%s\n' "$1" > "$work/raw/$phase/last-step"
 }
 
+optional_dependency_check() {
+   local kind="$1" package="$2" package_prefixes="$3" code=0 negative
+   case "$kind" in build-tree|installed) ;; *) return 2 ;; esac
+   negative="$work/candidate-$kind-optional-dependency"
+   stage "$kind-optional-dependency-configure"
+   # A fresh configure must produce its own proof, never reuse a stale marker.
+   if [[ -e "$negative" || -L "$negative" ]]; then return 1; fi
+   compile_only timeout --kill-after=5s 120s cmake \
+      -S "$root/tests/package_auth_liboauth2_optional_dependency" -B "$negative" "${options[@]}" \
+      -DForge_DIR="$package" -DCMAKE_PREFIX_PATH="$package_prefixes" -DCMAKE_MODULE_PATH="$source/cmake" \
+      -DCMAKE_DISABLE_FIND_PACKAGE_Jansson=TRUE || code=$?
+   printf '%d\n' "$code" > "$raw/$kind-optional-dependency.exit"
+   if (( code != 0 )); then return "$code"; fi
+   if ! cmp -s "$negative/optional-dependency.ok" <(printf 'PASS\n'); then return 1; fi
+   cp "$negative/optional-dependency.ok" "$raw/$kind-optional-dependency.ok"
+}
+
 cleanup_passed_lane() {
    # Reuse the real collector: exit=0 alone does not prove complete, unskipped cases.
    bash "$root/.github/scripts/cjose-auth-regressions.sh" evidence > "$raw/cleanup-validation.log" 2>&1 || return 0
@@ -387,7 +428,8 @@ try:
         # No glob, recursive search, source path, shared dependency or evidence path.
         names = [lane + '-build', lane + '-installed', lane + '-consumer']
         if lane == 'candidate':
-            names.append('candidate-build-tree-consumer')
+            names.extend(('candidate-build-tree-consumer', 'candidate-build-tree-optional-dependency',
+                          'candidate-installed-optional-dependency'))
         paths = [work / name for name in names]
         expected = Path(os.environ['RUNNER_TEMP']) / 'forge-cjose-auth-regressions'
         safe = (os.environ.get('CI') == 'true' and os.environ.get('RUNNER_OS') == 'Linux'
@@ -541,6 +583,7 @@ if [[ "$phase" == candidate ]]; then
    stage configured-version
    # Source pin alone does not prove which version the configured build selected.
    grep -Eq '^#define CJOSE_VERSION +"0\.8\.1"' "$build/vendor/cjose/generated-include/cjose/version.h"
+   optional_dependency_check build-tree "$build" "$prefixes"
 fi
 tests=(test_forge_auth_liboauth2 test_forge_auth_token_verifier test_forge_api_trusted_subject test_forge_auth_http
    test_forge_auth_liboauth2_patched_regression)
@@ -598,6 +641,9 @@ done
    installed="$work/$phase-installed"
    stage dev-install
    compile_only cmake --install "$build" --component dev --prefix "$installed"
+   if [[ "$phase" == candidate ]]; then
+      optional_dependency_check installed "$installed/lib/cmake/Forge" "$installed;$prefixes"
+   fi
    consumer="$work/$phase-consumer"
    stage consumer-configure
    compile_only cmake -S "$source/tests/package_auth_liboauth2_component" -B "$consumer" "${options[@]}" \
