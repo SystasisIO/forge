@@ -25,3 +25,6 @@ Literal native/guest bytes remain standard Raw strings, generated metadata
 marks only the canonical JSON alias, and the native ABI adapter restores JSON
 objects. Guest tests enforce Raw byte bounds and reject truncated strings;
 native codec/ABI tests own malformed JSON, depth and text-size validation.
+Raw `unpack_limits.max_bytes` bounds the string payload allocation, excluding
+its encoded length prefix. The fixture accepts eight payload bytes at a limit
+of eight and rejects nine, independently on the native host and WASM guest.
