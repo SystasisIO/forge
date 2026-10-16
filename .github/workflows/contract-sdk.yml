@@ -92,10 +92,10 @@ jobs:
               echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
             fi
           else
-            brew install llvm lld
-            echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
-            echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
-            echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+            brew install llvm@22 lld@22
+            echo "LLVM_ROOT=$(brew --prefix llvm@22)" >> "$GITHUB_ENV"
+            echo "CC=$(brew --prefix llvm@22)/bin/clang" >> "$GITHUB_ENV"
+            echo "CXX=$(brew --prefix llvm@22)/bin/clang++" >> "$GITHUB_ENV"
             echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
           fi
           brew install boost cmake gmp libngtcp2 ninja openssl@3
@@ -117,7 +117,7 @@ jobs:
         id: sysroot
         with:
           path: build/contract-sysroot
-          key: contract-sysroot-${{ runner.os }}-${{ runner.arch }}-${{ env.LLVM_COMMIT }}-${{ hashFiles('guest/sysroot/build.sh', 'guest/sysroot/include/**') }}
+          key: contract-sysroot-host-llvm22-${{ runner.os }}-${{ runner.arch }}-${{ env.LLVM_COMMIT }}-${{ hashFiles('guest/sysroot/build.sh', 'guest/sysroot/include/**') }}
 
       - name: Build pinned wasm32 sysroot
         if: steps.sysroot.outputs.cache-hit != 'true'
@@ -153,7 +153,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             wasm_ld="$LLVM_ROOT/bin/wasm-ld"
           else
-            wasm_ld="$(brew --prefix lld)/bin/wasm-ld"
+            wasm_ld="$(brew --prefix lld@22)/bin/wasm-ld"
           fi
           cmake -S guest -B build/contract-sdk -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -270,10 +270,10 @@ jobs:
               echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
             fi
           else
-            brew install llvm
-            echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
-            echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
-            echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+            brew install llvm@22
+            echo "LLVM_ROOT=$(brew --prefix llvm@22)" >> "$GITHUB_ENV"
+            echo "CC=$(brew --prefix llvm@22)/bin/clang" >> "$GITHUB_ENV"
+            echo "CXX=$(brew --prefix llvm@22)/bin/clang++" >> "$GITHUB_ENV"
             echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
           fi
           brew install boost cmake gmp libngtcp2 ninja openssl@3
