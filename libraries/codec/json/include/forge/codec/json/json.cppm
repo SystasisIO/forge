@@ -128,15 +128,15 @@ namespace detail {
 
 template <typename T>
 [[nodiscard]] read_result<T> decode_schema_input(const schema::input_value& input,
-                                                const schema::object_schema<T>& rules, const read_options& options) {
+                                                 const schema::object_schema<T>& rules, const read_options& options) {
    auto output = read_result<T>{};
    const auto* object = input.as_object();
    if (!object) {
       output.diagnostics.push_back(schema::diagnostic{
-         .path = options.source_name,
-         .code = "json.document",
-         .level = schema::severity::error,
-         .message = "JSON config document root must be an object",
+          .path = options.source_name,
+          .code = "json.document",
+          .level = schema::severity::error,
+          .message = "JSON config document root must be an object",
       });
       return output;
    }
@@ -164,7 +164,7 @@ template <typename T>
 
 template <typename T>
 [[nodiscard]] read_result<T> decode_variant(variant input, const schema::object_schema<T>& rules,
-                                           const read_options& options) {
+                                            const read_options& options) {
    auto output = read_result<T>{};
    rules.apply_defaults(output.value);
 
@@ -255,11 +255,11 @@ template <typename T> [[nodiscard]] read_result<T> decode(variant input, read_op
          return detail::decode_schema_input<T>(detail::to_schema_input(input), rules, options);
       } catch (const std::exception& error) {
          return read_result<T>{.diagnostics = {schema::diagnostic{
-            .path = {},
-            .code = "json.type",
-            .level = schema::severity::error,
-            .message = error.what(),
-         }}};
+                                   .path = {},
+                                   .code = "json.type",
+                                   .level = schema::severity::error,
+                                   .message = error.what(),
+                               }}};
       }
    }
    return detail::decode_variant<T>(std::move(input), rules, options);
@@ -273,9 +273,9 @@ template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, 
          return read_result<T>{.diagnostics = std::move(parsed.diagnostics)};
       }
       auto result = detail::decode_schema_input<T>(
-         config::core::to_schema_value(config::core::value{parsed.value.root}), rules, options);
+          config::core::to_schema_value(config::core::value{parsed.value.root}), rules, options);
       result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
-                                 std::make_move_iterator(parsed.diagnostics.end()));
+                                std::make_move_iterator(parsed.diagnostics.end()));
       return result;
    }
    auto parsed = read_value(input, options);
@@ -284,7 +284,7 @@ template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, 
    }
    auto result = detail::decode_variant<T>(std::move(parsed.value), rules, options);
    result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
-                              std::make_move_iterator(parsed.diagnostics.end()));
+                             std::make_move_iterator(parsed.diagnostics.end()));
    return result;
 }
 
@@ -296,9 +296,9 @@ template <typename T> [[nodiscard]] read_result<T> load(const std::filesystem::p
          return read_result<T>{.diagnostics = std::move(parsed.diagnostics)};
       }
       auto result = detail::decode_schema_input<T>(
-         config::core::to_schema_value(config::core::value{parsed.value.root}), rules, options);
+          config::core::to_schema_value(config::core::value{parsed.value.root}), rules, options);
       result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
-                                 std::make_move_iterator(parsed.diagnostics.end()));
+                                std::make_move_iterator(parsed.diagnostics.end()));
       return result;
    }
    auto parsed = load_value(path, options);
@@ -307,7 +307,7 @@ template <typename T> [[nodiscard]] read_result<T> load(const std::filesystem::p
    }
    auto result = detail::decode_variant<T>(std::move(parsed.value), rules, options);
    result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
-                              std::make_move_iterator(parsed.diagnostics.end()));
+                             std::make_move_iterator(parsed.diagnostics.end()));
    return result;
 }
 

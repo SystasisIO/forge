@@ -1098,16 +1098,17 @@ class binding_builder {
       switch (codec) {
       case body_codec::json: {
          const auto options = forge::codec::json::read_options{
-            .source_name = std::string{source_name},
-            .unknown_fields = forge::codec::json::unknown_field_policy::error,
-            .described_records = forge::codec::json::described_record_policy::exact,
+             .source_name = std::string{source_name},
+             .unknown_fields = forge::codec::json::unknown_field_policy::error,
+             .described_records = forge::codec::json::described_record_policy::exact,
          };
          auto decoded = [&] {
             if constexpr (detail::has_http_hidden_fields<T>::value) {
                auto parsed = forge::codec::json::read_value(body, options);
                if (!parsed.ok()) {
-                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
-                                        diagnostic_message(parsed.diagnostics, "HTTP API JSON request body is invalid"));
+                  FORGE_THROW_EXCEPTION(
+                      forge::net::http::exceptions::bad_request,
+                      diagnostic_message(parsed.diagnostics, "HTTP API JSON request body is invalid"));
                }
                detail::project_http_json_fields<T>(parsed.value, true);
                return forge::codec::json::decode<T>(std::move(parsed.value), options);
@@ -1999,15 +2000,17 @@ class binding_builder {
       auto plan = plan_;
       auto name = explicit_name.empty() ? method_name<interface_type, Request, Response>() : std::move(explicit_name);
       if constexpr (detail::http_method_has_hidden_fields_v<Method>) {
-         detail::validate_server_supplied_route<Method, Request>(forge::api::http::route{
-            .verb = verb,
-            .method_name = name,
-            .target = path,
-            .headers = options.headers,
-            .forms = options.forms,
-            .body_stream_field = options.body_stream_field,
-            .request_body_codec = options.request_body_codec,
-         }, options.query);
+         detail::validate_server_supplied_route<Method, Request>(
+             forge::api::http::route{
+                 .verb = verb,
+                 .method_name = name,
+                 .target = path,
+                 .headers = options.headers,
+                 .forms = options.forms,
+                 .body_stream_field = options.body_stream_field,
+                 .request_body_codec = options.request_body_codec,
+             },
+             options.query);
       }
       return [plan = std::move(plan), provider = invocation_provider_, verb, path = std::move(path), options = std::move(options),
               name = std::move(name)](router& target, std::string_view base_path) {

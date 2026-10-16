@@ -420,8 +420,8 @@ BOOST_AUTO_TEST_CASE(json_owned_dom_decode_matches_typed_read_without_changing_n
          BOOST_TEST(json::write(decoded.value).text == json::write(direct.value).text);
       }
    };
-   for (const auto policy : {json::unknown_field_policy::ignore, json::unknown_field_policy::warn,
-                             json::unknown_field_policy::error}) {
+   for (const auto policy :
+        {json::unknown_field_policy::ignore, json::unknown_field_policy::warn, json::unknown_field_policy::error}) {
       compare.operator()<forge_json_tests::http_config>(R"({"port":9090,"tags":["alpha"],"extra":1})",
                                                         {.unknown_fields = policy});
    }
@@ -430,11 +430,10 @@ BOOST_AUTO_TEST_CASE(json_owned_dom_decode_matches_typed_read_without_changing_n
                            R"({"bind-port":9090,"port":9091})", R"({"bind-port":9090.0})"}) {
       compare.operator()<forge_json_tests::http_config>(text, exact);
    }
-   for (const auto text : {R"({"items":[{"value":1}],"choice":[0,{"value":2}]})",
-                           R"({"items":[{"value":0.0}],"choice":[0,{"value":2}]})",
-                           R"({"items":[{"value":1}],"choice":[0.0,{"value":2}]})",
-                           R"({"items":[{"value":1}],"choice":[0,{"value":2}],"extra":1})",
-                           R"({"items":[{"value":1}]})"}) {
+   for (const auto text :
+        {R"({"items":[{"value":1}],"choice":[0,{"value":2}]})", R"({"items":[{"value":0.0}],"choice":[0,{"value":2}]})",
+         R"({"items":[{"value":1}],"choice":[0.0,{"value":2}]})",
+         R"({"items":[{"value":1}],"choice":[0,{"value":2}],"extra":1})", R"({"items":[{"value":1}]})"}) {
       compare.operator()<forge_json_tests::exact_record>(text, exact);
    }
    compare.operator()<forge_json_tests::exact_schema_plain_parent>(

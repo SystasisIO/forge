@@ -191,7 +191,8 @@ template <typename T> struct has_http_hidden_fields<form_field<T>, false> : has_
 
 template <typename T> [[nodiscard]] std::vector<std::string> http_json_field_names(std::string_view member_name) {
    const auto rules = forge::schema::rules<T>::define();
-   const auto field = std::ranges::find(rules.fields(), member_name, [](const auto& field) { return field.member_name; });
+   const auto field =
+       std::ranges::find(rules.fields(), member_name, [](const auto& field) { return field.member_name; });
    if (field == rules.fields().end()) {
       return {std::string{member_name}};
    }
@@ -245,9 +246,8 @@ template <typename T> void project_http_json_fields(forge::variant& value, bool 
                                         "HTTP server-supplied field is not accepted from the client",
                                         forge::exceptions::ctx("field", names.front()));
                }
-               const auto declared = std::ranges::any_of(rules.fields(), [&](const auto& field) {
-                  return field.member_name == member_name;
-               });
+               const auto declared = std::ranges::any_of(
+                   rules.fields(), [&](const auto& field) { return field.member_name == member_name; });
                if (incoming && (rules.fields().empty() || declared)) {
                   object.set(names.front(), forge::variant_schema::encode(member_type{}));
                }
@@ -273,7 +273,8 @@ using http_method_argument_tuple_t = forge::api::core::detail::method_fixed_argu
 
 template <auto Method>
 inline constexpr bool http_method_has_hidden_fields_v = []<std::size_t... Index>(std::index_sequence<Index...>) {
-   return (false || ... || has_http_hidden_fields<std::tuple_element_t<Index, http_method_argument_tuple_t<Method>>>::value);
+   return (false || ... ||
+           has_http_hidden_fields<std::tuple_element_t<Index, http_method_argument_tuple_t<Method>>>::value);
 }(std::make_index_sequence<std::tuple_size_v<http_method_argument_tuple_t<Method>>>{});
 
 [[noreturn]] inline void throw_positional_proxy_not_supported() {

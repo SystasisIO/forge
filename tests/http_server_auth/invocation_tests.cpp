@@ -569,8 +569,7 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
         {R"({"total":0.0,"choice":[0,10],"wide":10,"flag":true})",
          R"({"total":0,"choice":[0.0,10],"wide":10,"flag":true})",
          R"({"total":101,"choice":[0,10],"wide":10,"flag":true})",
-         R"({"total":0,"choice":[0,10],"wide":10,"flag":true,"extra":1})",
-         R"({"choice":[0,10],"wide":10,"flag":true})",
+         R"({"total":0,"choice":[0,10],"wide":10,"flag":true,"extra":1})", R"({"choice":[0,10],"wide":10,"flag":true})",
          R"({"total":0,"total":0,"choice":[0,10],"wide":10,"flag":true})"}) {
       BOOST_TEST(send("/secure/schema-numeric", body, true).result_int() == 422U);
    }
