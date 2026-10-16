@@ -2,11 +2,13 @@
 #include <boost/test/unit_test.hpp>
 #include <forge/api/core/macros.hpp>
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -17,6 +19,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -38,6 +41,7 @@
 import forge.api.auth.authenticated_caller;
 import forge.api.auth.authenticated_subject;
 import forge.api.core.binding;
+import forge.api.core.handle;
 import forge.api.core.invocation_context;
 import forge.api.core.registry;
 import forge.api.core.stream_reader;
@@ -47,6 +51,8 @@ import forge.api.http.binding;
 import forge.api.http.error_renderer;
 import forge.api.websocket.binding;
 import forge.asio.blocking;
+import forge.asio.affine;
+import forge.asio.gate;
 import forge.asio.runtime;
 import forge.auth.oauth2.token_verifier;
 import forge.codec.json;
@@ -715,6 +721,127 @@ BOOST_AUTO_TEST_CASE(http_buffered_admission_revoke_cancels_and_joins_pending_bo
    BOOST_TEST(source->cancelled.load());
    BOOST_TEST(source->exited->load());
    BOOST_TEST(implementation->calls.load() == 0U);
+}
+
+class nested_stream_service final : public api, public std::enable_shared_from_this<nested_stream_service> {
+ public:
+   nested_stream_service(boost::asio::any_io_executor executor, forge::asio::affine::executor affine)
+       : affine_{std::move(affine)}, producer_done_{std::move(executor), 1} {}
+
+   std::atomic_bool producer_started{false};
+   std::atomic_bool producer_cancelled{false};
+   std::atomic_bool producer_exited{false};
+   std::atomic_bool consumer_cancelled{false};
+   std::atomic_bool consumer_exited{false};
+   std::atomic_uint calls{0};
+
+   boost::asio::awaitable<output> who(input request) override {
+      calls.fetch_add(1);
+      auto ticket = co_await gate_.acquire();
+      co_await affine_.execute({.name = "before-native-stream"}, [] {});
+      auto source = core::handle<api>{shared_from_this()};
+      auto call = co_await source.async_open<&api::watch>(std::move(request));
+      auto failure = std::exception_ptr{};
+      try {
+         static_cast<void>(co_await call.async_read());
+      } catch (const core::exceptions::cancelled&) {
+         consumer_cancelled.store(true);
+         failure = std::current_exception();
+      } catch (...) {
+         failure = std::current_exception();
+      }
+      if (failure) {
+         call.cancel();
+         co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+         // This fixture acknowledges producer exit; call.async_finish() is a terminal result, not a join.
+         co_await producer_done_.async_receive(boost::asio::use_awaitable);
+         consumer_exited.store(true);
+         std::rethrow_exception(failure);
+      }
+      consumer_exited.store(true);
+      co_return output{};
+   }
+
+   boost::asio::awaitable<void> watch(input, core::stream_writer<output>) override {
+      struct completion {
+         nested_stream_service& owner;
+         ~completion() {
+            owner.producer_exited.store(true);
+            owner.producer_done_.try_send(boost::system::error_code{}, 0);
+         }
+      } done{*this};
+      producer_started.store(true);
+      auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor, std::chrono::seconds{2}};
+      try {
+         co_await timer.async_wait(boost::asio::use_awaitable);
+      } catch (...) {
+         producer_cancelled.store(true);
+         throw;
+      }
+   }
+
+ private:
+   forge::asio::gate gate_;
+   forge::asio::affine::executor affine_;
+   boost::asio::experimental::concurrent_channel<void(boost::system::error_code, int)> producer_done_;
+};
+
+BOOST_AUTO_TEST_CASE(http_lifetime_cancels_nested_native_stream_after_gate_and_affine_return) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto lane = forge::asio::affine::lane{};
+   for (const auto revoke : {false, true}) {
+      auto registry = core::registry{};
+      auto implementation =
+          std::make_shared<nested_stream_service>(runtime.context().get_executor(), lane.get_executor());
+      registry.install<api>(implementation);
+      auto provider_calls = std::atomic_uint{0};
+      auto typed_denials = std::atomic_uint{0};
+      auto recheck_denied = std::atomic_bool{false};
+      auto router = http::router{};
+      router.mount(
+          forge::api::http::binding()
+              .use(core::binding().serve(registry).build())
+              .invocation([&](const http::route_context&,
+                              const core::method_descriptor&) -> boost::asio::awaitable<core::invocation_context> {
+                 provider_calls.fetch_add(1);
+                 auto context = admitted("Alice");
+                 context.lifetime.limit_for(revoke ? std::chrono::seconds{1} : std::chrono::milliseconds{100});
+                 if (revoke) {
+                    context.lifetime.recheck_interval = std::chrono::milliseconds{1};
+                    context.lifetime.recheck_timeout = std::chrono::milliseconds{10};
+                    context.lifetime.recheck = [&](core::trusted_invocation) -> boost::asio::awaitable<bool> {
+                       if (implementation->producer_started.load()) {
+                          recheck_denied.store(true);
+                          co_return false;
+                       }
+                       co_return true;
+                    };
+                 }
+                 co_return context;
+              })
+              .errors([&](const forge::api::http::error_context& context) -> std::optional<http::response> {
+                 if (dynamic_cast<const core::exceptions::invocation_denied*>(context.cause)) {
+                    typed_denials.fetch_add(1);
+                 }
+                 return http::make_text_response(context.request, context.status, "denied");
+              })
+              .post<&api::who, input, output>("/who/:name")
+              .build());
+      const auto response = forge::asio::blocking::run(runtime, handle(router, request("Alice")));
+      BOOST_TEST_CONTEXT("revoke=" << revoke) {
+         BOOST_TEST(response.result_int() == 403U);
+         BOOST_TEST(provider_calls.load() == 1U);
+         BOOST_TEST(typed_denials.load() == 1U);
+         BOOST_TEST(implementation->calls.load() == 1U);
+         BOOST_TEST(implementation->producer_started.load());
+         BOOST_TEST(implementation->producer_cancelled.load());
+         BOOST_TEST(implementation->producer_exited.load());
+         BOOST_TEST(implementation->consumer_cancelled.load());
+         BOOST_TEST(implementation->consumer_exited.load());
+         BOOST_TEST(recheck_denied.load() == revoke);
+      }
+   }
+   forge::asio::blocking::run(runtime, lane.shutdown());
 }
 
 boost::asio::awaitable<std::size_t> drain_response(

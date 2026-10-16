@@ -1,10 +1,14 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/thread_pool.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
 #include <chrono>
 #include <concepts>
@@ -215,19 +219,15 @@ class executor {
    static boost::asio::awaitable<Result>
    execute_owned(std::shared_ptr<detail::lane_state> state,
                  std::shared_ptr<detail::result_state<Work, Result>> operation) {
-      auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+      const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
       if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
          static_cast<void>(operation->cancel_before_start());
-         throw exceptions::canceled{"affine operation was canceled before execution"};
+         FORGE_THROW_EXCEPTION(exceptions::canceled, "affine operation was canceled before execution");
       }
-      co_await boost::asio::this_coro::reset_cancellation_state(
-         boost::asio::enable_total_cancellation{},
-         detail::operation_cancellation_filter{operation});
-      cancellation = co_await boost::asio::this_coro::cancellation_state;
-      if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
-         static_cast<void>(operation->cancel_before_start());
-      }
-      co_await state->execute(operation);
+      const auto executor = co_await boost::asio::this_coro::executor;
+      // The operation's completion-wins filter belongs to its own awaitable thread.
+      // Keep the result outside co_spawn so non-default-constructible results remain supported.
+      co_await boost::asio::co_spawn(executor, state->execute(operation), boost::asio::use_awaitable);
       if constexpr (!std::is_void_v<Result>) {
          co_return operation->take_result();
       }

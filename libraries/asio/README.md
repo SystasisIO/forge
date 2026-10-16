@@ -232,7 +232,9 @@ co_await mutate_shared_state();
 
 The gate does not start detached work and does not own an executor. Waiting
 coroutines remain owned by their callers. A ticket may be released from another
-thread.
+thread. `acquire()` confines its grant cancellation filter to an awaited child
+coroutine, preserving the caller's cancellation policy and pending cancellation
+for work performed after acquisition, including after a rejected acquisition.
 
 ### Wait For Shared State Changes
 
@@ -294,6 +296,9 @@ operation and throws `canceled`. Once the callable starts, completion wins: its
 value or exception is returned. `request_stop()` rejects new and waiting work,
 cancels pending work and lets the running callable finish; `shutdown()` then
 joins the worker. Completions resume on the executor that awaited `execute()`.
+The operation's completion-wins filter is confined to an awaited child coroutine;
+returning a value or exception preserves the caller's cancellation policy,
+pending cancellation and `throw_if_cancelled` setting for subsequent async work.
 `snapshot()` reports queue depths, terminal outcomes and accumulated queue and
 execution time. The lane owner is the lifecycle boundary: it must outlive all
 consumers of its executor and shut them down before calling `lane.shutdown()`.
