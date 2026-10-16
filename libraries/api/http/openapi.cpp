@@ -416,23 +416,22 @@ struct request_body_description {
                 "OpenAPI positional methods cannot use HTTP parameter wrappers"};
          }
       }
-      const auto target = describe_target(operation.mapping.target);
-      for (const auto& field : request_fields) {
-         if (field.source != openapi_field_source::server_supplied) {
-            continue;
-         }
-         if (std::ranges::find(target.path_fields, field.name) != target.path_fields.end() ||
-             has_binding(target.query, field.name) || has_binding(operation.mapping.headers, field.name) ||
-             has_binding(operation.mapping.forms, field.name) ||
-             (operation.mapping.body_stream_field && *operation.mapping.body_stream_field == field.name)) {
-            throw forge::api::core::exceptions::protocol_error{
-                "OpenAPI server-supplied argument cannot be bound to a request field"};
-         }
-      }
-      std::erase_if(request_fields, [](const openapi_field& field) {
-         return field.source == openapi_field_source::server_supplied;
-      });
    }
+   const auto supplied_target = describe_target(operation.mapping.target);
+   for (const auto& field : request_fields) {
+      if (field.source != openapi_field_source::server_supplied) {
+         continue;
+      }
+      if (std::ranges::find(supplied_target.path_fields, field.name) != supplied_target.path_fields.end() ||
+          has_binding(supplied_target.query, field.name) || has_binding(operation.mapping.headers, field.name) ||
+          has_binding(operation.mapping.forms, field.name) ||
+          (operation.mapping.body_stream_field && *operation.mapping.body_stream_field == field.name)) {
+         throw forge::api::core::exceptions::protocol_error{
+             "OpenAPI server-supplied argument cannot be bound to a request field"};
+      }
+   }
+   std::erase_if(request_fields,
+                 [](const openapi_field& field) { return field.source == openapi_field_source::server_supplied; });
    auto parameters = forge::variants{};
    struct parameter_identity {
       std::string field;

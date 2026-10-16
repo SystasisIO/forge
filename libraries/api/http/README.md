@@ -8,6 +8,19 @@ descriptor, before domain dispatch, stream-open or streaming request-body reads.
 It returns `forge::api::core::invocation_context`. Choose resource policy from
 trusted route configuration; do not promote headers/JSON into verified subjects.
 
+With a nonempty provider, unary methods also use the existing stream route to run
+admission before consuming a buffered request body. After admission, ordinary DTOs
+and positional arguments retain their buffered decoding and native request body.
+An early denial sends the final response and closes an unread request; it does not
+send `100 Continue`. The provider runs once. Publications without a provider keep
+their existing buffered/stream route selection.
+
+For manual in-process dispatch, select `router::handle_stream` when
+`router::can_handle_stream` reports a stream route, as the HTTP server does.
+Supply the request body through its `body_reader`. Opting into a provider makes
+an ordinary unary route a stream route; `router::handle` dispatches buffered
+routes only.
+
 The binding composes provider values with the verified TLS caller and rejects any
 duplicate type. Required server-supplied values are still reset/applied by the
 existing descriptor mechanism. Subject validity bounds admission and stream
@@ -258,6 +271,32 @@ before invoking the handler when the emitted codec is not acceptable.
   bindings for that argument are rejected when mounted, and OpenAPI omits it.
   A normal request DTO containing a server-supplied member remains a DTO;
   its member is still reset and replaced by the core dispatch boundary.
+- A specialization may explicitly set `static constexpr bool http_visible = false`
+  to hide that service value when it is a reflected request member. Without this
+  opt-in, nested DTO bodies and OpenAPI retain their previous representation.
+  Hidden members are omitted by the HTTP client and request OpenAPI, do not
+  require a request body and cannot be mapped to path/query/header/form fields.
+  A client-supplied hidden JSON key is rejected; missing/unknown/duplicate ordinary
+  payload fields still pass through the existing exact JSON codec. Empty defaults
+  are materialized solely for decoding before core reset/apply supplies trusted
+  values. The marker does not change Raw, P2P, response encoding or core traversal.
+  This profile follows direct reflected members, including inherited members and
+  described records nested in them. As in core dispatch, it does not implicitly
+  traverse optionals, ranges, variants or pointers: their contents remain ordinary
+  payload values and do not acquire trusted authority from this marker. A hidden
+  value inside an HTTP parameter wrapper such as `body<request>` is unsupported
+  and rejected when building the route. Put the service member beside an ordinary
+  `body<business_payload>`, query, form or stream member instead. Hidden members
+  and their containing described members require single-segment schema names
+  and aliases; dotted names are rejected with typed `incompatible_version` before
+  mount, client encoding or OpenAPI generation. Ordinary dotted payload schemas
+  retain the codec's existing nested-object behavior.
+  The whole-request body form of this opt-in profile supports JSON; XML is
+  rejected with typed `incompatible_version` during route validation. Existing
+  XML DTOs and explicit XML `body<T>` wrappers without hidden fields in `T`
+  retain their behavior. Query, multipart and streaming request members continue
+  to use their existing bindings. An ordinary business payload key with the same
+  spelling as a service member is unaffected.
 - JSON/XML DTO codecs apply only to typed DTO bodies. `file_response`,
   `streaming_response`, `stream_response`, `bytes_response`, `empty_response`,
   `body_stream`, `body_bytes` and multipart/form-data bypass DTO codecs.

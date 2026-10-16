@@ -1,4 +1,4 @@
-add_library(forge_auth_http STATIC policy.cpp)
+add_library(forge_auth_http STATIC bearer.cpp policy.cpp)
 forge_target_modules_at(forge_auth_http auth/http)
 
 target_include_directories(forge_auth_http PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})

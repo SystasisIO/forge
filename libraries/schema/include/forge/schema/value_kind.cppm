@@ -21,7 +21,12 @@ enum class value_kind {
    string_list,
    object,
    object_list,
+   dynamic,
 };
+
+// Specializations own validated conversion to/from input_value. Schema never
+// imports a format codec or a dynamic-value backend.
+template <typename T> struct value_adapter;
 
 template <typename T> struct dependent_false : std::false_type {};
 
@@ -77,6 +82,8 @@ template <typename T> struct member_kind {
       using clean_type = std::remove_cvref_t<T>;
       if constexpr (is_optional<clean_type>::value) {
          return member_kind<typename is_optional<clean_type>::value_type>::value;
+      } else if constexpr (requires { value_adapter<clean_type>::kind; }) {
+         return value_adapter<clean_type>::kind;
       } else if constexpr (std::same_as<clean_type, bool>) {
          return value_kind::boolean;
       } else if constexpr (signed_integral_value<clean_type>) {

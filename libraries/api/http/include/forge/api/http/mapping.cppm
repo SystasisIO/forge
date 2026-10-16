@@ -1,6 +1,8 @@
 module;
 
 #include <algorithm>
+#include <boost/describe.hpp>
+#include <boost/mp11.hpp>
 #include <array>
 #include <cctype>
 #include <optional>
@@ -8,6 +10,7 @@ module;
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -18,6 +21,7 @@ export module forge.api.http.mapping;
 
 import forge.api.core.connection;
 import forge.api.core.descriptor;
+import forge.api.core.exceptions;
 import forge.api.core.server_supplied;
 import forge.api.core.types;
 import forge.codec.json;
@@ -27,6 +31,9 @@ import forge.net.http.negotiation;
 import forge.net.http.types;
 import forge.reflect.reflect;
 import forge.schema.scalar;
+import forge.schema.object;
+import forge.variant.value;
+import forge.variant.schema;
 
 export namespace forge::api::http {
 
@@ -149,11 +156,126 @@ template <typename Interface> struct traits;
 
 namespace detail {
 
+// Nested server-supplied values retain their ordinary DTO representation unless explicitly hidden for HTTP.
+template <typename T>
+inline constexpr bool server_supplied_http_visible_v = [] {
+   using value_type = std::remove_cvref_t<T>;
+   if constexpr (forge::api::core::server_supplied_value<value_type> &&
+                 requires { forge::api::core::server_supplied<value_type>::http_visible; }) {
+      return bool{forge::api::core::server_supplied<value_type>::http_visible};
+   }
+   return true;
+}();
+
+template <typename T, bool Described = forge::reflect::is_described_object_v<std::remove_cvref_t<T>>>
+struct has_http_hidden_fields : std::bool_constant<!server_supplied_http_visible_v<T>> {};
+
+template <typename Object> struct http_hidden_member_predicate {
+   template <typename Descriptor>
+   using fn = has_http_hidden_fields<std::remove_cvref_t<decltype(std::declval<Object>().*Descriptor::pointer)>>;
+};
+
+template <typename T> struct has_http_hidden_fields<T, true> {
+   using members = boost::describe::describe_members<std::remove_cvref_t<T>,
+                                                     boost::describe::mod_any_access | boost::describe::mod_inherited>;
+   static constexpr bool value =
+       !server_supplied_http_visible_v<T> || boost::mp11::mp_any_of_q<members, http_hidden_member_predicate<T>>::value;
+};
+
+template <typename T> struct has_http_hidden_fields<header<T>, false> : has_http_hidden_fields<T> {};
+template <typename T> struct has_http_hidden_fields<query<T>, false> : has_http_hidden_fields<T> {};
+template <typename T> struct has_http_hidden_fields<cookie<T>, false> : has_http_hidden_fields<T> {};
+template <typename T> struct has_http_hidden_fields<body<T>, false> : has_http_hidden_fields<T> {};
+template <typename T> struct has_http_hidden_fields<form<T>, false> : has_http_hidden_fields<T> {};
+template <typename T> struct has_http_hidden_fields<form_field<T>, false> : has_http_hidden_fields<T> {};
+
+template <typename T> [[nodiscard]] std::vector<std::string> http_json_field_names(std::string_view member_name) {
+   const auto rules = forge::schema::rules<T>::define();
+   const auto field =
+       std::ranges::find(rules.fields(), member_name, [](const auto& field) { return field.member_name; });
+   if (field == rules.fields().end()) {
+      return {std::string{member_name}};
+   }
+   auto names = std::vector<std::string>{field->name};
+   names.insert(names.end(), field->aliases.begin(), field->aliases.end());
+   if (std::ranges::any_of(names, [](const auto& name) { return name.contains('.'); })) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                            "HTTP-hidden server-supplied fields require single-segment schema names and aliases");
+   }
+   return names;
+}
+
+template <typename T> void validate_http_hidden_json_profile() {
+   if constexpr (is_http_parameter_v<T> && has_http_hidden_fields<T>::value) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                            "HTTP-hidden server-supplied values cannot be nested inside parameter wrappers");
+   } else if constexpr (forge::reflect::is_described_object_v<T> && has_http_hidden_fields<T>::value) {
+      forge::reflect::for_each_member<T>([](const char* name, auto member) {
+         using member_type = std::remove_cvref_t<decltype(std::declval<T>().*member)>;
+         if constexpr (has_http_hidden_fields<member_type>::value) {
+            (void)http_json_field_names<T>(name);
+            if constexpr (server_supplied_http_visible_v<member_type>) {
+               validate_http_hidden_json_profile<member_type>();
+            }
+         }
+      });
+   }
+}
+
+// Adapt only metadata-selected service fields; ordinary payload keys remain codec-owned.
+template <typename T> void project_http_json_fields(forge::variant& value, bool incoming) {
+   validate_http_hidden_json_profile<T>();
+   if constexpr (forge::reflect::is_described_object_v<T>) {
+      if (!value.is_object()) {
+         return;
+      }
+      auto object = forge::mutable_variant_object{value.get_object()};
+      const auto rules = forge::schema::rules<T>::define();
+      forge::reflect::for_each_member<T>([&](const char* member_name, auto member) {
+         using member_type = std::remove_cvref_t<decltype(std::declval<T>().*member)>;
+         if constexpr (has_http_hidden_fields<member_type>::value) {
+            const auto names = http_json_field_names<T>(member_name);
+            if constexpr (!server_supplied_http_visible_v<member_type>) {
+               auto supplied = false;
+               for (const auto& name : names) {
+                  supplied = supplied || object.find(name) != object.end();
+                  object.erase(name);
+               }
+               if (incoming && supplied) {
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                        "HTTP server-supplied field is not accepted from the client",
+                                        forge::exceptions::ctx("field", names.front()));
+               }
+               const auto declared = std::ranges::any_of(
+                   rules.fields(), [&](const auto& field) { return field.member_name == member_name; });
+               if (incoming && (rules.fields().empty() || declared)) {
+                  object.set(names.front(), forge::variant_schema::encode(member_type{}));
+               }
+            } else {
+               for (const auto& name : names) {
+                  auto nested = object.find(name);
+                  if (nested != object.end()) {
+                     project_http_json_fields<member_type>(nested->value(), incoming);
+                  }
+               }
+            }
+         }
+      });
+      value = forge::variant{std::move(object)};
+   }
+}
+
 template <auto Method>
 using http_method_request_t = forge::api::core::detail::method_fixed_request_t<Method>;
 
 template <auto Method>
 using http_method_argument_tuple_t = forge::api::core::detail::method_fixed_argument_tuple_t<Method>;
+
+template <auto Method>
+inline constexpr bool http_method_has_hidden_fields_v = []<std::size_t... Index>(std::index_sequence<Index...>) {
+   return (false || ... ||
+           has_http_hidden_fields<std::tuple_element_t<Index, http_method_argument_tuple_t<Method>>>::value);
+}(std::make_index_sequence<std::tuple_size_v<http_method_argument_tuple_t<Method>>>{});
 
 [[noreturn]] inline void throw_positional_proxy_not_supported() {
    FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
@@ -547,7 +669,8 @@ inline constexpr auto client_stream_transport_parameter_v =
    is_cookie<std::remove_cvref_t<T>>::value;
 
 template <auto Method, typename Request>
-void validate_server_supplied_route(const route& value) {
+void validate_server_supplied_route(const route& value, std::span<const field_binding> explicit_query = {}) {
+   validate_http_hidden_json_profile<Request>();
    if constexpr (is_positional_http_method_v<Method, Request>) {
       using interface_type = forge::api::core::method_class_t<Method>;
       using argument_tuple = http_method_argument_tuple_t<Method>;
@@ -560,6 +683,14 @@ void validate_server_supplied_route(const route& value) {
       [&]<std::size_t... Index>(std::index_sequence<Index...>) {
          (([&] {
             using argument = std::tuple_element_t<Index, argument_tuple>;
+            validate_http_hidden_json_profile<argument>();
+            if constexpr (has_http_hidden_fields<argument>::value &&
+                          !forge::api::core::server_supplied_value<argument>) {
+               if (value.request_body_codec == body_codec::xml) {
+                  FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                        "HTTP-hidden server-supplied fields require JSON for whole-request bodies");
+               }
+            }
             if constexpr (forge::api::core::server_supplied_value<argument>) {
                const auto& name = method->argument_names[Index];
                if (route_uses_fixed_field(value, name) ||
@@ -573,6 +704,25 @@ void validate_server_supplied_route(const route& value) {
             }
          }()), ...);
       }(std::make_index_sequence<std::tuple_size_v<argument_tuple>>{});
+   } else if constexpr (has_http_hidden_fields<Request>::value) {
+      if (value.request_body_codec == body_codec::xml && !request_has_http_parameter_v<Request>) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                               "HTTP-hidden server-supplied fields require JSON for whole-request bodies");
+      }
+      forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
+         using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
+         if constexpr (!server_supplied_http_visible_v<member_type>) {
+            if (route_uses_fixed_field(value, name) ||
+                std::ranges::any_of(explicit_query, [&](const auto& field) { return field.field == name; }) ||
+                std::ranges::any_of(value.headers, [&](const auto& field) { return field.field == name; }) ||
+                std::ranges::any_of(value.forms, [&](const auto& field) { return field.field == name; }) ||
+                (value.body_stream_field && *value.body_stream_field == name)) {
+               FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                     "HTTP-hidden server-supplied field cannot be bound to a request field",
+                                     forge::exceptions::ctx("field", name));
+            }
+         }
+      });
    }
 }
 
@@ -628,7 +778,9 @@ void validate_live_stream_route(const route& value) {
          using request_type = std::remove_cvref_t<Request>;
          forge::reflect::for_each_member<request_type>([&](const char* name, auto member) {
             using member_type = std::remove_cvref_t<decltype(std::declval<request_type>().*member)>;
-            if constexpr (client_stream_transport_parameter_v<member_type>) {
+            if constexpr (!server_supplied_http_visible_v<member_type>) {
+               return;
+            } else if constexpr (client_stream_transport_parameter_v<member_type>) {
                if (route_uses_fixed_field(value, name)) {
                   FORGE_THROW_EXCEPTION(
                      forge::net::http::exceptions::bad_request,

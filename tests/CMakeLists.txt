@@ -30,6 +30,10 @@ add_test(
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/app_lifecycle_tests.py
 )
 add_test(
+   NAME test_forge_plugin_impl_ownership_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/plugin_impl_ownership_tests.py
+)
+add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
    COMMAND
       ${CMAKE_COMMAND}
@@ -127,6 +131,7 @@ add_executable(
    variant/test_variant_estimated_size.cpp
    raw/test_raw.cpp
    json/test_json.cpp
+   json/document_tests.cpp
    crypto/test_base32.cpp
    crypto/test_blake2.cpp
    crypto/test_bls_legacy.cpp
@@ -229,6 +234,7 @@ add_executable(
    test_forge_codec_json
    unit/main.cpp
    json/test_json.cpp
+   json/document_tests.cpp
 )
 target_sources(
    test_forge_codec_json
@@ -241,6 +247,10 @@ target_link_libraries(test_forge_codec_json
    Boost::included_unit_test_framework
 )
 add_test(NAME test_forge_codec_json COMMAND test_forge_codec_json WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_executable(test_forge_http_sse unit/main.cpp http/sse_tests.cpp)
+target_link_libraries(test_forge_http_sse PRIVATE forge_net_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_sse COMMAND test_forge_http_sse)
 
 foreach(_codec IN ITEMS base64 base58 hex)
    add_executable(test_forge_codec_${_codec} unit/main.cpp codec/${_codec}_tests.cpp)
@@ -385,6 +395,7 @@ add_executable(
    test_forge_chain_api
    unit/main.cpp
    chain_api/abi_tests.cpp
+   chain_api/json_document_tests.cpp
    chain_api/chain_api_tests.cpp
 )
 target_link_libraries(
@@ -460,6 +471,7 @@ add_executable(
    test_forge_plugins_net_http_server
    unit/main.cpp
    http_server_auth/bearer_auth_tests.cpp
+   http_server_auth/invocation_tests.cpp
    http_server_auth/routes_tests.cpp
 )
 target_link_libraries(
@@ -1123,6 +1135,13 @@ add_executable(
 target_link_libraries(test_forge_http_stop_retry forge_net_http forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_http_stop_retry COMMAND test_forge_http_stop_retry WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_http_stop_retry PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_http_response_body_limit unit/main.cpp http/response_body_limit_tests.cpp)
+target_link_libraries(test_forge_http_response_body_limit PRIVATE forge_net_http forge_net_tls forge_asio
+   Boost::included_unit_test_framework OpenSSL::Crypto)
+add_test(NAME test_forge_http_response_body_limit COMMAND test_forge_http_response_body_limit
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_http_response_body_limit PROPERTIES TIMEOUT 60)
 
 add_executable(
    test_forge_yamux
@@ -2228,6 +2247,26 @@ target_link_libraries(test_forge_crypto_secrets forge Boost::included_unit_test_
 target_include_directories(test_forge_crypto_secrets PRIVATE ${PROJECT_SOURCE_DIR}/plugins/crypto/secrets)
 add_test(NAME test_forge_crypto_secrets COMMAND test_forge_crypto_secrets WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_executable(test_forge_crypto_secrets_versions
+   unit/main.cpp
+   plugins/crypto/secrets_versions_tests.cpp
+   plugins/crypto/secrets_faults.cpp
+)
+target_link_libraries(test_forge_crypto_secrets_versions PRIVATE
+   ${CMAKE_DL_LIBS}
+   OpenSSL::Crypto
+   forge_plugins_crypto_secrets
+   forge_crypto_keystore
+   forge_crypto_symmetric
+   forge_config_env
+   forge_config_program_options
+   forge_codec_base64
+   forge_codec_json
+   Boost::included_unit_test_framework
+)
+add_test(NAME test_forge_crypto_secrets_versions
+   COMMAND test_forge_crypto_secrets_versions WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
 if(FORGE_HAS_ROCKSDB)
    add_executable(
       test_forge_rocksdb
@@ -2275,6 +2314,17 @@ foreach(FORGE_PACKAGE_OPENSSL_VARIABLE IN ITEMS
       )
    endif()
 endforeach()
+set(FORGE_PACKAGE_BOOST_CACHE_CONTENT "")
+# Reuse the producer's selected Boost packages instead of mixing host installations.
+foreach(FORGE_PACKAGE_BOOST_VARIABLE IN ITEMS
+   Boost_DIR boost_headers_DIR boost_stacktrace_basic_DIR
+)
+   if(DEFINED ${FORGE_PACKAGE_BOOST_VARIABLE} AND ${FORGE_PACKAGE_BOOST_VARIABLE})
+      string(APPEND FORGE_PACKAGE_BOOST_CACHE_CONTENT
+         "set(${FORGE_PACKAGE_BOOST_VARIABLE} [==[${${FORGE_PACKAGE_BOOST_VARIABLE}}]==] CACHE PATH \"Exact producer Boost dependency\" FORCE)\n"
+      )
+   endif()
+endforeach()
 set(FORGE_PACKAGE_CONSUMER_CACHE "${CMAKE_BINARY_DIR}/tests/ForgePackageConsumerCache.cmake")
 string(
    CONCAT FORGE_PACKAGE_CONSUMER_CACHE_CONTENT
@@ -2282,6 +2332,7 @@ string(
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Package dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Exact Glaze package\" FORCE)\n"
    "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
+   "${FORGE_PACKAGE_BOOST_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
    "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
@@ -2306,6 +2357,7 @@ string(
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_EXPLICIT_GLAZE_DIR_PREFIX_PATH}]==] CACHE STRING \"Shared dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Explicit Glaze package hint\" FORCE)\n"
    "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
+   "${FORGE_PACKAGE_BOOST_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Expected shared dependency prefixes\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"

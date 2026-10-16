@@ -2,9 +2,13 @@ module;
 
 #include "details/async_waiter.hxx"
 
+#include <forge/exceptions/macros.hpp>
+
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
@@ -21,7 +25,13 @@ namespace forge::asio {
 namespace {
 
 boost::asio::awaitable<gate::ticket> acquire_owned(std::shared_ptr<detail::gate_state> state) {
-   co_return co_await state->acquire();
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "gate acquire was canceled");
+   }
+   const auto executor = co_await boost::asio::this_coro::executor;
+   // A granted ticket must not leave the gate's cancellation filter in its caller.
+   co_return co_await boost::asio::co_spawn(executor, state->acquire(), boost::asio::use_awaitable);
 }
 
 } // namespace

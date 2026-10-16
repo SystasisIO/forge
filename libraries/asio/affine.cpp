@@ -4,6 +4,8 @@ module;
 #include "details/stop_state.hxx"
 #include "details/thread_name.hxx"
 
+#include <forge/exceptions/macros.hpp>
+
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/post.hpp>
@@ -155,6 +157,17 @@ lane_state::~lane_state() {
 }
 
 boost::asio::awaitable<void> lane_state::execute(std::shared_ptr<operation_state> operation) {
+   auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+      static_cast<void>(operation->cancel_before_start());
+      FORGE_THROW_EXCEPTION(exceptions::canceled, "affine operation was canceled before execution");
+   }
+   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::enable_total_cancellation{},
+                                                             operation_cancellation_filter{operation});
+   cancellation = co_await boost::asio::this_coro::cancellation_state;
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+      static_cast<void>(operation->cancel_before_start());
+   }
    co_await operation->wait();
 }
 

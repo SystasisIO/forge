@@ -1,7 +1,9 @@
 #include <chrono>
 
 import forge.auth.http.exceptions;
+import forge.auth.http.bearer;
 import forge.auth.http.policy;
+import forge.net.http.types;
 
 int main() {
    namespace auth_http = forge::auth::http;
@@ -25,10 +27,13 @@ int main() {
    const auto cookie = auth_http::make_session_cookie(issuance.session_token, {});
    const auto digest = session::identify_session_token(issuance.session_token);
    const auto exception_import = auth_http::exceptions::code::csrf_mismatch;
+   auto request = forge::net::http::request{forge::net::http::method::get, "/", 11};
+   request.set("Authorization", "Bearer package-test");
+   const auto token = auth_http::extract_bearer_token(request);
 
    return origin.allowed_origins.size() == 1U && cookie.name == "__Host-forge-session" &&
                   digest == issuance.record.session_digest &&
-                  exception_import == auth_http::exceptions::code::csrf_mismatch
+                  exception_import == auth_http::exceptions::code::csrf_mismatch && token && *token == "package-test"
               ? 0
               : 1;
 }

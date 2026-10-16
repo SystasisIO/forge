@@ -280,6 +280,41 @@ void validate(const http_response& value, const limits& bounds) {
    wire_size(value, bounds);
 }
 
+void validate(const http_stream_open& value, const limits& bounds) {
+   validate(value.request, bounds);
+   validate_type_name(value.event_type, bounds);
+   byte_bound(value.end_marker.size(), 64U, bounds);
+   if (value.end_marker.empty() || value.end_marker.find_first_of("\r\n") != std::string::npos) {
+      FORGE_POLICY_THROW_EXCEPTION(exceptions::invalid_value, "Invalid HTTP stream end marker");
+   }
+   wire_size(value, bounds);
+}
+
+void validate(const http_stream_read& value, const limits& bounds) {
+   if (value.emission) {
+      validate(*value.emission, bounds);
+   }
+   wire_size(value, bounds);
+}
+
+void validate(const http_stream_event& value, const limits& bounds) {
+   if (value.status < 100 || value.status > 599) {
+      FORGE_POLICY_THROW_EXCEPTION(exceptions::invalid_http_response, "Invalid HTTP stream response status");
+   }
+   if (value.item) {
+      validate(*value.item, bounds);
+   }
+   wire_size(value, bounds);
+}
+
+void validate(const http_stream_event& value, std::string_view expected_item_type, const limits& bounds) {
+   validate(value, bounds);
+   validate_type_name(expected_item_type, bounds);
+   if (value.item && value.item->type != expected_item_type) {
+      FORGE_POLICY_THROW_EXCEPTION(exceptions::wrong_type, "Stream item does not match the pinned type");
+   }
+}
+
 void validate(const core::error_payload& value, const limits& bounds) {
    byte_bound(value.error.size(), bounds.name_bytes, bounds);
    byte_bound(value.message.size(), bounds.wire.max_bytes, bounds);

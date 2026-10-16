@@ -19,10 +19,17 @@ import forge.config.core.decode;
 import forge.crypto.core.secret_bytes;
 import forge.plugins.crypto.secrets.api;
 import forge.plugins.crypto.secrets.types;
+import forge.plugins.crypto.secrets.version_api;
+import forge.plugins.crypto.secrets.version_write_api;
+import forge.plugins.crypto.secrets.version_metadata_api;
+import forge.plugins.crypto.secrets.version_types;
 
 #include "details/config.hxx"
 #include "details/plugin_impl.hxx"
 #include "details/api_impl.hxx"
+#include "details/version_api_impl.hxx"
+#include "details/version_write_api_impl.hxx"
+#include "details/version_metadata_api_impl.hxx"
 
 namespace forge::plugins::crypto::secrets {
 
@@ -32,8 +39,8 @@ plugin::~plugin() = default;
 
 forge::app::plugin_descriptor plugin::descriptor() {
    return forge::app::plugin_descriptor{
-      .id = {.value = "forge.plugins.crypto.secrets"},
-      .factory = [] { return std::make_unique<plugin>(); },
+       .id = {.value = "forge.plugins.crypto.secrets"},
+       .factory = [] { return std::make_unique<plugin>(); },
    };
 }
 
@@ -46,7 +53,13 @@ std::string plugin::version() const {
 }
 
 std::optional<forge::config::core::component_descriptor> plugin::describe_config() const {
-   return forge::config::core::describe_component<config>("plugins.crypto.secrets");
+   auto descriptor = forge::config::core::describe_component<config>("plugins.crypto.secrets");
+   auto versions = forge::config::core::describe_component<version_store_config>("plugins.crypto.secrets");
+   for (auto& field : versions.fields) {
+      field.name = "versions." + field.name;
+      descriptor.fields.push_back(std::move(field));
+   }
+   return descriptor;
 }
 
 boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component_view view) {
@@ -56,21 +69,26 @@ boost::asio::awaitable<void> plugin::on_configure(forge::config::core::component
 
 boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& provider) {
    provider.install<api>(std::make_shared<api_impl>(impl_));
+   provider.install<version_api>(std::make_shared<version_api_impl>(impl_));
+   provider.install<version_write_api>(std::make_shared<version_write_api_impl>(impl_));
+   provider.install<version_metadata_api>(std::make_shared<version_metadata_api_impl>(impl_));
    co_return;
 }
 
-boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context&) {
-   co_return;
+boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
+   co_await impl_->initialize_versions(context);
 }
 
 boost::asio::awaitable<void> plugin::on_startup() {
    co_return;
 }
 
-void plugin::on_request_stop() noexcept {}
+void plugin::on_request_stop() noexcept {
+   impl_->stop_versions();
+}
 
 boost::asio::awaitable<void> plugin::on_shutdown() {
-   co_return;
+   co_await impl_->shutdown_versions();
 }
 
 } // namespace forge::plugins::crypto::secrets

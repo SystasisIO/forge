@@ -16,6 +16,7 @@ the same module sources. There is no `host`, `guest`, or `values` namespace.
 | `event` | Typed successful result or canonical API error |
 | `context` | Optional subject facts and typed facts supplied by the host |
 | `http_command` | Canonical HTTP method, relative target, optional body; status/body response |
+| `http_stream` | Stream open intent, pull/emission/finish intent and typed stream event |
 | `capability` | Host-selected pure validation policy, not a wire authority |
 | `limits`, `exceptions`, `validation`, `codec` | Bounds, typed failures, pure checks and Raw adapters |
 
@@ -82,6 +83,44 @@ current facts on every continuation. Client input and trusted context remain
 separate action arguments. This library neither verifies credentials nor makes
 deserialized context trustworthy.
 
+## Incremental HTTP Stream Contract
+
+`forge.api.wasm.http_stream` owns `http_stream_open`, `http_stream_read` and
+`http_stream_event`. The neutral feature name is `http.stream.v1`, exposed as
+`http_stream_feature`. These values use the existing effect/continuation model;
+they introduce no HTTP engine or host-side stream session implementation.
+
+```cpp
+import forge.api.wasm.http_stream;
+import forge.api.wasm.codec;
+
+namespace protocol = forge::api::wasm;
+auto open = protocol::http_stream_open{
+   {forge::net::http::method::get, "/items", {}}, "item", "END"};
+protocol::validate(open);
+auto pull = protocol::http_stream_read{};
+protocol::validate(pull);
+
+// Explicit typed decoding follows the selected binding's whole response type.
+auto item = protocol::decode<protocol::http_stream_event>(received_payload, "http_stream_event");
+protocol::validate(item, open.event_type);
+```
+
+Open validation reuses the normal HTTP intent checks, validates the item type
+name, and requires an end marker of 1–64 bytes with no CR/LF. Read validation
+bounds an optional emission; an emission and `finish=true` may share one yield.
+Event validation checks status 100–599 and an optional bounded item. The overload
+with `expected_item_type` also pins that item's type. All three validate packed
+aggregate size. `ended` does not imply an item presence rule; application state
+decides which terminal combinations and statuses it accepts.
+
+The host owns connections, framing, decoding, cancellation and transport bounds;
+the guest owns item interpretation and normalized emissions. Admission, allowed
+origins/methods, credentials, operation persistence and retry/recovery decisions
+remain with the host application. Generic capability validation never infers a
+stream handler from a payload type name: the selected adapter explicitly decodes
+the stream DTO and invokes its typed validator.
+
 ## Packaging And Evidence
 
 Native: `find_package(Forge CONFIG REQUIRED COMPONENTS api_wasm)`.
@@ -95,3 +134,7 @@ dependency isolation and real validation. `guest/tests/api_wasm` compares
 literal native, executed guest and generated ABI bytes for every variant,
 plus malformed inputs and a product-owned action/DTO example. See
 [the donor and acceptance note](../../../docs/donors/wasm-shared-execution.md).
+
+Capability policies support native Boost.Describe JSON encoding and value comparison,
+including nested HTTP body/status rules. This metadata does not change Raw field
+order or guest representation; validation and host selection remain mandatory.

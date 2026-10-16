@@ -37,6 +37,17 @@ import forge.schema.scalar;
 
 namespace forge::schema::detail {
 
+template <typename T> inline constexpr bool dynamic_value_v = [] {
+   using value_type = std::remove_cvref_t<T>;
+   if constexpr (is_optional<value_type>::value) {
+      return dynamic_value_v<typename is_optional<value_type>::value_type>;
+   } else if constexpr (requires { value_adapter<value_type>::kind; }) {
+      return value_adapter<value_type>::kind == value_kind::dynamic;
+   } else {
+      return false;
+   }
+}();
+
 template <std::floating_point Float, std::integral Integer>
 [[nodiscard]] constexpr bool integer_exactly_representable(Integer value) {
    using unsigned_type = std::make_unsigned_t<Integer>;
@@ -120,6 +131,29 @@ struct input_value {
       return std::get_if<object_type>(&storage);
    }
 };
+
+} // namespace forge::schema
+
+namespace forge::schema::detail {
+
+template <typename T> inline constexpr bool input_adapter_v = [] {
+   using value_type = std::remove_cvref_t<T>;
+   if constexpr (is_optional<value_type>::value) {
+      return input_adapter_v<typename is_optional<value_type>::value_type>;
+   } else if constexpr (requires(const input_value& input) {
+                           { value_adapter<value_type>::decode(input) } -> std::same_as<value_type>;
+                        }) {
+      return true;
+   } else if constexpr (is_vector<value_type>::value) {
+      return input_adapter_v<typename vector_item<value_type>::type>;
+   } else {
+      return false;
+   }
+}();
+
+} // namespace forge::schema::detail
+
+export namespace forge::schema {
 
 template <typename T>
 void validate_exact_input_value(const input_value& input, std::string_view path, std::vector<diagnostic>& diagnostics);
@@ -594,7 +628,9 @@ template <typename T> class object_schema {
       auto output = input_value::object_type{};
       for (const auto& field : *fields_) {
          auto value = encoder(field, input, append_path(base_path, field.name));
-         if (!std::holds_alternative<std::monostate>(value.storage)) {
+         const auto preserve_null = field.kind == value_kind::dynamic &&
+            (!field.optional || (field.read_validation_any && field.read_validation_any(input).has_value()));
+         if (!std::holds_alternative<std::monostate>(value.storage) || preserve_null) {
             set_input_path(output, field.name, std::move(value));
          }
       }
@@ -1008,6 +1044,8 @@ template <typename T>
          return clean_type{};
       }
       return cast_input_to<item_type>(input, path, diagnostics);
+   } else if constexpr (requires { { value_adapter<clean_type>::decode(input) } -> std::same_as<clean_type>; }) {
+      return value_adapter<clean_type>::decode(input);
    } else if constexpr (std::same_as<clean_type, bool>) {
       if (const auto* value = std::get_if<bool>(&input.storage)) {
          return *value;
@@ -1092,7 +1130,7 @@ template <typename T>
          }
          return output;
       }
-   } else if constexpr (is_vector_enum<clean_type>::value) {
+   } else if constexpr (is_vector_enum<clean_type>::value && !detail::input_adapter_v<clean_type>) {
       using enum_type = typename vector_item<clean_type>::type;
       if (const auto* values = input.as_array()) {
          auto output = clean_type{};
@@ -1168,7 +1206,14 @@ template <typename T>
    const auto nested_rules = rules<T>::define();
    for (std::size_t i = 0; i < values->size(); ++i) {
       const auto item_path = append_index(path, i);
-      if constexpr (std::constructible_from<T, std::string>) {
+      if constexpr (detail::input_adapter_v<T>) {
+         try {
+            output.push_back(cast_input_to<T>((*values)[i], item_path, diagnostics));
+         } catch (const std::exception& error) {
+            diagnostics.push_back(make_path_error(item_path, "config.type", error.what()));
+         }
+         continue;
+      } else if constexpr (std::constructible_from<T, std::string>) {
          if (const auto* text = std::get_if<std::string>(&(*values)[i].storage)) {
             auto item = [&] {
                if constexpr (canonical_string_scalar<T>) {
@@ -1220,6 +1265,12 @@ void validate_exact_input_value(const input_value& input, std::string_view path,
    if constexpr (is_optional<clean_type>::value) {
       if (!std::holds_alternative<std::monostate>(input.storage)) {
          validate_exact_input_value<typename is_optional<clean_type>::value_type>(input, path, diagnostics);
+      }
+   } else if constexpr (requires { { value_adapter<clean_type>::decode(input) } -> std::same_as<clean_type>; }) {
+      try {
+         static_cast<void>(value_adapter<clean_type>::decode(input));
+      } catch (const std::exception& error) {
+         diagnostics.push_back(make_path_error(std::string{path}, "config.type", error.what()));
       }
    } else if constexpr (std::same_as<clean_type, bool>) {
       if (!std::holds_alternative<bool>(input.storage)) {
@@ -1369,7 +1420,10 @@ void validate_exact_input_value(const input_value& input, std::string_view path,
       }
       using item_type = typename vector_item<clean_type>::type;
       for (std::size_t index = 0; index < values->size(); ++index) {
-         if constexpr (canonical_string_scalar<item_type>) {
+         if constexpr (detail::input_adapter_v<item_type>) {
+            validate_exact_input_value<item_type>((*values)[index], append_index(path, index), diagnostics);
+            continue;
+         } else if constexpr (canonical_string_scalar<item_type>) {
             if (std::holds_alternative<std::string>((*values)[index].storage)) {
                const auto& text = std::get<std::string>((*values)[index].storage);
                try {
@@ -1437,6 +1491,8 @@ template <typename T> [[nodiscard]] input_value to_input_value(const T& input, s
          return input_value{};
       }
       return to_input_value(*input, path);
+   } else if constexpr (requires { { value_adapter<clean_type>::encode(input) } -> std::same_as<input_value>; }) {
+      return value_adapter<clean_type>::encode(input);
    } else if constexpr (std::same_as<clean_type, bool>) {
       return input_value{input};
    } else if constexpr (signed_integral_value<clean_type> && !std::same_as<clean_type, bool>) {
@@ -1511,7 +1567,12 @@ template <typename T> [[nodiscard]] input_value to_input_value(const T& input, s
                                                                            boost::describe::mod_inherited>;
          boost::mp11::mp_for_each<members>([&](auto descriptor) {
             auto value = to_input_value(input.*descriptor.pointer, append_path(path, descriptor.name));
-            if (!std::holds_alternative<std::monostate>(value.storage)) {
+            using member_type = std::remove_cvref_t<decltype(input.*descriptor.pointer)>;
+            auto preserve_null = detail::dynamic_value_v<member_type>;
+            if constexpr (is_optional<member_type>::value) {
+               preserve_null = preserve_null && (input.*descriptor.pointer).has_value();
+            }
+            if (!std::holds_alternative<std::monostate>(value.storage) || preserve_null) {
                object.emplace(descriptor.name, std::move(value));
             }
          });

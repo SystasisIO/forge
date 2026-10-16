@@ -16,12 +16,15 @@ namespace {
 
 namespace http = forge::plugins::net::http::server;
 
-http::middleware_response invoke(const http::middleware_descriptor& middleware, std::string authorization,
-                                 bool& called) {
+http::middleware_response invoke(const http::middleware_descriptor& middleware, std::string authorization, bool& called,
+                                 std::string second_authorization = {}) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1U}};
    auto headers = std::vector<http::header_entry>{};
    if (!authorization.empty()) {
       headers.push_back({.name = "Authorization", .value = std::move(authorization)});
+   }
+   if (!second_authorization.empty()) {
+      headers.push_back({.name = "authorization", .value = std::move(second_authorization)});
    }
    auto request = http::middleware_request{.method = "GET", .path = "/v1/chain/admin", .headers = std::move(headers)};
    return forge::asio::blocking::run(
@@ -60,6 +63,10 @@ BOOST_AUTO_TEST_CASE(bearer_auth_accepts_only_configured_token_hashes) {
       BOOST_TEST(response.headers().front().name == "WWW-Authenticate");
       BOOST_TEST(response.headers().front().value == "Bearer");
    }
+   called = false;
+   response = invoke(middleware, "Bearer correct-horse-battery-staple", called, "Bearer correct-horse-battery-staple");
+   BOOST_TEST(!called);
+   BOOST_TEST(static_cast<int>(response.status()) == static_cast<int>(forge::net::http::status::unauthorized));
 }
 
 BOOST_AUTO_TEST_CASE(bearer_auth_rejects_incomplete_configuration) {

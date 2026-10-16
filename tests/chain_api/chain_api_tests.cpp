@@ -75,6 +75,7 @@ import forge.db.authenticated.hash;
 import forge.exceptions;
 import forge.net.http.base_url;
 import forge.net.http.client;
+import forge.net.http.exceptions;
 import forge.net.http.router;
 import forge.net.http.server;
 import forge.net.http.types;
@@ -1257,6 +1258,38 @@ authenticated::range_proof authenticated_changes_proof(const authenticated_chang
                fixture.updated_leaf,
            },
    };
+}
+
+forge::chain::protocol::operator_identity operator_identity_fixture() {
+   auto r1 = forge::crypto::asymmetric::r1_public_key{};
+   r1.data[0] = static_cast<char>(0x02);
+   auto finalizer_bytes = forge::crypto::bls::public_key::data_type{};
+   const auto finalizer_wire = forge::codec::hex::decode(
+       "f363f7a0cd6ed0812feb8bbd8b8bd2cef835f900e5e056f69f9d0ca7c4a4ec5af54f3d0c272a732f7f6749de553c580"
+       "50bd5aaae3a2945b066d4f7f44643f4d7c7e8d64dab5da258ed6b7377d44a944f0fa10e978439b83f266522ea5083f80e");
+   BOOST_REQUIRE(finalizer_wire.size() == finalizer_bytes.size());
+   std::ranges::copy(finalizer_wire, finalizer_bytes.begin());
+   return forge::chain::protocol::operator_identity{
+       .producer = forge::chain::protocol::account_name{"operator"},
+       .block_public_key = forge::chain::protocol::public_key{r1},
+       .finalizer_public_key = forge::crypto::bls::public_key{finalizer_bytes},
+       .enabled_roles = {forge::chain::protocol::operator_role::producer},
+   };
+}
+
+forge::mutable_variant_object operator_identity_http_fields() {
+   const auto identity = operator_identity_fixture();
+   const auto json = forge::codec::json::write(identity);
+   BOOST_REQUIRE(json.ok());
+   auto response = forge::net::http::response{forge::net::http::status::ok, 11};
+   response.body() = json.text;
+   const auto decoded = forge::api::http::detail::decode_response_body<forge::chain::protocol::operator_identity>(
+       response, forge::api::http::body_codec::json);
+   BOOST_REQUIRE(decoded == identity);
+
+   const auto parsed = forge::codec::json::read_value(json.text);
+   BOOST_REQUIRE(parsed.ok());
+   return forge::mutable_variant_object{parsed.value.get_object()};
 }
 
 const route& find_route(const std::vector<route>& routes, std::string_view name) {
@@ -2730,20 +2763,7 @@ BOOST_AUTO_TEST_CASE(chain_openapi_uses_canonical_public_key_json_shape) {
 }
 
 BOOST_AUTO_TEST_CASE(chain_admin_operator_identity_preserves_non_k1_key_across_raw_variant_and_http_json) {
-   auto r1 = forge::crypto::asymmetric::r1_public_key{};
-   r1.data[0] = static_cast<char>(0x02);
-   auto finalizer_bytes = forge::crypto::bls::public_key::data_type{};
-   const auto finalizer_wire = forge::codec::hex::decode(
-       "f363f7a0cd6ed0812feb8bbd8b8bd2cef835f900e5e056f69f9d0ca7c4a4ec5af54f3d0c272a732f7f6749de553c580"
-       "50bd5aaae3a2945b066d4f7f44643f4d7c7e8d64dab5da258ed6b7377d44a944f0fa10e978439b83f266522ea5083f80e");
-   BOOST_REQUIRE(finalizer_wire.size() == finalizer_bytes.size());
-   std::ranges::copy(finalizer_wire, finalizer_bytes.begin());
-   const auto identity = forge::chain::protocol::operator_identity{
-       .producer = forge::chain::protocol::account_name{"operator"},
-       .block_public_key = forge::chain::protocol::public_key{r1},
-       .finalizer_public_key = forge::crypto::bls::public_key{finalizer_bytes},
-       .enabled_roles = {forge::chain::protocol::operator_role::producer},
-   };
+   const auto identity = operator_identity_fixture();
 
    const auto raw = forge::raw::unpack<forge::chain::protocol::operator_identity>(forge::raw::pack(identity));
    BOOST_CHECK(raw == identity);
@@ -2768,20 +2788,57 @@ BOOST_AUTO_TEST_CASE(chain_admin_operator_identity_preserves_non_k1_key_across_r
 }
 
 BOOST_AUTO_TEST_CASE(http_response_decode_reports_safe_codec_location) {
+   auto fields = operator_identity_http_fields();
+   fields.set("enabled_roles", forge::variant{forge::variants{forge::variant{std::string{"not-an-operator-role"}}}});
+   fields.set("secret-bearing-field\n", forge::variant{true});
+   const auto json = forge::codec::json::write_value(forge::variant{std::move(fields)});
+   BOOST_REQUIRE(json.ok());
    auto response = forge::net::http::response{forge::net::http::status::ok, 11};
-   response.body() = R"({"enabled_roles":["not-an-operator-role"],"secret-bearing-field\n":true})";
+   response.body() = json.text;
 
+   auto rejected = false;
    try {
       static_cast<void>(forge::api::http::detail::decode_response_body<forge::chain::protocol::operator_identity>(
           response, forge::api::http::body_codec::json));
-      BOOST_FAIL("invalid typed HTTP response was accepted");
-   } catch (const std::exception& error) {
+   } catch (const forge::net::http::exceptions::bad_request& error) {
+      rejected = true;
       const auto chain = forge::exceptions::format_exception_chain(error);
-      BOOST_TEST(chain.find("diagnostic_code=json.type") != std::string::npos);
-      BOOST_TEST(chain.find("diagnostic_path_size=") != std::string::npos);
-      BOOST_TEST(chain.find("secret-bearing-field") == std::string::npos);
-      BOOST_TEST(chain.find(response.body()) == std::string::npos);
+      BOOST_TEST_CONTEXT(chain) {
+         BOOST_TEST(chain.find("diagnostic_code=json.type") != std::string::npos);
+         BOOST_TEST(chain.find("diagnostic_path_size=") != std::string::npos);
+         BOOST_TEST(chain.find("diagnostic_path_size=16") != std::string::npos);
+         BOOST_TEST(chain.find("secret-bearing-field") == std::string::npos);
+         BOOST_TEST(chain.find("not-an-operator-role") == std::string::npos);
+         BOOST_TEST(chain.find(response.body()) == std::string::npos);
+      }
    }
+   BOOST_TEST(rejected);
+}
+
+BOOST_AUTO_TEST_CASE(http_response_decode_reports_safe_missing_field_location) {
+   auto fields = operator_identity_http_fields();
+   fields.erase("producer");
+   fields.set("secret-bearing-field\n", forge::variant{true});
+   const auto json = forge::codec::json::write_value(forge::variant{std::move(fields)});
+   BOOST_REQUIRE(json.ok());
+   auto response = forge::net::http::response{forge::net::http::status::ok, 11};
+   response.body() = json.text;
+
+   auto rejected = false;
+   try {
+      static_cast<void>(forge::api::http::detail::decode_response_body<forge::chain::protocol::operator_identity>(
+          response, forge::api::http::body_codec::json));
+   } catch (const forge::net::http::exceptions::bad_request& error) {
+      rejected = true;
+      const auto chain = forge::exceptions::format_exception_chain(error);
+      BOOST_TEST_CONTEXT(chain) {
+         BOOST_TEST(chain.find("diagnostic_code=json.missing") != std::string::npos);
+         BOOST_TEST(chain.find("diagnostic_path_size=8") != std::string::npos);
+         BOOST_TEST(chain.find("secret-bearing-field") == std::string::npos);
+         BOOST_TEST(chain.find(response.body()) == std::string::npos);
+      }
+   }
+   BOOST_TEST(rejected);
 }
 
 BOOST_AUTO_TEST_CASE(chain_state_selector_openapi_requires_exactly_one_id_or_key) {

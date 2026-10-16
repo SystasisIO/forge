@@ -27,6 +27,7 @@ target_link_libraries(
       forge_schema
       forge_net_http
       forge_api_http
+      forge_auth_http
       forge_asio
       forge_crypto_core
       forge_crypto_digest

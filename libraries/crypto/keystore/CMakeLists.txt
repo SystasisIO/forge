@@ -1,6 +1,8 @@
 add_library(
    forge_crypto_keystore STATIC
    encrypted_file.cpp
+   persistence.cpp
+   unique_descriptor.cpp
    password.cpp
    ownership.cpp
    ownership_impl.cpp

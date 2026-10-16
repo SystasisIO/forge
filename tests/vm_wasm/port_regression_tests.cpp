@@ -816,7 +816,7 @@ TEST_CASE("shared modules preserve their initial page limit", "[backend]") {
 }
 
 TEST_CASE("interpreter rejects zero call depth", "[execution_context]") {
-   check_zero_call_depth<wasm::interpreter, wasm::exceptions::vector_out_of_bounds>();
+   check_zero_call_depth<wasm::interpreter, wasm::exceptions::interpreter>();
 }
 
 TEST_CASE("interpreter rejects out-of-range numeric function indexes", "[execution_context]") {

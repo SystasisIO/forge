@@ -3,6 +3,7 @@ module;
 #include <boost/describe.hpp>
 #include <boost/mp11.hpp>
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -285,9 +286,48 @@ template <typename T> [[nodiscard]] consteval bool json_parameter_field() {
    }
 }
 
+template <typename T> [[nodiscard]] forge::variant request_json_schema() {
+   validate_http_hidden_json_profile<T>();
+   auto result = make_json_schema<T>();
+   if constexpr (has_http_hidden_fields<T>::value && forge::reflect::is_described_object_v<T>) {
+      if (!result.is_object() || !result.get_object().contains("properties")) {
+         return result;
+      }
+      auto schema = forge::mutable_variant_object{result.get_object()};
+      auto properties = forge::mutable_variant_object{schema["properties"]};
+      auto required = schema.find("required") == schema.end() ? forge::variants{} : schema["required"].get_array();
+      forge::reflect::for_each_member<T>([&](const char* member_name, auto member) {
+         using member_type = clean_type<decltype(std::declval<T>().*member)>;
+         if constexpr (has_http_hidden_fields<member_type>::value) {
+            auto names = http_json_field_names<T>(member_name);
+            if (std::ranges::find(names, member_name) == names.end()) {
+               names.emplace_back(member_name);
+            }
+            for (const auto& name : names) {
+               if constexpr (!server_supplied_http_visible_v<member_type>) {
+                  properties.erase(name);
+                  std::erase_if(required, [&](const forge::variant& field) { return field.as_string() == name; });
+               } else if (properties.find(name) != properties.end()) {
+                  properties.set(name, request_json_schema<member_type>());
+               }
+            }
+         }
+      });
+      schema.set("properties", forge::variant{std::move(properties)});
+      schema.erase("required");
+      if (!required.empty()) {
+         schema.set("required", forge::variant{std::move(required)});
+      }
+      result = forge::variant{std::move(schema)};
+   }
+   return result;
+}
+
 template <typename T> [[nodiscard]] openapi_field request_field(std::string name = {}) {
    using field_type = clean_type<T>;
-   if constexpr (is_query<field_type>::value) {
+   if constexpr (!server_supplied_http_visible_v<field_type>) {
+      return openapi_field{.name = std::move(name), .required = false, .source = openapi_field_source::server_supplied};
+   } else if constexpr (is_query<field_type>::value) {
       return openapi_field{.name = std::move(name),
                            .schema = make_json_schema<typename is_query<field_type>::value_type>(),
                            .required = false,
@@ -337,7 +377,7 @@ template <typename T> [[nodiscard]] openapi_field request_field(std::string name
                            .source = openapi_field_source::upload};
    } else {
       return openapi_field{.name = std::move(name),
-                           .schema = make_json_schema<field_type>(),
+                           .schema = request_json_schema<field_type>(),
                            .required = !optional_traits<field_type>::value,
                            .json_parameter = json_parameter_field<field_type>()};
    }
@@ -389,6 +429,9 @@ template <auto Method, typename Request, typename Response>
    static_assert(std::same_as<clean_type<Request>, clean_type<http_method_request_t<Method>>>);
    static_assert(std::same_as<clean_type<Response>, clean_type<forge::api::core::method_response_t<Method>>>);
    constexpr auto positional = is_positional_http_method_v<Method, Request>;
+   if constexpr (http_method_has_hidden_fields_v<Method>) {
+      validate_server_supplied_route<Method, Request>(mapping);
+   }
    constexpr auto response_body = [] {
       if constexpr (is_empty_response_v<Response>) {
          return openapi_response_body::none;
@@ -399,7 +442,7 @@ template <auto Method, typename Request, typename Response>
       }
    }();
    return openapi_operation{.mapping = std::move(mapping),
-                            .request_schema = make_json_schema<Request>(),
+                            .request_schema = request_json_schema<Request>(),
                             .response_schema = make_json_schema<Response>(),
                             .request_fields = positional ? positional_fields<Method>() : request_fields<Request>(),
                             .query_objects =

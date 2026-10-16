@@ -3,6 +3,7 @@ module;
 #include <boost/describe.hpp>
 
 #include <string>
+#include <optional>
 #include <vector>
 
 export module forge.chain.protocol.abi_metadata;
@@ -34,12 +35,14 @@ struct abi_metadata {
    std::string version = "forge::abi-metadata/1.0";
    std::vector<abi_root_def> roots;
    std::vector<abi_enum_def> enums;
+   // Version 1.1 only: aliases with standard string wire encoding and JSON value semantics.
+   std::optional<std::vector<std::string>> json_types;
 };
 
 BOOST_DESCRIBE_STRUCT(abi_root_def, (), (cpp_type, type))
 BOOST_DESCRIBE_STRUCT(abi_enum_value, (), (name, value))
 BOOST_DESCRIBE_STRUCT(abi_enum_def, (), (name, type, values))
-BOOST_DESCRIBE_STRUCT(abi_metadata, (), (version, roots, enums))
+BOOST_DESCRIBE_STRUCT(abi_metadata, (), (version, roots, enums, json_types))
 
 inline void to_variant(const abi_metadata& value, forge::variant& variant) {
    forge::to_variant(value, variant);

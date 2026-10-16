@@ -835,7 +835,7 @@ if(FORGE_CONTRACT_SDK_HOST_PROFILE)
    add_subdirectory(libraries/net/http)
    add_subdirectory(libraries/api/wasm)
 endif()
-list(APPEND FORGE_LEAF_TARGETS forge_api_core_values forge_net_http_values forge_api_wasm)
+list(APPEND FORGE_LEAF_TARGETS forge_api_core_values forge_net_http_values forge_api_wasm forge_codec_json_values)
 
 if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    add_subdirectory(libraries/db/blob)
@@ -1003,6 +1003,7 @@ set(
    codec_base58
    codec_hex
    codec_json
+   codec_json_values
    crypto_core
    crypto_digest
    crypto_symmetric

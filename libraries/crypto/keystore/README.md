@@ -66,3 +66,23 @@ the format has a 16-byte salt, a 12-byte GCM nonce, a 16-byte GCM tag and an
 exact ciphertext length. Scrypt `N` must be a power of two and all KDF values
 must stay inside caller-provided limits. Malformed shape and KDF values fail as
 typed `exceptions::invalid_file`; valid wire bytes are unchanged.
+
+`forge.crypto.keystore.persistence` exposes the shared filesystem mechanics
+without signing-key payload semantics: `prepare_private_directory`,
+`read_container(owner, maximum)` and `write_container(owner, bytes, replace)`.
+The bytes are opaque to this layer; callers use `encrypt_file`/`decrypt_file`
+with their own authenticated payload schema. Existing signing stores keep their
+API, format and write behavior.
+
+Callers must retain both exclusive `ownership` and one `ownership::claim()` for
+the complete decrypted-store lifetime. These helpers verify ownership but do
+not acquire a claim or provide a scheduler. Run them on a caller-owned bounded
+compute executor. A stricter caller can additionally use `owner->require_file`
+before reading to reject hardlinks; the shared reader preserves the signing
+store's existing filesystem checks.
+
+`write_container(..., false)` provides exclusive first publication;
+`replace=true` atomically replaces an existing file. Both use private temporary
+files, file sync and directory sync, and preserve `durability_unknown` for a
+failure after publication. The caller must reconcile its in-memory authority
+with the published candidate before permitting further operations.

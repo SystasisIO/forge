@@ -35,7 +35,8 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
    virtual boost::asio::awaitable<void> reload_tls() = 0;
 
    template <typename Interface> boost::asio::awaitable<void> publish(publish_options options = {}) {
-      auto binding = std::make_unique<typed_binding_spec<Interface>>(std::move(options.error_renderer));
+      auto binding = std::make_unique<typed_binding_spec<Interface>>(std::move(options.error_renderer),
+                                                                     std::move(options.invocation));
       co_await publish(std::move(binding), std::move(options));
    }
 
@@ -49,15 +50,22 @@ class api : public forge::api::core::contract<api, forge::api::core::surface::lo
  private:
    template <typename Interface> class typed_binding_spec final : public binding_spec {
     public:
-      explicit typed_binding_spec(forge::api::http::error_renderer renderer) : renderer_{std::move(renderer)} {}
+      typed_binding_spec(forge::api::http::error_renderer renderer, forge::api::http::invocation_provider invocation)
+          : renderer_{std::move(renderer)}, invocation_{std::move(invocation)} {}
 
       [[nodiscard]] forge::api::http::binding_plan build(const forge::api::core::registry& registry) const override {
          auto plan = forge::api::core::binding().serve(registry).build();
-         return forge::api::http::binding().use(std::move(plan)).errors(renderer_).bind<Interface>().build();
+         return forge::api::http::binding()
+             .use(std::move(plan))
+             .errors(renderer_)
+             .invocation(invocation_)
+             .bind<Interface>()
+             .build();
       }
 
     private:
       forge::api::http::error_renderer renderer_;
+      forge::api::http::invocation_provider invocation_;
    };
 
    [[nodiscard]] virtual const forge::api::core::registry& registry() const = 0;

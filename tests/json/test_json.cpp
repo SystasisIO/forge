@@ -9,6 +9,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -397,6 +399,57 @@ BOOST_AUTO_TEST_CASE(json_typed_load_uses_same_unknown_policy_as_read) {
    BOOST_REQUIRE(ignored.ok());
    BOOST_TEST(ignored.diagnostics.empty());
    BOOST_TEST(ignored.value.bind_port == 9090U);
+}
+
+BOOST_AUTO_TEST_CASE(json_owned_dom_decode_matches_typed_read_without_changing_numeric_kinds) {
+   namespace json = forge::codec::json;
+   const auto compare = []<typename T>(std::string_view text, json::read_options options) {
+      auto parsed = json::read_value(text, options);
+      BOOST_REQUIRE(parsed.ok());
+      const auto direct = json::read<T>(text, options);
+      const auto decoded = json::decode<T>(std::move(parsed.value), options);
+      BOOST_TEST(decoded.ok() == direct.ok());
+      BOOST_REQUIRE(decoded.diagnostics.size() == direct.diagnostics.size());
+      for (auto index = std::size_t{0}; index < direct.diagnostics.size(); ++index) {
+         BOOST_TEST(decoded.diagnostics[index].code == direct.diagnostics[index].code);
+         BOOST_TEST(decoded.diagnostics[index].path == direct.diagnostics[index].path);
+         BOOST_TEST(decoded.diagnostics[index].message == direct.diagnostics[index].message);
+         BOOST_CHECK(decoded.diagnostics[index].level == direct.diagnostics[index].level);
+      }
+      if (direct.ok() && decoded.ok()) {
+         BOOST_TEST(json::write(decoded.value).text == json::write(direct.value).text);
+      }
+   };
+   for (const auto policy :
+        {json::unknown_field_policy::ignore, json::unknown_field_policy::warn, json::unknown_field_policy::error}) {
+      compare.operator()<forge_json_tests::http_config>(R"({"port":9090,"tags":["alpha"],"extra":1})",
+                                                        {.unknown_fields = policy});
+   }
+   const auto exact = json::read_options{.described_records = json::described_record_policy::exact};
+   for (const auto text : {R"({"port":9090,"tags":["alpha"]})", R"({"bind-port":0})",
+                           R"({"bind-port":9090,"port":9091})", R"({"bind-port":9090.0})"}) {
+      compare.operator()<forge_json_tests::http_config>(text, exact);
+   }
+   for (const auto text :
+        {R"({"items":[{"value":1}],"choice":[0,{"value":2}]})", R"({"items":[{"value":0.0}],"choice":[0,{"value":2}]})",
+         R"({"items":[{"value":1}],"choice":[0.0,{"value":2}]})",
+         R"({"items":[{"value":1}],"choice":[0,{"value":2}],"extra":1})", R"({"items":[{"value":1}]})"}) {
+      compare.operator()<forge_json_tests::exact_record>(text, exact);
+   }
+   compare.operator()<forge_json_tests::exact_schema_plain_parent>(
+       R"({"child":{"value":7},"children":[{"value":11}],"canonical":{"digest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}})",
+       exact);
+   compare.operator()<forge_json_tests::dotted_config>(R"({"api":{"deadline-ms":20},"path":{"policy":"direct_only"}})",
+                                                       exact);
+   for (const auto text : {"0.0", "[0.0,10]"}) {
+      auto parsed = json::read_value(text);
+      BOOST_REQUIRE(parsed.ok());
+      if (text[0] == '[') {
+         BOOST_TEST((!json::decode<std::variant<int, std::string>>(std::move(parsed.value), exact).ok()));
+      } else {
+         BOOST_TEST(!json::decode<int>(std::move(parsed.value), exact).ok());
+      }
+   }
 }
 
 BOOST_AUTO_TEST_CASE(json_exact_described_records_validate_nested_fields_and_variants) {

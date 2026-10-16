@@ -1,6 +1,7 @@
 module;
 
 #include <glaze/glaze.hpp>
+#include <forge/exceptions/macros.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -28,6 +29,7 @@ import forge.schema.diagnostic;
 import forge.schema.value_kind;
 import forge.schema.object;
 import forge.schema.enums;
+import forge.schema.exceptions;
 import forge.variant.exceptions;
 import forge.variant.value;
 import forge.variant.conversion;
@@ -48,6 +50,8 @@ constexpr glz::opts json_read_options{
     .comments = false,
     .error_on_unknown_keys = false,
 };
+
+constexpr glz::opts_validate json_complete_read_options{json_read_options};
 
 constexpr glz::opts json_lazy_options{
     .format = glz::JSON,
@@ -364,7 +368,10 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 [[nodiscard]] read_result<codec_value> read_codec_value(std::string_view input, const read_options& options) {
    auto result = read_result<codec_value>{};
    auto parsed = codec_value{};
-   if (auto error = glz::read<json_read_options>(parsed, input)) {
+   const auto error = options.described_records == described_record_policy::exact
+                         ? glz::read<json_complete_read_options>(parsed, input)
+                         : glz::read<json_read_options>(parsed, input);
+   if (error) {
       result.diagnostics.push_back(make_error(options.source_name, "json.parse", glz::format_error(error, input)));
       return result;
    }
@@ -478,6 +485,62 @@ write_result write_value(const variant& input, write_options options) {
    return write_codec_value(from_variant_value(input), options);
 }
 
+document parse_document(std::string_view input, document_limits limits)
+{
+   if (input.size() > limits.max_bytes)
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   const auto decoded = read_value(input, {.max_depth = limits.max_depth,
+                                         .described_records = described_record_policy::exact});
+   if (!decoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document is invalid");
+   }
+
+   const auto encoded = write_value(decoded.value, {.max_bytes = limits.max_bytes});
+   if (!encoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   return document{encoded.text};
+}
+
+variant document_value(const document& input, document_limits limits)
+{
+   if (input.text.size() > limits.max_bytes)
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   auto decoded = read_value(input.text, {.max_depth = limits.max_depth,
+                                        .described_records = described_record_policy::exact});
+   if (!decoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document is invalid");
+   }
+
+   return std::move(decoded.value);
+}
+
+void to_variant(const document& input, variant& output)
+{
+   output = document_value(input);
+}
+
+void from_variant(const variant& input, document& output)
+{
+   const auto encoded = write_value(input, {.max_bytes = document_limits{}.max_bytes});
+   if (!encoded.ok())
+   {
+      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON document exceeds its byte limit");
+   }
+
+   output = parse_document(encoded.text);
+}
+
 read_result<config::core::document> read_document(std::string_view input, read_options options) {
    auto parsed = read_codec_value(input, options);
    auto result = read_result<config::core::document>{};
@@ -554,3 +617,23 @@ write_result save_document(const std::filesystem::path& path, const config::core
 }
 
 } // namespace forge::codec::json
+
+namespace forge::schema {
+
+input_value value_adapter<forge::codec::json::document>::encode(const forge::codec::json::document& input)
+{
+   const auto value = forge::codec::json::document_value(input);
+   return forge::config::core::to_schema_value(
+      forge::codec::json::to_config_value(forge::codec::json::from_variant_value(value)));
+}
+
+forge::codec::json::document value_adapter<forge::codec::json::document>::decode(const input_value& input)
+{
+   const auto value = forge::codec::json::to_variant_value(
+      forge::codec::json::from_config_value(forge::config::core::from_schema_value(input)));
+   auto output = forge::codec::json::document{};
+   forge::codec::json::from_variant(value, output);
+   return output;
+}
+
+} // namespace forge::schema

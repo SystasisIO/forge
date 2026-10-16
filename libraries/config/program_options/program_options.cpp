@@ -31,7 +31,8 @@ namespace {
 namespace po = boost::program_options;
 
 [[nodiscard]] bool supports_field(schema::value_kind kind) {
-   return kind != schema::value_kind::object && kind != schema::value_kind::object_list;
+   return kind != schema::value_kind::object && kind != schema::value_kind::object_list &&
+          kind != schema::value_kind::dynamic;
 }
 
 [[nodiscard]] std::string option_name(const config::core::component_descriptor& component, const std::string& field) {
@@ -74,6 +75,8 @@ void add_field_option(po::options_description& description, const std::string& n
 
 [[nodiscard]] config::core::value cli_value(schema::value_kind kind, const std::string& input) {
    switch (kind) {
+   case schema::value_kind::dynamic:
+      throw std::invalid_argument{"dynamic command-line values are not supported"};
    case schema::value_kind::boolean: {
       return schema::parse_scalar_text<bool>(input);
    }

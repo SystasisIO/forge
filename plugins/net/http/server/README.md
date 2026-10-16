@@ -94,6 +94,7 @@ the application mount.
 - `forge_net_http`
 - `forge_net_tls`
 - `forge_api_http`
+- `forge_auth_http` for shared Bearer evidence parsing
 - `forge_config_core`
 - `forge_schema`
 - `forge_plugins_crypto_secrets` for TLS-enabled runtime composition
@@ -131,6 +132,30 @@ as `forge.api.http.error_renderer`. This is a code-level presentation callback,
 not a serializable configuration field. Leaving it empty preserves the standard
 Forge error format. Native route mounts are reserved for protocol surfaces such
 as a guarded WebSocket upgrade; ordinary HTTP methods should use typed APIs.
+
+`publish_options::invocation` optionally supplies the existing
+`forge::api::http::invocation_provider` for every method in this publication.
+The provider receives the native route context and canonical method descriptor
+and returns the existing `forge::api::core::invocation_context`. An empty provider
+retains normal publication behavior, including transport-provided mTLS identity.
+The HTTP binding invokes admission before request-body consumption, payload
+decoding and handler execution, including unary methods with buffered bodies.
+An early denial closes an unread request without soliciting `100 Continue`;
+its existing error renderer, trusted server-supplied values and invocation lifetime
+remain in force for buffered and streaming methods. This callback is programmatic
+and is not a serializable configuration field.
+
+```cpp
+co_await http->publish<catalog_api>({
+   .base_path = "/api/v1",
+   .invocation = admission_provider,
+});
+```
+
+Capture owned services in the provider and return owned trusted values. Request
+and method references are borrowed for that invocation; do not retain references
+or token views after it completes. Admission, caller identity and permissions
+remain application-owned; this plugin adds no verifier or second context model.
 
 Plaintext `mode: disabled` is accepted only for `127.0.0.1`, `::1` or the
 explicit `localhost` spelling, which binds `127.0.0.1`. Wildcard and public
@@ -329,6 +354,9 @@ guarantees remote delivery before exporter startup or after exporter shutdown.
   tenancy and rate policy belong to middleware or consuming product plugins.
 - `bearer_auth` proves possession of a configured token only. The consumer
   chooses protected paths and maps authenticated callers to product permissions.
+- Bearer evidence uses `forge.auth.http.bearer`: duplicate Authorization headers,
+  malformed tokens and tokens exceeding 4096 bytes are rejected before the
+  allowlist is evaluated.
 - Prefer supplying precomputed token hashes from a secret provider. The helper
   `hash_bearer_token` is intended for already-secret runtime input, not for
   embedding clear production tokens in source or ordinary config files.

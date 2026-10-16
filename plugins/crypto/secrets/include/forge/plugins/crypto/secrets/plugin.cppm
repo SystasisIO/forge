@@ -50,6 +50,9 @@ class plugin final : public forge::app::plugin {
  private:
    struct impl;
    class api_impl;
+   class version_api_impl;
+   class version_write_api_impl;
+   class version_metadata_api_impl;
 
    friend void apply_config(impl&, forge::config::core::component_view);
 

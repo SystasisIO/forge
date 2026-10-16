@@ -176,6 +176,18 @@ steady-clock deadline. Preparation/transport use the earlier of it and
 `timeout`; the effective absolute deadline is preserved through the connection
 queue, retries and streamed response body, not restarted after acquisition.
 
+`request_options::max_response_body_bytes` bounds response payload bytes for all
+buffered and streamed APIs, including requests that upload a streamed body.
+The default remains 8 MiB; zero accepts only empty bodies. The complete `uint64_t`
+range is supported, without a separate unlimited mode. Set a suitable per-request
+limit for larger downloads and use a streamed response to avoid materializing it
+in memory. Content-Length is checked while parsing headers, before body allocation;
+chunked and EOF-delimited responses are bounded as bytes arrive. HEAD and no-body
+statuses retain their HTTP semantics, so a metadata Content-Length does not count
+as a received body. A response exceeding the bound raises the existing typed
+`exceptions::unavailable`, closes its transport, and is not an idempotent retry
+condition. The focused tests are [response body limits](../../../tests/http/response_body_limit_tests.cpp).
+
 Auth/token-provider composition belongs to the consumer, once per client, not
 to each API method. HTTP client preparation imports neither Auth nor API; the
 existing server router still uses API Core's canonical error payload. The new
@@ -690,6 +702,26 @@ streaming and Server-Sent Events (SSE) owners may therefore wait longer than
 and remain cancellable when the peer disconnects. Applications must also
 provide appropriate concurrency, backpressure and resource limits for those
 waits.
+
+### Incremental Server-Sent Events
+
+Import `forge.net.http.sse` to frame SSE independently of JSON or a provider API.
+`sse_decoder::append(bytes)` admits a bounded transport chunk; drain `next()`
+before appending more. The decoder supports fragmented UTF-8 BOM, CR/LF/CRLF,
+comments, multiline data, event names, persistent IDs, and numeric retry fields.
+`finish()` marks EOF; completed events can still be drained, while an event
+without its terminating blank line is discarded. The decoder owns no event queue.
+Line, event-data and input-buffer limits are explicit; violations raise typed
+`payload_too_large` errors. `format_sse(event, limits)` rejects metadata injection
+and bounds its encoded output. JSON decoding and terminal sentinels belong to
+the consuming API.
+
+Use `streaming_response::from_source` with `content_type = "text/event-stream"`
+and `FORGE_HTTP_RESPONSE_STREAM` for a macro-bound HTTP API. The same method may
+choose `application/json` and return one bounded JSON body when requested.
+The server pulls the next body only after the previous write completes. Producers
+still own cancellation, deadlines, concurrency and queue/event limits; do not
+buffer an entire response and present fabricated fragments as a live stream.
 
 ### Use The Client
 

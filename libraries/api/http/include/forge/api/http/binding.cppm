@@ -199,6 +199,9 @@ class binding_builder {
    }
 
    template <auto Method, typename Request, typename Response> binding_builder& route(route value) {
+      if constexpr (detail::http_method_has_hidden_fields_v<Method>) {
+         detail::validate_server_supplied_route<Method, Request>(value);
+      }
       const auto parsed = detail::parse_route_template(value.target);
       steps_.push_back(make_step<Method, Request, Response>(value.verb, parsed.path,
                                                             route_options{
@@ -1044,21 +1047,18 @@ class binding_builder {
       if constexpr (forge::reflect::is_described_object_v<Request>) {
          forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
             using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
-            if constexpr (detail::is_header<member_type>::value ||
-                          detail::is_query<member_type>::value ||
-                          detail::is_cookie<member_type>::value) {
-               if (path_uses_field(path, name) ||
-                   query_uses_field(options, name)) {
-                  FORGE_THROW_EXCEPTION(
-                     forge::net::http::exceptions::bad_request,
-                     "HTTP parameter wrapper conflicts with route binding",
-                     forge::exceptions::ctx("field", name));
+            if constexpr (!detail::server_supplied_http_visible_v<member_type>) {
+               return;
+            } else if constexpr (detail::is_header<member_type>::value || detail::is_query<member_type>::value ||
+                                 detail::is_cookie<member_type>::value) {
+               if (path_uses_field(path, name) || query_uses_field(options, name)) {
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                        "HTTP parameter wrapper conflicts with route binding",
+                                        forge::exceptions::ctx("field", name));
                }
                return;
-            } else if constexpr (detail::is_http_parameter_v<member_type> ||
-                                 detail::is_body_stream_v<member_type> ||
-                                 detail::is_body_bytes_v<member_type> ||
-                                 detail::is_upload_file_v<member_type>) {
+            } else if constexpr (detail::is_http_parameter_v<member_type> || detail::is_body_stream_v<member_type> ||
+                                 detail::is_body_bytes_v<member_type> || detail::is_upload_file_v<member_type>) {
                FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
                                      "HTTP API client stream fixed field requires request-body mapping",
                                      forge::exceptions::ctx("field", name));
@@ -1097,10 +1097,25 @@ class binding_builder {
    [[nodiscard]] static T decode_value(std::string_view body, std::string_view source_name, body_codec codec) {
       switch (codec) {
       case body_codec::json: {
-         auto decoded = forge::codec::json::read<T>(
-             body, forge::codec::json::read_options{.source_name = std::string{source_name},
-                                                    .unknown_fields = forge::codec::json::unknown_field_policy::error,
-                                                    .described_records = forge::codec::json::described_record_policy::exact});
+         const auto options = forge::codec::json::read_options{
+             .source_name = std::string{source_name},
+             .unknown_fields = forge::codec::json::unknown_field_policy::error,
+             .described_records = forge::codec::json::described_record_policy::exact,
+         };
+         auto decoded = [&] {
+            if constexpr (detail::has_http_hidden_fields<T>::value) {
+               auto parsed = forge::codec::json::read_value(body, options);
+               if (!parsed.ok()) {
+                  FORGE_THROW_EXCEPTION(
+                      forge::net::http::exceptions::bad_request,
+                      diagnostic_message(parsed.diagnostics, "HTTP API JSON request body is invalid"));
+               }
+               detail::project_http_json_fields<T>(parsed.value, true);
+               return forge::codec::json::decode<T>(std::move(parsed.value), options);
+            } else {
+               return forge::codec::json::read<T>(body, options);
+            }
+         }();
          if (!decoded.ok()) {
             FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
                                   diagnostic_message(decoded.diagnostics, "HTTP API JSON request body is invalid"));
@@ -1108,6 +1123,10 @@ class binding_builder {
          return std::move(decoded.value);
       }
       case body_codec::xml: {
+         if constexpr (detail::has_http_hidden_fields<T>::value) {
+            FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                  "HTTP-hidden server-supplied fields require JSON for whole-request bodies");
+         }
          auto decoded = forge::codec::xml::read<T>(
              body, forge::codec::xml::read_options{.source_name = std::string{source_name},
                                                    .unknown_fields = forge::codec::xml::unknown_field_policy::error});
@@ -1419,13 +1438,24 @@ class binding_builder {
       const auto rules = forge::schema::rules<Request>::define();
       if (!rules.fields().empty()) {
          for (const auto& field : rules.fields()) {
-            required = required || ((!field.optional || field.required) && !route_bound(field.member_name));
+            auto visible = true;
+            if constexpr (forge::reflect::is_described_object_v<Request>) {
+               forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
+                  using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
+                  if constexpr (!detail::server_supplied_http_visible_v<member_type>) {
+                     if (field.member_name == name) {
+                        visible = false;
+                     }
+                  }
+               });
+            }
+            required = required || (visible && (!field.optional || field.required) && !route_bound(field.member_name));
          }
       } else {
          if constexpr (forge::reflect::is_described_object_v<Request>) {
             forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
                using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
-               if constexpr (!is_optional<member_type>::value) {
+               if constexpr (!is_optional<member_type>::value && detail::server_supplied_http_visible_v<member_type>) {
                   required = required || !route_bound(name);
                }
             });
@@ -1434,8 +1464,7 @@ class binding_builder {
          }
       }
       if (required) {
-         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
-                               "HTTP API JSON request body is required");
+         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request, "HTTP API JSON request body is required");
       }
    }
 
@@ -1445,6 +1474,9 @@ class binding_builder {
       if constexpr (forge::reflect::is_described_object_v<Request>) {
          forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
             using member_type = std::remove_cvref_t<decltype(request.*member)>;
+            if constexpr (!detail::server_supplied_http_visible_v<member_type>) {
+               return;
+            }
             if constexpr (detail::is_query<member_type>::value) {
                if (auto value = query_value(context, options, name); value.has_value()) {
                   parse_http_field(request.*member, *value, name);
@@ -1967,6 +1999,19 @@ class binding_builder {
       }
       auto plan = plan_;
       auto name = explicit_name.empty() ? method_name<interface_type, Request, Response>() : std::move(explicit_name);
+      if constexpr (detail::http_method_has_hidden_fields_v<Method>) {
+         detail::validate_server_supplied_route<Method, Request>(
+             forge::api::http::route{
+                 .verb = verb,
+                 .method_name = name,
+                 .target = path,
+                 .headers = options.headers,
+                 .forms = options.forms,
+                 .body_stream_field = options.body_stream_field,
+                 .request_body_codec = options.request_body_codec,
+             },
+             options.query);
+      }
       return [plan = std::move(plan), provider = invocation_provider_, verb, path = std::move(path), options = std::move(options),
               name = std::move(name)](router& target, std::string_view base_path) {
          validate_response_file_option<Response>(options);
@@ -2125,182 +2170,231 @@ class binding_builder {
                FORGE_THROW_EXCEPTION(forge::net::http::exceptions::method_not_allowed,
                                      "unsupported HTTP API live stream route verb");
             }
-         } else if constexpr (detail::request_needs_stream_v<Request> || tuple_needs_stream_v<argument_tuple> ||
-                       detail::response_needs_stream_v<Response>) {
-            auto stream_handler = [plan, provider, options, name,
-                                   canonical_method_descriptor](stream_request& request_value)
-                -> boost::asio::awaitable<stream_response> {
-               const auto& method_descriptor = canonical_method_descriptor;
-               auto endpoint = std::shared_ptr<endpoint_state>{};
-               try {
-                  if (plan.local == nullptr) {
-                     FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
-                                           "HTTP API binding has no local registry");
-                  }
-                  auto pinned = plan.pin(interface_type::ref());
-                  const auto& installed_method_descriptor = require_route_method_descriptor(
-                     pinned.describe(interface_type::ref()), name);
-                  validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
-                  require_response_accept_before_handler<Response>(request_value.context.request, options);
-                  auto admitted = co_await detail::provide_invocation(provider, request_value.context, method_descriptor);
-                  const auto& trusted = admitted.trusted;
-                  if constexpr (is_positional_http_method_v<Method, Request>) {
-                     if (method_descriptor.argument_names.empty()) {
-                        FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
-                                              "HTTP API positional method is missing argument metadata");
-                     }
-                     auto arguments = co_await forge::api::core::enforce_invocation(
-                        make_positional_arguments_from_stream<argument_tuple>(request_value, options, method_descriptor),
-                        admitted, [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
-                     auto value =
-                         co_await forge::api::core::enforce_invocation(
-                            invoke_local_arguments<Method, interface_type, Request, argument_tuple, Response>(
-                               pinned, name, canonical_method_descriptor, std::move(arguments), trusted), admitted,
-                            [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
-                     auto output = co_await make_success_stream_response(request_value.context.request,
-                                                                     options.success_status, std::move(value), options,
-                                                                     {}, &request_value);
-                     co_return detail::protect_response_body(std::move(output), std::move(admitted), request_value.body);
-                  } else {
-                     auto request = co_await forge::api::core::enforce_invocation(
-                        make_request_from_stream<Request>(request_value, options), admitted,
-                        [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
-                     endpoint = make_endpoint_state<Request>(request_value.context.request, options.success_status);
-                     attach_endpoint_state(request, endpoint);
-                     auto value = co_await forge::api::core::enforce_invocation(
-                        invoke_local<Method, interface_type, Request, Response>(
-                           pinned, name, canonical_method_descriptor, std::move(request), trusted), admitted,
-                        [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
-                     auto output = co_await make_success_stream_response(request_value.context.request,
-                                                                     options.success_status, std::move(value), options,
-                                                                     endpoint, &request_value);
-                     co_return detail::protect_response_body(std::move(output), std::move(admitted), request_value.body);
-                  }
-               } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
-                  co_return buffered(make_http_error_response(request_value.context.request, "unsupported_media_type",
-                                                              error.message(), status::unsupported_media_type, options,
-                                                              endpoint, &error));
-               } catch (const forge::net::http::exceptions::not_acceptable& error) {
-                  co_return buffered(make_http_error_response(request_value.context.request, "not_acceptable",
-                                                              error.message(), status::not_acceptable, options,
-                                                              endpoint, &error));
-               } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return buffered(make_validation_response(request_value.context.request, error.message(), options,
-                                                              endpoint, &error));
-               } catch (const forge::exceptions::base& error) {
-                  const auto payload = forge::api::core::project_error(method_descriptor, error);
-                  co_return buffered(
-                      make_error_response(request_value.context.request, payload, options, endpoint, &error));
-               } catch (...) {
-                  if (!options.error_renderer) {
-                     throw;
-                  }
-                  const auto payload = forge::api::core::make_internal_error_payload();
-                  co_return buffered(make_error_response(request_value.context.request, payload, options, endpoint));
-               }
-            };
-            switch (verb) {
-            case method::get:
-               target.get_stream(std::move(mounted_path), std::move(stream_handler));
-               break;
-            case method::head:
-               target.head_stream(std::move(mounted_path), std::move(stream_handler));
-               break;
-            case method::post:
-               target.post_stream(std::move(mounted_path), std::move(stream_handler));
-               break;
-            case method::put:
-               target.put_stream(std::move(mounted_path), std::move(stream_handler));
-               break;
-            case method::patch:
-               target.patch_stream(std::move(mounted_path), std::move(stream_handler));
-               break;
-            case method::delete_:
-               target.del_stream(std::move(mounted_path), std::move(stream_handler));
-               break;
-            default:
-               FORGE_THROW_EXCEPTION(forge::net::http::exceptions::method_not_allowed,
-                                     "unsupported HTTP API stream route verb");
-            }
          } else {
-            auto handler = [plan, provider, options, name,
-                            canonical_method_descriptor](route_context& context) -> boost::asio::awaitable<response> {
-               const auto& method_descriptor = canonical_method_descriptor;
-               auto endpoint = std::shared_ptr<endpoint_state>{};
-               try {
-                  if (plan.local == nullptr) {
-                     FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
-                                           "HTTP API binding has no local registry");
-                  }
-                  auto pinned = plan.pin(interface_type::ref());
-                  const auto& installed_method_descriptor = require_route_method_descriptor(
-                     pinned.describe(interface_type::ref()), name);
-                  validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
-                  require_response_accept_before_handler<Response>(context.request, options);
-                  auto admitted = co_await detail::provide_invocation(provider, context, method_descriptor);
-                  const auto& trusted = admitted.trusted;
-                  if constexpr (is_positional_http_method_v<Method, Request>) {
-                     if (method_descriptor.argument_names.empty()) {
-                        FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
-                                              "HTTP API positional method is missing argument metadata");
+            auto mount_stream_route = [&] {
+               auto stream_handler = [plan, provider, options, name, canonical_method_descriptor](
+                                         stream_request& request_value) -> boost::asio::awaitable<stream_response> {
+                  const auto& method_descriptor = canonical_method_descriptor;
+                  auto endpoint = std::shared_ptr<endpoint_state>{};
+                  auto buffered_request = std::optional<forge::net::http::request>{};
+                  auto buffered_context = std::optional<route_context>{};
+                  auto* context = &request_value.context;
+                  try {
+                     if (plan.local == nullptr) {
+                        FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                              "HTTP API binding has no local registry");
                      }
-                     auto arguments =
-                         make_positional_arguments_from_http<argument_tuple>(context, options, method_descriptor);
-                     auto value =
-                         co_await forge::api::core::enforce_invocation(
+                     auto pinned = plan.pin(interface_type::ref());
+                     const auto& installed_method_descriptor =
+                         require_route_method_descriptor(pinned.describe(interface_type::ref()), name);
+                     validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
+                     require_response_accept_before_handler<Response>(context->request, options);
+                     auto admitted = co_await detail::provide_invocation(provider, *context, method_descriptor);
+                     const auto& trusted = admitted.trusted;
+                     if constexpr (!detail::request_needs_stream_v<Request> && !tuple_needs_stream_v<argument_tuple>) {
+                        if (provider) {
+                           buffered_request.emplace(context->request);
+                           try {
+                              buffered_request->body() = co_await forge::api::core::enforce_invocation(
+                                  request_value.body.async_read_all(), admitted,
+                                  [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
+                           } catch (const forge::net::http::exceptions::payload_too_large&) {
+                              co_return buffered(
+                                  make_text_response(context->request, status::payload_too_large, "payload too large"));
+                           }
+                           buffered_request->prepare_payload();
+                           buffered_context.emplace(route_context{
+                               .request = *buffered_request,
+                               .parsed_target = context->parsed_target,
+                               .route_params = context->route_params,
+                               .runtime = context->runtime,
+                               .client_certificate_fingerprint = context->client_certificate_fingerprint,
+                           });
+                           context = &*buffered_context;
+                        }
+                     }
+                     if constexpr (is_positional_http_method_v<Method, Request>) {
+                        if (method_descriptor.argument_names.empty()) {
+                           FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                                 "HTTP API positional method is missing argument metadata");
+                        }
+                        auto decode_arguments = [&]() -> boost::asio::awaitable<argument_tuple> {
+                           if constexpr (!tuple_needs_stream_v<argument_tuple>) {
+                              if (provider) {
+                                 co_return make_positional_arguments_from_http<argument_tuple>(*context, options,
+                                                                                               method_descriptor);
+                              }
+                           }
+                           co_return co_await make_positional_arguments_from_stream<argument_tuple>(
+                               request_value, options, method_descriptor);
+                        };
+                        auto arguments = co_await forge::api::core::enforce_invocation(
+                            decode_arguments(), admitted,
+                            [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
+                        auto value = co_await forge::api::core::enforce_invocation(
                             invoke_local_arguments<Method, interface_type, Request, argument_tuple, Response>(
-                               pinned, name, canonical_method_descriptor, std::move(arguments), trusted), admitted);
-                     co_return make_success_response(context.request, options.success_status, value, options);
-                  } else {
-                     auto request = make_request_from_http<Request>(context, options);
-                     endpoint = make_endpoint_state<Request>(context.request, options.success_status);
-                     attach_endpoint_state(request, endpoint);
-                     auto value = co_await forge::api::core::enforce_invocation(
-                        invoke_local<Method, interface_type, Request, Response>(
-                           pinned, name, canonical_method_descriptor, std::move(request), trusted), admitted);
-                     co_return make_success_response(context.request, options.success_status, value, options, endpoint);
+                                pinned, name, canonical_method_descriptor, std::move(arguments), trusted),
+                            admitted, [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
+                        auto output = co_await make_success_stream_response(
+                            context->request, options.success_status, std::move(value), options, {}, &request_value);
+                        co_return detail::protect_response_body(std::move(output), std::move(admitted),
+                                                                request_value.body);
+                     } else {
+                        auto decode_request = [&]() -> boost::asio::awaitable<Request> {
+                           if constexpr (!detail::request_needs_stream_v<Request>) {
+                              if (provider) {
+                                 co_return make_request_from_http<Request>(*context, options);
+                              }
+                           }
+                           co_return co_await make_request_from_stream<Request>(request_value, options);
+                        };
+                        auto request = co_await forge::api::core::enforce_invocation(
+                            decode_request(), admitted,
+                            [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
+                        endpoint = make_endpoint_state<Request>(context->request, options.success_status);
+                        attach_endpoint_state(request, endpoint);
+                        auto value = co_await forge::api::core::enforce_invocation(
+                            invoke_local<Method, interface_type, Request, Response>(
+                                pinned, name, canonical_method_descriptor, std::move(request), trusted),
+                            admitted, [body = request_value.body](std::exception_ptr) mutable { body.cancel(); });
+                        auto output =
+                            co_await make_success_stream_response(context->request, options.success_status,
+                                                                  std::move(value), options, endpoint, &request_value);
+                        co_return detail::protect_response_body(std::move(output), std::move(admitted),
+                                                                request_value.body);
+                     }
+                  } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
+                     co_return buffered(make_http_error_response(context->request, "unsupported_media_type",
+                                                                 error.message(), status::unsupported_media_type,
+                                                                 options, endpoint, &error));
+                  } catch (const forge::net::http::exceptions::not_acceptable& error) {
+                     co_return buffered(make_http_error_response(context->request, "not_acceptable", error.message(),
+                                                                 status::not_acceptable, options, endpoint, &error));
+                  } catch (const forge::net::http::exceptions::bad_request& error) {
+                     co_return buffered(
+                         make_validation_response(context->request, error.message(), options, endpoint, &error));
+                  } catch (const forge::exceptions::base& error) {
+                     const auto payload = forge::api::core::project_error(method_descriptor, error);
+                     co_return buffered(make_error_response(context->request, payload, options, endpoint, &error));
+                  } catch (...) {
+                     if (!options.error_renderer) {
+                        throw;
+                     }
+                     const auto payload = forge::api::core::make_internal_error_payload();
+                     co_return buffered(make_error_response(context->request, payload, options, endpoint));
                   }
-               } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
-                  co_return make_http_error_response(context.request, "unsupported_media_type", error.message(),
-                                                     status::unsupported_media_type, options, endpoint, &error);
-               } catch (const forge::net::http::exceptions::not_acceptable& error) {
-                  co_return make_http_error_response(context.request, "not_acceptable", error.message(),
-                                                     status::not_acceptable, options, endpoint, &error);
-               } catch (const forge::net::http::exceptions::bad_request& error) {
-                  co_return make_validation_response(context.request, error.message(), options, endpoint, &error);
-               } catch (const forge::exceptions::base& error) {
-                  const auto payload = forge::api::core::project_error(method_descriptor, error);
-                  co_return make_error_response(context.request, payload, options, endpoint, &error);
-               } catch (...) {
-                  if (!options.error_renderer) {
-                     throw;
-                  }
-                  const auto payload = forge::api::core::make_internal_error_payload();
-                  co_return make_error_response(context.request, payload, options, endpoint);
+               };
+               switch (verb) {
+               case method::get:
+                  target.get_stream(std::move(mounted_path), std::move(stream_handler));
+                  break;
+               case method::head:
+                  target.head_stream(std::move(mounted_path), std::move(stream_handler));
+                  break;
+               case method::post:
+                  target.post_stream(std::move(mounted_path), std::move(stream_handler));
+                  break;
+               case method::put:
+                  target.put_stream(std::move(mounted_path), std::move(stream_handler));
+                  break;
+               case method::patch:
+                  target.patch_stream(std::move(mounted_path), std::move(stream_handler));
+                  break;
+               case method::delete_:
+                  target.del_stream(std::move(mounted_path), std::move(stream_handler));
+                  break;
+               default:
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::method_not_allowed,
+                                        "unsupported HTTP API stream route verb");
                }
             };
-            switch (verb) {
-            case method::get:
-               target.get(std::move(mounted_path), std::move(handler));
-               break;
-            case method::head:
-               target.head(std::move(mounted_path), std::move(handler));
-               break;
-            case method::post:
-               target.post(std::move(mounted_path), std::move(handler));
-               break;
-            case method::put:
-               target.put(std::move(mounted_path), std::move(handler));
-               break;
-            case method::patch:
-               target.patch(std::move(mounted_path), std::move(handler));
-               break;
-            case method::delete_:
-               target.del(std::move(mounted_path), std::move(handler));
-               break;
-            default:
-               FORGE_THROW_EXCEPTION(forge::net::http::exceptions::method_not_allowed,
-                                     "unsupported HTTP API route verb");
+            if constexpr (detail::request_needs_stream_v<Request> || tuple_needs_stream_v<argument_tuple> ||
+                          detail::response_needs_stream_v<Response>) {
+               mount_stream_route();
+            } else if (provider) {
+               mount_stream_route();
+            } else {
+               auto handler = [plan, provider, options, name, canonical_method_descriptor](
+                                  route_context& context) -> boost::asio::awaitable<response> {
+                  const auto& method_descriptor = canonical_method_descriptor;
+                  auto endpoint = std::shared_ptr<endpoint_state>{};
+                  try {
+                     if (plan.local == nullptr) {
+                        FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                              "HTTP API binding has no local registry");
+                     }
+                     auto pinned = plan.pin(interface_type::ref());
+                     const auto& installed_method_descriptor =
+                         require_route_method_descriptor(pinned.describe(interface_type::ref()), name);
+                     validate_route_method_descriptor<Method, Request, Response>(installed_method_descriptor, name);
+                     require_response_accept_before_handler<Response>(context.request, options);
+                     auto admitted = co_await detail::provide_invocation(provider, context, method_descriptor);
+                     const auto& trusted = admitted.trusted;
+                     if constexpr (is_positional_http_method_v<Method, Request>) {
+                        if (method_descriptor.argument_names.empty()) {
+                           FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                                 "HTTP API positional method is missing argument metadata");
+                        }
+                        auto arguments =
+                            make_positional_arguments_from_http<argument_tuple>(context, options, method_descriptor);
+                        auto value = co_await forge::api::core::enforce_invocation(
+                            invoke_local_arguments<Method, interface_type, Request, argument_tuple, Response>(
+                                pinned, name, canonical_method_descriptor, std::move(arguments), trusted),
+                            admitted);
+                        co_return make_success_response(context.request, options.success_status, value, options);
+                     } else {
+                        auto request = make_request_from_http<Request>(context, options);
+                        endpoint = make_endpoint_state<Request>(context.request, options.success_status);
+                        attach_endpoint_state(request, endpoint);
+                        auto value = co_await forge::api::core::enforce_invocation(
+                            invoke_local<Method, interface_type, Request, Response>(
+                                pinned, name, canonical_method_descriptor, std::move(request), trusted),
+                            admitted);
+                        co_return make_success_response(context.request, options.success_status, value, options,
+                                                        endpoint);
+                     }
+                  } catch (const forge::net::http::exceptions::unsupported_media_type& error) {
+                     co_return make_http_error_response(context.request, "unsupported_media_type", error.message(),
+                                                        status::unsupported_media_type, options, endpoint, &error);
+                  } catch (const forge::net::http::exceptions::not_acceptable& error) {
+                     co_return make_http_error_response(context.request, "not_acceptable", error.message(),
+                                                        status::not_acceptable, options, endpoint, &error);
+                  } catch (const forge::net::http::exceptions::bad_request& error) {
+                     co_return make_validation_response(context.request, error.message(), options, endpoint, &error);
+                  } catch (const forge::exceptions::base& error) {
+                     const auto payload = forge::api::core::project_error(method_descriptor, error);
+                     co_return make_error_response(context.request, payload, options, endpoint, &error);
+                  } catch (...) {
+                     if (!options.error_renderer) {
+                        throw;
+                     }
+                     const auto payload = forge::api::core::make_internal_error_payload();
+                     co_return make_error_response(context.request, payload, options, endpoint);
+                  }
+               };
+               switch (verb) {
+               case method::get:
+                  target.get(std::move(mounted_path), std::move(handler));
+                  break;
+               case method::head:
+                  target.head(std::move(mounted_path), std::move(handler));
+                  break;
+               case method::post:
+                  target.post(std::move(mounted_path), std::move(handler));
+                  break;
+               case method::put:
+                  target.put(std::move(mounted_path), std::move(handler));
+                  break;
+               case method::patch:
+                  target.patch(std::move(mounted_path), std::move(handler));
+                  break;
+               case method::delete_:
+                  target.del(std::move(mounted_path), std::move(handler));
+                  break;
+               default:
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::method_not_allowed,
+                                        "unsupported HTTP API route verb");
+               }
             }
          }
       };

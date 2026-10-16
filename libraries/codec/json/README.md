@@ -1,5 +1,26 @@
 # forge_codec_json
 
+## Opaque shared JSON values
+
+`forge.codec.json.document` is a guest-safe owned `document { std::string text; }`.
+Link `Forge::forge_codec_json_values` when a shared protocol must carry arbitrary
+JSON without importing a parser, Variant, or native runtime into WASM. Raw encodes
+the document exactly as one string. Guest code treats the bytes as opaque; they
+do not prove that the text is valid JSON.
+
+Native code imports `forge.codec.json` and uses `parse_document(text, limits)` or
+`document_value(value, limits)`. These functions use the existing JSON backend,
+reject malformed/duplicate/deep/oversized input, and enforce explicit byte/depth
+limits. Native `to_variant/from_variant` adapters preserve the JSON value inside
+described DTOs: an object remains an object, rather than a quoted JSON string.
+Default document limits are 1 MiB and depth 128. Do not log document contents.
+
+The native document adapter also implements the explicit
+`schema::value_adapter<T>` hook, so schema-bound DTOs preserve nested JSON values
+and required null values. Schema owns only the validated value conversion
+boundary; it imports no JSON parser. Dynamic values are not exposed as raw CLI
+or environment strings.
+
 `forge_codec_json` is the JSON codec boundary. The public API is `namespace forge::codec::json`;
 The parser backend is an internal implementation detail and never leaks into
 module interfaces.
@@ -123,6 +144,28 @@ if (!loaded.ok()) {
 
 Diagnostics preserve the recursive path, for example `policies[1].authority[1].threshold`.
 Missing `std::optional` members remain valid and decode as empty optionals.
+
+### Decode An Owned JSON Value
+
+`decode<T>(variant, read_options)` converts a JSON value that has already been
+parsed. It shares typed `read<T>`/`load<T>` conversion, exact validation, schema
+names/aliases, defaults, custom adapters and diagnostics. This supports a bounded
+metadata transformation between parsing and typed conversion without writing and
+parsing JSON again; integer and floating-point value kinds stay distinct.
+
+```cpp
+auto parsed = forge::codec::json::read_value(text, options);
+if (parsed.ok()) {
+   auto typed = forge::codec::json::decode<request>(std::move(parsed.value), options);
+}
+```
+
+The input is owned because schema materialization may modify it after exact
+validation. The caller must supply an already parsed, depth-bounded JSON value,
+normally from `read_value`. Syntax, duplicate object keys and parser depth limits
+are enforced during parsing; `decode` does not reapply `read_options::max_depth`
+to an arbitrary caller-constructed Variant. Exact record validation still checks
+schema aliases, missing/unknown fields, numeric ranges and indexed variants.
 
 ### File Helpers
 

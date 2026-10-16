@@ -13,7 +13,7 @@ foreach(input WASM ABI METADATA)
 endforeach()
 add_executable(api_wasm_parity main.cpp)
 target_link_libraries(api_wasm_parity PRIVATE api_wasm_fixture_protocol
-   Forge::forge_execution_wasm Forge::forge_chain_api Forge::forge_codec_json Forge::forge_codec_hex)
+   Forge::forge_api_wasm Forge::forge_execution_wasm Forge::forge_chain_api Forge::forge_codec_json Forge::forge_codec_hex)
 target_compile_definitions(api_wasm_parity PRIVATE
    API_WASM_WASM="${API_WASM_WASM}" API_WASM_ABI="${API_WASM_ABI}"
    API_WASM_METADATA="${API_WASM_METADATA}")

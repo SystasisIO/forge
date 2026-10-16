@@ -1196,10 +1196,12 @@ def check_auth_http_boundaries(root: Path, errors: list[str]) -> None:
    required = (
       leaf / "CMakeLists.txt",
       leaf / "policy.cpp",
+      leaf / "bearer.cpp",
       leaf / "README.md",
       leaf / "include" / "forge" / "auth" / "http" / "exceptions.cppm",
       leaf / "include" / "forge" / "auth" / "http" / "types.cppm",
       leaf / "include" / "forge" / "auth" / "http" / "policy.cppm",
+      leaf / "include" / "forge" / "auth" / "http" / "bearer.cppm",
       root / "tests" / "auth" / "http_auth_tests.cpp",
       root / "tests" / "package_auth_http_component" / "CMakeLists.txt",
       root / "tests" / "package_auth_http_component" / "main.cpp",
@@ -1216,7 +1218,7 @@ def check_auth_http_boundaries(root: Path, errors: list[str]) -> None:
 
    leaf_cmake = (leaf / "CMakeLists.txt").read_text(errors="ignore")
    for token in (
-      "add_library(forge_auth_http STATIC policy.cpp)",
+      "add_library(forge_auth_http STATIC bearer.cpp policy.cpp)",
       "forge_target_modules_at(forge_auth_http auth/http)",
       "forge_exceptions",
       "forge_crypto_core",
@@ -1690,10 +1692,22 @@ def check_plugin_descriptor_ownership(root: Path, errors: list[str]) -> None:
 
 
 def check_plugin_impl_ownership(root: Path, errors: list[str]) -> None:
+   declarations = re.compile(
+      r"(?:^|(?<=;))\s*(?:class|struct|enum(?:\s+(?:class|struct))?)\s+([A-Za-z_][A-Za-z0-9_:]*)",
+      re.MULTILINE,
+   )
    for path in sorted((root / "plugins").rglob("details/plugin_impl.hxx")):
-      for line_number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
-         declaration = PRIVATE_DECLARATION.match(line)
-         if declaration and declaration.group(1) != "plugin::impl":
+      source = re.sub(
+         r"""//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'""",
+         lambda match: re.sub(r"[^\n]", " ", match.group()),
+         path.read_text(errors="ignore"),
+      )
+      for declaration in declarations.finditer(source):
+         terminator = re.search(r"[;{]", source[declaration.end():])
+         if terminator and terminator.group() == ";":
+            continue
+         if declaration.group(1) != "plugin::impl":
+            line_number = source.count("\n", 0, declaration.start(1)) + 1
             errors.append(
                f"{path.relative_to(root)}:{line_number}: plugin_impl.hxx may only own plugin::impl; "
                f"move {declaration.group(1)} to its exact private header"

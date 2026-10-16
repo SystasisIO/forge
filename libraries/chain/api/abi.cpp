@@ -21,6 +21,7 @@ module;
 module forge.chain.api.abi;
 
 import forge.codec.hex;
+import forge.codec.json;
 import forge.crypto.asymmetric;
 import forge.crypto.digest.ripemd160;
 import forge.crypto.digest.sha256;
@@ -426,8 +427,26 @@ class serializer {
          bytes += text.size();
       };
       consume(metadata.version);
-      if (metadata.version != "forge::abi-metadata/1.0") {
+      if (metadata.version != "forge::abi-metadata/1.0" && metadata.version != "forge::abi-metadata/1.1") {
          fail(abi_error_code::invalid_abi, "Unsupported ABI metadata version", "abi_metadata", "metadata.version", 0U);
+      }
+      if (metadata.json_types)
+      {
+         if (metadata.version != "forge::abi-metadata/1.1")
+         {
+            fail(abi_error_code::invalid_abi, "JSON value metadata requires version 1.1", "abi_metadata", "metadata.version", 0U);
+         }
+
+         for (const auto& type : *metadata.json_types)
+         {
+            consume(type, true);
+            if (!aliases_.contains(type) || resolve_alias(type, "metadata.json_types", 1U) != "string" ||
+                !json_types_.insert(type).second)
+            {
+               fail(abi_error_code::invalid_abi, "JSON value metadata must name a unique string alias", type,
+                    "metadata.json_types", 0U);
+            }
+         }
       }
       auto roots = std::set<std::string, std::less<>>{};
       auto root_types = std::set<std::string, std::less<>>{};
@@ -444,6 +463,10 @@ class serializer {
          consume(definition.name, true);
          consume(definition.type);
          require_definition_name(definition.name, "metadata.enums", "enum");
+         if (json_types_.contains(definition.name))
+         {
+            fail(abi_error_code::invalid_abi, "ABI alias has conflicting JSON semantics", definition.name, "metadata.enums", 0U);
+         }
          if (!aliases_.contains(definition.name) ||
              resolve_alias(definition.name, "metadata.enums", 1U) != definition.type) {
             fail(abi_error_code::invalid_abi, "Enum metadata must match an existing ABI integer alias", definition.name,
@@ -487,6 +510,34 @@ class serializer {
          }
          current = alias->second;
       }
+      fail(abi_error_code::circular_definition, "Circular ABI type definition", type, path, 0U);
+   }
+
+   bool is_json_type(std::string_view type, std::string_view path, std::size_t depth) const
+   {
+      if (json_types_.empty())
+      {
+         return false;
+      }
+
+      auto current = type;
+      for (auto count = std::size_t{}; count <= aliases_.size(); ++count)
+      {
+         context_.check(depth + count, current, path, 0U);
+         if (json_types_.contains(current))
+         {
+            return true;
+         }
+
+         const auto alias = aliases_.find(current);
+         if (alias == aliases_.end())
+         {
+            return false;
+         }
+
+         current = alias->second;
+      }
+
       fail(abi_error_code::circular_definition, "Circular ABI type definition", type, path, 0U);
    }
 
@@ -755,6 +806,22 @@ class serializer {
    void encode_value(std::string_view type, const forge::variant& value, binary_writer& writer, std::string_view path,
                      std::size_t depth, bool extensions_allowed) const {
       context_.check(depth, type, path, writer.tellp());
+      if (is_json_type(type, path, depth))
+      {
+         const auto encoded = forge::codec::json::write_value(value, {.max_bytes = context_.limits().max_string_bytes});
+         if (!encoded.ok())
+         {
+            fail(abi_error_code::size_limit, "JSON document exceeds its byte limit", type, path, writer.tellp());
+         }
+
+         const auto checked = forge::codec::json::parse_document(encoded.text,
+            {.max_bytes = context_.limits().max_string_bytes,
+             .max_depth = context_.limits().max_recursion_depth - depth});
+         context_.check(depth, type, path, writer.tellp());
+         encode_string(forge::variant{checked.text}, writer, path);
+         return;
+      }
+
       if (const auto* definition = find_enum(type, path, depth)) {
          if (!value.is_string()) {
             fail(abi_error_code::invalid_json, "Enum JSON value must be a named string", type, path, writer.tellp());
@@ -819,6 +886,16 @@ class serializer {
    forge::variant decode_value(std::string_view type, binary_reader& reader, std::string_view path, std::size_t depth,
                                bool extensions_allowed) const {
       context_.check(depth, type, path, reader.tellp());
+      if (is_json_type(type, path, depth))
+      {
+         const auto text = decode_string(reader, path);
+         auto result = forge::codec::json::document_value({text.get_string()},
+            {.max_bytes = context_.limits().max_string_bytes,
+             .max_depth = context_.limits().max_recursion_depth - depth});
+         context_.check(depth, type, path, reader.tellp());
+         return result;
+      }
+
       if (const auto* definition = find_enum(type, path, depth)) {
          const auto number = decode_builtin(definition->type, reader, path, depth);
          const auto key = definition->type.starts_with("int") ? std::to_string(number.as_int64())
@@ -1368,6 +1445,7 @@ class serializer {
    std::map<std::string, std::string, std::less<>> aliases_;
    std::map<std::string, const protocol::struct_def*, std::less<>> structs_;
    std::map<std::string, const protocol::variant_def*, std::less<>> variants_;
+   std::set<std::string, std::less<>> json_types_;
 };
 
 } // namespace

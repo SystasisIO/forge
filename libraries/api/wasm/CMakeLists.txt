@@ -11,6 +11,7 @@ target_sources(forge_api_wasm PUBLIC
       include/forge/api/wasm/event.cppm
       include/forge/api/wasm/exceptions.cppm
       include/forge/api/wasm/http_command.cppm
+      include/forge/api/wasm/http_stream.cppm
       include/forge/api/wasm/limits.cppm
       include/forge/api/wasm/payload.cppm
       include/forge/api/wasm/step.cppm
