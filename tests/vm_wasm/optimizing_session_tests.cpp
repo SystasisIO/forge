@@ -528,6 +528,7 @@ BOOST_AUTO_TEST_CASE(darwin_sessions_share_native_sigchld_registration_across_ru
    auto executor = oc::executor{scheduler, {4 * 1024 * 1024 + 256 * 1024, 64 * 1024}};
    auto thread_prepared = false;
    auto failure = std::exception_ptr{};
+   const char* last_call = "initialization";
    const auto invoke_native = [&](const oc::compiler_session::completion& completed) {
       BOOST_REQUIRE(completed.code.is_prepared());
       auto binding = oc::executor::bind<registry>(completed.code);
@@ -560,7 +561,9 @@ BOOST_AUTO_TEST_CASE(darwin_sessions_share_native_sigchld_registration_across_ru
             first_result.get();
             BOOST_REQUIRE(second_result.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
             second_result.get();
+            last_call = "A/cold";
             const auto first_code = compile_request(first_runtime, first, request);
+            last_call = "B/cold";
             const auto second_code = compile_request(second_runtime, second_session, request);
             BOOST_REQUIRE(first_code.status == oc::compiler_session::completion_status::compiled);
             BOOST_REQUIRE(second_code.status == oc::compiler_session::completion_status::compiled);
@@ -577,6 +580,7 @@ BOOST_AUTO_TEST_CASE(darwin_sessions_share_native_sigchld_registration_across_ru
             BOOST_CHECK(after_first.sa_handler == owned.sa_handler);
             BOOST_TEST(after_first.sa_flags == owned.sa_flags);
             BOOST_TEST(same_mask(after_first.sa_mask, owned.sa_mask));
+            last_call = "B/after-A-shutdown";
             const auto still_live = compile_request(second_runtime, second_session, second);
             BOOST_REQUIRE(still_live.status == oc::compiler_session::completion_status::compiled);
             invoke_native(still_live); // Real new helper after the other session has drained.
@@ -586,16 +590,19 @@ BOOST_AUTO_TEST_CASE(darwin_sessions_share_native_sigchld_registration_across_ru
                                 BOOST_CHECK_THROW(initialize(failed_runtime, failed),
                                                   oc::exceptions::compiler_unavailable);
                              }); // Explicit normal fixture shutdown releases committed failed-startup ownership.
+            last_call = "B/after-failed-init";
             const auto after_unwind = compile_request(second_runtime, second_session, third);
             BOOST_REQUIRE(after_unwind.status == oc::compiler_session::completion_status::compiled);
             invoke_native(after_unwind);
 
             exercise_session(options(first_directory, helper), [&](auto& restarted, auto& restarted_runtime, auto&) {
                initialize(restarted_runtime, restarted); // New owner while the second session is still live.
+               last_call = "A-restart/disk-hit-expected";
                const auto restored = compile_request(restarted_runtime, restarted, request);
                BOOST_REQUIRE(restored.status == oc::compiler_session::completion_status::loaded_from_disk);
                invoke_native(restored);
                shutdown(second_runtime, second_session);
+               last_call = "A-restart/after-B-shutdown";
                const auto last_live = compile_request(restarted_runtime, restarted, second);
                BOOST_REQUIRE(last_live.status == oc::compiler_session::completion_status::compiled);
                invoke_native(last_live); // SAME last owner can still launch/reap a real helper.
@@ -632,8 +639,10 @@ BOOST_AUTO_TEST_CASE(darwin_sessions_share_native_sigchld_registration_across_ru
       if (!failure)
          failure = std::current_exception();
    }
-   if (failure)
+   if (failure) {
+      BOOST_TEST_CHECKPOINT("darwin_sigchld last_call=" << last_call);
       std::rethrow_exception(failure);
+   }
 }
 #endif
 
