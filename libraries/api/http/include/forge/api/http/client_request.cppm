@@ -384,6 +384,7 @@ void apply_route_cookies(request& target,
    switch (codec) {
    case body_codec::json: {
       if constexpr (has_http_hidden_fields<std::remove_cvref_t<decltype(value)>>::value) {
+         validate_http_hidden_json_profile<std::remove_cvref_t<decltype(value)>>();
          try {
             auto projected = forge::variant_schema::encode(value);
             project_http_json_fields<std::remove_cvref_t<decltype(value)>>(projected, false);

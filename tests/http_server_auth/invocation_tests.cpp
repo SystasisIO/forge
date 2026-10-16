@@ -113,7 +113,8 @@ struct numeric_input {
 
 struct schema_numeric_input {
    std::int8_t count = 0;
-   choice selected;
+   // Schema fields support numeric arrays; numeric_input covers actual indexed std::variant values.
+   std::vector<std::int8_t> selected;
    std::uint64_t wide = 0;
    std::optional<std::uint64_t> maybe;
    bool flag = true;
@@ -148,6 +149,7 @@ struct output {
 class api
     : public forge::api::core::contract<api, forge::api::core::surface::local | forge::api::core::surface::remote> {
  public:
+   virtual ~api() = default;
    virtual boost::asio::awaitable<output> submit(input request) = 0;
    virtual boost::asio::awaitable<output> upload(upload_input request) = 0;
    virtual boost::asio::awaitable<output> wrapped(wrapped_input request) = 0;
@@ -161,6 +163,7 @@ class api
 class unsupported_api : public forge::api::core::contract<unsupported_api, forge::api::core::surface::local |
                                                                                forge::api::core::surface::remote> {
  public:
+   virtual ~unsupported_api() = default;
    virtual boost::asio::awaitable<output> body(unsupported_body_input request) = 0;
    virtual boost::asio::awaitable<output> dotted(dotted_input request) = 0;
    virtual boost::asio::awaitable<output> dotted_alias(dotted_alias_input request) = 0;
@@ -174,12 +177,14 @@ class unsupported_api : public forge::api::core::contract<unsupported_api, forge
 class legacy_api : public forge::api::core::contract<legacy_api, forge::api::core::surface::local |
                                                                      forge::api::core::surface::remote> {
  public:
+   virtual ~legacy_api() = default;
    virtual boost::asio::awaitable<output> submit(legacy_input request) = 0;
 };
 
 class client_stream_api : public forge::api::core::contract<client_stream_api, forge::api::core::surface::local |
                                                                                    forge::api::core::surface::remote> {
  public:
+   virtual ~client_stream_api() = default;
    virtual boost::asio::awaitable<output> upload(input request, forge::api::core::stream_reader<output> items) = 0;
 };
 
@@ -187,6 +192,7 @@ class legacy_client_stream_api
     : public forge::api::core::contract<legacy_client_stream_api,
                                         forge::api::core::surface::local | forge::api::core::surface::remote> {
  public:
+   virtual ~legacy_client_stream_api() = default;
    virtual boost::asio::awaitable<output> upload(legacy_input request,
                                                  forge::api::core::stream_reader<output> items) = 0;
 };
@@ -309,10 +315,10 @@ FORGE_API(::forge::tests::http_admission::api, FORGE_API_CONTRACT("http-admissio
           FORGE_API_METHOD(query), FORGE_API_METHOD(form), FORGE_API_METHOD(numeric), FORGE_API_METHOD(schema_numeric))
 FORGE_HTTP_API(::forge::tests::http_admission::api, FORGE_HTTP_POST(submit, "/submit/:id", ok),
                FORGE_HTTP_PUT(upload, "/upload", ok, FORGE_HTTP_BODY_STREAM(body)),
-               FORGE_HTTP_POST(wrapped, "/wrapped", ok), FORGE_HTTP_GET(query, "/query", ok),
+               FORGE_HTTP_POST(wrapped, "/wrapped", ok), FORGE_HTTP_GET(query, "/query"),
                FORGE_HTTP_POST(form, "/form", ok, FORGE_HTTP_FORM(label, "label")),
                FORGE_HTTP_POST(numeric, "/numeric", ok), FORGE_HTTP_POST(schema_numeric, "/schema-numeric", ok),
-               FORGE_HTTP_GET(download, "/download/:id", ok, FORGE_HTTP_RESPONSE_STREAM))
+               FORGE_HTTP_GET(download, "/download/:id", FORGE_HTTP_RESPONSE_STREAM))
 
 FORGE_API(::forge::tests::http_admission::unsupported_api, FORGE_API_CONTRACT("http-admission-unsupported", 1, 0),
           FORGE_API_METHOD(body), FORGE_API_METHOD(dotted), FORGE_API_METHOD(dotted_alias),
@@ -444,6 +450,9 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
            .base_path = "/secure",
            .error_renderer =
                [](const forge::api::http::error_context& context) -> std::optional<forge::net::http::response> {
+              if (context.request.target() == "/secure/schema-numeric") {
+                 return std::nullopt;
+              }
               return forge::net::http::make_text_response(context.request, context.status, "external-denied");
            },
            .invocation = [state](const forge::net::http::route_context& context,
@@ -555,17 +564,27 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
                            R"({"selected":[0,10],"wide":10,"flag":true})"}) {
       BOOST_TEST(send("/secure/numeric", body, true).result_int() == 422U);
    }
+   // Keep all other required fields present so each case isolates scalar/array integer fidelity or exact validation.
    for (const auto body :
-        {R"({"total":0.0,"choice":[0,10],"wide":10})", R"({"total":0,"choice":[0.0,10],"wide":10})",
-         R"({"total":101,"choice":[0,10],"wide":10})", R"({"total":0,"choice":[0,10],"wide":10,"extra":1})",
-         R"({"choice":[0,10],"wide":10})", R"({"total":0,"total":0,"choice":[0,10],"wide":10})"}) {
+        {R"({"total":0.0,"choice":[0,10],"wide":10,"flag":true})",
+         R"({"total":0,"choice":[0.0,10],"wide":10,"flag":true})",
+         R"({"total":101,"choice":[0,10],"wide":10,"flag":true})",
+         R"({"total":0,"choice":[0,10],"wide":10,"flag":true,"extra":1})",
+         R"({"choice":[0,10],"wide":10,"flag":true})",
+         R"({"total":0,"total":0,"choice":[0,10],"wide":10,"flag":true})"}) {
       BOOST_TEST(send("/secure/schema-numeric", body, true).result_int() == 422U);
    }
+   const auto missing_flag = send("/secure/schema-numeric", R"({"total":0,"choice":[0,10],"wide":10})", true);
+   BOOST_TEST(missing_flag.result_int() == 422U);
+   BOOST_TEST(missing_flag.body().find("flag") != std::string::npos);
    BOOST_TEST(state->handlers.load() == before_numeric);
    BOOST_TEST(send("/secure/numeric", R"({"count":0,"selected":[0,10],"wide":18446744073709551615,"flag":true})", true)
                   .result_int() == 200U);
-   BOOST_TEST(send("/secure/schema-numeric", R"({"total":0,"legacy-choice":[0,10],"wide":18446744073709551615})", true)
-                  .result_int() == 200U);
+   const auto schema_numeric = send(
+       "/secure/schema-numeric", R"({"total":0,"legacy-choice":[0,10],"wide":18446744073709551615,"flag":true})", true);
+   BOOST_TEST_CONTEXT("Schema numeric response: " << schema_numeric.body()) {
+      BOOST_TEST(schema_numeric.result_int() == 200U);
+   }
    BOOST_TEST(state->handlers.load() == before_numeric + 2U);
    forge::asio::blocking::run(app->runtime(), app->shutdown());
 }
@@ -652,7 +671,7 @@ BOOST_AUTO_TEST_CASE(http_hidden_supplied_field_scrubs_generated_member_names_wi
    }
    auto value = fixture::schema_numeric_input{};
    value.count = 10;
-   value.selected = std::string{"selected"};
+   value.selected = {1, 10};
    value.wide = UINT64_MAX;
    value.maybe = 42;
    value.caller.id = "private";
@@ -666,7 +685,7 @@ BOOST_AUTO_TEST_CASE(http_hidden_supplied_field_scrubs_generated_member_names_wi
    BOOST_TEST(encoded.find("private") == std::string::npos);
    BOOST_TEST(encoded.find("native-facts") == std::string::npos);
    BOOST_TEST(encoded.find(R"("total":10)") != std::string::npos);
-   BOOST_TEST(encoded.find(R"("choice":[1,"selected"])") != std::string::npos);
+   BOOST_TEST(encoded.find(R"("choice":[1,10])") != std::string::npos);
    BOOST_TEST(encoded.find("18446744073709551615") != std::string::npos);
    auto plain = fixture::numeric_input{};
    plain.selected = std::int8_t{10};
