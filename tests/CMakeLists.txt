@@ -2314,6 +2314,17 @@ foreach(FORGE_PACKAGE_OPENSSL_VARIABLE IN ITEMS
       )
    endif()
 endforeach()
+set(FORGE_PACKAGE_BOOST_CACHE_CONTENT "")
+# Reuse the producer's selected Boost packages instead of mixing host installations.
+foreach(FORGE_PACKAGE_BOOST_VARIABLE IN ITEMS
+   Boost_DIR boost_headers_DIR boost_stacktrace_basic_DIR
+)
+   if(DEFINED ${FORGE_PACKAGE_BOOST_VARIABLE} AND ${FORGE_PACKAGE_BOOST_VARIABLE})
+      string(APPEND FORGE_PACKAGE_BOOST_CACHE_CONTENT
+         "set(${FORGE_PACKAGE_BOOST_VARIABLE} [==[${${FORGE_PACKAGE_BOOST_VARIABLE}}]==] CACHE PATH \"Exact producer Boost dependency\" FORCE)\n"
+      )
+   endif()
+endforeach()
 set(FORGE_PACKAGE_CONSUMER_CACHE "${CMAKE_BINARY_DIR}/tests/ForgePackageConsumerCache.cmake")
 string(
    CONCAT FORGE_PACKAGE_CONSUMER_CACHE_CONTENT
@@ -2321,6 +2332,7 @@ string(
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Package dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Exact Glaze package\" FORCE)\n"
    "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
+   "${FORGE_PACKAGE_BOOST_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
    "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
@@ -2345,6 +2357,7 @@ string(
    "set(CMAKE_PREFIX_PATH [==[${FORGE_PACKAGE_EXPLICIT_GLAZE_DIR_PREFIX_PATH}]==] CACHE STRING \"Shared dependency prefixes\" FORCE)\n"
    "set(glaze_DIR [==[${glaze_DIR}]==] CACHE PATH \"Explicit Glaze package hint\" FORCE)\n"
    "${FORGE_PACKAGE_OPENSSL_CACHE_CONTENT}"
+   "${FORGE_PACKAGE_BOOST_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Expected shared dependency prefixes\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
