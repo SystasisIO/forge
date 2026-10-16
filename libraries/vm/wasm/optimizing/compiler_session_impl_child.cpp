@@ -113,7 +113,7 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
    if (stop.stop_requested())
       FORGE_THROW_EXCEPTION(exceptions::cancelled, "compiler helper cancelled before spawn");
    auto endpoints = std::array<int, 2>{-1, -1};
-   auto socket_type = SOCK_STREAM;
+   int socket_type = SOCK_STREAM;
 #if defined(__linux__)
    socket_type |= SOCK_CLOEXEC; // Atomic at creation, not a later descriptor mutation.
 #endif
