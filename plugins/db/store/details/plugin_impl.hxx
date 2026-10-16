@@ -7,17 +7,26 @@
 
 namespace forge::plugins::db::store {
 struct plugin::impl : public std::enable_shared_from_this<plugin::impl> {
-   explicit impl(forge::app::plugin_lifecycle lifecycle);
+   explicit impl(forge::app::plugin_lifecycle lifecycle, plugin::options options);
    const forge::app::plugin_lifecycle lifecycle;
    mutable std::mutex mutex;
    config settings;
+   const plugin::options opening;
+   std::exception_ptr opening_failure;
+   std::exception_ptr prerequisite_failure;
    std::unordered_map<std::string, std::shared_ptr<managed_store>> stores;
    std::atomic<phase> current = phase::collecting;
    bool enabled = true;
    bool shutdown_completed = false;
+   forge::asio::compute::executor compute;
 
    void configure(config value);
-   void initialize();
+   void initialize(forge::asio::compute::executor executor);
+   boost::asio::awaitable<void> close_for_activation(std::string name);
+   void claim_activation(const std::string& name);
+   boost::asio::awaitable<void> activate_closed(std::string name, std::optional<std::filesystem::path> destination);
+   [[nodiscard]] activation_status closed_state(const std::string& name) const;
+   [[nodiscard]] bool activation_inflight(const std::string& name) const noexcept;
    boost::asio::awaitable<void> open();
    void start();
    void request_stop() noexcept;

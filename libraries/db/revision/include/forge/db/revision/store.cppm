@@ -19,6 +19,11 @@ class store {
    static boost::asio::awaitable<store>
    open(std::shared_ptr<forge::db::core::driver> driver,
         forge::db::object::store objects);
+   static boost::asio::awaitable<store> open_existing(std::shared_ptr<forge::db::core::driver> driver,
+                                                      forge::db::object::store objects);
+
+   // No journal scope is attached and no record is written.
+   boost::asio::awaitable<void> require_pristine(forge::db::object::transaction& active);
 
    boost::asio::awaitable<scope> join(forge::db::core::transaction& active);
    boost::asio::awaitable<scope> join(forge::db::object::transaction& active);
@@ -41,6 +46,8 @@ class store {
  private:
    struct impl;
    explicit store(std::shared_ptr<impl> implementation);
+   static boost::asio::awaitable<store> open_impl(std::shared_ptr<forge::db::core::driver> driver,
+                                                  forge::db::object::store objects, bool initialize);
 
    std::shared_ptr<impl> impl_;
 };

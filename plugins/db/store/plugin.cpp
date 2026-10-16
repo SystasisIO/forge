@@ -5,6 +5,7 @@ module;
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,6 +17,7 @@ module forge.plugins.db.store.plugin;
 import forge.api.core.binding;
 import forge.app.plugin;
 import forge.app.plugin_context;
+import forge.asio.compute;
 import forge.config.core.component;
 import forge.config.core.decode;
 import forge.db.blob.store;
@@ -31,7 +33,7 @@ import forge.plugins.db.store.exceptions;
 
 namespace forge::plugins::db::store {
 
-plugin::plugin() : impl_{std::make_shared<impl>(lifecycle_handle())} {}
+plugin::plugin(options value) : impl_{std::make_shared<impl>(lifecycle_handle(), std::move(value))} {}
 plugin::~plugin() = default;
 
 forge::app::plugin_id plugin::id() const {
@@ -57,8 +59,7 @@ boost::asio::awaitable<void> plugin::on_provide(forge::api::core::provider& prov
 }
 
 boost::asio::awaitable<void> plugin::on_initialize(forge::app::plugin_context& context) {
-   static_cast<void>(context);
-   impl_->initialize();
+   impl_->initialize(context.has_compute() ? context.compute() : forge::asio::compute::executor{});
    co_return;
 }
 
@@ -74,6 +75,9 @@ boost::asio::awaitable<void> plugin::on_after_initialize() {
    } catch (const exceptions::initialize_failed&) {
       throw;
    } catch (const std::exception& error) {
+      if (impl_->prerequisite_failure == std::current_exception()) {
+         std::rethrow_exception(impl_->prerequisite_failure);
+      }
       FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin initialization failed",
                             forge::exceptions::ctx("error", error.what()));
    }
@@ -106,11 +110,11 @@ boost::asio::awaitable<void> plugin::on_shutdown() {
    co_await impl_->close();
 }
 
-forge::app::plugin_descriptor plugin::descriptor() {
+forge::app::plugin_descriptor plugin::descriptor(options value) {
    return forge::app::plugin_descriptor{
       .id = forge::app::plugin_id{.value = "forge.plugins.db.store"},
-      .factory = [] {
-         return std::make_unique<plugin>();
+      .factory = [value = std::move(value)] {
+         return std::make_unique<plugin>(value);
       },
    };
 }

@@ -25,9 +25,19 @@ store::store(std::shared_ptr<impl> implementation)
 boost::asio::awaitable<store>
 store::open(std::shared_ptr<forge::db::core::driver> driver,
             forge::db::object::store objects) {
+   co_return co_await open_impl(std::move(driver), std::move(objects), true);
+}
+
+boost::asio::awaitable<store> store::open_existing(std::shared_ptr<forge::db::core::driver> driver,
+                                                   forge::db::object::store objects) {
+   co_return co_await open_impl(std::move(driver), std::move(objects), false);
+}
+
+boost::asio::awaitable<store> store::open_impl(std::shared_ptr<forge::db::core::driver> driver,
+                                               forge::db::object::store objects, bool initialize) {
    auto implementation = std::make_shared<impl>(std::move(driver), std::move(objects));
    try {
-      co_await implementation->initialize();
+      co_await implementation->initialize(initialize);
    } catch (const exceptions::corrupt_state&) {
       elog("forge.db.revision", "revision initialization rejected",
            ("event", "initialization.rejected")("reason", "corrupt_state"));
@@ -35,6 +45,13 @@ store::open(std::shared_ptr<forge::db::core::driver> driver,
    }
    dlog("forge.db.revision", "revision store initialized", ("event", "store.initialized"));
    co_return store{std::move(implementation)};
+}
+
+boost::asio::awaitable<void> store::require_pristine(forge::db::object::transaction& active) {
+   // Exact owning Object impl, not its family/participant name.
+   auto objects = co_await impl_->objects.join(active);
+   impl_->require_joinable(objects.db_transaction());
+   co_await impl_->require_pristine(objects);
 }
 
 boost::asio::awaitable<scope> store::join(forge::db::core::transaction& active) {

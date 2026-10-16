@@ -129,6 +129,18 @@ It rejects non-empty families without a header and versions outside the
 supported range. The cached header is available without I/O through
 `store.header()`.
 
+`store::open_existing(driver, config, options)` is the noninitializing alternative.
+It reads the actual family/header through a Core snapshot and reuses the same
+header decoder and validation. The header must already exist at the current
+format version: missing/malformed headers report `invalid_header`, and a
+non-current/unsupported version reports `incompatible_version`. It never creates
+or upgrades a header, reserves an ID, begins a write transaction, commits or
+invokes application mutation callbacks. A driver without snapshot reads is
+rejected; there is no creating/write fallback. The returned store is not
+read-only: subsequent ordinary transactions and writes retain their normal rules.
+This validates the layer header, not application consistency or pristine state.
+Native driver open/lock/filesystem activity is outside this logical-record promise.
+
 ## System Objects
 
 Object space `0` is reserved for Forge system objects. Application objects must
@@ -438,3 +450,108 @@ migration events for a future explicit migration layer:
 The candidate transaction-integrated revision journal and its boundary with a
 future migration runner are documented in
 [`docs/iterations/forge-db-revisions-migrations-v1.md`](../../../docs/iterations/forge-db-revisions-migrations-v1.md).
+
+## Transactional allocator projection
+
+Normal store-owned transactional allocations also publish typed
+`change_set::allocations` entries with exact sequence before/after values.
+Missing sequence is logical zero; explicit inserted IDs can be occupied while
+next is zero. Erasing rows never reconstructs or lowers next from live IDs.
+Counter-only changes (including an initializer that throws after allocation)
+participate in precommit observers, stale-projection checks and savepoints.
+
+`transaction::allocation_next<Model>()` and
+`snapshot::allocation_next<Model>()` read the existing sequence without
+initializing or reserving an ID. They use the same private codec as allocation.
+
+A transaction's operations/lifecycle must be serialized by its owner, including
+aliases and direct Core commit/rollback/savepoint calls. The participant rejects
+overlapping allocator calls before their first suspension; this is not a queue
+or a general concurrent-transaction API. Commit/savepoint preparation rejects an
+in-flight allocation. Monotonic high-watermark/seal semantics remain unchanged
+and are not a reversible consensus-counter contract. Custom allocator
+constructors keep their API; their arbitrary allocation source is not exposed
+as a store-owned sequence trace. `transaction::tracks_allocations()` reports
+this actual store-owned transactional single-writer capability (false for custom
+allocators, monotonic/backend policies and finalized transactions).
+`store::runtime_options()` exposes the immutable options actually selected by
+the owner; the existing Store plugin object handle forwards this query without
+re-reading configuration or caching a second policy.
+
+The added allocations vector changes the C++ layout of public change_set.
+Rebuild ObjectDB and its binary/module consumers with the normal CMake/package
+graph; do not mix old objects/BMIs. This does not introduce a Raw archive format
+or change application/contract row bytes.
+
+## Pristine provisioning precondition
+
+`co_await objects.require_pristine(object_tx)` accepts only the current Object
+header and end of the whole owning family. It rejects every other persisted
+record, including an allocator sequence whose value is zero, indexes and unknown
+system records. Header bytes must equal the canonical Raw encoding of the
+current owner header; no second decoder is introduced. No record is initialized,
+normalized, erased or written.
+
+Pass an active transaction obtained from THIS store's `begin_transaction()` or
+`join(core_tx)`, including aliases from `join(object_tx)`. The actual policy
+must be `single_writer`; monotonic IDs are allowed for non-consensus provisioning.
+Foreign/manual/closed transactions and backend-writer policy fail with typed
+errors before the scan. The same Object participant retains its writer lease
+through the enclosing Core transaction's commit/rollback, even if a local alias
+is destroyed. Serialize all transaction operations and perform provisioning in
+that SAME transaction; a stale snapshot or a separately opened transaction is
+not a check-to-write guarantee. This proves current namespace contents, not
+freshness of a signing key, another DB family, a filesystem path or erased history.
+
+Revision has a separate `revisions.require_pristine(object_tx)` predicate for
+its exact initial infrastructure. Do not use the header-only Object predicate
+to accept a family that already contains Revision metadata.
+
+The infrastructure-only `system::access` bridge has fixed header-only and
+header+Revision-state0 shapes, not a caller-supplied record allowlist. Its Revision
+entrypoint returns that exact payload for the mandatory owning decoder/default
+state check. Product code uses the concrete Object or Revision store predicate.
+
+## Restoring exact allocation state into a fresh namespace
+
+`store::restore_allocations(object_tx, std::vector<store::allocation>)` writes a
+bounded batch of exact next-ID values using the existing private sequence codec.
+Each entry contains a canonical application type ID (instance zero) and its
+`next` value. Entries must be strictly sorted and unique, refer to registered
+application types, and cannot outnumber the owner's registered model set.
+The product owns its closed manifest and must reject missing or extra models.
+
+The SAME active Object transaction and actual owner/driver must use
+`single_writer` plus `transactional` allocation. The complete Object family must
+contain ONLY its canonical header, with no row, index, sequence (even zero),
+Revision state or unknown record. The existing writer lease and pristine scanner
+enforce this before the first counter write. A store with existing or previously
+allocated state cannot use this operation to lower its counters.
+
+Zero is canonical absent sequence; it does not create a persisted zero record.
+`UINT64_MAX` is a valid exhausted next value, and subsequent ordinary `create`
+fails with the existing typed exhausted-sequence error. Explicit row insertion
+still does not advance next. Restoring next from `max(row IDs) + 1`, dummy
+creates or a raw sequence-key write is not equivalent. Consumers separately
+validate row-ID/reference invariants against authenticated counter values.
+
+All encoding and trace capacity reservation happen before writes. The SAME
+participant publishes each successful `0 -> next` trace, including logical
+zero, so normal observers, stale-projection checks and successful savepoint
+rollback retain their ordinary behavior. Operations/aliases/lifecycle must stay
+serialized. Allocation admission exists before lazy coroutine execution;
+dropping an unstarted operation denies commit until full rollback.
+
+Any error after admission, including cancellation or a pristine-check failure,
+is sticky until FULL transaction rollback. Catching the error or rolling back a
+savepoint does not make a partial restore committable. Pre-admission manifest,
+policy or encoding errors perform no writes. No ordinary allocator, monotonic
+seal, persisted row format or global default changes.
+
+Importers that need Revision infrastructure use an isolated unpublished stage
+without Revision for row/counter/authenticated-graph import, then strictly close
+it and reopen normally with Revision before writing local recovery metadata.
+This API does not restore a journal or activate a store. Do not attach a Revision
+capture to the import transaction. Existing Blob/Authenticated participants must
+be attached before their first mutation; their ownership/validation contracts
+remain unchanged.

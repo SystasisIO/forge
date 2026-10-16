@@ -19,7 +19,8 @@ struct transaction::impl {
       closed,
    };
 
-   explicit impl(std::unique_ptr<session> active_value, boost::asio::any_io_executor executor) noexcept;
+   explicit impl(std::unique_ptr<session> active_value, boost::asio::any_io_executor executor,
+                 std::shared_ptr<const void> origin_value) noexcept;
    ~impl();
 
    void rollback_on_drop() noexcept;
@@ -27,6 +28,7 @@ struct transaction::impl {
 
    std::unique_ptr<session> active;
    boost::asio::any_io_executor cleanup_executor;
+   std::shared_ptr<const void> origin;
    std::vector<before_commit_fn> before_commit_hooks;
    std::vector<after_commit_fn> after_commit_hooks;
    std::vector<after_rollback_fn> after_rollback_hooks;

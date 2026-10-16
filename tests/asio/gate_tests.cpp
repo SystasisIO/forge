@@ -1,7 +1,10 @@
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <future>
 #include <mutex>
+#include <optional>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -17,6 +20,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 import forge.asio.blocking;
 import forge.asio.gate;
@@ -60,7 +64,176 @@ acquire_after_precancel(forge::asio::gate& gate, std::atomic_bool& ready) {
    }
 }
 
+template <typename Operation>
+boost::asio::awaitable<bool> check_cancellation_scope(Operation& operation, std::promise<void>& timer_ready,
+                                                      bool throw_policy) {
+   auto filters = std::make_shared<std::array<unsigned, 2>>();
+   co_await boost::asio::this_coro::reset_cancellation_state(
+       [filters](boost::asio::cancellation_type_t type) {
+          ++(*filters)[0];
+          return type & boost::asio::cancellation_type::partial;
+       },
+       [filters](boost::asio::cancellation_type_t type) {
+          ++(*filters)[1];
+          return type & boost::asio::cancellation_type::partial;
+       });
+   co_await boost::asio::this_coro::throw_if_cancelled(throw_policy);
+   co_await operation();
+   const auto preserved = (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy;
+   auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+   timer.expires_after(std::chrono::milliseconds{500}); // Finite regression control, not a runtime policy.
+   timer_ready.set_value();
+   auto error = boost::system::error_code{};
+   co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   co_return preserved &&
+       (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy&& error ==
+           boost::asio::error::operation_aborted &&
+       (*filters)[0] == 2U && (*filters)[1] == 2U &&
+       cancellation.cancelled() == boost::asio::cancellation_type::partial;
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(asio_gate_preserves_caller_filters_throw_policy_and_next_timer_on_success_and_rejection) {
+   for (const auto throw_policy : {false, true}) {
+      for (const auto closed : {false, true}) {
+         auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+         auto gate = forge::asio::gate{};
+         if (closed)
+            gate.close();
+         auto expected_exit = false;
+         auto action = [&]() -> boost::asio::awaitable<void> {
+            try {
+               auto ticket = co_await gate.acquire();
+               expected_exit = !closed && ticket.active();
+            } catch (const forge::asio::exceptions::rejected&) {
+               if (!closed)
+                  throw;
+               expected_exit = true;
+            }
+         };
+         auto timer_ready = std::promise<void>{};
+         auto ready = timer_ready.get_future();
+         auto cancellation = boost::asio::cancellation_signal{};
+         auto result =
+             boost::asio::co_spawn(runtime.context(), check_cancellation_scope(action, timer_ready, throw_policy),
+                                   boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+         if (ready.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         boost::asio::post(runtime.context(), [&] {
+            cancellation.emit(boost::asio::cancellation_type::terminal);
+            cancellation.emit(boost::asio::cancellation_type::partial);
+         });
+         if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         BOOST_CHECK(result.get());
+         BOOST_CHECK(expected_exit);
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(asio_gate_queued_and_granted_cancellation_preserve_history_and_next_timer) {
+   for (const auto grant_before_cancel : {false, true}) {
+      auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+      auto gate = forge::asio::gate{};
+      auto owner = forge::asio::blocking::run(runtime, gate.acquire());
+      auto entered = std::promise<void>{};
+      auto entering = entered.get_future();
+      auto timer_ready = std::promise<void>{};
+      auto ready = timer_ready.get_future();
+      auto cancellation = boost::asio::cancellation_signal{};
+      auto result = std::future<bool>{};
+      auto canceled = false;
+      auto history_preserved = false;
+      auto action = [&]() -> boost::asio::awaitable<void> {
+         // On this single worker, this posted marker runs only after the
+         // nested acquire has suspended with the owner's ticket still held.
+         boost::asio::post(runtime.context(), [&] { entered.set_value(); });
+         try {
+            auto ticket = co_await gate.acquire();
+         } catch (const forge::asio::exceptions::canceled&) {
+            canceled = true;
+         }
+         const auto state = co_await boost::asio::this_coro::cancellation_state;
+         history_preserved = state.cancelled() == boost::asio::cancellation_type::partial &&
+                             !(co_await boost::asio::this_coro::throw_if_cancelled());
+      };
+      const auto cleanup = boost::scope::scope_exit{[&] {
+         owner.release();
+         gate.close();
+         if (result.valid()) {
+            if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+               std::terminate();
+            try {
+               static_cast<void>(result.get());
+            } catch (...) {
+            }
+         }
+      }};
+      result = boost::asio::co_spawn(runtime.context(), check_cancellation_scope(action, timer_ready, false),
+                                     boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+      if (entering.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      boost::asio::post(runtime.context(), [&] {
+         if (grant_before_cancel)
+            owner.release(); // Grant wake is posted; cancel wins before the waiting child resumes.
+         cancellation.emit(boost::asio::cancellation_type::partial);
+      });
+      if (ready.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      boost::asio::post(runtime.context(), [&] { cancellation.emit(boost::asio::cancellation_type::partial); });
+      if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      BOOST_CHECK(result.get());
+      BOOST_CHECK(canceled);
+      BOOST_CHECK(history_preserved);
+      owner.release();
+      auto successor = forge::asio::blocking::run(runtime, gate.acquire());
+      BOOST_CHECK(successor.active());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(asio_gate_completed_ticket_wins_and_next_timer_receives_cancellation) {
+   for (const auto throw_policy : {false, true}) {
+      auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+      auto gate = forge::asio::gate{};
+      auto ticket = std::optional<forge::asio::gate::ticket>{};
+      auto timer_ready = std::promise<void>{};
+      auto ready = timer_ready.get_future();
+      auto cancellation = boost::asio::cancellation_signal{};
+      auto result = std::future<bool>{};
+      auto action = [&]() -> boost::asio::awaitable<void> { ticket.emplace(co_await gate.acquire()); };
+      const auto cleanup = boost::scope::scope_exit{[&] {
+         gate.close();
+         if (result.valid()) {
+            if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+               std::terminate();
+            try {
+               static_cast<void>(result.get());
+            } catch (...) {
+            }
+         }
+         ticket.reset();
+      }};
+      result = boost::asio::co_spawn(runtime.context(), check_cancellation_scope(action, timer_ready, throw_policy),
+                                     boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+      if (ready.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      boost::asio::post(runtime.context(), [&] {
+         cancellation.emit(boost::asio::cancellation_type::terminal);
+         cancellation.emit(boost::asio::cancellation_type::partial);
+      });
+      if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      BOOST_CHECK(result.get());
+      BOOST_REQUIRE(ticket.has_value());
+      BOOST_CHECK(ticket->active()); // Cancellation after publication does not revoke its ticket.
+      ticket.reset();
+      auto successor = forge::asio::blocking::run(runtime, gate.acquire());
+      BOOST_CHECK(successor.active());
+   }
+}
 
 BOOST_AUTO_TEST_CASE(asio_gate_releases_move_only_ticket_with_raii) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

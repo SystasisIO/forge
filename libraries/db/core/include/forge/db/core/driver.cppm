@@ -71,6 +71,7 @@ class transaction {
    transaction& operator=(transaction&&) noexcept;
 
    [[nodiscard]] bool active() const noexcept;
+   [[nodiscard]] bool belongs_to(const driver& owner) const noexcept;
    [[nodiscard]] capabilities capabilities() const noexcept;
 
    boost::asio::awaitable<std::optional<std::vector<std::byte>>> get(family column_family, record_key key);
@@ -97,12 +98,17 @@ class transaction {
    boost::asio::awaitable<void> rollback();
 
  private:
+   transaction(std::unique_ptr<session> active, boost::asio::any_io_executor cleanup_executor,
+               std::shared_ptr<const void> origin);
+
    boost::asio::awaitable<void> prepare_prewrite_locks();
    boost::asio::awaitable<void>
    mutate(family column_family, record_key key, std::optional<std::vector<std::byte>> after);
 
    struct impl;
    std::shared_ptr<impl> impl_;
+
+   friend class driver;
 };
 
 class snapshot {
@@ -172,6 +178,7 @@ class driver {
    std::shared_ptr<detail::driver_state> state_;
 
    friend class snapshot;
+   friend class transaction;
 };
 
 } // namespace forge::db::core

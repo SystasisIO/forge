@@ -9,6 +9,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -23,6 +24,7 @@ module forge.plugins.db.store.plugin;
 import forge.api.core.binding;
 import forge.app.plugin_context;
 import forge.asio.affine;
+import forge.asio.compute;
 import forge.asio.exceptions;
 import forge.config.core.component;
 import forge.config.core.decode;
@@ -50,7 +52,8 @@ import forge.db.mdbx.driver;
 #include "details/config.hxx"
 
 namespace forge::plugins::db::store {
-plugin::impl::impl(forge::app::plugin_lifecycle value) : lifecycle{std::move(value)} {}
+plugin::impl::impl(forge::app::plugin_lifecycle value, plugin::options options)
+    : lifecycle{std::move(value)}, opening{std::move(options)} {}
 
 
 void plugin::impl::configure(config value) {
@@ -67,6 +70,7 @@ void plugin::impl::configure(config value) {
       record->path = item.path;
       record->families = item.families;
       record->options = detail::parse_options(item);
+      record->initialize_layers = item.create_if_missing;
       configured.emplace(record->name, std::move(record));
    }
 
@@ -86,7 +90,9 @@ void plugin::impl::configure(config value) {
         ("event", "configuration.accepted")("stores", count));
 }
 
-void plugin::impl::initialize() {}
+void plugin::impl::initialize(forge::asio::compute::executor executor) {
+   compute = std::move(executor);
+}
 
 void plugin::impl::reject_started_setup() const {
    const auto state = current.load();
@@ -143,149 +149,6 @@ void plugin::impl::add_store(std::string name, std::shared_ptr<forge::db::core::
         ("object", object)("blob", blob)("revision", revision));
 }
 
-boost::asio::awaitable<void> plugin::impl::open() {
-   auto pending = std::vector<pending_open>{};
-   auto restore_phase = phase::collecting;
-   const auto generation = lifecycle.snapshot().generation;
-   {
-      auto lock = std::scoped_lock{mutex};
-      const auto state = current.load();
-      if (state == phase::ready) {
-         co_return;
-      }
-      if (state == phase::closed) {
-         FORGE_THROW_EXCEPTION(exceptions::stopped, "db store plugin is stopping");
-      }
-      if (!enabled) {
-         current.store(phase::ready);
-         co_return;
-      }
-      if (state != phase::collecting) {
-         FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin is not initialized");
-      }
-
-      restore_phase = state;
-      current.store(phase::opening);
-      pending.reserve(stores.size());
-      for (const auto& [name, record] : stores) {
-         auto item = pending_open{
-             .name = name,
-             .options = record->options,
-             .owns_driver = record->owns_driver,
-             .driver = record->driver,
-         };
-         if (!item.driver) {
-            const auto configured =
-                std::ranges::find_if(settings.stores, [&](const auto& value) { return value.name == name; });
-            if (configured == settings.stores.end()) {
-               current.store(restore_phase);
-               FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store configured store is not registered",
-                                     forge::exceptions::ctx("store", name));
-            }
-            item.config = *configured;
-         }
-         pending.push_back(std::move(item));
-      }
-   }
-
-   const auto* failed = static_cast<const pending_open*>(nullptr);
-   try {
-      for (auto& item : pending) {
-         failed = &item;
-         if (!item.driver) {
-            item.driver = co_await make_configured_driver(*item.config);
-            item.owns_driver = true;
-         }
-         if (!item.driver) {
-            FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store has no driver",
-                                  forge::exceptions::ctx("store", item.name));
-         }
-         if (item.options.object) {
-            auto objects = co_await forge::db::object::store::open(
-                item.driver, forge::db::object::store::config{.family = item.options.object->family},
-                item.options.object->runtime);
-            item.objects = std::make_shared<forge::db::object::store>(std::move(objects));
-         }
-         if (item.options.revision) {
-            if (!item.objects) {
-               FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store revision layer requires object layer",
-                                     forge::exceptions::ctx("store", item.name));
-            }
-            auto revisions = co_await forge::db::revision::store::open(item.driver, *item.objects);
-            item.revisions = std::make_shared<forge::db::revision::store>(std::move(revisions));
-         }
-         if (item.options.blob) {
-            item.blobs =
-                std::make_shared<forge::db::blob::store>(item.driver, forge::db::blob::store::config{
-                                                                          .data_family = item.options.blob->data_family,
-                                                                          .refs_family = item.options.blob->refs_family,
-                                                                      });
-         }
-      }
-
-      if (!lifecycle.try_admit(generation, [&] {
-         auto lock = std::scoped_lock{mutex};
-         const auto state = current.load();
-         if (state == phase::closed) {
-            FORGE_THROW_EXCEPTION(exceptions::stopped, "db store plugin is stopping");
-         }
-         if (state != phase::opening) {
-            FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store plugin initialization state changed");
-         }
-         for (auto& item : pending) {
-            failed = &item;
-            const auto found = stores.find(item.name);
-            if (found == stores.end()) {
-               FORGE_THROW_EXCEPTION(exceptions::initialize_failed, "db store is no longer registered",
-                                     forge::exceptions::ctx("store", item.name));
-            }
-            auto& record = found->second;
-            record->owns_driver = item.owns_driver;
-            record->driver = std::move(item.driver);
-            record->objects = std::move(item.objects);
-            record->blobs = std::move(item.blobs);
-            record->revisions = std::move(item.revisions);
-            record->opened = true;
-            record->started = false;
-         }
-         current.store(phase::ready);
-      })) {
-         FORGE_THROW_EXCEPTION(exceptions::stopped, "db store opening was stopped");
-      }
-   } catch (...) {
-      const auto stopping = lifecycle.snapshot().stop_requested;
-      auto lock = std::unique_lock{mutex};
-      if (current.load() == phase::opening) {
-         current.store(restore_phase);
-      }
-      lock.unlock();
-      const auto failed_store = failed ? std::string_view{failed->name} : std::string_view{};
-      const auto failed_backend = failed
-         ? (failed->config ? std::string_view{failed->config->driver} : std::string_view{"custom"})
-         : std::string_view{};
-      auto canceled = false;
-      try {
-         throw;
-      } catch (const forge::asio::exceptions::canceled&) {
-         canceled = true;
-      } catch (...) {
-      }
-      if (canceled) {
-         dlog("forge.db.store", "store composition canceled", ("event", "composition.canceled")
-              ("store", failed_store)("backend", failed_backend));
-      } else if (!stopping) {
-         elog("forge.db.store", "store composition failed", ("event", "composition.failed")
-              ("store", failed_store)("backend", failed_backend));
-      }
-      throw;
-   }
-   const auto owned_count = static_cast<std::size_t>(
-       std::ranges::count_if(pending, [](const auto& item) { return item.owns_driver; }));
-   dlog("forge.db.store", "store composition ready",
-        ("event", "composition.ready")("stores", pending.size())
-        ("owned_drivers", static_cast<std::uint64_t>(owned_count)));
-   co_return;
-}
 
 void plugin::impl::start() {
    const auto generation = lifecycle.snapshot().generation;
@@ -319,6 +182,15 @@ boost::asio::awaitable<void> plugin::impl::close() {
       auto lock = std::scoped_lock{mutex};
       if (shutdown_completed) {
          co_return;
+      }
+      // Ordinary busy-release remains unchanged for ordinary records. Strict
+      // claims instead retain the SAME backend and borrowed compute graph.
+      for (const auto& [_, record] : stores) {
+         if (record->activation && (!record->strict_closed || record->strict_running || record->activation_io)) {
+            if (record->strict_failure)
+               std::rethrow_exception(record->strict_failure);
+            FORGE_THROW_EXCEPTION(forge::db::core::exceptions::driver_busy, "strict activation owner is not drained");
+         }
       }
       owned.reserve(stores.size());
       retired.reserve(stores.size());

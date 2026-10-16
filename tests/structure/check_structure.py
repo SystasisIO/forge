@@ -25,21 +25,21 @@ PRIVATE_DECLARATION = re.compile(r"^\s*(?:class|struct|enum(?:\s+class)?)\s+([A-
 VM_WASM_INTERPRET_EXPORT = re.compile(r"\bFORGE_VM_WASM_INTERPRET_EXPORT\b")
 UNQUALIFIED_C_MEMORY = re.compile(r"(?<![:\w])(?:memcpy|memmove|memset|memcmp)\s*\(")
 LEGACY_VM_WASM_SOURCE_IDENTITIES = (
-   (re.compile(r"\bforge_vm_wasm(?!_interpret(?:_|\b))"), "legacy VM target identity"),
-   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!_interpret(?:_|\b))"), "legacy VM component identity"),
+   (re.compile(r"\bforge_vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM target identity"),
+   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM component identity"),
    (re.compile(r"\bForge::vm_wasm_softfloat_internal\b"), "legacy SoftFloat export identity"),
    (re.compile(r"forge/internal/vm_wasm/softfloat"), "legacy SoftFloat install path"),
-   (re.compile(r"forge\.vm\.wasm(?!\.interpret(?:\b|:))"), "legacy VM module identity"),
-   (re.compile(r"forge::vm::wasm(?!::interpret(?:\b|::))"), "legacy VM namespace identity"),
-   (re.compile(r"forge/vm/wasm/(?!interpret/)"), "legacy VM public include identity"),
-   (re.compile(r"\bFORGE_VM_WASM(?!_INTERPRET(?:_|\b))"), "legacy VM macro identity"),
+   (re.compile(r"forge\.vm\.wasm(?!(?:\.interpret|\.optimizing)(?:\b|:))"), "legacy VM module identity"),
+   (re.compile(r"forge::vm::wasm(?!(?:\:\:interpret|\:\:optimizing)(?:\b|::))"), "legacy VM namespace identity"),
+   (re.compile(r"forge/vm/wasm/(?!(?:interpret|optimizing)/)"), "legacy VM public include identity"),
+   (re.compile(r"\bFORGE_VM_WASM(?!(?:_INTERPRET|_OPTIMIZING)(?:_|\b))"), "legacy VM macro identity"),
 )
 LEGACY_VM_WASM_CMAKE_IDENTITIES = (
-   (re.compile(r"\bforge_vm_wasm(?!_interpret(?:_|\b))"), "legacy VM target identity"),
-   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!_interpret(?:_|\b))"), "legacy VM component identity"),
+   (re.compile(r"\bforge_vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM target identity"),
+   (re.compile(r"(?<![/A-Za-z0-9_])vm_wasm(?!(?:_interpret|_optimizing)(?:_|\b))"), "legacy VM component identity"),
    (re.compile(r"forge/internal/vm_wasm/softfloat"), "legacy SoftFloat install path"),
    (re.compile(r"libraries/vm/wasm/include"), "legacy VM include root"),
-   (re.compile(r"\bFORGE_VM_WASM(?!_INTERPRET(?:_|\b))"), "legacy VM macro identity"),
+   (re.compile(r"\bFORGE_VM_WASM(?!(?:_INTERPRET|_OPTIMIZING)(?:_|\b))"), "legacy VM macro identity"),
 )
 LEGACY_CONTRACT_TOOLING_SOURCE_IDENTITIES = (
    (re.compile(r"\bforge_contract_(?:abi|attributes|validation|manifest|testing)\b"), "legacy Contract Tooling target identity"),
@@ -1365,7 +1365,7 @@ def check_vm_wasm_interpret_boundaries(root: Path, errors: list[str]) -> None:
    if root_cmake.is_file() and stale_include_registration in root_cmake.read_text(errors="ignore"):
       errors.append(f"CMakeLists.txt: stale {stale_include_registration} registration")
 
-   unexpected_family_entries = {path.name for path in family.iterdir()} - {"interpret"}
+   unexpected_family_entries = {path.name for path in family.iterdir()} - {"interpret", "optimizing"}
    if unexpected_family_entries:
       errors.append(
          f"{family.relative_to(root)}: empty vm::wasm family root contains: "
@@ -1385,6 +1385,26 @@ def check_vm_wasm_interpret_boundaries(root: Path, errors: list[str]) -> None:
       cmake = (component / "CMakeLists.txt").read_text()
       if re.search(r"(?:FILE_SET|install\s*\()[^)]*details", cmake, re.DOTALL):
          errors.append(f"{details.relative_to(root)}: private VM headers must not be installed or exported")
+
+   # Private pairs use the shared layout/pairing checks. Only publishing them is
+   # forbidden; a details/ directory is not itself an installed/public surface.
+   private_path = re.compile(r"(?:\bdetails(?:[/\\]|\b)|\.[Hh][Xx][Xx]\b)")
+   whole_root = re.compile(r'(?:\blibraries/vm/wasm/interpret|\$\{CMAKE_CURRENT_SOURCE_DIR\})(?:[/\\])?(?=["\s>]|$)')
+   for cmake in (root_cmake, component / "CMakeLists.txt"):
+      if not cmake.is_file():
+         continue
+      source = re.sub(r"(?m)#.*$", "", cmake.read_text(errors="ignore"))
+      for command in re.finditer(r"\b(install|set|list|target_sources|target_include_directories)\s*\(([^)]*)\)",
+                                 source, flags=re.DOTALL | re.IGNORECASE):
+         name, arguments = command.group(1).lower(), command.group(2)
+         if name == "install" or (name in {"set", "list"} and "FORGE_INSTALL_INCLUDE_DIRS" in arguments):
+            if private_path.search(arguments) or whole_root.search(arguments):
+               errors.append(f"{cmake.relative_to(root)}: VM private source headers must not be installed")
+         elif name in {"target_sources", "target_include_directories"}:
+            sections = re.split(r"\b(PUBLIC|PRIVATE|INTERFACE)\b", arguments)
+            for visibility, content in zip(sections[1::2], sections[2::2]):
+               if visibility in {"PUBLIC", "INTERFACE"} and (private_path.search(content) or whole_root.search(content)):
+                  errors.append(f"{cmake.relative_to(root)}: VM private source headers must not be public usage requirements")
 
    include = component / "include" / "forge" / "vm" / "wasm" / "interpret"
    allowed_headers = {"host_function.hpp", "opcode_macros.hpp"}
@@ -1452,7 +1472,7 @@ def check_vm_wasm_interpret_identities(root: Path, files: list[Path], errors: li
 
 def check_contract_tooling_boundaries(root: Path, files: list[Path], errors: list[str]) -> None:
    family = root / "libraries" / "tooling"
-   expected_family_entries = {"CMakeLists.txt", "README.md", "abi", "attributes", "validation", "manifest", "testing"}
+   expected_family_entries = {"CMakeLists.txt", "README.md", "abi", "attributes", "validation", "manifest", "testing", "wasm_compiler"}
    if not family.is_dir():
       errors.append("libraries/tooling: Contract Tooling family root is missing")
       return
@@ -1710,6 +1730,7 @@ def check_chain_savanna_boundaries(root: Path, errors: list[str]) -> None:
       "include/forge/chain/savanna/types.cppm",
       "include/forge/chain/savanna/policy.cppm",
       "include/forge/chain/savanna/finality_core.cppm",
+      "include/forge/chain/savanna/finality_witness_limits.cppm",
       "include/forge/chain/savanna/qc.cppm",
       "include/forge/chain/savanna/vote.cppm",
       "include/forge/chain/savanna/vote_accumulator.cppm",

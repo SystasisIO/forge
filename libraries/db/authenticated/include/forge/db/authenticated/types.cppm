@@ -2,9 +2,11 @@ module;
 
 #include <boost/describe.hpp>
 #include <forge/raw/serialization.hpp>
+#include <boost/asio/awaitable.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -126,6 +128,49 @@ enum class proof_tree : std::uint8_t {
    changes,
 };
 
+// Checkpoint framing is independent of the authenticated hash schema.
+inline constexpr std::uint8_t checkpoint_format_version = 1;
+
+struct checkpoint_record {
+   proof_tree tree = proof_tree::state;
+   digest hash;
+   proof_sibling node;
+
+   bool operator==(const checkpoint_record&) const = default;
+};
+
+// Explicit policy is required: zero-initialized limits admit no checkpoint.
+struct checkpoint_limits {
+   std::uint64_t max_records = 0;
+   std::uint64_t max_encoded_bytes = 0;
+   std::uint64_t max_value_bytes = 0;
+   std::size_t max_frame_bytes = 0;
+   std::size_t max_working_bytes = 0;
+   std::uint32_t max_depth = 0;
+};
+
+[[nodiscard]] constexpr bool checkpoint_limits_are_valid(const checkpoint_limits& value) noexcept {
+   return value.max_records != 0U && value.max_encoded_bytes != 0U && value.max_value_bytes != 0U &&
+          value.max_value_bytes <= value.max_encoded_bytes && value.max_frame_bytes != 0U &&
+          value.max_frame_bytes <= max_framed_bytes && value.max_frame_bytes <= value.max_encoded_bytes &&
+          value.max_working_bytes >= value.max_frame_bytes && value.max_depth != 0U &&
+          value.max_depth <= hard_max_proof_depth;
+}
+
+struct checkpoint_summary {
+   root anchor;
+   std::uint64_t records = 0;
+   std::uint64_t leaves = 0;
+   std::uint64_t value_bytes = 0;
+   std::uint64_t encoded_bytes = 0;
+
+   bool operator==(const checkpoint_summary&) const = default;
+};
+
+using checkpoint_sink = std::function<boost::asio::awaitable<void>(checkpoint_record)>;
+using checkpoint_source = std::function<boost::asio::awaitable<std::optional<checkpoint_record>>()>;
+using checkpoint_verify = std::function<boost::asio::awaitable<void>(checkpoint_summary)>;
+
 struct range_request {
    std::optional<bytes> lower;
    std::optional<bytes> upper;
@@ -200,6 +245,9 @@ BOOST_DESCRIBE_STRUCT(mutation, (), (key, value))
 BOOST_DESCRIBE_STRUCT(root, (), (version, state_root, state_size, change_root, change_count))
 BOOST_DESCRIBE_STRUCT(proof_leaf, (), (key, value_hash, value))
 BOOST_DESCRIBE_STRUCT(proof_branch, (), (height, size, min_key, max_key, separator, left_hash, right_hash))
+BOOST_DESCRIBE_STRUCT(checkpoint_record, (), (tree, hash, node))
+BOOST_DESCRIBE_STRUCT(checkpoint_limits, (),
+                      (max_records, max_encoded_bytes, max_value_bytes, max_frame_bytes, max_working_bytes, max_depth))
 BOOST_DESCRIBE_STRUCT(proof_step, (), (child, height, subtree_size, min_key, max_key, separator, sibling))
 BOOST_DESCRIBE_STRUCT(point_proof, (), (anchor, key, terminal, path))
 BOOST_DESCRIBE_STRUCT(range_request, (), (lower, upper, limit, include_values, reverse))
@@ -210,3 +258,4 @@ BOOST_DESCRIBE_STRUCT(range_proof, (), (anchor, tree, request, nodes))
 
 FORGE_DECLARE_SERIALIZATION_PACK(forge::db::authenticated::point_proof)
 FORGE_DECLARE_SERIALIZATION_PACK(forge::db::authenticated::range_proof)
+FORGE_DECLARE_SERIALIZATION_PACK(forge::db::authenticated::checkpoint_record)

@@ -237,6 +237,27 @@ void require_finished(const bounded_stream& stream) {
    }
 }
 
+std::size_t node_wire_size(const proof_leaf& node) {
+   auto result = checked_add(std::size_t{1}, byte_array_wire_size(node.key.size()));
+   result = checked_add(result, digest::data_size());
+   return checked_add(result, optional_byte_array_wire_size(node.value));
+}
+
+std::size_t node_wire_size(const proof_branch& node) {
+   auto result = std::size_t{1U + sizeof(node.height) + sizeof(node.size)};
+   result = checked_add(result, byte_array_wire_size(node.min_key.size()));
+   result = checked_add(result, byte_array_wire_size(node.max_key.size()));
+   result = checked_add(result, byte_array_wire_size(node.separator.size()));
+   return checked_add(result, 2U * digest::data_size());
+}
+
+std::size_t node_wire_size(const range_inner& node) {
+   auto result = std::size_t{1U + sizeof(node.height) + sizeof(node.size)};
+   result = checked_add(result, byte_array_wire_size(node.min_key.size()));
+   result = checked_add(result, byte_array_wire_size(node.max_key.size()));
+   return checked_add(result, byte_array_wire_size(node.separator.size()));
+}
+
 } // namespace
 
 bytes encode(const point_proof& value) {
@@ -251,6 +272,65 @@ bytes encode(const point_proof& value) {
 bytes encode(const range_proof& value) {
    static_cast<void>(wire_size(value));
    return as_bytes(forge::raw::pack(value));
+}
+
+std::size_t wire_size(const checkpoint_record& value) {
+   if (value.tree != proof_tree::state && value.tree != proof_tree::changes) {
+      reject("authenticated checkpoint tree is invalid");
+   }
+   if (value.node.valueless_by_exception()) {
+      reject("authenticated checkpoint node has no value");
+   }
+   return std::visit(
+       [](const auto& node) {
+          using node_type = std::remove_cvref_t<decltype(node)>;
+          if constexpr (std::same_as<node_type, proof_leaf>) {
+             if (!node.value) {
+                reject("authenticated checkpoint leaf requires its value");
+             }
+          }
+          // The existing proof node codec owns the SAME bounded byte/count framing.
+          return checked_add(2U + digest::data_size(), node_wire_size(node));
+       },
+       value.node);
+}
+
+bytes encode(const checkpoint_record& value) {
+   const auto expected = wire_size(value);
+   auto result = bytes{};
+   result.reserve(expected);
+   result.push_back(static_cast<std::byte>(checkpoint_format_version));
+   const auto payload = forge::raw::pack(value);
+   for (const auto byte : payload) {
+      result.push_back(static_cast<std::byte>(byte));
+   }
+   return result;
+}
+
+checkpoint_record decode_checkpoint_record(std::span<const std::byte> value, const limits& node_bounds,
+                                            const checkpoint_limits& checkpoint_bounds) {
+   if (!limits_are_valid(node_bounds) || !checkpoint_limits_are_valid(checkpoint_bounds) ||
+       value.size() > checkpoint_bounds.max_frame_bytes || value.size() > checkpoint_bounds.max_encoded_bytes) {
+      reject_limit("authenticated checkpoint frame exceeds configured bounds");
+   }
+   auto stream = bounded_stream{value};
+   if (read_scalar<std::uint8_t>(stream) != checkpoint_format_version) {
+      reject("authenticated checkpoint format is unsupported");
+   }
+   auto result = checkpoint_record{};
+   result.tree = read_scalar<proof_tree>(stream);
+   if (result.tree != proof_tree::state && result.tree != proof_tree::changes) {
+      reject("authenticated checkpoint tree is invalid");
+   }
+   result.hash = read_scalar<digest>(stream);
+   // Bound a value before read_leaf allocates, not after constructing the DTO.
+   auto leaf_bounds = node_bounds;
+   leaf_bounds.max_value_bytes = static_cast<std::size_t>(
+       std::min<std::uint64_t>(node_bounds.max_value_bytes, checkpoint_bounds.max_value_bytes));
+   result.node = read_sibling(stream, leaf_bounds);
+   require_finished(stream);
+   static_cast<void>(wire_size(result));
+   return result;
 }
 
 std::size_t wire_size(const point_proof& value) {
@@ -279,25 +359,7 @@ std::size_t wire_size(const range_proof_node& value) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "authenticated range proof node has no value");
    }
    return std::visit(
-       [](const auto& node) {
-          using node_type = std::remove_cvref_t<decltype(node)>;
-          if constexpr (std::same_as<node_type, proof_branch>) {
-             auto result = std::size_t{1U + sizeof(node.height) + sizeof(node.size)};
-             result = checked_add(result, byte_array_wire_size(node.min_key.size()));
-             result = checked_add(result, byte_array_wire_size(node.max_key.size()));
-             result = checked_add(result, byte_array_wire_size(node.separator.size()));
-             return checked_add(result, 2U * digest::data_size());
-          } else if constexpr (std::same_as<node_type, proof_leaf>) {
-             auto result = checked_add(std::size_t{1}, byte_array_wire_size(node.key.size()));
-             result = checked_add(result, digest::data_size());
-             return checked_add(result, optional_byte_array_wire_size(node.value));
-          } else {
-             auto result = std::size_t{1U + sizeof(node.height) + sizeof(node.size)};
-             result = checked_add(result, byte_array_wire_size(node.min_key.size()));
-             result = checked_add(result, byte_array_wire_size(node.max_key.size()));
-             return checked_add(result, byte_array_wire_size(node.separator.size()));
-          }
-       },
+       [](const auto& node) { return node_wire_size(node); },
        value);
 }
 

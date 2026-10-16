@@ -34,6 +34,22 @@ BOOST_DESCRIBE_STRUCT(described_variant_config, (), (name, limit, access))
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(variant_test_suite)
+BOOST_AUTO_TEST_CASE(bool_scalar_to_variant_preserves_boolean_kind) {
+   const bool values[]{false, true};
+   for (const auto expected : values) {
+      BOOST_TEST_CONTEXT("value=" << expected) {
+         auto converted = forge::variant{"previous value"};
+         forge::to_variant(expected, converted);
+         BOOST_TEST(converted.is_bool());
+         BOOST_TEST(converted.as_bool() == expected);
+
+         auto restored = !expected;
+         forge::from_variant(converted, restored);
+         BOOST_TEST(restored == expected);
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(variant_portable_integer_construction_preserves_full_ranges) {
    const auto signed_long = forge::variant{std::numeric_limits<long>::min()};
    BOOST_REQUIRE(signed_long.is_int64());

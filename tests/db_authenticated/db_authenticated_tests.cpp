@@ -1,18 +1,30 @@
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/system/system_error.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <map>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,6 +35,7 @@
 
 import forge.asio.affine;
 import forge.asio.blocking;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.db.authenticated.codec;
 import forge.db.authenticated.exceptions;
@@ -33,6 +46,7 @@ import forge.db.authenticated.store;
 import forge.db.authenticated.transaction;
 import forge.db.authenticated.types;
 import forge.db.core.driver;
+import forge.db.core.exceptions;
 import forge.db.core.record;
 import forge.db.mdbx.driver;
 import forge.db.object.store;
@@ -1635,6 +1649,759 @@ BOOST_AUTO_TEST_CASE(authenticated_prune_preflights_all_retention_guards) {
    }());
 
    std::filesystem::remove_all(root_path);
+}
+
+BOOST_AUTO_TEST_CASE(authenticated_checkpoint_frame_reuses_bounded_codec_without_proof_dataset_cap) {
+   namespace auth = forge::db::authenticated;
+   const auto policy = auth::checkpoint_limits{
+       .max_records = 32U,
+       .max_encoded_bytes = 4096U,
+       .max_value_bytes = 4096U,
+       .max_frame_bytes = 1024U,
+       .max_working_bytes = 16384U,
+       .max_depth = 16U,
+   };
+   BOOST_CHECK(auth::checkpoint_limits_are_valid(policy));
+   BOOST_CHECK(!auth::checkpoint_limits_are_valid({}));
+   auto record = auth::checkpoint_record{
+       .tree = auth::proof_tree::changes,
+       .hash = hash_text("checkpoint-leaf"),
+       .node = auth::proof_leaf{.key = bytes("key"), .value_hash = hash_text("payload"), .value = bytes("payload")},
+   };
+   const auto encoded = auth::encode(record);
+   BOOST_CHECK_EQUAL(auth::wire_size(record), encoded.size());
+   BOOST_CHECK_EQUAL(std::to_integer<unsigned>(encoded.front()), auth::checkpoint_format_version);
+   auto node_bounds = auth::limits{};
+   // Dataset framing does not inherit the independent point/range proof-byte cap.
+   node_bounds.max_proof_bytes = 1U;
+   BOOST_CHECK(auth::decode_checkpoint_record(encoded, node_bounds, policy) == record);
+   for (auto size = std::size_t{}; size < encoded.size(); ++size) {
+      BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(
+                            std::span<const std::byte>{encoded}.first(size), node_bounds, policy)),
+                        auth::exceptions::invalid_proof);
+   }
+   auto changed = encoded;
+   changed.push_back(std::byte{});
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(changed, node_bounds, policy)),
+                     auth::exceptions::invalid_proof);
+   changed = encoded;
+   changed[0] = std::byte{2};
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(changed, node_bounds, policy)),
+                     auth::exceptions::invalid_proof);
+   changed = encoded;
+   changed[1] = std::byte{127};
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(changed, node_bounds, policy)),
+                     auth::exceptions::invalid_proof);
+   changed = encoded;
+   changed[2U + auth::digest::data_size()] = std::byte{127};
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(changed, node_bounds, policy)),
+                     auth::exceptions::invalid_proof);
+
+   auto exact = policy;
+   exact.max_frame_bytes = encoded.size();
+   BOOST_CHECK(auth::decode_checkpoint_record(encoded, node_bounds, exact) == record);
+   --exact.max_frame_bytes;
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(encoded, node_bounds, exact)),
+                     auth::exceptions::proof_limit_exceeded);
+   auto small = node_bounds;
+   small.max_value_bytes = 6U;
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(encoded, small, policy)),
+                     auth::exceptions::proof_limit_exceeded);
+   small = node_bounds;
+   small.max_key_bytes = 2U;
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(encoded, small, policy)),
+                     auth::exceptions::proof_limit_exceeded);
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(encoded, node_bounds, {})),
+                     auth::exceptions::proof_limit_exceeded);
+
+   std::get<auth::proof_leaf>(record.node).value = auth::bytes{};
+   BOOST_CHECK(auth::decode_checkpoint_record(auth::encode(record), node_bounds, policy) == record);
+   std::get<auth::proof_leaf>(record.node).value.reset();
+   BOOST_CHECK_THROW(static_cast<void>(auth::encode(record)), auth::exceptions::invalid_proof);
+   // Raw is only used to construct an intentionally invalid frame in this test.
+   const auto missing_payload = forge::raw::pack(record);
+   changed.assign(1U, static_cast<std::byte>(auth::checkpoint_format_version));
+   for (const auto byte : missing_payload)
+      changed.push_back(static_cast<std::byte>(byte));
+   BOOST_CHECK_THROW(static_cast<void>(auth::decode_checkpoint_record(changed, node_bounds, policy)),
+                     auth::exceptions::invalid_proof);
+
+   record.node = auth::proof_branch{
+       .height = 1U,
+       .size = 2U,
+       .min_key = bytes("a"),
+       .max_key = bytes("z"),
+       .separator = bytes("z"),
+       .left_hash = hash_text("a"),
+       .right_hash = hash_text("z"),
+   };
+   const auto branch = auth::encode(record);
+   BOOST_CHECK_EQUAL(auth::wire_size(record), branch.size());
+   BOOST_CHECK(auth::decode_checkpoint_record(branch, node_bounds, policy) == record);
+}
+
+BOOST_AUTO_TEST_CASE(authenticated_checkpoint_preserves_historical_state_changes_then_reopens_advances_and_prunes) {
+   namespace auth = forge::db::authenticated;
+   const auto source_path = make_test_root("forge_authenticated_checkpoint_source");
+   const auto target_path = make_test_root("forge_authenticated_checkpoint_target");
+   auto runtime = forge::asio::runtime{};
+   auto lane = forge::asio::affine::lane{};
+   const auto policy = auth::checkpoint_limits{.max_records = 4096U,
+                                               .max_encoded_bytes = 1U << 20U,
+                                               .max_value_bytes = 1U << 20U,
+                                               .max_frame_bytes = 1U << 16U,
+                                               .max_working_bytes = 8U << 20U,
+                                               .max_depth = 32U};
+   const auto settings = auth::store::config{.family = forge::db::core::family{"authenticated"},
+                                             .domain = "forge.test.checkpoint.v1",
+                                             .bounds = {.max_key_bytes = 128U, .max_value_bytes = 4096U}};
+   auto expected = auth::root{};
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto driver = co_await open_driver(source_path, lane);
+      auto source = auth::store{driver, settings};
+      {
+         auto active = co_await driver->begin_transaction();
+         auto joined = co_await source.join(active, 41U);
+         const auto mutations = std::vector{put("b", "B"), put("c", "C"), put("d", "D"), put("e", "E")};
+         static_cast<void>(co_await joined.stage(mutations));
+         co_await active.commit();
+      }
+      {
+         auto active = co_await driver->begin_transaction();
+         auto joined = co_await source.join(active, 42U);
+         const auto mutations = std::vector{put("a", "A"), erase("z")};
+         expected = (co_await joined.stage(mutations)).commitment;
+         co_await active.commit();
+      }
+      BOOST_CHECK_EQUAL(expected.state_size, 5U);
+      BOOST_CHECK_EQUAL(expected.change_count, 2U);
+      const auto proof_a = co_await source.prove(42U, bytes("a"));
+      const auto request = auth::range_request{.limit = 16U};
+      const auto state_proof = co_await source.prove_range(42U, request);
+      const auto changes_proof = co_await source.prove_range(42U, request, auth::proof_tree::changes);
+      // Five leaves distinguish history: retained split abc/de versus sorted bulk ab/cde.
+      auto target_driver = co_await open_driver(target_path, lane);
+      {
+         auto active = co_await target_driver->begin_transaction();
+         auto bulk = auth::store{target_driver, settings};
+         auto joined = co_await bulk.join(active, 42U);
+         const auto mutations = std::vector{put("a", "A"), put("b", "B"), put("c", "C"), put("d", "D"), put("e", "E")};
+         BOOST_CHECK((co_await joined.stage(mutations)).commitment.state_root != expected.state_root);
+         co_await active.rollback();
+      }
+      auto frames = std::make_shared<std::vector<auth::checkpoint_record>>();
+      auto pinned = co_await driver->begin_read();
+      // Source Store wrapper dies BEFORE lazy export starts; the captured impl/view remain.
+      auto pending = [&] {
+         auto temporary = source;
+         return temporary.export_checkpoint(
+             pinned, expected,
+             [frames](auth::checkpoint_record record) -> boost::asio::awaitable<void> {
+                frames->push_back(std::move(record));
+                co_return;
+             },
+             policy);
+      }();
+      // Change/delete/prune the live graph AFTER acquiring the exact export snapshot.
+      {
+         auto active = co_await driver->begin_transaction();
+         auto joined = co_await source.join(active, 43U);
+         const auto mutations = std::vector{put("f", "F"), erase("a")};
+         static_cast<void>(co_await joined.stage(mutations));
+         co_await active.commit();
+      }
+      {
+         auto active = co_await driver->begin_transaction();
+         static_cast<void>(co_await source.prune_through(active, 42U));
+         co_await active.commit();
+      }
+      const auto exported = co_await std::move(pending);
+      BOOST_CHECK(exported.anchor == expected);
+      BOOST_CHECK_EQUAL(exported.records, 12U); // 9 state + 3 exact historical changes nodes.
+      BOOST_CHECK_EQUAL(frames->size(), exported.records);
+      BOOST_REQUIRE_EQUAL(frames->size(), 12U);
+      const auto* historic_root = std::get_if<auth::proof_branch>(&(*frames)[8U].node);
+      BOOST_REQUIRE(historic_root != nullptr);
+      BOOST_CHECK((*frames)[8U].tree == auth::proof_tree::state);
+      BOOST_CHECK((*frames)[8U].hash == expected.state_root);
+      BOOST_CHECK(historic_root->separator == bytes("d"));
+      pinned = {};
+      BOOST_CHECK(!(co_await source.find_root(42U)));
+
+      {
+         auto target = auth::store{target_driver, settings};
+         auto active = co_await target_driver->begin_transaction();
+         auto joined = target.join_restore(active, expected, policy);
+         BOOST_CHECK(!joined.restored());
+         auto cursor = std::make_shared<std::pair<decltype(frames), std::size_t>>(frames, 0U);
+         const auto source_lifetime = std::weak_ptr{cursor};
+         auto read = auth::checkpoint_source{
+             [cursor = std::move(cursor)]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                if (cursor->second == cursor->first->size())
+                   co_return std::nullopt;
+                co_return (*cursor->first)[cursor->second++];
+             }};
+         auto verified = std::make_shared<bool>(false);
+         auto restoring = joined.restore_checkpoint(
+             std::move(read),
+             [verified, exported, source_lifetime](auth::checkpoint_summary summary) -> boost::asio::awaitable<void> {
+                BOOST_CHECK(source_lifetime.expired()); // Before metadata/ready, including libc++ SBO moves.
+                BOOST_CHECK(summary == exported);
+                *verified = true;
+                co_return;
+             });
+         read = {}; // The caller must also release any moved-from small-buffer source.
+         const auto restored = co_await std::move(restoring);
+         BOOST_CHECK(*verified);
+         BOOST_CHECK(restored == exported);
+         BOOST_REQUIRE(joined.restored());
+         BOOST_CHECK(*joined.restored() == expected);
+         BOOST_CHECK(!joined.staged());
+         co_await active.commit();
+         BOOST_REQUIRE(co_await target.earliest());
+         BOOST_CHECK(*(co_await target.earliest()) == expected);
+         BOOST_CHECK(*(co_await target.latest()) == expected);
+         BOOST_CHECK((co_await target.prove(42U, bytes("a"))) == proof_a);
+         BOOST_CHECK((co_await target.prove_range(42U, request)) == state_proof);
+         BOOST_CHECK((co_await target.prove_range(42U, request, auth::proof_tree::changes)) == changes_proof);
+         BOOST_CHECK(!(co_await target.find_root(41U)));
+         BOOST_CHECK_THROW(static_cast<void>(co_await target.get(41U, bytes("a"))),
+                           auth::exceptions::version_unavailable);
+      }
+      co_await target_driver->async_close();
+      target_driver.reset();
+      target_driver = co_await open_driver(target_path, lane);
+      {
+         auto target = auth::store{target_driver, settings};
+         BOOST_CHECK(*(co_await target.find_root(42U)) == expected);
+         auto active = co_await target_driver->begin_transaction();
+         auto joined = co_await target.join(active, 43U);
+         const auto mutations = std::vector{put("next", "N"), erase("a")};
+         static_cast<void>(co_await joined.stage(mutations));
+         co_await active.commit();
+         auto prune = co_await target_driver->begin_transaction();
+         static_cast<void>(co_await target.prune_through(prune, 42U));
+         co_await prune.commit();
+         BOOST_CHECK(!(co_await target.find_root(42U)));
+         BOOST_CHECK(text(*(co_await target.get(43U, bytes("next")))) == "N");
+         BOOST_CHECK(text(*(co_await target.get(43U, bytes("b")))) == "B");
+         BOOST_CHECK(!(co_await target.get(43U, bytes("a"))));
+      }
+      co_await target_driver->async_close();
+      target_driver.reset();
+      co_await driver->async_close();
+      driver.reset();
+      co_await lane.shutdown();
+   }());
+   std::filesystem::remove_all(source_path);
+   std::filesystem::remove_all(target_path);
+}
+
+BOOST_AUTO_TEST_CASE(authenticated_checkpoint_failure_is_sticky_and_caught_errors_cannot_commit_partial_records) {
+   namespace auth = forge::db::authenticated;
+   namespace core = forge::db::core;
+   const auto source_path = make_test_root("forge_authenticated_checkpoint_fail_source");
+   const auto target_path = make_test_root("forge_authenticated_checkpoint_fail_target");
+   auto runtime = forge::asio::runtime{};
+   auto lane = forge::asio::affine::lane{};
+   const auto policy = auth::checkpoint_limits{.max_records = 4096U,
+                                               .max_encoded_bytes = 1U << 20U,
+                                               .max_value_bytes = 1U << 20U,
+                                               .max_frame_bytes = 1U << 16U,
+                                               .max_working_bytes = 8U << 20U,
+                                               .max_depth = 32U};
+   const auto settings = auth::store::config{.family = core::family{"authenticated"},
+                                             .domain = "forge.test.checkpoint.fail.v1",
+                                             .bounds = {.max_key_bytes = 128U, .max_value_bytes = 4096U}};
+   class finalization_veto final : public core::transaction_participant {
+    public:
+      explicit finalization_veto(std::shared_ptr<bool> verified) : verified_{std::move(verified)} {}
+      std::string_view name() const noexcept override {
+         return "test.checkpoint.finalization-veto";
+      }
+      core::mutation_policy classify(const core::family&, const core::record_key&,
+                                     core::mutation_kind) const noexcept override {
+         return *verified_ ? core::mutation_policy::forbidden : core::mutation_policy::inherit;
+      }
+
+    private:
+      std::shared_ptr<bool> verified_;
+   };
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto driver = co_await open_driver(source_path, lane);
+      auto source = auth::store{driver, settings};
+      {
+         auto active = co_await driver->begin_transaction();
+         auto joined = co_await source.join(active, 42U);
+         const auto changes = std::vector{put("a", "A"), put("b", "B"), erase("z")};
+         static_cast<void>(co_await joined.stage(changes));
+         co_await active.commit();
+      }
+      const auto expected = *(co_await source.latest());
+      auto frames = std::make_shared<std::vector<auth::checkpoint_record>>();
+      static_cast<void>(co_await source.export_checkpoint(
+          co_await driver->begin_read(), expected,
+          [frames](auth::checkpoint_record value) -> boost::asio::awaitable<void> {
+             frames->push_back(std::move(value));
+             co_return;
+          },
+          policy));
+      BOOST_REQUIRE(frames->size() > 3U);
+      auto target_driver = co_await open_driver(target_path, lane);
+      auto target = auth::store{target_driver, settings};
+      for (auto scenario = 0U; scenario < 23U; ++scenario) {
+         auto tape = std::make_shared<std::vector<auth::checkpoint_record>>(*frames);
+         auto budget = policy;
+         if (scenario == 0U)
+            tape->pop_back();
+         if (scenario == 1U)
+            tape->front().tree = auth::proof_tree::changes;
+         if (scenario == 2U)
+            std::get<auth::proof_leaf>(tape->front().node).value->push_back(std::byte{7});
+         if (scenario == 3U)
+            tape->front().hash = hash_text("not-the-node");
+         if (scenario == 4U) {
+            for (auto& frame : *tape) {
+               if (auto* branch = std::get_if<auth::proof_branch>(&frame.node)) {
+                  ++branch->height;
+                  break;
+               }
+            }
+         }
+         if (scenario == 5U)
+            std::swap((*tape)[0], (*tape)[1]);
+         if (scenario == 6U)
+            (*tape)[1] = (*tape)[0];
+         if (scenario == 7U)
+            tape->push_back(tape->front());
+         if (scenario == 10U)
+            tape->clear();
+         if (scenario == 11U)
+            budget.max_records = 1U;
+         if (scenario == 12U) {
+            budget.max_encoded_bytes = 512U;
+            budget.max_frame_bytes = 512U;
+            budget.max_value_bytes = 512U;
+         }
+         if (scenario == 13U)
+            budget.max_working_bytes = budget.max_frame_bytes;
+         if (scenario >= 15U && scenario <= 18U) {
+            for (auto& frame : *tape) {
+               if (auto* branch = std::get_if<auth::proof_branch>(&frame.node)) {
+                  if (scenario == 15U)
+                     ++branch->size;
+                  if (scenario == 16U)
+                     branch->separator = bytes("wrong");
+                  if (scenario == 17U)
+                     branch->min_key = bytes("wrong");
+                  if (scenario == 18U)
+                     branch->left_hash = hash_text("wrong-child");
+                  break;
+               }
+            }
+         }
+         if (scenario == 19U) {
+            for (auto& frame : *tape) {
+               if (frame.tree == auth::proof_tree::changes) {
+                  if (auto* leaf = std::get_if<auth::proof_leaf>(&frame.node)) {
+                     leaf->value = auth::bytes{std::byte{2}};
+                     leaf->value_hash = auth::hash_value(*leaf->value);
+                     frame.hash = auth::hash_leaf(auth::canonical_tree_domain(settings.domain, frame.tree), leaf->key,
+                                                  leaf->value_hash);
+                     break;
+                  }
+               }
+            }
+         }
+         if (scenario == 20U)
+            tape->insert(tape->begin() + 1, tape->front());
+         if (scenario == 21U)
+            budget.max_value_bytes = 1U;
+         if (scenario == 22U)
+            budget.max_depth = 1U;
+         auto active = co_await target_driver->begin_transaction();
+         if (scenario == 11U || scenario == 13U) {
+            // Invalid total policy is rejected synchronously before guard/frame
+            // publication or any data loading. The untouched transaction is usable.
+            BOOST_CHECK_THROW(static_cast<void>(target.join_restore(active, expected, budget)),
+                              auth::exceptions::proof_limit_exceeded);
+            co_await active.commit();
+            continue;
+         }
+         auto joined = target.join_restore(active, expected, budget);
+         auto cursor = std::make_shared<std::size_t>(0U);
+         auto verified = std::make_shared<bool>(false);
+         const auto injected = std::make_exception_ptr(std::runtime_error{"owned checkpoint callback failure"});
+         if (scenario == 14U)
+            active.attach_participant(std::make_shared<finalization_veto>(verified));
+         auto failed = false;
+         auto original_error = std::exception_ptr{};
+         try {
+            static_cast<void>(co_await joined.restore_checkpoint(
+                [tape, cursor, scenario, injected]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                   if (scenario == 8U && *cursor == 3U)
+                      std::rethrow_exception(injected);
+                   if (*cursor == tape->size())
+                      co_return std::nullopt;
+                   co_return (*tape)[(*cursor)++];
+                },
+                [verified, scenario, injected](auth::checkpoint_summary) -> boost::asio::awaitable<void> {
+                   *verified = true;
+                   if (scenario == 9U)
+                      std::rethrow_exception(injected);
+                   co_return;
+                }));
+         } catch (...) {
+            failed = true;
+            original_error = std::current_exception();
+         }
+         BOOST_REQUIRE(failed);
+         if (scenario == 8U || scenario == 9U)
+            BOOST_CHECK(original_error == injected);
+         BOOST_CHECK(!joined.restored());
+         BOOST_CHECK_THROW(static_cast<void>(joined.restore_checkpoint({}, {})), auth::exceptions::invalid_version);
+         if (scenario == 9U || scenario == 14U)
+            BOOST_CHECK(*verified);
+         BOOST_CHECK_THROW(co_await active.commit(), auth::exceptions::transaction_not_staged);
+         BOOST_CHECK_THROW(co_await active.commit(), core::exceptions::transaction_rollback_only);
+         co_await active.rollback();
+         auto check = co_await target_driver->begin_read();
+         BOOST_CHECK((co_await check.scan_page(settings.family, core::record_range{.has_end = false}, {.limit = 1U}))
+                         .entries.empty());
+      }
+      // Same native target is reusable after explicit whole rollback, not via a
+      // savepoint or replacement participant on a poisoned Core transaction.
+      {
+         auto active = co_await target_driver->begin_transaction();
+         auto joined = target.join_restore(active, expected, policy);
+         auto cursor = std::make_shared<std::size_t>(0U);
+         static_cast<void>(co_await joined.restore_checkpoint(
+             [frames, cursor]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                if (*cursor == frames->size())
+                   co_return std::nullopt;
+                co_return (*frames)[(*cursor)++];
+             },
+             [](auth::checkpoint_summary) -> boost::asio::awaitable<void> { co_return; }));
+         co_await active.commit();
+      }
+      BOOST_CHECK(*(co_await target.latest()) == expected);
+      co_await target_driver->async_close();
+      target_driver.reset();
+      co_await driver->async_close();
+      driver.reset();
+      co_await lane.shutdown();
+   }());
+   std::filesystem::remove_all(source_path);
+   std::filesystem::remove_all(target_path);
+}
+
+BOOST_AUTO_TEST_CASE(authenticated_checkpoint_pending_guard_denies_lazy_drop_savepoint_stage_and_reentrant_escape) {
+   namespace auth = forge::db::authenticated;
+   namespace core = forge::db::core;
+   const auto path = make_test_root("forge_authenticated_checkpoint_guard");
+   const auto foreign_path = make_test_root("forge_authenticated_checkpoint_foreign");
+   auto runtime = forge::asio::runtime{};
+   auto lane = forge::asio::affine::lane{};
+   const auto policy = auth::checkpoint_limits{.max_records = 32U,
+                                               .max_encoded_bytes = 4096U,
+                                               .max_value_bytes = 4096U,
+                                               .max_frame_bytes = 1024U,
+                                               .max_working_bytes = 1U << 20U,
+                                               .max_depth = 16U};
+   const auto settings = auth::store::config{.family = core::family{"authenticated"},
+                                             .domain = "forge.test.checkpoint.guard.v1",
+                                             .bounds = {.max_key_bytes = 128U, .max_value_bytes = 4096U}};
+   const auto empty = auth::root{
+       .version = 42U,
+       .state_root = auth::hash_empty(auth::canonical_tree_domain(settings.domain, auth::proof_tree::state)),
+       .change_root = auth::hash_empty(auth::canonical_tree_domain(settings.domain, auth::proof_tree::changes))};
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto driver = co_await open_driver(path, lane);
+      auto foreign = co_await open_driver(foreign_path, lane);
+      auto target = auth::store{driver, settings};
+      {
+         auto active = co_await foreign->begin_transaction();
+         BOOST_CHECK_THROW(static_cast<void>(target.join_restore(active, empty, policy)),
+                           auth::exceptions::invalid_store);
+         co_await active.commit();
+         BOOST_CHECK_THROW(static_cast<void>(co_await target.export_checkpoint(
+                               co_await foreign->begin_read(), empty,
+                               [](auth::checkpoint_record) -> boost::asio::awaitable<void> { co_return; }, policy)),
+                           auth::exceptions::invalid_store);
+      }
+      for (auto scenario = 0U; scenario < 7U; ++scenario) {
+         auto active = co_await driver->begin_transaction();
+         auto joined = std::make_shared<auth::transaction>(target.join_restore(active, empty, policy));
+         if (scenario == 0U)
+            joined.reset();
+         if (scenario == 1U)
+            BOOST_CHECK_THROW(static_cast<void>(co_await active.create_savepoint()), auth::exceptions::invalid_version);
+         if (scenario == 2U)
+            BOOST_CHECK_THROW(static_cast<void>(co_await joined->preview({})), auth::exceptions::invalid_version);
+         if (scenario == 3U)
+            BOOST_CHECK_THROW(static_cast<void>(co_await joined->stage({})), auth::exceptions::invalid_version);
+         if (scenario == 4U) {
+            auto called = std::make_shared<bool>(false);
+            {
+               auto abandoned = joined->restore_checkpoint(
+                   [called]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                      *called = true;
+                      co_return std::nullopt;
+                   },
+                   [](auth::checkpoint_summary) -> boost::asio::awaitable<void> { co_return; });
+            }
+            BOOST_CHECK(!*called);
+         }
+         if (scenario == 5U) {
+            BOOST_CHECK_THROW(
+                static_cast<void>(co_await joined->restore_checkpoint(
+                    []() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> { co_return std::nullopt; },
+                    [joined](auth::checkpoint_summary) -> boost::asio::awaitable<void> {
+                       BOOST_CHECK_THROW(static_cast<void>(co_await joined->preview({})),
+                                         auth::exceptions::invalid_version);
+                       co_return; // Catching the inner error MUST NOT restore eligibility.
+                    })),
+                auth::exceptions::invalid_version);
+         }
+         if (scenario == 6U) {
+            static_cast<void>(co_await joined->restore_checkpoint(
+                []() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> { co_return std::nullopt; },
+                [](auth::checkpoint_summary) -> boost::asio::awaitable<void> { co_return; }));
+            BOOST_REQUIRE(joined->restored());
+            BOOST_CHECK_THROW(static_cast<void>(co_await joined->preview({})), auth::exceptions::invalid_version);
+            BOOST_CHECK(!joined->restored());
+         }
+         BOOST_CHECK_THROW(co_await active.commit(), auth::exceptions::transaction_not_staged);
+         BOOST_CHECK_THROW(co_await active.commit(), core::exceptions::transaction_rollback_only);
+         co_await active.rollback();
+         auto check = co_await driver->begin_read();
+         BOOST_CHECK((co_await check.scan_page(settings.family, core::record_range{.has_end = false}, {.limit = 1U}))
+                         .entries.empty());
+      }
+      {
+         auto objects = co_await forge::db::object::store::open(driver);
+         auto revisions = co_await forge::db::revision::store::open(driver, objects);
+         for (auto order = 0U; order < 4U; ++order) {
+            auto active = co_await driver->begin_transaction();
+            auto joined = target.join_restore(active, empty, policy);
+            auto attached = std::make_shared<bool>(false);
+            if (order == 0U) {
+               static_cast<void>(co_await revisions.join(active));
+               *attached = true;
+            }
+            auto restoring = joined.restore_checkpoint(
+                [&active, &revisions, attached,
+                 order]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                   if (order == 2U) {
+                      static_cast<void>(co_await revisions.join(active));
+                      *attached = true;
+                   }
+                   co_return std::nullopt;
+                },
+                [&active, &revisions, attached, order](auth::checkpoint_summary) -> boost::asio::awaitable<void> {
+                   if (order == 3U) {
+                      static_cast<void>(co_await revisions.join(active));
+                      *attached = true;
+                   }
+                   co_return;
+                });
+            if (order == 1U) {
+               static_cast<void>(co_await revisions.join(active));
+               *attached = true;
+            }
+            if (order < 2U) {
+               BOOST_CHECK_THROW(static_cast<void>(co_await std::move(restoring)), auth::exceptions::invalid_store);
+            } else {
+               BOOST_CHECK_THROW(static_cast<void>(co_await std::move(restoring)),
+                                 core::exceptions::mutation_forbidden);
+            }
+            BOOST_CHECK(*attached);
+            BOOST_CHECK(!joined.restored());
+            BOOST_CHECK_THROW(co_await active.commit(), auth::exceptions::transaction_not_staged);
+            BOOST_CHECK_THROW(co_await active.commit(), core::exceptions::transaction_rollback_only);
+            co_await active.rollback();
+            auto check = co_await driver->begin_read();
+            BOOST_CHECK((co_await check.scan_page(settings.family, core::record_range{.has_end = false}, {.limit = 1U}))
+                            .entries.empty());
+         }
+      }
+      for (auto occupied = 0U; occupied < 2U; ++occupied) {
+         const auto occupied_path = make_test_root("forge_authenticated_checkpoint_occupied");
+         auto occupied_driver = co_await open_driver(occupied_path, lane);
+         auto occupied_target = auth::store{occupied_driver, settings};
+         {
+            auto active = co_await occupied_driver->begin_transaction();
+            if (occupied == 0U) {
+               // An unknown record anywhere in the dedicated family must veto restore.
+               co_await active.put(settings.family, core::record_key{{std::byte{0xff}}}, bytes("not-a-checkpoint"));
+            } else {
+               auto other_settings = settings;
+               other_settings.domain += ".other";
+               auto other_namespace = auth::store{occupied_driver, std::move(other_settings)};
+               auto joined = co_await other_namespace.join(active, 1U);
+               const auto mutations = std::vector{put("other", "namespace")};
+               static_cast<void>(co_await joined.stage(mutations));
+            }
+            co_await active.commit();
+         }
+         auto check = co_await occupied_driver->begin_read();
+         const auto before =
+             co_await check.scan_page(settings.family, core::record_range{.has_end = false}, {.limit = 64U});
+         BOOST_REQUIRE(!before.entries.empty());
+         BOOST_REQUIRE(!before.next);
+         check = {};
+         auto callbacks = std::make_shared<unsigned>(0U);
+         {
+            auto active = co_await occupied_driver->begin_transaction();
+            auto joined = occupied_target.join_restore(active, empty, policy);
+            BOOST_CHECK_THROW(static_cast<void>(co_await joined.restore_checkpoint(
+                                  [callbacks]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                                     ++*callbacks;
+                                     co_return std::nullopt;
+                                  },
+                                  [callbacks](auth::checkpoint_summary) -> boost::asio::awaitable<void> {
+                                     ++*callbacks;
+                                     co_return;
+                                  })),
+                              auth::exceptions::invalid_store);
+            BOOST_CHECK(!joined.restored());
+            BOOST_CHECK_THROW(co_await active.commit(), auth::exceptions::transaction_not_staged);
+            BOOST_CHECK_THROW(co_await active.commit(), core::exceptions::transaction_rollback_only);
+            co_await active.rollback();
+         }
+         BOOST_CHECK_EQUAL(*callbacks, 0U);
+         check = co_await occupied_driver->begin_read();
+         const auto after =
+             co_await check.scan_page(settings.family, core::record_range{.has_end = false}, {.limit = 64U});
+         auto unchanged = before.next == after.next && before.entries.size() == after.entries.size();
+         for (auto index = std::size_t{}; index < std::min(before.entries.size(), after.entries.size()); ++index) {
+            unchanged &= before.entries[index].key == after.entries[index].key &&
+                         before.entries[index].value == after.entries[index].value;
+         }
+         BOOST_CHECK(unchanged);
+         check = {};
+         BOOST_CHECK(!(co_await occupied_target.latest()));
+         co_await occupied_driver->async_close();
+         occupied_driver.reset();
+         std::filesystem::remove_all(occupied_path);
+      }
+      {
+         auto active = co_await driver->begin_transaction();
+         auto joined = co_await target.join(active, 1U);
+         const auto mutations = std::vector{put("occupied", "value")};
+         static_cast<void>(co_await joined.stage(mutations));
+         co_await active.commit();
+      }
+      const auto original = *(co_await target.latest());
+      {
+         auto active = co_await driver->begin_transaction();
+         auto joined = target.join_restore(active, empty, policy);
+         BOOST_CHECK_THROW(
+             static_cast<void>(co_await joined.restore_checkpoint(
+                 []() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> { co_return std::nullopt; },
+                 [](auth::checkpoint_summary) -> boost::asio::awaitable<void> { co_return; })),
+             auth::exceptions::invalid_store);
+         BOOST_CHECK_THROW(co_await active.commit(), auth::exceptions::transaction_not_staged);
+         co_await active.rollback();
+      }
+      BOOST_CHECK(*(co_await target.latest()) == original);
+      co_await driver->async_close();
+      co_await foreign->async_close();
+      driver.reset();
+      foreign.reset();
+      co_await lane.shutdown();
+   }());
+   std::filesystem::remove_all(path);
+   std::filesystem::remove_all(foreign_path);
+}
+
+BOOST_AUTO_TEST_CASE(authenticated_checkpoint_cooperative_cancel_is_drained_before_caught_commit_is_rejected) {
+   namespace auth = forge::db::authenticated;
+   namespace core = forge::db::core;
+   const auto path = make_test_root("forge_authenticated_checkpoint_cancel");
+   auto runtime = forge::asio::runtime{}; // One IO worker serializes the cancellation signal/slot.
+   auto lane = forge::asio::affine::lane{};
+   const auto policy = auth::checkpoint_limits{.max_records = 32U,
+                                               .max_encoded_bytes = 4096U,
+                                               .max_value_bytes = 4096U,
+                                               .max_frame_bytes = 1024U,
+                                               .max_working_bytes = 1U << 20U,
+                                               .max_depth = 16U};
+   const auto settings = auth::store::config{.family = core::family{"authenticated"},
+                                             .domain = "forge.test.checkpoint.cancel.v1",
+                                             .bounds = {.max_key_bytes = 128U, .max_value_bytes = 4096U}};
+   const auto empty = auth::root{
+       .version = 42U,
+       .state_root = auth::hash_empty(auth::canonical_tree_domain(settings.domain, auth::proof_tree::state)),
+       .change_root = auth::hash_empty(auth::canonical_tree_domain(settings.domain, auth::proof_tree::changes))};
+   struct state {
+      forge::asio::notification entered;
+      forge::asio::notification completed;
+      std::atomic_bool source_entered = false;
+      std::atomic_bool terminal = false;
+      std::exception_ptr error;
+      std::shared_ptr<core::transaction> active;
+      std::shared_ptr<auth::transaction> joined;
+   };
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto driver = co_await open_driver(path, lane);
+      auto target = auth::store{driver, settings};
+      auto owned = std::make_shared<state>();
+      owned->active = std::make_shared<core::transaction>(co_await driver->begin_transaction());
+      owned->joined = std::make_shared<auth::transaction>(target.join_restore(*owned->active, empty, policy));
+      auto cancellation = boost::asio::cancellation_signal{};
+      const auto entered_epoch = owned->entered.epoch();
+      const auto completed_epoch = owned->completed.epoch();
+      boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
+                            owned->joined->restore_checkpoint(
+                                [owned]() -> boost::asio::awaitable<std::optional<auth::checkpoint_record>> {
+                                   auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+                                   timer.expires_after(std::chrono::seconds{1});
+                                   owned->source_entered.store(true, std::memory_order_release);
+                                   owned->entered.notify();
+                                   co_await timer.async_wait(boost::asio::use_awaitable);
+                                   co_return std::nullopt;
+                                },
+                                [](auth::checkpoint_summary) -> boost::asio::awaitable<void> { co_return; }),
+                            boost::asio::bind_cancellation_slot(
+                                cancellation.slot(), [owned](std::exception_ptr error, auth::checkpoint_summary) {
+                                   owned->error = error;
+                                   owned->terminal.store(true, std::memory_order_release);
+                                   owned->completed.notify();
+                                }));
+      static_cast<void>(co_await owned->entered.async_wait_until(entered_epoch, std::chrono::steady_clock::now() +
+                                                                                    std::chrono::seconds{2}));
+      cancellation.emit(boost::asio::cancellation_type::terminal);
+      // Source has its own finite one-second timer even if cancellation is broken.
+      // Heap-owned Core/guard remain retained by the terminal handler until it drains.
+      static_cast<void>(co_await owned->completed.async_wait_until(completed_epoch, std::chrono::steady_clock::now() +
+                                                                                        std::chrono::seconds{3}));
+      if (!owned->terminal.load(std::memory_order_acquire)) {
+         // Test-only fail-fast: never unwind runtime/lane owners with an unjoined child.
+         std::terminate();
+      }
+      BOOST_REQUIRE(owned->terminal.load(std::memory_order_acquire));
+      BOOST_CHECK(owned->source_entered.load(std::memory_order_acquire));
+      BOOST_REQUIRE(owned->error);
+      auto cancelled = false;
+      try {
+         std::rethrow_exception(owned->error);
+      } catch (const boost::system::system_error& error) {
+         cancelled = error.code() == boost::asio::error::operation_aborted;
+      }
+      BOOST_CHECK(cancelled);
+      BOOST_CHECK(!owned->joined->restored());
+      BOOST_CHECK_THROW(co_await owned->active->commit(), auth::exceptions::transaction_not_staged);
+      BOOST_CHECK_THROW(co_await owned->active->commit(), core::exceptions::transaction_rollback_only);
+      co_await owned->active->rollback();
+      owned->joined.reset();
+      owned->active.reset();
+      BOOST_CHECK(!(co_await target.latest()));
+      co_await driver->async_close();
+      driver.reset();
+      co_await lane.shutdown();
+   }());
+   std::filesystem::remove_all(path);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

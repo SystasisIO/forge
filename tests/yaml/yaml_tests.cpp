@@ -75,6 +75,26 @@ template <> struct forge::schema::rules<forge_yaml_tests::long_double_config> {
 
 BOOST_AUTO_TEST_SUITE(yaml_codec_tests)
 
+BOOST_AUTO_TEST_CASE(yaml_scalar_bool_writer_preserves_boolean_kind_and_roundtrip) {
+   const bool values[]{false, true};
+   for (const auto expected : values) {
+      BOOST_TEST_CONTEXT("value=" << expected) {
+         const auto written = forge::codec::yaml::write(expected);
+         BOOST_REQUIRE(written.ok());
+         BOOST_TEST(written.text == (expected ? "true" : "false"));
+
+         const auto parsed = forge::codec::yaml::read_value(written.text);
+         BOOST_REQUIRE(parsed.ok());
+         BOOST_REQUIRE(parsed.value.is_bool());
+         BOOST_TEST(parsed.value.as_bool() == expected);
+
+         const auto restored = forge::codec::yaml::read<bool>(written.text);
+         BOOST_REQUIRE(restored.ok());
+         BOOST_TEST(restored.value == expected);
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(yaml_schema_writer_rejects_long_double_without_narrowing) {
    const auto written = forge::codec::yaml::write(forge_yaml_tests::long_double_config{.value = 1.0L});
 

@@ -16,22 +16,12 @@ export import forge.chain.protocol.audit;
 export import forge.chain.protocol.block;
 export import forge.chain.savanna.admission;
 export import forge.chain.savanna.checkpoint;
+export import forge.chain.savanna.finality_witness_limits;
 
 export namespace forge::chain::savanna {
 
 inline constexpr auto finality_witness_scheme = std::string_view{"spine.savanna.finality"};
 inline constexpr auto finality_witness_version = std::uint32_t{1};
-inline constexpr auto finality_witness_hard_max_blocks = std::uint32_t{4'096};
-inline constexpr auto finality_witness_hard_max_producer_slots = std::uint32_t{65'536};
-inline constexpr auto finality_witness_hard_max_bytes = std::uint32_t{8U << 20U};
-
-struct finality_witness_limits {
-   // Also bound the retained roots and canonical bytes of each trusted checkpoint.
-   std::uint32_t max_blocks = finality_witness_hard_max_blocks;
-   std::uint32_t max_producer_slots = finality_witness_hard_max_producer_slots;
-   std::uint32_t max_bytes = finality_witness_hard_max_bytes;
-};
-
 struct finality_witness_record {
    forge::chain::protocol::signed_block_header header;
    forge::chain::protocol::extensions block_extensions;
@@ -124,7 +114,6 @@ void verify_finality_ancestry_witness(const finality_trust& trust, const forge::
                                       std::span<const forge::chain::protocol::state_anchor> intermediate,
                                       finality_witness_limits limits = {});
 
-BOOST_DESCRIBE_STRUCT(finality_witness_limits, (), (max_blocks, max_producer_slots, max_bytes))
 BOOST_DESCRIBE_STRUCT(finality_witness_record, (), (header, block_extensions, action_receipt_root))
 BOOST_DESCRIBE_STRUCT(finality_witness, (), (chain, trusted_bootstrap, records))
 BOOST_DESCRIBE_STRUCT(finality_genesis_bootstrap, (), (configuration, commitment))

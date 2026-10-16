@@ -585,6 +585,10 @@ void from_variant(const variant& var, variant& vo) {
    vo = var;
 }
 
+void to_variant(const bool& var, variant& vo) {
+   vo = variant{var};
+}
+
 void to_variant(const uint8_t& var, variant& vo) {
    vo = uint64_t(var);
 }

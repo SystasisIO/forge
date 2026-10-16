@@ -3,6 +3,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>

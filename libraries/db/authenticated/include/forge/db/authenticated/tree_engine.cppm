@@ -116,6 +116,18 @@ boost::asio::awaitable<void> retain_root(get_record_fn get, put_record_fn put, e
                                          const digest& hash);
 boost::asio::awaitable<void> release_root(get_record_fn get, put_record_fn put, const digest& hash);
 
+void validate_checkpoint_policy(std::string_view domain, const root& expected, const limits& node_bounds,
+                                const checkpoint_limits& checkpoint_bounds);
+boost::asio::awaitable<checkpoint_summary> export_checkpoint_graphs(std::string_view domain, root expected,
+                                                                    get_record_fn get, checkpoint_sink sink,
+                                                                    limits node_bounds,
+                                                                    checkpoint_limits checkpoint_bounds);
+boost::asio::awaitable<checkpoint_summary> restore_checkpoint_graphs(std::string_view domain, root expected,
+                                                                     get_record_fn get, put_record_fn put,
+                                                                     erase_record_fn erase, checkpoint_source source,
+                                                                     limits node_bounds,
+                                                                     checkpoint_limits checkpoint_bounds);
+
 struct garbage_result {
    std::uint64_t nodes = 0;
    std::uint64_t values = 0;

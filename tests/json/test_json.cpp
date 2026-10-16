@@ -213,6 +213,33 @@ template <> struct forge::schema::rules<forge_json_tests::exact_dotted_schema_pa
 
 BOOST_AUTO_TEST_SUITE(json_codec_tests)
 
+BOOST_AUTO_TEST_CASE(json_scalar_bool_writer_preserves_literals_and_strict_roundtrip) {
+   const auto options = forge::codec::json::read_options{
+       .described_records = forge::codec::json::described_record_policy::exact,
+   };
+   const bool values[]{false, true};
+   for (const auto expected : values) {
+      BOOST_TEST_CONTEXT("value=" << expected) {
+         const auto encoded = forge::codec::json::write(expected);
+         BOOST_REQUIRE(encoded.ok());
+         BOOST_TEST(encoded.text == (expected ? "true" : "false"));
+
+         const auto decoded = forge::codec::json::read<bool>(encoded.text, options);
+         BOOST_TEST(decoded.ok());
+         if (decoded.ok()) {
+            BOOST_TEST(decoded.value == expected);
+         }
+      }
+   }
+
+   for (const auto* json : {"0", "1", "\"true\"", "null"}) {
+      BOOST_TEST_CONTEXT("invalid bool=" << json) {
+         const auto decoded = forge::codec::json::read<bool>(json, options);
+         BOOST_TEST(!decoded.ok());
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(json_schema_writer_rejects_long_double_without_narrowing) {
    const auto input = forge_json_tests::exact_long_double_record{.value = 1.0L};
    const auto written = forge::codec::json::write(input);

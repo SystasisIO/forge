@@ -384,6 +384,206 @@ boost::asio::awaitable<void> decrement_reference(get_record_fn get, put_record_f
    }
 }
 
+// Shared by ordinary persistence and fresh checkpoint restoration. Reference
+// metadata is always owner-built, never supplied by the checkpoint.
+boost::asio::awaitable<void> persist_value_record(const get_record_fn& get, const put_record_fn& put,
+                                                  const digest& hash, const bytes& value) {
+   const auto content_key = value_key(hash);
+   const auto reference_key = value_reference_key(hash);
+   const auto existing = co_await read_record(get, content_key);
+   if (existing) {
+      if (*existing != value || !(co_await read_record(get, reference_key))) {
+         FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated value record is inconsistent");
+      }
+      co_return;
+   }
+   if (co_await read_record(get, reference_key)) {
+      FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated value reference exists without content");
+   }
+   co_await write_record(put, content_key, value);
+   co_await write_record(put, reference_key, encode_reference_count(0));
+}
+
+boost::asio::awaitable<bool> persist_node_record(const get_record_fn& get, const put_record_fn& put, const digest& hash,
+                                                 const node& value) {
+   const auto content_key = node_key(hash);
+   const auto reference_key = node_reference_key(hash);
+   const auto encoded = encode_node(value);
+   const auto existing = co_await read_record(get, content_key);
+   if (existing) {
+      if (*existing != encoded || !(co_await read_record(get, reference_key))) {
+         FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated node record is inconsistent");
+      }
+      co_return false;
+   }
+   if (co_await read_record(get, reference_key)) {
+      FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated node reference exists without content");
+   }
+   co_await write_record(put, content_key, encoded);
+   co_await write_record(put, reference_key, encode_reference_count(0));
+   co_return true;
+}
+
+boost::asio::awaitable<void> retain_node_children(const get_record_fn& get, const put_record_fn& put,
+                                                  const erase_record_fn& erase, const node& value) {
+   if (value.type == node::kind::leaf) {
+      co_await increment_reference(get, put, erase, value_reference_key(value.value_hash),
+                                   value_gc_key(value.value_hash));
+   } else {
+      co_await increment_reference(get, put, erase, node_reference_key(value.left), node_gc_key(value.left));
+      co_await increment_reference(get, put, erase, node_reference_key(value.right), node_gc_key(value.right));
+   }
+}
+
+struct checkpoint_node_summary {
+   digest hash;
+   std::uint16_t height = 0;
+   std::uint64_t size = 0;
+   bytes min_key;
+   bytes max_key;
+};
+
+struct checkpoint_export_frame {
+   digest hash;
+   node value;
+   checkpoint_node_summary left;
+   std::uint8_t phase = 0;
+};
+
+[[noreturn]] void checkpoint_limit() {
+   FORGE_THROW_EXCEPTION(exceptions::proof_limit_exceeded, "authenticated checkpoint exceeds configured bounds");
+}
+
+std::uint64_t checkpoint_add(std::uint64_t left, std::uint64_t right) {
+   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+      checkpoint_limit();
+   }
+   return left + right;
+}
+
+std::uint64_t checkpoint_multiply(std::uint64_t left, std::uint64_t right) {
+   if (left != 0U && right > std::numeric_limits<std::uint64_t>::max() / left) {
+      checkpoint_limit();
+   }
+   return left * right;
+}
+
+std::uint64_t checkpoint_tree_records(std::uint64_t leaves) {
+   return leaves == 0U ? 0U : checkpoint_add(leaves, leaves - 1U);
+}
+
+void checkpoint_preflight(std::string_view domain, const root& expected, const limits& node_bounds,
+                          const checkpoint_limits& bounds) {
+   if (domain.empty() || domain.size() > max_base_domain_bytes || !limits_are_valid(node_bounds) ||
+       !checkpoint_limits_are_valid(bounds)) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store, "authenticated checkpoint policy is invalid");
+   }
+   const auto state_records = checkpoint_tree_records(expected.state_size);
+   const auto change_records = checkpoint_tree_records(expected.change_count);
+   if (checkpoint_add(state_records, change_records) > bounds.max_records) {
+      checkpoint_limit();
+   }
+   const auto depth = std::min(bounds.max_depth, node_bounds.max_proof_depth);
+   // Bound ALL retained record data before calling any source/sink or allocating
+   // traversal vectors: one role's digest history, bounded iterative frames and
+   // conservative eight-frame transients (DTO/input/result/raw/record copies).
+   // Standard allocator bookkeeping/Asio execution metadata is not a process RSS cap.
+   const auto keys = checkpoint_multiply(6U, node_bounds.max_key_bytes);
+   const auto frame = checkpoint_add(sizeof(checkpoint_export_frame),
+                                     checkpoint_add(keys, checkpoint_multiply(2U, domain.size() + 1U)));
+   auto working = checkpoint_multiply(checkpoint_add(depth, 1U), frame);
+   working = checkpoint_add(working, checkpoint_multiply(std::max(state_records, change_records), sizeof(digest)));
+   working = checkpoint_add(working, checkpoint_multiply(8U, bounds.max_frame_bytes));
+   // A valid stored value may exceed the selected checkpoint frame budget. Core
+   // returns that whole backend record before export can reject/copy it.
+   working = checkpoint_add(working, checkpoint_multiply(2U, node_bounds.max_value_bytes));
+   working = checkpoint_add(working, checkpoint_multiply(8U, domain.size() + 1U));
+   working = checkpoint_add(working,
+                            sizeof(checkpoint_summary) + sizeof(checkpoint_record) + sizeof(checkpoint_node_summary));
+   if (working > bounds.max_working_bytes || state_records > std::numeric_limits<std::size_t>::max() ||
+       change_records > std::numeric_limits<std::size_t>::max()) {
+      checkpoint_limit();
+   }
+   for (const auto tree : {proof_tree::state, proof_tree::changes}) {
+      const auto size = tree == proof_tree::state ? expected.state_size : expected.change_count;
+      const auto hash = tree == proof_tree::state ? expected.state_root : expected.change_root;
+      if (size == 0U && hash != hash_empty(canonical_tree_domain(domain, tree))) {
+         FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "authenticated empty checkpoint root is invalid");
+      }
+   }
+}
+
+void account_checkpoint(const checkpoint_record& record, const limits& node_bounds, const checkpoint_limits& bounds,
+                        checkpoint_summary& summary) {
+   const auto size = wire_size(record);
+   if (size > bounds.max_frame_bytes || summary.records >= bounds.max_records ||
+       size > bounds.max_encoded_bytes - summary.encoded_bytes) {
+      checkpoint_limit();
+   }
+   if (const auto* leaf = std::get_if<proof_leaf>(&record.node)) {
+      if (!leaf->value || leaf->key.size() > node_bounds.max_key_bytes ||
+          leaf->value->size() > node_bounds.max_value_bytes ||
+          leaf->value->size() > bounds.max_value_bytes - summary.value_bytes) {
+         checkpoint_limit();
+      }
+      summary.value_bytes += leaf->value->size();
+      ++summary.leaves;
+   } else {
+      const auto& branch = std::get<proof_branch>(record.node);
+      if (branch.min_key.size() > node_bounds.max_key_bytes || branch.max_key.size() > node_bounds.max_key_bytes ||
+          branch.separator.size() > node_bounds.max_key_bytes ||
+          branch.height > std::min(bounds.max_depth, node_bounds.max_proof_depth)) {
+         checkpoint_limit();
+      }
+   }
+   ++summary.records;
+   summary.encoded_bytes += size;
+}
+
+checkpoint_node_summary summarize_checkpoint(const digest& hash, const node& value) {
+   return {.hash = hash,
+           .height = value.height,
+           .size = value.size,
+           .min_key = node_min_key(value),
+           .max_key = node_max_key(value)};
+}
+
+void validate_checkpoint_branch(const node& value, const checkpoint_node_summary& left,
+                                const checkpoint_node_summary& right) {
+   if (value.type != node::kind::inner || value.left != left.hash || value.right != right.hash ||
+       !key_less(left.max_key, right.min_key) || value.key != right.min_key || value.min_key != left.min_key ||
+       value.max_key != right.max_key || value.size != checkpoint_add(left.size, right.size) ||
+       value.height != static_cast<unsigned>(std::max(left.height, right.height)) + 1U ||
+       std::abs(static_cast<int>(left.height) - static_cast<int>(right.height)) > 1) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "authenticated checkpoint branch topology is inconsistent");
+   }
+}
+
+void validate_checkpoint_hash(const node& value, const digest& hash, std::string_view domain) {
+   if (value.domain != domain || node_hash(domain, value) != hash) {
+      FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "authenticated checkpoint node hash or domain is invalid");
+   }
+}
+
+void validate_checkpoint_value(const proof_leaf& leaf, proof_tree tree) {
+   if (!leaf.value || hash_value(*leaf.value) != leaf.value_hash) {
+      FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "authenticated checkpoint value is missing or invalid");
+   }
+   if (tree == proof_tree::changes) {
+      const auto decoded = decode_change_value(*leaf.value);
+      if (encode_change_value(mutation{.value = decoded}) != *leaf.value) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "authenticated checkpoint change value is not canonical");
+      }
+   }
+}
+
+void validate_checkpoint_history(std::vector<digest>& hashes) {
+   std::sort(hashes.begin(), hashes.end());
+   if (std::adjacent_find(hashes.begin(), hashes.end()) != hashes.end()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "authenticated checkpoint repeats a node address");
+   }
+}
+
 } // namespace
 
 tree_engine::tree_engine(std::string domain, std::optional<digest> root_hash, get_record_fn get, limits settings)
@@ -1011,57 +1211,222 @@ boost::asio::awaitable<void> tree_engine::persist(get_record_fn get, put_record_
       if (!reachable_values.contains(hash)) {
          continue;
       }
-      const auto content_key = value_key(hash);
-      const auto reference_key = value_reference_key(hash);
-      const auto existing = co_await read_record(get, content_key);
-      if (existing) {
-         if (*existing != value || !(co_await read_record(get, reference_key))) {
-            FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated value record is inconsistent");
-         }
-         continue;
-      }
-      if (co_await read_record(get, reference_key)) {
-         FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated value reference exists without content");
-      }
-      co_await write_record(put, content_key, value);
-      co_await write_record(put, reference_key, encode_reference_count(0));
+      co_await persist_value_record(get, put, hash, value);
    }
    for (const auto& [hash, value] : pending_nodes_) {
       if (!reachable_nodes.contains(hash)) {
          continue;
       }
-      const auto content_key = node_key(hash);
-      const auto reference_key = node_reference_key(hash);
-      const auto encoded = encode_node(value);
-      const auto existing = co_await read_record(get, content_key);
-      if (existing) {
-         if (*existing != encoded || !(co_await read_record(get, reference_key))) {
-            FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated node record is inconsistent");
-         }
-         continue;
+      if (co_await persist_node_record(get, put, hash, value)) {
+         inserted_nodes.emplace_back(hash, value);
       }
-      if (co_await read_record(get, reference_key)) {
-         FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "authenticated node reference exists without content");
-      }
-      co_await write_record(put, content_key, encoded);
-      co_await write_record(put, reference_key, encode_reference_count(0));
-      inserted_nodes.emplace_back(hash, value);
    }
 
    for (const auto& [hash, value] : inserted_nodes) {
       static_cast<void>(hash);
-      if (value.type == node::kind::leaf) {
-         co_await increment_reference(get, put, erase, value_reference_key(value.value_hash),
-                                      value_gc_key(value.value_hash));
-      } else {
-         co_await increment_reference(get, put, erase, node_reference_key(value.left), node_gc_key(value.left));
-         co_await increment_reference(get, put, erase, node_reference_key(value.right), node_gc_key(value.right));
-      }
+      co_await retain_node_children(get, put, erase, value);
    }
 }
 
 std::optional<digest> tree_engine::root_hash() const noexcept {
    return root_hash_;
+}
+
+void validate_checkpoint_policy(std::string_view domain, const root& expected, const limits& node_bounds,
+                                const checkpoint_limits& checkpoint_bounds) {
+   checkpoint_preflight(domain, expected, node_bounds, checkpoint_bounds);
+}
+
+boost::asio::awaitable<checkpoint_summary> export_checkpoint_graphs(std::string_view domain, root expected,
+                                                                    get_record_fn get, checkpoint_sink sink,
+                                                                    limits node_bounds,
+                                                                    checkpoint_limits checkpoint_bounds) {
+   checkpoint_preflight(domain, expected, node_bounds, checkpoint_bounds);
+   if (!get || !sink) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store, "checkpoint export callbacks are missing");
+   }
+   auto result = checkpoint_summary{.anchor = expected};
+   const auto depth = std::min(checkpoint_bounds.max_depth, node_bounds.max_proof_depth);
+   for (const auto tree : {proof_tree::state, proof_tree::changes}) {
+      const auto leaves = tree == proof_tree::state ? expected.state_size : expected.change_count;
+      if (leaves == 0U) {
+         continue;
+      }
+      const auto hash = tree == proof_tree::state ? expected.state_root : expected.change_root;
+      const auto role_domain = canonical_tree_domain(domain, tree);
+      const auto record_count = checkpoint_tree_records(leaves);
+      auto hashes = std::vector<digest>{};
+      hashes.reserve(static_cast<std::size_t>(record_count));
+      auto stack = std::vector<checkpoint_export_frame>{};
+      stack.reserve(static_cast<std::size_t>(depth) + 1U);
+      stack.push_back({.hash = hash});
+      auto completed = std::optional<checkpoint_node_summary>{};
+      while (!stack.empty()) {
+         const auto top = stack.size() - 1U;
+         if (completed) {
+            if (stack[top].phase == 1U) {
+               stack[top].left = std::move(*completed);
+               completed.reset();
+               stack[top].phase = 2U;
+               continue;
+            }
+            if (stack[top].phase != 3U) {
+               FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "checkpoint export traversal state is invalid");
+            }
+            validate_checkpoint_branch(stack[top].value, stack[top].left, *completed);
+            const auto& value = stack[top].value;
+            auto record = checkpoint_record{.tree = tree,
+                                            .hash = stack[top].hash,
+                                            .node = proof_branch{.height = value.height,
+                                                                 .size = value.size,
+                                                                 .min_key = value.min_key,
+                                                                 .max_key = value.max_key,
+                                                                 .separator = value.key,
+                                                                 .left_hash = value.left,
+                                                                 .right_hash = value.right}};
+            account_checkpoint(record, node_bounds, checkpoint_bounds, result);
+            if (hashes.size() >= record_count) {
+               FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "checkpoint export exceeds its root node count");
+            }
+            hashes.push_back(record.hash);
+            completed = summarize_checkpoint(record.hash, value);
+            co_await sink(std::move(record));
+            stack.pop_back();
+            continue;
+         }
+         if (stack[top].phase == 2U) {
+            if (stack.size() > depth) {
+               checkpoint_limit();
+            }
+            stack[top].phase = 3U;
+            stack.push_back({.hash = stack[top].value.right});
+            continue;
+         }
+         if (stack[top].phase != 0U) {
+            FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "checkpoint export child is missing");
+         }
+         const auto encoded = co_await read_record(get, node_key(stack[top].hash));
+         if (!encoded) {
+            FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "checkpoint export node is missing");
+         }
+         // The backend returns a whole record; reject oversized local records
+         // before decoding/copying them. This is not a bounded Core::get API.
+         const auto node_bytes = checkpoint_add(checkpoint_add(role_domain.size(), 128U),
+                                                checkpoint_multiply(3U, node_bounds.max_key_bytes));
+         if (encoded->size() > node_bytes) {
+            checkpoint_limit();
+         }
+         stack[top].value = decode_node(*encoded);
+         validate_checkpoint_hash(stack[top].value, stack[top].hash, role_domain);
+         if (stack[top].value.type == node::kind::inner) {
+            if (stack.size() > depth || stack[top].value.height > depth) {
+               checkpoint_limit();
+            }
+            stack[top].phase = 1U;
+            stack.push_back({.hash = stack[top].value.left});
+            continue;
+         }
+         const auto value = co_await read_record(get, value_key(stack[top].value.value_hash));
+         if (!value) {
+            FORGE_THROW_EXCEPTION(exceptions::corrupt_node, "checkpoint export value is missing");
+         }
+         if (value->size() > node_bounds.max_value_bytes || value->size() > checkpoint_bounds.max_frame_bytes ||
+             value->size() > checkpoint_bounds.max_value_bytes - result.value_bytes ||
+             stack[top].value.key.size() > node_bounds.max_key_bytes) {
+            checkpoint_limit();
+         }
+         auto record = checkpoint_record{
+             .tree = tree,
+             .hash = stack[top].hash,
+             .node =
+                 proof_leaf{.key = stack[top].value.key, .value_hash = stack[top].value.value_hash, .value = *value}};
+         account_checkpoint(record, node_bounds, checkpoint_bounds, result);
+         validate_checkpoint_value(std::get<proof_leaf>(record.node), tree);
+         if (hashes.size() >= record_count) {
+            FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "checkpoint export exceeds its root node count");
+         }
+         hashes.push_back(record.hash);
+         completed = summarize_checkpoint(record.hash, stack[top].value);
+         co_await sink(std::move(record));
+         stack.pop_back();
+      }
+      if (!completed || completed->hash != hash || completed->size != leaves || hashes.size() != record_count) {
+         FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "checkpoint export root metadata is inconsistent");
+      }
+      validate_checkpoint_history(hashes);
+   }
+   co_return result;
+}
+
+boost::asio::awaitable<checkpoint_summary> restore_checkpoint_graphs(std::string_view domain, root expected,
+                                                                     get_record_fn get, put_record_fn put,
+                                                                     erase_record_fn erase, checkpoint_source source,
+                                                                     limits node_bounds,
+                                                                     checkpoint_limits checkpoint_bounds) {
+   checkpoint_preflight(domain, expected, node_bounds, checkpoint_bounds);
+   if (!get || !put || !erase || !source) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store, "checkpoint restore callbacks are missing");
+   }
+   auto result = checkpoint_summary{.anchor = expected};
+   const auto depth = std::min(checkpoint_bounds.max_depth, node_bounds.max_proof_depth);
+   for (const auto tree : {proof_tree::state, proof_tree::changes}) {
+      const auto leaves = tree == proof_tree::state ? expected.state_size : expected.change_count;
+      const auto record_count = checkpoint_tree_records(leaves);
+      const auto hash = tree == proof_tree::state ? expected.state_root : expected.change_root;
+      const auto role_domain = canonical_tree_domain(domain, tree);
+      auto hashes = std::vector<digest>{};
+      hashes.reserve(static_cast<std::size_t>(record_count));
+      auto stack = std::vector<checkpoint_node_summary>{};
+      stack.reserve(static_cast<std::size_t>(depth) + 1U);
+      for (auto index = std::uint64_t{}; index < record_count; ++index) {
+         auto record = co_await source();
+         if (!record || record->tree != tree) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "checkpoint is truncated or has the wrong tree role");
+         }
+         account_checkpoint(*record, node_bounds, checkpoint_bounds, result);
+         auto value = node{.domain = role_domain};
+         if (const auto* leaf = std::get_if<proof_leaf>(&record->node)) {
+            validate_checkpoint_value(*leaf, tree);
+            value.key = leaf->key;
+            value.value_hash = leaf->value_hash;
+            if (stack.size() > depth) {
+               checkpoint_limit();
+            }
+            validate_checkpoint_hash(value, record->hash, role_domain);
+            co_await persist_value_record(get, put, value.value_hash, *leaf->value);
+         } else {
+            if (stack.size() < 2U) {
+               FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "checkpoint branch precedes its children");
+            }
+            const auto& branch = std::get<proof_branch>(record->node);
+            value.type = node::kind::inner;
+            value.height = branch.height;
+            value.size = branch.size;
+            value.key = branch.separator;
+            value.min_key = branch.min_key;
+            value.max_key = branch.max_key;
+            value.left = branch.left_hash;
+            value.right = branch.right_hash;
+            validate_checkpoint_branch(value, stack[stack.size() - 2U], stack.back());
+            validate_checkpoint_hash(value, record->hash, role_domain);
+            stack.pop_back();
+            stack.pop_back();
+         }
+         if (co_await persist_node_record(get, put, record->hash, value)) {
+            co_await retain_node_children(get, put, erase, value);
+         }
+         stack.push_back(summarize_checkpoint(record->hash, value));
+         hashes.push_back(record->hash);
+      }
+      if (leaves != 0U && (stack.size() != 1U || stack.back().hash != hash || stack.back().size != leaves)) {
+         FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "checkpoint graph does not match its root tuple");
+      }
+      validate_checkpoint_history(hashes);
+   }
+   if (co_await source()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_proof, "checkpoint contains trailing records");
+   }
+   co_return result;
 }
 
 std::uint64_t tree_engine::size() const noexcept {

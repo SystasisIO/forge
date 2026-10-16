@@ -45,6 +45,11 @@ class store {
 
    boost::asio::awaitable<transaction> join(forge::db::core::transaction& active, version_id_t version) const;
 
+   boost::asio::awaitable<checkpoint_summary> export_checkpoint(forge::db::core::snapshot active, root expected,
+                                                                checkpoint_sink sink, checkpoint_limits bounds) const;
+   [[nodiscard]] transaction join_restore(forge::db::core::transaction& active, root expected,
+                                          checkpoint_limits bounds) const;
+
  private:
    struct impl;
    explicit store(std::shared_ptr<impl> implementation);

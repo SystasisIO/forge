@@ -12,6 +12,8 @@ module;
 #include <utility>
 #include <vector>
 
+#include "details/sequence_record.hxx"
+
 module forge.db.object.snapshot;
 
 import forge.db.object.exceptions;
@@ -33,6 +35,11 @@ void snapshot::ensure_registered_type(forge::db::ids::object_id type, std::type_
       FORGE_THROW_EXCEPTION(exceptions::transaction_closed, "db object snapshot is closed");
    }
    impl_->ensure_registered(type, model);
+}
+
+boost::asio::awaitable<std::uint64_t> snapshot::read_allocation_next(forge::db::ids::object_id type) const {
+   const auto value = co_await get_record(detail::record_key::sequence(type));
+   co_return value ? detail::sequence_record::decode(*value) : std::uint64_t{0};
 }
 
 boost::asio::awaitable<std::optional<std::vector<std::byte>>> snapshot::get_record(forge::db::core::record_key key) const {

@@ -27,6 +27,8 @@ namespace forge::vm::wasm::interpret {
 
 namespace detail {
 
+inline constexpr options parser_defaults{};
+
 inline constexpr unsigned get_size_for_type(uint8_t type) {
    switch (type) {
    case types::i32:
@@ -50,6 +52,10 @@ template <typename Options> struct max_mutable_globals_checker<Options, std::voi
    static_assert(std::is_unsigned_v<std::decay_t<max_mutable_globals_t<Options>>>,
                  "max_mutable_globals must be an unsigned integer type");
    void on_mutable_global(const Options& options, uint8_t type) {
+      if constexpr (requires { options.check_mutable_global_bytes; }) {
+         if (!options.check_mutable_global_bytes)
+            return;
+      }
       unsigned size = get_size_for_type(type);
       _counter += size;
       detail::check<exceptions::parse>((_counter <= options.max_mutable_global_bytes && _counter >= size),
@@ -72,8 +78,15 @@ template <typename Options> struct max_mutable_globals_checker<Options, std::voi
 
 #define MAX_ELEMENTS(name, default_) PARSER_OPTION(name, default_, std::uint32_t)
 
-MAX_ELEMENTS(max_table_elements, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_section_elements, 0xFFFFFFFFu)
+PARSER_OPTION(max_mutable_global_bytes, parser_defaults.max_mutable_global_bytes, std::uint64_t)
+PARSER_OPTION(max_func_local_bytes, parser_defaults.max_func_local_bytes, std::uint64_t)
+PARSER_OPTION(check_mutable_global_bytes, parser_defaults.check_mutable_global_bytes, bool)
+PARSER_OPTION(check_func_local_bytes, parser_defaults.check_func_local_bytes, bool)
+PARSER_OPTION(check_control_depth, parser_defaults.check_control_depth, bool)
+PARSER_OPTION(check_legacy_nested_structures, parser_defaults.check_legacy_nested_structures, bool)
+
+MAX_ELEMENTS(max_table_elements, parser_defaults.max_table_elements)
+MAX_ELEMENTS(max_section_elements, parser_defaults.max_section_elements)
 
 MAX_ELEMENTS(max_type_section_elements, detail::get_max_section_elements(options))
 MAX_ELEMENTS(max_import_section_elements, detail::get_max_section_elements(options))
@@ -83,12 +96,11 @@ MAX_ELEMENTS(max_export_section_elements, detail::get_max_section_elements(optio
 MAX_ELEMENTS(max_element_section_elements, detail::get_max_section_elements(options))
 MAX_ELEMENTS(max_data_section_elements, detail::get_max_section_elements(options))
 
-MAX_ELEMENTS(max_element_segment_elements, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_data_segment_bytes, 0xFFFFFFFFu)
+MAX_ELEMENTS(max_element_segment_elements, parser_defaults.max_element_segment_elements)
+MAX_ELEMENTS(max_data_segment_bytes, parser_defaults.max_data_segment_bytes)
 
-PARSER_OPTION(max_linear_memory_init, 0xFFFFFFFFFFFFFFFFu, std::uint64_t)
-PARSER_OPTION(max_func_local_bytes_flags, max_func_local_bytes_flags_t::locals | max_func_local_bytes_flags_t::stack,
-              max_func_local_bytes_flags_t);
+PARSER_OPTION(max_linear_memory_init, parser_defaults.max_linear_memory_init, std::uint64_t)
+PARSER_OPTION(max_func_local_bytes_flags, parser_defaults.max_func_local_bytes_flags, max_func_local_bytes_flags_t);
 
 template <typename Options, typename Enable = void> struct max_func_local_bytes_checker {
    explicit max_func_local_bytes_checker(const Options&, const func_type& /*ft*/) {}
@@ -102,6 +114,10 @@ template <typename Options, typename Enable = void> struct max_func_local_bytes_
 template <typename Options>
 struct max_func_local_bytes_checker<Options, std::void_t<decltype(std::declval<Options>().max_func_local_bytes)>> {
    explicit max_func_local_bytes_checker(const Options& options, const func_type& ft) {
+      if constexpr (requires { options.check_func_local_bytes; }) {
+         if (!options.check_func_local_bytes)
+            return;
+      }
       if ((detail::get_max_func_local_bytes_flags(options) & max_func_local_bytes_flags_t::params) !=
           (max_func_local_bytes_flags_t)0) {
          for (std::uint32_t i = 0; i < ft.param_types.size(); ++i) {
@@ -110,12 +126,20 @@ struct max_func_local_bytes_checker<Options, std::void_t<decltype(std::declval<O
       }
    }
    void on_type(const Options& options, std::uint8_t type) {
+      if constexpr (requires { options.check_func_local_bytes; }) {
+         if (!options.check_func_local_bytes)
+            return;
+      }
       unsigned size = get_size_for_type(type);
       _count += size;
       detail::check<exceptions::parse>((_count <= options.max_func_local_bytes && _count >= size),
                                        "local variable limit exceeded");
    }
    void on_local(const Options& options, std::uint8_t type, std::uint32_t count) {
+      if constexpr (requires { options.check_func_local_bytes; }) {
+         if (!options.check_func_local_bytes)
+            return;
+      }
       if ((detail::get_max_func_local_bytes_flags(options) & max_func_local_bytes_flags_t::locals) !=
           (max_func_local_bytes_flags_t)0) {
          uint64_t size = get_size_for_type(type);
@@ -143,12 +167,20 @@ struct max_func_local_bytes_stack_checker : max_func_local_bytes_checker<Options
    explicit constexpr max_func_local_bytes_stack_checker(const max_func_local_bytes_checker<Options>& base)
        : max_func_local_bytes_checker<Options>(base) {}
    void push_stack(const Options& options, std::uint8_t type) {
+      if constexpr (requires { options.check_func_local_bytes; }) {
+         if (!options.check_func_local_bytes)
+            return;
+      }
       if (unreachable_depth == 0 && (detail::get_max_func_local_bytes_flags(options) &
                                      max_func_local_bytes_flags_t::stack) != (max_func_local_bytes_flags_t)0) {
          this->on_type(options, type);
       }
    }
    void pop_stack(const Options& options, std::uint8_t type) {
+      if constexpr (requires { options.check_func_local_bytes; }) {
+         if (!options.check_func_local_bytes)
+            return;
+      }
       if (unreachable_depth == 0 && (detail::get_max_func_local_bytes_flags(options) &
                                      max_func_local_bytes_flags_t::stack) != (max_func_local_bytes_flags_t)0) {
          this->_count -= get_size_for_type(type);
@@ -173,9 +205,11 @@ struct max_func_local_bytes_stack_checker<Options,
    void pop_unreachable() {}
 };
 
-MAX_ELEMENTS(max_local_sets, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_nested_structures, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_br_table_elements, 0xFFFFFFFFu)
+MAX_ELEMENTS(max_local_sets, parser_defaults.max_local_sets)
+MAX_ELEMENTS(max_nested_structures, parser_defaults.max_nested_structures)
+MAX_ELEMENTS(max_br_table_elements, parser_defaults.max_br_table_elements)
+PARSER_OPTION(max_control_depth, parser_defaults.max_control_depth, std::uint64_t)
+PARSER_OPTION(max_legacy_nested_structures, parser_defaults.max_legacy_nested_structures, std::uint64_t)
 
 template <typename Options, typename Enable = void> struct max_control_depth_checker {
    void on_control(const Options&) {}
@@ -184,10 +218,18 @@ template <typename Options, typename Enable = void> struct max_control_depth_che
 template <typename Options>
 struct max_control_depth_checker<Options, std::void_t<decltype(std::declval<Options>().max_control_depth)>> {
    void on_control(const Options& options) {
+      if constexpr (requires { options.check_control_depth; }) {
+         if (!options.check_control_depth)
+            return;
+      }
       ++_count;
       detail::check<exceptions::parse>((_count <= options.max_control_depth), "Nested depth exceeded");
    }
-   void on_end(const Options&) {
+   void on_end(const Options& options) {
+      if constexpr (requires { options.check_control_depth; }) {
+         if (!options.check_control_depth)
+            return;
+      }
       detail::check<exceptions::parse>((_count > 0), "control depth underflow");
       --_count;
    }
@@ -204,10 +246,18 @@ template <typename Options>
 struct max_legacy_nested_structures_checker<
     Options, std::void_t<decltype(std::declval<Options>().max_legacy_nested_structures)>> {
    void on_control(const Options& options) {
+      if constexpr (requires { options.check_legacy_nested_structures; }) {
+         if (!options.check_legacy_nested_structures)
+            return;
+      }
       ++_count;
       detail::check<exceptions::parse>((_count <= options.max_legacy_nested_structures), "Nested depth exceeded");
    }
-   void on_end(const Options&) {
+   void on_end(const Options& options) {
+      if constexpr (requires { options.check_legacy_nested_structures; }) {
+         if (!options.check_legacy_nested_structures)
+            return;
+      }
       if (_count == 0)
          ++_count;
       else
@@ -216,20 +266,20 @@ struct max_legacy_nested_structures_checker<
    std::decay_t<decltype(std::declval<Options>().max_legacy_nested_structures)> _count = 0;
 };
 
-MAX_ELEMENTS(max_symbol_bytes, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_memory_offset, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_code_bytes, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_pages, 0xFFFFFFFFu)
-MAX_ELEMENTS(max_call_depth, 251)
+MAX_ELEMENTS(max_symbol_bytes, parser_defaults.max_symbol_bytes)
+MAX_ELEMENTS(max_memory_offset, parser_defaults.max_memory_offset)
+MAX_ELEMENTS(max_code_bytes, parser_defaults.max_code_bytes)
+MAX_ELEMENTS(max_pages, parser_defaults.max_pages)
+MAX_ELEMENTS(max_call_depth, parser_defaults.max_call_depth)
 
-PARSER_OPTION(forbid_export_mutable_globals, false, bool);
-PARSER_OPTION(allow_code_after_function_end, false, bool);
-PARSER_OPTION(allow_u32_limits_flags, false, bool);
-PARSER_OPTION(allow_invalid_empty_local_set, false, bool);
+PARSER_OPTION(forbid_export_mutable_globals, parser_defaults.forbid_export_mutable_globals, bool);
+PARSER_OPTION(allow_code_after_function_end, parser_defaults.allow_code_after_function_end, bool);
+PARSER_OPTION(allow_u32_limits_flags, parser_defaults.allow_u32_limits_flags, bool);
+PARSER_OPTION(allow_invalid_empty_local_set, parser_defaults.allow_invalid_empty_local_set, bool);
 
-PARSER_OPTION(allow_zero_blocktype, false, bool)
+PARSER_OPTION(allow_zero_blocktype, parser_defaults.allow_zero_blocktype, bool)
 
-PARSER_OPTION(parse_custom_section_name, false, bool);
+PARSER_OPTION(parse_custom_section_name, parser_defaults.parse_custom_section_name, bool);
 
 #undef MAX_ELEMENTS
 #undef PARSER_OPTION

@@ -27,11 +27,20 @@ struct object_mutation {
    std::optional<std::vector<std::byte>> after;
 };
 
+struct allocation_change {
+   forge::db::ids::object_id type;
+   std::uint64_t before = 0;
+   std::uint64_t after = 0;
+
+   bool operator==(const allocation_change&) const = default;
+};
+
 struct change_set {
    std::vector<object_mutation> mutations;
+   std::vector<allocation_change> allocations;
 
    [[nodiscard]] bool empty() const noexcept {
-      return mutations.empty();
+      return mutations.empty() && allocations.empty();
    }
 };
 

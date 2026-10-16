@@ -5,6 +5,7 @@
 #include <variant>
 
 import forge.chain.savanna.finality_witness;
+import forge.chain.savanna.finality_witness_limits;
 import forge.chain.savanna.checkpoint;
 import forge.chain.savanna.genesis;
 import forge.chain.savanna.finality_core;
@@ -15,6 +16,10 @@ import forge.chain.savanna.rank;
 import forge.chain.savanna.validation;
 import forge.chain.savanna.vote;
 import forge.chain.savanna.vote_accumulator;
+
+static_assert(forge::chain::savanna::finality_witness_limits{}.max_blocks == 4'096U);
+static_assert(forge::chain::savanna::finality_witness_limits{}.max_producer_slots == 65'536U);
+static_assert(forge::chain::savanna::finality_witness_limits{}.max_bytes == (8U << 20U));
 
 int main() {
    using namespace forge::chain;

@@ -3,6 +3,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/awaitable.hpp>
 #include <cstddef>
 #include <cstdint>
@@ -12,14 +13,18 @@ module;
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "details/sequence_record.hxx"
+
 module forge.db.object.transaction;
+
+import forge.db.core.exceptions;
 
 #include "details/transaction_impl.hxx"
 #include "details/transaction_participant_impl.hxx"
-#include "details/record_key.hxx"
 
 namespace forge::db::object::detail {
 
@@ -38,7 +43,8 @@ bool same_changes(const change_set& left, const change_set& right) {
                      [](const object_mutation& lhs, const object_mutation& rhs) {
                         return lhs.kind == rhs.kind && lhs.id == rhs.id && lhs.before == rhs.before &&
                                lhs.after == rhs.after;
-                     });
+                     }) &&
+          left.allocations == right.allocations;
 }
 
 } // namespace
@@ -91,7 +97,16 @@ forge::db::core::mutation_policy transaction_participant_impl::classify(const fo
 }
 
 boost::asio::awaitable<void> transaction_participant_impl::prepare_savepoint(forge::db::core::savepoint_id_t id) {
-   pending_savepoint_ = savepoint_frame{.id = id, .mutation_count = changes_.mutations.size()};
+   if (allocation_restore_failed_) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object allocation restore requires full rollback");
+   }
+   if (allocation_in_flight_.load(std::memory_order_acquire)) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object savepoint overlaps an allocation");
+   }
+   pending_savepoint_ = savepoint_frame{
+       .id = id, .mutation_count = changes_.mutations.size(), .allocation_count = changes_.allocations.size()};
    co_return;
 }
 
@@ -116,16 +131,14 @@ transaction_participant_impl::rollback_to_savepoint(forge::db::core::savepoint_i
    }
 
    changes_.mutations.resize(savepoints_.back().mutation_count);
+   changes_.allocations.resize(savepoints_.back().allocation_count);
    savepoints_.pop_back();
 
    if (!reuse_rolled_back_ids_) {
       // Native rollback also restores sequence records. Re-publish every consumed
       // high-watermark so generated IDs are never reusable inside the outer transaction.
       for (const auto& [type, next_instance] : allocation_seals_) {
-         auto bytes = std::vector<std::byte>{};
-         bytes.reserve(sizeof(next_instance));
-         record_key::append_be64(bytes, next_instance);
-         co_await access.put(family_, record_key::sequence(type), std::move(bytes));
+         co_await access.put(family_, record_key::sequence(type), sequence_record::encode(next_instance));
       }
    }
 }
@@ -139,11 +152,60 @@ boost::asio::awaitable<void> transaction_participant_impl::release_savepoint(for
 }
 
 boost::asio::awaitable<void> transaction_participant_impl::prepare_commit(forge::db::core::participant_access&) {
+   if (allocation_restore_failed_) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object allocation restore requires full rollback");
+   }
+   if (allocation_in_flight_.load(std::memory_order_acquire)) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object commit overlaps an allocation");
+   }
    if (observed_change_set_ && !same_changes(*observed_change_set_, changes_)) {
       FORGE_THROW_EXCEPTION(exceptions::stale_precommit_projection,
                             "db object precommit projection changed after an observer accepted it");
    }
+   // A native commit may fail after Core prepared all participants. Core retries
+   // that SAME commit without calling prepare_commit again: close new restore
+   // admission now, even if there is no precommit observer and the trace is empty.
+   preparing_commit_ = true;
    co_return;
+}
+
+void transaction_participant_impl::begin_allocation() {
+   if (finalized_ || allocation_restore_failed_ || allocation_in_flight_.exchange(true, std::memory_order_acq_rel)) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object allocation overlaps another operation");
+   }
+}
+
+void transaction_participant_impl::end_allocation() noexcept {
+   allocation_in_flight_.store(false, std::memory_order_release);
+}
+
+void transaction_participant_impl::begin_allocation_restore(std::size_t count) {
+   if (allocation_restore_failed_ || preparing_commit_ || observed_change_set_ || !changes_.empty() ||
+       !transactional_allocations()) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object allocation restore requires an untouched transactional participant");
+   }
+   begin_allocation();
+   try {
+      changes_.allocations.reserve(count);
+   } catch (...) {
+      fail_allocation_restore();
+      throw;
+   }
+}
+
+void transaction_participant_impl::publish_restored_allocation(allocation_change value) noexcept {
+   static_assert(std::is_nothrow_move_constructible_v<allocation_change>);
+   // The exclusive allocation admission reserved the ENTIRE batch before I/O.
+   changes_.allocations.push_back(value);
+}
+
+void transaction_participant_impl::fail_allocation_restore() noexcept {
+   allocation_restore_failed_ = true;
+   end_allocation();
 }
 
 void transaction_participant_impl::remember_allocation(forge::db::ids::object_id type, std::uint64_t next_instance) {
@@ -171,6 +233,10 @@ bool transaction_participant_impl::finalized() const noexcept {
    return finalized_;
 }
 
+bool transaction_participant_impl::transactional_allocations() const noexcept {
+   return reuse_rolled_back_ids_ && !backend_writes_;
+}
+
 std::size_t transaction_participant_impl::committed_mutation_count() const noexcept {
    return committed_mutation_count_;
 }
@@ -188,6 +254,10 @@ bool transaction_participant_impl::add_precommit_observer(std::shared_ptr<precom
 }
 
 boost::asio::awaitable<void> transaction_participant_impl::run_precommit_observers() {
+   if (allocation_restore_failed_ || allocation_in_flight_.load(std::memory_order_acquire)) {
+      FORGE_THROW_EXCEPTION(forge::db::core::exceptions::participant_conflict,
+                            "db object allocation restore is incomplete");
+   }
    preparing_commit_ = true;
    const auto observers = precommit_observers_;
    for (const auto& hook : observers) {
@@ -206,6 +276,7 @@ void transaction_participant_impl::release_writer() noexcept {
 boost::asio::awaitable<void> transaction_participant_impl::after_rollback() {
    finalized_ = true;
    changes_.mutations.clear();
+   changes_.allocations.clear();
    observed_change_set_.reset();
    savepoints_.clear();
    pending_savepoint_.reset();

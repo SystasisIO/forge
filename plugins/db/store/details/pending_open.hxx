@@ -6,6 +6,7 @@ struct pending_open {
    std::string name;
    std::optional<store_config> config;
    store_options options;
+   bool initialize_layers = true;
    bool owns_driver = false;
    std::shared_ptr<forge::db::core::driver> driver;
    std::shared_ptr<forge::db::object::store> objects;

@@ -114,6 +114,8 @@ class transaction {
 
    [[nodiscard]] forge::db::core::transaction& db_transaction() const;
    [[nodiscard]] change_set projected_changes() const;
+   [[nodiscard]] bool tracks_allocations() const noexcept;
+   template <application_object_model Object> boost::asio::awaitable<std::uint64_t> allocation_next() const;
    void add_precommit_observer(std::shared_ptr<precommit_observer> value);
 
    boost::asio::awaitable<void> commit();
@@ -140,6 +142,7 @@ class transaction {
    void ensure_registered_type(forge::db::ids::object_id type, std::type_index model) const;
    boost::asio::awaitable<void> before_mutation(const object_mutation& mutation) const;
    boost::asio::awaitable<forge::db::ids::object_id> allocate_id(forge::db::ids::object_id type) const;
+   boost::asio::awaitable<std::uint64_t> read_allocation_next(forge::db::ids::object_id type) const;
    boost::asio::awaitable<std::optional<std::vector<std::byte>>> get_record(forge::db::core::record_key key) const;
    boost::asio::awaitable<void> put_record(forge::db::core::record_key key, std::vector<std::byte> value) const;
    boost::asio::awaitable<void> erase_record(forge::db::core::record_key key) const;
@@ -157,6 +160,9 @@ namespace detail {
 
 class transaction_access {
  public:
+   using tracked_allocate_id_fn = std::function<boost::asio::awaitable<forge::db::ids::object_id>(
+       forge::db::ids::object_id, forge::db::core::transaction&, change_set&)>;
+
    [[nodiscard]] static transaction
    make_owned(forge::db::core::transaction&& active, forge::db::core::family family,
               transaction::ensure_registered_fn ensure, transaction::allocate_id_fn allocate,
@@ -169,9 +175,14 @@ class transaction_access {
                transaction::seal_allocations_fn seal, std::vector<std::shared_ptr<interceptor>> interceptors,
                std::vector<std::shared_ptr<observer>> observers, transaction::release_fn release, bool backend_writes,
                bool reuse_rolled_back_ids);
-   static void bind_store(transaction& active, std::shared_ptr<const void> identity);
+   static void bind_store(transaction& active, std::shared_ptr<const void> identity,
+                          tracked_allocate_id_fn allocate = {});
    [[nodiscard]] static bool belongs_to(const transaction& active, const void* identity) noexcept;
    [[nodiscard]] static transaction joined(transaction& active);
+   static void begin_allocation_restore(transaction& active, std::size_t count);
+   static void publish_restored_allocation(transaction& active, allocation_change value) noexcept;
+   static void finish_allocation_restore(transaction& active) noexcept;
+   static void fail_allocation_restore(transaction& active) noexcept;
 };
 
 } // namespace detail
@@ -710,6 +721,11 @@ boost::asio::awaitable<typename Object::value_type> transaction::get(forge::db::
 template <object_model Object>
 boost::asio::awaitable<std::optional<typename Object::value_type>> transaction::find(forge::db::ids::object_id id) {
    co_return co_await detail::read_transaction_object<Object>(access{*this}, id);
+}
+
+template <application_object_model Object> boost::asio::awaitable<std::uint64_t> transaction::allocation_next() const {
+   ensure_registered_type(object_id_of<Object>::value, std::type_index{typeid(Object)});
+   co_return co_await read_allocation_next(object_id_of<Object>::value);
 }
 
 template <application_object_value Value> boost::asio::awaitable<void> transaction::insert(Value value) {

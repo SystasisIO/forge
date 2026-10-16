@@ -39,6 +39,8 @@ class snapshot {
    snapshot() = default;
    snapshot(forge::db::core::snapshot active, forge::db::core::family family, ensure_registered_fn ensure);
 
+   template <application_object_model Object> boost::asio::awaitable<std::uint64_t> allocation_next() const;
+
    template <forge::db::ids::typed_id_like Id>
    boost::asio::awaitable<typename index_for_id_t<Id>::value_type> get(Id id);
 
@@ -58,6 +60,7 @@ class snapshot {
    class access;
 
    void ensure_registered_type(forge::db::ids::object_id type, std::type_index model) const;
+   boost::asio::awaitable<std::uint64_t> read_allocation_next(forge::db::ids::object_id type) const;
    boost::asio::awaitable<std::optional<std::vector<std::byte>>> get_record(forge::db::core::record_key key) const;
    boost::asio::awaitable<forge::db::core::record_page> scan_records(forge::db::core::record_range range, forge::db::core::page_request request) const;
 
@@ -293,6 +296,11 @@ query_snapshot_exact_rank(Access view, const typename Object::value_type& value)
 } // namespace forge::db::object::detail
 
 export namespace forge::db::object {
+
+template <application_object_model Object> boost::asio::awaitable<std::uint64_t> snapshot::allocation_next() const {
+   ensure_registered_type(object_id_of<Object>::value, std::type_index{typeid(Object)});
+   co_return co_await read_allocation_next(object_id_of<Object>::value);
+}
 
 template <forge::db::ids::typed_id_like Id>
 boost::asio::awaitable<typename index_for_id_t<Id>::value_type> snapshot::get(Id id) {

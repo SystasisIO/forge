@@ -4,11 +4,15 @@ module;
 #include "details/stop_state.hxx"
 #include "details/thread_name.hxx"
 
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/thread_pool.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -56,14 +60,12 @@ bool operation_state::cancel_before_start() noexcept {
    return false;
 }
 
-boost::asio::cancellation_type_t
-operation_cancellation_filter::operator()(boost::asio::cancellation_type_t type) const noexcept {
+void operation_cancellation_handler::operator()(boost::asio::cancellation_type_t type) const noexcept {
    if (type != boost::asio::cancellation_type::none) {
       if (auto current = operation.lock()) {
          static_cast<void>(current->cancel_before_start());
       }
    }
-   return boost::asio::cancellation_type::none;
 }
 
 bool operation_state::complete_value() noexcept {
@@ -155,7 +157,25 @@ lane_state::~lane_state() {
 }
 
 boost::asio::awaitable<void> lane_state::execute(std::shared_ptr<operation_state> operation) {
-   co_await operation->wait();
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   auto slot = cancellation.slot();
+   if (slot.is_connected())
+      slot.assign(operation_cancellation_handler{operation});
+   const auto clear_slot = boost::scope::scope_exit{[&slot] {
+      if (slot.is_connected())
+         slot.clear();
+   }};
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none)
+      static_cast<void>(operation->cancel_before_start());
+   // No admission has occurred yet. A caller await_transform cancellation
+   // check may unwind safely before child initiation. After initiation only
+   // the disconnected child admits/waits, on this SAME executor, to terminal
+   // completion. Caller filters, history and throw policy are never reset.
+   const auto current = co_await boost::asio::this_coro::executor;
+   co_await boost::asio::co_spawn(
+       current, operation->wait(),
+       boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+   // The child is void; no default-construction constraint on typed results.
 }
 
 void lane_state::submit(const std::shared_ptr<operation_state>& operation) {
@@ -450,7 +470,6 @@ void lane_state::finalize() {
 }
 
 boost::asio::awaitable<void> lane_state::shutdown() {
-   co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
    request_stop();
    co_await wait_for_drain();
    finalize();
@@ -514,7 +533,12 @@ void lane::request_stop() noexcept {
 namespace {
 
 boost::asio::awaitable<void> shutdown_owned(std::shared_ptr<detail::lane_state> state) {
-   co_await state->shutdown();
+   // Stop admission and terminal worker drain begin only inside this owned
+   // isolated child, never before a possible parent await_transform failure.
+   const auto current = co_await boost::asio::this_coro::executor;
+   co_await boost::asio::co_spawn(
+       current, state->shutdown(),
+       boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
 }
 
 } // namespace

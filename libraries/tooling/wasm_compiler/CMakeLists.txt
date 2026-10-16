@@ -1,0 +1,7 @@
+find_package(LLVM 22.1.8 EXACT REQUIRED CONFIG)
+add_library(forge_tooling_wasm_compiler STATIC command.cpp compiler.cpp control_flow.cpp lowering.cpp object_image.cpp)
+forge_target_modules_at(forge_tooling_wasm_compiler tooling/wasm_compiler)
+target_include_directories(forge_tooling_wasm_compiler PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
+target_include_directories(forge_tooling_wasm_compiler SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(forge_tooling_wasm_compiler PRIVATE ${LLVM_DEFINITIONS})
+target_link_libraries(forge_tooling_wasm_compiler PUBLIC forge_vm_wasm_optimizing PRIVATE forge_core LLVM)

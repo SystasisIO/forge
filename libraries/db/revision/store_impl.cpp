@@ -181,12 +181,42 @@ store::impl::impl(std::shared_ptr<forge::db::core::driver> driver_value,
    }
 }
 
-boost::asio::awaitable<void> store::impl::initialize() {
+boost::asio::awaitable<void> store::impl::require_pristine(forge::db::object::transaction& active) {
+   auto encoded = co_await forge::db::object::system::access::inspect_pristine_revision(objects, active);
+   const auto current = detail::decode<state>(encoded, "state");
+   validate_state(current);
+   auto initial = state{};
+   initial.id = state_id;
+   if (current != initial || encoded != detail::encode(initial)) {
+      FORGE_THROW_EXCEPTION(exceptions::corrupt_state, "db revision state is not pristine");
+   }
+}
+
+boost::asio::awaitable<void> store::impl::initialize(bool create_missing) {
    forge::db::object::system::access::register_object<state_index>(objects);
    forge::db::object::system::access::register_object<entry_index>(objects);
    forge::db::object::system::access::register_object<delta_index>(objects);
 
    auto active = co_await driver->begin_transaction();
+   if (!create_missing) {
+      auto error = std::exception_ptr{};
+      try {
+         if (!active.capabilities().record_locks) {
+            FORGE_THROW_EXCEPTION(exceptions::unsupported_operation, "db revision requires backend record locks");
+         }
+         static_cast<void>(co_await read_state(active, family));
+      } catch (...) {
+         error = std::current_exception();
+      }
+      // No journal/Object participant or mutation was admitted. Rollback is
+      // nevertheless mandatory and must succeed before publishing this store.
+      // Core closes/retires its SAME session even when rollback reports failure.
+      co_await active.rollback();
+      if (error) {
+         std::rethrow_exception(error);
+      }
+      co_return;
+   }
    auto error = std::exception_ptr{};
    try {
       auto object_scope = co_await objects.join(active);

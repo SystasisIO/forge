@@ -58,8 +58,9 @@ rollback_dropped_transaction(std::unique_ptr<session> active, std::vector<transa
 
 } // namespace
 
-transaction::impl::impl(std::unique_ptr<session> active_value, boost::asio::any_io_executor executor) noexcept
-    : active{std::move(active_value)}, cleanup_executor{std::move(executor)} {}
+transaction::impl::impl(std::unique_ptr<session> active_value, boost::asio::any_io_executor executor,
+                        std::shared_ptr<const void> origin_value) noexcept
+    : active{std::move(active_value)}, cleanup_executor{std::move(executor)}, origin{std::move(origin_value)} {}
 
 transaction::impl::~impl() {
    rollback_on_drop();
@@ -94,7 +95,11 @@ void transaction::impl::rollback_on_drop() noexcept {
 }
 
 transaction::transaction(std::unique_ptr<session> active, boost::asio::any_io_executor cleanup_executor)
-    : impl_{std::make_shared<impl>(std::move(active), std::move(cleanup_executor))} {
+    : transaction{std::move(active), std::move(cleanup_executor), {}} {}
+
+transaction::transaction(std::unique_ptr<session> active, boost::asio::any_io_executor cleanup_executor,
+                         std::shared_ptr<const void> origin)
+    : impl_{std::make_shared<impl>(std::move(active), std::move(cleanup_executor), std::move(origin))} {
    if (!impl_->active) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor, "db transaction session is null");
    }
@@ -110,6 +115,12 @@ transaction& transaction::operator=(transaction&&) noexcept = default;
 
 bool transaction::active() const noexcept {
    return impl_ && impl_->active && impl_->current != impl::phase::closed;
+}
+
+bool transaction::belongs_to(const driver& owner) const noexcept {
+   return impl_ && impl_->origin && owner.snapshot_origin_ &&
+          !impl_->origin.owner_before(owner.snapshot_origin_) &&
+          !owner.snapshot_origin_.owner_before(impl_->origin);
 }
 
 capabilities transaction::capabilities() const noexcept {

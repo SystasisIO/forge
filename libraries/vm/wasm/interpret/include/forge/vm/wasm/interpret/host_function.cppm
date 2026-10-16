@@ -14,6 +14,7 @@ module;
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <boost/describe.hpp>
 
 export module forge.vm.wasm.interpret.host_function;
 
@@ -344,6 +345,8 @@ template <typename TC> constexpr auto to_wasm_type_v<TC, void> = types::ret_void
 struct host_function {
    std::vector<value_type> params;
    std::vector<value_type> ret;
+
+   friend bool operator==(const host_function&, const host_function&) = default;
 };
 
 template <typename Func_type> inline bool operator==(const host_function& lhs, const Func_type& rhs) {
@@ -436,20 +439,30 @@ struct registered_host_functions {
       }
    }
 
+   // Cold named-import binding for an already checked native artifact. Uses
+   // the very same registry and signature comparison as parsed-module resolve;
+   // callers finish registration before creating bindings or executing them.
+   template <typename Signature>
+   static uint32_t resolve_import(const std::string& module_name, const std::string& function_name,
+                                  const Signature& signature) {
+      const auto& current_mappings = mappings::get();
+      const auto found = current_mappings.named_mapping.find({module_name, function_name});
+      detail::check<exceptions::link>(found != current_mappings.named_mapping.end(),
+                                      std::string("no mapping for imported function ") + function_name);
+      const auto index = found->second;
+      detail::check<exceptions::link>(current_mappings.host_functions[index] == signature,
+                                      std::string("wrong type for imported function ") + function_name);
+      return index;
+   }
+
    template <typename Module> static void resolve_impl(Module& mod) {
       auto& imports = mod.import_functions;
-      auto& current_mappings = mappings::get();
       for (std::size_t i = 0; i < mod.imports.size(); i++) {
          std::string mod_name = std::string((char*)mod.imports[i].module_str.data(), mod.imports[i].module_str.size());
          std::string fn_name = std::string((char*)mod.imports[i].field_str.data(), mod.imports[i].field_str.size());
-         detail::check<exceptions::link>((current_mappings.named_mapping.count({mod_name, fn_name})),
-                                         std::string("no mapping for imported function ") + fn_name);
-         imports[i] = current_mappings.named_mapping[{mod_name, fn_name}];
          detail::check<exceptions::link>((mod.imports[i].kind == Function),
                                          std::string("importing non-function ") + fn_name);
-         detail::check<exceptions::link>(
-             (current_mappings.host_functions[imports[i]] == mod.types[mod.imports[i].type.func_t]),
-             std::string("wrong type for imported function ") + fn_name);
+         imports[i] = resolve_import(mod_name, fn_name, mod.types[mod.imports[i].type.func_t]);
       }
    }
 
@@ -462,4 +475,8 @@ struct registered_host_functions {
       std::invoke(_func, host, tc);
    }
 };
+
+// Namespace metadata follows all ordinary declarations (create-library R9).
+BOOST_DESCRIBE_STRUCT(host_function, (), (params, ret))
+
 } // namespace forge::vm::wasm::interpret

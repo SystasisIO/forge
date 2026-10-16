@@ -87,11 +87,10 @@ class operation_state : public std::enable_shared_from_this<operation_state> {
    std::function<void()> wake_;
 };
 
-struct operation_cancellation_filter {
+struct operation_cancellation_handler {
    std::weak_ptr<operation_state> operation;
 
-   boost::asio::cancellation_type_t
-   operator()(boost::asio::cancellation_type_t type) const noexcept;
+   void operator()(boost::asio::cancellation_type_t type) const noexcept;
 };
 
 template <typename Work, typename Result> class result_state final : public operation_state {
@@ -219,13 +218,6 @@ class executor {
       if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
          static_cast<void>(operation->cancel_before_start());
          throw exceptions::canceled{"affine operation was canceled before execution"};
-      }
-      co_await boost::asio::this_coro::reset_cancellation_state(
-         boost::asio::enable_total_cancellation{},
-         detail::operation_cancellation_filter{operation});
-      cancellation = co_await boost::asio::this_coro::cancellation_state;
-      if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
-         static_cast<void>(operation->cancel_before_start());
       }
       co_await state->execute(operation);
       if constexpr (!std::is_void_v<Result>) {

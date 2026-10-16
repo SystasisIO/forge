@@ -3,6 +3,7 @@
 #include <boost/asio/awaitable.hpp>
 
 #include <array>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <optional>
@@ -36,11 +37,17 @@ class transaction_participant_impl final : public forge::db::core::transaction_p
                                                   forge::db::core::participant_access& access) override;
    boost::asio::awaitable<void> prepare_commit(forge::db::core::participant_access& access) override;
 
+   void begin_allocation();
+   void end_allocation() noexcept;
+   void begin_allocation_restore(std::size_t count);
+   void publish_restored_allocation(allocation_change value) noexcept;
+   void fail_allocation_restore() noexcept;
    void remember_allocation(forge::db::ids::object_id type, std::uint64_t next_instance);
    void use_backend_writes(bool value) noexcept;
    [[nodiscard]] change_set& changes() noexcept;
    [[nodiscard]] const change_set& changes() const noexcept;
    [[nodiscard]] bool finalized() const noexcept;
+   [[nodiscard]] bool transactional_allocations() const noexcept;
    [[nodiscard]] std::size_t committed_mutation_count() const noexcept;
    [[nodiscard]] bool add_precommit_observer(std::shared_ptr<precommit_observer> value);
    boost::asio::awaitable<void> run_precommit_observers();
@@ -52,6 +59,7 @@ class transaction_participant_impl final : public forge::db::core::transaction_p
    struct savepoint_frame {
       forge::db::core::savepoint_id_t id = 0;
       std::size_t mutation_count = 0;
+      std::size_t allocation_count = 0;
    };
 
    void release_writer() noexcept;
@@ -68,6 +76,8 @@ class transaction_participant_impl final : public forge::db::core::transaction_p
    change_set changes_;
    std::optional<savepoint_frame> pending_savepoint_;
    std::vector<savepoint_frame> savepoints_;
+   std::atomic_bool allocation_in_flight_{false};
+   bool allocation_restore_failed_ = false;
    bool finalized_ = false;
    bool preparing_commit_ = false;
    bool backend_writes_ = false;

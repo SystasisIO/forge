@@ -7,6 +7,9 @@
 #include <vector>
 
 import forge.chain.savanna.finality_core;
+import forge.chain.savanna.extensions;
+import forge.chain.savanna.exceptions;
+import forge.chain.protocol.types;
 import forge.chain.savanna.policy;
 import forge.chain.savanna.qc;
 import forge.chain.savanna.rank;
@@ -54,6 +57,19 @@ savanna::digest packed_finality_digest(const savanna::finality_core& core) {
    auto encoder = forge::crypto::digest::sha256::encoder{};
    core.pack_for_digest(encoder);
    return encoder.result();
+}
+
+BOOST_AUTO_TEST_CASE(chain_savanna_counter_commitment_v4_rejects_previous_v3_history) {
+   static_assert(savanna::state_commitment_version == 4U);
+   auto extensions = forge::chain::protocol::extensions{
+       {savanna::finality_extension_id, forge::raw::pack(savanna::finality_extension{})},
+       {savanna::state_commitment_extension_id, forge::raw::pack(savanna::state_commitment{})},
+   };
+   BOOST_CHECK_EQUAL(savanna::decode_header_extensions(extensions).commitment.version, 4U);
+   extensions.back().second = forge::raw::pack(savanna::state_commitment{.version = 3U});
+   const auto original_bytes = extensions.back().second;
+   BOOST_CHECK_THROW(savanna::decode_header_extensions(extensions), savanna::exceptions::invalid_extension);
+   BOOST_CHECK(extensions.back().second == original_bytes);
 }
 
 BOOST_AUTO_TEST_CASE(chain_savanna_policy_validates_strict_majority_and_keys) {

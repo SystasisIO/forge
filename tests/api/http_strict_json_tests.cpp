@@ -69,6 +69,10 @@ struct body_input {
    forge::api::http::body<payload> document;
 };
 
+struct boolean_input {
+   bool value = false;
+};
+
 struct route_input {
    std::string tag;
    std::int8_t count = 0;
@@ -110,6 +114,7 @@ class api
    virtual boost::asio::awaitable<optional_input> optional_only(optional_input value) = 0;
    virtual boost::asio::awaitable<route_default_input> route_default(route_default_input value) = 0;
    virtual boost::asio::awaitable<required_optional_input> required_optional(required_optional_input value) = 0;
+   virtual boost::asio::awaitable<bool> boolean(boolean_input value) = 0;
    virtual boost::asio::awaitable<void>
    stream(std::string tag, payload value, forge::api::core::stream_writer<reply> output) = 0;
 };
@@ -131,6 +136,7 @@ class implementation final : public api {
    boost::asio::awaitable<optional_input> optional_only(optional_input value) override;
    boost::asio::awaitable<route_default_input> route_default(route_default_input value) override;
    boost::asio::awaitable<required_optional_input> required_optional(required_optional_input value) override;
+   boost::asio::awaitable<bool> boolean(boolean_input value) override;
    boost::asio::awaitable<void>
    stream(std::string tag, payload value, forge::api::core::stream_writer<reply> output) override;
 
@@ -179,6 +185,7 @@ struct fixture {
 BOOST_DESCRIBE_STRUCT(child, (), (count, maybe))
 BOOST_DESCRIBE_STRUCT(payload, (), (count, wide, nested, selected, maybe))
 BOOST_DESCRIBE_STRUCT(body_input, (), (document))
+BOOST_DESCRIBE_STRUCT(boolean_input, (), (value))
 BOOST_DESCRIBE_STRUCT(route_input, (), (tag, count, wide))
 BOOST_DESCRIBE_STRUCT(optional_input, (), (count, wide))
 BOOST_DESCRIBE_STRUCT(route_default_input, (), (tag, limit))
@@ -214,6 +221,7 @@ FORGE_API(::forge::tests::http_strict_json::api, FORGE_API_CONTRACT("http-strict
                                  ::forge::tests::http_strict_json::route_default_input),
           FORGE_API_METHOD_TYPED(required_optional, ::forge::tests::http_strict_json::required_optional_input,
                                  ::forge::tests::http_strict_json::required_optional_input),
+          FORGE_API_METHOD_TYPED(boolean, ::forge::tests::http_strict_json::boolean_input, bool),
           FORGE_API_METHOD(stream, tag, value))
 FORGE_HTTP_API(::forge::tests::http_strict_json::api,
                FORGE_HTTP_POST(typed, "/strict/typed", ok),
@@ -223,7 +231,7 @@ FORGE_HTTP_API(::forge::tests::http_strict_json::api,
                FORGE_HTTP_POST(optional_only, "/strict/optional-only", ok),
                FORGE_HTTP_POST(route_default, "/strict/route-default/:tag?limit={limit}", ok),
                FORGE_HTTP_POST(required_optional, "/strict/required-optional", ok),
-               FORGE_HTTP_POST(stream, "/strict/stream/:tag", ok))
+               FORGE_HTTP_POST(boolean, "/strict/boolean", ok), FORGE_HTTP_POST(stream, "/strict/stream/:tag", ok))
 
 FORGE_API(::forge::tests::http_strict_json::response_api, FORGE_API_CONTRACT("http-strict-json-response", 1, 0),
           FORGE_API_METHOD_TYPED(read, ::forge::tests::http_strict_json::response_request,
@@ -274,6 +282,11 @@ boost::asio::awaitable<route_default_input> implementation::route_default(route_
 boost::asio::awaitable<required_optional_input> implementation::required_optional(required_optional_input value) {
    ++calls;
    co_return value;
+}
+
+boost::asio::awaitable<bool> implementation::boolean(boolean_input value) {
+   ++calls;
+   co_return value.value;
 }
 
 boost::asio::awaitable<void>
@@ -532,6 +545,36 @@ void check_remote_identity(const forge::exceptions::base& error, forge::api::cor
 }
 
 BOOST_AUTO_TEST_SUITE(http_strict_json_loopback)
+
+BOOST_AUTO_TEST_CASE(bool_scalar_roundtrips_through_binding_and_proxy_without_integer_coercion) {
+   auto value = fixture{};
+   auto remote = forge::api::http::proxy<api>{*value.client};
+   const auto route = route_case{"/strict/boolean", "boolean"};
+   for (const auto expected : std::array{false, true}) {
+      BOOST_TEST_CONTEXT("value=" << expected) {
+         const auto* literal = expected ? "true" : "false";
+         const auto before = value.service->calls.load();
+         const auto response = value.post(route, std::string{"{\"value\":"} + literal + '}');
+         BOOST_REQUIRE_EQUAL(response.result_int(), 200U);
+         BOOST_TEST(response.body() == literal);
+         BOOST_TEST(value.service->calls.load() == before + 1U);
+
+         const auto decoded = forge::asio::blocking::run(value.runtime, remote.boolean(boolean_input{expected}));
+         BOOST_TEST(decoded == expected);
+         BOOST_TEST(value.service->calls.load() == before + 2U);
+      }
+   }
+
+   for (const auto* json : {"0", "1", "\"true\"", "null"}) {
+      BOOST_TEST_CONTEXT("invalid bool=" << json) {
+         const auto before = value.service->calls.load();
+         const auto response = value.post(route, std::string{"{\"value\":"} + json + '}');
+         BOOST_TEST(response.result_int() == 422U);
+         BOOST_TEST(response.body().find("validation_error") != std::string::npos);
+         BOOST_TEST(value.service->calls.load() == before);
+      }
+   }
+}
 
 BOOST_AUTO_TEST_CASE(supported_routes_and_proxy_success_controls_are_usable) {
    auto value = fixture{};

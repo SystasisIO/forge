@@ -9,6 +9,24 @@ This is a low-level VM library. It executes architecture-neutral WASM bytes;
 the consuming product owns contract selection, code caching, scheduling,
 state access, resource billing, and the host functions exposed to a guest.
 
+`execute_numeric(opcodes, span<const expr_value>)` dispatches one raw numeric
+operation through the same interpreter overloads and existing private SoftFloat
+helpers. Its closed domain is the 62 MVP f32/f64 comparisons/arithmetic and
+FP/integer conversions, including bit reinterpretation. Constants, control,
+memory and integer-only operations reject with `exceptions::unsupported_numeric`;
+wrong one/two-operand arity rejects with `exceptions::numeric_arity`. Existing
+conversion failures retain `exceptions::interpreter`; consumers classify the
+known conversion family without parsing exception text.
+
+The caller must already be on its host stack with VM signal recovery NULL,
+as established by `invoke_without_signal_recovery` for an optimizing-runtime
+callback. The primitive owns the existing `floating_point_environment` guard,
+restoring all caller SoftFloat TLS state on success or exception. It owns no
+signal checkpoint, stack switch, trap transport, parser or alternative numeric
+engine. Returning to generated code and transporting a trap remain executor
+responsibilities. Raw operand/result slots preserve existing NaN payloads and
+signed zero; no alternative native floating-point arithmetic is introduced.
+
 ## Package Integration
 
 ```cmake
@@ -65,6 +83,31 @@ executing lane its own compiled module, context, linear memory, mutable host
 state, and deadline guard.
 Host-function registration is static per `registered_host_functions` type and
 must finish during process startup before backend construction.
+
+SoftFloat state is thread-local in the owning dependency target. Guest entry
+(including start functions) uses nearest-even rounding, tininess after
+rounding, zero exception flags and extended precision 80, independently of
+the caller's state. A nested invocation and every host-function boundary
+restore their caller's exact four values on return or exception. Changing
+rounding in a host callback must not affect subsequent guest arithmetic.
+
+The real reusable guard is `forge.vm.wasm.interpret.floating_point_environment`.
+An execution adapter that uses it must construct the guard **outside** its
+guest signal/trap boundary, with VM recovery suspended before constructing
+the guard and throughout its destruction. The existing two-mode callback
+adapter owns that suspension: both numeric roots keep argument conversion,
+saved-state cleanup and result conversion inside it; host gateways keep the
+complete registered wrapper and user callback inside it, without an inner
+hardware-fault checkpoint. Root entry saves the original caller environment
+before custom argument conversion, then recanonicalizes after conversion
+before executing the guest; throwing converters restore the original caller
+too. Guest-pointer validation remains typed. Genuine
+C++ host SIGSEGV/SIGBUS is foreign/fatal; no host-RAII cleanup is promised on
+that fatal path. Pending legacy watchdog interruption is recovered only on
+safe guest reentry. Do not reset state on every internal WASM call or expose
+SoftFloat globals as a second VM API.
+After changing ordinary SoftFloat objects to TLS, rebuild the full archive
+and all consumers; old ordinary-state and new TLS objects cannot be mixed.
 
 ## Cookbook: Load Canonical WASM Bytes
 
@@ -217,6 +260,52 @@ On expiry, the callback disables the backend's code pages. The guarded signal
 path interrupts execution and `timed_run` reports
 `forge::vm::wasm::interpret::exceptions::timeout`. Do not catch and ignore this exception
 inside the timed callable.
+
+### Absolute Deadline And Neutral External Interruption
+
+The additive overload `backend::timed_run(steady_clock::time_point,
+interrupt_options, Work)` uses the same guard/protection algorithm and the
+existing single watchdog thread, with stop callbacks rather than an additional
+per-invocation thread. `interrupt_options::cancel` is ordinary cancellation;
+`external` is a neutral caller-owned notification. At the one-shot claim,
+cancellation takes priority, then an already expired **original absolute
+deadline**, then external notification. The first claimed cause is sticky.
+Preexisting cancellation, expiry or external notification does not run Work.
+The categories are `exceptions::canceled` (4010003), `exceptions::timeout`
+(4010001) and `exceptions::interrupted` (4010008), respectively.
+
+A notification arriving after Work admission can disable that backend's code
+pages. Only its existing owned-code fault, bound to the same mapping and this
+scope's fired cause, may become an interruption. Genuine memory, arithmetic,
+host/C++ exceptions and an ordinary timeout keep their original categories,
+even if a notification is pending. Host callbacks finish their complete C++
+cleanup before guest reentry can trap. A successful callable with a pending
+claimed cause reports that cause after guard teardown. Stop callbacks are
+unregistered and the timer joined outside their mutex before code is reenabled
+and borrowed backend/TLS state is released. A late request after return is inert.
+The existing two-argument/custom-watchdog API retains its original timeout
+semantics, including expiry during guard destruction. All duration-constructor
+callbacks, including explicit stop, run on the existing timer thread and never
+reenter the requester. Only absolute-deadline stop callbacks may run synchronously
+on the requester. The existing sole atomic pending-protection count is the truth
+for both POSIX and private Darwin readers, with no separately maintained boolean:
+publish before disabling code, restore code before retirement.
+
+There is at most one active **typed** timed scope per code mapping. A nested
+timed scope sharing that mapping, when either scope is typed, fails with
+`exceptions::execution_unavailable` before its Work; page protection cannot
+represent independent owners. This does not change legacy+legacy behavior.
+Separate backends/modules for the exact same WASM contract have independent
+mappings and may nest through the existing host boundary; they never consume
+an ancestor's reason. This is not a claim of arbitrary same-mapping nested
+interruption support. Backends still must not execute concurrently.
+
+Forge does not associate `external` with a compiler, code identity, readiness,
+receipt, savepoint or retry. The consuming product must verify those facts and
+perform any full-transaction rollback/retry itself. The deadline is never
+extended to make a readiness threshold reachable: for example, a product's
+deadline shorter than its 500 ms compile-readiness threshold can legitimately
+expire without any readiness interruption.
 
 ## Cookbook: Read A Return Value
 
@@ -464,10 +553,34 @@ Product-specific profiles should use `max_control_depth` for normal nesting
 policy and should not opt into the legacy counter.
 
 Products may define another options type with the same named static members or
-use the runtime `options` record. Do not default-construct `options` and leave
-its scalar fields uninitialized. Fill every field from validated policy before
-passing it to a backend. In a blockchain, changing any execution or validation
+use the runtime `options` record. `options{}` now contains the generic parser
+defaults; untrusted production code still requires an explicit bounded policy.
+Use `resolve_options(profile)` to create an owned value from a custom/static
+profile. It uses the canonical parser getters, retains section-limit
+inheritance and preserves omitted optional checker traits through the
+`check_*` flags. In a blockchain, changing any execution or validation
 limit is a protocol change and must be activated consistently.
+
+```cpp
+import forge.vm.wasm.interpret.backend;
+
+auto snapshot = forge::vm::wasm::interpret::resolve_options(
+   forge::vm::wasm::interpret::compatibility_options{});
+using validator = forge::vm::wasm::interpret::backend<
+   std::nullptr_t, forge::vm::wasm::interpret::null_backend,
+   forge::vm::wasm::interpret::options>;
+auto validated = validator{code, nullptr, snapshot};
+```
+
+`interpreter::parser<Host, Options, DebugInfo>` is an existing public alias for
+consumers that need the canonical typed instruction sequence. After parsing
+and `module::finalize()`, call `module::validate_instantiation()` before using
+that sequence: parsing can defer an element-bound failure, and initial data
+segments must fit declared initial memory. This method does not execute start
+or bind imports; validate every import against the product's existing typed
+host registry before execution. Do not import backend partitions as a public
+API. See the [options migration note](../../../../docs/releases/unreleased-wasm-options-snapshot.md)
+for the approved record-layout change.
 
 ## Boundaries
 

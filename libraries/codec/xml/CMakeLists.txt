@@ -10,7 +10,7 @@ forge_target_modules_at(forge_codec_xml codec/xml)
 target_include_directories(
    forge_codec_xml
    PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS}
-   PRIVATE "${FORGE_XML_PUGIXML_SOURCE_DIR}"
+   PRIVATE "$<BUILD_INTERFACE:${FORGE_XML_PUGIXML_SOURCE_DIR}>"
 )
 target_link_libraries(
    forge_codec_xml PUBLIC
