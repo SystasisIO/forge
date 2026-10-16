@@ -32,10 +32,12 @@ class transaction {
    [[nodiscard]] version_id_t version() const;
    [[nodiscard]] std::optional<root> base() const;
    [[nodiscard]] std::optional<staged_version> staged() const;
+   [[nodiscard]] std::optional<root> restored() const;
 
    boost::asio::awaitable<staged_version> preview(std::span<const mutation> mutations);
    boost::asio::awaitable<staged_version> stage(std::span<const mutation> mutations,
                                                 std::optional<digest> expected_state_root = std::nullopt);
+   boost::asio::awaitable<checkpoint_summary> restore_checkpoint(checkpoint_source source, checkpoint_verify verify);
 
  private:
    struct impl;
@@ -53,6 +55,11 @@ class transaction_access {
    [[nodiscard]] static transaction make(forge::db::core::transaction& active, forge::db::core::family family,
                                          std::string domain, digest namespace_hash, limits bounds,
                                          version_id_t candidate, std::optional<root> base);
+   [[nodiscard]] static transaction make_restore(forge::db::core::transaction& active,
+                                                 std::shared_ptr<forge::db::core::driver> owner,
+                                                 forge::db::core::family family, std::string domain,
+                                                 digest namespace_hash, limits bounds, root expected,
+                                                 checkpoint_limits checkpoint_bounds);
 };
 
 } // namespace detail

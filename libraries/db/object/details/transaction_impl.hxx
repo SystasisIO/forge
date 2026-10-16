@@ -26,6 +26,7 @@ struct transaction::impl {
    forge::db::core::family family;
    transaction::ensure_registered_fn ensure_registered;
    transaction::allocate_id_fn allocate_id;
+   detail::transaction_access::tracked_allocate_id_fn allocate_tracked;
    std::shared_ptr<detail::transaction_participant_impl> participant;
    std::vector<std::shared_ptr<interceptor>> interceptors;
    std::shared_ptr<const void> store_identity;

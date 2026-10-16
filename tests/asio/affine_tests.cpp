@@ -1,4 +1,5 @@
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <future>
@@ -7,6 +8,7 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <type_traits>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -25,6 +27,7 @@
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 import forge.asio.affine;
 import forge.asio.blocking;
@@ -223,7 +226,342 @@ boost::asio::awaitable<bool> execute_after_precancel(forge::asio::affine::execut
    co_return false;
 }
 
+template <typename Operation>
+boost::asio::awaitable<bool> check_cancellation_scope(Operation& operation, std::promise<void>& timer_ready,
+                                                      bool throw_policy) {
+   auto filters = std::make_shared<std::array<unsigned, 2>>();
+   co_await boost::asio::this_coro::reset_cancellation_state(
+       [filters](boost::asio::cancellation_type_t type) {
+          ++(*filters)[0];
+          return type & boost::asio::cancellation_type::partial;
+       },
+       [filters](boost::asio::cancellation_type_t type) {
+          ++(*filters)[1];
+          return type & boost::asio::cancellation_type::partial;
+       });
+   co_await boost::asio::this_coro::throw_if_cancelled(throw_policy);
+   co_await operation();
+   const auto preserved = (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy;
+   auto timer = boost::asio::steady_timer{co_await boost::asio::this_coro::executor};
+   timer.expires_after(std::chrono::milliseconds{500}); // Finite regression control, not a runtime policy.
+   timer_ready.set_value();
+   auto error = boost::system::error_code{};
+   co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   co_return preserved &&
+       (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy&& error ==
+           boost::asio::error::operation_aborted &&
+       (*filters)[0] == 2U && (*filters)[1] == 2U &&
+       cancellation.cancelled() == boost::asio::cancellation_type::partial;
+}
+
+template <typename Operation>
+boost::asio::awaitable<bool> check_active_cancellation_scope(Operation& operation, bool throw_policy) {
+   auto filters = std::make_shared<std::array<unsigned, 2>>();
+   co_await boost::asio::this_coro::reset_cancellation_state(
+       [filters](boost::asio::cancellation_type_t type) {
+          ++(*filters)[0];
+          return type & boost::asio::cancellation_type::partial;
+       },
+       [filters](boost::asio::cancellation_type_t type) {
+          ++(*filters)[1];
+          return type & boost::asio::cancellation_type::partial;
+       });
+   co_await boost::asio::this_coro::throw_if_cancelled(throw_policy);
+   co_await operation();
+   const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+   co_return cancellation.cancelled() == boost::asio::cancellation_type::partial &&
+       (co_await boost::asio::this_coro::throw_if_cancelled()) == throw_policy && (*filters)[0] == 2U &&
+       (*filters)[1] == 2U;
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(asio_affine_preserves_caller_filters_throw_policy_and_next_timer_on_all_exits) {
+   for (const auto throw_policy : {false, true}) {
+      for (auto scenario = 0U; scenario < 3U; ++scenario) {
+         auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+         auto lane = forge::asio::affine::lane{};
+         const auto cleanup = boost::scope::scope_exit{[&] {
+            try {
+               forge::asio::blocking::run(runtime, lane.shutdown());
+            } catch (...) {
+               std::terminate();
+            }
+         }};
+         auto executor = lane.get_executor();
+         auto calls = 0U;
+         auto expected_exit = false;
+         auto action = [&]() -> boost::asio::awaitable<void> {
+            if (scenario == 2U)
+               lane.request_stop();
+            try {
+               co_await executor.execute({}, [scenario, &calls] {
+                  ++calls;
+                  if (scenario == 1U)
+                     throw std::runtime_error{"expected affine work failure"};
+               });
+               expected_exit = scenario == 0U;
+            } catch (const forge::asio::exceptions::rejected&) {
+               if (scenario != 2U)
+                  throw;
+               expected_exit = true;
+            } catch (const std::runtime_error&) {
+               if (scenario != 1U)
+                  throw;
+               expected_exit = true;
+            }
+         };
+         auto timer_ready = std::promise<void>{};
+         auto ready = timer_ready.get_future();
+         auto cancellation = boost::asio::cancellation_signal{};
+         auto result =
+             boost::asio::co_spawn(runtime.context(), check_cancellation_scope(action, timer_ready, throw_policy),
+                                   boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+         if (ready.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         boost::asio::post(runtime.context(), [&] {
+            cancellation.emit(boost::asio::cancellation_type::terminal); // Caller filter rejects this type.
+            cancellation.emit(boost::asio::cancellation_type::partial);
+         });
+         if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         BOOST_CHECK(result.get());
+         BOOST_CHECK(expected_exit);
+         BOOST_CHECK_EQUAL(calls, scenario == 2U ? 0U : 1U);
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(asio_affine_supports_non_default_constructible_results) {
+   using result_type = std::unique_ptr<int, void (*)(int*)>;
+   static_assert(!std::is_default_constructible_v<result_type>);
+   auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+   auto lane = forge::asio::affine::lane{};
+   const auto cleanup = boost::scope::scope_exit{[&] {
+      try {
+         forge::asio::blocking::run(runtime, lane.shutdown());
+      } catch (...) {
+         std::terminate();
+      }
+   }};
+   auto result = forge::asio::blocking::run(runtime, lane.get_executor().execute({}, [] {
+      return result_type{new int{42}, +[](int* value) { delete value; }};
+   }));
+   BOOST_REQUIRE(result != nullptr);
+   BOOST_CHECK_EQUAL(*result, 42);
+}
+
+BOOST_AUTO_TEST_CASE(asio_affine_active_completion_and_shutdown_preserve_caller_cancellation_history) {
+   for (const auto throw_policy : {false, true}) {
+      for (auto scenario = 0U; scenario < 3U; ++scenario) {
+         auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+         auto lane = forge::asio::affine::lane{};
+         auto blocker = std::make_shared<blocking_operation>();
+         auto result = std::future<bool>{};
+         auto supporting = std::future<void>{};
+         auto executor = lane.get_executor();
+         const auto failure = std::make_exception_ptr(std::runtime_error{"expected active failure"});
+         auto expected_exit = false;
+         auto calls = 0U;
+         auto action = [&]() -> boost::asio::awaitable<void> {
+            if (scenario == 2U) {
+               co_await lane.shutdown();
+               expected_exit = true;
+               co_return;
+            }
+            try {
+               const auto value = co_await executor.execute({}, [&, blocker] {
+                  ++calls;
+                  blocker->run();
+                  if (scenario == 1U)
+                     std::rethrow_exception(failure);
+                  return 42;
+               });
+               expected_exit = scenario == 0U && value == 42;
+            } catch (...) {
+               if (scenario != 1U || std::current_exception() != failure)
+                  throw;
+               expected_exit = true;
+            }
+         };
+         auto cancellation = boost::asio::cancellation_signal{};
+         auto emitted = std::promise<void>{};
+         auto emission = emitted.get_future();
+         const auto cleanup = boost::scope::scope_exit{[&] {
+            blocker->release();
+            if (result.valid()) {
+               if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+                  std::terminate();
+               try {
+                  static_cast<void>(result.get());
+               } catch (...) {
+               }
+            }
+            if (supporting.valid()) {
+               if (supporting.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+                  std::terminate();
+               try {
+                  supporting.get();
+               } catch (...) {
+                  std::terminate();
+               }
+            }
+            try {
+               forge::asio::blocking::run(runtime, lane.shutdown());
+            } catch (...) {
+               std::terminate();
+            }
+         }};
+         if (scenario == 2U) {
+            supporting = boost::asio::co_spawn(runtime.context(), executor.execute({}, [blocker] { blocker->run(); }),
+                                               boost::asio::use_future);
+            if (!wait_until([&] {
+                   const auto lock = std::scoped_lock{blocker->mutex};
+                   return blocker->started;
+                }))
+               std::terminate();
+         }
+         result =
+             boost::asio::co_spawn(runtime.context(), check_active_cancellation_scope(action, throw_policy),
+                                   boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+         if (!wait_until([&] {
+                const auto lock = std::scoped_lock{blocker->mutex};
+                return blocker->started && (scenario != 2U || lane.snapshot().stopped);
+             }))
+            std::terminate();
+         boost::asio::post(runtime.context(), [&] {
+            cancellation.emit(boost::asio::cancellation_type::terminal);
+            cancellation.emit(boost::asio::cancellation_type::partial);
+            emitted.set_value();
+         });
+         if (emission.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         BOOST_CHECK(result.wait_for(std::chrono::milliseconds{10}) == std::future_status::timeout);
+         blocker->release();
+         if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         BOOST_CHECK(result.get());
+         BOOST_CHECK(expected_exit);
+         BOOST_CHECK_EQUAL(calls, scenario == 2U ? 0U : 1U);
+      }
+   }
+}
+
+BOOST_AUTO_TEST_CASE(asio_affine_queued_cancel_preserves_history_and_next_timer) {
+   auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+   auto lane = forge::asio::affine::lane{};
+   auto blocker = std::make_shared<blocking_operation>();
+   auto active = std::future<void>{};
+   auto result = std::future<bool>{};
+   auto executor = lane.get_executor();
+   auto calls = 0U;
+   auto canceled = false;
+   auto history_preserved = false;
+   auto action = [&]() -> boost::asio::awaitable<void> {
+      try {
+         co_await executor.execute({}, [&] { ++calls; });
+      } catch (const forge::asio::exceptions::canceled&) {
+         canceled = true;
+      }
+      const auto state = co_await boost::asio::this_coro::cancellation_state;
+      history_preserved = state.cancelled() == boost::asio::cancellation_type::partial &&
+                          !(co_await boost::asio::this_coro::throw_if_cancelled());
+   };
+   auto timer_ready = std::promise<void>{};
+   auto ready = timer_ready.get_future();
+   auto cancellation = boost::asio::cancellation_signal{};
+   const auto cleanup = boost::scope::scope_exit{[&] {
+      lane.request_stop();
+      blocker->release();
+      if (result.valid()) {
+         if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         try {
+            static_cast<void>(result.get());
+         } catch (...) {
+         }
+      }
+      if (active.valid()) {
+         if (active.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+            std::terminate();
+         try {
+            active.get();
+         } catch (...) {
+            std::terminate();
+         }
+      }
+      try {
+         forge::asio::blocking::run(runtime, lane.shutdown());
+      } catch (...) {
+         std::terminate();
+      }
+   }};
+   active = boost::asio::co_spawn(runtime.context(), executor.execute({}, [blocker] { blocker->run(); }),
+                                  boost::asio::use_future);
+   if (!wait_until([&] {
+          const auto lock = std::scoped_lock{blocker->mutex};
+          return blocker->started;
+       }))
+      std::terminate();
+   result = boost::asio::co_spawn(runtime.context(), check_cancellation_scope(action, timer_ready, false),
+                                  boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   if (!wait_until([&] { return lane.snapshot().pending == 1U; }))
+      std::terminate();
+   boost::asio::post(runtime.context(), [&] { cancellation.emit(boost::asio::cancellation_type::partial); });
+   if (ready.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+      std::terminate();
+   boost::asio::post(runtime.context(), [&] { cancellation.emit(boost::asio::cancellation_type::partial); });
+   if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+      std::terminate();
+   BOOST_CHECK(result.get());
+   BOOST_CHECK(canceled);
+   BOOST_CHECK(history_preserved);
+   BOOST_CHECK_EQUAL(calls, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(asio_affine_shutdown_preserves_filters_and_next_timer_on_success) {
+   for (const auto throw_policy : {false, true}) {
+      auto runtime = forge::asio::runtime{{.worker_threads = 1}};
+      auto lane = forge::asio::affine::lane{};
+      auto timer_ready = std::promise<void>{};
+      auto ready = timer_ready.get_future();
+      auto cancellation = boost::asio::cancellation_signal{};
+      auto result = std::future<bool>{};
+      auto stopped = false;
+      auto action = [&]() -> boost::asio::awaitable<void> {
+         co_await lane.shutdown();
+         stopped = lane.snapshot().stopped;
+      };
+      const auto cleanup = boost::scope::scope_exit{[&] {
+         if (result.valid()) {
+            if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+               std::terminate();
+            try {
+               static_cast<void>(result.get());
+            } catch (...) {
+            }
+         }
+         try {
+            forge::asio::blocking::run(runtime, lane.shutdown());
+         } catch (...) {
+            std::terminate();
+         }
+      }};
+      result = boost::asio::co_spawn(runtime.context(), check_cancellation_scope(action, timer_ready, throw_policy),
+                                     boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+      if (ready.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      boost::asio::post(runtime.context(), [&] {
+         cancellation.emit(boost::asio::cancellation_type::terminal);
+         cancellation.emit(boost::asio::cancellation_type::partial);
+      });
+      if (result.wait_for(std::chrono::seconds{2}) != std::future_status::ready)
+         std::terminate();
+      BOOST_CHECK(result.get());
+      BOOST_CHECK(stopped);
+   }
+}
 
 BOOST_AUTO_TEST_CASE(asio_affine_runs_every_operation_on_one_owned_thread) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

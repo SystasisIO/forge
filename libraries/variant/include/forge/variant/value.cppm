@@ -37,6 +37,7 @@ using Int = boost::multiprecision::number<boost::multiprecision::cpp_int_backend
 
 void to_variant(const blob& var, variant& vo);
 void from_variant(const variant& var, blob& vo);
+void to_variant(const bool& var, variant& vo);
 void to_variant(const uint8_t& var, variant& vo);
 void from_variant(const variant& var, uint8_t& vo);
 void to_variant(const int8_t& var, variant& vo);

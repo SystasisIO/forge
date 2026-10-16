@@ -1,4 +1,8 @@
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/system/error_code.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -36,6 +40,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <typeindex>
 #include <type_traits>
@@ -58,8 +63,10 @@ import forge.db.object.index;
 import forge.db.object.object;
 import forge.db.core.driver;
 import forge.db.core.record;
+import forge.db.core.participant;
 import forge.db.object.snapshot;
 import forge.db.object.store;
+import forge.db.object.system;
 import forge.db.object.transaction;
 import forge.raw.raw;
 
@@ -304,7 +311,9 @@ struct memory_state {
    std::size_t scan_calls = 0;
    std::size_t snapshot_calls = 0;
    std::size_t commit_calls = 0;
+   std::size_t mutation_calls = 0;
    std::size_t fail_commits = 0;
+   std::optional<std::size_t> fail_put_after;
    std::size_t active_writes = 0;
    std::size_t rollback_calls = 0;
    std::size_t destroyed_without_finish = 0;
@@ -360,6 +369,17 @@ class memory_session final : public forge::db::core::session {
 
    boost::asio::awaitable<void> put(forge::db::core::family, forge::db::core::record_key key,
                                     std::vector<std::byte> value) override {
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->mutation_calls;
+         if (state_->fail_put_after) {
+            if (*state_->fail_put_after == 0U) {
+               state_->fail_put_after.reset();
+               throw std::runtime_error{"injected object write failure"};
+            }
+            --*state_->fail_put_after;
+         }
+      }
       auto stored_key = key;
       working_[stored_key] = value;
       erased_.erase(stored_key);
@@ -368,6 +388,10 @@ class memory_session final : public forge::db::core::session {
    }
 
    boost::asio::awaitable<void> erase(forge::db::core::family, forge::db::core::record_key key) override {
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->mutation_calls;
+      }
       working_.erase(key);
       writes_.erase(key);
       erased_.insert(std::move(key));
@@ -847,6 +871,16 @@ class memory_driver : public forge::db::core::driver {
       return state_->records.size();
    }
 
+   [[nodiscard]] auto records() const {
+      const auto lock = std::scoped_lock{state_->mutex};
+      return state_->records;
+   }
+
+   [[nodiscard]] std::size_t mutation_calls() const noexcept {
+      const auto lock = std::scoped_lock{state_->mutex};
+      return state_->mutation_calls;
+   }
+
    void seed_record(forge::db::core::record_key key, std::vector<std::byte> value) {
       auto guard = std::scoped_lock{state_->mutex};
       state_->records[std::move(key)] = std::move(value);
@@ -921,6 +955,11 @@ class memory_driver : public forge::db::core::driver {
       state_->fail_commits = count;
    }
 
+   void fail_put_after(std::size_t successful_writes) {
+      auto guard = std::scoped_lock{state_->mutex};
+      state_->fail_put_after = successful_writes;
+   }
+
    [[nodiscard]] bool rollback_started() const noexcept {
       auto guard = std::scoped_lock{state_->mutex};
       return state_->rollback_started;
@@ -978,6 +1017,61 @@ template <typename Session> class session_driver : public forge::db::core::drive
    }
 
    std::shared_ptr<memory_state> state_ = std::make_shared<memory_state>();
+};
+
+class pausing_allocation_participant final : public forge::db::core::transaction_participant {
+ public:
+   explicit pausing_allocation_participant(boost::asio::any_io_executor executor)
+       : entered_event{executor, std::chrono::steady_clock::now() + std::chrono::seconds{2}},
+         release_event{executor, std::chrono::steady_clock::now() + std::chrono::seconds{2}} {}
+
+   std::string_view name() const noexcept override {
+      return "test.allocation.pause";
+   }
+   bool captures_mutations() const noexcept override {
+      return true;
+   }
+
+   boost::asio::awaitable<void> prepare_mutation(const forge::db::core::record_mutation& mutation) override {
+      sequence = !mutation.key.empty() && mutation.key.bytes().front() == std::byte{2};
+      if (sequence && fail_sequence) {
+         fail_sequence = false;
+         throw std::runtime_error{"allocation write veto"};
+      }
+      if (sequence && !entered) {
+         entered = true;
+         entered_event.cancel();
+         auto error = boost::system::error_code{};
+         co_await release_event.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
+         if (!released) {
+            throw std::runtime_error{"allocation barrier expired"};
+         }
+      }
+   }
+   void publish_mutation() noexcept override {
+      sequence_writes += sequence ? 1U : 0U;
+   }
+   boost::asio::awaitable<void> wait_entered() {
+      if (!entered) {
+         auto error = boost::system::error_code{};
+         co_await entered_event.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
+      }
+      if (!entered) {
+         throw std::runtime_error{"allocation was not admitted"};
+      }
+   }
+   void release() {
+      released = true;
+      release_event.cancel();
+   }
+
+   boost::asio::steady_timer entered_event;
+   boost::asio::steady_timer release_event;
+   bool entered = false;
+   bool released = false;
+   bool sequence = false;
+   bool fail_sequence = false;
+   std::size_t sequence_writes = 0;
 };
 
 class veto_interceptor final : public forge::db::object::interceptor {
@@ -1626,6 +1720,215 @@ BOOST_AUTO_TEST_CASE(db_object_ranked_projection_overflow_uses_public_exception)
    }());
 }
 
+BOOST_AUTO_TEST_CASE(db_object_require_pristine_keeps_same_transaction_and_alias_writer) {
+   auto runtime = forge::asio::runtime{};
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto store = co_await make_store(driver);
+      const auto before = driver->records();
+      const auto mutations = driver->mutation_calls();
+      const auto commits = driver->commit_calls();
+      auto core = co_await driver->begin_transaction();
+      {
+         auto active = co_await store.join(core);
+         auto alias = co_await store.join(active);
+         co_await store.require_pristine(alias);
+         BOOST_CHECK(driver->records() == before);
+         BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+         BOOST_CHECK_EQUAL(driver->commit_calls(), commits);
+         BOOST_CHECK_EQUAL(driver->active_writes(), 1U);
+         co_await alias.insert(make_account(42U, "provisioned", 1U, 1U));
+      }
+      // The Core-owned participant retains the SAME writer lease after both
+      // local Object wrappers retire; no second transaction or Revision scope.
+      BOOST_CHECK(core.claims_family(store.family()));
+      BOOST_CHECK_EQUAL(driver->active_writes(), 1U);
+      co_await core.commit();
+      BOOST_CHECK_EQUAL((co_await store.get(account::id_t{42U})).name, "provisioned");
+      auto occupied = co_await store.begin_transaction();
+      BOOST_CHECK_THROW(co_await store.require_pristine(occupied), forge::db::object::exceptions::invalid_descriptor);
+      co_await occupied.rollback();
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_require_pristine_rejects_every_nonheader_record_without_writes) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto mode : {0U, 1U, 2U, 3U, 4U}) {
+      auto driver = std::make_shared<memory_driver>();
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto store = co_await make_store(driver);
+         const auto created = co_await store.create<account>([](account& value) { value.name = "occupied"; });
+         static_cast<void>(created);
+         const auto kind = mode == 0U ? 0x10U : mode == 1U ? 0x20U : 0x02U;
+         auto extra = driver->first_key_with_kind(kind);
+         BOOST_REQUIRE(extra.has_value());
+         auto value = driver->record_value(*extra);
+         BOOST_REQUIRE(value.has_value());
+         // Keep only ONE authentic application/index/sequence record alongside
+         // the header. Sequence0 is still persisted occupancy, never "missing".
+         for (const auto& key : driver->keys()) {
+            if (key != header_record_key())
+               driver->erase_record(key);
+         }
+         if (mode == 2U)
+            std::fill(value->begin(), value->end(), std::byte{0});
+         if (mode == 3U) {
+            extra = forge::db::object::system::access::record_key(
+                forge::db::ids::object_id{.space = 0U, .type = 99U, .instance = 0U});
+            value = std::vector<std::byte>{std::byte{0xffU}};
+         } else if (mode == 4U) {
+            extra = forge::db::core::record_key{std::vector<std::byte>{std::byte{0xffU}}};
+            value = std::vector<std::byte>{std::byte{0xffU}};
+         }
+         driver->seed_record(*extra, *value);
+         const auto before = driver->records();
+         const auto mutations = driver->mutation_calls();
+         const auto commits = driver->commit_calls();
+         const auto scans = driver->scan_calls();
+         auto active = co_await store.begin_transaction();
+         BOOST_CHECK_THROW(co_await store.require_pristine(active), forge::db::object::exceptions::invalid_descriptor);
+         BOOST_CHECK_EQUAL(driver->scan_calls(), scans + 1U);
+         BOOST_CHECK(driver->records() == before);
+         BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+         BOOST_CHECK_EQUAL(driver->commit_calls(), commits);
+         co_await active.rollback();
+      }());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_object_require_pristine_rejects_wrong_owner_closed_and_backend_policy_before_scan) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store = co_await make_store(driver);
+      auto other = co_await forge::db::object::store::open(driver);
+      auto active = co_await store.begin_transaction();
+      const auto scans = driver->scan_calls();
+      BOOST_CHECK_THROW(co_await other.require_pristine(active), forge::db::object::exceptions::invalid_descriptor);
+      auto manual = forge::db::object::transaction{};
+      BOOST_CHECK_THROW(co_await store.require_pristine(manual), forge::db::object::exceptions::invalid_descriptor);
+      co_await active.rollback();
+      BOOST_CHECK_THROW(co_await store.require_pristine(active), forge::db::object::exceptions::transaction_closed);
+      BOOST_CHECK_EQUAL(driver->scan_calls(), scans);
+      {
+         auto raw = co_await driver->begin_transaction();
+         auto custom = forge::db::object::transaction{
+             raw, store.family(), [](forge::db::ids::object_id, std::type_index) {}, {}, {}};
+         BOOST_CHECK_THROW(co_await store.require_pristine(custom), forge::db::object::exceptions::invalid_descriptor);
+         co_await raw.rollback();
+         BOOST_CHECK_EQUAL(driver->scan_calls(), scans);
+      }
+      auto backend = co_await forge::db::object::store::open(
+          driver, forge::db::object::store::options{.writes = forge::db::object::write_policy::backend});
+      auto unsafe = co_await backend.begin_transaction();
+      BOOST_CHECK_THROW(co_await backend.require_pristine(unsafe),
+                        forge::db::object::exceptions::unsupported_operation);
+      BOOST_CHECK_EQUAL(driver->scan_calls(), scans);
+      co_await unsafe.rollback();
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_require_pristine_revalidates_actual_header_without_normalizing) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto malformed : {false, true}) {
+      auto driver = std::make_shared<memory_driver>();
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto store = co_await make_store(driver);
+         driver->replace_record(header_record_key(),
+                                malformed ? std::vector<std::byte>{std::byte{0xffU}} : packed_header(0U));
+         const auto before = driver->records();
+         const auto mutations = driver->mutation_calls();
+         auto active = co_await store.begin_transaction();
+         BOOST_CHECK_THROW(co_await store.require_pristine(active), forge::db::object::exceptions::invalid_header);
+         BOOST_CHECK(driver->records() == before);
+         BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+         co_await active.rollback();
+      }());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_object_open_existing_rejects_missing_header_without_mutation) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto populated : {false, true}) {
+      auto driver = std::make_shared<memory_driver>();
+      if (populated) {
+         driver->seed_record(forge::db::core::record_key{std::vector<std::byte>{std::byte{0x10U}}}, {std::byte{0x41U}});
+      }
+      const auto before = driver->records();
+      const auto mutations = driver->mutation_calls();
+      const auto commits = driver->commit_calls();
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         BOOST_CHECK_THROW((void)(co_await forge::db::object::store::open_existing(
+                               driver, forge::db::object::store::config{}, forge::db::object::store::options{})),
+                           forge::db::object::exceptions::invalid_header);
+         co_return;
+      }());
+      BOOST_CHECK(driver->records() == before);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+      BOOST_CHECK_EQUAL(driver->commit_calls(), commits);
+      BOOST_CHECK(!driver->record_value(header_record_key()).has_value());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_object_open_existing_preserves_current_records_and_allows_later_writes) {
+   auto runtime = forge::asio::runtime{};
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto original = co_await forge::db::object::store::open(driver);
+      original.register_object<db_object_tests::account_object>();
+      auto value = db_object_tests::account{};
+      value.id = db_object_tests::account::id_t{7U};
+      value.name = "existing";
+      value.balance = 42U;
+      co_await original.insert(value);
+      const auto before = driver->records();
+      const auto mutations = driver->mutation_calls();
+      const auto commits = driver->commit_calls();
+
+      auto opened = co_await forge::db::object::store::open_existing(driver, forge::db::object::store::config{},
+                                                                     forge::db::object::store::options{});
+      opened.register_object<db_object_tests::account_object>();
+      BOOST_CHECK(opened.header() == original.header());
+      BOOST_CHECK((co_await opened.get(value.id)) == value);
+      BOOST_CHECK(driver->records() == before);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+      BOOST_CHECK_EQUAL(driver->commit_calls(), commits);
+
+      co_await opened.modify(value.id, [](auto& stored) { ++stored.balance; });
+      BOOST_CHECK_EQUAL((co_await opened.get(value.id)).balance, 43U);
+      co_return;
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_open_existing_rejects_bad_headers_without_rewriting) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto kind : {0U, 1U, 2U}) {
+      auto driver = std::make_shared<memory_driver>();
+      const auto encoded = kind == 0U
+                               ? std::vector<std::byte>{std::byte{0xffU}}
+                               : packed_header(kind == 1U ? 0U : forge::db::object::header::current_version + 1U);
+      driver->seed_record(header_record_key(), encoded);
+      const auto before = driver->records();
+      const auto mutations = driver->mutation_calls();
+      const auto commits = driver->commit_calls();
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         if (kind == 0U) {
+            BOOST_CHECK_THROW((void)(co_await forge::db::object::store::open_existing(
+                                  driver, forge::db::object::store::config{}, forge::db::object::store::options{})),
+                              forge::db::object::exceptions::invalid_header);
+         } else {
+            BOOST_CHECK_THROW((void)(co_await forge::db::object::store::open_existing(
+                                  driver, forge::db::object::store::config{}, forge::db::object::store::options{})),
+                              forge::db::object::exceptions::incompatible_version);
+         }
+         co_return;
+      }());
+      BOOST_CHECK(driver->records() == before);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+      BOOST_CHECK_EQUAL(driver->commit_calls(), commits);
+   }
+}
+
 BOOST_AUTO_TEST_CASE(db_object_store_open_creates_and_reads_system_header) {
    auto runtime = forge::asio::runtime{};
    auto driver = std::make_shared<memory_driver>();
@@ -2141,6 +2444,167 @@ BOOST_AUTO_TEST_CASE(db_object_create_transaction_rollback_consumes_id) {
       BOOST_CHECK_EQUAL(committed.id.instance, 1U);
       BOOST_CHECK_EQUAL((co_await store.get(committed.id)).name, "committed");
       co_return;
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_transactional_allocation_trace_reads_zero_and_preserves_skipped_ids) {
+   auto runtime = forge::asio::runtime{};
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      const auto options =
+          forge::db::object::store::options{.id_allocation = forge::db::object::id_allocation_policy::transactional};
+      auto store = co_await make_store(driver, options);
+      const auto records = driver->record_count();
+      {
+         auto view = co_await store.begin_read();
+         BOOST_CHECK_EQUAL(co_await view.allocation_next<account_object>(), 0U);
+      }
+      BOOST_CHECK_EQUAL(driver->record_count(), records);
+      driver->seed_record(
+          forge::db::core::record_key{std::vector<std::byte>{std::byte{2}, std::byte{1}, std::byte{0}, std::byte{7}}},
+          std::vector<std::byte>(8U));
+      auto observer = std::make_shared<counting_observer>();
+      store.add_observer(observer);
+      auto tx = co_await store.begin_transaction();
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 0U);
+      co_await tx.insert(make_account(0, "reserved", 0, 0));
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 0U);
+      const auto created = co_await tx.create<account>([](auto& value) { value.name = "allocated"; });
+      BOOST_CHECK_EQUAL(created.id.instance, 1U);
+      const auto alias = co_await store.join(tx);
+      BOOST_CHECK_EQUAL(co_await alias.allocation_next<account_object>(), 2U);
+      BOOST_CHECK(tx.tracks_allocations());
+      BOOST_CHECK(alias.tracks_allocations());
+      const auto changes = tx.projected_changes();
+      BOOST_REQUIRE_EQUAL(changes.allocations.size(), 1U);
+      BOOST_CHECK_EQUAL(changes.allocations.front().type.instance, 0U);
+      BOOST_CHECK_EQUAL(changes.allocations.front().before, 0U);
+      BOOST_CHECK_EQUAL(changes.allocations.front().after, 2U);
+      co_await tx.commit();
+      BOOST_REQUIRE(observer->last.has_value());
+      BOOST_CHECK(observer->last->allocations == changes.allocations);
+
+      auto erased = co_await store.begin_transaction();
+      co_await erased.erase(created.id);
+      co_await erased.erase(account::id_t{0});
+      BOOST_CHECK(erased.projected_changes().allocations.empty());
+      BOOST_CHECK_EQUAL(co_await erased.allocation_next<account_object>(), 2U);
+      co_await erased.commit();
+      auto reopened = co_await make_store(driver, options);
+      auto view = co_await reopened.begin_read();
+      BOOST_CHECK_EQUAL(co_await view.allocation_next<account_object>(), 2U);
+      co_return;
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_counter_only_failed_initializer_and_savepoint_trace_are_transactional) {
+   auto runtime = forge::asio::runtime{};
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      auto observer = std::make_shared<counting_observer>();
+      store.add_observer(observer);
+      auto tx = co_await store.begin_transaction();
+      BOOST_CHECK_THROW(co_await tx.create<account>([](auto&) { throw std::runtime_error{"initializer"}; }),
+                        std::runtime_error);
+      BOOST_CHECK(tx.projected_changes().mutations.empty());
+      BOOST_CHECK(!tx.projected_changes().empty());
+      BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 1U);
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 1U);
+      const auto point = co_await tx.db_transaction().create_savepoint();
+      auto alias = co_await store.join(tx);
+      const auto discarded = co_await alias.create<account>([](auto& value) { value.name = "discarded"; });
+      BOOST_CHECK_EQUAL(discarded.id.instance, 1U);
+      co_await tx.db_transaction().rollback_to_savepoint(point);
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 1U);
+      BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 1U);
+      co_await tx.commit();
+      BOOST_REQUIRE(observer->last.has_value());
+      BOOST_CHECK(observer->last->mutations.empty());
+      BOOST_REQUIRE_EQUAL(observer->last->allocations.size(), 1U);
+      auto next = co_await store.begin_transaction();
+      const auto reused = co_await next.create<account>([](auto& value) { value.name = "reused"; });
+      BOOST_CHECK_EQUAL(reused.id.instance, 1U);
+      co_await next.rollback();
+      auto view = co_await store.begin_read();
+      BOOST_CHECK_EQUAL(co_await view.allocation_next<account_object>(), 1U);
+      co_return;
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_precommit_projection_rejects_later_counter_only_change) {
+   auto runtime = forge::asio::runtime{};
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      auto tx = co_await store.begin_transaction();
+      auto observer = std::make_shared<recording_precommit_observer>();
+      tx.add_precommit_observer(observer);
+      tx.db_transaction().before_commit([&]() -> boost::asio::awaitable<void> {
+         try {
+            (void)co_await tx.create<account>([](auto&) { throw std::runtime_error{"late initializer"}; });
+         } catch (const std::runtime_error&) {
+         }
+      });
+      BOOST_CHECK_THROW(co_await tx.commit(), forge::db::object::exceptions::stale_precommit_projection);
+      BOOST_REQUIRE(observer->last.has_value());
+      BOOST_CHECK(observer->last->empty());
+      co_await tx.rollback();
+      auto view = co_await store.begin_read();
+      BOOST_CHECK_EQUAL(co_await view.allocation_next<account_object>(), 0U);
+      co_return;
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_allocation_alias_overlap_is_rejected_before_second_write) {
+   auto runtime = forge::asio::runtime{};
+   auto driver = std::make_shared<memory_driver>();
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      const auto strand = boost::asio::make_strand(co_await boost::asio::this_coro::executor);
+      auto exercise = [&]() -> boost::asio::awaitable<void> {
+         auto store =
+             co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+         auto tx = co_await store.begin_transaction();
+         auto alias = co_await store.join(tx);
+         auto pause = std::make_shared<pausing_allocation_participant>(strand);
+         tx.db_transaction().attach_participant(pause);
+         auto first = [&]() -> boost::asio::awaitable<void> {
+            const auto value = co_await tx.create<account>([](auto& row) { row.name = "first"; });
+            BOOST_CHECK_EQUAL(value.id.instance, 0U);
+         };
+         auto second = [&]() -> boost::asio::awaitable<void> {
+            co_await pause->wait_entered();
+            BOOST_CHECK_EQUAL(pause->sequence_writes, 0U);
+            auto rejected = false;
+            try {
+               (void)co_await alias.create<account>([](auto& row) { row.name = "overlap"; });
+            } catch (const forge::db::core::exceptions::participant_conflict&) {
+               rejected = true;
+            }
+            pause->release();
+            BOOST_CHECK(rejected);
+         };
+         using namespace boost::asio::experimental::awaitable_operators;
+         co_await (first() && second());
+         BOOST_CHECK_EQUAL(pause->sequence_writes, 1U);
+         BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 1U);
+         const auto next = co_await alias.create<account>([](auto& row) { row.name = "after"; });
+         BOOST_CHECK_EQUAL(next.id.instance, 1U);
+         BOOST_CHECK_EQUAL(pause->sequence_writes, 2U);
+         BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 2U);
+         pause->fail_sequence = true;
+         BOOST_CHECK_THROW(co_await alias.create<account>([](auto& row) { row.name = "vetoed"; }), std::runtime_error);
+         BOOST_CHECK_EQUAL(co_await alias.allocation_next<account_object>(), 2U);
+         BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 2U);
+         const auto retried = co_await alias.create<account>([](auto& row) { row.name = "retried"; });
+         BOOST_CHECK_EQUAL(retried.id.instance, 2U);
+         BOOST_CHECK_EQUAL(pause->sequence_writes, 3U);
+         BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 3U);
+         co_await tx.commit();
+      };
+      co_await boost::asio::co_spawn(strand, exercise(), boost::asio::use_awaitable);
    }());
 }
 
@@ -3955,6 +4419,261 @@ BOOST_AUTO_TEST_CASE(db_object_db_rocksdb_snapshot_preserves_old_state_across_wr
    std::filesystem::remove_all(root);
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_preserves_erased_highest_and_future_id) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      const auto options =
+          forge::db::object::store::options{.id_allocation = forge::db::object::id_allocation_policy::transactional};
+      auto source = co_await make_store(std::make_shared<memory_driver>(), options);
+      const auto first = co_await source.create<account>([](auto& value) { value.name = "first"; });
+      const auto last = co_await source.create<account>([](auto& value) { value.name = "erased"; });
+      co_await source.erase(last.id);
+      auto read = co_await source.begin_read();
+      const auto next = co_await read.allocation_next<account_object>();
+      BOOST_CHECK_EQUAL(next, 2U);
+      auto driver = std::make_shared<memory_driver>();
+      auto target = co_await make_store(driver, options);
+      auto observer = std::make_shared<counting_observer>();
+      target.add_observer(observer);
+      auto tx = co_await target.begin_transaction();
+      auto alias = co_await target.join(tx);
+      auto values = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value, .next = next}};
+      co_await target.restore_allocations(alias, std::move(values));
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), next);
+      co_await tx.insert(first);
+      const auto trace = tx.projected_changes();
+      BOOST_REQUIRE_EQUAL(trace.allocations.size(), 1U);
+      BOOST_CHECK_EQUAL(trace.allocations.front().before, 0U);
+      BOOST_CHECK_EQUAL(trace.allocations.front().after, next);
+      co_await tx.commit();
+      BOOST_REQUIRE(observer->last.has_value());
+      BOOST_CHECK(observer->last->allocations == trace.allocations);
+      auto reopened = co_await make_store(driver, options);
+      auto reopened_read = co_await reopened.begin_read();
+      BOOST_CHECK_EQUAL(co_await reopened_read.allocation_next<account_object>(), next);
+      const auto actual = co_await reopened.create<account>([](auto& value) { value.name = "future"; });
+      const auto expected = co_await source.create<account>([](auto& value) { value.name = "future"; });
+      BOOST_CHECK_EQUAL(actual.id.instance, expected.id.instance);
+      BOOST_CHECK_EQUAL(actual.id.instance, 2U);
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_canonical_zero_and_exhaustion) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      auto tx = co_await store.begin_transaction();
+      auto zero = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value, .next = 0U}};
+      const auto mutations = driver->mutation_calls();
+      co_await store.restore_allocations(tx, std::move(zero));
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), mutations);
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 0U);
+      BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 1U);
+      co_await tx.commit();
+      BOOST_CHECK(!driver->first_key_with_kind(2U));
+      auto exhausted = co_await store.begin_transaction();
+      auto maximum = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value,
+           .next = std::numeric_limits<std::uint64_t>::max()}};
+      co_await store.restore_allocations(exhausted, std::move(maximum));
+      co_await exhausted.commit();
+      auto next = co_await store.begin_transaction();
+      BOOST_CHECK_EQUAL(co_await next.allocation_next<account_object>(), std::numeric_limits<std::uint64_t>::max());
+      BOOST_CHECK_THROW(co_await next.create<account>([](auto& value) { value.name = "overflow"; }),
+                        forge::db::object::exceptions::invalid_descriptor);
+      co_await next.rollback();
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_success_obeys_savepoints_and_full_rollback) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      const auto type = forge::db::object::object_id_of<account_object>::value;
+      auto tx = co_await store.begin_transaction();
+      const auto point = co_await tx.db_transaction().create_savepoint();
+      auto values = std::vector<forge::db::object::store::allocation>{{.type = type, .next = 9U}};
+      co_await store.restore_allocations(tx, std::move(values));
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 9U);
+      co_await tx.db_transaction().rollback_to_savepoint(point);
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 0U);
+      BOOST_CHECK(tx.projected_changes().empty());
+      auto replacement = std::vector<forge::db::object::store::allocation>{{.type = type, .next = 7U}};
+      co_await store.restore_allocations(tx, std::move(replacement));
+      co_await tx.rollback();
+      auto read = co_await store.begin_read();
+      BOOST_CHECK_EQUAL(co_await read.allocation_next<account_object>(), 0U);
+      BOOST_CHECK(!driver->first_key_with_kind(2U));
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_rejects_unregistered_system_duplicate_and_unsorted_types) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      store.register_object<document_object>();
+      const auto account_type = forge::db::object::object_id_of<account_object>::value;
+      const auto document_type = forge::db::object::object_id_of<document_object>::value;
+      using allocation = forge::db::object::store::allocation;
+      const auto invalid = std::vector<std::vector<allocation>>{
+          {{.type = {.space = 0U, .type = 0U}, .next = 1U}},
+          {{.type = {.space = 1U, .type = 999U}, .next = 1U}},
+          {{.type = {.space = 1U, .type = 7U, .instance = 1U}, .next = 1U}},
+          {{.type = account_type, .next = 1U}, {.type = account_type, .next = 2U}},
+          {{.type = document_type, .next = 1U}, {.type = account_type, .next = 2U}},
+          {{.type = account_type}, {.type = document_type}, {.type = document_type}}};
+      const auto before = driver->records();
+      const auto writes = driver->mutation_calls();
+      for (const auto& values : invalid) {
+         auto tx = co_await store.begin_transaction();
+         BOOST_CHECK_THROW(co_await store.restore_allocations(tx, values),
+                           forge::db::object::exceptions::invalid_descriptor);
+         co_await tx.rollback();
+      }
+      BOOST_CHECK(driver->records() == before);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), writes);
+      auto tx = co_await store.begin_transaction();
+      auto other = co_await make_store(std::make_shared<memory_driver>(),
+                                       {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      auto values = std::vector<allocation>{{.type = account_type, .next = 1U}};
+      BOOST_CHECK_THROW(co_await other.restore_allocations(tx, values),
+                        forge::db::object::exceptions::invalid_descriptor);
+      co_await tx.rollback();
+      auto monotonic = co_await make_store(std::make_shared<memory_driver>());
+      auto unsafe = co_await monotonic.begin_transaction();
+      BOOST_CHECK_THROW(co_await monotonic.restore_allocations(unsafe, values),
+                        forge::db::object::exceptions::unsupported_operation);
+      co_await unsafe.rollback();
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_cannot_lower_occupied_namespace_and_failure_is_sticky) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      const auto existing = co_await store.create<account>([](auto& value) { value.name = "existing"; });
+      co_await store.erase(existing.id); // A sequence alone still makes this non-pristine.
+      const auto before = driver->records();
+      const auto writes = driver->mutation_calls();
+      auto tx = co_await store.begin_transaction();
+      const auto point = co_await tx.db_transaction().create_savepoint();
+      auto values = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value, .next = 0U}};
+      BOOST_CHECK_THROW(co_await store.restore_allocations(tx, values),
+                        forge::db::object::exceptions::invalid_descriptor);
+      co_await tx.db_transaction().rollback_to_savepoint(point);
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 1U);
+      BOOST_CHECK_THROW(co_await store.restore_allocations(tx, values),
+                        forge::db::core::exceptions::participant_conflict);
+      BOOST_CHECK_THROW(co_await tx.commit(), forge::db::core::exceptions::participant_conflict);
+      co_await tx.rollback();
+      BOOST_CHECK(driver->records() == before);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), writes);
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_partial_put_failure_cannot_commit_or_reset_via_savepoint) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      store.register_object<document_object>();
+      const auto before = driver->records();
+      const auto values = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value, .next = 5U},
+          {.type = forge::db::object::object_id_of<document_object>::value, .next = 8U}};
+      auto tx = co_await store.begin_transaction();
+      const auto point = co_await tx.db_transaction().create_savepoint();
+      driver->fail_put_after(1U);
+      BOOST_CHECK_THROW(co_await store.restore_allocations(tx, values), std::runtime_error);
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 5U);
+      BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 1U);
+      co_await tx.db_transaction().rollback_to_savepoint(point);
+      BOOST_CHECK(tx.projected_changes().empty());
+      BOOST_CHECK_EQUAL(co_await tx.allocation_next<account_object>(), 0U);
+      BOOST_CHECK_THROW(co_await tx.commit(), forge::db::core::exceptions::participant_conflict);
+      co_await tx.rollback();
+      BOOST_CHECK(driver->records() == before);
+      auto fresh = co_await store.begin_transaction();
+      co_await store.restore_allocations(fresh, values);
+      co_await fresh.commit();
+      auto read = co_await store.begin_read();
+      BOOST_CHECK_EQUAL(co_await read.allocation_next<account_object>(), 5U);
+      BOOST_CHECK_EQUAL(co_await read.allocation_next<document_object>(), 8U);
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_lazy_admission_and_revision_rejection) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store =
+          co_await make_store(driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      auto tx = co_await store.begin_transaction();
+      auto values = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value, .next = 4U}};
+      auto operation = store.restore_allocations(tx, values);
+      const auto writes = driver->mutation_calls();
+      BOOST_CHECK_THROW(static_cast<void>(store.restore_allocations(tx, values)), forge::db::core::exceptions::participant_conflict);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), writes);
+      co_await std::move(operation);
+      co_await tx.rollback();
+      auto captured = co_await store.begin_transaction();
+      auto lazy = store.restore_allocations(captured, values);
+      captured.db_transaction().attach_participant(
+          std::make_shared<pausing_allocation_participant>(co_await boost::asio::this_coro::executor));
+      BOOST_CHECK_THROW(co_await std::move(lazy), forge::db::object::exceptions::unsupported_operation);
+      BOOST_CHECK_THROW(co_await captured.commit(), forge::db::core::exceptions::participant_conflict);
+      co_await captured.rollback();
+      auto abandoned = co_await store.begin_transaction();
+      {
+         auto pending = store.restore_allocations(abandoned, values);
+         BOOST_CHECK_THROW(co_await abandoned.commit(), forge::db::core::exceptions::participant_conflict);
+      }
+      co_await abandoned.rollback();
+      BOOST_CHECK(!driver->first_key_with_kind(2U));
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_object_restore_allocations_rejects_prepared_core_but_preserves_native_commit_retry) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto driver = std::make_shared<memory_driver>();
+      auto store = co_await make_store(
+          driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+      const auto before = driver->records();
+      auto tx = co_await store.begin_transaction();
+      BOOST_CHECK(tx.projected_changes().empty()); // No observer and no allocation.
+      driver->fail_next_commits(1U);
+      BOOST_CHECK_THROW(co_await tx.commit(), std::runtime_error);
+      const auto scans = driver->scan_calls();
+      const auto writes = driver->mutation_calls();
+      auto values = std::vector<forge::db::object::store::allocation>{
+          {.type = forge::db::object::object_id_of<account_object>::value, .next = 9U}};
+      // This is a synchronous pre-admission rejection, not a loading failure.
+      BOOST_CHECK_THROW(static_cast<void>(store.restore_allocations(tx, values)), forge::db::core::exceptions::participant_conflict);
+      BOOST_CHECK_EQUAL(driver->scan_calls(), scans);
+      BOOST_CHECK_EQUAL(driver->mutation_calls(), writes);
+      BOOST_CHECK(tx.projected_changes().empty());
+      co_await tx.commit(); // Existing Core prepared-commit retry remains valid.
+      BOOST_CHECK(driver->records() == before);
+      BOOST_CHECK(!driver->first_key_with_kind(2U));
+      auto read = co_await store.begin_read();
+      BOOST_CHECK_EQUAL(co_await read.allocation_next<account_object>(), 0U);
+   }());
+}
 
 BOOST_AUTO_TEST_CASE(db_object_cursor_is_opaque_key_boundary) {
    const auto key = forge::db::core::record_key{

@@ -75,7 +75,7 @@ boost::asio::awaitable<transaction> driver::begin_transaction() {
    }
    co_return transaction{
       std::make_unique<detail::tracked_session>(std::move(active), std::move(admission)),
-      executor};
+      executor, snapshot_origin_};
 }
 
 boost::asio::awaitable<snapshot> driver::begin_read() {

@@ -15,8 +15,11 @@ module;
 #include <mutex>
 #include <string>
 #include <typeindex>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "details/sequence_record.hxx"
 
 module forge.db.object.store;
 
@@ -37,7 +40,6 @@ runtime_state::runtime_state()
 
 namespace {
 
-constexpr auto sequence_value_size = std::size_t{8};
 constexpr auto header_value_size = sizeof(std::uint64_t) + sizeof(std::uint32_t);
 
 std::vector<std::byte> encode_header(const forge::db::object::header& value) {
@@ -71,24 +73,17 @@ forge::db::object::header decode_header(const std::vector<std::byte>& bytes) {
    }
 }
 
-std::vector<std::byte> encode_next_instance(std::uint64_t value) {
-   auto out = std::vector<std::byte>{};
-   out.reserve(sequence_value_size);
-   detail::record_key::append_be64(out, value);
-   return out;
-}
-
-std::uint64_t decode_next_instance(const std::vector<std::byte>& bytes) {
-   if (bytes.size() != sequence_value_size) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor, "db object id sequence record has invalid size");
+void validate_header(const forge::db::object::header& decoded) {
+   if (decoded.id != forge::db::object::header_id) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_header, "db object header has invalid id");
    }
-
-   auto value = std::uint64_t{0};
-   for (auto byte : bytes) {
-      value <<= 8U;
-      value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(byte));
+   if (decoded.version < forge::db::object::header::minimum_version ||
+       decoded.version > forge::db::object::header::current_version) {
+      FORGE_THROW_EXCEPTION(exceptions::incompatible_version, "db object header version is incompatible",
+                            forge::exceptions::ctx("version", decoded.version),
+                            forge::exceptions::ctx("minimum-version", forge::db::object::header::minimum_version),
+                            forge::exceptions::ctx("current-version", forge::db::object::header::current_version));
    }
-   return value;
 }
 
 struct runtime_entry {
@@ -181,16 +176,7 @@ store::impl::initialize_header(forge::db::core::transaction& active) const {
    }
 
    auto decoded = decode_header(*existing);
-   if (decoded.id != forge::db::object::header_id) {
-      FORGE_THROW_EXCEPTION(exceptions::invalid_header, "db object header has invalid id");
-   }
-   if (decoded.version < forge::db::object::header::minimum_version ||
-       decoded.version > forge::db::object::header::current_version) {
-      FORGE_THROW_EXCEPTION(exceptions::incompatible_version, "db object header version is incompatible",
-                            forge::exceptions::ctx("version", decoded.version),
-                            forge::exceptions::ctx("minimum-version", forge::db::object::header::minimum_version),
-                            forge::exceptions::ctx("current-version", forge::db::object::header::current_version));
-   }
+   validate_header(decoded);
 
    if (decoded.version != forge::db::object::header::current_version) {
       decoded.version = forge::db::object::header::current_version;
@@ -199,12 +185,32 @@ store::impl::initialize_header(forge::db::core::transaction& active) const {
    co_return decoded;
 }
 
-boost::asio::awaitable<forge::db::ids::object_id> store::impl::allocate_id(forge::db::ids::object_id type,
-                                                                           forge::db::core::transaction& active) {
+boost::asio::awaitable<forge::db::object::header>
+store::impl::read_existing_header(forge::db::core::snapshot& active) const {
+   const auto key = detail::record_key::object(forge::db::ids::to_object_id(forge::db::object::header_id));
+   const auto existing = co_await active.get(config.family, key);
+   if (!existing) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_header, "db object header is missing");
+   }
+   const auto decoded = decode_header(*existing);
+   validate_header(decoded);
+   // Existing-only open cannot perform the creating route's version upgrade.
+   if (decoded.version != forge::db::object::header::current_version) {
+      FORGE_THROW_EXCEPTION(exceptions::incompatible_version, "db object header requires an explicit upgrade",
+                            forge::exceptions::ctx("version", decoded.version),
+                            forge::exceptions::ctx("current-version", forge::db::object::header::current_version));
+   }
+   co_return decoded;
+}
+
+boost::asio::awaitable<forge::db::ids::object_id>
+store::impl::allocate_id(forge::db::ids::object_id type, forge::db::core::transaction& active, change_set& changes) {
+   type.instance = 0;
    const auto key = detail::record_key::sequence(type);
    if (settings.id_allocation == id_allocation_policy::transactional) {
       const auto existing = co_await active.get(config.family, key);
-      auto next = existing.has_value() ? decode_next_instance(*existing) : std::uint64_t{0};
+      const auto before = existing.has_value() ? detail::sequence_record::decode(*existing) : std::uint64_t{0};
+      auto next = before;
       auto candidate = type;
       candidate.instance = next;
       while ((co_await active.get(config.family, detail::record_key::object(candidate))).has_value()) {
@@ -220,7 +226,12 @@ boost::asio::awaitable<forge::db::ids::object_id> store::impl::allocate_id(forge
 
       auto allocated = type;
       allocated.instance = next;
-      co_await active.put(config.family, key, encode_next_instance(next + 1U));
+      static_assert(std::is_nothrow_move_constructible_v<allocation_change>);
+      auto encoded = detail::sequence_record::encode(next + 1U);
+      changes.allocations.reserve(changes.allocations.size() + 1U);
+      co_await active.put(config.family, key, std::move(encoded));
+      // Both the record and its reserved POD trace are published in this transaction.
+      changes.allocations.push_back(allocation_change{.type = type, .before = before, .after = next + 1U});
       co_return allocated;
    }
 
@@ -230,7 +241,7 @@ boost::asio::awaitable<forge::db::ids::object_id> store::impl::allocate_id(forge
    auto cursor = runtime->next_instances.find(type);
    if (cursor == runtime->next_instances.end()) {
       const auto existing = co_await active.get(config.family, key);
-      const auto next = existing.has_value() ? decode_next_instance(*existing) : std::uint64_t{0};
+      const auto next = existing.has_value() ? detail::sequence_record::decode(*existing) : std::uint64_t{0};
       cursor = runtime->next_instances.emplace(type, next).first;
    }
 
@@ -254,7 +265,7 @@ boost::asio::awaitable<forge::db::ids::object_id> store::impl::allocate_id(forge
 
    allocated.instance = next;
    cursor->second = next + 1U;
-   co_await active.put(config.family, key, encode_next_instance(cursor->second));
+   co_await active.put(config.family, key, detail::sequence_record::encode(cursor->second));
    co_return allocated;
 }
 
@@ -273,10 +284,10 @@ boost::asio::awaitable<void> store::impl::seal_allocations(transaction::allocati
          sealed_type.instance = 0;
          const auto key = detail::record_key::sequence(sealed_type);
          const auto existing = co_await active.get(config.family, key);
-         const auto stored_next = existing.has_value() ? decode_next_instance(*existing) : std::uint64_t{0};
+         const auto stored_next = existing.has_value() ? detail::sequence_record::decode(*existing) : std::uint64_t{0};
          const auto sealed_next = std::max(stored_next, consumed_next);
          if (sealed_next != stored_next) {
-            co_await active.put(config.family, key, encode_next_instance(sealed_next));
+            co_await active.put(config.family, key, detail::sequence_record::encode(sealed_next));
          }
 
          auto cursor = runtime->next_instances.find(sealed_type);

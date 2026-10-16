@@ -12,6 +12,7 @@ module;
 #include <typeindex>
 #include <typeinfo>
 #include <utility>
+#include <vector>
 
 export module forge.db.object.store;
 
@@ -54,15 +55,23 @@ class store {
       id_allocation_policy id_allocation = id_allocation_policy::monotonic;
    };
 
+   struct allocation {
+      forge::db::ids::object_id type;
+      std::uint64_t next = 0;
+   };
+
    static boost::asio::awaitable<store> open(std::shared_ptr<forge::db::core::driver> value);
    static boost::asio::awaitable<store> open(std::shared_ptr<forge::db::core::driver> value, options runtime);
    static boost::asio::awaitable<store> open(std::shared_ptr<forge::db::core::driver> value, config settings);
    static boost::asio::awaitable<store> open(std::shared_ptr<forge::db::core::driver> value, config settings,
                                              options runtime);
+   static boost::asio::awaitable<store> open_existing(std::shared_ptr<forge::db::core::driver> value, config settings,
+                                                      options runtime);
 
    [[nodiscard]] forge::db::object::header header() const noexcept;
    [[nodiscard]] std::shared_ptr<forge::db::core::driver> driver() const noexcept;
    [[nodiscard]] forge::db::core::family family() const;
+   [[nodiscard]] options runtime_options() const noexcept;
 
    template <application_object_model Object> void register_object();
 
@@ -70,6 +79,13 @@ class store {
 
    void add_interceptor(std::shared_ptr<interceptor> value);
    void add_observer(std::shared_ptr<observer> value);
+
+   // Requires this store's live single-writer Object transaction. No writes.
+   boost::asio::awaitable<void> require_pristine(transaction& active);
+
+   // Fresh header-only namespace; exact registered application counters only.
+   // A loading failure prevents commit until the entire transaction rolls back.
+   boost::asio::awaitable<void> restore_allocations(transaction& active, std::vector<allocation> values);
 
    boost::asio::awaitable<transaction> begin_transaction();
    boost::asio::awaitable<snapshot> begin_read();
@@ -119,6 +135,9 @@ class store {
  private:
    friend class transaction;
    friend class snapshot;
+
+   static boost::asio::awaitable<store> open_impl(std::shared_ptr<forge::db::core::driver> value, config settings,
+                                                  options runtime, bool initialize);
 
    void register_object_type(forge::db::ids::object_id type, std::type_index model);
    void register_system_object_type(forge::db::ids::object_id type, std::type_index model);

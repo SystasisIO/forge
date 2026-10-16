@@ -4,6 +4,7 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <cstddef>
+#include <exception>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -35,6 +36,74 @@ import forge.db.revision.types;
 import forge.plugins.db.store.exceptions;
 
 namespace forge::plugins::db::store {
+
+closed_store::closed_store(std::shared_ptr<store_handle_state> state) noexcept : state_{std::move(state)} {}
+closed_store::closed_store(closed_store&&) noexcept = default;
+closed_store& closed_store::operator=(closed_store&& other) noexcept {
+   if (this != &other) {
+      if (state_ && state_->activation_inflight())
+         std::terminate();
+      state_ = std::move(other.state_);
+   }
+   return *this;
+}
+closed_store::~closed_store() {
+   if (state_ && state_->activation_inflight())
+      std::terminate(); // Never destroy a borrowed runtime during accepted IO.
+}
+activation_status closed_store::state() const {
+   if (!state_)
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "closed store capability is empty");
+   return state_->closed_state();
+}
+boost::asio::awaitable<void> closed_store::activate(std::filesystem::path destination) const {
+   return activate_owned(state_, std::move(destination));
+}
+boost::asio::awaitable<void> closed_store::confirm_durability() const {
+   return confirm_owned(state_);
+}
+boost::asio::awaitable<void> closed_store::activate_owned(std::shared_ptr<store_handle_state> owner,
+                                                          std::filesystem::path destination) {
+   if (!owner)
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "closed store capability is empty");
+   co_await owner->activate_closed(std::move(destination));
+}
+boost::asio::awaitable<void> closed_store::confirm_owned(std::shared_ptr<store_handle_state> owner) {
+   if (!owner)
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "closed store capability is empty");
+   co_await owner->confirm_activation();
+}
+boost::asio::awaitable<closed_store> store_handle::close_for_activation() const {
+   return close_owned(state_);
+}
+boost::asio::awaitable<closed_store> store_handle::close_owned(std::shared_ptr<store_handle_state> owner) {
+   if (!owner)
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "store handle is empty");
+   co_await owner->close_for_activation();
+   owner->claim_activation();
+   co_return closed_store{std::move(owner)};
+}
+boost::asio::awaitable<void> store_handle_state::close_for_activation() const {
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_activation, "store has no strict activation owner");
+   co_return;
+}
+void store_handle_state::claim_activation() const {
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_activation, "store has no strict activation owner");
+}
+boost::asio::awaitable<void> store_handle_state::activate_closed(std::filesystem::path) const {
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_activation, "store has no strict activation owner");
+   co_return;
+}
+boost::asio::awaitable<void> store_handle_state::confirm_activation() const {
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_activation, "store has no strict activation owner");
+   co_return;
+}
+activation_status store_handle_state::closed_state() const {
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_activation, "store has no strict activation owner");
+}
+bool store_handle_state::activation_inflight() const noexcept {
+   return false;
+}
 
 snapshot::snapshot(forge::db::core::snapshot active, std::string store_name,
                    std::optional<forge::db::object::snapshot> objects, std::optional<forge::db::blob::snapshot> blobs)
@@ -172,6 +241,10 @@ std::shared_ptr<forge::db::object::store> object_handle::require_store() const {
    return state_->require_objects();
 }
 
+forge::db::object::store::options object_handle::runtime_options() const {
+   return require_store()->runtime_options();
+}
+
 void object_handle::add_interceptor(std::shared_ptr<forge::db::object::interceptor> value) const {
    require_setup_store()->add_interceptor(std::move(value));
 }
@@ -204,6 +277,36 @@ boost::asio::awaitable<forge::db::object::transaction> object_handle::join(trans
       }
    }
    co_return co_await objects->join(active.db_transaction());
+}
+
+boost::asio::awaitable<void> object_handle::require_pristine(transaction& active) const {
+   auto owner = require_store();
+   active.require_named_store(name());
+   if (!active.object_) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument,
+                            "pristine check requires the store's cached ObjectDB transaction");
+   }
+   auto objects = co_await join(active);
+   if (objects.db_transaction().has_participant("forge.db.revision")) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "pristine check cannot use an attached Revision scope");
+   }
+   co_await owner->require_pristine(objects);
+}
+
+boost::asio::awaitable<void>
+object_handle::restore_allocations(transaction& active,
+                                   std::vector<forge::db::object::store::allocation> values) const {
+   auto owner = require_store();
+   active.require_named_store(name());
+   if (!active.object_) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument,
+                            "allocation restore requires the store's cached ObjectDB transaction");
+   }
+   auto objects = co_await join(active);
+   if (objects.db_transaction().has_participant("forge.db.revision")) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "allocation restore cannot use an attached Revision scope");
+   }
+   co_await owner->restore_allocations(objects, std::move(values));
 }
 
 std::string blob_handle::name() const {
@@ -285,6 +388,20 @@ boost::asio::awaitable<forge::db::revision::scope> revision_handle::join(transac
    co_return co_await require_store()->join(active.db_transaction());
 }
 
+boost::asio::awaitable<void> revision_handle::require_pristine(transaction& active) const {
+   auto owner = require_store();
+   active.require_named_store(name());
+   if (!active.object_) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument,
+                            "pristine check requires the store's cached ObjectDB transaction");
+   }
+   auto objects = co_await object_handle{state_}.join(active);
+   if (objects.db_transaction().has_participant("forge.db.revision")) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "pristine check cannot use an attached Revision scope");
+   }
+   co_await owner->require_pristine(objects);
+}
+
 boost::asio::awaitable<void> revision_handle::revert(transaction& active,
                                                      forge::db::revision::revision_id_t expected_head) const {
    active.require_named_store(name());
@@ -362,6 +479,36 @@ boost::asio::awaitable<forge::db::authenticated::transaction>
 authenticated_handle::join(transaction& active, forge::db::authenticated::version_id_t version) const {
    active.require_named_store(name());
    co_return co_await require_store().join(active.db_transaction(), version);
+}
+
+boost::asio::awaitable<forge::db::authenticated::checkpoint_summary>
+authenticated_handle::export_checkpoint(snapshot active, forge::db::authenticated::root expected,
+                                         forge::db::authenticated::checkpoint_sink sink,
+                                         forge::db::authenticated::checkpoint_limits bounds) const {
+   const auto& store = require_store();
+   if (active.name() != name()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_argument, "db store snapshot belongs to another named store");
+   }
+   // Base admission captures the SAME Auth owner and Core snapshot immediately.
+   auto operation = store.export_checkpoint(active.active_, expected, std::move(sink), bounds);
+   return export_owned(state_, std::move(active), std::move(operation));
+}
+
+boost::asio::awaitable<forge::db::authenticated::checkpoint_summary>
+authenticated_handle::export_owned(std::shared_ptr<store_handle_state> owner, snapshot active,
+                                    boost::asio::awaitable<forge::db::authenticated::checkpoint_summary> operation) {
+   // These owned parameters pin managed lifetime and every SAME-snapshot view
+   // through terminal completion, including lazy start and suspension in sink.
+   (void)owner;
+   (void)active;
+   co_return co_await std::move(operation);
+}
+
+forge::db::authenticated::transaction
+authenticated_handle::join_restore(transaction& active, forge::db::authenticated::root expected,
+                                    forge::db::authenticated::checkpoint_limits bounds) const {
+   active.require_named_store(name());
+   return require_store().join_restore(active.db_transaction(), expected, bounds);
 }
 
 boost::asio::awaitable<forge::db::authenticated::prune_result>

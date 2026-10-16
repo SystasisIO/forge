@@ -20,6 +20,8 @@ struct transaction::impl {
    limits bounds;
    version_id_t candidate = 0;
    std::optional<root> base_root;
+   std::optional<root> restore_anchor;
+   checkpoint_limits restore_bounds;
    std::shared_ptr<detail::transaction_participant_impl> participant;
 };
 

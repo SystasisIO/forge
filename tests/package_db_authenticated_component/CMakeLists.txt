@@ -12,4 +12,5 @@ add_executable(forge_package_db_authenticated_component main.cpp)
 target_link_libraries(
    forge_package_db_authenticated_component
    PRIVATE Forge::forge_db_authenticated
+           Forge::forge_raw
 )

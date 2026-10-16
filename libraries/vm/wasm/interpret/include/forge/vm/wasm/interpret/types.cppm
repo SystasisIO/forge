@@ -399,6 +399,9 @@ struct module {
    }
 
    void normalize_types();
+   // Parsing can defer instantiation errors. Validate before compilation or
+   // instantiation without executing a start function or resolving host code.
+   void validate_instantiation() const;
 };
 } // namespace forge::vm::wasm::interpret
 

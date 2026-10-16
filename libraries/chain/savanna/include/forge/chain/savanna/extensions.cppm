@@ -19,7 +19,7 @@ inline constexpr std::uint16_t finality_extension_id = 2;
 inline constexpr std::uint16_t quorum_certificate_extension_id = 3;
 inline constexpr std::uint16_t finalizer_proof_extension_id = 4;
 inline constexpr std::uint16_t state_commitment_extension_id = 5;
-inline constexpr std::uint32_t state_commitment_version = 3;
+inline constexpr std::uint32_t state_commitment_version = 4;
 inline constexpr std::uint32_t proper_savanna_schedule_version = std::uint32_t{1} << 31U;
 
 struct protocol_feature_extension {

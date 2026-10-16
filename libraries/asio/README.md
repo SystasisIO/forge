@@ -157,6 +157,18 @@ later canceled or fails. It is false for an immediate rejection because the
 scheduler is stopped or its pending queue is full; `wait()` reports that
 rejection as an exception.
 
+`submit(...)` and `submit_after(...)` provide strong admission: if submission
+throws before returning a handle, its candidate was not admitted and will not
+run later. Queue growth and posting complete before the accepted state is
+published. Callable payloads retired by failed submission, cancellation or
+queue shutdown are destroyed outside the scheduler queue mutex, so their
+destructors do not run while that mutex is held.
+
+An accepted task may start before submission returns. Observe its result with
+`handle::wait()`; strong admission does not roll back already accepted work or
+promise recovery from every later asynchronous allocation failure. Immediate
+stopped/full-queue rejection still returns an unaccepted handle as above.
+
 ### Delegate CPU Work To Compute
 
 `task::scheduler` owns orchestration, numeric priority and delayed admission.
@@ -212,6 +224,29 @@ auto right_value = co_await std::move(right).wait();
 `max_waiting_submissions` separately bounds coroutines waiting for admission.
 `try_submit()` never waits. Cancellation removes pending work; running work sees
 a `std::stop_token` and must cooperate. FORGE never terminates a worker thread.
+
+Use `execute()` when a callable borrows a caller-owned transaction, buffer or
+other scoped object. It registers its completion and cooperative cancellation
+before publishing the job. After admission, it does not finish (including on
+cancellation or a work exception) until the callback has exited and its callable
+captures have been destroyed. Pending cancellation retires those captures without
+invoking the callback. Capture destructors run outside the pool mutex. A worker
+exception is preserved; cancellation observed after a successful callback reports
+`canceled`. Keep the Asio executor and compute pool alive through this drain, and
+make synchronous callbacks cooperate with their stop token. This can take longer
+than the caller's cancellation request; cancellation is not forced termination.
+
+`submit()`/`try_submit()` and `operation::wait()` remain detached-handle APIs:
+discarding a handle does not join its work, and canceling a wait may return before
+running work exits. Their callables must independently own everything they use,
+or an external owner must explicitly retain and drain the pool. Do not substitute
+`submit()` followed by a newly created `wait()` for the scoped `execute()` contract.
+
+Completion uses standard Asio `post` on the awaiting executor, including its strand;
+it never resumes the caller inline on a compute worker. Executor/service delivery
+failures after work quiescence remain host-runtime failures, not ordinary work
+cancellation. This is not a global out-of-memory or executor-availability guarantee;
+there is no allocator fallback, swallowed delivery error or forced abort path.
 
 ### Serialize Async Ownership With A Gate
 
@@ -302,6 +337,41 @@ pending cancellation and `throw_if_cancelled` setting for subsequent async work.
 `snapshot()` reports queue depths, terminal outcomes and accumulated queue and
 execution time. The lane owner is the lifecycle boundary: it must outlive all
 consumers of its executor and shut them down before calling `lane.shutdown()`.
+
+#### Scoped Cancellation Composition
+
+Affine execution and gate acquisition register a scoped handler on the caller's
+existing output cancellation slot. They do not replace its input/output filters,
+clear its recorded cancellation, or change `throw_if_cancelled`. Only cancellation
+types admitted by the caller's filters reach the operation's existing cancel
+path. After success, work failure, rejection or caught cancellation, the caller
+retains its own cancellation state; its next pending timer or native operation
+can receive a later admitted cancellation normally.
+
+The terminal wait is a joined, disconnected `co_spawn` child on the SAME caller
+executor, not a new worker or runtime. Before child initiation, no work, gate
+waiter or shutdown request has been admitted, so the caller's ordinary
+pre-await cancellation check can unwind safely. After initiation, cancellation
+only requests the existing operation transition: the child does not finish
+until that transition is terminal. For a running affine callable its actual
+value/exception wins after callback exit; a queued gate cancellation releases
+an unconsumed grant, whereas an already returned ticket remains its owner's.
+The void affine child preserves move-constructible results that have no default
+constructor.
+
+`lane.shutdown()` also initiates stop/drain only inside its joined disconnected
+child. It waits for the running callback and joins the worker without resetting
+the caller's filters, cancellation history or throw policy. This is operation
+ownership, not cancellation shielding for the caller's subsequent work, and
+does not add the stronger compute-execute guarantee about retirement of all
+callable captures. The lane owner must still drain its consumers before shutdown.
+
+Ordinary Asio regressions exercise custom filters, both throw policies, existing
+cancellation history, next-timer delivery, queued/grant races and active
+completion/shutdown. Store startup additionally retains both its callback-owned
+timer cancellation control and the original upstream-cancellation path, including
+rollback and reopening the same native Store. Test-source coverage is not a
+claim of successful owning/runtime execution.
 
 ### Isolate Blocking Work Behind The Scheduler
 

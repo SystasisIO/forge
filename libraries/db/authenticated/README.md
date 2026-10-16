@@ -46,6 +46,52 @@ change set after savepoint rollback and must verify that it matches the staged
 authenticated mutation digest. Projection policy remains downstream because
 Forge does not know product table or index semantics.
 
+## Retained Checkpoint Export And Fresh Restore
+
+The pending checkpoint API exports BOTH retained state and historical changes
+graphs, including full values and tombstones, without rebuilding AVL topology.
+Frame format 1 is distinct from hash schema 3 and the persisted record format.
+`encode(checkpoint_record)` and `decode_checkpoint_record` reuse the existing
+bounded node codec. There is no Spring snapshot-format compatibility claim.
+
+`export_checkpoint(snapshot, exact_root, sink, limits)` retains the SAME copied
+snapshot and shared Store/driver owner across callbacks. All other data layers
+must read that same snapshot; independently opening a current read view is not
+historical materialization. The sink receives left-first postorder state records,
+then changes records. A missing/pruned version fails; there is no latest fallback.
+
+`join_restore(core_tx, exact_root, limits)` is synchronous and attaches the SAME
+pending Authenticated participant before writes, locks or savepoints. It requires
+a driver-opened, active, same-origin transaction, no Revision capture, and an empty
+dedicated Authenticated family. Attach other participants before loading data.
+`restore_checkpoint(source, verify)` becomes committable only after both graphs,
+all hashes/values/topology/counts, source EOF, the mandatory trusted verifier and
+owner-built root/reference metadata succeed. The verifier must bind the complete
+logical ObjectDB/Blob/counter projection and the REAL outer file EOF/anchor policy;
+a self-consistent graph does not authenticate unrelated product records.
+
+Any error/cancellation leaves a sticky pending/failed participant. Catching it,
+dropping/never awaiting the operation or handle, trying ordinary stage/preview or
+savepoints, or replacing the participant cannot commit a partial baseline. Whole
+Core rollback and a new transaction are required. `restored()` reports the exact
+completed root; `staged()` is not populated with a synthetic mutation digest.
+Core lifecycle and writes remain serialized by the caller; raw Core bypass and
+uncooperative callbacks are not supported restoration operations.
+
+Limits are explicit and nonzero. The owner checks record/count/byte arithmetic,
+depth, digest-history and iterative traversal storage, plus conservative input/DTO/
+encoding/backend-copy transients before allocating traversal storage or calling
+the source. `max_working_bytes` covers bounded record/owner data, not process RSS,
+standard allocator bookkeeping or unrelated callback-owned retention. File sources
+must bound a frame before allocation; a callback cannot allocate arbitrary memory
+and make it the library's budget. Existing Core get returns whole local records;
+this API does not promise bounded pre-allocation for a corrupted backend record.
+
+Only exact C exists initially: earliest/latest are C, below-C reads/proofs report
+version unavailable, and normal C+1 mutations and reference/GC pruning continue.
+This neutral component does not implement product trust selection, activation,
+finality-key custody, controller import/reorg, transport or an application runtime.
+
 ## Reads And Proofs
 
 `get()` and `scan_range()` read a retained immutable version while validating

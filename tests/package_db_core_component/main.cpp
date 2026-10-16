@@ -49,6 +49,10 @@ int main() {
                           const forge::db::core::driver& driver) {
       { view.belongs_to(driver) } -> std::same_as<bool>;
    });
+   static_assert(requires(const forge::db::core::transaction& active,
+                          const forge::db::core::driver& driver) {
+      { active.belongs_to(driver) } noexcept -> std::same_as<bool>;
+   });
    static_assert(requires(forge::db::core::driver& driver) {
       driver.async_close();
    });

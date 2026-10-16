@@ -1,0 +1,61 @@
+{
+  "spring": {
+    "repository": "https://github.com/AntelopeIO/spring.git",
+    "commit": "e6a99f68b67abc4d89fe716755b2e1394a4991f7",
+    "licenses": ["libraries/tooling/wasm_compiler/LICENSE.Spring", "libraries/tooling/wasm_compiler/LICENSE.WAVM"],
+    "sources": [
+      {
+        "path": "libraries/chain/webassembly/runtimes/eos-vm-oc/LLVMEmitIR.cpp",
+        "sha256": "86a435418d46fe78ea5bec32b67e0a5aaec3da697fddaea03b3e749361f08cf4",
+        "classification": "semantic-pattern-adaptation-integer-traps-masked-shifts-remainder-phi-cfg-switch-memory-global-growth-FP-runtime-intrinsic-fallback-and-bounded-signature-checked-indirect-call-not-native-FP-not-verbatim-source",
+        "targets": ["libraries/tooling/wasm_compiler/lowering.cpp"]
+      },
+      {
+        "path": "libraries/chain/webassembly/runtimes/eos-vm-oc/LLVMJIT.cpp",
+        "sha256": "99cf291f300a71e1d26e3bec1a289a83692ed1918c8f7fa3eda742817747dff5",
+        "classification": "fixed-frame-completeness-algorithm-adaptation-not-ORC-port",
+        "targets": ["libraries/tooling/wasm_compiler/object_image.cpp", "libraries/tooling/wasm_compiler/lowering.cpp"]
+      }
+    ]
+  },
+  "eos_vm": {
+    "manifest": "tests/vm_wasm/donor_source_manifest.json",
+    "commit": "e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f",
+    "classification": "reuse-existing-Forge-owner-no-second-parser-or-copy",
+    "components": ["backend", "parser", "bitcode_writer", "types", "options", "opcodes", "interpret_visitor", "softfloat"]
+  },
+  "wasmtime_platform": {
+    "repository": "https://github.com/bytecodealliance/wasmtime.git",
+    "commit": "05e7deebf1ddcc726bfc4c30cd87e3dbb2881072",
+    "license": "Apache-2.0 WITH LLVM-exception",
+    "classification": "inspected-platform-pattern-and-public-system-API-integration-no-Rust-source-copy-no-build-dependency",
+    "sources": [
+      {"path": "crates/environ/src/compile/mod.rs", "sha256": "2b9e38453d63266485542bbfcff014bfa5b1468b776f8613fcab2c2332a03551", "targets": ["libraries/tooling/wasm_compiler/object_image.cpp"]},
+      {"path": "crates/wasmtime/src/runtime/code_memory.rs", "sha256": "474cae9da2d44afd277af735add595f952ba771dc2709534cbc906c3935971fc", "targets": ["libraries/vm/wasm/optimizing/native_image.cpp"]},
+      {"path": "crates/wasmtime/src/runtime/vm/sys/unix/mmap.rs", "sha256": "bc866accf65810187208c7474b67051fccb09e8191de73cc5a9b915415c01af9", "targets": ["libraries/vm/wasm/optimizing/native_image.cpp"]},
+      {"path": "crates/jit-icache-coherence/src/libc/aarch64_apple.rs", "sha256": "3871217d8278da82d83a6311f948ea4c5a479fe84b3894fcf62d93d1d15bba9a", "targets": ["libraries/vm/wasm/optimizing/native_image.cpp"]},
+      {"path": "crates/jit-icache-coherence/src/libc.rs", "sha256": "91e35ac286dde073862064baaa18c2faf370e817b2539418e8395d802d2c0cbc", "targets": ["libraries/vm/wasm/optimizing/native_image.cpp"]}
+    ]
+  },
+  "wasmtime_epoch": {
+    "repository": "https://github.com/bytecodealliance/wasmtime.git",
+    "commit": "05e7deebf1ddcc726bfc4c30cd87e3dbb2881072",
+    "license": "Apache-2.0 WITH LLVM-exception",
+    "classification": "inspected-function-entry-and-loop-epoch-rare-callback-pattern-no-Rust-copy-no-build-dependency-Forge-acquire-publication-and-sticky-stop-contract",
+    "sources": [
+      {"path": "crates/cranelift/src/func_environ.rs", "sha256": "8fc0f61cf7d7c452543c8e010c2c29f23cd089e6c0c46308519a5977e0702eba", "targets": ["libraries/tooling/wasm_compiler/lowering.cpp"]},
+      {"path": "crates/wasmtime/src/engine.rs", "sha256": "c9bbfc1b0f41c1ca2f876623f25200e442f19d897255059d4b68e1c801ab591f", "targets": ["libraries/vm/wasm/optimizing/include/forge/vm/wasm/optimizing/invocation_abi.cppm"]}
+    ]
+  },
+  "llvm": {
+    "version": "22.1.8",
+    "license": "Apache-2.0 WITH LLVM-exception",
+    "classification": "private-build-dependency-public-API-use-no-source-copy",
+    "headers": [
+      {"path": "llvm/IR/IRBuilder.h", "sha256": "c4c6d0d65103933a2feaa7b51956a53ec05a9e70cedaeb4725bcd2389ae5b276"},
+      {"path": "llvm/IR/Intrinsics.h", "sha256": "58831b6a5e99ed29bf48cbe0ec9b88aef9ef3e1a5bfb60c542d3dd8ae032dcc4"},
+      {"path": "llvm/Object/ELFObjectFile.h", "sha256": "dab015e949574dbcac3c9a9ce36aefe0bedcef18221aba7e103b61e0d158a5c2"},
+      {"path": "llvm/Support/LEB128.h", "sha256": "565dbaf449dfb7ccb0f2a72079f34f49e89bebbd56e6258cc049ea4836fc02ed"}
+    ]
+  }
+}

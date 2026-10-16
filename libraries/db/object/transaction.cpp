@@ -7,6 +7,9 @@ module;
 #include <boost/asio/system_executor.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <exception>
 #include <functional>
 #include <map>
 #include <memory>
@@ -16,6 +19,8 @@ module;
 #include <typeindex>
 #include <utility>
 #include <vector>
+
+#include "details/sequence_record.hxx"
 
 module forge.db.object.transaction;
 
@@ -140,9 +145,11 @@ transaction detail::transaction_access::make_joined(
                       backend_writes,  reuse_rolled_back_ids};
 }
 
-void detail::transaction_access::bind_store(transaction& active, std::shared_ptr<const void> identity) {
+void detail::transaction_access::bind_store(transaction& active, std::shared_ptr<const void> identity,
+                                            tracked_allocate_id_fn allocate) {
    if (active.impl_) {
       active.impl_->store_identity = std::move(identity);
+      active.impl_->allocate_tracked = std::move(allocate);
    }
 }
 
@@ -153,6 +160,23 @@ bool detail::transaction_access::belongs_to(const transaction& active, const voi
 transaction detail::transaction_access::joined(transaction& active) {
    (void)active.active_transaction();
    return transaction{active.impl_};
+}
+
+void detail::transaction_access::begin_allocation_restore(transaction& active, std::size_t count) {
+   (void)active.active_transaction();
+   active.impl_->participant->begin_allocation_restore(count);
+}
+
+void detail::transaction_access::publish_restored_allocation(transaction& active, allocation_change value) noexcept {
+   active.impl_->participant->publish_restored_allocation(value);
+}
+
+void detail::transaction_access::finish_allocation_restore(transaction& active) noexcept {
+   active.impl_->participant->end_allocation();
+}
+
+void detail::transaction_access::fail_allocation_restore(transaction& active) noexcept {
+   active.impl_->participant->fail_allocation_restore();
 }
 
 transaction::transaction(forge::db::core::transaction& active, forge::db::core::family family,
@@ -192,6 +216,11 @@ transaction::transaction(forge::db::core::transaction& active, forge::db::core::
 
 forge::db::core::transaction& transaction::db_transaction() const {
    return active_transaction();
+}
+
+bool transaction::tracks_allocations() const noexcept {
+   return impl_ && impl_->store_identity && impl_->allocate_tracked &&
+          impl_->participant->transactional_allocations() && !impl_->participant->finalized();
 }
 
 change_set transaction::projected_changes() const {
@@ -243,12 +272,31 @@ boost::asio::awaitable<void> transaction::before_mutation(const object_mutation&
 }
 
 boost::asio::awaitable<forge::db::ids::object_id> transaction::allocate_id(forge::db::ids::object_id type) const {
-   if (!impl_ || !impl_->allocate_id) {
+   if (!impl_ || (!impl_->allocate_tracked && !impl_->allocate_id)) {
       FORGE_THROW_EXCEPTION(exceptions::unsupported_operation, "db object transaction cannot allocate ids");
    }
-   auto allocated = co_await impl_->allocate_id(type, active_transaction());
-   impl_->remember_allocation(type, allocated.instance + 1U);
+   auto& active = active_transaction();
+   impl_->participant->begin_allocation();
+   auto allocated = forge::db::ids::object_id{};
+   auto failure = std::exception_ptr{};
+   try {
+      allocated = impl_->allocate_tracked
+                      ? co_await impl_->allocate_tracked(type, active, impl_->participant->changes())
+                      : co_await impl_->allocate_id(type, active);
+      impl_->remember_allocation(type, allocated.instance + 1U);
+   } catch (...) {
+      failure = std::current_exception();
+   }
+   impl_->participant->end_allocation();
+   if (failure) {
+      std::rethrow_exception(failure);
+   }
    co_return allocated;
+}
+
+boost::asio::awaitable<std::uint64_t> transaction::read_allocation_next(forge::db::ids::object_id type) const {
+   const auto value = co_await active_transaction().get(impl_->family, detail::record_key::sequence(type));
+   co_return value ? detail::sequence_record::decode(*value) : std::uint64_t{0};
 }
 
 boost::asio::awaitable<std::optional<std::vector<std::byte>>>

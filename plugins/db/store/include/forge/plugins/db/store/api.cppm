@@ -43,6 +43,40 @@ import forge.db.revision.types;
 
 export namespace forge::plugins::db::store {
 
+enum class activation_phase { closed, publishing, published_unconfirmed, durable };
+
+// Durability does not imply publication. Consumers must match this exact root
+// and their own verified activation intent before declaring product readiness.
+struct activation_status {
+   activation_phase phase = activation_phase::closed;
+   std::filesystem::path root;
+   std::uint64_t device = 0;
+   std::uint64_t inode = 0;
+   bool published = false;
+};
+
+class store_handle_state;
+
+class closed_store {
+ public:
+   closed_store(closed_store&&) noexcept;
+   closed_store& operator=(closed_store&&) noexcept;
+   closed_store(const closed_store&) = delete;
+   closed_store& operator=(const closed_store&) = delete;
+   ~closed_store();
+
+   [[nodiscard]] activation_status state() const;
+   boost::asio::awaitable<void> activate(std::filesystem::path destination) const;
+   boost::asio::awaitable<void> confirm_durability() const;
+
+ private:
+   explicit closed_store(std::shared_ptr<store_handle_state> state) noexcept;
+   static boost::asio::awaitable<void> activate_owned(std::shared_ptr<store_handle_state>, std::filesystem::path);
+   static boost::asio::awaitable<void> confirm_owned(std::shared_ptr<store_handle_state>);
+   std::shared_ptr<store_handle_state> state_;
+   friend class store_handle;
+};
+
 class snapshot {
  public:
    snapshot() = default;
@@ -62,6 +96,7 @@ class snapshot {
    std::optional<forge::db::blob::snapshot> blobs_;
 
    friend class store_handle_state;
+   friend class authenticated_handle;
 };
 
 class transaction {
@@ -107,12 +142,19 @@ class store_handle_state {
    virtual boost::asio::awaitable<snapshot> begin_read() const;
 
  private:
+   virtual boost::asio::awaitable<void> close_for_activation() const;
+   virtual void claim_activation() const;
+   virtual boost::asio::awaitable<void> activate_closed(std::filesystem::path) const;
+   virtual boost::asio::awaitable<void> confirm_activation() const;
+   [[nodiscard]] virtual activation_status closed_state() const;
+   [[nodiscard]] virtual bool activation_inflight() const noexcept;
    [[nodiscard]] virtual std::shared_ptr<forge::db::core::driver> require_driver() const = 0;
 
    friend class authenticated_handle;
    friend class object_handle;
    friend class revision_handle;
    friend class store_handle;
+   friend class closed_store;
 };
 
 class object_handle {
@@ -125,6 +167,11 @@ class object_handle {
    }
 
    [[nodiscard]] std::string name() const;
+   [[nodiscard]] forge::db::object::store::options runtime_options() const;
+
+   boost::asio::awaitable<void> require_pristine(transaction& active) const;
+   boost::asio::awaitable<void> restore_allocations(transaction& active,
+                                                    std::vector<forge::db::object::store::allocation> values) const;
 
    template <forge::db::object::application_object_model Object> void register_object() const {
       require_setup_store()->template register_object<Object>();
@@ -306,6 +353,8 @@ class revision_handle {
 
    [[nodiscard]] std::string name() const;
 
+   boost::asio::awaitable<void> require_pristine(transaction& active) const;
+
    boost::asio::awaitable<forge::db::revision::scope> join(transaction& active) const;
    boost::asio::awaitable<void> revert(transaction& active, forge::db::revision::revision_id_t expected_head) const;
    boost::asio::awaitable<forge::db::revision::prune_result>
@@ -346,6 +395,14 @@ class authenticated_handle {
    scan_range(forge::db::authenticated::version_id_t version, forge::db::authenticated::range_request request,
               forge::db::authenticated::proof_tree tree = forge::db::authenticated::proof_tree::state) const;
 
+   boost::asio::awaitable<forge::db::authenticated::checkpoint_summary>
+   export_checkpoint(snapshot active, forge::db::authenticated::root expected,
+                     forge::db::authenticated::checkpoint_sink sink,
+                     forge::db::authenticated::checkpoint_limits bounds) const;
+   [[nodiscard]] forge::db::authenticated::transaction
+   join_restore(transaction& active, forge::db::authenticated::root expected,
+                forge::db::authenticated::checkpoint_limits bounds) const;
+
    boost::asio::awaitable<forge::db::authenticated::transaction>
    join(transaction& active, forge::db::authenticated::version_id_t version) const;
    boost::asio::awaitable<forge::db::authenticated::prune_result>
@@ -357,6 +414,10 @@ class authenticated_handle {
        : state_{std::move(state)}, store_{std::move(value)} {}
 
    [[nodiscard]] const forge::db::authenticated::store& require_store() const;
+
+   static boost::asio::awaitable<forge::db::authenticated::checkpoint_summary>
+   export_owned(std::shared_ptr<store_handle_state> owner, snapshot active,
+                boost::asio::awaitable<forge::db::authenticated::checkpoint_summary> operation);
 
    std::shared_ptr<store_handle_state> state_;
    forge::db::authenticated::store store_;
@@ -378,6 +439,10 @@ class store_handle {
    boost::asio::awaitable<transaction> begin_transaction() const;
    boost::asio::awaitable<snapshot> begin_read() const;
    boost::asio::awaitable<void> create_checkpoint(std::filesystem::path destination) const;
+   // Only a configured, owned durable-sync MDBX store supports this operation.
+   // Core driver_busy retains this SAME owner with admissions closed; explicit
+   // retry is close-only. No token is issued for any unproven close.
+   boost::asio::awaitable<closed_store> close_for_activation() const;
 
    [[nodiscard]] object_handle objects() const;
    [[nodiscard]] blob_handle blobs() const;
@@ -385,6 +450,7 @@ class store_handle {
    [[nodiscard]] authenticated_handle authenticated(forge::db::authenticated::store::config settings) const;
 
  private:
+   static boost::asio::awaitable<closed_store> close_owned(std::shared_ptr<store_handle_state>);
    [[nodiscard]] std::shared_ptr<forge::db::core::driver> require_driver() const;
 
    std::shared_ptr<store_handle_state> state_;

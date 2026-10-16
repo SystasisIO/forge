@@ -68,6 +68,13 @@ snapshot remain alive until the last copy is destroyed. Snapshot-capable
 sessions must therefore support concurrent read operations through copies of
 the same Core snapshot; write sessions receive no new concurrency requirement.
 
+Driver-opened write transactions also expose `transaction::belongs_to(driver)`.
+Moves preserve that origin; manually wrapped sessions have unknown origin and
+return false. Origin is identity only: callers must separately check `active()`.
+Existing normal joins are unchanged. Fresh provisioning APIs may require a known
+origin before attaching participants or writing records. This additive source API
+and private transaction state require consumers to rebuild; no record format changes.
+
 ## Savepoints And Participants
 
 Savepoints are transient LIFO boundaries inside one active transaction:

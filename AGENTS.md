@@ -211,6 +211,14 @@ class service_node {
 - `forge::vm::wasm::interpret` owns neutral WebAssembly parsing, validation, execution,
   host-function mechanics, guarded memory, deterministic floating point,
   watchdog behavior and supported execution backends.
+- The approved EOS VM OC port adds `forge::vm::wasm::optimizing` as a sibling
+  leaf. It owns native artifacts, execution, cache mechanics and the bounded
+  async client of an isolated compiler process. It reuses the existing WASM
+  parser/validation and host mechanisms; a second parser or backend facade is
+  forbidden. Products own backend selection, cache budgets and activation policy.
+- LLVM lowering and the private compiler worker belong to the optional
+  `forge::tooling::wasm_compiler` leaf. Runtime VM consumers must not acquire
+  LLVM headers or link dependencies merely by using native execution.
 - VM libraries must not contain blockchain controller behavior, state access,
   contract policy, transaction/resource accounting, code-cache policy or
   product-specific host functions.
@@ -239,7 +247,10 @@ class service_node {
   deterministic contract test host are independent optional package
   components.
 - Host contract libraries are enabled by `FORGE_ENABLE_TOOLING`.
-  Only ABI and attribute components may depend on Clang/LLVM.
+  ABI and attribute components may depend on Clang/LLVM. The separately opt-in
+  WASM optimizing compiler is the explicitly approved additional LLVM owner;
+  it does not enable unrelated contract tooling. Default configuration remains
+  free of the optimizing compiler and does not build LLVM.
 - `guest/` owns wasm32 code, the sysroot, contract examples and guest tests.
   Normal Forge configuration must not enter this project or build LLVM.
 - `tools/` owns thin host programs. Programs may parse no domain model and

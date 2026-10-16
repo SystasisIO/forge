@@ -14,6 +14,7 @@ target_include_directories(forge_api_stream PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
 target_link_libraries(
    forge_api_stream PUBLIC
       forge_api_core
+      forge_api_core_values
       forge_asio
       forge_raw
       forge_net_transport

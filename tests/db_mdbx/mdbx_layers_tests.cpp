@@ -274,6 +274,70 @@ BOOST_AUTO_TEST_CASE(db_mdbx_shared_snapshot_keeps_object_and_blob_visible) {
    std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(db_mdbx_transactional_allocator_trace_revision_revert_and_reopen) {
+   const auto root = make_layer_root("forge_db_mdbx_allocator_v4");
+   auto runtime = forge::asio::runtime{};
+   auto lane = forge::asio::affine::lane{};
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto driver = co_await open_layer_driver(root / "store", lane);
+      {
+         auto objects = co_await forge::db::object::store::open(
+             driver, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+         objects.register_object<mdbx_layer_tests::account_index>();
+         auto revisions = co_await forge::db::revision::store::open(driver, objects);
+         {
+            auto active = co_await driver->begin_transaction();
+            auto tx = co_await objects.join(active);
+            const auto revision = co_await revisions.join(tx);
+            const auto first = co_await tx.create<mdbx_layer_tests::account>([](auto& row) { row.name = "first"; });
+            BOOST_CHECK_EQUAL(first.id.instance, 0U);
+            BOOST_REQUIRE_EQUAL(tx.projected_changes().allocations.size(), 1U);
+            BOOST_CHECK_EQUAL(revision.id(), 1U);
+            co_await active.commit();
+         }
+         forge::db::revision::revision_id_t changed = 0;
+         {
+            auto active = co_await driver->begin_transaction();
+            auto tx = co_await objects.join(active);
+            const auto revision = co_await revisions.join(tx);
+            changed = revision.id();
+            co_await tx.erase(mdbx_layer_tests::account::id_t{0});
+            const auto next = co_await tx.create<mdbx_layer_tests::account>([](auto& row) { row.name = "next"; });
+            BOOST_CHECK_EQUAL(next.id.instance, 1U);
+            co_await tx.erase(next.id);
+            BOOST_CHECK_EQUAL(co_await tx.allocation_next<mdbx_layer_tests::account_index>(), 2U);
+            co_await active.commit();
+         }
+         {
+            auto active = co_await driver->begin_transaction();
+            co_await revisions.revert(active, changed);
+            co_await active.commit();
+         }
+         auto view = co_await objects.begin_read();
+         BOOST_CHECK_EQUAL(co_await view.allocation_next<mdbx_layer_tests::account_index>(), 1U);
+         BOOST_CHECK_EQUAL((co_await view.get(mdbx_layer_tests::account::id_t{0})).name, "first");
+      }
+      co_await driver->async_flush(true);
+      co_await driver->async_close();
+      driver.reset();
+      auto reopened = co_await open_layer_driver(root / "store", lane);
+      {
+         auto objects = co_await forge::db::object::store::open(
+             reopened, {.id_allocation = forge::db::object::id_allocation_policy::transactional});
+         objects.register_object<mdbx_layer_tests::account_index>();
+         auto tx = co_await objects.begin_transaction();
+         BOOST_CHECK_EQUAL(co_await tx.allocation_next<mdbx_layer_tests::account_index>(), 1U);
+         const auto next = co_await tx.create<mdbx_layer_tests::account>([](auto& row) { row.name = "after-reopen"; });
+         BOOST_CHECK_EQUAL(next.id.instance, 1U);
+         co_await tx.commit();
+      }
+      co_await reopened->async_close();
+      reopened.reset();
+      co_await lane.shutdown();
+   }());
+   std::filesystem::remove_all(root);
+}
+
 BOOST_AUTO_TEST_CASE(db_mdbx_checkpoint_is_a_durable_point_in_time_copy) {
    const auto root = make_layer_root("forge_db_mdbx_checkpoint");
    auto runtime = forge::asio::runtime{};

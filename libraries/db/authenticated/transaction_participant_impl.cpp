@@ -3,6 +3,8 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <boost/asio/awaitable.hpp>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -32,6 +34,9 @@ std::string_view transaction_participant_impl::name() const noexcept {
 forge::db::core::mutation_policy transaction_participant_impl::classify(const forge::db::core::family& family,
                                                                         const forge::db::core::record_key& key,
                                                                         forge::db::core::mutation_kind) const noexcept {
+   if (restore_phase_ != restore_phase::ordinary && family.name == family_.name) {
+      return forge::db::core::mutation_policy::forbidden_when_captured;
+   }
    if (family.name == family_.name && !key.empty() && key.bytes().front() == std::byte{9}) {
       return forge::db::core::mutation_policy::excluded;
    }
@@ -53,6 +58,7 @@ transaction_participant_impl::make_retention_guard(const forge::db::core::record
 }
 
 boost::asio::awaitable<void> transaction_participant_impl::prepare_savepoint(forge::db::core::savepoint_id_t id) {
+   require_ordinary();
    pending_savepoint_ = savepoint_frame{.id = id, .staged = staged_};
    co_return;
 }
@@ -72,6 +78,7 @@ void transaction_participant_impl::discard_savepoint(forge::db::core::savepoint_
 
 boost::asio::awaitable<void> transaction_participant_impl::rollback_to_savepoint(forge::db::core::savepoint_id_t id,
                                                                                  forge::db::core::participant_access&) {
+   require_ordinary();
    if (!savepoints_.empty() && savepoints_.back().id == id) {
       staged_ = std::move(savepoints_.back().staged);
       savepoints_.pop_back();
@@ -81,6 +88,7 @@ boost::asio::awaitable<void> transaction_participant_impl::rollback_to_savepoint
 
 boost::asio::awaitable<void> transaction_participant_impl::release_savepoint(forge::db::core::savepoint_id_t id,
                                                                              forge::db::core::participant_access&) {
+   require_ordinary();
    if (!savepoints_.empty() && savepoints_.back().id == id) {
       savepoints_.pop_back();
    }
@@ -88,6 +96,12 @@ boost::asio::awaitable<void> transaction_participant_impl::release_savepoint(for
 }
 
 boost::asio::awaitable<void> transaction_participant_impl::prepare_commit(forge::db::core::participant_access&) {
+   if (restore_phase_ != restore_phase::ordinary) {
+      if (restore_phase_ != restore_phase::ready) {
+         FORGE_THROW_EXCEPTION(exceptions::transaction_not_staged, "authenticated checkpoint is incomplete or failed");
+      }
+      co_return;
+   }
    if (!staged_) {
       FORGE_THROW_EXCEPTION(exceptions::transaction_not_staged, "authenticated transaction has no staged version");
    }
@@ -95,6 +109,7 @@ boost::asio::awaitable<void> transaction_participant_impl::prepare_commit(forge:
 }
 
 void transaction_participant_impl::set_staged(staged_version value) {
+   require_ordinary();
    if (staged_) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_version, "authenticated transaction is already staged");
    }
@@ -103,6 +118,47 @@ void transaction_participant_impl::set_staged(staged_version value) {
 
 std::optional<staged_version> transaction_participant_impl::staged() const {
    return staged_;
+}
+
+void transaction_participant_impl::enable_restore(root expected,
+                                                  std::shared_ptr<forge::db::core::driver> owner) noexcept {
+   restore_anchor_ = expected;
+   restore_owner_ = std::move(owner);
+   restore_phase_ = restore_phase::pending;
+}
+
+void transaction_participant_impl::require_ordinary() {
+   if (restore_phase_ != restore_phase::ordinary) {
+      fail_restore();
+      FORGE_THROW_EXCEPTION(exceptions::invalid_version,
+                            "ordinary staging and savepoints cannot modify a checkpoint restore");
+   }
+}
+
+void transaction_participant_impl::start_restore() {
+   if (restore_phase_ != restore_phase::pending) {
+      fail_restore();
+      FORGE_THROW_EXCEPTION(exceptions::invalid_version, "authenticated checkpoint restore is not pending");
+   }
+   restore_phase_ = restore_phase::loading;
+}
+
+void transaction_participant_impl::fail_restore() noexcept {
+   if (restore_phase_ != restore_phase::ordinary) {
+      restore_phase_ = restore_phase::failed;
+   }
+}
+
+bool transaction_participant_impl::finish_restore() noexcept {
+   if (restore_phase_ != restore_phase::loading) {
+      return false;
+   }
+   restore_phase_ = restore_phase::ready;
+   return true;
+}
+
+std::optional<root> transaction_participant_impl::restored() const noexcept {
+   return restore_phase_ == restore_phase::ready ? std::optional<root>{restore_anchor_} : std::nullopt;
 }
 
 } // namespace forge::db::authenticated::detail

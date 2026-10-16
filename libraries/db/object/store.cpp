@@ -6,6 +6,8 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/this_coro.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -18,6 +20,8 @@ module;
 #include <utility>
 #include <vector>
 
+#include "details/sequence_record.hxx"
+
 module forge.db.object.store;
 
 import forge.asio.gate;
@@ -25,10 +29,42 @@ import forge.log.logger;
 import forge.db.core.driver;
 import forge.db.core.exceptions;
 import forge.db.object.exceptions;
+import forge.db.object.system;
 
 #include "details/store_impl.hxx"
+#include "details/record_key.hxx"
 
 namespace forge::db::object {
+
+namespace {
+
+boost::asio::awaitable<void> restore_allocations_owned(store owner, transaction active,
+                                                       std::vector<store::allocation> values,
+                                                       std::vector<forge::db::core::record_entry> records) {
+   try {
+      if (active.db_transaction().captures_mutations()) {
+         FORGE_THROW_EXCEPTION(exceptions::unsupported_operation,
+                               "db object allocation restore cannot capture revisions");
+      }
+      co_await owner.require_pristine(active);
+      for (std::size_t index = 0; index < values.size(); ++index) {
+         const auto& value = values[index];
+         if (value.next != 0U) {
+            co_await active.db_transaction().put(owner.family(), std::move(records[index].key),
+                                                 std::move(records[index].value));
+         }
+         detail::transaction_access::publish_restored_allocation(
+             active, allocation_change{.type = value.type, .before = 0U, .after = value.next});
+      }
+      detail::transaction_access::finish_allocation_restore(active);
+   } catch (...) {
+      detail::transaction_access::fail_allocation_restore(active);
+      throw;
+   }
+   co_return;
+}
+
+} // namespace
 
 store::store(std::shared_ptr<impl> implementation) : impl_{std::move(implementation)} {}
 
@@ -46,12 +82,33 @@ boost::asio::awaitable<store> store::open(std::shared_ptr<forge::db::core::drive
 
 boost::asio::awaitable<store> store::open(std::shared_ptr<forge::db::core::driver> value, config settings,
                                           options runtime) {
+   co_return co_await open_impl(std::move(value), std::move(settings), runtime, true);
+}
+
+boost::asio::awaitable<store> store::open_existing(std::shared_ptr<forge::db::core::driver> value, config settings,
+                                                   options runtime) {
+   co_return co_await open_impl(std::move(value), std::move(settings), runtime, false);
+}
+
+boost::asio::awaitable<store> store::open_impl(std::shared_ptr<forge::db::core::driver> value, config settings,
+                                               options runtime, bool initialize) {
    if (runtime.id_allocation == id_allocation_policy::transactional && runtime.writes != write_policy::single_writer) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor,
                             "transactional db object id allocation requires single-writer policy");
    }
    auto result = store{std::make_shared<impl>(std::move(value), std::move(settings), runtime)};
    auto ticket = co_await result.impl_->runtime->write_gate->acquire();
+   if (!initialize) {
+      auto active = forge::db::core::snapshot{};
+      try {
+         active = co_await result.impl_->open_read_snapshot();
+      } catch (const forge::db::core::exceptions::unsupported_operation&) {
+         FORGE_THROW_EXCEPTION(exceptions::unsupported_operation, "db object driver does not support snapshot reads");
+      }
+      result.impl_->header_value = co_await result.impl_->read_existing_header(active);
+      ticket.release();
+      co_return result;
+   }
    auto active = forge::db::core::transaction{};
 
    try {
@@ -111,6 +168,10 @@ forge::db::core::family store::family() const {
    return impl_->config.family;
 }
 
+store::options store::runtime_options() const noexcept {
+   return impl_->settings;
+}
+
 void store::add_interceptor(std::shared_ptr<interceptor> value) {
    if (value) {
       impl_->interceptors.push_back(std::move(value));
@@ -120,6 +181,55 @@ void store::add_interceptor(std::shared_ptr<interceptor> value) {
 void store::add_observer(std::shared_ptr<observer> value) {
    if (value) {
       impl_->observers.push_back(std::move(value));
+   }
+}
+
+boost::asio::awaitable<void> store::require_pristine(transaction& active) {
+   co_await system::access::require_pristine(*this, active);
+}
+
+boost::asio::awaitable<void> store::restore_allocations(transaction& active, std::vector<allocation> values) {
+   // Ordinary wrapper: retain SAME owners and admission BEFORE lazy initiation.
+   if (!impl_) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor, "db object allocation restore owner is empty");
+   }
+   auto alias = detail::transaction_access::joined(active);
+   if (!detail::transaction_access::belongs_to(alias, impl_.get())) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor, "db object allocation restore belongs to another store");
+   }
+   auto& core = alias.db_transaction();
+   if (!core.belongs_to(*impl_->driver) || !core.capabilities().writes || !alias.tracks_allocations() ||
+       impl_->settings.writes != write_policy::single_writer ||
+       impl_->settings.id_allocation != id_allocation_policy::transactional || core.captures_mutations()) {
+      FORGE_THROW_EXCEPTION(
+          exceptions::unsupported_operation,
+          "db object allocation restore requires a same-origin transactional single writer without revisions");
+   }
+   if (values.size() > impl_->registered.size()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor, "db object allocation restore exceeds registered types");
+   }
+   auto records = std::vector<forge::db::core::record_entry>{};
+   records.reserve(values.size());
+   auto previous = std::optional<forge::db::ids::object_id>{};
+   for (const auto& value : values) {
+      if (value.type.space == system_space || value.type.instance != 0U || !impl_->registered.contains(value.type) ||
+          (previous && !(*previous < value.type))) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor,
+                               "db object allocation restore requires sorted unique registered application types");
+      }
+      previous = value.type;
+      records.push_back(
+          {.key = detail::record_key::sequence(value.type),
+           .value = value.next == 0U ? std::vector<std::byte>{} : detail::sequence_record::encode(value.next)});
+   }
+   // No sequence record may be allocated or written before all validation/encoding.
+   detail::transaction_access::begin_allocation_restore(alias, values.size());
+   try {
+      return restore_allocations_owned(store{impl_}, std::move(alias), std::move(values), std::move(records));
+   } catch (...) {
+      // Includes coroutine-frame creation failure. The caller cannot catch then commit.
+      detail::transaction_access::fail_allocation_restore(active);
+      throw;
    }
 }
 
@@ -142,13 +252,17 @@ boost::asio::awaitable<transaction> store::begin_transaction() {
       release = [owned_ticket]() mutable { owned_ticket->reset(); };
    }
 
+   auto allocate = detail::transaction_access::tracked_allocate_id_fn{
+       [impl = impl_](forge::db::ids::object_id type, forge::db::core::transaction& active,
+                      change_set& changes) -> boost::asio::awaitable<forge::db::ids::object_id> {
+          co_return co_await impl->allocate_id(type, active, changes);
+       }};
    auto result = detail::transaction_access::make_owned(
        std::move(active), impl_->config.family,
        [impl = impl_](forge::db::ids::object_id type, std::type_index model) {
           impl->ensure_registered_type(type, model);
        },
-       [impl = impl_](forge::db::ids::object_id type, forge::db::core::transaction& active)
-           -> boost::asio::awaitable<forge::db::ids::object_id> { co_return co_await impl->allocate_id(type, active); },
+       transaction::allocate_id_fn{},
        [impl = impl_](transaction::allocation_seal_map seals) -> boost::asio::awaitable<void> {
           co_await impl->seal_allocations(std::move(seals));
           co_return;
@@ -156,7 +270,7 @@ boost::asio::awaitable<transaction> store::begin_transaction() {
        impl_->interceptors, impl_->observers, std::move(release), executor,
        impl_->settings.writes == write_policy::backend,
        impl_->settings.id_allocation == id_allocation_policy::transactional);
-   detail::transaction_access::bind_store(result, impl_);
+   detail::transaction_access::bind_store(result, impl_, std::move(allocate));
    co_return result;
 }
 
@@ -199,20 +313,24 @@ boost::asio::awaitable<transaction> store::join(forge::db::core::transaction& ac
       release = [owned_ticket]() mutable { owned_ticket->reset(); };
    }
 
+   auto allocate = detail::transaction_access::tracked_allocate_id_fn{
+       [impl = impl_](forge::db::ids::object_id type, forge::db::core::transaction& active,
+                      change_set& changes) -> boost::asio::awaitable<forge::db::ids::object_id> {
+          co_return co_await impl->allocate_id(type, active, changes);
+       }};
    auto result = detail::transaction_access::make_joined(
        active, impl_->config.family,
        [impl = impl_](forge::db::ids::object_id type, std::type_index model) {
           impl->ensure_registered_type(type, model);
        },
-       [impl = impl_](forge::db::ids::object_id type, forge::db::core::transaction& active)
-           -> boost::asio::awaitable<forge::db::ids::object_id> { co_return co_await impl->allocate_id(type, active); },
+       transaction::allocate_id_fn{},
        [impl = impl_](transaction::allocation_seal_map seals) -> boost::asio::awaitable<void> {
           co_await impl->seal_allocations(std::move(seals));
           co_return;
        },
        impl_->interceptors, impl_->observers, std::move(release), impl_->settings.writes == write_policy::backend,
        impl_->settings.id_allocation == id_allocation_policy::transactional);
-   detail::transaction_access::bind_store(result, impl_);
+   detail::transaction_access::bind_store(result, impl_, std::move(allocate));
    co_return result;
 }
 

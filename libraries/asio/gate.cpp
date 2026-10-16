@@ -4,11 +4,13 @@ module;
 
 #include <forge/exceptions/macros.hpp>
 
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
@@ -30,8 +32,24 @@ boost::asio::awaitable<gate::ticket> acquire_owned(std::shared_ptr<detail::gate_
       FORGE_THROW_EXCEPTION(exceptions::canceled, "gate acquire was canceled");
    }
    const auto executor = co_await boost::asio::this_coro::executor;
-   // A granted ticket must not leave the gate's cancellation filter in its caller.
-   co_return co_await boost::asio::co_spawn(executor, state->acquire(), boost::asio::use_awaitable);
+   auto signal = std::make_shared<detail::async_waiter>(executor);
+   auto waiter = std::make_shared<detail::gate_waiter>();
+   waiter->wake = [signal] { signal->wake(); };
+   auto slot = cancellation.slot();
+   if (slot.is_connected())
+      slot.assign(detail::gate_cancellation_handler{state, waiter});
+   const auto clear_slot = boost::scope::scope_exit{[&slot] {
+      if (slot.is_connected())
+         slot.clear();
+   }};
+   if (cancellation.cancelled() != boost::asio::cancellation_type::none)
+      detail::gate_cancellation_handler{state, waiter}(cancellation.cancelled());
+   // Wake storage exists before cancellation registration, but no waiter has
+   // entered the gate. Parent pre-initiation cancellation may safely unwind.
+   // Only the disconnected child admits/waits, using the SAME caller executor.
+   co_return co_await boost::asio::co_spawn(
+       executor, state->acquire(waiter, signal->wait()),
+       boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
 }
 
 } // namespace
@@ -85,24 +103,9 @@ void gate::ticket::release() noexcept {
 
 namespace forge::asio::detail {
 
-boost::asio::awaitable<forge::asio::gate::ticket> gate_state::acquire() {
-   const auto executor = co_await boost::asio::this_coro::executor;
-   auto cancellation = co_await boost::asio::this_coro::cancellation_state;
-   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
-      throw exceptions::canceled{"gate acquire was canceled"};
-   }
-
+boost::asio::awaitable<forge::asio::gate::ticket>
+gate_state::acquire(std::shared_ptr<gate_waiter> waiter, boost::asio::awaitable<boost::system::error_code> wait) {
    const auto self = shared_from_this();
-   auto signal = std::make_shared<async_waiter>(executor);
-   auto waiter = std::make_shared<gate_waiter>();
-   waiter->wake = [signal] { signal->wake(); };
-
-   co_await boost::asio::this_coro::reset_cancellation_state(
-      boost::asio::enable_total_cancellation{}, gate_cancellation_filter{self, waiter});
-   cancellation = co_await boost::asio::this_coro::cancellation_state;
-   if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
-      cancel(waiter);
-   }
 
    {
       auto lock = std::scoped_lock{mutex_};
@@ -114,12 +117,13 @@ boost::asio::awaitable<forge::asio::gate::ticket> gate_state::acquire() {
       }
       if (!held_) {
          held_ = true;
+         waiter->state = gate_wait_state::completed;
          co_return forge::asio::gate::ticket{self};
       }
       waiters_.push_back(waiter);
    }
 
-   static_cast<void>(co_await signal->wait());
+   static_cast<void>(co_await std::move(wait));
 
    auto state = gate_wait_state::canceled;
    {
@@ -144,14 +148,13 @@ boost::asio::awaitable<forge::asio::gate::ticket> gate_state::acquire() {
    if (state == gate_wait_state::rejected) {
       throw exceptions::rejected{"gate closed while acquire was waiting"};
    }
-   if (state == gate_wait_state::canceled || cancellation.cancelled() != boost::asio::cancellation_type::none) {
+   if (state == gate_wait_state::canceled) {
       throw exceptions::canceled{"gate acquire was canceled"};
    }
    throw exceptions::internal{"gate waiter woke without a terminal state"};
 }
 
-boost::asio::cancellation_type_t
-gate_cancellation_filter::operator()(boost::asio::cancellation_type_t type) const noexcept {
+void gate_cancellation_handler::operator()(boost::asio::cancellation_type_t type) const noexcept {
    if (type != boost::asio::cancellation_type::none) {
       if (auto state = owner.lock()) {
          if (auto pending = waiter.lock()) {
@@ -159,7 +162,6 @@ gate_cancellation_filter::operator()(boost::asio::cancellation_type_t type) cons
          }
       }
    }
-   return boost::asio::cancellation_type::none;
 }
 
 void gate_state::cancel(const std::shared_ptr<gate_waiter>& waiter) noexcept {

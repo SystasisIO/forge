@@ -1,7 +1,10 @@
+#include <boost/asio/awaitable.hpp>
 #include <concepts>
+#include <memory>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <boost/describe.hpp>
@@ -15,6 +18,7 @@ import forge.db.object.index;
 import forge.db.object.object;
 import forge.db.object.snapshot;
 import forge.db.object.store;
+import forge.db.object.transaction;
 
 struct external_key {
    std::uint32_t value = 0;
@@ -63,7 +67,32 @@ concept ranked_findable_by_name = requires(View& index, const std::string& name)
    index.find_rank(name);
 };
 
+boost::asio::awaitable<void> require_initial_objects(forge::db::object::store& objects,
+                                                     forge::db::object::transaction& active) {
+   co_await objects.require_pristine(active);
+}
+
+boost::asio::awaitable<void> restore_initial_allocations(forge::db::object::store& objects,
+                                                         forge::db::object::transaction& active) {
+   auto values = std::vector<forge::db::object::store::allocation>{
+       {.type = forge::db::object::object_id_of<account_object>::value, .next = 8U}};
+   co_await objects.restore_allocations(active, std::move(values));
+}
+
 int main() {
+   static_assert(requires(forge::db::object::store& objects, forge::db::object::transaction& active,
+                          std::vector<forge::db::object::store::allocation> values) {
+      { objects.restore_allocations(active, std::move(values)) } -> std::same_as<boost::asio::awaitable<void>>;
+   });
+   static_assert(requires(forge::db::object::store& objects, forge::db::object::transaction& active) {
+      { objects.require_pristine(active) } -> std::same_as<boost::asio::awaitable<void>>;
+   });
+   static_assert(requires(std::shared_ptr<forge::db::core::driver> driver) {
+      {
+         forge::db::object::store::open_existing(driver, forge::db::object::store::config{},
+                                                 forge::db::object::store::options{})
+      } -> std::same_as<boost::asio::awaitable<forge::db::object::store>>;
+   });
    static_assert(forge::db::object::object_model<account_object>);
    static_assert(forge::db::object::system_object_value<forge::db::object::header>);
    static_assert(forge::db::object::system_object_model<forge::db::object::header_index>);

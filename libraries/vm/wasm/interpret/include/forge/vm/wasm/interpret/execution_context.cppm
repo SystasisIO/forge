@@ -15,6 +15,7 @@ module;
 #include <limits>
 #include <optional>
 #include <signal.h>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -27,6 +28,7 @@ export module forge.vm.wasm.interpret.backend:execution_context;
 import forge.vm.wasm.interpret.allocator;
 import forge.vm.wasm.interpret.debug_info;
 import forge.vm.wasm.interpret.exceptions;
+import forge.vm.wasm.interpret.floating_point_environment;
 import forge.vm.wasm.interpret.host_function;
 import forge.vm.wasm.interpret.options;
 import forge.vm.wasm.interpret.types;
@@ -78,16 +80,6 @@ template <> struct host_invoker<std::nullptr_t> {
 };
 template <typename HF> using host_invoker_t = typename host_invoker<HF>::type;
 
-template <typename Module> inline void validate_data_segments(const Module& mod) {
-   const auto available_memory =
-       mod.memories.size() == 0 ? 0 : mod.memories[0].limits.initial * static_cast<std::uint64_t>(page_size);
-   for (std::uint32_t i = 0; i < mod.data.size(); ++i) {
-      const auto& segment = mod.data[i];
-      const std::uint32_t offset = segment.offset.value.i32; // force to unsigned
-      const auto required_memory = static_cast<std::uint64_t>(offset) + segment.data.size();
-      detail::check<exceptions::memory>((required_memory <= available_memory), "data out of range");
-   }
-}
 } // namespace detail
 
 template <typename Derived, typename Host, bool IsJit> class execution_context_base {
@@ -218,7 +210,7 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
          _linear_memory = nullptr;
       }
 
-      detail::validate_data_segments(mod);
+      _mod->validate_instantiation();
       for (uint32_t i = 0; i < mod.data.size(); i++) {
          const auto& data_seg = mod.data[i];
          uint32_t offset = data_seg.offset.value.i32; // force to unsigned
@@ -249,19 +241,27 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
    }
 
  protected:
-   void invoke_host(host_type* host, uint32_t function) {
-      const auto previous = _host_call_active;
-      _host_call_active = true;
-      try {
-         _rhf(host, get_interface(), function);
-      } catch (...) {
+   inline void invoke_host(host_type* host, std::uint32_t index) {
+      // Own all host RAII and error tracking while VM recovery is suspended.
+      // Genuine host faults stay foreign/fatal, never a guest recovery jump.
+      ::forge::vm::wasm::interpret::longjmp_on_exception([&] {
+         const auto environment = floating_point_environment{};
+         const auto previous = _host_call_active;
+         _host_call_active = true;
+         try {
+            _rhf(host, get_interface(), index);
+         } catch (const detail::code_interruption&) {
+            // Private ancestor transport is not a failure of this host.
+            _host_call_active = previous;
+            throw;
+         } catch (...) {
+            _host_call_active = previous;
+            if (!_host_failure)
+               _host_failure = std::current_exception();
+            throw;
+         }
          _host_call_active = previous;
-         if (!_host_failure)
-            _host_failure = std::current_exception();
-         throw;
-      }
-      // A signal leaving the host call skips this assignment; that failure also forbids reuse.
-      _host_call_active = previous;
+      });
    }
 
    template <typename Func_type, typename... Args> static void type_check_args(const Func_type& ft, Args&&...) {
@@ -272,8 +272,8 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
           "unexpected argument type");
    }
 
-   static void handle_signal(int sig) {
-      switch (sig) {
+   static void handle_signal(const native_signal_result& result, std::span<const std::byte> code) {
+      switch (result.signal) {
       case SIGSEGV:
       case SIGBUS:
       case SIGFPE:
@@ -282,6 +282,9 @@ template <typename Derived, typename Host, bool IsJit> class execution_context_b
          /* TODO fix this */
          assert(!"??????");
       }
+      if (result.fault == native_signal_fault::code && !code.empty() &&
+          (result.signal == SIGSEGV || result.signal == SIGBUS))
+         throw detail::code_interruption{code};
       throw exceptions::memory{"wasm memory out-of-bounds"};
    }
 
@@ -404,91 +407,108 @@ class jit_execution_context : public frame_info_holder<EnableBacktrace>,
 
    template <typename... Args>
    inline std::optional<operand_stack_elem> execute(host_type* host, jit_visitor, uint32_t func_index, Args&&... args) {
-      const auto imported_functions = _mod->jit_mod->get_imported_functions_size();
-      const auto function_count = static_cast<std::size_t>(imported_functions) + _mod->jit_mod->functions.size();
-      detail::check<exceptions::interpreter>((static_cast<std::size_t>(func_index) < function_count),
-                                             "cannot execute function, function not found");
+      // Only a trivial result carrier may outlive the NULL-recovery callback.
+      // Argument/result conversions, saved state, FP scope and typed tails all
+      // complete before the adapter restores an active ancestor destination.
+      using result_type = std::optional<operand_stack_elem>;
+      static_assert(std::is_trivially_copyable_v<result_type>);
+      result_type returned;
+      ::forge::vm::wasm::interpret::longjmp_on_exception([&] {
+         returned = [&]() -> result_type {
+            // Save the actual caller state before any custom argument
+            // converter can mutate it. Guest entry recanonicalizes below.
+            const auto entry_environment = floating_point_environment{};
+            const auto imported_functions = _mod->jit_mod->get_imported_functions_size();
+            const auto function_count = static_cast<std::size_t>(imported_functions) + _mod->jit_mod->functions.size();
+            detail::check<exceptions::interpreter>((static_cast<std::size_t>(func_index) < function_count),
+                                                   "cannot execute function, function not found");
 
-      auto saved_host = _host;
-      auto saved_os_size = get_operand_stack().size();
-      auto g = scope_guard([&]() {
-         _host = saved_host;
-         get_operand_stack().eat(saved_os_size);
-      });
+            auto saved_host = _host;
+            auto saved_os_size = get_operand_stack().size();
+            auto g = scope_guard([&]() {
+               _host = saved_host;
+               get_operand_stack().eat(saved_os_size);
+            });
 
-      _host = host;
+            _host = host;
 
-      const auto& ft = _mod->jit_mod->get_function_type(func_index);
-      this->type_check_args(ft, std::forward<Args>(args)...); // args not modified by type_check_args
-      native_value result;
+            const auto& ft = _mod->jit_mod->get_function_type(func_index);
+            this->type_check_args(ft, std::forward<Args>(args)...); // args not modified by type_check_args
+            native_value result;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
-      // Calling execute() with no `args` (i.e. `execute(host_type,jit_visitor,uint32_t)`) results in a "statement has
-      // no effect [-Werror=unused-value]" warning on this line. Dissable warning.
-      native_value args_raw[] = {transform_arg(std::forward<Args>(args))...};
+            // Calling execute() with no `args` (i.e. `execute(host_type,jit_visitor,uint32_t)`) results in a "statement
+            // has no effect [-Werror=unused-value]" warning on this line. Dissable warning.
+            native_value args_raw[] = {transform_arg(std::forward<Args>(args))...};
 #pragma GCC diagnostic pop
 
-      try {
-         if (func_index < imported_functions) {
-            std::reverse(args_raw + 0, args_raw + sizeof...(Args));
-            ::forge::vm::wasm::interpret::invoke_with_signal_handler(
-                [&]() { result = call_host_function(args_raw, func_index); }, &handle_signal, _mod->allocator,
-                base_type::get_wasm_allocator());
-         } else {
-            detail::check<exceptions::interpreter>(_remaining_call_depth > 0, "stack overflow");
-            std::size_t maximum_stack_usage =
-                (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (_remaining_call_depth + 1) + sizeof...(Args) +
-                4 /* scratch space */;
-            stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
-            // reserve 24 bytes for data accessed by inline assembly
-            void* stack = alt_stack.top();
-            if (stack) {
-               stack = static_cast<char*>(stack) - 24;
+            const auto environment = floating_point_environment{};
+            try {
+               if (func_index < imported_functions) {
+                  std::reverse(args_raw + 0, args_raw + sizeof...(Args));
+                  result = call_host_function(args_raw, func_index);
+               } else {
+                  detail::check<exceptions::interpreter>(_remaining_call_depth > 0, "stack overflow");
+                  std::size_t maximum_stack_usage =
+                      (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (_remaining_call_depth + 1) +
+                      sizeof...(Args) + 4 /* scratch space */;
+                  stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
+                  // reserve 24 bytes for data accessed by inline assembly
+                  void* stack = alt_stack.top();
+                  if (stack) {
+                     stack = static_cast<char*>(stack) - 24;
+                  }
+                  auto fn = reinterpret_cast<native_value (*)(void*, void*)>(
+                      _mod->jit_mod->jit_code_offset[func_index - imported_functions] + _mod->allocator._code_base);
+
+                  if constexpr (EnableBacktrace) {
+                     sigset_t block_mask;
+                     sigemptyset(&block_mask);
+                     sigaddset(&block_mask, SIGPROF);
+                     pthread_sigmask(SIG_BLOCK, &block_mask, nullptr);
+                     auto restore = scope_guard{[this, &block_mask] {
+                        this->_top_frame = nullptr;
+                        this->_bottom_frame = nullptr;
+                        pthread_sigmask(SIG_UNBLOCK, &block_mask, nullptr);
+                     }};
+
+                     ::forge::vm::wasm::interpret::invoke_with_signal_handler(
+                         [&]() {
+                            result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
+                         },
+                         &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+                  } else {
+                     ::forge::vm::wasm::interpret::invoke_with_signal_handler(
+                         [&]() {
+                            result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
+                         },
+                         &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+                  }
+               }
+            } catch (exceptions::exit&) {
+               return {};
             }
-            auto fn = reinterpret_cast<native_value (*)(void*, void*)>(
-                _mod->jit_mod->jit_code_offset[func_index - imported_functions] + _mod->allocator._code_base);
 
-            if constexpr (EnableBacktrace) {
-               sigset_t block_mask;
-               sigemptyset(&block_mask);
-               sigaddset(&block_mask, SIGPROF);
-               pthread_sigmask(SIG_BLOCK, &block_mask, nullptr);
-               auto restore = scope_guard{[this, &block_mask] {
-                  this->_top_frame = nullptr;
-                  this->_bottom_frame = nullptr;
-                  pthread_sigmask(SIG_UNBLOCK, &block_mask, nullptr);
-               }};
-
-               ::forge::vm::wasm::interpret::invoke_with_signal_handler(
-                   [&]() { result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack); },
-                   &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
-            } else {
-               ::forge::vm::wasm::interpret::invoke_with_signal_handler(
-                   [&]() { result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack); },
-                   &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
-            }
-         }
-      } catch (exceptions::exit&) {
-         return {};
-      }
-
-      if (!ft.return_count)
-         return {};
-      else
-         switch (ft.return_type) {
-         case i32:
-            return {i32_const_t{result.i32}};
-         case i64:
-            return {i64_const_t{result.i64}};
-         case f32:
-            return {f32_const_t{result.f32}};
-         case f64:
-            return {f64_const_t{result.f64}};
-         default:
-            assert(!"Unexpected function return type");
-         }
-      __builtin_unreachable();
+            if (!ft.return_count)
+               return {};
+            else
+               switch (ft.return_type) {
+               case i32:
+                  return {i32_const_t{result.i32}};
+               case i64:
+                  return {i64_const_t{result.i64}};
+               case f32:
+                  return {f32_const_t{result.f32}};
+               case f64:
+                  return {f64_const_t{result.f64}};
+               default:
+                  assert(!"Unexpected function return type");
+               }
+            __builtin_unreachable();
+         }();
+      });
+      return returned;
    }
 
    template <typename... Args>
@@ -920,47 +940,56 @@ template <typename Host> class execution_context : public execution_context_base
    template <typename Visitor, typename... Args>
    inline std::optional<operand_stack_elem> execute(host_type* host, Visitor&& visitor, uint32_t func_index,
                                                     Args&&... args) {
-      detail::check<exceptions::interpreter>((func_index < _mod->get_functions_total()),
-                                             "cannot execute function, function not found");
+      using result_type = std::optional<operand_stack_elem>;
+      static_assert(std::is_trivially_copyable_v<result_type>);
+      result_type returned;
+      ::forge::vm::wasm::interpret::longjmp_on_exception([&] {
+         returned = [&]() -> result_type {
+            const auto entry_environment = floating_point_environment{};
+            detail::check<exceptions::interpreter>((func_index < _mod->get_functions_total()),
+                                                   "cannot execute function, function not found");
 
-      auto last_last_op_index = _last_op_index;
+            auto last_last_op_index = _last_op_index;
 
-      // save the state of the original calling context
-      execution_state saved_state = _state;
+            // save the state of the original calling context
+            execution_state saved_state = _state;
 
-      _state.host = host;
-      _state.as_index = _as.size();
-      _state.os_index = get_operand_stack().size();
+            _state.host = host;
+            _state.as_index = _as.size();
+            _state.os_index = get_operand_stack().size();
 
-      auto cleanup = scope_guard([&]() {
-         get_operand_stack().eat(_state.os_index);
-         _as.eat(_state.as_index);
-         _state = saved_state;
+            auto cleanup = scope_guard([&]() {
+               get_operand_stack().eat(_state.os_index);
+               _as.eat(_state.as_index);
+               _state = saved_state;
 
-         _last_op_index = last_last_op_index;
+               _last_op_index = last_last_op_index;
+            });
+
+            this->type_check_args(_mod->get_function_type(func_index),
+                                  std::forward<Args>(args)...); // args not modified
+            push_args(std::forward<Args>(args)...);
+            push_call<true>(func_index);
+
+            const auto environment = floating_point_environment{};
+            if (func_index < _mod->get_imported_functions_size()) {
+               this->invoke_host(_state.host, _mod->import_functions[func_index]);
+            } else {
+               _state.pc = _mod->get_function_pc(func_index);
+               setup_locals(func_index);
+               ::forge::vm::wasm::interpret::invoke_with_signal_handler(
+                   [&]() { execute(std::forward<Visitor>(visitor)); }, &handle_signal, _mod->allocator,
+                   base_type::get_wasm_allocator());
+            }
+
+            if (_mod->get_function_type(func_index).return_count && !_state.exiting) {
+               return pop_operand();
+            } else {
+               return {};
+            }
+         }();
       });
-
-      this->type_check_args(_mod->get_function_type(func_index), std::forward<Args>(args)...); // args not modified
-      push_args(std::forward<Args>(args)...);
-      push_call<true>(func_index);
-
-      if (func_index < _mod->get_imported_functions_size()) {
-         ::forge::vm::wasm::interpret::invoke_with_signal_handler(
-             [&]() { this->invoke_host(_state.host, _mod->import_functions[func_index]); }, &handle_signal,
-             _mod->allocator, base_type::get_wasm_allocator());
-      } else {
-         _state.pc = _mod->get_function_pc(func_index);
-         setup_locals(func_index);
-         ::forge::vm::wasm::interpret::invoke_with_signal_handler([&]() { execute(std::forward<Visitor>(visitor)); },
-                                                                  &handle_signal, _mod->allocator,
-                                                                  base_type::get_wasm_allocator());
-      }
-
-      if (_mod->get_function_type(func_index).return_count && !_state.exiting) {
-         return pop_operand();
-      } else {
-         return {};
-      }
+      return returned;
    }
 
    inline void jump(uint32_t pop_info, uint32_t new_pc) {

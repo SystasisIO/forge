@@ -1,5 +1,6 @@
 module;
 
+#include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/awaitable.hpp>
 
 #include <chrono>
@@ -39,11 +40,15 @@ class operation_state : public std::enable_shared_from_this<operation_state> {
    [[nodiscard]] bool stop_requested() const noexcept;
    [[nodiscard]] std::stop_token stop_token() const noexcept;
    boost::asio::awaitable<void> wait();
+   boost::asio::awaitable<void> execute(reservation reservation, std::string name, std::function<void(context&)>& work);
 
    void link_parent(std::stop_token parent);
    void request_stop_only() noexcept;
-   bool complete_value() noexcept;
-   bool complete_exception(std::exception_ptr error) noexcept;
+   bool complete_value();
+   bool complete_exception(std::exception_ptr error);
+   [[nodiscard]] bool completed() const noexcept;
+   [[nodiscard]] std::exception_ptr cancellation_error() const noexcept;
+   void install_completion(boost::asio::any_completion_handler<void(std::exception_ptr)>&& completion);
 
  private:
    struct impl;
@@ -129,7 +134,7 @@ class pool_state : public std::enable_shared_from_this<pool_state> {
    std::optional<reservation> try_reserve(std::stop_token parent);
    void release_reservation(std::uint64_t id) noexcept;
    void submit(reservation reservation, std::string name, std::shared_ptr<operation_state> operation,
-               std::function<void(context&)> work);
+               std::function<void(context&)>&& work);
    bool cancel(std::uint64_t id) noexcept;
    void request_stop() noexcept;
    boost::asio::awaitable<void> shutdown();
@@ -318,8 +323,10 @@ export class executor {
       requires detail::supported_work<std::remove_cvref_t<Work>>
    boost::asio::awaitable<detail::work_result_t<std::remove_cvref_t<Work>>> execute(task_options options,
                                                                                     Work&& work) const {
-      using result_type = detail::work_result_t<std::remove_cvref_t<Work>>;
-      return execute_owned<result_type>(submit(std::move(options), std::forward<Work>(work)));
+      require_valid();
+      using work_type = std::remove_cvref_t<Work>;
+      auto callable = std::make_shared<work_type>(std::forward<Work>(work));
+      return execute_owned(state_, std::move(options), std::move(callable));
    }
 
  private:
@@ -331,14 +338,17 @@ export class executor {
       }
    }
 
-   template <typename Result>
-   static boost::asio::awaitable<Result>
-   execute_owned(boost::asio::awaitable<operation<Result>> submission) {
-      auto submitted = co_await std::move(submission);
-      if constexpr (std::is_void_v<Result>) {
-         co_await std::move(submitted).wait();
-      } else {
-         co_return co_await std::move(submitted).wait();
+   template <typename Work>
+   static boost::asio::awaitable<detail::work_result_t<Work>>
+   execute_owned(std::shared_ptr<detail::pool_state> state, task_options options, std::shared_ptr<Work> callable) {
+      using result_type = detail::work_result_t<Work>;
+      auto reservation = co_await state->reserve(options.parent_stop_token);
+      auto result = std::make_shared<detail::result_state<result_type>>(state, reservation.id());
+      result->link_parent(options.parent_stop_token);
+      auto invoke = make_invocation(result, std::move(callable));
+      co_await result->execute(std::move(reservation), std::move(options.name), invoke);
+      if constexpr (!std::is_void_v<result_type>) {
+         co_return result->take_result();
       }
    }
 
@@ -382,8 +392,17 @@ export class executor {
                  std::shared_ptr<detail::result_state<detail::work_result_t<Work>>> result,
                  std::shared_ptr<Work> callable) {
       using result_type = detail::work_result_t<Work>;
+      auto invoke = make_invocation(result, std::move(callable));
+      state->submit(std::move(reservation), std::move(options.name), result, std::move(invoke));
+      return operation<result_type>{std::move(result)};
+   }
 
-      auto invoke = [callable = std::move(callable), result](context& work_context) mutable {
+   template <typename Work>
+   static std::function<void(context&)>
+   make_invocation(std::shared_ptr<detail::result_state<detail::work_result_t<Work>>> result,
+                   std::shared_ptr<Work> callable) {
+      using result_type = detail::work_result_t<Work>;
+      return [callable = std::move(callable), result = std::move(result)](context& work_context) mutable {
          if constexpr (detail::work_traits<Work>::with_context) {
             if constexpr (std::is_void_v<result_type>) {
                std::invoke(*callable, work_context);
@@ -398,8 +417,6 @@ export class executor {
             }
          }
       };
-      state->submit(std::move(reservation), std::move(options.name), result, std::move(invoke));
-      return operation<result_type>{std::move(result)};
    }
 
    std::shared_ptr<detail::pool_state> state_;

@@ -19,8 +19,9 @@ struct store::impl {
    boost::asio::awaitable<forge::db::core::snapshot> open_read_snapshot() const;
    boost::asio::awaitable<forge::db::object::header>
    initialize_header(forge::db::core::transaction& active) const;
-   boost::asio::awaitable<forge::db::ids::object_id> allocate_id(forge::db::ids::object_id type,
-                                                             forge::db::core::transaction& active);
+   boost::asio::awaitable<forge::db::object::header> read_existing_header(forge::db::core::snapshot& active) const;
+   boost::asio::awaitable<forge::db::ids::object_id>
+   allocate_id(forge::db::ids::object_id type, forge::db::core::transaction& active, change_set& changes);
    boost::asio::awaitable<void> seal_allocations(transaction::allocation_seal_map seals);
 
    void register_object_type(forge::db::ids::object_id type, std::type_index model);

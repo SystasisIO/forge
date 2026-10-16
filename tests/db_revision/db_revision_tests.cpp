@@ -13,6 +13,7 @@
 #include <forge/db/object/macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -35,6 +36,7 @@ import forge.db.core.driver;
 import forge.db.core.exceptions;
 import forge.db.core.record;
 import forge.db.object.store;
+import forge.db.object.exceptions;
 import forge.db.object.system;
 import forge.db.object.transaction;
 import forge.db.object.hooks;
@@ -44,6 +46,7 @@ import forge.db.revision.exceptions;
 import forge.db.revision.store;
 import forge.db.revision.types;
 import forge.db.ids.object_id;
+import forge.raw.raw;
 
 namespace {
 
@@ -73,6 +76,10 @@ bool starts_with(const forge::db::core::record_key& value, const forge::db::core
                              std::equal(prefix.bytes().begin(), prefix.bytes().end(), value.bytes().begin()));
 }
 
+struct rollback_failure final : std::runtime_error {
+   using std::runtime_error::runtime_error;
+};
+
 struct memory_state {
    struct lock_waiter {
       explicit lock_waiter(boost::asio::any_io_executor executor)
@@ -84,6 +91,12 @@ struct memory_state {
 
    mutable std::mutex mutex;
    family_map records;
+   std::size_t put_calls = 0;
+   std::size_t erase_calls = 0;
+   std::size_t commit_calls = 0;
+   std::size_t rollback_calls = 0;
+   std::size_t record_lock_calls = 0;
+   bool fail_rollback = false;
    bool record_locks = true;
    bool savepoints = true;
    bool record_locked = false;
@@ -126,6 +139,10 @@ class memory_session final : public forge::db::core::session {
 
    boost::asio::awaitable<std::optional<std::vector<std::byte>>>
    get_for_update(forge::db::core::family family, forge::db::core::record_key record) override {
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->record_lock_calls;
+      }
       if (!record_lock_owned_) {
          const auto executor = co_await boost::asio::this_coro::executor;
          auto waiter = std::make_shared<memory_state::lock_waiter>(executor);
@@ -158,11 +175,19 @@ class memory_session final : public forge::db::core::session {
 
    boost::asio::awaitable<void> put(forge::db::core::family family, forge::db::core::record_key record,
                                     std::vector<std::byte> value) override {
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->put_calls;
+      }
       working_[family.name][std::move(record)] = std::move(value);
       co_return;
    }
 
    boost::asio::awaitable<void> erase(forge::db::core::family family, forge::db::core::record_key record) override {
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->erase_calls;
+      }
       working_[family.name].erase(record);
       co_return;
    }
@@ -225,6 +250,10 @@ class memory_session final : public forge::db::core::session {
    }
 
    boost::asio::awaitable<void> commit() override {
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->commit_calls;
+      }
       if (writable_) {
          auto lock = std::scoped_lock{state_->mutex};
          state_->records = std::move(working_);
@@ -235,6 +264,15 @@ class memory_session final : public forge::db::core::session {
 
    boost::asio::awaitable<void> rollback() override {
       release_record_lock();
+      auto fail = false;
+      {
+         const auto lock = std::scoped_lock{state_->mutex};
+         ++state_->rollback_calls;
+         fail = std::exchange(state_->fail_rollback, false);
+      }
+      if (fail) {
+         throw rollback_failure{"simulated rollback failure"};
+      }
       co_return;
    }
 
@@ -293,6 +331,16 @@ class memory_driver final : public forge::db::core::driver {
 
    std::shared_ptr<memory_state> state_;
 };
+
+[[nodiscard]] family_map records_of(const std::shared_ptr<memory_state>& state) {
+   const auto lock = std::scoped_lock{state->mutex};
+   return state->records;
+}
+
+[[nodiscard]] auto logical_calls(const std::shared_ptr<memory_state>& state) {
+   const auto lock = std::scoped_lock{state->mutex};
+   return std::array{state->put_calls, state->erase_calls, state->commit_calls, state->record_lock_calls};
+}
 
 struct environment {
    std::shared_ptr<memory_driver> driver;
@@ -392,6 +440,268 @@ static_assert(std::same_as<forge::db::object::index_for_id_t<forge::db::revision
                            forge::db::revision::delta_index>);
 
 BOOST_AUTO_TEST_SUITE(db_revision_test_suite)
+
+BOOST_AUTO_TEST_CASE(db_revision_require_pristine_accepts_initial_state_without_journal_or_mutation) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto state = std::make_shared<memory_state>();
+      auto env = co_await open_environment(state);
+      auto active = co_await env.objects.begin_transaction();
+      auto alias = co_await env.objects.join(active);
+      const auto before = records_of(state);
+      const auto calls = logical_calls(state);
+      co_await env.revisions.require_pristine(alias);
+      BOOST_CHECK(!active.db_transaction().captures_mutations());
+      BOOST_CHECK(records_of(state) == before);
+      BOOST_CHECK(logical_calls(state) == calls);
+      // Header-only Object predicate intentionally rejects the Revision row.
+      BOOST_CHECK_THROW(co_await env.objects.require_pristine(active),
+                        forge::db::object::exceptions::invalid_descriptor);
+      env.objects.register_object<db_revision_tests::account_object>();
+      auto value = db_revision_tests::account{};
+      value.id = db_revision_tests::account::id_t{1U};
+      value.name = "same-writer";
+      co_await alias.insert(value);
+      co_await active.commit();
+      BOOST_CHECK_EQUAL((co_await env.objects.get(value.id)).name, "same-writer");
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_require_pristine_rejects_every_noninitial_field_and_trailing_bytes) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto mode : {0U, 1U, 2U, 3U, 4U, 5U, 6U}) {
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto state = std::make_shared<memory_state>();
+         auto env = co_await open_environment(state);
+         auto value = forge::db::revision::state{};
+         value.id = forge::db::revision::state_id;
+         if (mode == 0U)
+            value.next_revision = 2U;
+         else if (mode == 1U)
+            value.next_delta = 2U;
+         else if (mode == 2U) {
+            value.next_revision = 2U;
+            value.head = 1U;
+         } else if (mode == 3U) {
+            value.next_revision = 2U;
+            value.oldest_retained = 2U;
+            value.prune_baseline = 1U;
+         } else if (mode == 5U) {
+            value.format_version = 0U;
+         } else if (mode == 6U) {
+            value.id = forge::db::revision::state::id_t{1U};
+         }
+         auto encoded = std::vector<std::byte>{};
+         for (const auto byte : forge::raw::pack(value))
+            encoded.push_back(static_cast<std::byte>(byte));
+         if (mode == 4U)
+            encoded.push_back(std::byte{0xffU});
+         const auto record =
+             forge::db::object::system::access::record_key(forge::db::ids::to_object_id(forge::db::revision::state_id));
+         {
+            const auto lock = std::scoped_lock{state->mutex};
+            state->records[env.objects.family().name][record] = std::move(encoded);
+         }
+         const auto before = records_of(state);
+         const auto calls = logical_calls(state);
+         auto active = co_await env.objects.begin_transaction();
+         BOOST_CHECK_THROW(co_await env.revisions.require_pristine(active),
+                           forge::db::revision::exceptions::corrupt_state);
+         BOOST_CHECK(records_of(state) == before);
+         BOOST_CHECK(logical_calls(state) == calls);
+         co_await active.rollback();
+      }());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_require_pristine_rejects_extra_journal_and_unknown_records) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto type : {forge::db::object::system::type_id::revision_entry,
+                           forge::db::object::system::type_id::revision_delta, std::uint16_t{99U}}) {
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto state = std::make_shared<memory_state>();
+         auto env = co_await open_environment(state);
+         const auto extra = forge::db::object::system::access::record_key(
+             forge::db::ids::object_id{.space = 0U, .type = type, .instance = 1U});
+         co_await seed_record(env.driver, env.objects.family(), extra, bytes("not-pristine"));
+         const auto before = records_of(state);
+         const auto calls = logical_calls(state);
+         auto active = co_await env.objects.begin_transaction();
+         BOOST_CHECK_THROW(co_await env.revisions.require_pristine(active),
+                           forge::db::object::exceptions::invalid_descriptor);
+         BOOST_CHECK(records_of(state) == before);
+         BOOST_CHECK(logical_calls(state) == calls);
+         co_await active.rollback();
+      }());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_require_pristine_rejects_foreign_backend_closed_and_active_revision) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, []() -> boost::asio::awaitable<void> {
+      auto state = std::make_shared<memory_state>();
+      auto env = co_await open_environment(state);
+      auto foreign = co_await forge::db::object::store::open(env.driver);
+      {
+         auto active = co_await foreign.begin_transaction();
+         BOOST_CHECK_THROW(co_await env.revisions.require_pristine(active),
+                           forge::db::object::exceptions::invalid_descriptor);
+         co_await active.rollback();
+      }
+      {
+         auto active = co_await env.objects.begin_transaction();
+         const auto scope = co_await env.revisions.join(active);
+         static_cast<void>(scope);
+         const auto calls = logical_calls(state);
+         BOOST_CHECK_THROW(co_await env.revisions.require_pristine(active),
+                           forge::db::revision::exceptions::unsupported_operation);
+         BOOST_CHECK(logical_calls(state) == calls);
+         co_await active.rollback();
+         BOOST_CHECK_THROW(co_await env.revisions.require_pristine(active),
+                           forge::db::object::exceptions::transaction_closed);
+      }
+      const auto options = forge::db::object::store::options{.writes = forge::db::object::write_policy::backend};
+      auto unsafe = co_await open_environment(std::make_shared<memory_state>(), options);
+      auto active = co_await unsafe.objects.begin_transaction();
+      BOOST_CHECK_THROW(co_await unsafe.revisions.require_pristine(active),
+                        forge::db::object::exceptions::unsupported_operation);
+      co_await active.rollback();
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_open_existing_rejects_missing_state_without_mutation) {
+   auto runtime = forge::asio::runtime{};
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto state = std::make_shared<memory_state>();
+      auto driver = std::make_shared<memory_driver>(state);
+      auto objects = co_await forge::db::object::store::open(driver);
+      const auto before = records_of(state);
+      const auto calls = logical_calls(state);
+      const auto rollbacks = state->rollback_calls;
+      BOOST_CHECK_THROW((void)(co_await forge::db::revision::store::open_existing(driver, objects)),
+                        forge::db::revision::exceptions::corrupt_state);
+      BOOST_CHECK(records_of(state) == before);
+      BOOST_CHECK(logical_calls(state) == calls);
+      BOOST_CHECK_EQUAL(state->rollback_calls, rollbacks + 1U);
+      co_return;
+   }());
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_open_existing_preserves_initial_or_nonempty_journal_and_stays_mutable) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto nonempty : {false, true}) {
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto state = std::make_shared<memory_state>();
+         auto env = co_await open_environment(state);
+         const auto records = forge::db::core::family{"records"};
+         if (nonempty) {
+            auto first = co_await env.revisions.begin_transaction();
+            co_await first.db_transaction().put(records, key("item"), bytes("first"));
+            co_await first.commit();
+         }
+         const auto persisted = co_await env.objects.get(forge::db::revision::state_id);
+         const auto before = records_of(state);
+         const auto calls = logical_calls(state);
+         const auto rollbacks = state->rollback_calls;
+
+         auto opened = co_await forge::db::revision::store::open_existing(env.driver, env.objects);
+         BOOST_CHECK(records_of(state) == before);
+         BOOST_CHECK(logical_calls(state) == calls);
+         BOOST_CHECK_EQUAL(state->rollback_calls, rollbacks + 1U);
+         BOOST_CHECK((co_await env.objects.get(forge::db::revision::state_id)) == persisted);
+
+         auto next = co_await opened.begin_transaction();
+         BOOST_CHECK_EQUAL(next.id(), persisted.next_revision);
+         co_await next.db_transaction().put(records, key("item"), bytes("next"));
+         co_await next.commit();
+         auto revert = co_await env.driver->begin_transaction();
+         co_await opened.revert(revert, next.id());
+         co_await revert.commit();
+         const auto restored = co_await read_record(env.driver, records, key("item"));
+         if (nonempty) {
+            BOOST_REQUIRE(restored.has_value());
+            BOOST_CHECK_EQUAL(text(*restored), "first");
+         } else {
+            BOOST_CHECK(!restored.has_value());
+         }
+         const auto current = co_await env.objects.get(forge::db::revision::state_id);
+         BOOST_CHECK(current.head == persisted.head);
+         BOOST_CHECK_EQUAL(current.next_revision, persisted.next_revision + 1U);
+         co_return;
+      }());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_open_existing_rejects_corrupt_or_old_format_without_rewriting) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto malformed : {false, true}) {
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto state = std::make_shared<memory_state>();
+         auto env = co_await open_environment(state);
+         auto encoded = std::vector<std::byte>{std::byte{0xffU}};
+         if (!malformed) {
+            auto value = forge::db::revision::state{};
+            value.id = forge::db::revision::state_id;
+            value.format_version = 0U;
+            encoded.clear();
+            for (const auto byte : forge::raw::pack(value)) {
+               encoded.push_back(static_cast<std::byte>(byte));
+            }
+         }
+         const auto state_key =
+             forge::db::object::system::access::record_key(forge::db::ids::to_object_id(forge::db::revision::state_id));
+         {
+            const auto lock = std::scoped_lock{state->mutex};
+            state->records[env.objects.family().name][state_key] = std::move(encoded);
+         }
+         const auto before = records_of(state);
+         const auto calls = logical_calls(state);
+         const auto rollbacks = state->rollback_calls;
+         BOOST_CHECK_THROW((void)(co_await forge::db::revision::store::open_existing(env.driver, env.objects)),
+                           forge::db::revision::exceptions::corrupt_state);
+         BOOST_CHECK(records_of(state) == before);
+         BOOST_CHECK(logical_calls(state) == calls);
+         BOOST_CHECK_EQUAL(state->rollback_calls, rollbacks + 1U);
+         co_return;
+      }());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(db_revision_open_existing_keeps_record_lock_requirement_and_one_shot_rollback) {
+   auto runtime = forge::asio::runtime{};
+   for (const auto mode : {0U, 1U, 2U}) {
+      forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+         auto state = std::make_shared<memory_state>();
+         auto env = co_await open_environment(state);
+         if (mode == 0U) {
+            state->record_locks = false;
+         } else {
+            state->fail_rollback = true;
+            if (mode == 2U) {
+               const auto state_key = forge::db::object::system::access::record_key(
+                   forge::db::ids::to_object_id(forge::db::revision::state_id));
+               const auto lock = std::scoped_lock{state->mutex};
+               state->records[env.objects.family().name][state_key] = {std::byte{0xffU}};
+            }
+         }
+         const auto before = records_of(state);
+         const auto calls = logical_calls(state);
+         const auto rollbacks = state->rollback_calls;
+         if (mode == 0U) {
+            BOOST_CHECK_THROW((void)(co_await forge::db::revision::store::open_existing(env.driver, env.objects)),
+                              forge::db::revision::exceptions::unsupported_operation);
+         } else {
+            BOOST_CHECK_THROW((void)(co_await forge::db::revision::store::open_existing(env.driver, env.objects)),
+                              rollback_failure);
+         }
+         BOOST_CHECK(records_of(state) == before);
+         BOOST_CHECK(logical_calls(state) == calls);
+         BOOST_CHECK_EQUAL(state->rollback_calls, rollbacks + 1U);
+         BOOST_CHECK(!state->record_locked);
+         co_return;
+      }());
+   }
+}
 
 BOOST_AUTO_TEST_CASE(db_revision_commits_before_images_and_reverts_only_current_head) {
    auto runtime = forge::asio::runtime{};

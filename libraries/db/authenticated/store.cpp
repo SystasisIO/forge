@@ -68,12 +68,56 @@ detail::get_record_fn snapshot_reader(const std::shared_ptr<forge::db::core::sna
    };
 }
 
+boost::asio::awaitable<checkpoint_summary> export_owned(auto owner, forge::db::core::snapshot active, root expected,
+                                                        checkpoint_sink sink, checkpoint_limits bounds) {
+   if (!active.active() || !active.belongs_to(*owner->driver) || !sink || !checkpoint_limits_are_valid(bounds)) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store,
+                            "checkpoint export requires a same-origin snapshot and finite bounds");
+   }
+   auto pinned = std::make_shared<forge::db::core::snapshot>(std::move(active));
+   const auto actual = co_await read_root(*pinned, owner->settings.family, owner->namespace_hash, expected.version);
+   if (!actual) {
+      FORGE_THROW_EXCEPTION(exceptions::version_unavailable, "checkpoint version is unavailable");
+   }
+   if (*actual != expected) {
+      FORGE_THROW_EXCEPTION(exceptions::root_mismatch, "checkpoint does not match the exact retained root tuple");
+   }
+   co_return co_await detail::export_checkpoint_graphs(
+       owner->settings.domain, expected, snapshot_reader(pinned, owner->settings.family, owner->settings.read_observer),
+       std::move(sink), owner->settings.bounds, bounds);
+}
+
 } // namespace
 
 store::store(std::shared_ptr<forge::db::core::driver> driver, config settings)
     : impl_{std::make_shared<impl>(std::move(driver), std::move(settings))} {}
 
 store::store(std::shared_ptr<impl> implementation) : impl_{std::move(implementation)} {}
+
+boost::asio::awaitable<checkpoint_summary> store::export_checkpoint(forge::db::core::snapshot active, root expected,
+                                                                    checkpoint_sink sink,
+                                                                    checkpoint_limits bounds) const {
+   if (!impl_) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store, "authenticated store is not initialized");
+   }
+   // Do not retain `this` in a lazy coroutine: capture the SAME shared owner now.
+   detail::validate_checkpoint_policy(impl_->settings.domain, expected, impl_->settings.bounds, bounds);
+   return export_owned(impl_, std::move(active), expected, std::move(sink), bounds);
+}
+
+transaction store::join_restore(forge::db::core::transaction& active, root expected, checkpoint_limits bounds) const {
+   if (!impl_ || !active.active() || !active.belongs_to(*impl_->driver) || !checkpoint_limits_are_valid(bounds)) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store,
+                            "checkpoint restore requires a same-origin transaction and finite bounds");
+   }
+   if (active.captures_mutations()) {
+      FORGE_THROW_EXCEPTION(exceptions::invalid_store, "checkpoint baseline cannot import revision history");
+   }
+   detail::validate_checkpoint_policy(impl_->settings.domain, expected, impl_->settings.bounds, bounds);
+   return detail::transaction_access::make_restore(active, impl_->driver, impl_->settings.family,
+                                                   impl_->settings.domain, impl_->namespace_hash,
+                                                   impl_->settings.bounds, expected, bounds);
+}
 
 boost::asio::awaitable<std::optional<root>> store::earliest() const {
    if (!impl_) {

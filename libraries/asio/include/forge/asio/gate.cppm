@@ -4,6 +4,7 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <cstdint>
 #include <deque>
@@ -81,17 +82,17 @@ struct gate_waiter {
    gate_wait_state state = gate_wait_state::queued;
 };
 
-struct gate_cancellation_filter {
+struct gate_cancellation_handler {
    std::weak_ptr<gate_state> owner;
    std::weak_ptr<gate_waiter> waiter;
 
-   boost::asio::cancellation_type_t
-   operator()(boost::asio::cancellation_type_t type) const noexcept;
+   void operator()(boost::asio::cancellation_type_t type) const noexcept;
 };
 
 class gate_state : public std::enable_shared_from_this<gate_state> {
  public:
-   boost::asio::awaitable<forge::asio::gate::ticket> acquire();
+   boost::asio::awaitable<forge::asio::gate::ticket>
+   acquire(std::shared_ptr<gate_waiter> waiter, boost::asio::awaitable<boost::system::error_code> wait);
    void close() noexcept;
    [[nodiscard]] bool closed() const noexcept;
    void release_one() noexcept;
@@ -105,7 +106,7 @@ class gate_state : public std::enable_shared_from_this<gate_state> {
    std::shared_ptr<gate_waiter> granted_;
    std::deque<std::shared_ptr<gate_waiter>> waiters_;
 
-   friend struct gate_cancellation_filter;
+   friend struct gate_cancellation_handler;
 };
 
 } // namespace forge::asio::detail

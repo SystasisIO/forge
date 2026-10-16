@@ -25,6 +25,7 @@ module;
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -203,15 +204,24 @@ boost::asio::awaitable<void> handle::wait_owned(std::shared_ptr<state> state) {
 }
 
 struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
-   struct queued_task {
-      std::shared_ptr<handle::state> state;
-      priority scheduled_priority{};
+   struct task_payload {
       std::string name;
       std::function<void()> work;
       std::function<boost::asio::awaitable<void>(context&)> awaitable_work;
+   };
+
+   struct queued_task {
+      std::shared_ptr<handle::state> state;
+      priority scheduled_priority{};
+      // A small std::function may clone on move and destroy its source target.
+      // Heap operations must not invoke user destructors while holding mutex.
+      std::unique_ptr<task_payload> payload;
       std::chrono::steady_clock::time_point ready_at = std::chrono::steady_clock::now();
       std::uint64_t sequence = 0;
    };
+
+   static_assert(std::is_nothrow_move_constructible_v<queued_task>);
+   static_assert(std::is_nothrow_move_assignable_v<queued_task>);
 
    struct ready_priority_less {
       bool operator()(const queued_task& left, const queued_task& right) const noexcept {
@@ -258,9 +268,8 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
       auto queued = queued_task{
           .state = state,
           .scheduled_priority = value.priority,
-          .name = std::move(value.name),
-          .work = std::move(value.work),
-          .awaitable_work = {},
+          .payload = std::make_unique<task_payload>(std::move(value.name), std::move(value.work),
+                                                    std::function<boost::asio::awaitable<void>(context&)>{}),
           .ready_at = ready_at,
           .sequence = next_sequence.fetch_add(1, std::memory_order_relaxed),
       };
@@ -277,9 +286,8 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
       auto queued = queued_task{
           .state = state,
           .scheduled_priority = value.priority,
-          .name = std::move(value.name),
-          .work = {},
-          .awaitable_work = std::move(value.work),
+          .payload =
+              std::make_unique<task_payload>(std::move(value.name), std::function<void()>{}, std::move(value.work)),
           .ready_at = ready_at,
           .sequence = next_sequence.fetch_add(1, std::memory_order_relaxed),
       };
@@ -306,20 +314,34 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
             return handle{std::move(state)};
          }
 
+         const auto ready = queued.ready_at <= std::chrono::steady_clock::now();
+         auto& heap = ready ? ready_heap : delayed_heap;
+         reserve_heap_locked(heap, heap.size() + 1);
+
+         // post never invokes drain inline. A concurrent drain takes this same
+         // mutex, so it cannot observe the candidate until the no-throw commit.
+         // Any allocation/post failure still owns queued above this lock scope.
+         schedule_drain();
+         heap.push_back(std::move(queued));
+         if (ready) {
+            std::push_heap(heap.begin(), heap.end(), ready_priority_less{});
+         } else {
+            std::push_heap(heap.begin(), heap.end(), delayed_time_less{});
+         }
          ++current_metrics.submitted;
          state->accepted.store(true, std::memory_order_release);
-         if (queued.ready_at <= std::chrono::steady_clock::now()) {
-            ready_heap.push_back(std::move(queued));
-            std::push_heap(ready_heap.begin(), ready_heap.end(), ready_priority_less{});
-         } else {
-            delayed_heap.push_back(std::move(queued));
-            std::push_heap(delayed_heap.begin(), delayed_heap.end(), delayed_time_less{});
-         }
          refresh_metrics_locked();
       }
-
-      schedule_drain();
       return handle{std::move(state)};
+   }
+
+   void reserve_heap_locked(std::vector<queued_task>& heap, std::size_t required) {
+      if (required <= heap.capacity()) {
+         return;
+      }
+      const auto available = options.max_pending_tasks - heap.capacity();
+      const auto growth = std::min(std::max(heap.capacity(), std::size_t{1}), available);
+      heap.reserve(std::max(required, heap.capacity() + growth));
    }
 
    void remove_pending(std::uint64_t id) {
@@ -373,24 +395,19 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
    }
 
    void request_stop() {
-      auto canceled = std::vector<std::shared_ptr<handle::state>>{};
+      auto canceled_ready = std::vector<queued_task>{};
+      auto canceled_delayed = std::vector<queued_task>{};
       auto timer_to_cancel = std::shared_ptr<boost::asio::steady_timer>{};
       auto drained = std::vector<std::shared_ptr<drain_waiter>>{};
       {
          const auto lock = std::scoped_lock{mutex};
          if (!stopped) {
             stopped = true;
-            for (auto& task : ready_heap) {
-               canceled.push_back(task.state);
-            }
-            for (auto& task : delayed_heap) {
-               canceled.push_back(task.state);
-            }
-            ready_heap.clear();
-            delayed_heap.clear();
+            canceled_ready.swap(ready_heap);
+            canceled_delayed.swap(delayed_heap);
             timer_to_cancel = std::move(ready_timer);
             ready_timer_deadline = (std::chrono::steady_clock::time_point::max)();
-            current_metrics.canceled += canceled.size();
+            current_metrics.canceled += canceled_ready.size() + canceled_delayed.size();
             refresh_metrics_locked();
          }
          if (drained_locked()) {
@@ -398,10 +415,14 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
          }
       }
 
-      for (const auto& state : canceled) {
-         static_cast<void>(state->stop_state.request_stop());
-         state->complete_exception(make_error(exceptions::code::canceled, "scheduled task was canceled"));
-      }
+      const auto cancel = [](auto& tasks) {
+         for (const auto& task : tasks) {
+            static_cast<void>(task.state->stop_state.request_stop());
+            task.state->complete_exception(make_error(exceptions::code::canceled, "scheduled task was canceled"));
+         }
+      };
+      cancel(canceled_ready);
+      cancel(canceled_delayed);
 
       if (timer_to_cancel != nullptr) {
          boost::asio::post(strand, [timer = std::move(timer_to_cancel)] { timer->cancel(); });
@@ -445,25 +466,29 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
          throw exceptions::internal{"failed to arm task scheduler drain wait"};
       }
       auto error = boost::system::error_code{};
-      co_await waiter->timer.async_wait(
-         boost::asio::redirect_error(boost::asio::use_awaitable, error));
+      co_await waiter->timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, error));
       static_cast<void>(error);
    }
 
    void drain() {
       auto tasks = std::vector<queued_task>{};
+      auto retired = std::vector<queued_task>{};
+      auto skipped = std::vector<queued_task>{};
+      auto extracted = std::optional<queued_task>{};
       {
          const auto lock = std::scoped_lock{mutex};
          auto now = std::chrono::steady_clock::now();
-         move_ready_delayed_locked(now);
+         // Extract into storage above the lock. A failing vector insertion
+         // leaves its owning payload here, so unwind destroys it after unlock.
+         move_ready_delayed_locked(now, extracted, retired);
          if (stopped) {
             return;
          }
 
-         while (auto task = pop_ready_locked()) {
-            start_task_locked(*task);
+         while (pop_ready_locked(extracted, retired, skipped)) {
+            start_task_locked(*extracted);
             ++current_metrics.started;
-            tasks.push_back(std::move(*task));
+            tasks.push_back(std::move(*extracted));
          }
 
          if (tasks.empty()) {
@@ -492,13 +517,13 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
          return;
       }
 
-      if (task.awaitable_work) {
+      if (task.payload->awaitable_work) {
          run_awaitable_task(std::move(task));
          return;
       }
 
       try {
-         task.work();
+         task.payload->work();
          finish_task_value(task);
       } catch (...) {
          finish_task_exception(task, std::current_exception());
@@ -512,7 +537,7 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
              auto task_context = context{task.state->stop_state.token()};
              try {
                 task_context.throw_if_cancel_requested();
-                co_await task.awaitable_work(task_context);
+                co_await task.payload->awaitable_work(task_context);
                 self->finish_task_value(task);
              } catch (...) {
                 self->finish_task_exception(task, std::current_exception());
@@ -581,7 +606,11 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
    }
 
    void schedule_drain() {
-      boost::asio::post(strand, [weak = weak_from_this()] {
+      // io_context commits a single operation after its allocation. Posting a
+      // cold strand has a second invoker allocation after strand enqueue, whose
+      // failure can leave that strand permanently locked. Queue/slot/timer
+      // mutations are already serialized by mutex; user work stays outside it.
+      boost::asio::post(runtime_ref.context(), [weak = weak_from_this()] {
          if (auto self = weak.lock()) {
             self->drain();
          }
@@ -589,7 +618,7 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
    }
 
    [[nodiscard]] static bool is_awaitable(const queued_task& task) noexcept {
-      return static_cast<bool>(task.awaitable_work);
+      return static_cast<bool>(task.payload->awaitable_work);
    }
 
    [[nodiscard]] bool can_start_locked(const queued_task& task) const noexcept {
@@ -615,15 +644,18 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
       tasks.clear();
    }
 
-   std::optional<queued_task> pop_ready_locked() {
-      auto skipped = std::vector<queued_task>{};
+   bool pop_ready_locked(std::optional<queued_task>& extracted, std::vector<queued_task>& retired,
+                         std::vector<queued_task>& skipped) {
       while (!ready_heap.empty()) {
          std::pop_heap(ready_heap.begin(), ready_heap.end(), ready_priority_less{});
-         auto task = std::move(ready_heap.back());
+         extracted.emplace(std::move(ready_heap.back()));
          ready_heap.pop_back();
+         auto& task = *extracted;
          if (task.state->stop_state.stop_requested() || task.state->completed.load(std::memory_order_acquire)) {
             ++current_metrics.canceled;
-            task.state->complete_exception(make_error(exceptions::code::canceled, "scheduled task was canceled"));
+            retired.push_back(std::move(task));
+            retired.back().state->complete_exception(
+                make_error(exceptions::code::canceled, "scheduled task was canceled"));
             refresh_metrics_locked();
             continue;
          }
@@ -633,22 +665,27 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
          }
          restore_ready_locked(skipped);
          refresh_metrics_locked();
-         return task;
+         return true;
       }
       restore_ready_locked(skipped);
-      return std::nullopt;
+      return false;
    }
 
-   void move_ready_delayed_locked(std::chrono::steady_clock::time_point now) {
+   void move_ready_delayed_locked(std::chrono::steady_clock::time_point now, std::optional<queued_task>& extracted,
+                                  std::vector<queued_task>& retired) {
       while (!delayed_heap.empty() && delayed_heap.front().ready_at <= now) {
          std::pop_heap(delayed_heap.begin(), delayed_heap.end(), delayed_time_less{});
-         auto task = std::move(delayed_heap.back());
+         extracted.emplace(std::move(delayed_heap.back()));
          delayed_heap.pop_back();
+         auto& task = *extracted;
          if (task.state->stop_state.stop_requested() || task.state->completed.load(std::memory_order_acquire)) {
             ++current_metrics.canceled;
-            task.state->complete_exception(make_error(exceptions::code::canceled, "scheduled task was canceled"));
+            retired.push_back(std::move(task));
+            retired.back().state->complete_exception(
+                make_error(exceptions::code::canceled, "scheduled task was canceled"));
             continue;
          }
+         reserve_heap_locked(ready_heap, ready_heap.size() + 1);
          ready_heap.push_back(std::move(task));
          std::push_heap(ready_heap.begin(), ready_heap.end(), ready_priority_less{});
       }
@@ -686,7 +723,7 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
       });
    }
 
-   std::size_t pending_count_locked() const {
+   std::size_t pending_count_locked() const noexcept {
       return ready_heap.size() + delayed_heap.size();
    }
 
@@ -694,7 +731,7 @@ struct scheduler::impl : std::enable_shared_from_this<scheduler::impl> {
       return running_blocking_tasks == 0 && running_awaitable_tasks == 0;
    }
 
-   void refresh_metrics_locked() const {
+   void refresh_metrics_locked() const noexcept {
       current_metrics.pending = pending_count_locked();
       current_metrics.running_blocking = running_blocking_tasks;
       current_metrics.running_awaitable = running_awaitable_tasks;

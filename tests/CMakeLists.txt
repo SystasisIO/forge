@@ -34,6 +34,10 @@ add_test(
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/plugin_impl_ownership_tests.py
 )
 add_test(
+   NAME test_forge_vm_wasm_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/vm_wasm_tests.py
+)
+add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
    COMMAND
       ${CMAKE_COMMAND}
@@ -1066,6 +1070,13 @@ add_executable(
 )
 target_link_libraries(test_forge_asio forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_asio COMMAND test_forge_asio WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# Keep replaceable allocation symbols out of the general Asio test executable.
+add_executable(test_forge_asio_task_admission asio/task_admission_tests.cpp)
+target_link_libraries(test_forge_asio_task_admission forge_asio Boost::included_unit_test_framework)
+add_test(NAME test_forge_asio_task_admission COMMAND test_forge_asio_task_admission
+         WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_forge_asio_task_admission PROPERTIES TIMEOUT 30)
 
 add_executable(
    test_forge_cli
@@ -2189,6 +2200,7 @@ add_executable(
    fixtures/local_dns_server.cpp
    fixtures/local_dns_server.hxx
    plugins_db_store/db_store_tests.cpp
+   plugins_db_store/activation_tests.cpp
    plugins_db_store/p2p_peer_state_persistence_tests.cpp
    plugins_db_store/p2p_private_network_tests.cpp
    plugins_db_store/secure_node_fixture.cpp
@@ -2226,6 +2238,7 @@ target_link_libraries(
    forge_plugins_crypto_secrets
    forge_plugins_net_p2p_node
    Boost::included_unit_test_framework
+   ${CMAKE_DL_LIBS}
 )
 target_include_directories(test_forge_plugins_db_store PRIVATE ${PROJECT_SOURCE_DIR}/plugins/net/p2p/node)
 target_compile_definitions(test_forge_plugins_db_store PRIVATE FORGE_HAS_ROCKSDB=$<BOOL:${FORGE_HAS_ROCKSDB}>)
@@ -2295,6 +2308,19 @@ else()
 endif()
 
 set(FORGE_PACKAGE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/forge-package-install")
+set(_forge_package_metadata_test
+   ${CMAKE_COMMAND}
+   -DFORGE_PACKAGE_TEST_SOURCE_ROOT=${CMAKE_SOURCE_DIR}
+   -DFORGE_PACKAGE_TEST_BUILD_ROOT=${CMAKE_BINARY_DIR}
+   -DFORGE_PACKAGE_TEST_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}
+   -DFORGE_PACKAGE_TEST_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}
+   -DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}
+   -DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+   -DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
+   -P ${CMAKE_CURRENT_SOURCE_DIR}/package_metadata/verify_layout.cmake
+)
+add_custom_target(test_forge_package_metadata COMMAND ${_forge_package_metadata_test})
+add_test(NAME test_forge_package_metadata COMMAND ${_forge_package_metadata_test})
 set(FORGE_PACKAGE_DIR "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake/Forge")
 set(FORGE_PACKAGE_CONSUMER_PREFIX_PATH ${CMAKE_PREFIX_PATH})
 list(REMOVE_DUPLICATES FORGE_PACKAGE_CONSUMER_PREFIX_PATH)
@@ -2325,6 +2351,40 @@ foreach(FORGE_PACKAGE_BOOST_VARIABLE IN ITEMS
       )
    endif()
 endforeach()
+set(FORGE_PACKAGE_TOOLCHAIN_CACHE "${CMAKE_BINARY_DIR}/tests/ForgePackageToolchainCache.cmake")
+set(FORGE_PACKAGE_TOOLCHAIN_CACHE_CONTENT "# Parent toolchain only; never package roots or dependency hints.\n")
+set(_forge_package_toolchain_fields
+   CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_BUILD_TYPE CMAKE_CONFIGURATION_TYPES
+   CMAKE_C_FLAGS CMAKE_CXX_FLAGS
+   CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_STATIC_LINKER_FLAGS
+   CMAKE_OSX_SYSROOT CMAKE_OSX_DEPLOYMENT_TARGET CMAKE_OSX_ARCHITECTURES
+   CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS CMAKE_AR CMAKE_RANLIB CMAKE_NM CMAKE_STRIP CMAKE_LINKER
+   CMAKE_C_COMPILER_AR CMAKE_C_COMPILER_RANLIB CMAKE_CXX_COMPILER_AR CMAKE_CXX_COMPILER_RANLIB
+   CMAKE_EXPORT_COMPILE_COMMANDS)
+set(_forge_package_configurations DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+foreach(configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+   string(TOUPPER "${configuration}" _forge_package_configuration)
+   list(APPEND _forge_package_configurations "${_forge_package_configuration}")
+endforeach()
+if(CMAKE_BUILD_TYPE)
+   string(TOUPPER "${CMAKE_BUILD_TYPE}" _forge_package_current_configuration)
+   list(APPEND _forge_package_configurations "${_forge_package_current_configuration}")
+endif()
+list(REMOVE_DUPLICATES _forge_package_configurations)
+foreach(configuration IN LISTS _forge_package_configurations)
+   foreach(flags IN ITEMS CMAKE_C_FLAGS CMAKE_CXX_FLAGS CMAKE_EXE_LINKER_FLAGS
+      CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_STATIC_LINKER_FLAGS)
+      list(APPEND _forge_package_toolchain_fields "${flags}_${configuration}")
+   endforeach()
+endforeach()
+foreach(field IN LISTS _forge_package_toolchain_fields)
+   if(DEFINED ${field})
+      string(APPEND FORGE_PACKAGE_TOOLCHAIN_CACHE_CONTENT
+         "set(${field} [==[${${field}}]==] CACHE STRING \"Parent toolchain value\" FORCE)\n")
+   endif()
+endforeach()
+file(GENERATE OUTPUT "${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
+   CONTENT "${FORGE_PACKAGE_TOOLCHAIN_CACHE_CONTENT}")
 set(FORGE_PACKAGE_CONSUMER_CACHE "${CMAKE_BINARY_DIR}/tests/ForgePackageConsumerCache.cmake")
 string(
    CONCAT FORGE_PACKAGE_CONSUMER_CACHE_CONTENT
@@ -2335,9 +2395,7 @@ string(
    "${FORGE_PACKAGE_BOOST_CACHE_CONTENT}"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
-   "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
-   "set(CMAKE_C_FLAGS [==[${CMAKE_C_FLAGS}]==] CACHE STRING \"Parent C toolchain flags\" FORCE)\n"
-   "set(CMAKE_EXE_LINKER_FLAGS [==[${CMAKE_EXE_LINKER_FLAGS}]==] CACHE STRING \"Parent executable linker flags\" FORCE)\n"
+   "include([==[${FORGE_PACKAGE_TOOLCHAIN_CACHE}]==])\n"
 )
 file(
    GENERATE
@@ -2361,9 +2419,7 @@ string(
    "set(FORGE_EXPECTED_PREFIX_PATH [==[${FORGE_PACKAGE_CONSUMER_PREFIX_PATH}]==] CACHE STRING \"Expected shared dependency prefixes\" FORCE)\n"
    "set(FORGE_EXPECTED_PACKAGE_DIR [==[${FORGE_PACKAGE_DIR}]==] CACHE PATH \"Expected Forge test package\" FORCE)\n"
    "set(FORGE_EXPECTED_GLAZE_DIR [==[${glaze_DIR}]==] CACHE PATH \"Expected Glaze package\" FORCE)\n"
-   "set(CMAKE_CXX_FLAGS [==[${CMAKE_CXX_FLAGS}]==] CACHE STRING \"Parent C++ toolchain flags\" FORCE)\n"
-   "set(CMAKE_C_FLAGS [==[${CMAKE_C_FLAGS}]==] CACHE STRING \"Parent C toolchain flags\" FORCE)\n"
-   "set(CMAKE_EXE_LINKER_FLAGS [==[${CMAKE_EXE_LINKER_FLAGS}]==] CACHE STRING \"Parent executable linker flags\" FORCE)\n"
+   "include([==[${FORGE_PACKAGE_TOOLCHAIN_CACHE}]==])\n"
 )
 file(
    GENERATE
@@ -2377,6 +2433,11 @@ set(
    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
    -DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
 )
+set(_forge_package_openssl_root_argument)
+if(DEFINED OPENSSL_ROOT_DIR AND NOT "${OPENSSL_ROOT_DIR}" STREQUAL "")
+   set(_forge_package_openssl_root_argument
+      "-DFORGE_PACKAGE_TEST_OPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}")
+endif()
 
 if(TARGET forge_auth_oidc_agent)
    add_library(
@@ -2428,6 +2489,34 @@ add_custom_target(
    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --prefix ${FORGE_PACKAGE_INSTALL_PREFIX} --component dev
    DEPENDS forge
 )
+if(TARGET forge_vm_wasm_optimizing)
+   add_dependencies(test_forge_package_install forge_wasm_compiler)
+   set(_forge_oc_relocated_test
+      ${CMAKE_COMMAND}
+      "-DFORGE_PACKAGE_TEST_INSTALL_PREFIX=${FORGE_PACKAGE_INSTALL_PREFIX}"
+      "-DFORGE_PACKAGE_TEST_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
+      "-DFORGE_PACKAGE_TEST_BINDIR=${CMAKE_INSTALL_BINDIR}"
+      "-DFORGE_PACKAGE_TEST_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_optimizing_component"
+      "-DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}"
+      "-DFORGE_PACKAGE_TEST_TOOLCHAIN_CACHE=${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
+      ${_forge_package_openssl_root_argument}
+      "-DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}"
+      "-DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}"
+      "-DFORGE_OC_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+      "-DFORGE_OC_BUILD_ROOT=${CMAKE_BINARY_DIR}"
+      "-DFORGE_OC_BUILD_CONFIG=${CMAKE_BINARY_DIR}/tests/vm_wasm/compiler-build-config-$<CONFIG>.txt"
+      "-DFORGE_OC_BUILD_STAMP=${CMAKE_BINARY_DIR}/tests/vm_wasm/compiler-build-$<CONFIG>.json"
+      "-DFORGE_OC_COMPILER=$<TARGET_FILE:test_forge_vm_wasm_optimizing_compiler>"
+      "-DFORGE_OC_AS_BYTES=${FORGE_VM_WASM_OPTIMIZING_HELPER_TEST_AS_BYTES}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_optimizing_component/verify_relocation.cmake")
+   add_custom_target(test_forge_package_vm_wasm_optimizing_component
+      COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}"
+         --output-on-failure --parallel 1 -R "^test_forge_package_vm_wasm_optimizing_component$"
+      DEPENDS test_forge_package_install test_forge_vm_wasm_optimizing_compiler
+         test_forge_vm_wasm_optimizing_ordinary_consumer forge_wasm_compiler
+      VERBATIM)
+endif()
 add_custom_target(
    test_forge_package_consumer
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -3116,6 +3205,9 @@ add_custom_target(
       -DFORGE_PACKAGE_TEST_SOURCE_ROOT=${PROJECT_SOURCE_DIR}
       -DFORGE_PACKAGE_TEST_BUILD_ROOT=${CMAKE_BINARY_DIR}
       -DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}
+      "-DFORGE_PACKAGE_TEST_TOOLCHAIN_CACHE=${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
+      ${_forge_package_openssl_root_argument}
+      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
       -DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_interpret_component/verify_relocation.cmake
@@ -3513,6 +3605,13 @@ add_test(
    NAME test_forge_package_install
    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --prefix ${FORGE_PACKAGE_INSTALL_PREFIX} --component dev
 )
+if(TARGET forge_vm_wasm_optimizing)
+   set_property(TEST test_forge_package_install APPEND PROPERTY FIXTURES_SETUP forge_oc_installed_sdk)
+   add_test(NAME test_forge_package_vm_wasm_optimizing_component COMMAND ${_forge_oc_relocated_test})
+   set_tests_properties(test_forge_package_vm_wasm_optimizing_component PROPERTIES
+      LABELS vm_wasm_optimizing TIMEOUT 800
+      FIXTURES_REQUIRED "forge_oc_runtime_fixtures;forge_oc_installed_sdk")
+endif()
 add_test(
    NAME test_forge_package_consumer
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -4237,6 +4336,9 @@ add_test(
       -DFORGE_PACKAGE_TEST_SOURCE_ROOT=${PROJECT_SOURCE_DIR}
       -DFORGE_PACKAGE_TEST_BUILD_ROOT=${CMAKE_BINARY_DIR}
       -DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}
+      "-DFORGE_PACKAGE_TEST_TOOLCHAIN_CACHE=${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
+      ${_forge_package_openssl_root_argument}
+      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
       -DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_interpret_component/verify_relocation.cmake

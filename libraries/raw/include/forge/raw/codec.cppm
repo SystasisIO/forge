@@ -1,5 +1,6 @@
 module;
 
+#include <boost/describe.hpp>
 #include <boost/pfr/core.hpp>
 
 #include <algorithm>
@@ -959,3 +960,10 @@ datastream<Storage, Enable>& operator>>(datastream<Storage, Enable>& stream, T& 
 }
 
 } // namespace forge
+
+export namespace forge::raw {
+
+BOOST_DESCRIBE_STRUCT(unpack_limits, (),
+                      (max_container_elements, max_total_container_elements, max_bytes, first_container_elements))
+
+} // namespace forge::raw

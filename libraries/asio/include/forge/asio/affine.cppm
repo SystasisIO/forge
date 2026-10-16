@@ -5,10 +5,8 @@ module;
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/cancellation_type.hpp>
-#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/thread_pool.hpp>
-#include <boost/asio/use_awaitable.hpp>
 
 #include <chrono>
 #include <concepts>
@@ -91,11 +89,10 @@ class operation_state : public std::enable_shared_from_this<operation_state> {
    std::function<void()> wake_;
 };
 
-struct operation_cancellation_filter {
+struct operation_cancellation_handler {
    std::weak_ptr<operation_state> operation;
 
-   boost::asio::cancellation_type_t
-   operator()(boost::asio::cancellation_type_t type) const noexcept;
+   void operator()(boost::asio::cancellation_type_t type) const noexcept;
 };
 
 template <typename Work, typename Result> class result_state final : public operation_state {
@@ -224,10 +221,7 @@ class executor {
          static_cast<void>(operation->cancel_before_start());
          FORGE_THROW_EXCEPTION(exceptions::canceled, "affine operation was canceled before execution");
       }
-      const auto executor = co_await boost::asio::this_coro::executor;
-      // The operation's completion-wins filter belongs to its own awaitable thread.
-      // Keep the result outside co_spawn so non-default-constructible results remain supported.
-      co_await boost::asio::co_spawn(executor, state->execute(operation), boost::asio::use_awaitable);
+      co_await state->execute(operation);
       if constexpr (!std::is_void_v<Result>) {
          co_return operation->take_result();
       }

@@ -7,6 +7,7 @@ include(CheckCXXSourceCompiles)
 include(CMakePackageConfigHelpers)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(ForgeVendorCompilePolicy)
+include(ForgeSoftFloatAbi)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
    include(CTest)
@@ -26,6 +27,13 @@ option(FORGE_ENABLE_MDBX "Build the vendored MDBX-backed FORGE database driver" 
 option(FORGE_ENABLE_TOOLING "Build optional Forge Contract Tooling host libraries" OFF)
 option(FORGE_ENABLE_S3 "Build the optional AWS SDK-backed S3 client" OFF)
 option(FORGE_ENABLE_LIBOAUTH2 "Build the resource-token verification backend" OFF)
+option(FORGE_ENABLE_VM_WASM_OPTIMIZING "Build the optional WASM optimizing native artifact/runtime leaf" OFF)
+if(FORGE_ENABLE_VM_WASM_OPTIMIZING AND
+   (NOT ((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$") OR
+         (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")) OR
+    NOT CMAKE_SIZEOF_VOID_P EQUAL 8))
+   message(FATAL_ERROR "FORGE_ENABLE_VM_WASM_OPTIMIZING=ON requires Linux x86-64 or Darwin ARM64; this target is ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
+endif()
 set(FORGE_ENABLE_OIDC_AGENT "AUTO" CACHE STRING "Build the oidc-agent authentication backend: AUTO, ON or OFF")
 set_property(CACHE FORGE_ENABLE_OIDC_AGENT PROPERTY STRINGS AUTO ON OFF)
 if(NOT FORGE_ENABLE_OIDC_AGENT MATCHES "^(AUTO|ON|OFF)$")
@@ -100,6 +108,9 @@ set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
 set(_forge_boost_components headers date_time iostreams)
+if(FORGE_ENABLE_VM_WASM_OPTIMIZING)
+   list(APPEND _forge_boost_components process)
+endif()
 if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    list(APPEND _forge_boost_components charconv url program_options)
 endif()
@@ -407,6 +418,13 @@ if(FORGE_ENABLE_TOOLING)
    )
 endif()
 
+if(FORGE_ENABLE_VM_WASM_OPTIMIZING)
+   list(APPEND FORGE_SOURCE_INCLUDE_DIRS
+      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/vm/wasm/optimizing/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/wasm_compiler/include"
+   )
+endif()
+
 set(FORGE_PLUGINS_CHAIN_SIGNER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/chain/signer/include")
 set(FORGE_PLUGINS_CRYPTO_SECRETS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/crypto/secrets/include")
 set(FORGE_PLUGINS_NET_P2P_NODE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/net/p2p/node/include")
@@ -621,6 +639,7 @@ endif()
 add_subdirectory(vendor/bn256/src)
 add_subdirectory(vendor/bls12-381 EXCLUDE_FROM_ALL)
 add_subdirectory(vendor/softfloat EXCLUDE_FROM_ALL)
+forge_configure_softfloat_abi(softfloat)
 set_target_properties(
    softfloat PROPERTIES
    EXPORT_NAME vm_wasm_interpret_softfloat_internal
@@ -930,6 +949,15 @@ if(FORGE_ENABLE_TOOLING)
    add_subdirectory(libraries/tooling)
 endif()
 
+if(TARGET forge_vm_wasm_optimizing)
+   add_subdirectory(libraries/tooling/wasm_compiler)
+   list(APPEND FORGE_LEAF_TARGETS forge_vm_wasm_optimizing forge_tooling_wasm_compiler)
+   add_executable(forge_wasm_compiler tools/wasm-compiler/main.cpp)
+   target_link_libraries(forge_wasm_compiler PRIVATE forge_tooling_wasm_compiler)
+   set_target_properties(forge_wasm_compiler PROPERTIES OUTPUT_NAME "forge-wasm-compiler")
+   install(TARGETS forge_wasm_compiler RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT dev)
+endif()
+
 if(TARGET forge_rocksdb)
    list(APPEND FORGE_LEAF_TARGETS forge_rocksdb)
 endif()
@@ -1083,6 +1111,10 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       list(APPEND FORGE_BUILT_COMPONENTS auth_liboauth2)
    endif()
 endif()
+if(TARGET forge_vm_wasm_optimizing)
+   list(APPEND FORGE_BUILT_COMPONENTS vm_wasm_optimizing tooling_wasm_compiler)
+endif()
+
 if(TARGET forge_rocksdb)
    list(APPEND FORGE_BUILT_COMPONENTS rocksdb)
 endif()
@@ -1280,6 +1312,13 @@ if(FORGE_CONTRACT_SDK_HOST_PROFILE)
       endif()
    endforeach()
 endif()
+if(TARGET forge_vm_wasm_optimizing)
+   list(APPEND FORGE_INSTALL_INCLUDE_DIRS
+      libraries/vm/wasm/optimizing/include/forge
+      libraries/tooling/wasm_compiler/include/forge
+   )
+endif()
+
 install(
    DIRECTORY ${FORGE_INSTALL_INCLUDE_DIRS}
    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} COMPONENT dev EXCLUDE_FROM_ALL
@@ -1351,14 +1390,35 @@ install(
    EXCLUDE_FROM_ALL
 )
 
+# One source list owns root-level notice installation and required-name metadata.
+# Separate third-party subdirectories remain inside the existing notices directory.
+set(_forge_notice_sources
+   "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+   "${CMAKE_CURRENT_SOURCE_DIR}/NOTICE"
+   "${CMAKE_CURRENT_SOURCE_DIR}/AUTHORS"
+   "${CMAKE_CURRENT_SOURCE_DIR}/PROVENANCE.md"
+   "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_LICENSES"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/vm/wasm/interpret/LICENSE.eos-vm"
+)
+if(TARGET forge_tooling_wasm_compiler)
+   list(APPEND _forge_notice_sources
+      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/wasm_compiler/LICENSE.Spring"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/wasm_compiler/LICENSE.WAVM"
+   )
+endif()
+set(Forge_NOTICE_FILES)
+foreach(_forge_notice_source IN LISTS _forge_notice_sources)
+   get_filename_component(_forge_notice_name "${_forge_notice_source}" NAME)
+   if(_forge_notice_name IN_LIST Forge_NOTICE_FILES)
+      message(FATAL_ERROR "Duplicate Forge legal-notice basename: ${_forge_notice_name}")
+   endif()
+   list(APPEND Forge_NOTICE_FILES "${_forge_notice_name}")
+endforeach()
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ForgeNoticeFiles.cmake" CONTENT
+   "set(FORGE_PACKAGE_NOTICE_SOURCES [==[${_forge_notice_sources}]==])\nset(FORGE_PACKAGE_NOTICE_FILES [==[${Forge_NOTICE_FILES}]==])\n"
+)
 install(
-   FILES
-      "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
-      "${CMAKE_CURRENT_SOURCE_DIR}/NOTICE"
-      "${CMAKE_CURRENT_SOURCE_DIR}/AUTHORS"
-      "${CMAKE_CURRENT_SOURCE_DIR}/PROVENANCE.md"
-      "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_LICENSES"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/vm/wasm/interpret/LICENSE.eos-vm"
+   FILES ${_forge_notice_sources}
    DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge"
    COMPONENT dev
    EXCLUDE_FROM_ALL
@@ -1454,6 +1514,7 @@ configure_package_config_file(
    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ForgeConfig.cmake.in"
    "${CMAKE_CURRENT_BINARY_DIR}/ForgeConfig.cmake"
    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Forge"
+   PATH_VARS CMAKE_INSTALL_DATADIR
 )
 write_basic_package_version_file(
    "${CMAKE_CURRENT_BINARY_DIR}/ForgeConfigVersion.cmake"

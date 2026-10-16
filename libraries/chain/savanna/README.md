@@ -34,6 +34,9 @@ Crypto Asymmetric, Crypto BLS, Crypto Digest, Raw and Variant dependencies.
 - `forge.chain.savanna.finalizer_safety`
 - `forge.chain.savanna.rank`
 - `forge.chain.savanna.exceptions`
+- `forge.chain.savanna.finality_witness_limits`: scalar limits, hard ceilings and
+  their Describe metadata only; no protocol, checkpoint or replay dependency.
+  `finality_witness` re-exports these same declarations for existing consumers.
 
 The same `forge_chain_savanna` target also provides the protocol-bound modules
 `policy_state`, `extensions`, `genesis`, `header_state`, `candidate`,

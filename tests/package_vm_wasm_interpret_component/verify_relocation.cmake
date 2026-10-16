@@ -12,12 +12,21 @@ foreach(
       FORGE_PACKAGE_TEST_SOURCE_ROOT
       FORGE_PACKAGE_TEST_BUILD_ROOT
       FORGE_PACKAGE_TEST_GENERATOR
+      FORGE_PACKAGE_TEST_TOOLCHAIN_CACHE
+      FORGE_PACKAGE_TEST_C_COMPILER
       FORGE_PACKAGE_TEST_CXX_COMPILER
 )
    if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
       message(FATAL_ERROR "${required} is required")
    endif()
 endforeach()
+
+if(NOT IS_ABSOLUTE "${FORGE_PACKAGE_TEST_TOOLCHAIN_CACHE}" OR
+   NOT EXISTS "${FORGE_PACKAGE_TEST_TOOLCHAIN_CACHE}" OR
+   IS_DIRECTORY "${FORGE_PACKAGE_TEST_TOOLCHAIN_CACHE}" OR
+   IS_SYMLINK "${FORGE_PACKAGE_TEST_TOOLCHAIN_CACHE}")
+   message(FATAL_ERROR "the owning build's toolchain-only initial cache must be present")
+endif()
 
 file(REMOVE_RECURSE "${FORGE_PACKAGE_TEST_RELOCATED_PREFIX}")
 file(COPY "${FORGE_PACKAGE_TEST_INSTALL_PREFIX}/" DESTINATION "${FORGE_PACKAGE_TEST_RELOCATED_PREFIX}")
@@ -30,10 +39,14 @@ if(NOT IS_DIRECTORY "${installed_vm_wasm_root}/interpret")
    message(FATAL_ERROR "Installed VM interpreter headers are missing: ${installed_vm_wasm_root}/interpret")
 endif()
 file(GLOB installed_vm_wasm_entries LIST_DIRECTORIES TRUE "${installed_vm_wasm_root}/*")
+set(installed_optimizing_leaf OFF)
 foreach(entry IN LISTS installed_vm_wasm_entries)
    get_filename_component(entry_name "${entry}" NAME)
-   if(NOT entry_name STREQUAL "interpret" OR NOT IS_DIRECTORY "${entry}")
+   if((NOT entry_name STREQUAL "interpret" AND NOT entry_name STREQUAL "optimizing") OR NOT IS_DIRECTORY "${entry}")
       message(FATAL_ERROR "Installed package exposes legacy VM public path: ${entry}")
+   endif()
+   if(entry_name STREQUAL "optimizing")
+      set(installed_optimizing_leaf ON)
    endif()
 endforeach()
 
@@ -105,6 +118,9 @@ assert_target_has_no_build_paths("Forge::forge_core")
 assert_target_has_no_build_paths("Forge::forge_exceptions")
 assert_target_has_no_build_paths("Forge::forge_vm_wasm_interpret")
 assert_target_has_no_build_paths("Forge::vm_wasm_interpret_softfloat_internal")
+if(installed_optimizing_leaf)
+   assert_target_has_no_build_paths("Forge::forge_vm_wasm_optimizing")
+endif()
 assert_content_omits(targets_content "ForgeTargets" "Forge::forge_vm_wasm([^A-Za-z0-9_]|$)")
 assert_content_omits(targets_content "ForgeTargets" "Forge::vm_wasm_softfloat_internal([^A-Za-z0-9_]|$)")
 assert_content_omits(targets_content "ForgeTargets" "forge/internal/vm_wasm/softfloat")
@@ -117,17 +133,22 @@ set(
    "${CMAKE_COMMAND}"
    -S "${FORGE_PACKAGE_TEST_SOURCE_DIR}"
    -B "${FORGE_PACKAGE_TEST_BINARY_DIR}"
+   -C "${FORGE_PACKAGE_TEST_TOOLCHAIN_CACHE}"
    -G "${FORGE_PACKAGE_TEST_GENERATOR}"
    "-DCMAKE_PREFIX_PATH=${FORGE_PACKAGE_TEST_RELOCATED_PREFIX}"
    "-DCMAKE_CXX_COMPILER=${FORGE_PACKAGE_TEST_CXX_COMPILER}"
+   "-DCMAKE_C_COMPILER=${FORGE_PACKAGE_TEST_C_COMPILER}"
 )
 if(DEFINED FORGE_PACKAGE_TEST_OSX_SYSROOT AND NOT "${FORGE_PACKAGE_TEST_OSX_SYSROOT}" STREQUAL "")
    list(APPEND configure_command "-DCMAKE_OSX_SYSROOT=${FORGE_PACKAGE_TEST_OSX_SYSROOT}")
 endif()
+if(DEFINED FORGE_PACKAGE_TEST_OPENSSL_ROOT_DIR AND NOT "${FORGE_PACKAGE_TEST_OPENSSL_ROOT_DIR}" STREQUAL "")
+   list(APPEND configure_command "-DOPENSSL_ROOT_DIR=${FORGE_PACKAGE_TEST_OPENSSL_ROOT_DIR}")
+endif()
 
 execute_process(COMMAND ${configure_command} COMMAND_ERROR_IS_FATAL ANY)
 execute_process(
-   COMMAND "${CMAKE_COMMAND}" --build "${FORGE_PACKAGE_TEST_BINARY_DIR}"
+   COMMAND "${CMAKE_COMMAND}" --build "${FORGE_PACKAGE_TEST_BINARY_DIR}" -j 4
    COMMAND_ERROR_IS_FATAL ANY
 )
 execute_process(

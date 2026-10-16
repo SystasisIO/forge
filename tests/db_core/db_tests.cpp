@@ -1027,6 +1027,39 @@ BOOST_AUTO_TEST_CASE(db_snapshot_session_lives_until_last_copy_is_released) {
    }());
 }
 
+BOOST_AUTO_TEST_CASE(db_transaction_origin_is_driver_scoped_moves_and_does_not_grant_manual_sessions) {
+   auto runtime = forge::asio::runtime{};
+   auto state = std::make_shared<memory_state>();
+   auto driver = std::make_shared<memory_driver>(state);
+   auto foreign = std::make_shared<memory_driver>(state);
+
+   forge::asio::blocking::run(runtime, [&]() -> boost::asio::awaitable<void> {
+      auto active = co_await driver->begin_transaction();
+      BOOST_CHECK(active.active());
+      BOOST_CHECK(active.belongs_to(*driver));
+      BOOST_CHECK(!active.belongs_to(*foreign));
+      auto moved = std::move(active);
+      BOOST_CHECK(!active.belongs_to(*driver));
+      BOOST_CHECK(moved.belongs_to(*driver));
+      active = std::move(moved);
+      BOOST_CHECK(!moved.belongs_to(*driver));
+      BOOST_CHECK(active.belongs_to(*driver));
+      co_await active.rollback();
+      BOOST_CHECK(!active.active());
+      // Identity and active lifecycle are independent, just as for snapshots.
+      BOOST_CHECK(active.belongs_to(*driver));
+
+      auto manual = forge::db::core::transaction{
+          std::make_unique<memory_session>(state, false, true), co_await boost::asio::this_coro::executor};
+      BOOST_CHECK(manual.active());
+      BOOST_CHECK(!manual.belongs_to(*driver));
+      BOOST_CHECK(!manual.belongs_to(*foreign));
+      co_await manual.rollback();
+      auto empty = forge::db::core::transaction{};
+      BOOST_CHECK(!empty.belongs_to(*driver));
+   }());
+}
+
 BOOST_AUTO_TEST_CASE(db_snapshot_copies_support_parallel_reads) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
    auto driver = std::make_shared<memory_driver>(std::make_shared<memory_state>());

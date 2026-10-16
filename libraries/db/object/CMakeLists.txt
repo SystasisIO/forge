@@ -3,6 +3,8 @@ add_library(
    details/ordered_key.hxx
    details/ranked_index.hxx
    details/record_key.hxx
+   details/sequence_record.hxx
+   sequence_record.cpp
    ranked_index.cpp
    snapshot.cpp
    store.cpp

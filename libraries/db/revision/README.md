@@ -49,6 +49,21 @@ const auto candidate = tx.id();
 co_await tx.commit();
 ```
 
+For an existing layer, use `store::open_existing(driver, objects)`. It reuses the
+same exact driver/Object ownership checks and state decoder, but never creates a
+missing state record, changes a format, joins a journal/Object participant or
+writes/commits records. Missing, malformed and format-incompatible state reports
+`corrupt_state`. A valid nonempty journal is accepted; this is not a pristine-state
+check and does not validate every retained entry/delta.
+
+The noninitializing operation still requires the actual backend's record-lock
+capability, exactly like normal open. It opens one writable Core transaction for
+capabilities and nonmutating reads, then awaits one explicit rollback on both
+success and validation error. Rollback must succeed before returning a store;
+a rollback error is propagated without a hidden retry or false success. There is
+no `get_for_update`, mutation, commit, or claim of physical read-only access.
+Returned stores remain usable for ordinary transactions/revert/prune.
+
 Revision IDs are Forge-owned monotonic `std::uint64_t` values starting at `1`.
 An uncommitted candidate may be issued again after rollback. A committed ID is
 never reused. One Core transaction can own at most one revision scope, and the
@@ -133,3 +148,21 @@ checkout, automatic Blob collection policy, shared Object/Blob read views,
 migrations and physical checkpoints are outside this library. Runtime
 configuration is available separately through the optional Revision layer in
 `plugins.db.store`; the Revision library does not depend on that plugin.
+
+## Pristine provisioning precondition
+
+`co_await revisions.require_pristine(object_tx)` requires THIS store's active
+single-writer Object transaction. It reuses exact Object-owner identity and its
+writer lease, scans the whole shared family with a fixed three-record bound,
+and accepts only the current Object header plus the canonical initial Revision
+state and end-of-family. The existing Revision codec validates that state.
+Entries, deltas, application/index/allocator/unknown records and any changed
+Revision field or trailing payload bytes fail without mutation. An attached
+Revision scope is not eligible.
+
+The method does not join a Revision scope, acquire its state-row lock, allocate
+an ID, create a savepoint, write metadata or begin another transaction. Keep
+provisioning in the SAME caller-owned transaction until commit/rollback; serialize
+its operations and aliases. The method alone does not prove other Blob/Auth
+families, paths or local key custody are fresh, nor that erased history never
+existed. Use the ordinary journal APIs only after this provisioning precondition.

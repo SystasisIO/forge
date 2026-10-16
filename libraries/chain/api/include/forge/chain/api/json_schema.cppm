@@ -12,7 +12,6 @@ export module forge.chain.api.json_schema;
 import forge.api.http.openapi;
 import forge.chain.protocol.entity_selector;
 import forge.chain.protocol.float64;
-import forge.chain.protocol.state_query;
 import forge.chain.protocol.types;
 import forge.crypto.bls.serialization;
 import forge.variant.value;

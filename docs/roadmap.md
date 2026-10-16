@@ -94,6 +94,9 @@ plugins, telemetry and compatibility layers должны быть пригодн
   accepted clean-breaking split of the current EOS VM lane into
   `forge.vm.wasm.interpret`, reserving sibling `forge.vm.wasm.optimizing` for
   the future EOS VM OC backend without an aggregate VM target.
+- [VM WASM Optimizing v1](iterations/forge-vm-wasm-optimizing-v1.md): proposed
+  compiler/executor port with isolated compilation, bounded cache, LLVM
+  modernization and mandatory first-consumer runtime acceptance.
 - [Secret Provider](iterations/fcl-secret-provider-v1.md): neutral
   infrastructure plugin for local secret material, redacted source loading and
   purpose-gated AES-GCM/HKDF operations.

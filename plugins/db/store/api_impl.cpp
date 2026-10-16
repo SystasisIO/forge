@@ -4,6 +4,9 @@ module;
 #include <forge/exceptions/macros.hpp>
 
 #include <memory>
+#include <mutex>
+#include <exception>
+#include <filesystem>
 #include <string>
 #include <utility>
 
@@ -16,6 +19,7 @@ import forge.db.object.store;
 import forge.db.object.transaction;
 import forge.db.revision.store;
 import forge.db.core.driver;
+import forge.asio.compute;
 import forge.plugins.db.store.exceptions;
 import forge.plugins.db.store.types;
 
