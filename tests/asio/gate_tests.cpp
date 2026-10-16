@@ -4,17 +4,21 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/cancellation_state.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_future.hpp>
 
@@ -31,6 +35,17 @@ bool wait_until(Predicate predicate, std::chrono::milliseconds timeout = std::ch
       std::this_thread::sleep_for(std::chrono::milliseconds{1});
    }
    return predicate();
+}
+
+std::future<void> emit_cancellation(boost::asio::any_io_executor executor, boost::asio::cancellation_signal& signal) {
+   auto completion = std::promise<void>{};
+   auto result = completion.get_future();
+   // Composed-operation cancellation must not race its intermediate Asio handlers.
+   boost::asio::post(executor, [&signal, completion = std::move(completion)]() mutable {
+      signal.emit(boost::asio::cancellation_type::all);
+      completion.set_value();
+   });
+   return result;
 }
 
 boost::asio::awaitable<void>
@@ -112,17 +127,16 @@ BOOST_AUTO_TEST_CASE(asio_gate_waiters_are_granted_fifo) {
 
 BOOST_AUTO_TEST_CASE(asio_gate_cancels_queued_acquire_without_losing_grant) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto serial = boost::asio::make_strand(runtime.context());
    auto gate = forge::asio::gate{};
    auto owner = forge::asio::blocking::run(runtime, gate.acquire());
    auto cancellation = boost::asio::cancellation_signal{};
 
    auto canceled = boost::asio::co_spawn(
-      runtime.context(),
-      gate.acquire(),
-      boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+       serial, gate.acquire(), boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
 
    std::this_thread::sleep_for(std::chrono::milliseconds{20});
-   cancellation.emit(boost::asio::cancellation_type::all);
+   emit_cancellation(serial, cancellation).get();
    BOOST_CHECK_THROW(static_cast<void>(canceled.get()), forge::asio::exceptions::canceled);
    owner.release();
 
@@ -132,17 +146,17 @@ BOOST_AUTO_TEST_CASE(asio_gate_cancels_queued_acquire_without_losing_grant) {
 
 BOOST_AUTO_TEST_CASE(asio_gate_rejects_precanceled_acquire_with_typed_error) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto serial = boost::asio::make_strand(runtime.context());
    auto gate = forge::asio::gate{};
    auto ready = std::atomic_bool{false};
    auto cancellation = boost::asio::cancellation_signal{};
-   auto result = boost::asio::co_spawn(
-      runtime.context(),
-      acquire_after_precancel(gate, ready),
-      boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+   auto result =
+       boost::asio::co_spawn(serial, acquire_after_precancel(gate, ready),
+                             boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
 
    BOOST_REQUIRE(wait_until([&] { return ready.load(std::memory_order_acquire); }));
    std::this_thread::sleep_for(std::chrono::milliseconds{10});
-   cancellation.emit(boost::asio::cancellation_type::all);
+   emit_cancellation(serial, cancellation).get();
    BOOST_CHECK(result.get());
 
    auto ticket = forge::asio::blocking::run(runtime, gate.acquire());
@@ -151,21 +165,22 @@ BOOST_AUTO_TEST_CASE(asio_gate_rejects_precanceled_acquire_with_typed_error) {
 
 BOOST_AUTO_TEST_CASE(asio_gate_release_cancel_race_never_loses_ticket) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto serial = boost::asio::make_strand(runtime.context());
    auto gate = forge::asio::gate{};
 
    for (auto attempt = 0; attempt != 32; ++attempt) {
       auto owner = forge::asio::blocking::run(runtime, gate.acquire());
       auto cancellation = boost::asio::cancellation_signal{};
       auto waiting = boost::asio::co_spawn(
-         runtime.context(),
-         gate.acquire(),
-         boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
+          serial, gate.acquire(), boost::asio::bind_cancellation_slot(cancellation.slot(), boost::asio::use_future));
       std::this_thread::sleep_for(std::chrono::milliseconds{1});
 
       auto release = std::thread{[&owner] { owner.release(); }};
-      auto cancel = std::thread{[&cancellation] { cancellation.emit(boost::asio::cancellation_type::all); }};
+      auto emitted = std::future<void>{};
+      auto cancel = std::thread{[&] { emitted = emit_cancellation(serial, cancellation); }};
       release.join();
       cancel.join();
+      emitted.get();
 
       try {
          auto ticket = waiting.get();
