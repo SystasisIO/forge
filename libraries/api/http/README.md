@@ -8,6 +8,19 @@ descriptor, before domain dispatch, stream-open or streaming request-body reads.
 It returns `forge::api::core::invocation_context`. Choose resource policy from
 trusted route configuration; do not promote headers/JSON into verified subjects.
 
+With a nonempty provider, unary methods also use the existing stream route to run
+admission before consuming a buffered request body. After admission, ordinary DTOs
+and positional arguments retain their buffered decoding and native request body.
+An early denial sends the final response and closes an unread request; it does not
+send `100 Continue`. The provider runs once. Publications without a provider keep
+their existing buffered/stream route selection.
+
+For manual in-process dispatch, select `router::handle_stream` when
+`router::can_handle_stream` reports a stream route, as the HTTP server does.
+Supply the request body through its `body_reader`. Opting into a provider makes
+an ordinary unary route a stream route; `router::handle` dispatches buffered
+routes only.
+
 The binding composes provider values with the verified TLS caller and rejects any
 duplicate type. Required server-supplied values are still reset/applied by the
 existing descriptor mechanism. Subject validity bounds admission and stream

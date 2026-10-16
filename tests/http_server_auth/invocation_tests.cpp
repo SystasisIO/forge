@@ -1,4 +1,6 @@
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/write.hpp>
@@ -20,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -82,6 +85,11 @@ struct business_payload {
 
 struct wrapped_input : forge::net::http::endpoint_request {
    forge::api::http::body<business_payload> data;
+   identity caller;
+};
+
+struct header_input : forge::net::http::endpoint_request {
+   forge::api::http::header<std::string> token;
    identity caller;
 };
 
@@ -151,8 +159,11 @@ class api
  public:
    virtual ~api() = default;
    virtual boost::asio::awaitable<output> submit(input request) = 0;
+   virtual boost::asio::awaitable<output> scalar(std::int32_t id, std::int32_t limit) = 0;
+   virtual boost::asio::awaitable<output> sequence(std::vector<std::int32_t> values) = 0;
    virtual boost::asio::awaitable<output> upload(upload_input request) = 0;
    virtual boost::asio::awaitable<output> wrapped(wrapped_input request) = 0;
+   virtual boost::asio::awaitable<output> headers(header_input request) = 0;
    virtual boost::asio::awaitable<output> query(query_input request) = 0;
    virtual boost::asio::awaitable<output> form(form_input request) = 0;
    virtual boost::asio::awaitable<output> numeric(numeric_input request) = 0;
@@ -200,6 +211,7 @@ class legacy_client_stream_api
 BOOST_DESCRIBE_STRUCT(business_payload, (), (caller))
 BOOST_DESCRIBE_STRUCT(wrapped_input, (), (data, caller))
 BOOST_DESCRIBE_STRUCT(query_input, (), (label, caller))
+BOOST_DESCRIBE_STRUCT(header_input, (), (token, caller))
 BOOST_DESCRIBE_STRUCT(form_input, (), (label, caller))
 BOOST_DESCRIBE_STRUCT(renamed_input, (), (id, caller))
 BOOST_DESCRIBE_STRUCT(numeric_input, (), (count, selected, wide, maybe, flag, caller))
@@ -312,10 +324,13 @@ FORGE_API(::forge::tests::http_admission::legacy_client_stream_api,
           FORGE_API_CONTRACT("http-admission-legacy-client-stream", 1, 0), FORGE_API_METHOD(upload))
 FORGE_API(::forge::tests::http_admission::api, FORGE_API_CONTRACT("http-admission-test", 1, 0),
           FORGE_API_METHOD(submit), FORGE_API_METHOD(upload), FORGE_API_METHOD(download), FORGE_API_METHOD(wrapped),
-          FORGE_API_METHOD(query), FORGE_API_METHOD(form), FORGE_API_METHOD(numeric), FORGE_API_METHOD(schema_numeric))
+          FORGE_API_METHOD(query), FORGE_API_METHOD(form), FORGE_API_METHOD(numeric), FORGE_API_METHOD(schema_numeric),
+          FORGE_API_METHOD(scalar, id, limit), FORGE_API_METHOD(sequence, values), FORGE_API_METHOD(headers))
 FORGE_HTTP_API(::forge::tests::http_admission::api, FORGE_HTTP_POST(submit, "/submit/:id", ok),
                FORGE_HTTP_PUT(upload, "/upload", ok, FORGE_HTTP_BODY_STREAM(body)),
                FORGE_HTTP_POST(wrapped, "/wrapped", ok), FORGE_HTTP_GET(query, "/query"),
+               FORGE_HTTP_POST(scalar, "/scalar/:id?limit={limit}", ok), FORGE_HTTP_POST(sequence, "/sequence", ok),
+               FORGE_HTTP_POST(headers, "/headers", ok, FORGE_HTTP_HEADER(token, "X-Test-Admission")),
                FORGE_HTTP_POST(form, "/form", ok, FORGE_HTTP_FORM(label, "label")),
                FORGE_HTTP_POST(numeric, "/numeric", ok), FORGE_HTTP_POST(schema_numeric, "/schema-numeric", ok),
                FORGE_HTTP_GET(download, "/download/:id", FORGE_HTTP_RESPONSE_STREAM))
@@ -332,6 +347,8 @@ struct observations {
    std::atomic<unsigned> admissions = 0;
    std::atomic<unsigned> handlers = 0;
    std::atomic<unsigned> response_reads = 0;
+   std::atomic<std::size_t> buffered_body_bytes = 0;
+   std::atomic<bool> admission_saw_body = false;
    std::atomic<bool> descriptor_seen = false;
 };
 
@@ -348,7 +365,18 @@ class implementation final : public api {
 
    boost::asio::awaitable<output> submit(input request) override {
       ++state_->handlers;
+      state_->buffered_body_bytes = request.request().body().size();
       co_return output{request.id + ":" + request.caller.id};
+   }
+
+   boost::asio::awaitable<output> scalar(std::int32_t id, std::int32_t limit) override {
+      ++state_->handlers;
+      co_return output{std::to_string(id) + ":" + std::to_string(limit)};
+   }
+
+   boost::asio::awaitable<output> sequence(std::vector<std::int32_t> values) override {
+      ++state_->handlers;
+      co_return output{std::to_string(values.at(0)) + ":" + std::to_string(values.size())};
    }
 
    boost::asio::awaitable<output> upload(upload_input request) override {
@@ -359,7 +387,13 @@ class implementation final : public api {
 
    boost::asio::awaitable<output> wrapped(wrapped_input request) override {
       ++state_->handlers;
+      state_->buffered_body_bytes = request.request().body().size();
       co_return output{request.caller.id + ":" + request.data.value.caller};
+   }
+
+   boost::asio::awaitable<output> headers(header_input request) override {
+      ++state_->handlers;
+      co_return output{request.caller.id + ":" + request.token.value};
    }
 
    boost::asio::awaitable<output> query(query_input request) override {
@@ -403,18 +437,49 @@ class implementation final : public api {
    std::shared_ptr<observations> state_;
 };
 
-boost::asio::awaitable<unsigned> headers_only(std::uint16_t port) {
+struct expect_reply {
+   unsigned first_status = 0;
+   bool first_keep_alive = false;
+   unsigned final_status = 0;
+   std::string body;
+   bool closed = false;
+};
+
+boost::asio::awaitable<expect_reply> exchange_expect(std::uint16_t port, std::string verb, std::string target,
+                                                     std::optional<std::string> body = {}, bool admitted = false,
+                                                     bool chunked = false) {
    const auto executor = co_await boost::asio::this_coro::executor;
    auto stream = boost::beast::tcp_stream{executor};
    stream.expires_after(std::chrono::seconds{2});
    co_await stream.async_connect({boost::asio::ip::make_address("127.0.0.1"), port}, boost::asio::use_awaitable);
-   const auto headers = std::string{"PUT /secure/upload HTTP/1.1\r\nHost: 127.0.0.1\r\nExpect: 100-continue\r\n"
-                                    "Content-Length: 1024\r\nContent-Type: application/octet-stream\r\n\r\n"};
+   auto headers = verb + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1\r\nExpect: 100-continue\r\n";
+   headers += chunked ? "Transfer-Encoding: chunked\r\n"
+                      : "Content-Length: " + std::to_string(body ? body->size() : 1024U) + "\r\n";
+   headers += "Content-Type: application/json\r\nConnection: keep-alive\r\n";
+   if (admitted) {
+      headers += "X-Test-Admission: accepted\r\n";
+   }
+   headers += "\r\n";
    co_await boost::asio::async_write(stream, boost::asio::buffer(headers), boost::asio::use_awaitable);
    auto buffer = boost::beast::flat_buffer{};
    auto response = boost::beast::http::response<boost::beast::http::string_body>{};
    co_await boost::beast::http::async_read(stream, buffer, response, boost::asio::use_awaitable);
-   co_return response.result_int();
+   auto result = expect_reply{.first_status = response.result_int(), .first_keep_alive = response.keep_alive()};
+   if (response.result_int() == 100U && body) {
+      co_await boost::asio::async_write(stream, boost::asio::buffer(*body), boost::asio::use_awaitable);
+      response = {};
+      co_await boost::beast::http::async_read(stream, buffer, response, boost::asio::use_awaitable);
+   }
+   result.final_status = response.result_int();
+   result.body = response.body();
+   if (!response.keep_alive()) {
+      auto byte = char{};
+      auto error = boost::system::error_code{};
+      co_await stream.async_read_some(boost::asio::buffer(&byte, 1),
+                                      boost::asio::redirect_error(boost::asio::use_awaitable, error));
+      result.closed = error == boost::asio::error::eof;
+   }
+   co_return result;
 }
 
 } // namespace forge::tests::http_admission
@@ -441,6 +506,7 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
    auto config = forge::config::core::document{};
    config.set("plugins.net.http.server.port", std::uint64_t{port});
    config.set("plugins.net.http.server.read-timeout-ms", std::uint64_t{500});
+   config.set("plugins.net.http.server.max-request-body-bytes", std::uint64_t{1024});
    app->configure(config);
    forge::asio::blocking::run(app->runtime(), app->initialize());
    const auto server = app->apis().get<http::api>(http::api::ref());
@@ -459,10 +525,14 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
                                  const forge::api::core::method_descriptor& method)
                -> boost::asio::awaitable<forge::api::core::invocation_context> {
               ++state->admissions;
+              if (!context.request.body().empty()) {
+                 state->admission_saw_body = true;
+              }
               state->descriptor_seen = method.name == "submit" || method.name == "upload" ||
                                        method.name == "download" || method.name == "wrapped" ||
                                        method.name == "query" || method.name == "form" || method.name == "numeric" ||
-                                       method.name == "schema_numeric";
+                                       method.name == "schema_numeric" || method.name == "scalar" ||
+                                       method.name == "sequence" || method.name == "headers";
               if (context.request.header("X-Test-Admission") != std::optional<std::string_view>{"accepted"}) {
                  FORGE_THROW_EXCEPTION(forge::api::core::exceptions::invocation_denied, "private-admission-diagnostic");
               }
@@ -535,8 +605,11 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
    const auto stream = forge::asio::blocking::run(app->runtime(), client.async_get("/secure/download/item"));
    BOOST_TEST(stream.result_int() == 403U);
    BOOST_TEST(stream.body() == "external-denied");
-   const auto before_continue = forge::asio::blocking::run(app->runtime(), fixture::headers_only(port));
-   BOOST_TEST(before_continue == 403U);
+   const auto before_continue =
+       forge::asio::blocking::run(app->runtime(), fixture::exchange_expect(port, "PUT", "/secure/upload"));
+   BOOST_TEST(before_continue.first_status == 403U);
+   BOOST_TEST(!before_continue.first_keep_alive);
+   BOOST_TEST(before_continue.closed);
    BOOST_TEST(state->handlers.load() == calls);
    BOOST_TEST(state->response_reads.load() == 0U);
    BOOST_TEST(state->descriptor_seen.load());
@@ -585,6 +658,73 @@ BOOST_AUTO_TEST_CASE(http_publication_admits_trusted_identity_and_preserves_lega
       BOOST_TEST(schema_numeric.result_int() == 200U);
    }
    BOOST_TEST(state->handlers.load() == before_numeric + 2U);
+
+   for (const auto target : {"/secure/submit/expect", "/secure/wrapped", "/secure/scalar/7?limit=2", "/secure/sequence",
+                             "/secure/headers"}) {
+      const auto admissions = state->admissions.load();
+      const auto handlers = state->handlers.load();
+      const auto denied = forge::asio::blocking::run(app->runtime(), fixture::exchange_expect(port, "POST", target));
+      BOOST_TEST_CONTEXT(target) {
+         BOOST_TEST(denied.first_status == 403U);
+         BOOST_TEST(!denied.first_keep_alive);
+         BOOST_TEST(denied.closed);
+         BOOST_TEST(denied.body == "external-denied");
+         BOOST_TEST(state->admissions.load() == admissions + 1U);
+         BOOST_TEST(state->handlers.load() == handlers);
+      }
+   }
+   for (const auto& [target, body, expected] :
+        {std::tuple{"/secure/submit/expect", R"({"id":"expect"})", R"({"value":"expect:server-owner"})"},
+         std::tuple{"/secure/wrapped", R"({"caller":"business-value"})", R"({"value":"server-owner:business-value"})"},
+         std::tuple{"/secure/scalar/7?limit=2", "{}", R"({"value":"7:2"})"},
+         std::tuple{"/secure/sequence", "[7,8]", R"({"value":"7:2"})"},
+         std::tuple{"/secure/headers", "{}", R"({"value":"server-owner:accepted"})"}}) {
+      const auto admissions = state->admissions.load();
+      const auto handlers = state->handlers.load();
+      const auto accepted = forge::asio::blocking::run(
+          app->runtime(), fixture::exchange_expect(port, "POST", target, std::string{body}, true));
+      BOOST_TEST_CONTEXT(target) {
+         BOOST_TEST(accepted.first_status == 100U);
+         BOOST_TEST(accepted.final_status == 200U);
+         BOOST_TEST(accepted.body == expected);
+         BOOST_TEST(state->admissions.load() == admissions + 1U);
+         BOOST_TEST(state->handlers.load() == handlers + 1U);
+         if (std::string_view{target} == "/secure/submit/expect" || std::string_view{target} == "/secure/wrapped") {
+            BOOST_TEST(state->buffered_body_bytes.load() == std::string_view{body}.size());
+         }
+      }
+   }
+   for (const auto& [target, body] : {std::pair{"/secure/submit/expect", R"({"id":"expect","extra":1})"},
+                                      std::pair{"/secure/sequence", "[7.0,8]"}}) {
+      const auto admissions = state->admissions.load();
+      const auto handlers = state->handlers.load();
+      const auto invalid = forge::asio::blocking::run(
+          app->runtime(), fixture::exchange_expect(port, "POST", target, std::string{body}, true));
+      BOOST_TEST(invalid.first_status == 100U);
+      BOOST_TEST(invalid.final_status == 422U);
+      BOOST_TEST(state->admissions.load() == admissions + 1U);
+      BOOST_TEST(state->handlers.load() == handlers);
+   }
+   const auto before_limit = state->handlers.load();
+   const auto before_limit_admissions = state->admissions.load();
+   const auto oversized = forge::asio::blocking::run(
+       app->runtime(),
+       fixture::exchange_expect(port, "POST", "/secure/submit/expect",
+                                std::string{"401\r\n"} + std::string(1025, 'x') + "\r\n0\r\n\r\n", true, true));
+   BOOST_TEST(oversized.first_status == 100U);
+   BOOST_TEST(oversized.final_status == 413U);
+   BOOST_TEST(oversized.closed);
+   BOOST_TEST(state->admissions.load() == before_limit_admissions + 1U);
+   BOOST_TEST(state->handlers.load() == before_limit);
+   const auto admissions = state->admissions.load();
+   const auto legacy_expect = forge::asio::blocking::run(
+       app->runtime(), fixture::exchange_expect(port, "POST", "/legacy/submit/expect",
+                                                std::string{R"({"id":"expect","caller":{"id":"forged"}})"}));
+   BOOST_TEST(legacy_expect.first_status == 100U);
+   BOOST_TEST(legacy_expect.final_status == 200U);
+   BOOST_TEST(legacy_expect.body == R"({"value":"expect:"})");
+   BOOST_TEST(state->admissions.load() == admissions);
+   BOOST_TEST(!state->admission_saw_body.load());
    forge::asio::blocking::run(app->runtime(), app->shutdown());
 }
 

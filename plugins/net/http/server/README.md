@@ -138,7 +138,9 @@ as a guarded WebSocket upgrade; ordinary HTTP methods should use typed APIs.
 The provider receives the native route context and canonical method descriptor
 and returns the existing `forge::api::core::invocation_context`. An empty provider
 retains normal publication behavior, including transport-provided mTLS identity.
-The HTTP binding invokes admission before payload decoding and handler execution;
+The HTTP binding invokes admission before request-body consumption, payload
+decoding and handler execution, including unary methods with buffered bodies.
+An early denial closes an unread request without soliciting `100 Continue`;
 its existing error renderer, trusted server-supplied values and invocation lifetime
 remain in force for buffered and streaming methods. This callback is programmatic
 and is not a serializable configuration field.

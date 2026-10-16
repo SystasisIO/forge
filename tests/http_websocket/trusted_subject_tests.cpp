@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <future>
@@ -43,6 +44,7 @@ import forge.api.core.stream_reader;
 import forge.api.core.stream_writer;
 import forge.api.core.types;
 import forge.api.http.binding;
+import forge.api.http.error_renderer;
 import forge.api.websocket.binding;
 import forge.asio.blocking;
 import forge.asio.runtime;
@@ -218,8 +220,38 @@ http::request request(std::string name) {
    return value;
 }
 
+class buffered_body final : public http::body_reader::source {
+ public:
+   explicit buffered_body(std::string text) : _text(std::move(text)) {}
+
+   boost::asio::awaitable<std::optional<http::body_chunk>> async_read() override {
+      if (_text.empty()) {
+         co_return std::nullopt;
+      }
+      auto chunk = http::body_chunk{std::vector<std::byte>(_text.size())};
+      std::memcpy(chunk.bytes.data(), _text.data(), _text.size());
+      _read += _text.size();
+      _text.clear();
+      co_return chunk;
+   }
+
+   std::uint64_t bytes_read() const noexcept override {
+      return _read;
+   }
+
+ private:
+   std::string _text;
+   std::uint64_t _read = 0;
+};
+
 boost::asio::awaitable<http::response> handle(http::router& router, http::request value) {
    auto context = http::make_route_context(value);
+   if (router.can_handle_stream(context)) {
+      auto source = std::make_shared<buffered_body>(std::exchange(value.body(), {}));
+      auto stream = http::stream_request{context, http::body_reader{std::move(source)}};
+      auto output = co_await router.handle_stream(stream);
+      co_return std::move(output.head);
+   }
    co_return co_await router.handle(context);
 }
 
@@ -601,9 +633,12 @@ BOOST_AUTO_TEST_CASE(recheck_timeout_fails_closed_and_drains_the_check) {
 
 class slow_body final : public http::body_reader::source {
  public:
+   std::atomic_bool started{false};
    std::atomic_bool cancelled{false};
+   std::shared_ptr<std::atomic_bool> exited = std::make_shared<std::atomic_bool>(false);
    boost::asio::awaitable<std::optional<http::body_chunk>> async_read() override {
-      static_cast<void>(co_await wait_operation(std::make_shared<std::atomic_bool>(false)));
+      started.store(true);
+      static_cast<void>(co_await wait_operation(exited));
       co_return std::nullopt;
    }
    std::uint64_t bytes_read() const noexcept override { return 0; }
@@ -624,6 +659,63 @@ class cancel_probe final : public http::body_reader::source {
  private:
    std::atomic_bool done_{false};
 };
+
+BOOST_AUTO_TEST_CASE(http_buffered_admission_revoke_cancels_and_joins_pending_body) {
+   auto runtime = forge::asio::runtime{};
+   auto registry = core::registry{};
+   auto implementation = std::make_shared<service>();
+   registry.install<api>(implementation);
+   auto source = std::make_shared<slow_body>();
+   auto provider_calls = std::atomic_uint{0};
+   auto typed_denials = std::atomic_uint{0};
+   auto recheck_denied = std::atomic_bool{false};
+   auto router = http::router{};
+   router.mount(
+       forge::api::http::binding()
+           .use(core::binding().serve(registry).build())
+           .invocation([source, &provider_calls, &recheck_denied](
+                           const http::route_context&,
+                           const core::method_descriptor&) -> boost::asio::awaitable<core::invocation_context> {
+              provider_calls.fetch_add(1);
+              auto context = admitted("Alice");
+              context.lifetime.limit_for(std::chrono::seconds{1});
+              context.lifetime.recheck_interval = std::chrono::milliseconds{1};
+              context.lifetime.recheck_timeout = std::chrono::milliseconds{5};
+              context.lifetime.recheck = [source,
+                                          &recheck_denied](core::trusted_invocation) -> boost::asio::awaitable<bool> {
+                 // Revoke only after this request has actually entered its buffered body read.
+                 if (source->started.load()) {
+                    recheck_denied.store(true);
+                    co_return false;
+                 }
+                 co_return true;
+              };
+              co_return context;
+           })
+           .errors([&typed_denials](const forge::api::http::error_context& context) -> std::optional<http::response> {
+              if (dynamic_cast<const core::exceptions::invocation_denied*>(context.cause)) {
+                 typed_denials.fetch_add(1);
+              }
+              return http::make_text_response(context.request, context.status, "denied");
+           })
+           .post<&api::who, input, output>("/who/:name")
+           .build());
+   auto value = request("Alice");
+   value.body().clear();
+   auto context = http::make_route_context(value);
+   context.runtime = &runtime;
+   BOOST_REQUIRE(router.can_handle_stream(context));
+   auto stream = http::stream_request{context, http::body_reader{source}};
+   const auto response = forge::asio::blocking::run(runtime, router.handle_stream(stream));
+   BOOST_TEST(response.head.result_int() == 403U);
+   BOOST_TEST(provider_calls.load() == 1U);
+   BOOST_TEST(typed_denials.load() == 1U);
+   BOOST_TEST(recheck_denied.load());
+   BOOST_TEST(source->started.load());
+   BOOST_TEST(source->cancelled.load());
+   BOOST_TEST(source->exited->load());
+   BOOST_TEST(implementation->calls.load() == 0U);
+}
 
 boost::asio::awaitable<std::size_t> drain_response(
    boost::beast::tcp_stream& socket, boost::beast::flat_buffer& buffer,

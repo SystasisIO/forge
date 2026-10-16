@@ -5,6 +5,7 @@
 #include <forge/api/http/macros.hpp>
 #include <forge/exceptions/macros.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -21,6 +22,8 @@ import forge.api.http.binding;
 import forge.api.http.error_renderer;
 import forge.api.http.proxy;
 import forge.net.http.client;
+import forge.net.http.body;
+import forge.net.http.stream;
 import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.net.http.exceptions;
@@ -79,6 +82,18 @@ class implementation final : public api {
    unsigned calls = 0;
 };
 
+class unread_body final : public forge::net::http::body_reader::source {
+ public:
+   boost::asio::awaitable<std::optional<forge::net::http::body_chunk>> async_read() override {
+      BOOST_FAIL("admission denial read the request body");
+      co_return std::nullopt;
+   }
+
+   std::uint64_t bytes_read() const noexcept override {
+      return 0;
+   }
+};
+
 struct fixture {
    fixture() {
       apis.install<api>(api::describe(), service);
@@ -100,6 +115,12 @@ struct fixture {
       request.prepare_payload();
       auto context = forge::net::http::make_route_context(request);
       context.runtime = &runtime;
+      if (router.can_handle_stream(context)) {
+         auto stream =
+             forge::net::http::stream_request{context, forge::net::http::body_reader{std::make_shared<unread_body>()}};
+         auto output = forge::asio::blocking::run(runtime, router.handle_stream(stream));
+         return std::move(output.head);
+      }
       return forge::asio::blocking::run(runtime, router.handle(context));
    }
 
