@@ -10,6 +10,7 @@ module;
 #include <cstring>
 #include <cstdint>
 #include <functional>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +37,7 @@ import forge.net.http.stream;
 import forge.net.http.types;
 import forge.net.http.upload;
 import forge.codec.json;
+import forge.variant.schema;
 import forge.reflect.reflect;
 import forge.codec.xml;
 
@@ -381,16 +383,38 @@ void apply_route_cookies(request& target,
 [[nodiscard]] std::string encode_body_value(const auto& value, body_codec codec) {
    switch (codec) {
    case body_codec::json: {
-      auto encoded = forge::codec::json::write(value);
-      if (!encoded.ok()) {
-         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request, "HTTP API request body cannot be encoded as JSON");
+      if constexpr (has_http_hidden_fields<std::remove_cvref_t<decltype(value)>>::value) {
+         try {
+            auto projected = forge::variant_schema::encode(value);
+            project_http_json_fields<std::remove_cvref_t<decltype(value)>>(projected, false);
+            auto encoded = forge::codec::json::write_value(projected);
+            if (!encoded.ok()) {
+               FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                     "HTTP API request body cannot be encoded as JSON");
+            }
+            return std::move(encoded.text);
+         } catch (const std::exception&) {
+            FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                  "HTTP API request body cannot be encoded as JSON");
+         }
+      } else {
+         auto encoded = forge::codec::json::write(value);
+         if (!encoded.ok()) {
+            FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                  "HTTP API request body cannot be encoded as JSON");
+         }
+         return std::move(encoded.text);
       }
-      return std::move(encoded.text);
    }
    case body_codec::xml: {
+      if constexpr (has_http_hidden_fields<std::remove_cvref_t<decltype(value)>>::value) {
+         FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                               "HTTP-hidden server-supplied fields require JSON for whole-request bodies");
+      }
       auto encoded = forge::codec::xml::write(value);
       if (!encoded.ok()) {
-         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request, "HTTP API request body cannot be encoded as XML");
+         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                               "HTTP API request body cannot be encoded as XML");
       }
       return std::move(encoded.text);
    }

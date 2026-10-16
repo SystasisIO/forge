@@ -12,6 +12,7 @@ module;
 #include <filesystem>
 #include <flat_map>
 #include <limits>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -123,70 +124,59 @@ void from_variant(const variant& input, document& output);
 [[nodiscard]] write_result save_document(const std::filesystem::path& path, const config::core::document& input,
                                          write_options options = {});
 
-template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, read_options options = {}) {
+namespace detail {
+
+template <typename T>
+[[nodiscard]] read_result<T> decode_schema_input(const schema::input_value& input,
+                                                const schema::object_schema<T>& rules, const read_options& options) {
    auto output = read_result<T>{};
-   const auto rules = schema::rules<T>::define();
-   if (!rules.fields().empty()) {
-      auto parsed_document = read_document(input, options);
-      output.diagnostics = std::move(parsed_document.diagnostics);
-      if (!parsed_document.ok()) {
+   const auto* object = input.as_object();
+   if (!object) {
+      output.diagnostics.push_back(schema::diagnostic{
+         .path = options.source_name,
+         .code = "json.document",
+         .level = schema::severity::error,
+         .message = "JSON config document root must be an object",
+      });
+      return output;
+   }
+   if (options.described_records == described_record_policy::exact) {
+      append_schema_diagnostics(output.diagnostics, rules.validate_exact_input(*object));
+      if (!output.ok()) {
          return output;
       }
-      if (options.described_records == described_record_policy::exact) {
-         const auto input = config::core::to_schema_value(config::core::value{parsed_document.value.root});
-         auto exact = rules.validate_exact_input(*input.as_object());
-         for (auto& entry : exact) {
-            if (entry.code == "config.unknown") {
-               entry.code = "json.unknown";
-            } else if (entry.code == "config.missing") {
-               entry.code = "json.missing";
-            } else if (entry.code == "config.duplicate") {
-               entry.code = "json.duplicate";
-            } else if (entry.code == "config.type") {
-               entry.code = "json.type";
-            } else if (entry.code == "config.range") {
-               entry.code = "json.range";
-            }
-            output.diagnostics.push_back(std::move(entry));
+   }
+   rules.apply_defaults(output.value);
+   for (auto entry : rules.decode_object(*object, {}, output.value)) {
+      if (entry.code == "config.unknown") {
+         if (options.unknown_fields == unknown_field_policy::ignore) {
+            continue;
          }
-         if (!output.ok()) {
-            return output;
+         entry.code = "json.unknown";
+         if (options.unknown_fields == unknown_field_policy::error) {
+            entry.level = schema::severity::error;
          }
       }
-      auto decoded = config::core::decode<T>(parsed_document.value);
-      output.value = std::move(decoded.value);
-      for (auto entry : std::move(decoded.diagnostics.entries)) {
-         if (entry.code == "config.unknown") {
-            if (options.unknown_fields == unknown_field_policy::ignore) {
-               continue;
-            }
-            entry.code = "json.unknown";
-            if (options.unknown_fields == unknown_field_policy::error) {
-               entry.level = schema::severity::error;
-            }
-         }
-         output.diagnostics.push_back(std::move(entry));
-      }
-      return output;
+      output.diagnostics.push_back(std::move(entry));
    }
+   return output;
+}
 
-   auto parsed = read_value(input, options);
-   output.diagnostics = std::move(parsed.diagnostics);
-   if (!parsed.ok()) {
-      return output;
-   }
-
+template <typename T>
+[[nodiscard]] read_result<T> decode_variant(variant input, const schema::object_schema<T>& rules,
+                                           const read_options& options) {
+   auto output = read_result<T>{};
    rules.apply_defaults(output.value);
 
    if (options.described_records == described_record_policy::exact) {
-      detail::validate_exact<T>(parsed.value, {}, output.diagnostics);
+      detail::validate_exact<T>(input, {}, output.diagnostics);
       if (!output.ok()) {
          return output;
       }
    }
 
    const auto schema_diagnostic_offset = output.diagnostics.size();
-   detail::materialize_schema_records<T>(parsed.value, {}, output.diagnostics);
+   detail::materialize_schema_records<T>(input, {}, output.diagnostics);
    if (options.described_records == described_record_policy::permissive) {
       auto first = output.diagnostics.begin() + static_cast<std::ptrdiff_t>(schema_diagnostic_offset);
       if (options.unknown_fields == unknown_field_policy::ignore) {
@@ -208,7 +198,7 @@ template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, 
 
    if constexpr (requires(const variant& source, T& target) { from_variant(source, target); }) {
       try {
-         from_variant(parsed.value, output.value);
+         from_variant(input, output.value);
       } catch (const std::exception& error) {
          output.diagnostics.push_back(schema::diagnostic{
              .path = {},
@@ -228,14 +218,14 @@ template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, 
       return output;
    }
 
-   if (options.unknown_fields != unknown_field_policy::ignore && parsed.value.is_object()) {
+   if (options.unknown_fields != unknown_field_policy::ignore && input.is_object()) {
       auto known = std::set<std::string>{};
       for (const auto& field : rules.fields()) {
          known.insert(field.name);
          known.insert(field.aliases.begin(), field.aliases.end());
       }
       if (!known.empty()) {
-         for (const auto& entry : parsed.value.get_object()) {
+         for (const auto& entry : input.get_object()) {
             if (!known.contains(entry.key())) {
                output.diagnostics.push_back(schema::diagnostic{
                    .path = entry.key(),
@@ -254,113 +244,71 @@ template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, 
    return output;
 }
 
-template <typename T> [[nodiscard]] read_result<T> load(const std::filesystem::path& path, read_options options = {}) {
-   auto parsed = load_value(path, options);
-   auto output = read_result<T>{};
-   output.diagnostics = std::move(parsed.diagnostics);
-   if (!parsed.ok()) {
-      return output;
-   }
+} // namespace detail
 
+// Converts an already parsed JSON value. Syntax, duplicate-member and depth checks belong to read_value/read/load.
+// The value is owned because schema materialization may normalize records after exact validation.
+template <typename T> [[nodiscard]] read_result<T> decode(variant input, read_options options = {}) {
    const auto rules = schema::rules<T>::define();
    if (!rules.fields().empty()) {
-      auto parsed_document = load_document(path, options);
-      output.diagnostics = std::move(parsed_document.diagnostics);
-      if (!parsed_document.ok()) {
-         return output;
-      }
-      if (options.described_records == described_record_policy::exact) {
-         const auto input = config::core::to_schema_value(config::core::value{parsed_document.value.root});
-         auto exact = rules.validate_exact_input(*input.as_object());
-         for (auto& entry : exact) {
-            if (entry.code == "config.unknown") {
-               entry.code = "json.unknown";
-            } else if (entry.code == "config.missing") {
-               entry.code = "json.missing";
-            } else if (entry.code == "config.duplicate") {
-               entry.code = "json.duplicate";
-            } else if (entry.code == "config.type") {
-               entry.code = "json.type";
-            } else if (entry.code == "config.range") {
-               entry.code = "json.range";
-            }
-            output.diagnostics.push_back(std::move(entry));
-         }
-         if (!output.ok()) {
-            return output;
-         }
-      }
-      auto decoded = config::core::decode<T>(parsed_document.value);
-      output.value = std::move(decoded.value);
-      for (auto entry : std::move(decoded.diagnostics.entries)) {
-         if (entry.code == "config.unknown") {
-            if (options.unknown_fields == unknown_field_policy::ignore) {
-               continue;
-            }
-            entry.code = "json.unknown";
-            if (options.unknown_fields == unknown_field_policy::error) {
-               entry.level = schema::severity::error;
-            }
-         }
-         output.diagnostics.push_back(std::move(entry));
-      }
-      return output;
-   }
-
-   rules.apply_defaults(output.value);
-   if (options.described_records == described_record_policy::exact) {
-      detail::validate_exact<T>(parsed.value, {}, output.diagnostics);
-      if (!output.ok()) {
-         return output;
-      }
-   }
-
-   const auto schema_diagnostic_offset = output.diagnostics.size();
-   detail::materialize_schema_records<T>(parsed.value, {}, output.diagnostics);
-   if (options.described_records == described_record_policy::permissive) {
-      auto first = output.diagnostics.begin() + static_cast<std::ptrdiff_t>(schema_diagnostic_offset);
-      if (options.unknown_fields == unknown_field_policy::ignore) {
-         output.diagnostics.erase(
-             std::remove_if(first, output.diagnostics.end(),
-                            [](const schema::diagnostic& entry) { return entry.code == "json.unknown"; }),
-             output.diagnostics.end());
-      } else if (options.unknown_fields == unknown_field_policy::error) {
-         for (auto iterator = first; iterator != output.diagnostics.end(); ++iterator) {
-            if (iterator->code == "json.unknown") {
-               iterator->level = schema::severity::error;
-            }
-         }
-      }
-   }
-   if (!output.ok()) {
-      return output;
-   }
-
-   if constexpr (requires(const variant& source, T& target) { from_variant(source, target); }) {
       try {
-         from_variant(parsed.value, output.value);
+         return detail::decode_schema_input<T>(detail::to_schema_input(input), rules, options);
       } catch (const std::exception& error) {
-         output.diagnostics.push_back(schema::diagnostic{
-             .path = {},
-             .code = "json.type",
-             .level = schema::severity::error,
-             .message = error.what(),
-         });
-         return output;
+         return read_result<T>{.diagnostics = {schema::diagnostic{
+            .path = {},
+            .code = "json.type",
+            .level = schema::severity::error,
+            .message = error.what(),
+         }}};
       }
-   } else {
-      output.diagnostics.push_back(schema::diagnostic{
-          .path = {},
-          .code = "json.type",
-          .level = schema::severity::error,
-          .message = "type is not readable from JSON without schema rules or forge::from_variant",
-      });
-      return output;
    }
+   return detail::decode_variant<T>(std::move(input), rules, options);
+}
 
-   auto validation = rules.validate(output.value);
-   output.diagnostics.insert(output.diagnostics.end(), validation.begin(), validation.end());
-   return output;
+template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, read_options options = {}) {
+   const auto rules = schema::rules<T>::define();
+   if (!rules.fields().empty()) {
+      auto parsed = read_document(input, options);
+      if (!parsed.ok()) {
+         return read_result<T>{.diagnostics = std::move(parsed.diagnostics)};
+      }
+      auto result = detail::decode_schema_input<T>(
+         config::core::to_schema_value(config::core::value{parsed.value.root}), rules, options);
+      result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
+                                 std::make_move_iterator(parsed.diagnostics.end()));
+      return result;
+   }
+   auto parsed = read_value(input, options);
+   if (!parsed.ok()) {
+      return read_result<T>{.diagnostics = std::move(parsed.diagnostics)};
+   }
+   auto result = detail::decode_variant<T>(std::move(parsed.value), rules, options);
+   result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
+                              std::make_move_iterator(parsed.diagnostics.end()));
+   return result;
+}
+
+template <typename T> [[nodiscard]] read_result<T> load(const std::filesystem::path& path, read_options options = {}) {
+   const auto rules = schema::rules<T>::define();
+   if (!rules.fields().empty()) {
+      auto parsed = load_document(path, options);
+      if (!parsed.ok()) {
+         return read_result<T>{.diagnostics = std::move(parsed.diagnostics)};
+      }
+      auto result = detail::decode_schema_input<T>(
+         config::core::to_schema_value(config::core::value{parsed.value.root}), rules, options);
+      result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
+                                 std::make_move_iterator(parsed.diagnostics.end()));
+      return result;
+   }
+   auto parsed = load_value(path, options);
+   if (!parsed.ok()) {
+      return read_result<T>{.diagnostics = std::move(parsed.diagnostics)};
+   }
+   auto result = detail::decode_variant<T>(std::move(parsed.value), rules, options);
+   result.diagnostics.insert(result.diagnostics.begin(), std::make_move_iterator(parsed.diagnostics.begin()),
+                              std::make_move_iterator(parsed.diagnostics.end()));
+   return result;
 }
 
 template <typename T> [[nodiscard]] write_result write(const T& input, write_options options = {}) {

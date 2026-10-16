@@ -26,5 +26,6 @@ target_link_libraries(
       forge_raw
       forge_reflect
       forge_schema
+      forge_variant
       Boost::asio
 )

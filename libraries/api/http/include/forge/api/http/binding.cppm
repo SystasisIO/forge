@@ -199,6 +199,9 @@ class binding_builder {
    }
 
    template <auto Method, typename Request, typename Response> binding_builder& route(route value) {
+      if constexpr (detail::http_method_has_hidden_fields_v<Method>) {
+         detail::validate_server_supplied_route<Method, Request>(value);
+      }
       const auto parsed = detail::parse_route_template(value.target);
       steps_.push_back(make_step<Method, Request, Response>(value.verb, parsed.path,
                                                             route_options{
@@ -1044,21 +1047,18 @@ class binding_builder {
       if constexpr (forge::reflect::is_described_object_v<Request>) {
          forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
             using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
-            if constexpr (detail::is_header<member_type>::value ||
-                          detail::is_query<member_type>::value ||
-                          detail::is_cookie<member_type>::value) {
-               if (path_uses_field(path, name) ||
-                   query_uses_field(options, name)) {
-                  FORGE_THROW_EXCEPTION(
-                     forge::net::http::exceptions::bad_request,
-                     "HTTP parameter wrapper conflicts with route binding",
-                     forge::exceptions::ctx("field", name));
+            if constexpr (!detail::server_supplied_http_visible_v<member_type>) {
+               return;
+            } else if constexpr (detail::is_header<member_type>::value || detail::is_query<member_type>::value ||
+                                 detail::is_cookie<member_type>::value) {
+               if (path_uses_field(path, name) || query_uses_field(options, name)) {
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                        "HTTP parameter wrapper conflicts with route binding",
+                                        forge::exceptions::ctx("field", name));
                }
                return;
-            } else if constexpr (detail::is_http_parameter_v<member_type> ||
-                                 detail::is_body_stream_v<member_type> ||
-                                 detail::is_body_bytes_v<member_type> ||
-                                 detail::is_upload_file_v<member_type>) {
+            } else if constexpr (detail::is_http_parameter_v<member_type> || detail::is_body_stream_v<member_type> ||
+                                 detail::is_body_bytes_v<member_type> || detail::is_upload_file_v<member_type>) {
                FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
                                      "HTTP API client stream fixed field requires request-body mapping",
                                      forge::exceptions::ctx("field", name));
@@ -1097,10 +1097,24 @@ class binding_builder {
    [[nodiscard]] static T decode_value(std::string_view body, std::string_view source_name, body_codec codec) {
       switch (codec) {
       case body_codec::json: {
-         auto decoded = forge::codec::json::read<T>(
-             body, forge::codec::json::read_options{.source_name = std::string{source_name},
-                                                    .unknown_fields = forge::codec::json::unknown_field_policy::error,
-                                                    .described_records = forge::codec::json::described_record_policy::exact});
+         const auto options = forge::codec::json::read_options{
+            .source_name = std::string{source_name},
+            .unknown_fields = forge::codec::json::unknown_field_policy::error,
+            .described_records = forge::codec::json::described_record_policy::exact,
+         };
+         auto decoded = [&] {
+            if constexpr (detail::has_http_hidden_fields<T>::value) {
+               auto parsed = forge::codec::json::read_value(body, options);
+               if (!parsed.ok()) {
+                  FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
+                                        diagnostic_message(parsed.diagnostics, "HTTP API JSON request body is invalid"));
+               }
+               detail::project_http_json_fields<T>(parsed.value, true);
+               return forge::codec::json::decode<T>(std::move(parsed.value), options);
+            } else {
+               return forge::codec::json::read<T>(body, options);
+            }
+         }();
          if (!decoded.ok()) {
             FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
                                   diagnostic_message(decoded.diagnostics, "HTTP API JSON request body is invalid"));
@@ -1108,6 +1122,10 @@ class binding_builder {
          return std::move(decoded.value);
       }
       case body_codec::xml: {
+         if constexpr (detail::has_http_hidden_fields<T>::value) {
+            FORGE_THROW_EXCEPTION(forge::api::core::exceptions::incompatible_version,
+                                  "HTTP-hidden server-supplied fields require JSON for whole-request bodies");
+         }
          auto decoded = forge::codec::xml::read<T>(
              body, forge::codec::xml::read_options{.source_name = std::string{source_name},
                                                    .unknown_fields = forge::codec::xml::unknown_field_policy::error});
@@ -1419,13 +1437,24 @@ class binding_builder {
       const auto rules = forge::schema::rules<Request>::define();
       if (!rules.fields().empty()) {
          for (const auto& field : rules.fields()) {
-            required = required || ((!field.optional || field.required) && !route_bound(field.member_name));
+            auto visible = true;
+            if constexpr (forge::reflect::is_described_object_v<Request>) {
+               forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
+                  using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
+                  if constexpr (!detail::server_supplied_http_visible_v<member_type>) {
+                     if (field.member_name == name) {
+                        visible = false;
+                     }
+                  }
+               });
+            }
+            required = required || (visible && (!field.optional || field.required) && !route_bound(field.member_name));
          }
       } else {
          if constexpr (forge::reflect::is_described_object_v<Request>) {
             forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
                using member_type = std::remove_cvref_t<decltype(std::declval<Request>().*member)>;
-               if constexpr (!is_optional<member_type>::value) {
+               if constexpr (!is_optional<member_type>::value && detail::server_supplied_http_visible_v<member_type>) {
                   required = required || !route_bound(name);
                }
             });
@@ -1434,8 +1463,7 @@ class binding_builder {
          }
       }
       if (required) {
-         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request,
-                               "HTTP API JSON request body is required");
+         FORGE_THROW_EXCEPTION(forge::net::http::exceptions::bad_request, "HTTP API JSON request body is required");
       }
    }
 
@@ -1445,6 +1473,9 @@ class binding_builder {
       if constexpr (forge::reflect::is_described_object_v<Request>) {
          forge::reflect::for_each_member<Request>([&](const char* name, auto member) {
             using member_type = std::remove_cvref_t<decltype(request.*member)>;
+            if constexpr (!detail::server_supplied_http_visible_v<member_type>) {
+               return;
+            }
             if constexpr (detail::is_query<member_type>::value) {
                if (auto value = query_value(context, options, name); value.has_value()) {
                   parse_http_field(request.*member, *value, name);
@@ -1967,6 +1998,17 @@ class binding_builder {
       }
       auto plan = plan_;
       auto name = explicit_name.empty() ? method_name<interface_type, Request, Response>() : std::move(explicit_name);
+      if constexpr (detail::http_method_has_hidden_fields_v<Method>) {
+         detail::validate_server_supplied_route<Method, Request>(forge::api::http::route{
+            .verb = verb,
+            .method_name = name,
+            .target = path,
+            .headers = options.headers,
+            .forms = options.forms,
+            .body_stream_field = options.body_stream_field,
+            .request_body_codec = options.request_body_codec,
+         }, options.query);
+      }
       return [plan = std::move(plan), provider = invocation_provider_, verb, path = std::move(path), options = std::move(options),
               name = std::move(name)](router& target, std::string_view base_path) {
          validate_response_file_option<Response>(options);

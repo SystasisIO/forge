@@ -303,6 +303,12 @@ std::vector<header_entry> request::headers() const {
    return state_->headers;
 }
 
+std::size_t request::header_count(std::string_view name) const noexcept {
+   return static_cast<std::size_t>(std::ranges::count_if(state_->headers, [&](const auto& header) {
+      return header_name_equal(header.name, name);
+   }));
+}
+
 void request::prepare_payload() {
    set(field::content_length, std::to_string(state_->body_value.size()));
 }

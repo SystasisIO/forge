@@ -148,6 +148,7 @@ class request {
    [[nodiscard]] std::string operator[](field name) const;
    [[nodiscard]] std::string operator[](std::string_view name) const;
    [[nodiscard]] std::optional<std::string_view> header(std::string_view name) const;
+   [[nodiscard]] std::size_t header_count(std::string_view name) const noexcept;
    [[nodiscard]] std::vector<header_entry> headers() const;
 
    void prepare_payload();
