@@ -30,6 +30,10 @@ add_test(
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/app_lifecycle_tests.py
 )
 add_test(
+   NAME test_forge_plugin_impl_ownership_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/plugin_impl_ownership_tests.py
+)
+add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
    COMMAND
       ${CMAKE_COMMAND}
@@ -467,6 +471,7 @@ add_executable(
    test_forge_plugins_net_http_server
    unit/main.cpp
    http_server_auth/bearer_auth_tests.cpp
+   http_server_auth/invocation_tests.cpp
    http_server_auth/routes_tests.cpp
 )
 target_link_libraries(

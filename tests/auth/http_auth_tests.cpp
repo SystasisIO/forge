@@ -1,6 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -9,6 +10,7 @@
 #include <vector>
 
 import forge.auth.http.exceptions;
+import forge.auth.http.bearer;
 import forge.auth.http.policy;
 import forge.auth.session.exceptions;
 import forge.auth.session.session;
@@ -341,3 +343,28 @@ BOOST_AUTO_TEST_CASE(security_headers_are_strict_without_global_asset_no_store) 
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+BOOST_AUTO_TEST_CASE(bearer_extraction_is_bounded_borrowed_and_rejects_ambiguous_evidence) {
+   auto request = net_http::request{net_http::method::get, "/", 11};
+   BOOST_TEST(!auth_http::extract_bearer_token(request));
+   request.insert("authorization", "bEaReR  opaque-token");
+   const auto token = auth_http::extract_bearer_token(request, 12);
+   BOOST_REQUIRE(token.has_value());
+   BOOST_TEST(*token == "opaque-token");
+   BOOST_TEST(token->data() == request.header("Authorization")->data() + 8);
+   const auto churn = std::vector<std::string>(128, std::string(1024, 'x'));
+   BOOST_TEST(churn.size() == 128U);
+   BOOST_TEST(*token == "opaque-token");
+   BOOST_CHECK_THROW(auth_http::extract_bearer_token(request, 11), auth_http::exceptions::malformed_evidence);
+   BOOST_CHECK_THROW(auth_http::extract_bearer_token(request, 0), auth_http::exceptions::invalid_options);
+   request.insert("Authorization", "Bearer another");
+   BOOST_CHECK_THROW(auth_http::extract_bearer_token(request), auth_http::exceptions::duplicate_evidence);
+
+   for (const auto value :
+        {std::string_view{""}, std::string_view{"Basic opaque"}, std::string_view{"Bearer"},
+         std::string_view{"Bearer "}, std::string_view{"Bearer token value"}, std::string_view{"Bearer\ttoken"},
+         std::string_view{"Bearer token\t"}, std::string_view{"Bearer token\r"}, std::string_view{"Bearer token\n"},
+         std::string_view{"Bearer token\x7f"}, std::string_view{"Bearer token\0tail", 17}}) {
+      const auto values = std::array{value};
+      BOOST_CHECK_THROW(auth_http::extract_bearer_token(values), auth_http::exceptions::malformed_evidence);
+   }
+}
