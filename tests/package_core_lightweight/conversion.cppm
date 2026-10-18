@@ -18,14 +18,14 @@ export namespace forge::core {
 
 template <> class conversion<consumer::result> {
  public:
-   explicit constexpr conversion(std::uint64_t value) : value_{value} {}
+   explicit constexpr conversion(std::uint64_t value) : _value{value} {}
 
    [[nodiscard]] constexpr consumer::result finish() && {
-      return {value_};
+      return {_value};
    }
 
  private:
-   std::uint64_t value_;
+   std::uint64_t _value;
 };
 
 } // namespace forge::core
