@@ -445,13 +445,11 @@ BOOST_AUTO_TEST_CASE(memory_host_numeric_and_ordinary_timeout_are_not_readiness)
       owner.healthy();
       owner.host.hook = {};
       const auto numeric = [&] { owner.instance.call(owner.host, "env", "numeric"); };
-      // The legacy JIT maps its arithmetic SIGFPE to memory; the interpreter
-      // throws interpreter. Preserve those existing categories, not a new trap.
-      if constexpr (Implementation::is_jit)
-         BOOST_CHECK_THROW(owner.instance.timed_run(steady_clock::now() + 1s, {}, numeric), wasm::exceptions::memory);
-      else
-         BOOST_CHECK_THROW(owner.instance.timed_run(steady_clock::now() + 1s, {}, numeric),
-                           wasm::exceptions::interpreter);
+      const auto divided_by_zero = [](const wasm::exceptions::guest_trap& error) {
+         return error.kind == wasm::exceptions::guest_trap_kind::integer_divide_by_zero;
+      };
+      BOOST_CHECK_EXCEPTION(owner.instance.timed_run(steady_clock::now() + 1s, {}, numeric),
+                            wasm::exceptions::guest_trap, divided_by_zero);
       owner.healthy();
       external = std::stop_source{};
       const auto retained_numeric = [&] {
@@ -462,14 +460,9 @@ BOOST_AUTO_TEST_CASE(memory_host_numeric_and_ordinary_timeout_are_not_readiness)
             throw;
          }
       };
-      if constexpr (Implementation::is_jit)
-         BOOST_CHECK_THROW(
-             owner.instance.timed_run(steady_clock::now() + 1s, {{}, external.get_token()}, retained_numeric),
-             wasm::exceptions::memory);
-      else
-         BOOST_CHECK_THROW(
-             owner.instance.timed_run(steady_clock::now() + 1s, {{}, external.get_token()}, retained_numeric),
-             wasm::exceptions::interpreter);
+      BOOST_CHECK_EXCEPTION(
+          owner.instance.timed_run(steady_clock::now() + 1s, {{}, external.get_token()}, retained_numeric),
+          wasm::exceptions::guest_trap, divided_by_zero);
       owner.healthy();
    });
 }
