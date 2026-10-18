@@ -4,10 +4,22 @@ add_executable(test_forge_swarm_core
    swarm_core/main.cpp
    swarm_core/descriptor_tests.cpp
    swarm_core/merkle_tests.cpp
+   swarm_core/checkpoint_tests.cpp
 )
 target_link_libraries(test_forge_swarm_core PRIVATE forge_swarm_core Boost::included_unit_test_framework)
 add_test(NAME test_forge_swarm_core COMMAND test_forge_swarm_core)
 set_tests_properties(test_forge_swarm_core PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_swarm_storage
+   swarm_storage/main.cpp
+   swarm_storage/file_store_tests.cpp
+   swarm_storage/io_faults.cpp
+   swarm_storage/fault_tests.cpp
+   swarm_storage/concurrency_tests.cpp
+)
+target_link_libraries(test_forge_swarm_storage PRIVATE forge_swarm_storage Boost::included_unit_test_framework ${CMAKE_DL_LIBS})
+add_test(NAME test_forge_swarm_storage COMMAND test_forge_swarm_storage)
+set_tests_properties(test_forge_swarm_storage PROPERTIES TIMEOUT 180)
 
 set(FORGE_SWARM_LIBTORRENT_DONOR_ROOT "" CACHE PATH "Pinned libtorrent source used only by Swarm algorithm acceptance")
 if(FORGE_SWARM_LIBTORRENT_DONOR_ROOT)
@@ -3175,6 +3187,17 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
+   test_forge_package_swarm_storage_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_storage_component
+      ${CMAKE_BINARY_DIR}/forge-package-swarm-storage-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_swarm_storage_component
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
    test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -4263,6 +4286,17 @@ add_test(
       --test-command forge_package_swarm_core_component
 )
 set_tests_properties(test_forge_package_swarm_core_component PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_swarm_storage_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_storage_component
+      ${CMAKE_BINARY_DIR}/forge-package-swarm-storage-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_swarm_storage_component
+)
+set_tests_properties(test_forge_package_swarm_storage_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}

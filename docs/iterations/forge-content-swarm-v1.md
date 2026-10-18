@@ -1082,6 +1082,26 @@ the linked production roadmap; low-level codecs alone do not satisfy them.
   sidecars, symlink/path races, destination conflicts and cross-filesystem
   rejection. No payload DB or hidden disk thread pool.
 
+PR2's concrete contracts are `forge.swarm.core.store` and
+`forge.swarm.core.checkpoint`, implemented by
+`forge.swarm.storage.file_store` (`swarm_storage` component). A store binds one
+validated descriptor/destination and separate caller-owned disk/CPU executors.
+`begin(piece_id)` grants exclusive writer ownership; complete-block positional
+writes, authenticated commit and discard are distinct operations. Reads verify
+the actual piece buffer before returning a bounded range. Snapshot/change
+notification, leases, explicit checkpoint/publication and awaited close expose
+their own ownership rather than a hidden runtime.
+
+Default bounds are 16 unfinished pieces, 8 active I/O operations and 1 MiB
+per write/range request. A versioned checksummed Raw restart cache holds
+identity, generation, verified bitmap and unfinished block hints. Reopen
+rehashes payload independently. An optional `checkpoint_store` selects external
+metadata instead of the sidecar; PR3 supplies ObjectDB, not a second authority.
+Native POSIX publication is an atomic no-replace rename of one same-filesystem
+root. Unsupported atomic semantics fail explicitly. Parent credentials and
+root ownership remain trusted local administration boundaries; process-crash
+tests do not constitute physical power-loss or production proof.
+
 ### PR3: Indexed metadata and persistence adapter
 
 - **Owner/API:** `forge_swarm_db` declares metadata models and index descriptors;

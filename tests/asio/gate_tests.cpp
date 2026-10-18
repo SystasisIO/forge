@@ -6,6 +6,7 @@
 #include <optional>
 #include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -394,6 +395,26 @@ BOOST_AUTO_TEST_CASE(asio_gate_ticket_can_be_released_from_another_thread) {
    auto release = std::thread{[ticket = std::move(owner)]() mutable { ticket.release(); }};
    release.join();
 
+   auto successor = forge::asio::blocking::run(runtime, gate.acquire());
+   BOOST_CHECK(successor.active());
+}
+
+BOOST_AUTO_TEST_CASE(asio_gate_stop_token_cancels_before_admission_and_while_queued) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   auto gate = forge::asio::gate{};
+   auto stopped = std::stop_source{};
+   stopped.request_stop();
+   BOOST_CHECK_THROW(forge::asio::blocking::run(runtime, gate.acquire(stopped.get_token())), forge::asio::exceptions::canceled);
+   auto owner = forge::asio::blocking::run(runtime, gate.acquire());
+   for (auto i = 0; i < 32; ++i) {
+      auto stop = std::stop_source{};
+      auto waiting = boost::asio::co_spawn(runtime.context(), gate.acquire(stop.get_token()), boost::asio::use_future);
+      auto cancel = std::jthread{[&] { stop.request_stop(); }};
+      cancel.join();
+      BOOST_REQUIRE(waiting.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+      BOOST_CHECK_THROW(static_cast<void>(waiting.get()), forge::asio::exceptions::canceled);
+   }
+   owner.release();
    auto successor = forge::asio::blocking::run(runtime, gate.acquire());
    BOOST_CHECK(successor.active());
 }

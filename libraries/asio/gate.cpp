@@ -18,6 +18,7 @@ module;
 #include <memory>
 #include <mutex>
 #include <ranges>
+#include <stop_token>
 #include <utility>
 
 module forge.asio.gate;
@@ -26,7 +27,7 @@ namespace forge::asio {
 
 namespace {
 
-boost::asio::awaitable<gate::ticket> acquire_owned(std::shared_ptr<detail::gate_state> state) {
+boost::asio::awaitable<gate::ticket> acquire_owned(std::shared_ptr<detail::gate_state> state, std::stop_token stop) {
    const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
    if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
       FORGE_THROW_EXCEPTION(exceptions::canceled, "gate acquire was canceled");
@@ -35,6 +36,9 @@ boost::asio::awaitable<gate::ticket> acquire_owned(std::shared_ptr<detail::gate_
    auto signal = std::make_shared<detail::async_waiter>(executor);
    auto waiter = std::make_shared<detail::gate_waiter>();
    waiter->wake = [signal] { signal->wake(); };
+   auto stopped = std::stop_callback{stop, [handler = detail::gate_cancellation_handler{state, waiter}] {
+      handler(boost::asio::cancellation_type::all);
+   }};
    auto slot = cancellation.slot();
    if (slot.is_connected())
       slot.assign(detail::gate_cancellation_handler{state, waiter});
@@ -61,7 +65,11 @@ gate::~gate() {
 }
 
 boost::asio::awaitable<gate::ticket> gate::acquire() {
-   return acquire_owned(state_);
+   return acquire_owned(state_, {});
+}
+
+boost::asio::awaitable<gate::ticket> gate::acquire(std::stop_token stop) {
+   return acquire_owned(state_, stop);
 }
 
 void gate::close() noexcept {
