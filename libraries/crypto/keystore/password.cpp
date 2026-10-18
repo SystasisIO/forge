@@ -114,23 +114,39 @@ core::secret_string read_line(int descriptor, std::size_t maximum, bool require_
    }
 }
 
-class echo_guard {
+class echo_guard
+{
  public:
-   explicit echo_guard(int descriptor) : descriptor_{descriptor} {
-      if (::tcgetattr(descriptor_, &original_) != 0) {
+   explicit echo_guard(int descriptor)
+     : descriptor_{descriptor}
+   {
+      if (::tcgetattr(descriptor_, &original_) != 0)
+      {
          throw_password_error("get_terminal_attributes");
       }
+
       auto hidden = original_;
       hidden.c_lflag &= static_cast<tcflag_t>(~ECHO);
-      if (::tcsetattr(descriptor_, TCSAFLUSH, &hidden) != 0) {
+      if (::tcflush(descriptor_, TCIFLUSH) != 0)
+      {
+         throw_password_error("flush_terminal_input");
+      }
+
+      if (::tcsetattr(descriptor_, TCSANOW, &hidden) != 0)
+      {
          throw_password_error("hide_terminal_echo");
       }
+
       active_ = true;
    }
 
-   ~echo_guard() {
-      if (active_) {
-         static_cast<void>(::tcsetattr(descriptor_, TCSAFLUSH, &original_));
+   ~echo_guard()
+   {
+      if (active_)
+      {
+         // Discard pending input without waiting for a caller to consume terminal output.
+         static_cast<void>(::tcflush(descriptor_, TCIFLUSH));
+         static_cast<void>(::tcsetattr(descriptor_, TCSANOW, &original_));
       }
    }
 

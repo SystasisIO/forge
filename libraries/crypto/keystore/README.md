@@ -68,6 +68,9 @@ Cancellation raises `exceptions::password_cancelled` and unwinds the same termin
 echo guard as success, EOF and input errors. Callers must join their blocking
 task before destroying its terminal or input descriptors. An omitted token
 preserves the existing synchronous behavior and error identities.
+Terminal entry and restoration discard pending input and apply attributes
+immediately; they do not wait for the caller to drain prompt output. Restoration
+retains the complete original terminal attributes and leaves output pending.
 
 Decrypt validates the complete container shape before running scrypt or AES:
 the format has a 16-byte salt, a 12-byte GCM nonce, a 16-byte GCM tag and an

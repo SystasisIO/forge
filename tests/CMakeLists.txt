@@ -1073,6 +1073,14 @@ if(UNIX)
    add_test(NAME test_forge_crypto_password_cancellation COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/crypto/password_cancellation.py --binary $<TARGET_FILE:forge_password_input_helper>)
    set_tests_properties(test_forge_crypto_password_cancellation PROPERTIES TIMEOUT 30)
+   add_test(NAME test_forge_crypto_password_unread_prompt_cancellation COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/crypto/password_cancellation.py
+      --binary $<TARGET_FILE:forge_password_input_helper> --gate unread-prompt)
+   set_tests_properties(test_forge_crypto_password_unread_prompt_cancellation PROPERTIES TIMEOUT 10)
+   add_test(NAME test_forge_crypto_password_unread_entry_cancellation COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/crypto/password_cancellation.py
+      --binary $<TARGET_FILE:forge_password_input_helper> --gate unread-entry)
+   set_tests_properties(test_forge_crypto_password_unread_entry_cancellation PROPERTIES TIMEOUT 10)
    add_test(NAME test_forge_crypto_password_fifo COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/crypto/password_cancellation.py
       --binary $<TARGET_FILE:forge_password_input_helper> --gate fifo)
