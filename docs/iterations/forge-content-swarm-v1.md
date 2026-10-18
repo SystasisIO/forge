@@ -15,7 +15,7 @@
 > product-supplied admission and quota policies over the same engine.
 > The same revision makes Swarm a library family: Object Store metadata belongs
 > to `swarm.db`, network records to `swarm.protocol`, and remote contracts to
-> `swarm.api`. The family root stays empty; no implementation is started here.
+> `swarm.api`. The family root stays empty; focused PRs deliver its leaves.
 > The common conversion template belongs to existing `forge_core` through
 > `forge.core.conversion`; domain specializations belong to `swarm.conversion`.
 > Development, joint validation and production follow the separate
@@ -362,17 +362,23 @@ struct file_entry {
    std::vector<std::string> path;
    std::uint64_t size;
    forge::crypto::digest::sha256 root;
+   std::vector<forge::crypto::digest::sha256> pieces;
 };
 
 struct descriptor {
    descriptor_version version;
    std::uint32_t piece_size;
    std::vector<file_entry> files;
-   piece_hash_layer pieces;
 };
 ```
 
-The final exact field types are fixed with Raw fixtures before publication.
+PR1 freezes `descriptor_version::v1 = 1` as an explicitly serialized uint32,
+`piece_size` as uint32 and file sizes as uint64. Counts use minimal Raw uint32
+varints. Each file owns its ordered piece layer; files no larger than one piece
+omit that layer. This replaces the provisional global `piece_hash_layer`
+sketch with unambiguous file-local ownership. The
+[Core guide](../../libraries/swarm/core/README.md) specifies exact bytes and
+limits, and [donor evidence](../donors/forge-swarm-core-v1.md) records acceptance.
 
 Accepted descriptor rules:
 
@@ -394,6 +400,12 @@ intermediate components, `.`, `..`, separators embedded in a component, NUL,
 duplicate normalized paths and file/directory collisions are rejected.
 Platform adapters additionally reject names that cannot be represented safely
 on their target filesystem.
+
+Canonical logical paths preserve valid UTF-8 bytes without normalization or
+case folding and are ordered component-wise by unsigned bytes. Exact duplicate
+and file/directory prefix paths are invalid. Case or Unicode equivalence and
+other target-filesystem aliases require adapter rejection rather than changing
+the descriptor identity.
 
 The v1 descriptor is Forge Raw, not a claim of `.torrent` wire compatibility.
 The file/piece layout deliberately follows BitTorrent v2 closely enough for a
