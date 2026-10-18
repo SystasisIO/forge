@@ -2,6 +2,12 @@
 
 ## Status
 
+Historical backend split. The WAMR experiment extends this family with separate
+`compiler` and SDK `execution` leaves; `optimizing` remains the optimized mode,
+not a promise to retain the EOS OC implementation. See the approved
+[current boundary map](forge-vm-wasm-wamr-v1.md#library-boundary-review).
+The original rename and its evidence below remain historical.
+
 Accepted direction. The clean-breaking interpreter rename is implemented;
 the second WASM execution backend remains deferred to its own review block.
 

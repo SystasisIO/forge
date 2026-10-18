@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "version": 4,
+  "date": "2026-10-18",
+  "kind": "instruction-profile-runtime-source-freeze-delta",
+  "parent_manifest": "tests/vm_wamr/jit/source-freeze-instruction-profile-v3.json",
+  "parent_manifest_sha256": "3894a8d82c2e1eb6f7a4d12b8e6197f0116dffbf3f7ee47040e72117c989a9e7",
+  "state": {
+    "source": "FROZEN_FOR_REVIEW",
+    "configure": "NOT_RUN",
+    "compile": "NOT_RUN",
+    "runtime_tests": "NOT_RUN",
+    "independent_review": "PENDING"
+  },
+  "changed_fork_sources": {
+    "core/iwasm/compilation/aot_jit_profile.cpp": {
+      "before_sha256": "51dfd4c28d19d646753618d15ea06d9838a7826f9c69ccb5acbf9ea30a78c75a",
+      "sha256": "b7cf47cbd708c6b39fdaa27ef2485b7a359503aa70c8c6ead35f3fc34bd94fcf"
+    }
+  },
+  "other_owned_sources": "Inherit unchanged v3 hashes; all ten owned sources verified with this one delta",
+  "finding": "aot_jit_profile_location could propagate std::bad_alloc from LLVM/C++ metadata allocation into the C opcode translator",
+  "resolution": [
+    "Check the existing owner budget for every profiled opcode (and unknown generated-code location)",
+    "Mark the profile failed and return false on unavailable owner or invalid original-file location",
+    "Catch std::bad_alloc across owner check, location validation and DILocation creation; mark failed, invoke allocation_failed, set the existing compiler last error, return false",
+    "No new allocator, quota, API, loader or CMake change"
+  ],
+  "qualification_boundary": {
+    "llvm_transient_heap": "Still excluded; no universal LLVM OOM recovery/cap claim",
+    "owner_refusal_tests": "Existing early owner heap/cancellation cases remain source-only, NOT_RUN",
+    "global_llvm_oom": "NOT_QUALIFIED; no global allocation-failure injection performed"
+  },
+  "static_checks": [
+    "All ten owned sources compared against immutable v3 plus the declared one-file hash delta",
+    "git diff --no-index --check /dev/null aot_jit_profile.cpp: no whitespace diagnostics (exit 1 is added-file diff)"
+  ],
+  "no_builds_or_background_jobs_started": true
+}

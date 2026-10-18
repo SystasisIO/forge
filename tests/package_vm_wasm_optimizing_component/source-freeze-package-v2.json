@@ -1,0 +1,154 @@
+{
+   "schema": 1,
+   "date": "2026-10-18",
+   "scope": "Test-only installed interpret profiling smoke and canonical optimizing producer/runtime/session consumers",
+   "paths_relative_to": "worktree_root",
+   "wamr_pin": "12d1f906668cde93c03e7d864e71ee1e10dfb194",
+   "status": {
+      "source": "FROZEN_V2_SYNC_FORMAT_R1",
+      "root_registration": "PROPOSED_PATCH_NOT_APPLIED",
+      "configure": "NOT_RUN",
+      "build": "NOT_RUN",
+      "runtime": "NOT_RUN",
+      "independent_review": "BOHR_V2_REVIEW_PENDING"
+   },
+   "format": {
+      "tool": "Homebrew clang-format 22.1.8 --style=file",
+      "cpp_files": [
+         "tests/package_vm_wasm_interpret_component/main.cpp"
+      ],
+      "dry_run_werror": "PASS",
+      "canonical_sources_formatted_by_this_slice": false,
+      "canonical_inputs_synced_to_parent": "format-r1"
+   },
+   "source_files": [
+      {
+         "path": "tests/package_vm_wasm_interpret_component/main.cpp",
+         "sha256": "a1be597b5753548ecd32f31ca2aff5382804fc70d4846abef81a4415e8b1d217"
+      },
+      {
+         "path": "tests/package_vm_wasm_optimizing_component/CMakeLists.txt",
+         "sha256": "dd605b1e29b736f81b349de6756952e5a355065d3154f34eea8b2b3593d4ca3d"
+      },
+      {
+         "path": "tests/package_vm_wasm_optimizing_component/verify_installed.cmake",
+         "sha256": "ef9d58eafb85dee81ba40cc3147378ad3d87f73eb455aceebe5553123ff7148f"
+      },
+      {
+         "path": "tests/package_vm_wasm_optimizing_component/README.md",
+         "sha256": "b7f6f2f9343c1e08c8adeb2d4c4655b543f1b8f202bd27fe1048d19bd9b47f2f"
+      }
+   ],
+   "unchanged_canonical_inputs": [
+      {
+         "path": "tests/vm_wasm_optimizing/export_name_tests.cpp",
+         "sha256": "bfacb2c8651704803bbce726a882560ef1a75727f46ab28d689f9ec38375dc97"
+      },
+      {
+         "path": "tests/vm_wasm_optimizing/session_tests.cpp",
+         "sha256": "f4b00a416b649bc23128ecb037b9fd0d68da2489e45c7b5ebfc9abad0bf1b60d"
+      },
+      {
+         "path": "tests/vm_wasm_optimizing/compile_fixture.cpp",
+         "sha256": "165d335397beeadf15101de4edcb245e19242704007c4bbc829fcee310307daa"
+      },
+      {
+         "path": "tests/vm_wasm_optimizing/heavy_fixture.cpp",
+         "sha256": "5e950430e2927151359d6b58eb6cc23a8e73d1dc447d996d920d3b9674959341"
+      },
+      {
+         "path": "tests/vm_wasm_execution/export_name_fixtures.hxx",
+         "sha256": "e84a4b55dca4da756d0d22948b637ffec41c220e437114664d8baa73a0616436"
+      },
+      {
+         "path": "tests/package_vm_wasm_interpret_component/CMakeLists.txt",
+         "sha256": "0b5e6375defb1225cc31c336627f570f32039d73705e3560f33cf32d490b2c0f"
+      },
+      {
+         "path": "tests/package_vm_wasm_interpret_component/verify_relocation.cmake",
+         "sha256": "bbb25ac9c9f637326e1c38e3f8e0e1806508eb93bf56dae09cb7441e7c6d94b9"
+      },
+      {
+         "path": ".clang-format",
+         "sha256": "df3e63846eb7d116d9b8240ffe19353846105b697b26e03f51ab49779eeac019"
+      }
+   ],
+   "artifacts": [
+      {
+         "path": "../../artifacts/wamr-dev-integration-20261018-r5/package-registration-v1.patch",
+         "sha256": "8258f0ad5cd17288c205ca5ab64758d15ed4e5783b63fa228caef6d60626c19d"
+      },
+      {
+         "path": "../../artifacts/wamr-dev-integration-20261018-r5/package-qualification-runbook.md",
+         "sha256": "ef51fc28663ef3bec53ddd0c886f28a5617cddbc145de99630a75c6316853101"
+      }
+   ],
+   "registration_base_snapshot": {
+      "path": "tests/CMakeLists.txt",
+      "sha256": "e0fa4f998223ce20582937acf364e471238f729a893ffab73af872e8a9c15e4c",
+      "git_apply_check": "PASS_CHECK_ONLY_PATCH_NOT_APPLIED",
+      "modified_by_this_slice": false
+   },
+   "evidence_boundary": "No package configure, compilation or runtime executed. Profiling smoke has no sampler or positive native-PC assertion. Canonical public sampling tests remain separate. Source-level and installed/product acceptance are not interchangeable.",
+   "previous_freeze": {
+      "path": "tests/package_vm_wasm_optimizing_component/source-freeze-package-v1.json",
+      "sha256": "e0861be5c4d8a8dbf3850f2506a2e52f488d014e6984921e229b3840de06203f"
+   },
+   "review": {
+      "reviewer": "Bohr",
+      "thread_title": "Run ed5 AOT CTests",
+      "url": "codex://threads/01a1445f-ff19-7893-8ee4-c05a6cea40b8",
+      "turn_id": "01a14fc9-c0fc-7d21-87a8-7c3c6e3ba6e4",
+      "reviewed_freeze_sha256": "e0861be5c4d8a8dbf3850f2506a2e52f488d014e6984921e229b3840de06203f",
+      "findings": [
+         {
+            "priority": "P2",
+            "issue": "LLVM 22.1.8 FindFFI selects a C probe when the runner supplies CMAKE_C_COMPILER, but the project enabled only CXX.",
+            "resolution": "Package project now enables LANGUAGES C CXX; runner unchanged."
+         },
+         {
+            "priority": "P2",
+            "issue": "Only 10 of 15 v1 inputs matched after parent formatting changed five canonical source files.",
+            "resolution": "Preserved v1; v2 records all 15 current hashes and verifies the five canonical postimages against format-r1 without editing them."
+         }
+      ],
+      "resolution_status": "FIXED_IN_SOURCE_AWAITING_INDEPENDENT_V2_REVIEW",
+      "configure_build_runtime": "NOT_RUN"
+   },
+   "parent_format_sync": {
+      "name": "format-r1",
+      "manifest": {
+         "path": "../../artifacts/wamr-dev-integration-20261018-r5/format-r1/manifest.json",
+         "sha256": "b6610962d1132399280592b7625ed08b1fba9208b8844400d8d6b91eaafe5394"
+      },
+      "static_review": {
+         "path": "../../artifacts/wamr-dev-integration-20261018-r5/format-r1/review.md",
+         "sha256": "aca57aafe3f85fd0d58f01b4ae0b7761486cb40d518f319f3d4025e3ad7f1145"
+      },
+      "refreshed_canonical_inputs": [
+         "tests/vm_wasm_optimizing/export_name_tests.cpp",
+         "tests/vm_wasm_optimizing/session_tests.cpp",
+         "tests/vm_wasm_optimizing/compile_fixture.cpp",
+         "tests/vm_wasm_optimizing/heavy_fixture.cpp",
+         "tests/vm_wasm_execution/export_name_fixtures.hxx"
+      ],
+      "canonical_postimages_verified": true,
+      "capacity_profile": {
+         "path": "libraries/vm/wasm/interpret/include/forge/vm/wasm/interpret/capacity_profile.cppm",
+         "before_format_sha256": "bf6c636d99df90d9a89967ddd7657dacbe92047bfeb8d1d037c33f944d8f5266",
+         "sha256": "9bd78b18bd271d392cc1ed6b075c7d79f781bafea3f88e164bace98f354f53df"
+      },
+      "capacity_identity_policy": "Capacity constants/profile version are unchanged by formatting, but the source hash participates in FORGE_WAMR_CAPACITY_IDENTITY. Fresh matching helper/runtime/artifact identities are required; pre-format results are not relabeled as v2 acceptance."
+   },
+   "validation": {
+      "core_input_hash_count": 15,
+      "all_core_hashes_current": true,
+      "package_cpp_clang_format_22_dry_run_werror": "PASS",
+      "production_and_canonical_source_edits": false,
+      "scope_edits": [
+         "tests/package_vm_wasm_optimizing_component/CMakeLists.txt",
+         "tests/package_vm_wasm_optimizing_component/README.md",
+         "tests/package_vm_wasm_optimizing_component/source-freeze-package-v2.json"
+      ]
+   }
+}

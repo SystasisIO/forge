@@ -68,6 +68,8 @@ session_options validate_options(session_options value, const asio::compute::exe
        value.max_configuration_bytes > raw::max_byte_array_size || value.max_request_bytes > raw::max_byte_array_size ||
        value.max_response_bytes > raw::max_byte_array_size || value.max_inflight_bytes == 0 ||
        value.max_resident_bytes == 0 || value.max_disk_bytes == 0 || value.max_disk_entries == 0 ||
+       value.max_preparation_resident_bytes > value.max_resident_bytes ||
+       value.max_preparation_workspace_bytes > value.max_inflight_bytes ||
        value.max_disk_entries > std::numeric_limits<std::size_t>::max() - 2 || value.helper_timeout.count() <= 0 ||
        value.worker_count > std::numeric_limits<std::size_t>::max() - value.max_pending_jobs)
       FORGE_THROW_EXCEPTION(exceptions::compile_limit, "invalid finite compiler session options");
@@ -116,14 +118,32 @@ compiler_session::impl::impl(asio::runtime& runtime_value, asio::compute::execut
    disk = std::make_unique<disk_entry[]>(options.max_disk_entries + 1);
    account->resident_bytes = index_bytes;
    account->inflight_bytes = live_bytes;
+   base_resident_bytes = index_bytes;
+   base_inflight_bytes = live_bytes;
    cancelled_error = std::make_exception_ptr(exceptions::cancelled{"compiler session was stopped"});
    allocation_error = std::make_exception_ptr(exceptions::compile_limit{"compiler session allocation failed"});
+   cleanup_error = std::make_exception_ptr(exceptions::shutdown_incomplete{"compiler native cleanup requires retry"});
 }
 
 compiler_session::impl::~impl() {
    if (!quiescent || shutdown_active || signal_owner)
       std::terminate();
    close_cache(); // only after all tracked scheduler/compute/child drains
+   clear_ready();
+   index.reset();
+   disk.reset();
+   live.reset();
+   const auto lock = std::scoped_lock{account->mutex};
+   account->resident_bytes -= base_resident_bytes;
+   account->inflight_bytes -= base_inflight_bytes;
+}
+
+compiler_session::impl::resident_charge::resident_charge(std::shared_ptr<accounting> value)
+    : account(std::move(value)) {}
+compiler_session::impl::resident_charge::~resident_charge() {
+   const auto lock = std::scoped_lock{account->mutex};
+   account->resident_bytes -= bytes;
+   account->inflight_bytes -= workspace_bytes;
 }
 
 std::optional<std::uint64_t> compiler_session::impl::configuration_bytes(const compile_configuration& value,

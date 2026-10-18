@@ -12,7 +12,7 @@
 
 import fixture.api_wasm;
 import forge.api.wasm.codec;
-import forge.execution.wasm.compiled_module;
+import forge.vm.wasm.execution.compiled_module;
 import forge.chain.api.abi;
 import forge.chain.protocol.values;
 import forge.codec.hex;
@@ -43,7 +43,7 @@ int main() {
    namespace wasm = forge::api::wasm;
    namespace abi_api = forge::chain::api;
    namespace chain = forge::chain::protocol;
-   namespace execution = forge::execution::wasm;
+   namespace execution = forge::vm::wasm::execution;
 
    auto file = std::ifstream{API_WASM_WASM, std::ios::binary};
    require(file.good(), "missing WASM artifact");

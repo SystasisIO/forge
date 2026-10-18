@@ -25,15 +25,14 @@ option(FORGE_ENABLE_LIBP2P_INTEROP "Run live go-libp2p/rust-libp2p interoperabil
 option(FORGE_ENABLE_ROCKSDB "Build RocksDB-backed optional FORGE features when RocksDB is available" ON)
 option(FORGE_ENABLE_MDBX "Build the vendored MDBX-backed FORGE database driver" ON)
 option(FORGE_ENABLE_TOOLING "Build optional Forge Contract Tooling host libraries" OFF)
+option(FORGE_ENABLE_WASM_COMPILER "Build the optional WASM compiler and isolated helper" OFF)
+option(FORGE_ENABLE_VM_WASM_OPTIMIZING "Build the optional WASM native artifact and runtime leaf" OFF)
+option(FORGE_ENABLE_VM_WASM_LLVM_JIT "Build the optional in-process WAMR LLVM JIT backend" OFF)
+if(FORGE_ENABLE_WASM_COMPILER AND NOT FORGE_ENABLE_VM_WASM_OPTIMIZING)
+   message(FATAL_ERROR "FORGE_ENABLE_WASM_COMPILER=ON requires FORGE_ENABLE_VM_WASM_OPTIMIZING=ON")
+endif()
 option(FORGE_ENABLE_S3 "Build the optional AWS SDK-backed S3 client" OFF)
 option(FORGE_ENABLE_LIBOAUTH2 "Build the resource-token verification backend" OFF)
-option(FORGE_ENABLE_VM_WASM_OPTIMIZING "Build the optional WASM optimizing native artifact/runtime leaf" OFF)
-if(FORGE_ENABLE_VM_WASM_OPTIMIZING AND
-   (NOT ((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$") OR
-         (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")) OR
-    NOT CMAKE_SIZEOF_VOID_P EQUAL 8))
-   message(FATAL_ERROR "FORGE_ENABLE_VM_WASM_OPTIMIZING=ON requires Linux x86-64 or Darwin ARM64; this target is ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
-endif()
 set(FORGE_ENABLE_OIDC_AGENT "AUTO" CACHE STRING "Build the oidc-agent authentication backend: AUTO, ON or OFF")
 set_property(CACHE FORGE_ENABLE_OIDC_AGENT PROPERTY STRINGS AUTO ON OFF)
 if(NOT FORGE_ENABLE_OIDC_AGENT MATCHES "^(AUTO|ON|OFF)$")
@@ -108,9 +107,6 @@ set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
 set(_forge_boost_components headers date_time iostreams)
-if(FORGE_ENABLE_VM_WASM_OPTIMIZING)
-   list(APPEND _forge_boost_components process)
-endif()
 if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    list(APPEND _forge_boost_components charconv url program_options)
 endif()
@@ -416,13 +412,6 @@ if(FORGE_ENABLE_TOOLING)
       "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/validation/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/manifest/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/testing/include"
-   )
-endif()
-
-if(FORGE_ENABLE_VM_WASM_OPTIMIZING)
-   list(APPEND FORGE_SOURCE_INCLUDE_DIRS
-      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/vm/wasm/optimizing/include"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/wasm_compiler/include"
    )
 endif()
 
@@ -797,7 +786,6 @@ add_subdirectory(libraries/raw)
 add_subdirectory(libraries/compression)
 add_subdirectory(libraries/chain)
 add_subdirectory(libraries/vm)
-add_subdirectory(libraries/execution)
 add_subdirectory(libraries/db/ids)
 add_subdirectory(libraries/db/core)
 add_subdirectory(libraries/db/object)
@@ -827,7 +815,7 @@ set(
    forge_chain_fork
    forge_chain_savanna
    forge_vm_wasm_interpret
-   forge_execution_wasm
+   forge_vm_wasm_execution
    forge_db_ids
    forge_db_core
    forge_db_object
@@ -953,12 +941,13 @@ if(FORGE_ENABLE_TOOLING)
 endif()
 
 if(TARGET forge_vm_wasm_optimizing)
+   list(APPEND FORGE_LEAF_TARGETS forge_vm_wasm_optimizing)
+endif()
+if(TARGET forge_vm_wasm_compiler)
    add_subdirectory(libraries/tooling/wasm_compiler)
-   list(APPEND FORGE_LEAF_TARGETS forge_vm_wasm_optimizing forge_tooling_wasm_compiler)
-   add_executable(forge_wasm_compiler tools/wasm-compiler/main.cpp)
-   target_link_libraries(forge_wasm_compiler PRIVATE forge_tooling_wasm_compiler)
-   set_target_properties(forge_wasm_compiler PROPERTIES OUTPUT_NAME "forge-wasm-compiler")
-   install(TARGETS forge_wasm_compiler RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT dev)
+   add_subdirectory(tools/wasm-compiler)
+   list(APPEND FORGE_LEAF_TARGETS forge_vm_wasm_compiler forge_tooling_wasm_compiler)
+   install(TARGETS wasm_compiler RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT dev EXCLUDE_FROM_ALL)
 endif()
 
 if(TARGET forge_rocksdb)
@@ -1026,7 +1015,7 @@ set(
    chain_fork
    chain_savanna
    vm_wasm_interpret
-   execution_wasm
+   vm_wasm_execution
    db_core
    db_object
    config_core
@@ -1116,9 +1105,11 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    endif()
 endif()
 if(TARGET forge_vm_wasm_optimizing)
-   list(APPEND FORGE_BUILT_COMPONENTS vm_wasm_optimizing tooling_wasm_compiler)
+   list(APPEND FORGE_BUILT_COMPONENTS vm_wasm_optimizing)
 endif()
-
+if(TARGET forge_vm_wasm_compiler)
+   list(APPEND FORGE_BUILT_COMPONENTS vm_wasm_compiler tooling_wasm_compiler)
+endif()
 if(TARGET forge_rocksdb)
    list(APPEND FORGE_BUILT_COMPONENTS rocksdb)
 endif()
@@ -1183,6 +1174,9 @@ install(
 )
 
 set(FORGE_INTERNAL_TARGETS secp256k1-internal secp256k1 bn256 bls12-381 softfloat)
+if(TARGET forge_vm_wasm_compiler)
+   list(APPEND FORGE_INTERNAL_TARGETS vmlib aotclib)
+endif()
 if(TARGET appauth-internal)
    list(APPEND FORGE_INTERNAL_TARGETS appauth-internal)
 endif()
@@ -1318,10 +1312,12 @@ if(FORGE_CONTRACT_SDK_HOST_PROFILE)
    endforeach()
 endif()
 if(TARGET forge_vm_wasm_optimizing)
+   list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/vm/wasm/optimizing/include/forge)
+endif()
+if(TARGET forge_vm_wasm_compiler)
    list(APPEND FORGE_INSTALL_INCLUDE_DIRS
-      libraries/vm/wasm/optimizing/include/forge
-      libraries/tooling/wasm_compiler/include/forge
-   )
+      libraries/vm/wasm/compiler/include/forge
+      libraries/tooling/wasm_compiler/include/forge)
 endif()
 
 install(
@@ -1395,6 +1391,15 @@ install(
    EXCLUDE_FROM_ALL
 )
 
+install(
+   FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/vendor/wamr/LICENSE"
+      "${CMAKE_CURRENT_SOURCE_DIR}/vendor/wamr/ATTRIBUTIONS.md"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge/wamr"
+   COMPONENT dev
+   EXCLUDE_FROM_ALL
+)
+
 # One source list owns root-level notice installation and required-name metadata.
 # Separate third-party subdirectories remain inside the existing notices directory.
 set(_forge_notice_sources
@@ -1405,12 +1410,6 @@ set(_forge_notice_sources
    "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_LICENSES"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/vm/wasm/interpret/LICENSE.eos-vm"
 )
-if(TARGET forge_tooling_wasm_compiler)
-   list(APPEND _forge_notice_sources
-      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/wasm_compiler/LICENSE.Spring"
-      "${CMAKE_CURRENT_SOURCE_DIR}/libraries/tooling/wasm_compiler/LICENSE.WAVM"
-   )
-endif()
 set(Forge_NOTICE_FILES)
 foreach(_forge_notice_source IN LISTS _forge_notice_sources)
    get_filename_component(_forge_notice_name "${_forge_notice_source}" NAME)

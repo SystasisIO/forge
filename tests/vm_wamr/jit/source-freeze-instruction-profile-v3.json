@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "version": 3,
+  "date": "2026-10-18",
+  "kind": "instruction-profile-runtime-source-freeze",
+  "fork_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/wamr-public-migration-20261016/wamr-fork",
+  "forge_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-vm-wasm-wamr-dev-integration-v1",
+  "base_wamr_commit": "ed5c12ae6bcec88f2863aa7c541b6d829d657a4c",
+  "state": {
+    "source": "FROZEN_FOR_REVIEW",
+    "configure": "NOT_RUN",
+    "compile": "NOT_RUN",
+    "runtime_tests": "NOT_RUN",
+    "independent_review": "PENDING",
+    "publication": "NOT_RUN"
+  },
+  "private_contract": {
+    "compile_entry": "wasm_loader_compile_llvm_jit_profile_ex(WASMModule*, const WASMLoadBudget*, uint64, char*, uint32)",
+    "plain_entry": "wasm_loader_compile_llvm_jit_ex",
+    "observers": [
+      "aot_jit_profile_intervals",
+      "aot_jit_profile_translate"
+    ],
+    "lifetime": "Existing module/compctx; caller pins owner and excludes compile/unload while reading",
+    "publication": "After complete native functions/stack metadata and final owner check, not at object emission",
+    "empty_defined_functions": "Success without compctx; empty intervals and UINT32_MAX for all PCs",
+    "llvm_transient_heap": "Excluded; no universal heap/OOM guarantee",
+    "guest_inlining": "Current bounded path keeps guest/precheck noinline for measured stack safety; forced guest-inlining coverage not claimed"
+  },
+  "owned_fork_sources": {
+    "core/iwasm/compilation/aot_compiler.c": "9ad58ddb23b530af2d0e52ee8df02e5ae4d1967a662c68efc62736e71052251c",
+    "core/iwasm/compilation/aot_llvm.c": "ac9e7204d7642a7c1463d49e8e97e747150ac8cd23c0582bef1342936c7932f4",
+    "core/iwasm/compilation/aot_llvm.h": "f84dc19fe6797818997a395484e991fab6a2b72e9657e2100dd15410683a4cd9",
+    "core/iwasm/compilation/aot_jit_profile.cpp": "51dfd4c28d19d646753618d15ea06d9838a7826f9c69ccb5acbf9ea30a78c75a",
+    "core/iwasm/compilation/aot_jit_profile.h": "7618c6ec152518fd3a92e71d885e8534676fe129214fc9f26f3bf1908978bfbc",
+    "core/iwasm/compilation/iwasm_compl.cmake": "cad65dd24a7a754a44964034000189fead4cbcfa3c01a2357bca549c359713d7"
+  },
+  "owned_forge_sources": {
+    "tests/vm_wamr/jit/instruction_profile_probe.cpp": "a83f097809df7be84b7da04b50d378f3d5e6866128f22b590efab72050f8c3a3",
+    "tests/vm_wamr/jit/instruction_profile_fixture.hxx": "fd2cb11dfba2162a013316b4ad46732b76fcac445bf71fc171854557d5f11b99",
+    "tests/vm_wamr/jit/instruction_profile.cmake": "dbf1aac0ba2f407bc031b1121164c0015539c807ee42fb28564cc0f3fa976023",
+    "tests/vm_wamr/jit/instruction_profile.md": "01f3cfedb6232a75639286ceb891ee90819a10b5cfaf0f8665363ee589545d5f"
+  },
+  "shared_loader_references": {
+    "note": "Snapshot only: parent NUL/empty-function edits preserved, not a claim of ownership/freeze of parent files",
+    "sources": {
+      "core/iwasm/interpreter/wasm_loader.c": "50965d4dc1150eb04cc2a6bb770822b731bc9732fd6306bfac4d5bf991f5d60c",
+      "core/iwasm/interpreter/wasm_loader.h": "1106e0211b8e4731f01e68548497b2a4560d39cebab19c6362f0c6379cee9d3e"
+    }
+  },
+  "historical_v2": {
+    "path": "tests/vm_wamr/jit/source-freeze-instruction-profile-v2.json",
+    "sha256": "f4d09a858324b9336d2bb8436332dc9e1fa0fcdbe7354b6c81531c73361293f7",
+    "unchanged": true,
+    "not_evidence_for_v3": true
+  },
+  "static_checks": [
+    "Tracked owned fork changes: git diff --check exit 0",
+    "Untracked owned profile/test/doc files: git diff --no-index --check /dev/null <file> emitted no whitespace diagnostics (exit 1 indicates added-file differences)"
+  ],
+  "registered_cases": [
+    "runtime",
+    "plain",
+    "empty",
+    "multi",
+    "early_heap",
+    "early_cancel",
+    "late_cancel",
+    "mapping"
+  ],
+  "required_next_checks": [
+    "Independent source review before fork publication/pin",
+    "Reconfigure/rebuild whole runtime and compiler at combined reviewed fork; no candidate TU overlays on old archive",
+    "Build test_forge_wamr_jit_instruction_profile at coordinated -j2",
+    "Run all eight instruction-profile CTests, preserve new XML/log names",
+    "Link map: one WAMR C provider, compiler/profile objects from the existing runtime archive",
+    "Carver/parent public observer ownership, public jit_profile and consumer acceptance"
+  ],
+  "build_commands": [
+    "cmake --build build/wamr-dev-r4 --target test_forge_wamr_jit_instruction_profile -j2",
+    "ctest --test-dir build/wamr-dev-r4 -R '^test_forge_wamr_jit_instruction_profile($|_)' --output-on-failure --output-junit instruction-profile-runtime-v3.xml"
+  ]
+}

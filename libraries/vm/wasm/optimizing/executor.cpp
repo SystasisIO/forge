@@ -19,7 +19,6 @@ module;
 module forge.vm.wasm.optimizing.executor;
 
 import forge.asio.notification;
-import forge.vm.wasm.interpret.backend;
 import forge.vm.wasm.interpret.exceptions;
 
 #include "details/executor_epoch.hxx"

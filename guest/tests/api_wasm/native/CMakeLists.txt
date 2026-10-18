@@ -3,7 +3,7 @@ project(ForgeApiWasmParity LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-find_package(Forge CONFIG REQUIRED COMPONENTS api_wasm execution_wasm chain_api codec_json codec_hex)
+find_package(Forge CONFIG REQUIRED COMPONENTS api_wasm vm_wasm_execution chain_api codec_json codec_hex)
 find_package(ForgeContract CONFIG REQUIRED)
 add_subdirectory(../protocol protocol)
 foreach(input WASM ABI METADATA)
@@ -13,7 +13,7 @@ foreach(input WASM ABI METADATA)
 endforeach()
 add_executable(api_wasm_parity main.cpp)
 target_link_libraries(api_wasm_parity PRIVATE api_wasm_fixture_protocol
-   Forge::forge_api_wasm Forge::forge_execution_wasm Forge::forge_chain_api Forge::forge_codec_json Forge::forge_codec_hex)
+   Forge::forge_api_wasm Forge::forge_vm_wasm_execution Forge::forge_chain_api Forge::forge_codec_json Forge::forge_codec_hex)
 target_compile_definitions(api_wasm_parity PRIVATE
    API_WASM_WASM="${API_WASM_WASM}" API_WASM_ABI="${API_WASM_ABI}"
    API_WASM_METADATA="${API_WASM_METADATA}")

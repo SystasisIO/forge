@@ -1,0 +1,8 @@
+execute_process(COMMAND "${NM}" -u "${ARCHIVE}" RESULT_VARIABLE _result OUTPUT_VARIABLE _symbols ERROR_VARIABLE _error)
+if(NOT _result EQUAL 0)
+   message(FATAL_ERROR "Cannot inspect probe owner symbols: ${_error}")
+endif()
+if(_symbols MATCHES "[ \t]_?(mmap|munmap|mprotect|os_mmap|os_munmap|os_mprotect|os_icache_flush|os_dcache_flush|os_thread_jit_write_protect_np|sys_icache_invalidate|sys_dcache_flush|__clear_cache)([\r\n]|$)")
+   message(FATAL_ERROR "Stage-1 owner references native mapping/protection/cache effects: ${_symbols}")
+endif()
+message(STATUS "Stage-1 owner has no direct native mapping/protection/cache-effect references")

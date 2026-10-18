@@ -53,7 +53,6 @@ using memory = ::forge::exceptions::coded_exception<code, code::memory>;
 using stack_memory = ::forge::exceptions::coded_exception<code, code::stack_memory>;
 using invalid_element = ::forge::exceptions::coded_exception<code, code::invalid_element>;
 using link = ::forge::exceptions::coded_exception<code, code::link>;
-// Local execution machinery is unavailable; this is not a deterministic guest trap.
 using execution_unavailable = ::forge::exceptions::coded_exception<code, code::execution_unavailable>;
 using pointer_out_of_bounds = ::forge::exceptions::coded_exception<code, code::pointer_out_of_bounds>;
 using timeout = ::forge::exceptions::coded_exception<code, code::timeout>;
@@ -68,6 +67,24 @@ using span = ::forge::exceptions::coded_exception<code, code::span>;
 using profile = ::forge::exceptions::coded_exception<code, code::profile>;
 using numeric_arity = ::forge::exceptions::coded_exception<code, code::numeric_arity>;
 using unsupported_numeric = ::forge::exceptions::coded_exception<code, code::unsupported_numeric>;
+
+enum class guest_trap_kind {
+   unknown,
+   unreachable,
+   table_bounds,
+   indirect_type,
+   integer_divide_by_zero,
+   integer_overflow,
+   invalid_conversion,
+   logical_depth,
+   auxiliary_stack,
+};
+
+class guest_trap : public interpreter {
+ public:
+   guest_trap(guest_trap_kind kind, std::string message) : interpreter(std::move(message)), kind(kind) {}
+   guest_trap_kind kind;
+};
 
 } // namespace forge::vm::wasm::interpret::exceptions
 

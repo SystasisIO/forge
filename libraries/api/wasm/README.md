@@ -126,7 +126,7 @@ the stream DTO and invokes its typed validator.
 Native: `find_package(Forge CONFIG REQUIRED COMPONENTS api_wasm)`.
 Guest: link `Forge::forge_api_wasm` through the installed Forge Contract SDK.
 The dependency closure contains API/HTTP values and Raw, not their runtimes,
-VM, Asio, authentication, DB, LLVM or Clang. `execution_wasm` is a separate host
+VM, Asio, authentication, DB, LLVM or Clang. `vm_wasm_execution` is a separate host
 choice, never a dependency of these protocol values.
 
 Focused tests live in `tests/api_wasm`; the installed-package consumer checks

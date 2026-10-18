@@ -1,0 +1,29 @@
+{
+  "status": "source candidate; native NOT_RUN; no commit or vendor repin",
+  "base_commit": "ed5c12ae6bcec88f2863aa7c541b6d829d657a4c",
+  "fork_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/wamr-public-migration-20261016/wamr-fork",
+  "forge_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-vm-wasm-wamr-dev-integration-v1",
+  "fork_sha256": {
+    "core/iwasm/compilation/aot_compiler.c": "1d788182815e0622d4b334f8d1f2d906edf5920dbc9143acfc377753bcb509b9",
+    "core/iwasm/compilation/aot_llvm.c": "0694a327819ed700dc1ac4db0cb295ecac6922414b8ff3624b1e511abdf99307",
+    "core/iwasm/compilation/aot_llvm.h": "f84dc19fe6797818997a395484e991fab6a2b72e9657e2100dd15410683a4cd9",
+    "core/iwasm/compilation/aot_jit_profile.cpp": "fd5afebc3f6df7601afaec92c7c84c5246f08e762fff5b48203594ec0d077064",
+    "core/iwasm/compilation/aot_jit_profile.h": "a1c706f2785d8d3039f6663622ac56df973b16353576580ac16235bb2bfe7d62"
+  },
+  "forge_sha256": {
+    "tests/vm_wamr/jit/instruction_profile_probe.cpp": "075e496630ba92321e09aa01f1ddafba52e631d2253bebfef6105a7643fd5087",
+    "tests/vm_wamr/jit/instruction_profile_fixture.hxx": "a463806b59f2e619d830011f793c743ae8eb59dcb572f67af399a45d12722831",
+    "tests/vm_wamr/jit/instruction_profile.cmake": "002605809a991033f2bb5e85fe53d4c04b4cbc83c4f195c8394efdb5bd0dcaa4",
+    "tests/vm_wamr/jit/instruction_profile.md": "8f155bd393ec8a0baac2610aed2595241132a248aaed492ea91dff38515e9c63"
+  },
+  "checks": {
+    "fork_git_diff_check": "PASS",
+    "cmake_fragment_parse": "PASS",
+    "compile": "NOT_RUN",
+    "link_and_single_runtime_provider": "NOT_RUN",
+    "darwin_native_pc_map": "NOT_RUN",
+    "genuine_instruction_samples": "NOT_RUN",
+    "accounting_denial_and_cleanup": "NOT_RUN"
+  },
+  "build_target": "test_forge_wamr_jit_instruction_profile"
+}

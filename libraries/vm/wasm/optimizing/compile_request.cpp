@@ -16,6 +16,14 @@ import forge.vm.wasm.optimizing.exceptions;
 import forge.vm.wasm.optimizing.invocation_abi;
 
 namespace forge::vm::wasm::optimizing {
+
+std::string_view engine_identity() noexcept {
+#ifndef FORGE_WAMR_SOURCE_IDENTITY
+#error WAMR artifact identity requires the exact prepared source identity
+#endif
+   return FORGE_WAMR_SOURCE_IDENTITY ":" FORGE_WAMR_CAPACITY_IDENTITY;
+}
+
 namespace {
 enum class target_kind { unsupported, linux_x86_64, darwin_arm64 };
 constexpr auto linux_definition = std::array<std::string_view, 3>{"x86_64-unknown-linux-gnu", "x86-64", ""};
@@ -37,8 +45,8 @@ bool matches(const target_profile& target, const std::array<std::string_view, 3>
 }
 
 target_kind recognize(const target_profile& target) noexcept {
-   if (target.llvm_version != "22.1.8" || target.codegen_version != 3 ||
-       target.host_abi_version != invocation_abi::current_version)
+   if (target.llvm_version != "22.1.8" || target.codegen_version != 5 || target.engine != engine_identity() ||
+       target.host_abi_version != current_host_abi_version)
       return target_kind::unsupported;
    if (matches(target, linux_definition))
       return target_kind::linux_x86_64;
@@ -91,7 +99,7 @@ compile_configuration canonicalize(compile_configuration configuration) {
 }
 
 crypto::digest::sha256 identify(const crypto::digest::sha256& wasm, const compile_configuration& configuration) {
-   return crypto::digest::sha256::packhash(wasm, canonicalize(configuration));
+   return crypto::digest::sha256::packhash(std::string{"forge.wamr.aot.v1"}, wasm, canonicalize(configuration));
 }
 
 crypto::digest::sha256 identify(const compile_request& request) {

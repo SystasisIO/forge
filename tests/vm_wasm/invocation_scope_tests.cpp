@@ -2,7 +2,6 @@
 #include <boost/test/unit_test.hpp>
 
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,12 +11,11 @@
 #include <semaphore>
 #include <stdexcept>
 #include <stop_token>
-#include <sys/mman.h>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
+#include <type_traits>
 #include <utility>
 
+import forge.vm.wasm.interpret.allocator;
 import forge.vm.wasm.interpret.backend;
 
 namespace {
@@ -25,7 +23,7 @@ namespace {
 namespace wasm = forge::vm::wasm::interpret;
 using namespace std::chrono_literals;
 
-#if defined(__x86_64__) && !defined(FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY)
+#if FORGE_VM_WASM_INTERPRET_HAS_JIT && !defined(FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY)
 using implementations = boost::mpl::list<wasm::interpreter, wasm::jit>;
 #else
 using implementations = boost::mpl::list<wasm::interpreter>;
@@ -37,6 +35,10 @@ struct invocation_host {
    std::uint32_t tick() {
       return on_tick ? on_tick() : 0;
    }
+};
+
+struct recorded_host_failure {
+   unsigned identity;
 };
 
 struct bounded_depth_options {
@@ -67,14 +69,12 @@ wasm::wasm_code program(bool with_start) {
    append_section(code, 4, {1, 0x70, 0, 1});
    append_section(code, 5, {1, 1, 1, 2});
    append_section(code, 6, {1, 0x7f, 1, 0x41, 11, 0x0b});
-   append_section(code, 7, {
-       6, 4, 'r', 'e', 'a', 'd', 0, 1,
-       6, 'm', 'u', 't', 'a', 't', 'e', 0, 3,
-       4, 't', 'r', 'a', 'p', 0, 4,
-       4, 'w', 'a', 'i', 't', 0, 5,
-       8, 'i', 'n', 'd', 'i', 'r', 'e', 'c', 't', 0, 6,
-       3, 'o', 'o', 'b', 0, 7,
-   });
+   append_section(code, 7,
+                  {
+                      6,   4,   'r', 'e', 'a', 'd', 0,   1,   6, 'm', 'u', 't', 'a', 't', 'e', 0,
+                      3,   4,   't', 'r', 'a', 'p', 0,   4,   4, 'w', 'a', 'i', 't', 0,   5,   8,
+                      'i', 'n', 'd', 'i', 'r', 'e', 'c', 't', 0, 6,   3,   'o', 'o', 'b', 0,   7,
+                  });
    if (with_start)
       append_section(code, 8, {5});
    append_section(code, 9, {1, 0, 0x41, 0, 0x0b, 1, 2});
@@ -82,12 +82,12 @@ wasm::wasm_code program(bool with_start) {
    for (const auto& body : {
             wasm::wasm_code{0, 0x41, 0, 0x28, 2, 0, 0x23, 0, 0x6a, 0x0b}, // read: data + global
             wasm::wasm_code{0, 0x41, 42, 0x0b},                           // table function
-            wasm::wasm_code{0, 0x41, 0xe3, 0, 0x24, 0, 0x41, 0, 0x41, 0xe3, 0,
-                            0x36, 2, 0, 0x41, 1, 0x40, 0, 0x1a, 0x0b}, // mutate and grow
-            wasm::wasm_code{0, 0, 0x0b},                                 // unreachable
-            wasm::wasm_code{0, 3, 0x40, 0x10, 0, 0x0d, 0, 0x0b, 0x0b},  // loop while host tick != 0
-            wasm::wasm_code{0, 0x41, 0, 0x11, 0, 0, 0x0b},               // call_indirect table[0]
-            wasm::wasm_code{0, 0x41, 0xff, 0xff, 3, 0x28, 2, 0, 0x0b},   // load across memory bound
+            wasm::wasm_code{0, 0x41, 0xe3, 0, 0x24, 0, 0x41, 0, 0x41, 0xe3,
+                            0, 0x36, 2,    0, 0x41, 1, 0x40, 0, 0x1a, 0x0b}, // mutate and grow
+            wasm::wasm_code{0, 0, 0x0b},                                     // unreachable
+            wasm::wasm_code{0, 3, 0x40, 0x10, 0, 0x0d, 0, 0x0b, 0x0b},       // loop while host tick != 0
+            wasm::wasm_code{0, 0x41, 0, 0x11, 0, 0, 0x0b},                   // call_indirect table[0]
+            wasm::wasm_code{0, 0x41, 0xff, 0xff, 3, 0x28, 2, 0, 0x0b},       // load across memory bound
         }) {
       append_size(bodies, body.size());
       bodies.insert(bodies.end(), body.begin(), body.end());
@@ -127,26 +127,6 @@ template <typename Backend> void check_fresh(Backend& backend, invocation_host& 
    BOOST_TEST(indirect->to_ui32() == 42U);
 }
 
-struct expires_then_unmaps {
-   wasm::span<std::byte> code;
-   int& unmap_result;
-
-   struct guard {
-      std::function<void()> expire;
-      wasm::span<std::byte> code;
-      int& unmap_result;
-
-      ~guard() noexcept {
-         expire();
-         unmap_result = ::munmap(code.data(), code.size());
-      }
-   };
-
-   template <typename F> guard scoped_run(F&& callback) {
-      return {std::forward<F>(callback), code, unmap_result};
-   }
-};
-
 } // namespace
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_resets_memory_globals_data_and_table, Impl, implementations) {
@@ -169,14 +149,15 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_guest_traps_release_and_allow_fresh_reu
    auto instance = prepared_instance<Impl>{};
    auto host = invocation_host{};
    auto& backend = instance.backend;
-   BOOST_CHECK_THROW(backend.with_invocation(&host, {}, 2s, {}, [&] {
-      backend.call(host, "env", "mutate");
-      backend.call(host, "env", "trap");
-   }), wasm::exceptions::interpreter);
+   BOOST_CHECK_THROW(backend.with_invocation(&host, {}, 2s, {},
+                                             [&] {
+                                                backend.call(host, "env", "mutate");
+                                                backend.call(host, "env", "trap");
+                                             }),
+                     wasm::exceptions::interpreter);
    backend.with_invocation(&host, {}, 2s, {}, [&] { check_fresh(backend, host); });
-   BOOST_CHECK_THROW(backend.with_invocation(&host, {}, 2s, {}, [&] {
-      backend.call(host, "env", "oob");
-   }), wasm::exceptions::memory);
+   BOOST_CHECK_THROW(backend.with_invocation(&host, {}, 2s, {}, [&] { backend.call(host, "env", "oob"); }),
+                     wasm::exceptions::memory);
    backend.with_invocation(&host, {}, 2s, {}, [&] { check_fresh(backend, host); });
 }
 
@@ -212,7 +193,10 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_call_depth_guards_guest_and_import_fram
 BOOST_AUTO_TEST_CASE(invocation_admission_rejects_shared_owned_and_canceled_before_start) {
    auto instance = prepared_instance{true};
    auto ticks = 0;
-   auto host = invocation_host{[&] { ++ticks; return 0U; }};
+   auto host = invocation_host{[&] {
+      ++ticks;
+      return 0U;
+   }};
    auto body = false;
    {
       auto shared = prepared_instance<>::backend_type{};
@@ -253,7 +237,9 @@ BOOST_AUTO_TEST_CASE(invocation_admission_rejects_overlap_reentry_and_sharing_wi
             if (!release.try_acquire_for(2s))
                throw std::runtime_error{"test admission rendezvous expired"};
          });
-      } catch (...) { failure = std::current_exception(); }
+      } catch (...) {
+         failure = std::current_exception();
+      }
    }};
    const auto active = entered.try_acquire_for(2s);
    if (active) {
@@ -278,10 +264,12 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_deadline_interrupts_start_and_export_an
       auto host = invocation_host{[&] { return std::chrono::steady_clock::now() < fallback ? 1U : 0U; }};
       const auto began = std::chrono::steady_clock::now();
       auto body = false;
-      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 20ms, {}, [&] {
-         body = true;
-         instance.backend.call(host, "env", "wait");
-      }), wasm::exceptions::timeout);
+      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 20ms, {},
+                                                         [&] {
+                                                            body = true;
+                                                            instance.backend.call(host, "env", "wait");
+                                                         }),
+                        wasm::exceptions::timeout);
       BOOST_CHECK(std::chrono::steady_clock::now() - began < 500ms);
       BOOST_CHECK(body != start);
       host.on_tick = {};
@@ -289,7 +277,8 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_deadline_interrupts_start_and_export_an
    }
 }
 
-BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_cancellation_interrupts_start_and_export_and_allows_reuse, Impl, implementations) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_cancellation_interrupts_start_and_export_and_allows_reuse, Impl,
+                              implementations) {
    for (const auto start : {false, true}) {
       auto instance = prepared_instance<Impl>{start};
       auto stop = std::stop_source{};
@@ -300,10 +289,12 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_cancellation_interrupts_start_and_expor
       }};
       const auto began = std::chrono::steady_clock::now();
       auto body = false;
-      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 3s, stop.get_token(), [&] {
-         body = true;
-         instance.backend.call(host, "env", "wait");
-      }), wasm::exceptions::canceled);
+      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 3s, stop.get_token(),
+                                                         [&] {
+                                                            body = true;
+                                                            instance.backend.call(host, "env", "wait");
+                                                         }),
+                        wasm::exceptions::canceled);
       BOOST_CHECK(std::chrono::steady_clock::now() - began < 1s);
       BOOST_CHECK(body != start);
       host.on_tick = {};
@@ -320,10 +311,12 @@ BOOST_AUTO_TEST_CASE(invocation_uses_one_budget_for_start_and_body) {
       return 0U;
    }};
    auto body = false;
-   BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 500ms, {}, [&] {
-      body = true;
-      instance.backend.call(host, "env", "wait");
-   }), wasm::exceptions::timeout);
+   BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 500ms, {},
+                                                      [&] {
+                                                         body = true;
+                                                         instance.backend.call(host, "env", "wait");
+                                                      }),
+                     wasm::exceptions::timeout);
    BOOST_TEST(body);
    BOOST_TEST(ticks == 2);
 }
@@ -353,6 +346,86 @@ BOOST_AUTO_TEST_CASE(invocation_host_and_native_failures_preserve_types_and_pois
    }
 }
 
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_body_vm_error_siblings_remain_reusable, Impl, implementations) {
+   auto verify = []<typename Error> {
+      static_assert(!std::is_base_of_v<wasm::exceptions::interpreter, Error>);
+      auto instance = prepared_instance<Impl>{};
+      auto host = invocation_host{};
+      const auto expected = Error{"reusable VM error from native body"};
+      BOOST_CHECK_EXCEPTION(
+          instance.backend.with_invocation(&host, {}, 2s, {},
+                                           [&] {
+                                              instance.backend.call(host, "env", "mutate");
+                                              BOOST_TEST(instance.backend.get_context().current_linear_memory() == 2U);
+                                              throw expected;
+                                           }),
+          Error,
+          [&](const Error& error) { return error.code() == expected.code() && error.message() == expected.message(); });
+      BOOST_CHECK_NO_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [&] {
+         check_fresh(instance.backend, host);
+         instance.backend.call(host, "env", "wait");
+      }));
+   };
+   verify.template operator()<wasm::exceptions::stack_memory>();
+   verify.template operator()<wasm::exceptions::pointer_out_of_bounds>();
+   verify.template operator()<wasm::exceptions::invalid_element>();
+   verify.template operator()<wasm::exceptions::exit>();
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_host_vm_error_siblings_keep_first_failure_and_poison, Impl, implementations) {
+   auto verify = []<typename Error> {
+      auto instance = prepared_instance<Impl>{};
+      auto stop = std::stop_source{};
+      auto calls = 0U;
+      const auto expected = Error{"first VM error from host callback"};
+      auto host = invocation_host{[&]() -> std::uint32_t {
+         ++calls;
+         stop.request_stop();
+         throw expected;
+      }};
+      auto caught = false;
+      BOOST_CHECK_EXCEPTION(instance.backend.with_invocation(&host, {}, 2s, stop.get_token(),
+                                                             [&] {
+                                                                try {
+                                                                   instance.backend.call(host, "env", "wait");
+                                                                } catch (const Error&) {
+                                                                   caught = true;
+                                                                }
+                                                                instance.backend.get_context().reset();
+                                                                throw std::logic_error{"later native body failure"};
+                                                             }),
+                            Error, [&](const Error& error) {
+                               return error.code() == expected.code() && error.message() == expected.message();
+                            });
+      BOOST_TEST(caught);
+      BOOST_TEST(calls == 1U);
+      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [] {}), wasm::exceptions::unusable);
+      auto shared = typename prepared_instance<Impl>::backend_type{};
+      BOOST_CHECK_THROW(shared.share(instance.backend), wasm::exceptions::unusable);
+   };
+   verify.template operator()<wasm::exceptions::stack_memory>();
+   verify.template operator()<wasm::exceptions::pointer_out_of_bounds>();
+   verify.template operator()<wasm::exceptions::invalid_element>();
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_unlisted_native_errors_still_poison, Impl, implementations) {
+   auto verify = []<typename Error> {
+      auto instance = prepared_instance<Impl>{};
+      auto host = invocation_host{};
+      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {},
+                                                         [&] {
+                                                            instance.backend.call(host, "env", "mutate");
+                                                            throw Error{"unlisted native body failure"};
+                                                         }),
+                        Error);
+      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [] {}), wasm::exceptions::unusable);
+      auto shared = typename prepared_instance<Impl>::backend_type{};
+      BOOST_CHECK_THROW(shared.share(instance.backend), wasm::exceptions::unusable);
+   };
+   verify.template operator()<std::runtime_error>();
+   verify.template operator()<wasm::exceptions::allocation>();
+}
+
 BOOST_AUTO_TEST_CASE(invocation_host_failure_is_not_hidden_by_cancellation_or_body_catch) {
    auto instance = prepared_instance{};
    auto stop = std::stop_source{};
@@ -360,102 +433,214 @@ BOOST_AUTO_TEST_CASE(invocation_host_failure_is_not_hidden_by_cancellation_or_bo
       stop.request_stop();
       throw std::runtime_error{"host failure during cancellation"};
    }};
-   BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, stop.get_token(), [&] {
-      try { instance.backend.call(host, "env", "wait"); }
-      catch (const std::runtime_error&) {}
-   }), std::runtime_error);
+   BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, stop.get_token(),
+                                                      [&] {
+                                                         try {
+                                                            instance.backend.call(host, "env", "wait");
+                                                         } catch (const std::runtime_error&) {
+                                                         }
+                                                      }),
+                     std::runtime_error);
    BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [] {}), wasm::exceptions::unusable);
 }
 
-BOOST_AUTO_TEST_CASE(code_access_restoration_reports_real_mapping_failure) {
-   const auto page_size = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-   auto allocator = wasm::growable_allocator{};
-   allocator.use_fixed_memory(page_size);
-   auto* start = allocator.start_code();
-   static_cast<void>(allocator.alloc<std::byte>(1));
-   allocator.end_code<false>(start);
-   allocator.disable_code();
-   const auto code = allocator.get_code_span();
-   BOOST_REQUIRE(::munmap(code.data(), code.size()) == 0);
-   BOOST_CHECK_THROW(allocator.enable_code(false), wasm::exceptions::allocation);
-   BOOST_CHECK_THROW(allocator.enable_code(true), wasm::exceptions::allocation);
-   BOOST_CHECK_THROW(allocator.disable_code(), wasm::exceptions::allocation);
-}
-
-BOOST_AUTO_TEST_CASE(invocation_restore_failure_outranks_guest_and_host_errors_and_forbids_reuse) {
-   auto healthy = prepared_instance{};
-   auto healthy_host = invocation_host{};
-   for (auto failure = 0; failure != 5; ++failure) {
-      auto instance = prepared_instance{};
-      auto host = invocation_host{[]() -> std::uint32_t {
-         throw wasm::exceptions::interpreter{"host exception using the guest trap type"};
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_first_host_failure_survives_raw_context_reset_clear_and_reinitialize, Impl,
+                              implementations) {
+   for (unsigned mutation = 0; mutation != 3; ++mutation) {
+      auto instance = prepared_instance<Impl>{};
+      auto first_calls = 0U;
+      auto second_calls = 0U;
+      auto first = invocation_host{[&]() -> std::uint32_t {
+         ++first_calls;
+         throw recorded_host_failure{17};
       }};
-      auto unmap_result = -1;
-      const auto code = instance.backend.get_module().allocator.get_code_span();
-      BOOST_REQUIRE(!code.empty());
-      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [&] {
-         try {
-            instance.backend.timed_run(expires_then_unmaps{code, unmap_result}, [&] {
-               if (failure == 1)
-                  instance.backend.call(host, "env", "trap");
-               if (failure == 2)
-                  instance.backend.call(host, "env", "wait");
-               if (failure == 3)
-                  throw std::runtime_error{"native failure racing code restoration"};
-            });
-         } catch (const wasm::exceptions::allocation&) {
-            if (failure != 4)
-               throw;
-         }
-      }), wasm::exceptions::allocation);
-      BOOST_TEST(unmap_result == 0);
-      BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [] {}), wasm::exceptions::unusable);
-      BOOST_CHECK_THROW(instance.backend.timed_run(wasm::watchdog{2s}, [] {}), wasm::exceptions::unusable);
-      BOOST_CHECK_THROW(instance.backend.initialize(&host), wasm::exceptions::unusable);
-      auto shared = prepared_instance<>::backend_type{};
+      auto second = invocation_host{[&]() -> std::uint32_t {
+         ++second_calls;
+         throw recorded_host_failure{23};
+      }};
+      auto body_returned = false;
+      BOOST_CHECK_EXCEPTION(instance.backend.with_invocation(
+                                &first, {}, 2s, {},
+                                [&] {
+                                   auto& context = instance.backend.get_context();
+                                   const auto index = instance.backend.get_module().get_exported_function("wait");
+                                   BOOST_CHECK_EXCEPTION(context.call(&first, index, {}), recorded_host_failure,
+                                                         [](const auto& error) { return error.identity == 17; });
+                                   if (mutation != 0)
+                                      context.clear_host_failure();
+                                   context.reset();
+                                   BOOST_TEST(!context.initialized());
+                                   BOOST_CHECK(!context.host_failure());
+                                   if (mutation == 2) {
+                                      context.initialize(&second);
+                                      BOOST_CHECK_EXCEPTION(context.call(&second, index, {}), recorded_host_failure,
+                                                            [](const auto& error) { return error.identity == 23; });
+                                      context.clear_host_failure();
+                                      context.reset();
+                                      second.on_tick = [&] {
+                                         ++second_calls;
+                                         return 0U;
+                                      };
+                                      context.initialize(&second);
+                                      check_fresh(instance.backend, second);
+                                      instance.backend.call(second, "env", "wait");
+                                   }
+                                   body_returned = true;
+                                }),
+                            recorded_host_failure, [](const auto& error) { return error.identity == 17; });
+      BOOST_TEST(body_returned);
+      BOOST_TEST(first_calls == 1U);
+      BOOST_TEST(second_calls == (mutation == 2 ? 2U : 0U));
+      BOOST_CHECK_THROW(instance.backend.with_invocation(&first, {}, 2s, {}, [] {}), wasm::exceptions::unusable);
+      auto shared = typename prepared_instance<Impl>::backend_type{};
       BOOST_CHECK_THROW(shared.share(instance.backend), wasm::exceptions::unusable);
-
-      BOOST_CHECK_THROW(healthy.backend.with_invocation(&healthy_host, {}, 2s, {}, [&] {
-         healthy.backend.call(healthy_host, "env", "oob");
-      }), wasm::exceptions::memory);
-      healthy.backend.with_invocation(&healthy_host, {}, 2s, {}, [&] { check_fresh(healthy.backend, healthy_host); });
    }
 }
 
-BOOST_AUTO_TEST_CASE(watchdog_disable_failure_is_fail_fast_not_a_timeout_or_unbounded_wait) {
-   const auto child = ::fork();
-   BOOST_REQUIRE(child >= 0);
-   if (child == 0) {
-      // Even a broken callback cannot leave this failure regression hanging.
-      ::alarm(3);
-      std::set_terminate([] { ::_exit(86); });
-      try {
-         auto instance = prepared_instance{};
-         const auto code = instance.backend.get_module().allocator.get_code_span();
-         if (::munmap(code.data(), code.size()) != 0)
-            ::_exit(84);
-         instance.backend.timed_run(wasm::watchdog{0s}, [] {});
-      } catch (...) {
-         ::_exit(85);
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_failed_start_keeps_original_host_failure_and_strict_poison, Impl,
+                              implementations) {
+   auto instance = prepared_instance<Impl>{true};
+   auto body_entered = false;
+   auto host = invocation_host{[]() -> std::uint32_t { throw recorded_host_failure{31}; }};
+   BOOST_CHECK_EXCEPTION(instance.backend.with_invocation(&host, {}, 2s, {}, [&] { body_entered = true; }),
+                         recorded_host_failure, [](const auto& error) { return error.identity == 31; });
+   BOOST_TEST(!body_entered);
+   BOOST_CHECK_THROW(instance.backend.with_invocation(&host, {}, 2s, {}, [] {}), wasm::exceptions::unusable);
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(legacy_timed_host_failure_reinitializes_fresh_cached_instance_after_scope_close, Impl,
+                              implementations) {
+   for (const auto start : {false, true}) {
+      for (const auto typed : {false, true}) {
+         auto instance = prepared_instance<Impl>{start};
+         auto& backend = instance.backend;
+         auto& module = backend.get_module();
+         auto context = typename Impl::template context<host_functions>{module, 251};
+         auto memory = wasm::wasm_allocator{};
+         backend.set_context(&context);
+         backend.set_wasm_allocator(&memory);
+         auto first_calls = 0U;
+         auto first = invocation_host{[&]() -> std::uint32_t {
+            ++first_calls;
+            throw recorded_host_failure{41};
+         }};
+         auto run = [&](auto&& body) {
+            if (typed)
+               backend.timed_run(std::chrono::steady_clock::now() + 2s, {}, std::forward<decltype(body)>(body));
+            else
+               backend.timed_run(wasm::watchdog{2s}, std::forward<decltype(body)>(body));
+         };
+         BOOST_CHECK_EXCEPTION(run([&] {
+                                  backend.initialize(&first);
+                                  backend.call(first, "env", "mutate");
+                                  backend.call(first, "env", "wait");
+                               }),
+                               recorded_host_failure, [](const auto& error) { return error.identity == 41; });
+         BOOST_TEST(first_calls == 1U);
+         const auto closed_failure = context.host_failure();
+         BOOST_REQUIRE(closed_failure);
+         auto stop = std::stop_source{};
+         stop.request_stop();
+         auto entered = false;
+         BOOST_CHECK_THROW(
+             backend.timed_run(std::chrono::steady_clock::now() + 2s, {stop.get_token()}, [&] { entered = true; }),
+             wasm::exceptions::canceled);
+         BOOST_TEST(!entered);
+         BOOST_CHECK(context.host_failure() == closed_failure);
+         BOOST_CHECK_NO_THROW(run([&] { entered = true; }));
+         BOOST_TEST(entered);
+         entered = false;
+         BOOST_CHECK_THROW(backend.timed_run(std::chrono::steady_clock::now() - 1ms, {}, [&] { entered = true; }),
+                           wasm::exceptions::timeout);
+         BOOST_TEST(!entered);
+         BOOST_CHECK(context.host_failure() == closed_failure);
+         BOOST_TEST(first_calls == 1U);
+         context.reset();
+         BOOST_TEST(!context.initialized());
+         BOOST_CHECK(context.linear_memory() == nullptr);
+         BOOST_CHECK(!context.host_failure());
+         auto next_calls = 0U;
+         auto next = invocation_host{[&] {
+            ++next_calls;
+            return 0U;
+         }};
+         for (auto round = 0; round != 2; ++round) {
+            BOOST_CHECK_NO_THROW(run([&] {
+               // The second round retires a live, mutated instance through
+               // initialize itself, without an intervening allocator reset.
+               backend.initialize(&next);
+               BOOST_CHECK(&backend.get_module() == &module);
+               BOOST_CHECK(&backend.get_context() == &context);
+               BOOST_CHECK(!context.host_failure());
+               check_fresh(backend, next);
+               backend.call(next, "env", "wait");
+               backend.call(next, "env", "mutate");
+               BOOST_TEST(context.current_linear_memory() == 2U);
+               BOOST_TEST(backend.call_with_return(next, "env", "read")->to_ui32() == 198U);
+            }));
+         }
+         BOOST_TEST(next_calls == (start ? 4U : 2U));
+         BOOST_TEST(first_calls == 1U);
+         context.reset();
+         backend.set_context(nullptr);
       }
-      ::_exit(87);
    }
-   auto status = 0;
-   auto waited = pid_t{};
-   do {
-      waited = ::waitpid(child, &status, 0);
-   } while (waited < 0 && errno == EINTR);
-   BOOST_REQUIRE(waited == child);
-   BOOST_REQUIRE(WIFEXITED(status));
-   BOOST_TEST(WEXITSTATUS(status) == 86);
 }
 
-BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_independent_compiled_instances_isolate_cancellation_and_deadline, Impl, implementations) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(legacy_nested_timed_scopes_keep_first_failure_and_release_lifo, Impl, implementations) {
+   auto instance = prepared_instance<Impl>{};
+   auto& backend = instance.backend;
+   auto context = typename Impl::template context<host_functions>{backend.get_module(), 251};
+   auto memory = wasm::wasm_allocator{};
+   backend.set_context(&context);
+   backend.set_wasm_allocator(&memory);
+   auto identity = 51U;
+   auto host = invocation_host{[&]() -> std::uint32_t { throw recorded_host_failure{identity}; }};
+   auto inner_returned = false;
+   auto outer_returned = false;
+   BOOST_CHECK_EXCEPTION(
+       backend.timed_run(wasm::watchdog{2s},
+                         [&] {
+                            backend.initialize(&host);
+                            BOOST_CHECK_EXCEPTION(
+                                backend.timed_run(
+                                    wasm::watchdog{2s},
+                                    [&] {
+                                       const auto index = backend.get_module().get_exported_function("wait");
+                                       BOOST_CHECK_EXCEPTION(context.call(&host, index, {}), recorded_host_failure,
+                                                             [](const auto& error) { return error.identity == 51; });
+                                       context.clear_host_failure();
+                                       context.reset();
+                                       identity = 52;
+                                       context.initialize(&host);
+                                       BOOST_CHECK_EXCEPTION(context.call(&host, index, {}), recorded_host_failure,
+                                                             [](const auto& error) { return error.identity == 52; });
+                                       context.reset();
+                                       inner_returned = true;
+                                    }),
+                                recorded_host_failure, [](const auto& error) { return error.identity == 51; });
+                            context.reset();
+                            outer_returned = true;
+                         }),
+       recorded_host_failure, [](const auto& error) { return error.identity == 51; });
+   BOOST_TEST(inner_returned);
+   BOOST_TEST(outer_returned);
+   host.on_tick = [] { return 0U; };
+   BOOST_CHECK_NO_THROW(backend.timed_run(wasm::watchdog{2s}, [&] {
+      backend.initialize(&host);
+      check_fresh(backend, host);
+      backend.call(host, "env", "wait");
+   }));
+   context.reset();
+   backend.set_context(nullptr);
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_independent_compiled_instances_isolate_cancellation_and_deadline, Impl,
+                              implementations) {
    for (const auto cancel : {false, true}) {
       auto interrupted = prepared_instance<Impl>{};
       auto neighbor = prepared_instance<Impl>{};
-      BOOST_CHECK(interrupted.backend.get_module().allocator.get_code_start() !=
-                  neighbor.backend.get_module().allocator.get_code_start());
+      BOOST_CHECK(&interrupted.backend.get_module() != &neighbor.backend.get_module());
       auto neighbor_entered = std::binary_semaphore{0};
       auto entered = std::binary_semaphore{0};
       auto interrupted_done = std::atomic<bool>{false};
@@ -476,7 +661,9 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_independent_compiled_instances_isolate_
          if (std::exchange(neighbor_first_tick, false))
             neighbor_entered.release();
          return !interrupted_done.load(std::memory_order_acquire) &&
-                        std::chrono::steady_clock::now() < neighbor_fallback ? 1U : 0U;
+                        std::chrono::steady_clock::now() < neighbor_fallback
+                    ? 1U
+                    : 0U;
       }};
       auto sibling = std::jthread{[&] {
          try {
@@ -487,19 +674,24 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(invocation_independent_compiled_instances_isolate_
                   throw std::runtime_error{"test isolation rendezvous expired"};
                neighbor_value = neighbor.backend.call_with_return(neighbor_host, "env", "read")->to_ui32();
             });
-         } catch (...) { neighbor_failure = std::current_exception(); }
+         } catch (...) {
+            neighbor_failure = std::current_exception();
+         }
       }};
       auto worker = std::jthread{[&] {
          try {
             if (!neighbor_entered.try_acquire_for(2s))
                throw std::runtime_error{"test neighbor admission rendezvous expired"};
             fallback = std::chrono::steady_clock::now() + 1s;
-            interrupted.backend.with_invocation(&host, {}, cancel ? 2s : 20ms, stop.get_token(), [&] {
-               interrupted.backend.call(host, "env", "wait");
-            });
-         } catch (const wasm::exceptions::canceled&) { outcome = 1; }
-         catch (const wasm::exceptions::timeout&) { outcome = 2; }
-         catch (...) { outcome = 3; }
+            interrupted.backend.with_invocation(&host, {}, cancel ? 2s : 20ms, stop.get_token(),
+                                                [&] { interrupted.backend.call(host, "env", "wait"); });
+         } catch (const wasm::exceptions::canceled&) {
+            outcome = 1;
+         } catch (const wasm::exceptions::timeout&) {
+            outcome = 2;
+         } catch (...) {
+            outcome = 3;
+         }
          interrupted_done.store(true, std::memory_order_release);
       }};
       const auto active = entered.try_acquire_for(2s);

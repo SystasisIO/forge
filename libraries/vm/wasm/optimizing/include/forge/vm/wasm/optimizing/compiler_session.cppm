@@ -37,6 +37,18 @@ struct session_options {
    std::size_t max_disk_entries = 0;
    std::chrono::milliseconds helper_timeout{};
    compiler_protocol::resource_limits helper_limits;
+   // Zero inherits a per-active-worker share of the existing finite resident
+   // and inflight budgets, after fixed metadata and precharged job/tickets.
+   // Default resident/workspace ceilings also obey current unreserved shared
+   // headroom. Resident first tries existing ready eviction; external/weak pins
+   // remain charged. Decoded storage plus a positive native ceiling must fit.
+   // Queued jobs retain their charged storage during another preparation.
+   // max_tickets changes actual metadata costs, never the share's divisor.
+   // Artifact/configuration/token bytes are subtracted from the resident share.
+   // Nonzero is an explicit hard ceiling, never shrunk to available headroom,
+   // and not a promise that every valid artifact fits.
+   std::uint64_t max_preparation_resident_bytes = 0;
+   std::uint64_t max_preparation_workspace_bytes = 0;
 };
 
 enum class admission_status { accepted_unverified, saturated, stopped, not_initialized };
@@ -67,6 +79,10 @@ class compiler_session {
 
    class ticket;
    struct enqueue_result;
+   struct memory_usage {
+      std::uint64_t resident_bytes;
+      std::uint64_t inflight_bytes;
+   };
 
    compiler_session(asio::runtime&, asio::compute::executor, session_options);
    ~compiler_session();
@@ -92,6 +108,8 @@ class compiler_session {
    // mapping or worker wait. Full expected configuration equality is required.
    // Cold/initializing/failed/stopped sessions return null.
    std::optional<artifact> ready(const crypto::digest::sha256&, const compile_configuration& canonical_expected) const;
+   // Shared account snapshot, including external pins after shutdown.
+   memory_usage usage() const;
    // Bounded capacity/count admission only. Hint is not authority or dedup.
    // Full WASM identify/canonicalization occur on compute before cache mutation.
    enqueue_result enqueue(const crypto::digest::sha256& hint, compile_request&&, asio::task::priority);

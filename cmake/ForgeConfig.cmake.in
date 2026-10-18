@@ -12,6 +12,8 @@ set(Forge_BUILT_WITH_MDBX @FORGE_HAS_MDBX@)
 set(Forge_BUILT_WITH_TUI @FORGE_HAS_TUI@)
 set(Forge_BUILT_WITH_TOOLING @FORGE_ENABLE_TOOLING@)
 set(Forge_BUILT_WITH_VM_WASM_OPTIMIZING @FORGE_ENABLE_VM_WASM_OPTIMIZING@)
+set(Forge_BUILT_WITH_WASM_COMPILER @FORGE_ENABLE_WASM_COMPILER@)
+set(Forge_BUILT_WITH_VM_WASM_LLVM_JIT @FORGE_ENABLE_VM_WASM_LLVM_JIT@)
 set(Forge_BUILT_WITH_PORTABLE_VERIFIED_CLIENT @FORGE_HAS_PORTABLE_VERIFIED_CLIENT@)
 set(Forge_BUILD_PROFILE "@FORGE_BUILD_PROFILE@")
 
@@ -40,8 +42,9 @@ set(
    chain_savanna
    vm_wasm_interpret
    vm_wasm_optimizing
+   vm_wasm_compiler
+   vm_wasm_execution
    tooling_wasm_compiler
-   execution_wasm
    tooling_testing
    tooling_abi
    tooling_attributes
@@ -221,7 +224,7 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "vm_wasm_optimizing")
          if(NOT Forge_BUILT_WITH_VM_WASM_OPTIMIZING)
             set(Forge_vm_wasm_optimizing_FOUND FALSE)
-            set(Forge_NOT_FOUND_MESSAGE "Forge vm_wasm_optimizing component requires Forge built with FORGE_ENABLE_VM_WASM_OPTIMIZING=ON")
+            set(Forge_NOT_FOUND_MESSAGE "Forge vm_wasm_optimizing requires FORGE_ENABLE_VM_WASM_OPTIMIZING=ON")
          else()
             _forge_add_component(vm_wasm_interpret)
             _forge_add_component(asio)
@@ -231,14 +234,23 @@ macro(_forge_add_component component)
             _forge_add_component(crypto_digest)
             _forge_add_component(raw)
          endif()
-      elseif("${component}" STREQUAL "tooling_wasm_compiler")
-         if(NOT Forge_BUILT_WITH_VM_WASM_OPTIMIZING)
-            set(Forge_tooling_wasm_compiler_FOUND FALSE)
-            set(Forge_NOT_FOUND_MESSAGE "Forge tooling_wasm_compiler component requires Forge built with FORGE_ENABLE_VM_WASM_OPTIMIZING=ON")
+      elseif("${component}" STREQUAL "vm_wasm_compiler")
+         if(NOT Forge_BUILT_WITH_WASM_COMPILER)
+            set(Forge_vm_wasm_compiler_FOUND FALSE)
+            set(Forge_NOT_FOUND_MESSAGE "Forge vm_wasm_compiler requires FORGE_ENABLE_WASM_COMPILER=ON")
          else()
             _forge_add_component(vm_wasm_optimizing)
          endif()
-      elseif("${component}" STREQUAL "execution_wasm")
+      elseif("${component}" STREQUAL "tooling_wasm_compiler")
+         if(NOT Forge_BUILT_WITH_WASM_COMPILER)
+            set(Forge_tooling_wasm_compiler_FOUND FALSE)
+            set(Forge_NOT_FOUND_MESSAGE "Forge tooling_wasm_compiler requires FORGE_ENABLE_WASM_COMPILER=ON")
+         else()
+            _forge_add_component(vm_wasm_compiler)
+            _forge_add_component(core)
+            _forge_add_component(raw)
+         endif()
+      elseif("${component}" STREQUAL "vm_wasm_execution")
          _forge_add_component(vm_wasm_interpret)
          _forge_add_component(chain_protocol)
          _forge_add_component(raw)
@@ -886,8 +898,8 @@ if(
 )
    _forge_require_package(Clang 22.1 CONFIG)
 endif()
-
-if(Forge_BUILT_WITH_VM_WASM_OPTIMIZING AND "tooling_wasm_compiler" IN_LIST _FORGE_COMPONENTS)
+if((Forge_BUILT_WITH_WASM_COMPILER AND "vm_wasm_compiler" IN_LIST _FORGE_COMPONENTS)
+   OR (Forge_BUILT_WITH_VM_WASM_LLVM_JIT AND "vm_wasm_interpret" IN_LIST _FORGE_COMPONENTS))
    _forge_require_package(LLVM 22.1.8 EXACT CONFIG)
 endif()
 

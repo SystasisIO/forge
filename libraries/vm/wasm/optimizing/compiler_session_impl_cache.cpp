@@ -363,7 +363,7 @@ boost::asio::awaitable<std::optional<artifact>> compiler_session::impl::load(std
    auto code = std::optional<artifact>{};
    auto rejected = false;
    try {
-      code.emplace(co_await prepare(record, std::move(*bytes), stop));
+      code.emplace(co_await prepare(record, std::move(*bytes), stop, artifact::origin::owned_cache));
    } catch (const exceptions::invalid_artifact&) {
       rejected = true;
    } catch (const exceptions::unsupported_target&) {

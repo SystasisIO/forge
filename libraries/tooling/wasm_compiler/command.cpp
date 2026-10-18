@@ -3,13 +3,14 @@ module;
 #include <array>
 #include <cerrno>
 #include <charconv>
+#include <cstdio>
 #include <cstdint>
 #include <exception>
+#include <fcntl.h>
 #include <forge/exceptions/macros.hpp>
 #include <limits>
 #include <new>
 #include <optional>
-#include <llvm/Config/llvm-config.h>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,12 +20,13 @@ module;
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include <boost/scope/scope_exit.hpp>
 
 module forge.tooling.wasm_compiler.command;
 
 import forge.core.version;
 import forge.core.git_revision;
-import forge.tooling.wasm_compiler.compiler;
+import forge.vm.wasm.compiler.compiler;
 import forge.vm.wasm.optimizing.compiler_protocol;
 import forge.raw.raw;
 
@@ -111,8 +113,8 @@ void write_exact(int fd, std::span<const std::uint8_t> bytes) {
    }
 }
 
-void send(const protocol::exchange_id& exchange, const crypto::digest::sha256& identity, protocol::message_kind kind,
-          std::span<const std::uint8_t> body, std::uint64_t max_bytes) {
+void send(int output, const protocol::exchange_id& exchange, const crypto::digest::sha256& identity,
+          protocol::message_kind kind, std::span<const std::uint8_t> body, std::uint64_t max_bytes) {
    if (body.size() > max_bytes)
       FORGE_THROW_EXCEPTION(oc::exceptions::compile_limit, "compiler helper output exceeds response budget");
    auto header = protocol::header{};
@@ -120,14 +122,14 @@ void send(const protocol::exchange_id& exchange, const crypto::digest::sha256& i
    header.exchange = exchange;
    header.identity = identity;
    header.body_bytes = body.size();
-   write_exact(STDOUT_FILENO, protocol::encode(header));
-   write_exact(STDOUT_FILENO, body);
+   write_exact(output, protocol::encode(header));
+   write_exact(output, body);
 }
 
 protocol::reply compile(const oc::compile_request& request, std::uint64_t max_bytes) {
    auto result = protocol::reply{};
    try {
-      auto code = compiler{}.compile(request);
+      auto code = vm::wasm::compiler::compiler{}.compile(request);
       result.image = code.encode();
       // Include the wrapper, not merely artifact bytes, before response publish.
       if (raw::pack_size(result) > max_bytes)
@@ -158,6 +160,19 @@ int run(int argc, const char* const* argv) {
       // Even malformed launch input must not create a helper core dump.
       limit(RLIMIT_CORE, 0);
       const auto options = parse(argc, argv);
+      // This command owns the helper process stdio. Upstream diagnostics must
+      // neither corrupt its binary protocol nor disclose compiler input.
+      const auto output = ::fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
+      if (output < 0)
+         FORGE_THROW_EXCEPTION(oc::exceptions::compiler_unavailable, "compiler protocol output is unavailable");
+      const auto close_output = boost::scope::scope_exit{[output] { ::close(output); }};
+      const auto discard = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+      if (discard < 0)
+         FORGE_THROW_EXCEPTION(oc::exceptions::compiler_unavailable, "compiler diagnostic isolation is unavailable");
+      const auto close_discard = boost::scope::scope_exit{[discard] { ::close(discard); }};
+      if (std::fflush(stdout) != 0 || std::fflush(stderr) != 0 || ::dup2(discard, STDOUT_FILENO) < 0 ||
+          ::dup2(discard, STDERR_FILENO) < 0)
+         FORGE_THROW_EXCEPTION(oc::exceptions::compiler_unavailable, "compiler diagnostic isolation failed");
       limit(RLIMIT_CPU, options.limits.cpu_seconds);
       limit(RLIMIT_AS, options.limits.address_space_bytes);
       limit(RLIMIT_STACK, options.limits.stack_bytes);
@@ -181,7 +196,7 @@ int run(int argc, const char* const* argv) {
             FORGE_THROW_EXCEPTION(oc::exceptions::compiler_unavailable, "compiler request identity mismatch");
          target = request->configuration.target;
       }
-      if (target.llvm_version != LLVM_VERSION_STRING)
+      if (target.llvm_version != vm::wasm::compiler::compiler::llvm_version())
          FORGE_THROW_EXCEPTION(oc::exceptions::compiler_unavailable, "compiler helper request identity/build mismatch");
 
       auto hello = protocol::hello{};
@@ -193,7 +208,7 @@ int run(int argc, const char* const* argv) {
       // Shared canonical target validation and actual LLVM/build handshake
       // precede compiler::compile/LLVM initialization, not unchecked argv echo.
       const auto hello_bytes = protocol::encode(hello);
-      send(options.exchange, {}, protocol::message_kind::hello, hello_bytes, options.max_response_bytes);
+      send(output, options.exchange, {}, protocol::message_kind::hello, hello_bytes, options.max_response_bytes);
 
       // Do not enter LLVM until the parent has checked the actual build/target
       // hello. The SAME Raw header is the whole acknowledgement, not a codec.
@@ -211,7 +226,8 @@ int run(int argc, const char* const* argv) {
          return 0;
       const auto result = compile(*request, options.max_response_bytes);
       const auto reply_bytes = protocol::encode(result);
-      send(options.exchange, header.identity, protocol::message_kind::reply, reply_bytes, options.max_response_bytes);
+      send(output, options.exchange, header.identity, protocol::message_kind::reply, reply_bytes,
+           options.max_response_bytes);
       return 0;
    } catch (...) {
       // Parent observes EOF/exit and typed protocol failure; never parses text

@@ -39,14 +39,11 @@ if(NOT IS_DIRECTORY "${installed_vm_wasm_root}/interpret")
    message(FATAL_ERROR "Installed VM interpreter headers are missing: ${installed_vm_wasm_root}/interpret")
 endif()
 file(GLOB installed_vm_wasm_entries LIST_DIRECTORIES TRUE "${installed_vm_wasm_root}/*")
-set(installed_optimizing_leaf OFF)
+set(supported_vm_wasm_leaves interpret execution optimizing compiler)
 foreach(entry IN LISTS installed_vm_wasm_entries)
    get_filename_component(entry_name "${entry}" NAME)
-   if((NOT entry_name STREQUAL "interpret" AND NOT entry_name STREQUAL "optimizing") OR NOT IS_DIRECTORY "${entry}")
+   if(NOT entry_name IN_LIST supported_vm_wasm_leaves OR NOT IS_DIRECTORY "${entry}")
       message(FATAL_ERROR "Installed package exposes legacy VM public path: ${entry}")
-   endif()
-   if(entry_name STREQUAL "optimizing")
-      set(installed_optimizing_leaf ON)
    endif()
 endforeach()
 
@@ -118,9 +115,6 @@ assert_target_has_no_build_paths("Forge::forge_core")
 assert_target_has_no_build_paths("Forge::forge_exceptions")
 assert_target_has_no_build_paths("Forge::forge_vm_wasm_interpret")
 assert_target_has_no_build_paths("Forge::vm_wasm_interpret_softfloat_internal")
-if(installed_optimizing_leaf)
-   assert_target_has_no_build_paths("Forge::forge_vm_wasm_optimizing")
-endif()
 assert_content_omits(targets_content "ForgeTargets" "Forge::forge_vm_wasm([^A-Za-z0-9_]|$)")
 assert_content_omits(targets_content "ForgeTargets" "Forge::vm_wasm_softfloat_internal([^A-Za-z0-9_]|$)")
 assert_content_omits(targets_content "ForgeTargets" "forge/internal/vm_wasm/softfloat")
@@ -138,7 +132,13 @@ set(
    "-DCMAKE_PREFIX_PATH=${FORGE_PACKAGE_TEST_RELOCATED_PREFIX}"
    "-DCMAKE_CXX_COMPILER=${FORGE_PACKAGE_TEST_CXX_COMPILER}"
    "-DCMAKE_C_COMPILER=${FORGE_PACKAGE_TEST_C_COMPILER}"
+   "-DCMAKE_DISABLE_FIND_PACKAGE_Clang=ON"
 )
+if(NOT FORGE_PACKAGE_TEST_WITH_JIT)
+   list(APPEND configure_command "-DCMAKE_DISABLE_FIND_PACKAGE_LLVM=ON")
+elseif(DEFINED FORGE_PACKAGE_TEST_LLVM_DIR AND NOT "${FORGE_PACKAGE_TEST_LLVM_DIR}" STREQUAL "")
+   list(APPEND configure_command "-DLLVM_DIR=${FORGE_PACKAGE_TEST_LLVM_DIR}")
+endif()
 if(DEFINED FORGE_PACKAGE_TEST_OSX_SYSROOT AND NOT "${FORGE_PACKAGE_TEST_OSX_SYSROOT}" STREQUAL "")
    list(APPEND configure_command "-DCMAKE_OSX_SYSROOT=${FORGE_PACKAGE_TEST_OSX_SYSROOT}")
 endif()
@@ -148,7 +148,7 @@ endif()
 
 execute_process(COMMAND ${configure_command} COMMAND_ERROR_IS_FATAL ANY)
 execute_process(
-   COMMAND "${CMAKE_COMMAND}" --build "${FORGE_PACKAGE_TEST_BINARY_DIR}" -j 4
+   COMMAND "${CMAKE_COMMAND}" --build "${FORGE_PACKAGE_TEST_BINARY_DIR}"
    COMMAND_ERROR_IS_FATAL ANY
 )
 execute_process(

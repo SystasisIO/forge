@@ -1,0 +1,49 @@
+{
+  "status": "private Darwin ARM64 native proof PASS; independent review and public backend integration pending",
+  "base_commit": "ed5c12ae6bcec88f2863aa7c541b6d829d657a4c",
+  "candidate_compiler_identity": "c20af97eb22e97eb9dc2cf6fc5d20a08483dd801babcac1e342a9fc101ec248e",
+  "runtime_identity": "ed5c12ae6bcec88f2863aa7c541b6d829d657a4c-feaa984fd8a2dc51bf8b39968f41fb45efb1df7803d2be4e944211e08aa2b296",
+  "fork_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/artifacts/wamr-public-migration-20261016/wamr-fork",
+  "forge_root": "/Users/vladimirtarnakin/.openclaw/workspace/Projects/Storlane/worktrees/forge-vm-wasm-wamr-dev-integration-v1",
+  "fork_sha256": {
+    "core/iwasm/compilation/aot_compiler.c": "1d788182815e0622d4b334f8d1f2d906edf5920dbc9143acfc377753bcb509b9",
+    "core/iwasm/compilation/aot_llvm.c": "0694a327819ed700dc1ac4db0cb295ecac6922414b8ff3624b1e511abdf99307",
+    "core/iwasm/compilation/aot_llvm.h": "f84dc19fe6797818997a395484e991fab6a2b72e9657e2100dd15410683a4cd9",
+    "core/iwasm/compilation/aot_jit_profile.cpp": "81f235c583a5677db4f7bfced5bbf9f9575015c4e9492f98bf52696bca88091e",
+    "core/iwasm/compilation/aot_jit_profile.h": "a1c706f2785d8d3039f6663622ac56df973b16353576580ac16235bb2bfe7d62"
+  },
+  "forge_sha256": {
+    "tests/vm_wamr/jit/instruction_profile_probe.cpp": "ad5331e32b963a0758fec34c3d22b0bbcfca723f8d1e3f3717f85cd9b12b9a28",
+    "tests/vm_wamr/jit/instruction_profile_fixture.hxx": "c2c508fb8cfc489a321baf7195fee0e050544e87bc2f4bb806720c882d77f361",
+    "tests/vm_wamr/jit/instruction_profile.cmake": "002605809a991033f2bb5e85fe53d4c04b4cbc83c4f195c8394efdb5bd0dcaa4"
+  },
+  "artifact_sha256": {
+    "build/wamr-dev-r4/tests/vm_wasm_execution/test_forge_wamr_jit_instruction_profile": "a26c392509d094e34745ef7fb5995b66cbf0cb493a730dc9f63b9bc636519eaf",
+    "build/wamr-dev-r4/tests/vm_wasm_execution/test_forge_wamr_jit_instruction_profile.linkmap": "955a60e80fd62c5d9a303d1ddfaf04f3e1106ce011f1749a99ecdbafb3dc9cca",
+    "build/wamr-dev-r4/libraries/vm/wasm/interpret/libforge_vm_wasm_interpret.a": "dfb3f2239461836b09a407d93101620c82b42fe3fa2545e4cd0cfce33a2d91d1",
+    "build/wamr-dev-r4/instruction-profile-dev-05.xml": "ab2d69d2acc2c52eed2d9634b8d6f8d074a27a2bd7c7652bc8e3691bfff73b80",
+    "build/wamr-dev-r4/instruction-profile-ctest-dev-05.log": "2fff0636fd59dc821393f9f35a7913cd0f30e65cd1bb02c8b9a52fb8471d2f46",
+    "build/wamr-dev-r4/instruction-profile-dev-repeat-01.xml": "23a4236f38d3b6aef384440d447bc8a2308d288d031ca789b4524bb573c8495e",
+    "build/wamr-dev-r4/instruction-profile-ctest-dev-repeat-01.log": "11c5211338c513928c7e39eacd0dbe4b54595266a2f4d96c42cae77fd16ab6e2",
+    "build/wamr-dev-r4/instruction-profile-build-r4-dev-07.log": "1b39913d9fbd507a18548631bfccbaf5a76c31adb6c40394aad1dc2dd20908bf",
+    "build/wamr-dev-r4/instruction-profile-symbols-dev-01.log": "2f6c99d9d3305ef1357d1f0a2cac99954f32cba10f5aa7a46db0bccc6eb1945a"
+  },
+  "checks": {
+    "build": "PASS -j2",
+    "native_ctest": "1/1 PASS",
+    "repeat_ctest": "3/3 subprocess runs PASS",
+    "native_intervals": 5,
+    "distinct_original_file_offsets": [355, 362, 365],
+    "real_samples": [299, 275, 240, 270],
+    "distinct_sampled_offsets_each_run": 3,
+    "foreign_object_host_prologue_gap_unknown": "PASS",
+    "mapping_denial_no_publication": "PASS",
+    "same_owner_accounting_and_cleanup": "PASS",
+    "immutable_caller_source": "PASS",
+    "single_c_runtime_provider": "PASS; linkmap object 28 supplies full_init/load_ex/unload/destroy exactly once",
+    "public_jit_profile_consumer": "NOT_RUN; not implemented in this slice",
+    "independent_review": "PENDING"
+  },
+  "no_commit_push_repin": true,
+  "no_active_developer_jobs": true
+}

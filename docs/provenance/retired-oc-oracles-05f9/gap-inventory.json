@@ -1,0 +1,272 @@
+{
+  "schema": "retired-oc-oracle-gap-inventory-v1",
+  "status": "OPEN_OPERATIONAL_ORACLE_GAPS_NOT_ACCEPTANCE",
+  "retired_source_base": "05f9edafe7c0bbd07f7bc8338907348f376a123e",
+  "original_source_introduction": "f6b617ddae0847113eb5c75b225fdb2fde2f3b23",
+  "retired_preimages": [
+    {
+      "original_path": "tests/vm_wasm/optimizing_compiler_tests.cpp",
+      "archive_path": "preimages/tests/vm_wasm/optimizing_compiler_tests.cpp.txt",
+      "base_commit": "05f9edafe7c0bbd07f7bc8338907348f376a123e",
+      "git_blob": "df3fb9b1148807340a40c2b71ed18ce242896a0d",
+      "sha256": "6a3e7899dbcf003ba49103a20ddbad460af49dcb5930c0f8e9b16f73b64dc219",
+      "bytes": 99121
+    },
+    {
+      "original_path": "tests/vm_wasm/optimizing_epoch_ir_tests.cpp",
+      "archive_path": "preimages/tests/vm_wasm/optimizing_epoch_ir_tests.cpp.txt",
+      "base_commit": "05f9edafe7c0bbd07f7bc8338907348f376a123e",
+      "git_blob": "d6fe02e2402f4c85b80631ddc0beeb7369c18c3d",
+      "sha256": "adaad13dfc139c5176e428e2f3b8143f8741e3546ede1fa6ca949f9519aaba4d",
+      "bytes": 15014
+    },
+    {
+      "original_path": "tests/vm_wasm/optimizing_fixture_export.hpp",
+      "archive_path": "preimages/tests/vm_wasm/optimizing_fixture_export.hpp.txt",
+      "base_commit": "05f9edafe7c0bbd07f7bc8338907348f376a123e",
+      "git_blob": "d2fb07412174f4a14c3150432a4ebbba11ae9a85",
+      "sha256": "697ec267e8a8d236da6ba237adf943d1eeb2a76a88243c60bab719f787c29b15",
+      "bytes": 863
+    },
+    {
+      "original_path": "tests/vm_wasm/export_runtime_fixtures.cmake",
+      "archive_path": "preimages/tests/vm_wasm/export_runtime_fixtures.cmake.txt",
+      "base_commit": "05f9edafe7c0bbd07f7bc8338907348f376a123e",
+      "git_blob": "20776df4006349904b8a8671db307bde30112e80",
+      "sha256": "253d28b9287482887d2ca23a957be29f9b298451809851f2ca5c99ef7cc06415",
+      "bytes": 19675
+    },
+    {
+      "original_path": "tests/package_vm_wasm_optimizing_component/verify_relocation.cmake",
+      "archive_path": "preimages/tests/package_vm_wasm_optimizing_component/verify_relocation.cmake.txt",
+      "base_commit": "05f9edafe7c0bbd07f7bc8338907348f376a123e",
+      "git_blob": "0280fd58ddcc4be36255e9d0685e935b7c4ace2b",
+      "sha256": "1341535da35f8ff830ee243cab5fd22ef9679fca7c5283f7cf47d97dc654858b",
+      "bytes": 5771
+    }
+  ],
+  "legacy_cases": [
+    "common_benchmark_corpus_checks_runtime_operands_and_one_host_effect",
+    "export_checked_benchmark_corpus",
+    "export_checked_runtime_fixtures",
+    "genuine_recursive_request_preserves_canonical_depth_for_runtime_handoff",
+    "real_parser_llvm_object_artifact_and_raw_roundtrip",
+    "canonical_input_and_output_budgets_are_enforced",
+    "unbound_valid_import_is_local_unavailability_not_invalid_wasm",
+    "import_bindings_and_indirect_types_reuse_canonical_frontend_equivalence",
+    "canonical_control_flow_result_merges_module_pcs_and_branch_table_payloads",
+    "integer_families_emit_verified_native_code_with_defined_wasm_boundaries",
+    "memory_widths_signs_unaligned_offsets_and_raw_float_bits_emit_real_artifacts",
+    "globals_and_memory_growth_use_the_existing_options_and_preparation",
+    "memory_admission_is_canonical_and_out_of_bounds_addresses_never_wrap",
+    "dense_branch_table_emits_real_readonly_data_and_page_relocations",
+    "explicit_darwin_abi_elf_codegen_has_aarch64_calls_and_fixed_aligned_frames",
+    "all_fp_numeric_signatures_and_locals_emit_verified_objects_for_both_profiles",
+    "native_integer_entry_primitive_smoke_not_executor_acceptance",
+    "native_finite_callpath_distinguishes_local_stack_capacity_from_canonical_depth_primitive",
+    "native_epoch_rearm_and_shared_bursts_do_not_cancel_other_invocation_primitive",
+    "native_epoch_and_abi2_software_guards_are_bounded_fresh_primitives_not_executor",
+    "native_cfg_results_and_integer_boundaries_primitive_not_guarded_executor",
+    "native_memory_globals_and_forced_base_reload_primitive_not_executor_acceptance",
+    "native_fp_raw_transport_calls_the_actual_shared_numeric_owner_primitive",
+    "native_import_thunks_and_mixed_indirect_calls_are_raw_abi_primitives_only",
+    "native_indirect_software_guards_precede_dereferences_and_host_effects_primitive",
+    "native_memory_bounds_are_explicit_traps_before_pointer_access_primitive",
+    "native_division_traps_and_backward_edge_cancellation_are_bounded_primitive"
+  ],
+  "legacy_disabled_exporters": [
+    "export_checked_benchmark_corpus",
+    "export_checked_runtime_fixtures"
+  ],
+  "legacy_assertion_macro_occurrences": 287,
+  "legacy_golden_reference": {
+    "integer_mix_checksum": "15065454813286283065",
+    "memory_sweep_checksum": "11713105455123543422",
+    "manifest": "docs/donors/forge-wamr-baseline-v1.json",
+    "manifest_sha256": "87e7a7a4e0e0210d03283f18cd989c2cd344b6e3366f53953c36763eb44dadcc"
+  },
+  "new_aot47_source_inventory": {
+    "path": "tests/vm_wasm_optimizing/CMakeLists.txt",
+    "sha256": "4f78d34c030a1c9ff38bcfc5354bf525a5d3e81c1998d6b161850ccaf5dab335",
+    "enumeration": "literal foreach expansion; not a configured/runtime registry",
+    "required": [
+      "forge_vm_wasm_compiler target",
+      "wasm_compiler helper",
+      "explicit FORGE_WAMR_COMPILER_TEST_AS_BYTES for4session checks"
+    ],
+    "count": 47,
+    "names": [
+      "wamr_export_names_compile",
+      "wamr_export_names_runtime",
+      "wamr_optimizing_guest_unreachable",
+      "wamr_optimizing_guest_divide_zero",
+      "wamr_optimizing_guest_overflow",
+      "wamr_optimizing_guest_conversion",
+      "wamr_optimizing_guest_table_bounds",
+      "wamr_optimizing_guest_indirect_type",
+      "wamr_optimizing_guest_depth",
+      "wamr_optimizing_guest_private_index",
+      "wamr_optimizing_guest_unexported_import",
+      "wamr_optimizing_guest_indirect_import",
+      "wamr_optimizing_guest_table_null",
+      "wamr_optimizing_guest_memory_bounds",
+      "wamr_optimizing_session_bounded",
+      "wamr_optimizing_session_probe_late",
+      "wamr_optimizing_session_probe_overlap",
+      "wamr_optimizing_session_cleanup",
+      "wamr_optimizing_8192_preparation",
+      "wamr_optimizing_8192_heavy",
+      "wamr_optimizing_8192_depth",
+      "wamr_optimizing_8192_deadline",
+      "wamr_optimizing_8192_cancel",
+      "wamr_optimizing_8192_host_error",
+      "wamr_optimizing_8192_exported_import",
+      "wamr_optimizing_8192_runtime_pin",
+      "wamr_optimizing_8192_identity",
+      "wamr_optimizing_16384_preparation",
+      "wamr_optimizing_16384_heavy",
+      "wamr_optimizing_16384_depth",
+      "wamr_optimizing_16384_deadline",
+      "wamr_optimizing_16384_cancel",
+      "wamr_optimizing_16384_host_error",
+      "wamr_optimizing_16384_exported_import",
+      "wamr_optimizing_16384_runtime_pin",
+      "wamr_optimizing_16384_identity",
+      "wamr_optimizing_32768_preparation",
+      "wamr_optimizing_32768_heavy",
+      "wamr_optimizing_32768_depth",
+      "wamr_optimizing_32768_deadline",
+      "wamr_optimizing_32768_cancel",
+      "wamr_optimizing_32768_host_error",
+      "wamr_optimizing_32768_exported_import",
+      "wamr_optimizing_32768_runtime_pin",
+      "wamr_optimizing_32768_identity",
+      "wamr_optimizing_untrusted_substitution",
+      "wamr_optimizing_physical_capacity"
+    ]
+  },
+  "comparison": [
+    {
+      "group": "benchmark",
+      "legacy_cases": [
+        "common_benchmark_corpus_checks_runtime_operands_and_one_host_effect",
+        "export_checked_benchmark_corpus"
+      ],
+      "status": "NO_SAME_WORKLOAD_IN_AOT47",
+      "current_evidence": [
+
+      ]
+    },
+    {
+      "group": "historical_fixture_export",
+      "legacy_cases": [
+        "export_checked_runtime_fixtures"
+      ],
+      "status": "DISABLED_OLD_ABI2_CODEGEN3_EXPORT_NOT_CURRENT_GATE",
+      "current_evidence": [
+        "fresh source-owned wamr_compile_fixture outputs"
+      ]
+    },
+    {
+      "group": "artifact_and_budgets",
+      "legacy_cases": [
+        "real_parser_llvm_object_artifact_and_raw_roundtrip",
+        "canonical_input_and_output_budgets_are_enforced"
+      ],
+      "status": "PARTIAL_PUBLIC_BEHAVIOR_NOT_OLD_ELF_REPRESENTATION",
+      "current_evidence": [
+        "wamr_optimizing_*_preparation",
+        "wamr_optimizing_*_identity",
+        "wamr_optimizing_untrusted_substitution",
+        "wamr_optimizing_session_bounded"
+      ]
+    },
+    {
+      "group": "imports_and_indirect",
+      "legacy_cases": [
+        "unbound_valid_import_is_local_unavailability_not_invalid_wasm",
+        "import_bindings_and_indirect_types_reuse_canonical_frontend_equivalence",
+        "native_import_thunks_and_mixed_indirect_calls_are_raw_abi_primitives_only",
+        "native_indirect_software_guards_precede_dereferences_and_host_effects_primitive"
+      ],
+      "status": "PUBLIC_DOMAINS_COVERED_NOT_ALL_OLD_PERMUTATIONS",
+      "current_evidence": [
+        "wamr_optimizing_guest_*",
+        "wamr_optimizing_*_exported_import"
+      ]
+    },
+    {
+      "group": "integer_cfg_memory",
+      "legacy_cases": [
+        "canonical_control_flow_result_merges_module_pcs_and_branch_table_payloads",
+        "integer_families_emit_verified_native_code_with_defined_wasm_boundaries",
+        "memory_widths_signs_unaligned_offsets_and_raw_float_bits_emit_real_artifacts",
+        "globals_and_memory_growth_use_the_existing_options_and_preparation",
+        "memory_admission_is_canonical_and_out_of_bounds_addresses_never_wrap",
+        "dense_branch_table_emits_real_readonly_data_and_page_relocations",
+        "native_integer_entry_primitive_smoke_not_executor_acceptance",
+        "native_cfg_results_and_integer_boundaries_primitive_not_guarded_executor",
+        "native_memory_globals_and_forced_base_reload_primitive_not_executor_acceptance",
+        "native_memory_bounds_are_explicit_traps_before_pointer_access_primitive",
+        "native_division_traps_and_backward_edge_cancellation_are_bounded_primitive"
+      ],
+      "status": "PARTIAL_NOT_EXHAUSTIVE_WIDTH_CFG_GROWTH_ORACLE_PARITY",
+      "current_evidence": [
+        "wamr_optimizing_*_heavy",
+        "wamr_optimizing_guest_*",
+        "wamr_optimizing_*_cancel"
+      ]
+    },
+    {
+      "group": "darwin_elf_abi",
+      "legacy_cases": [
+        "explicit_darwin_abi_elf_codegen_has_aarch64_calls_and_fixed_aligned_frames"
+      ],
+      "status": "OLD_PRIVATE_ABI_REPRESENTATION_RETIRED",
+      "current_evidence": [
+
+      ]
+    },
+    {
+      "group": "numeric_all_fp",
+      "legacy_cases": [
+        "all_fp_numeric_signatures_and_locals_emit_verified_objects_for_both_profiles",
+        "native_fp_raw_transport_calls_the_actual_shared_numeric_owner_primitive"
+      ],
+      "status": "NO_EXHAUSTIVE_62_OP_AOT_EQUIVALENCE_IN_THIS_47",
+      "current_evidence": [
+        "wamr_optimizing_guest_conversion",
+        "fenv restoration in runtime_tests.cpp"
+      ]
+    },
+    {
+      "group": "depth_and_physical_stack",
+      "legacy_cases": [
+        "genuine_recursive_request_preserves_canonical_depth_for_runtime_handoff",
+        "native_finite_callpath_distinguishes_local_stack_capacity_from_canonical_depth_primitive"
+      ],
+      "status": "PUBLIC_DOMAIN_COVERED_PROFILE_AND_RAW_ABI_CHANGED",
+      "current_evidence": [
+        "wamr_optimizing_*_heavy",
+        "wamr_optimizing_*_depth",
+        "wamr_optimizing_physical_capacity"
+      ]
+    },
+    {
+      "group": "epochs_and_overlap",
+      "legacy_cases": [
+        "native_epoch_rearm_and_shared_bursts_do_not_cancel_other_invocation_primitive",
+        "native_epoch_and_abi2_software_guards_are_bounded_fresh_primitives_not_executor"
+      ],
+      "status": "PUBLIC_BEHAVIOR_COVERED_OLD_EPOCH_ABI_RETIRED",
+      "current_evidence": [
+        "wamr_optimizing_*_deadline",
+        "wamr_optimizing_*_cancel",
+        "wamr_optimizing_session_bounded",
+        "wamr_optimizing_session_probe_late",
+        "wamr_optimizing_session_probe_overlap"
+      ]
+    }
+  ],
+  "acceptance_boundary": "Source retirement is approved. No claim of full oracle parity or new runtime qualification; uncovered operational oracles remain open and require public-API tests."
+}

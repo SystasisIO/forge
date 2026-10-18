@@ -32,6 +32,10 @@ namespace {
 // Check opportunity, not a new CPU accounting clock or a hard latency promise.
 constexpr auto tick_quantum = std::chrono::milliseconds{1};
 constexpr auto saturated = (std::numeric_limits<std::uint64_t>::max)();
+static_assert(std::atomic_ref<std::uint64_t>::is_always_lock_free &&
+              std::atomic_ref<std::uint32_t>::is_always_lock_free);
+static_assert(std::atomic_ref<std::uint64_t>::required_alignment <= 8 &&
+              std::atomic_ref<std::uint32_t>::required_alignment <= 8);
 } // namespace
 
 executor_epoch::executor_epoch(asio::task::scheduler& scheduler) : _scheduler(scheduler) {}
@@ -85,6 +89,12 @@ boost::asio::awaitable<void> executor_epoch::tick(asio::task::context& context) 
          if (timer_error)
             throw boost::system::system_error{timer_error};
          bump();
+         {
+            const auto lock = std::lock_guard{_completion_mutex};
+            const auto now = std::chrono::steady_clock::now();
+            for (auto* active = _activations; active; active = active->_next)
+               active->observe_deadline(now);
+         }
       }
    } catch (...) {
       error = std::current_exception();
@@ -215,26 +225,25 @@ void executor_epoch::retire() noexcept {
    _changed.notify();
 }
 
-executor_epoch::activation::activation(executor_epoch& owner, invocation_abi& context,
-                                       std::chrono::steady_clock::time_point deadline, std::stop_token caller_stop,
-                                       std::stop_token compute_stop)
-    : _owner(owner), _context(context), _deadline(deadline) {
+executor_epoch::activation::activation(executor_epoch& owner, std::chrono::steady_clock::time_point deadline,
+                                       std::stop_token caller_stop, std::stop_token compute_stop)
+    : _owner(owner), _deadline(deadline) {
    _owner.admit();
    try {
-      _context.epoch = &_owner._epoch;
-      _context.sticky_reason = &_reason;
-      _context.epoch_deadline = 0;
       _caller_stop.emplace(caller_stop, stop_handler{this});
       _compute_stop.emplace(compute_stop, stop_handler{this});
       _executor_stop.emplace(_owner._stop.get_token(), stop_handler{this});
+      {
+         const auto lock = std::lock_guard{_owner._completion_mutex};
+         _next = _owner._activations;
+         _owner._activations = this;
+         _linked = true;
+      }
       static_cast<void>(poll());
    } catch (...) {
       _executor_stop.reset();
       _compute_stop.reset();
       _caller_stop.reset();
-      _context.epoch = nullptr;
-      _context.sticky_reason = nullptr;
-      _context.epoch_deadline = 0;
       _owner.retire();
       throw;
    }
@@ -242,15 +251,22 @@ executor_epoch::activation::activation(executor_epoch& owner, invocation_abi& co
 
 executor_epoch::activation::~activation() {
    static_cast<void>(finish());
-   _context.epoch = nullptr;
-   _context.sticky_reason = nullptr;
-   _context.epoch_deadline = 0;
    _owner.retire();
 }
 
 trap_reason executor_epoch::activation::finish() noexcept {
    if (_finished)
       return reason();
+   {
+      const auto lock = std::lock_guard{_owner._completion_mutex};
+      if (_linked) {
+         auto** current = &_owner._activations;
+         while (*current != this)
+            current = &(*current)->_next;
+         *current = _next;
+         _linked = false;
+      }
+   }
    _executor_stop.reset();
    _compute_stop.reset();
    _caller_stop.reset();
@@ -270,8 +286,19 @@ trap_reason executor_epoch::activation::reason() const noexcept {
 void executor_epoch::activation::publish(trap_reason reason) noexcept {
    auto expected = static_cast<std::uint32_t>(trap_reason::none);
    if (std::atomic_ref{_reason}.compare_exchange_strong(expected, static_cast<std::uint32_t>(reason),
-                                                        std::memory_order_release, std::memory_order_relaxed))
+                                                        std::memory_order_release, std::memory_order_relaxed)) {
       _owner.bump();
+      static_cast<void>(_guest_stop.request_stop());
+   }
+}
+
+std::stop_token executor_epoch::activation::guest_stop() const noexcept {
+   return _guest_stop.get_token();
+}
+
+void executor_epoch::activation::observe_deadline(std::chrono::steady_clock::time_point now) noexcept {
+   if (now >= _deadline)
+      publish(trap_reason::deadline);
 }
 
 trap_reason executor_epoch::activation::poll() noexcept {
@@ -286,8 +313,6 @@ trap_reason executor_epoch::activation::poll() noexcept {
          publish(trap_reason::deadline);
       current = reason();
    }
-   if (current == trap_reason::none)
-      _context.epoch_deadline = snapshot + 1;
    return current;
 }
 

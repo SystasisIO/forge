@@ -45,7 +45,9 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    void abort_io() noexcept;
    void refresh_quiescent() noexcept;
    bool drained() const noexcept;
+   bool process_drained() const noexcept;
    bool is_quiescent() const noexcept;
+   void remove_workspace(); // existing compute boundary, only after physical drain
 
    const session_options& options;
    compiler_protocol::exchange_id exchange;
@@ -65,6 +67,8 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    pid_t pid = -1;
    int parent_endpoint = -1;
    std::atomic_bool quiescent{true};
+   std::atomic_bool workspace_pending{false};
+   std::string workspace;
    std::atomic_bool stop_requested{false};
    int native_status = W_STOPCODE(SIGSTOP);
    bool owned = false;

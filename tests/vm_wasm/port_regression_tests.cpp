@@ -4,9 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
-#include <sys/mman.h>
 #include <type_traits>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -29,10 +27,6 @@ static_assert(!std::is_copy_assignable_v<wasm::wasm_allocator>);
 static_assert(!std::is_move_constructible_v<wasm::wasm_allocator>);
 static_assert(!std::is_move_assignable_v<wasm::wasm_allocator>);
 static_assert(std::is_nothrow_destructible_v<wasm::wasm_allocator>);
-static_assert(!std::is_copy_constructible_v<wasm::growable_allocator>);
-static_assert(!std::is_copy_assignable_v<wasm::growable_allocator>);
-static_assert(!std::is_move_constructible_v<wasm::growable_allocator>);
-static_assert(!std::is_move_assignable_v<wasm::growable_allocator>);
 static_assert(!std::is_copy_constructible_v<wasm::stack_allocator>);
 static_assert(!std::is_copy_assignable_v<wasm::stack_allocator>);
 static_assert(std::is_nothrow_move_constructible_v<wasm::stack_allocator>);
@@ -129,7 +123,13 @@ template <typename Implementation, typename Exception> void check_zero_call_dept
    using runtime = wasm::backend<std::nullptr_t, Implementation, zero_call_depth_options>;
    auto instance = runtime{code, static_cast<wasm::wasm_allocator*>(nullptr), zero_call_depth_options{}};
 
-   BOOST_CHECK_THROW(instance.call_with_return("env", "run"), Exception);
+   const auto expected_code = [](const Exception& error) {
+      return error.code() == wasm::exceptions::make_error_code(wasm::exceptions::code::interpreter);
+   };
+   BOOST_TEST(instance.get_context().initialized());
+   BOOST_CHECK_EXCEPTION(instance.call_with_return("env", "run"), Exception, expected_code);
+   BOOST_CHECK_EXCEPTION(instance.get_context().call(nullptr, 0U, {}), Exception, expected_code);
+   BOOST_TEST(instance.get_context().initialized());
 }
 
 template <typename Implementation> void check_numeric_function_index() {
@@ -259,13 +259,30 @@ TEST_CASE("wasm allocator reset preserves reusable execution-lane ownership", "[
    BOOST_TEST(memory.get_base_ptr<std::uint8_t>()[0] == 0);
 }
 
+TEST_CASE("expression values preserve signed integers and floating point bits on copy", "[expr_value]") {
+   static_assert(std::is_aggregate_v<wasm::expr_value>);
+   static_assert(std::is_trivially_copyable_v<wasm::expr_value>);
+
+   const auto signed32 = wasm::expr_value{.i32 = -42};
+   const auto signed32_copy = signed32;
+   BOOST_TEST(signed32_copy.i32 == -42);
+
+   const auto signed64 = wasm::expr_value{.i64 = std::numeric_limits<std::int64_t>::min()};
+   const auto signed64_copy = signed64;
+   BOOST_TEST(signed64_copy.i64 == std::numeric_limits<std::int64_t>::min());
+
+   const auto float32 = wasm::expr_value{.f32 = UINT32_C(0x7fc01234)};
+   const auto float32_copy = float32;
+   BOOST_TEST(float32_copy.f32 == UINT32_C(0x7fc01234));
+
+   const auto float64 = wasm::expr_value{.f64 = UINT64_C(0x8000000000000000)};
+   const auto float64_copy = float64;
+   BOOST_TEST(float64_copy.f64 == UINT64_C(0x8000000000000000));
+}
+
 TEST_CASE("function type equality includes non-void result types", "[func_type]") {
-   auto lhs_allocator = wasm::growable_allocator{64};
-   auto rhs_allocator = wasm::growable_allocator{64};
-   auto lhs_parameters = wasm::guarded_vector<wasm::value_type>{lhs_allocator, 1};
-   auto rhs_parameters = wasm::guarded_vector<wasm::value_type>{rhs_allocator, 1};
-   lhs_parameters[0] = wasm::i32;
-   rhs_parameters[0] = wasm::i32;
+   auto lhs_parameters = std::vector<wasm::value_type>{wasm::i32};
+   auto rhs_parameters = std::vector<wasm::value_type>{wasm::i32};
 
    const auto lhs = wasm::func_type{wasm::func, std::move(lhs_parameters), 1, wasm::i32};
    const auto rhs = wasm::func_type{wasm::func, std::move(rhs_parameters), 1, wasm::i64};
@@ -370,12 +387,8 @@ TEST_CASE("default span proxies copy and write back without an alignment divisor
 }
 
 TEST_CASE("function type equality ignores absent result types", "[func_type]") {
-   auto lhs_allocator = wasm::growable_allocator{64};
-   auto rhs_allocator = wasm::growable_allocator{64};
-   auto lhs_parameters = wasm::guarded_vector<wasm::value_type>{lhs_allocator, 1};
-   auto rhs_parameters = wasm::guarded_vector<wasm::value_type>{rhs_allocator, 1};
-   lhs_parameters[0] = wasm::i32;
-   rhs_parameters[0] = wasm::i32;
+   auto lhs_parameters = std::vector<wasm::value_type>{wasm::i32};
+   auto rhs_parameters = std::vector<wasm::value_type>{wasm::i32};
 
    const auto lhs = wasm::func_type{wasm::func, std::move(lhs_parameters), 0, wasm::i32};
    const auto rhs = wasm::func_type{wasm::func, std::move(rhs_parameters), 0, wasm::i64};
@@ -390,8 +403,8 @@ TEST_CASE("vector to string sizes its destination", "[vector_to_string]") {
 }
 
 TEST_CASE("managed vectors preserve values across growth", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
 
    values.push_back(7U);
    values.emplace_back(9U);
@@ -412,8 +425,8 @@ TEST_CASE("managed vectors preserve values across growth", "[managed_vector]") {
 }
 
 TEST_CASE("managed vector back returns the last appended element", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
 
    static_assert(std::is_same_v<decltype(values.back()), std::uint32_t&>);
    BOOST_CHECK_THROW(values.back(), wasm::exceptions::vector_out_of_bounds);
@@ -432,8 +445,8 @@ TEST_CASE("managed vector back returns the last appended element", "[managed_vec
 }
 
 TEST_CASE("managed vector rejects empty pops without changing its index", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
 
    BOOST_CHECK_THROW(values.pop_back(), wasm::exceptions::vector_out_of_bounds);
 
@@ -446,8 +459,8 @@ TEST_CASE("managed vector rejects empty pops without changing its index", "[mana
 }
 
 TEST_CASE("managed vector copy preserves the next insertion position", "[managed_vector]") {
-   auto allocator = wasm::growable_allocator{64};
-   auto values = wasm::managed_vector<std::uint32_t, wasm::growable_allocator>{allocator};
+   auto allocator = wasm::bounded_allocator{64};
+   auto values = wasm::managed_vector<std::uint32_t, wasm::bounded_allocator>{allocator};
    auto source = std::array<std::uint32_t, 2>{7U, 9U};
 
    values.copy(source.data(), 0);
@@ -463,28 +476,6 @@ TEST_CASE("managed vector copy preserves the next insertion position", "[managed
    BOOST_TEST(values[0] == 7U);
    BOOST_TEST(values[1] == 9U);
    BOOST_TEST(values[2] == 11U);
-}
-
-TEST_CASE("code protection failures surface as allocation errors", "[allocator]") {
-   const auto page_size = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-   auto allocator = wasm::growable_allocator{};
-   allocator.use_fixed_memory(page_size);
-   auto* code = allocator.start_code();
-   static_cast<void>(allocator.alloc<std::byte>(1));
-   allocator.end_code<false>(code);
-   const auto span = allocator.get_code_span();
-
-   BOOST_REQUIRE(!span.empty());
-   BOOST_REQUIRE(::munmap(span.data(), span.size()) == 0);
-   BOOST_CHECK_THROW(allocator.disable_code(), wasm::exceptions::allocation);
-}
-
-TEST_CASE("zero-sized allocations do not require mapped storage", "[allocator]") {
-   auto allocator = wasm::growable_allocator{};
-
-   BOOST_TEST(allocator.alloc<std::byte>(0) == nullptr);
-   allocator.use_fixed_memory(static_cast<std::size_t>(::sysconf(_SC_PAGESIZE)));
-   BOOST_TEST(allocator.alloc<std::uint64_t>(0) == nullptr);
 }
 
 TEST_CASE("alternate stack allocation reports mapping failure", "[stack_allocator]") {

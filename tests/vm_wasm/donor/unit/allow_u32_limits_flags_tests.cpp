@@ -95,10 +95,10 @@ BACKEND_TEST_CASE("Test allow_u32_limits_flags static fail", "[allow_u32_limits_
 
 BACKEND_TEST_CASE("Test allow_u32_limits_flags static pass", "[allow_u32_limits_flags_test]") {
    using backend_t = backend<std::nullptr_t, TestType, static_options_true>;
-   backend_t backend_mem_no_max(mem_no_max_wasm, &wa);
-   backend_t backend_mem_max(mem_max_wasm, &wa);
-   backend_t backend_table_no_max(table_no_max_wasm, &wa);
-   backend_t backend_table_max(table_max_wasm, &wa);
+   BOOST_CHECK_THROW(backend_t(mem_no_max_wasm, &wa), exceptions::parse);
+   BOOST_CHECK_THROW(backend_t(mem_max_wasm, &wa), exceptions::parse);
+   BOOST_CHECK_THROW(backend_t(table_no_max_wasm, &wa), exceptions::parse);
+   BOOST_CHECK_THROW(backend_t(table_max_wasm, &wa), exceptions::parse);
 }
 
 BACKEND_TEST_CASE("Test allow_u32_limits_flags dynamic fail", "[allow_u32_limits_flags_test]") {
@@ -111,8 +111,8 @@ BACKEND_TEST_CASE("Test allow_u32_limits_flags dynamic fail", "[allow_u32_limits
 
 BACKEND_TEST_CASE("Test allow_u32_limits_flags dynamic pass", "[allow_u32_limits_flags_test]") {
    using backend_t = backend<std::nullptr_t, TestType, dynamic_options>;
-   backend_t backend_mem_max(mem_max_wasm, nullptr, dynamic_options{true});
-   backend_t backend_mem_no_max(mem_no_max_wasm, nullptr, dynamic_options{true});
-   backend_t backend_table_max(table_max_wasm, nullptr, dynamic_options{true});
-   backend_t backend_table_no_max(table_no_max_wasm, nullptr, dynamic_options{true});
+   BOOST_CHECK_THROW(backend_t(mem_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);
+   BOOST_CHECK_THROW(backend_t(mem_no_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);
+   BOOST_CHECK_THROW(backend_t(table_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);
+   BOOST_CHECK_THROW(backend_t(table_no_max_wasm, nullptr, dynamic_options{true}), exceptions::parse);
 }

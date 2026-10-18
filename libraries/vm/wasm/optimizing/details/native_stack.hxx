@@ -28,9 +28,9 @@ class native_stack {
    // function budget. x86 red zone is excluded when selecting a host top.
    static constexpr std::uint64_t anchor_bytes = 32;
    static constexpr std::uint64_t host_red_zone = 128;
-   // Spring's supported fixed-frame cap. The mapped guard is at least this
-   // wide, rounded to an actual OS page; it does not replace failing-frame room.
-   static constexpr std::uint64_t max_frame_bytes = 16 * 1024;
+   // Local physical-frame cap, independent of the logical source profile.
+   // The page-rounded guard does not replace failing-frame room.
+   static constexpr std::uint64_t max_frame_bytes = 64 * 1024;
 
  private:
    static std::size_t mapping_bytes(std::uint64_t usable_bytes);

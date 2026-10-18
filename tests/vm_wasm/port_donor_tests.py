@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import pathlib
@@ -15,6 +16,124 @@ import tempfile
 
 DONOR_COMMIT = "e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f"
 FIXTURE_COMMIT = "ffbbb552e6020623d8ae148d81a152c8ef700325"
+DONOR_MANIFEST_SHA256 = "ede2eae24fe49c00c8ccfa99f8e4c8f2fbc370734e012c99bd225c38c36ca186"
+
+CASE_PATTERN = re.compile(
+    r'\b(BACKEND_TEST_CASE|TEST_CASE)\s*\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)'
+)
+
+
+@dataclass(frozen=True)
+class ProfileSource:
+    donor_sha256: str
+    historical_port_sha256: str
+    added_assertions: int
+
+
+@dataclass(frozen=True)
+class ProfileExpectation:
+    id: str
+    source: str
+    title: str
+    tags: str
+    category: str
+    replacements: tuple[tuple[str, str], ...]
+    fixtures: tuple[str, ...] = ()
+
+
+# Both the pinned input and the syntax-only port must match before adapting an oracle.
+PROFILE_SOURCES = {
+    "allow_code_after_function_end_tests.cpp": ProfileSource(
+        "711005a791821b96628b3d7e6d6a6e0c21fa723afa4705369f0a1a67ce9bc6c0",
+        "a9b4427e88031e024a98c080e44887bee65fc86013c15b0ab5ad886e15563633", 2),
+    "allow_invalid_empty_local_set_tests.cpp": ProfileSource(
+        "b7334ab72d303495b7049eb84ad09c0acd4c282baf26d0244851f3abb6d04ea4",
+        "de612f3c16b95a516ef8e4751dd333375c5875bae292b13d3899c086ac80e480", 2),
+    "allow_u32_limits_flags_tests.cpp": ProfileSource(
+        "430148c302450980652babd7093748f707c452d75116c727e02600523140977d",
+        "7e8f95c8f7f01c41b393a474342532e413979978c15cfcef8e0c37d800b7f06d", 8),
+    "implementation_limits_tests.cpp": ProfileSource(
+        "efed154e042d5f263087b1c3e9911868e39149a4ee61c2650e1b5aa83095aae6",
+        "12a0933c9899c62ee862166c531a35e8c89c88cdfdc563be3e20a48eee16f3fa", 1),
+    "spec/binary_tests.cpp": ProfileSource(
+        "28149f8eb5d1f67a4b9a0feb7f78b785458638f89b9257d44e911125b22b0015",
+        "54e8b8058c12bf8c552e6edf51d1064f07422ab2ea99d27b08882c31de83c6d2", 0),
+    "spec/unreached-invalid_tests.cpp": ProfileSource(
+        "c349f52609e80f69d7de4dbe65b4c3178e8d8a4cd50c39fb1b28bdbb3b8e98cf",
+        "d2378a06e9b32b8ca550a36556f751f9ae85477dc5664e9b55127380056ac2a9", 0),
+    "spec/e_memory_tests.cpp": ProfileSource(
+        "b8a995617f88453669f06c7107793cb520a8a52fbef30d90c8589eac85750000",
+        "578bb82755ad12cd10d28ac0fcdb21b64f83fcb0596fc463bef3a98399509a8b", 1),
+}
+
+PROFILE_EXPECTATIONS = (
+    ProfileExpectation(
+        "retired_after_end_static", "allow_code_after_function_end_tests.cpp",
+        "Test allow_code_after_function_end static pass", "[allow_code_after_function_end_test]",
+        "retired_malformed", ((
+            "   backend_t backend(code_after_end_wasm, &wa);",
+            "   BOOST_CHECK_THROW(backend_t(code_after_end_wasm, &wa), exceptions::parse);"),)),
+    ProfileExpectation(
+        "retired_after_end_dynamic", "allow_code_after_function_end_tests.cpp",
+        "Test allow_code_after_function_end dynamic pass", "[allow_code_after_function_end_test]",
+        "retired_malformed", ((
+            "   backend_t backend(code_after_end_wasm, nullptr, dynamic_options{true});",
+            "   BOOST_CHECK_THROW(backend_t(code_after_end_wasm, nullptr, dynamic_options{true}), exceptions::parse);"),)),
+    ProfileExpectation(
+        "retired_empty_local_static", "allow_invalid_empty_local_set_tests.cpp",
+        "Test allow_invalid_empty_local_set static pass", "[allow_invalid_empty_local_set_test]",
+        "retired_malformed", ((
+            "   backend_t backend(bad_local_wasm, &wa);",
+            "   BOOST_CHECK_THROW(backend_t(bad_local_wasm, &wa), exceptions::parse);"),)),
+    ProfileExpectation(
+        "retired_empty_local_dynamic", "allow_invalid_empty_local_set_tests.cpp",
+        "Test allow_invalid_empty_local_set dynamic pass", "[allow_invalid_empty_local_set_test]",
+        "retired_malformed", ((
+            "   backend_t backend(bad_local_wasm, nullptr, dynamic_options{true});",
+            "   BOOST_CHECK_THROW(backend_t(bad_local_wasm, nullptr, dynamic_options{true}), exceptions::parse);"),)),
+    ProfileExpectation(
+        "retired_limits_flags_static", "allow_u32_limits_flags_tests.cpp",
+        "Test allow_u32_limits_flags static pass", "[allow_u32_limits_flags_test]",
+        "retired_malformed", tuple(
+            (f"   backend_t backend_{name}({name}_wasm, &wa);",
+             f"   BOOST_CHECK_THROW(backend_t({name}_wasm, &wa), exceptions::parse);")
+            for name in ("mem_no_max", "mem_max", "table_no_max", "table_max"))),
+    ProfileExpectation(
+        "retired_limits_flags_dynamic", "allow_u32_limits_flags_tests.cpp",
+        "Test allow_u32_limits_flags dynamic pass", "[allow_u32_limits_flags_test]",
+        "retired_malformed", tuple(
+            (f"   backend_t backend_{name}({name}_wasm, nullptr, dynamic_options{{true}});",
+             f"   BOOST_CHECK_THROW(backend_t({name}_wasm, nullptr, dynamic_options{{true}}), exceptions::parse);")
+            for name in ("mem_max", "mem_no_max", "table_max", "table_no_max"))),
+    ProfileExpectation(
+        "capacity_depth", "implementation_limits_tests.cpp",
+        "Test call depth dynamic", "[call_depth]", "capacity", (
+            ("   // Very large call depth requires dynamically allocating a new stack",
+             "   // Refuse over-profile configuration, then recover with the supported depth."),
+            ('   bkend.initialize(nullptr, dynamic_options{1024*1024});\n\n'
+             '   BOOST_TEST(static_cast<bool>(!bkend.call_with_return("env", "call", (uint32_t)1024*1024 - 1)));',
+             '   BOOST_CHECK_THROW(bkend.initialize(nullptr, dynamic_options{1024*1024}), exceptions::profile);\n'
+             '   bkend.initialize(nullptr, dynamic_options{51});\n'
+             '   BOOST_TEST(static_cast<bool>(!bkend.call_with_return("env", "call", (uint32_t)50)));'))),
+    ProfileExpectation(
+        "capacity_initial_pages", "spec/e_memory_tests.cpp",
+        "Testing wasm <e_memory_1_wasm>", "[e_memory_1_wasm_tests]", "capacity", ((
+            "   backend_t bkend( code, &wa );",
+            "   BOOST_CHECK_THROW(backend_t(code, &wa), exceptions::profile);"),), ("e_memory.1.wasm",)),
+) + tuple(
+    ProfileExpectation(
+        f"modern_binary_{number}", "spec/binary_tests.cpp",
+        f"Testing wasm <binary_{number}_wasm>", f"[binary_{number}_wasm_tests]", "modern_grammar",
+        (("   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"),), (f"binary.{number}.wasm",))
+    for number in (38, 39, 40, 41, 43, 44, 45, 46)
+) + (
+    ProfileExpectation(
+        "modern_unreachable_br_table", "spec/unreached-invalid_tests.cpp",
+        "Testing wasm <unreached-invalid_87_wasm>", "[unreached-invalid_87_wasm_tests]", "modern_typing",
+        (("   BOOST_CHECK_THROW(backend_t(code, nullptr), std::exception);",
+          "   BOOST_REQUIRE_NO_THROW(backend_t(code, nullptr));"),), ("unreached-invalid.87.wasm",)),
+)
 
 UNIT_SOURCES = (
     "allocator_tests.cpp",
@@ -137,9 +256,6 @@ def active_sources(donor: pathlib.Path) -> list[pathlib.Path]:
 
 
 def case_manifest(text: str, source: str) -> list[dict[str, object]]:
-    pattern = re.compile(
-        r'\b(BACKEND_TEST_CASE|TEST_CASE)\s*\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)'
-    )
     cases = [
         {
             "kind": match.group(1),
@@ -147,7 +263,7 @@ def case_manifest(text: str, source: str) -> list[dict[str, object]]:
             "tags": match.group(3),
             "line": text.count("\n", 0, match.start()) + 1,
         }
-        for match in pattern.finditer(text)
+        for match in CASE_PATTERN.finditer(text)
     ]
     if source == "max_section_elements_tests.cpp":
         for name in ("type", "import", "function", "global", "export", "element", "data"):
@@ -348,10 +464,139 @@ def transform_text(text: str, relative: pathlib.Path) -> str:
 
 def transform_source(path: pathlib.Path, donor: pathlib.Path) -> str:
     relative = path.relative_to(donor / "tests")
-    return transform_text(path.read_text(), relative)
+    return apply_profile_expectations(transform_text(path.read_text(), relative), relative, sha256(path))
+
+
+def ported_assertions(text: str) -> dict[str, int]:
+    return {
+        name: len(re.findall(rf"\b{name}\s*\(", text))
+        for name in ("BOOST_TEST", "BOOST_REQUIRE", "BOOST_CHECK_THROW", "BOOST_REQUIRE_NO_THROW")
+    }
+
+
+def profile_case_span(text: str, rule: ProfileExpectation) -> tuple[int, int]:
+    matches = list(CASE_PATTERN.finditer(text))
+    selected = [
+        index for index, match in enumerate(matches)
+        if match.group(1) == "BACKEND_TEST_CASE" and match.group(2) == rule.title and match.group(3) == rule.tags
+    ]
+    if len(selected) != 1:
+        raise RuntimeError(f"{rule.id}: expected exactly one title/tags anchor, got {len(selected)}")
+    index = selected[0]
+    return matches[index].start(), matches[index + 1].start() if index + 1 < len(matches) else len(text)
+
+
+def apply_profile_expectations(text: str, relative: pathlib.Path, donor_sha256: str) -> str:
+    source = relative.as_posix()
+    policy = PROFILE_SOURCES.get(source)
+    if policy is None:
+        return text
+    if donor_sha256 != policy.donor_sha256:
+        raise RuntimeError(f"{source}: pinned donor source hash differs")
+    if hashlib.sha256(text.encode()).hexdigest() != policy.historical_port_sha256:
+        raise RuntimeError(f"{source}: historical port hash differs")
+
+    before = text
+    for rule in PROFILE_EXPECTATIONS:
+        if rule.source != source:
+            continue
+        start, end = profile_case_span(text, rule)
+        block = text[start:end]
+        for name in rule.fixtures:
+            if block.count(f'"{name}"') != 1:
+                raise RuntimeError(f"{rule.id}: fixture name is not bound to this exact case")
+        for old, new in rule.replacements:
+            if old.count("\n") != new.count("\n"):
+                raise RuntimeError(f"{rule.id}: replacement would change compiled case line IDs")
+            if block.count(old) != 1:
+                raise RuntimeError(f"{rule.id}: expected exactly one statement anchor")
+            block = block.replace(old, new, 1)
+        text = text[:start] + block + text[end:]
+
+    if case_manifest(before, relative.name) != case_manifest(text, relative.name):
+        raise RuntimeError(f"{source}: profile adaptation changed case registrations")
+    if sum(ported_assertions(text).values()) - sum(ported_assertions(before).values()) != policy.added_assertions:
+        raise RuntimeError(f"{source}: profile adaptation changed the reviewed assertion count")
+    return text
+
+
+def build_profile_manifest(donor: pathlib.Path, fixtures: pathlib.Path) -> dict[str, object]:
+    categories = {name: sum(rule.category == name for rule in PROFILE_EXPECTATIONS)
+                  for name in ("retired_malformed", "capacity", "modern_grammar", "modern_typing")}
+    if (len(PROFILE_EXPECTATIONS) != 17 or len({rule.id for rule in PROFILE_EXPECTATIONS}) != 17
+            or {rule.source for rule in PROFILE_EXPECTATIONS} != set(PROFILE_SOURCES)
+            or categories != {"retired_malformed": 6, "capacity": 2, "modern_grammar": 8, "modern_typing": 1}):
+        raise RuntimeError("profile rule inventory differs from the approved 17 cases")
+
+    sources = []
+    for path in active_sources(donor):
+        relative = path.relative_to(donor / "tests")
+        original = path.read_text()
+        historical = transform_text(original, relative)
+        prepared = apply_profile_expectations(historical, relative, sha256(path))
+        cases = case_manifest(historical, relative.name)
+        if cases != case_manifest(prepared, relative.name):
+            raise RuntimeError(f"{relative}: changed case registrations")
+        sources.append({
+            "source": relative.as_posix(),
+            "output": (pathlib.Path("spec") / path.name if relative.parts[0] == "spec"
+                       else pathlib.Path("unit") / path.name).as_posix(),
+            "donor_sha256": sha256(path),
+            "historical_port_sha256": hashlib.sha256(historical.encode()).hexdigest(),
+            "profile_port_sha256": hashlib.sha256(prepared.encode()).hexdigest(),
+            "case_count": len(cases),
+            "registration_sha256": hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest(),
+            "donor_assertions": assertion_manifest(original),
+            "historical_port_assertions": ported_assertions(historical),
+            "profile_port_assertions": ported_assertions(prepared),
+        })
+
+    rules = []
+    for rule in PROFILE_EXPECTATIONS:
+        original = (donor / "tests" / rule.source).read_text()
+        historical = transform_text(original, pathlib.Path(rule.source))
+        start, end = profile_case_span(historical, rule)
+        row = asdict(rule)
+        row["compiled_case_line"] = historical.count("\n", 0, start) + 1
+        row["historical_case_sha256"] = hashlib.sha256(historical[start:end].encode()).hexdigest()
+        row["fixture_inputs"] = [{"path": name, "sha256": sha256(fixtures / name)} for name in rule.fixtures]
+        rules.append(row)
+
+    here = pathlib.Path(__file__).parent
+    return {
+        "schema_version": 1,
+        "oracle": "forge-approved-wamr-profile-v1; not historical EOS VM parity",
+        "donor_commit": DONOR_COMMIT,
+        "fixture_commit": FIXTURE_COMMIT,
+        "historical_donor_manifest_sha256": DONOR_MANIFEST_SHA256,
+        "policy": {
+            "max_call_depth": 1024, "max_initial_pages": 65535,
+            "parse_code": 4000006, "profile_code": 4030000,
+            "approval": "docs/releases/unreleased-wamr-bounded-profile.md#retired-parser-permissions",
+            "modern_inputs": "u32 zero memidx encodings; unreachable br_table bottom typing",
+        },
+        "tool_inputs": [{"path": name, "sha256": sha256(here / name)} for name in
+                        ("port_donor_tests.py", "test_port_donor_tests.py", "PROFILE_ORACLE.md")],
+        "harness_inputs": [{"path": name, "sha256": sha256(here / name)} for name in
+                           ("CMakeLists.txt", "test_support.hpp", "test_prelude.hpp", "donor/sources.cmake")],
+        "support_inputs": [{"path": f"support/{name}", "sha256": sha256(donor / "tests" / name)}
+                           for name in SUPPORT_FILES],
+        "verification_boundary": "Source transformation only; C++ compilation/runtime NOT_RUN by this slice",
+        "rule_count": len(rules),
+        "case_results_when_interpreter_and_jit_enabled": 2 * len(rules),
+        "rule_categories": categories,
+        "source_count": len(sources),
+        "case_count": sum(row["case_count"] for row in sources),
+        "historical_assertion_sites": sum(sum(row["historical_port_assertions"].values()) for row in sources),
+        "profile_assertion_sites": sum(sum(row["profile_port_assertions"].values()) for row in sources),
+        "rules": rules,
+        "sources": sources,
+    }
 
 
 def write_port(donor: pathlib.Path, output: pathlib.Path) -> None:
+    # Check every hash/anchor before writing any generated translation unit.
+    transformed = {source: transform_source(source, donor) for source in active_sources(donor)}
     unit = output / "unit"
     spec = output / "spec"
     support = output / "support"
@@ -359,10 +604,10 @@ def write_port(donor: pathlib.Path, output: pathlib.Path) -> None:
     spec.mkdir(parents=True, exist_ok=True)
     support.mkdir(parents=True, exist_ok=True)
 
-    for source in active_sources(donor):
+    for source, text in transformed.items():
         relative = source.relative_to(donor / "tests")
         destination = spec / source.name if relative.parts[0] == "spec" else unit / source.name
-        destination.write_text(transform_source(source, donor))
+        destination.write_text(text)
 
     for name in SUPPORT_FILES:
         shutil.copyfile(donor / "tests" / name, support / name)
@@ -412,6 +657,8 @@ def main() -> int:
     parser.add_argument("--fixtures", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path(__file__).parent / "donor")
     parser.add_argument("--manifest", type=pathlib.Path, default=pathlib.Path(__file__).parent / "donor_manifest.json")
+    parser.add_argument("--profile-manifest", type=pathlib.Path,
+                        default=pathlib.Path(__file__).parent / "profile_oracle_manifest.json")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
@@ -422,15 +669,20 @@ def main() -> int:
     manifest = build_manifest(arguments.donor, arguments.fixtures)
     manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
 
+    if (not arguments.manifest.is_file() or sha256(arguments.manifest) != DONOR_MANIFEST_SHA256
+            or arguments.manifest.read_text() != manifest_text):
+        print("historical donor manifest differs from the pinned source/corpus; refusing to rebaseline", file=sys.stderr)
+        return 1
+    profile = build_profile_manifest(arguments.donor, arguments.fixtures)
+    profile_text = json.dumps(profile, indent=2, sort_keys=True) + "\n"
+
     if arguments.write:
-        if arguments.output.exists():
-            shutil.rmtree(arguments.output)
         write_port(arguments.donor, arguments.output)
-        arguments.manifest.write_text(manifest_text)
+        arguments.profile_manifest.write_text(profile_text)
         return 0
 
-    if not arguments.manifest.is_file() or arguments.manifest.read_text() != manifest_text:
-        print("donor manifest differs from the pinned source", file=sys.stderr)
+    if not arguments.profile_manifest.is_file() or arguments.profile_manifest.read_text() != profile_text:
+        print("profile oracle manifest differs from the reviewed transformation", file=sys.stderr)
         return 1
 
     with tempfile.TemporaryDirectory() as temporary:

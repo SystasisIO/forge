@@ -50,7 +50,10 @@ endif()
 
 set(FORGE_VM_WASM_INTERPRET_DONOR_ROOT "" CACHE PATH "Pinned EOS VM checkout used to verify the native interpreter test port")
 add_subdirectory(vm_wasm)
-add_subdirectory(execution_wasm)
+add_subdirectory(vm_wasm_execution)
+if(TARGET forge_vm_wasm_optimizing)
+   add_subdirectory(vm_wasm_optimizing)
+endif()
 add_subdirectory(api_wasm)
 
 set(FORGE_STRUCTURE_CHECK ${CMAKE_CURRENT_SOURCE_DIR}/structure/check_structure.py)
@@ -84,6 +87,10 @@ add_test(
 add_test(
    NAME test_forge_vm_wasm_structure
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/vm_wasm_tests.py
+)
+add_test(
+   NAME test_forge_wasm_family_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/wasm_family_tests.py
 )
 add_test(
    NAME test_forge_contract_sdk_cmake_runtime_policy
@@ -616,6 +623,7 @@ if(FORGE_ENABLE_TOOLING)
       test_forge_tooling
       unit/main.cpp
       tooling/contract_tests.cpp
+      tooling/validation_tests.cpp
    )
    target_link_libraries(
       test_forge_tooling
@@ -2538,33 +2546,38 @@ add_custom_target(
    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --prefix ${FORGE_PACKAGE_INSTALL_PREFIX} --component dev
    DEPENDS forge
 )
-if(TARGET forge_vm_wasm_optimizing)
-   add_dependencies(test_forge_package_install forge_wasm_compiler)
-   set(_forge_oc_relocated_test
+if(TARGET wasm_compiler)
+   add_dependencies(test_forge_package_install wasm_compiler)
+endif()
+
+if(TARGET forge_vm_wasm_compiler AND TARGET wasm_compiler AND UNIX AND FORGE_WAMR_COMPILER_TEST_AS_BYTES)
+   set(_forge_package_optimizing_test
       ${CMAKE_COMMAND}
-      "-DFORGE_PACKAGE_TEST_INSTALL_PREFIX=${FORGE_PACKAGE_INSTALL_PREFIX}"
-      "-DFORGE_PACKAGE_TEST_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
-      "-DFORGE_PACKAGE_TEST_BINDIR=${CMAKE_INSTALL_BINDIR}"
-      "-DFORGE_PACKAGE_TEST_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_optimizing_component"
-      "-DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}"
-      "-DFORGE_PACKAGE_TEST_TOOLCHAIN_CACHE=${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
-      ${_forge_package_openssl_root_argument}
-      "-DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-      "-DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}"
-      "-DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}"
-      "-DFORGE_OC_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
-      "-DFORGE_OC_BUILD_ROOT=${CMAKE_BINARY_DIR}"
-      "-DFORGE_OC_BUILD_CONFIG=${CMAKE_BINARY_DIR}/tests/vm_wasm/compiler-build-config-$<CONFIG>.txt"
-      "-DFORGE_OC_BUILD_STAMP=${CMAKE_BINARY_DIR}/tests/vm_wasm/compiler-build-$<CONFIG>.json"
-      "-DFORGE_OC_COMPILER=$<TARGET_FILE:test_forge_vm_wasm_optimizing_compiler>"
-      "-DFORGE_OC_AS_BYTES=${FORGE_VM_WASM_OPTIMIZING_HELPER_TEST_AS_BYTES}"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_optimizing_component/verify_relocation.cmake")
+      -DFORGE_PACKAGE_TEST_SOURCE_ROOT=${CMAKE_SOURCE_DIR}
+      -DFORGE_PACKAGE_TEST_BUILD_ROOT=${CMAKE_BINARY_DIR}/forge-package-vm-wasm-optimizing-component
+      -DFORGE_PACKAGE_TEST_CONSUMER_CACHE=${FORGE_PACKAGE_CONSUMER_CACHE}
+      -DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}
+      -DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
+      -DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
+      -DFORGE_PACKAGE_TEST_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DFORGE_PACKAGE_TEST_CTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+      -DFORGE_PACKAGE_TEST_LLVM_DIR=${LLVM_DIR}
+      -DFORGE_PACKAGE_TEST_HELPER=${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/forge-wasm-compiler
+      -DFORGE_PACKAGE_TEST_AS_BYTES=${FORGE_WAMR_COMPILER_TEST_AS_BYTES}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_optimizing_component/verify_installed.cmake
+   )
    add_custom_target(test_forge_package_vm_wasm_optimizing_component
-      COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}"
-         --output-on-failure --parallel 1 -R "^test_forge_package_vm_wasm_optimizing_component$"
-      DEPENDS test_forge_package_install test_forge_vm_wasm_optimizing_compiler
-         test_forge_vm_wasm_optimizing_ordinary_consumer forge_wasm_compiler
-      VERBATIM)
+      COMMAND ${_forge_package_optimizing_test}
+      DEPENDS test_forge_package_install
+   )
+   add_test(NAME test_forge_package_vm_wasm_optimizing_component
+      COMMAND ${_forge_package_optimizing_test}
+   )
+   set_tests_properties(test_forge_package_vm_wasm_optimizing_component PROPERTIES
+      DEPENDS test_forge_package_install RUN_SERIAL TRUE TIMEOUT 3600 LABELS "package;wamr;optimizing")
+else()
+   message(STATUS "Skipping installed optimizing/session package test: compiler, UNIX and explicit helper AS limit required")
 endif()
 add_custom_target(
    test_forge_package_consumer
@@ -2687,18 +2700,23 @@ add_custom_target(
 )
 set(execution_package_command ${CMAKE_CTEST_COMMAND}
    --build-and-test
-   ${CMAKE_CURRENT_SOURCE_DIR}/package_execution_wasm_component
+   ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_execution_component
    ${CMAKE_BINARY_DIR}/forge-package-execution-wasm-component
    --build-generator ${CMAKE_GENERATOR}
    --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
       -DCMAKE_DISABLE_FIND_PACKAGE_Clang=ON
-      -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=ON
-   --test-command forge_package_execution_wasm_component
 )
-add_custom_target(test_forge_package_execution_wasm_component
+if(FORGE_ENABLE_VM_WASM_LLVM_JIT)
+   list(APPEND execution_package_command
+      -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=OFF "-DLLVM_DIR=${LLVM_DIR}")
+else()
+   list(APPEND execution_package_command -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=ON)
+endif()
+list(APPEND execution_package_command --test-command forge_package_vm_wasm_execution_component)
+add_custom_target(test_forge_package_vm_wasm_execution_component
    COMMAND ${execution_package_command} DEPENDS test_forge_package_install)
-add_test(NAME test_forge_package_execution_wasm_component COMMAND ${execution_package_command})
-set_tests_properties(test_forge_package_execution_wasm_component PROPERTIES DEPENDS test_forge_package_install)
+add_test(NAME test_forge_package_vm_wasm_execution_component COMMAND ${execution_package_command})
+set_tests_properties(test_forge_package_vm_wasm_execution_component PROPERTIES DEPENDS test_forge_package_install)
 
 foreach(values_component IN ITEMS api_core_values net_http_values api_wasm)
    set(values_package_command ${CMAKE_CTEST_COMMAND}
@@ -3267,9 +3285,11 @@ add_custom_target(
       -DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}
       "-DFORGE_PACKAGE_TEST_TOOLCHAIN_CACHE=${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
       ${_forge_package_openssl_root_argument}
-      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
       -DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
+      -DFORGE_PACKAGE_TEST_WITH_JIT=${FORGE_ENABLE_VM_WASM_LLVM_JIT}
+      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
+      -DFORGE_PACKAGE_TEST_LLVM_DIR=${LLVM_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_interpret_component/verify_relocation.cmake
    DEPENDS test_forge_package_install
 )
@@ -3665,13 +3685,6 @@ add_test(
    NAME test_forge_package_install
    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --prefix ${FORGE_PACKAGE_INSTALL_PREFIX} --component dev
 )
-if(TARGET forge_vm_wasm_optimizing)
-   set_property(TEST test_forge_package_install APPEND PROPERTY FIXTURES_SETUP forge_oc_installed_sdk)
-   add_test(NAME test_forge_package_vm_wasm_optimizing_component COMMAND ${_forge_oc_relocated_test})
-   set_tests_properties(test_forge_package_vm_wasm_optimizing_component PROPERTIES
-      LABELS vm_wasm_optimizing TIMEOUT 800
-      FIXTURES_REQUIRED "forge_oc_runtime_fixtures;forge_oc_installed_sdk")
-endif()
 add_test(
    NAME test_forge_package_consumer
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -4409,9 +4422,11 @@ add_test(
       -DFORGE_PACKAGE_TEST_GENERATOR=${CMAKE_GENERATOR}
       "-DFORGE_PACKAGE_TEST_TOOLCHAIN_CACHE=${FORGE_PACKAGE_TOOLCHAIN_CACHE}"
       ${_forge_package_openssl_root_argument}
-      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
       -DFORGE_PACKAGE_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -DFORGE_PACKAGE_TEST_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}
+      -DFORGE_PACKAGE_TEST_WITH_JIT=${FORGE_ENABLE_VM_WASM_LLVM_JIT}
+      -DFORGE_PACKAGE_TEST_C_COMPILER=${CMAKE_C_COMPILER}
+      -DFORGE_PACKAGE_TEST_LLVM_DIR=${LLVM_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/package_vm_wasm_interpret_component/verify_relocation.cmake
 )
 set_tests_properties(test_forge_package_vm_wasm_interpret_component PROPERTIES DEPENDS test_forge_package_install)

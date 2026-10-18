@@ -91,8 +91,8 @@ BACKEND_TEST_CASE( "Test call depth dynamic", "[call_depth]") {
    BOOST_TEST(static_cast<bool>(!bkend.call_with_return("env", "call.indirect.host", (uint32_t)49)));
    BOOST_CHECK_THROW(bkend.call("env", "call.indirect.host", (uint32_t)50), std::exception);
 
-   // Very large call depth requires dynamically allocating a new stack
-   bkend.initialize(nullptr, dynamic_options{1024*1024});
-
-   BOOST_TEST(static_cast<bool>(!bkend.call_with_return("env", "call", (uint32_t)1024*1024 - 1)));
+   // Refuse over-profile configuration, then recover with the supported depth.
+   BOOST_CHECK_THROW(bkend.initialize(nullptr, dynamic_options{1024*1024}), exceptions::profile);
+   bkend.initialize(nullptr, dynamic_options{51});
+   BOOST_TEST(static_cast<bool>(!bkend.call_with_return("env", "call", (uint32_t)50)));
 }

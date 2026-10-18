@@ -7,9 +7,10 @@ It also checks focused build-tree discovery without installed notices.
 
 `Forge_NOTICE_FILES` is the basename-only required root-level list in the existing
 `Forge_NOTICES_DIR`. It is derived from the same source list as the root install
-rule, not a second downstream filename registry. When the optimizing compiler
-is enabled, that list also contains `LICENSE.Spring` and `LICENSE.WAVM`.
-The gate copies this owning source list, compares package metadata with it,
+rule, not a second downstream filename registry. The WAMR notices retain their
+existing separate install rule and subdirectory; this gate does not restore
+the removed compiler's root-level notice requirements.
+The gate copies the owning root-level source list, compares package metadata with it,
 and rejects a missing notice or a directory in place of a notice file.
 This is not the complete third-party notice-file list: optional subdirectories
 are installed by their existing owning rules. Product redistribution must copy

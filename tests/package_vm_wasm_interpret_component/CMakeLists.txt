@@ -8,5 +8,5 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Forge CONFIG REQUIRED COMPONENTS vm_wasm_interpret)
 
-add_executable(forge_package_vm_wasm_interpret_component main.cpp softfloat_c_probe.c)
+add_executable(forge_package_vm_wasm_interpret_component main.cpp)
 target_link_libraries(forge_package_vm_wasm_interpret_component PRIVATE Forge::forge_vm_wasm_interpret)

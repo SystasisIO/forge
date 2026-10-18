@@ -1,0 +1,89 @@
+{
+   "schema": 1,
+   "date": "2026-10-18",
+   "scope": "Test-only installed interpret profiling smoke and canonical optimizing producer/runtime/session consumers",
+   "paths_relative_to": "worktree_root",
+   "wamr_pin": "12d1f906668cde93c03e7d864e71ee1e10dfb194",
+   "status": {
+      "source": "FROZEN_V1",
+      "root_registration": "PROPOSED_PATCH_NOT_APPLIED",
+      "configure": "NOT_RUN",
+      "build": "NOT_RUN",
+      "runtime": "NOT_RUN"
+   },
+   "format": {
+      "tool": "Homebrew clang-format 22.1.8 --style=file",
+      "cpp_files": ["tests/package_vm_wasm_interpret_component/main.cpp"],
+      "dry_run_werror": "PASS",
+      "canonical_sources_formatted": false
+   },
+   "source_files": [
+      {
+         "path": "tests/package_vm_wasm_interpret_component/main.cpp",
+         "sha256": "a1be597b5753548ecd32f31ca2aff5382804fc70d4846abef81a4415e8b1d217"
+      },
+      {
+         "path": "tests/package_vm_wasm_optimizing_component/CMakeLists.txt",
+         "sha256": "aa88d92dfca734be43539a411409e5256e2f003462d4bd4a21db3bc79b87d21f"
+      },
+      {
+         "path": "tests/package_vm_wasm_optimizing_component/verify_installed.cmake",
+         "sha256": "ef9d58eafb85dee81ba40cc3147378ad3d87f73eb455aceebe5553123ff7148f"
+      },
+      {
+         "path": "tests/package_vm_wasm_optimizing_component/README.md",
+         "sha256": "54460b1db9ff4be60f1957447bfd766d918920e985526b205172efab7d1c77be"
+      }
+   ],
+   "unchanged_canonical_inputs": [
+      {
+         "path": "tests/vm_wasm_optimizing/export_name_tests.cpp",
+         "sha256": "89ae5d40aa965c6d83025c2286e599ef4beac3d0fb4c31d4ff62d28960f6b641"
+      },
+      {
+         "path": "tests/vm_wasm_optimizing/session_tests.cpp",
+         "sha256": "a88ae6a20859e66573033483db194ef2f98238f7d3ec402c6bad39e26267acbd"
+      },
+      {
+         "path": "tests/vm_wasm_optimizing/compile_fixture.cpp",
+         "sha256": "7d53ce979aeb7d9603354b7a1e77d87c2eb5cbfd683115eaf8712f1284e92cb7"
+      },
+      {
+         "path": "tests/vm_wasm_optimizing/heavy_fixture.cpp",
+         "sha256": "49efa4788f00746adb1b912e8bc9559c64332892566e5d8e9d2f37e5a8af8fbf"
+      },
+      {
+         "path": "tests/vm_wasm_execution/export_name_fixtures.hxx",
+         "sha256": "d8431d1914f298b472daaa5ebc9f5e68bf3de4cdd1b42f8ed2016a2e32f45921"
+      },
+      {
+         "path": "tests/package_vm_wasm_interpret_component/CMakeLists.txt",
+         "sha256": "0b5e6375defb1225cc31c336627f570f32039d73705e3560f33cf32d490b2c0f"
+      },
+      {
+         "path": "tests/package_vm_wasm_interpret_component/verify_relocation.cmake",
+         "sha256": "bbb25ac9c9f637326e1c38e3f8e0e1806508eb93bf56dae09cb7441e7c6d94b9"
+      },
+      {
+         "path": ".clang-format",
+         "sha256": "df3e63846eb7d116d9b8240ffe19353846105b697b26e03f51ab49779eeac019"
+      }
+   ],
+   "artifacts": [
+      {
+         "path": "../../artifacts/wamr-dev-integration-20261018-r5/package-registration-v1.patch",
+         "sha256": "8258f0ad5cd17288c205ca5ab64758d15ed4e5783b63fa228caef6d60626c19d"
+      },
+      {
+         "path": "../../artifacts/wamr-dev-integration-20261018-r5/package-qualification-runbook.md",
+         "sha256": "ef51fc28663ef3bec53ddd0c886f28a5617cddbc145de99630a75c6316853101"
+      }
+   ],
+   "registration_base_snapshot": {
+      "path": "tests/CMakeLists.txt",
+      "sha256": "e0fa4f998223ce20582937acf364e471238f729a893ffab73af872e8a9c15e4c",
+      "git_apply_check": "PASS",
+      "modified_by_this_slice": false
+   },
+   "evidence_boundary": "No package configure, compilation or runtime executed. Profiling smoke has no sampler or positive native-PC assertion. Canonical public sampling tests remain separate. Source-level and installed/product acceptance are not interchangeable."
+}

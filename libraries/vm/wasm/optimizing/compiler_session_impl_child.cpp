@@ -21,7 +21,9 @@ module;
 #include <atomic>
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fcntl.h>
 #include <forge/exceptions/macros.hpp>
 #include <functional>
@@ -112,6 +114,12 @@ compiler_session::impl::child::~child() {
 void compiler_session::impl::child::spawn(std::stop_token stop) {
    if (stop.stop_requested())
       FORGE_THROW_EXCEPTION(exceptions::cancelled, "compiler helper cancelled before spawn");
+   workspace = (std::filesystem::temp_directory_path() / "forge-wasm-compiler-XXXXXX").string();
+   if (::mkdtemp(workspace.data()) == nullptr) {
+      workspace.clear();
+      FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler helper workspace is unavailable");
+   }
+   workspace_pending.store(true, std::memory_order_release);
    auto endpoints = std::array<int, 2>{-1, -1};
    int socket_type = SOCK_STREAM;
 #if defined(__linux__)
@@ -147,6 +155,7 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
    auto actions = posix_spawn_file_actions_t{};
    require_spawn(::posix_spawn_file_actions_init(&actions));
    const auto destroy_actions = boost::scope::scope_exit{[&] { ::posix_spawn_file_actions_destroy(&actions); }};
+   require_spawn(::posix_spawn_file_actions_addchdir_np(&actions, workspace.c_str()));
    require_spawn(::posix_spawn_file_actions_adddup2(&actions, child_fd, STDIN_FILENO));
    require_spawn(::posix_spawn_file_actions_adddup2(&actions, child_fd, STDOUT_FILENO));
    require_spawn(::posix_spawn_file_actions_adddup2(&actions, null_fd, STDERR_FILENO));
@@ -203,7 +212,24 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
 }
 
 bool compiler_session::impl::child::is_quiescent() const noexcept {
+   return process_drained() && !workspace_pending.load(std::memory_order_acquire);
+}
+
+bool compiler_session::impl::child::process_drained() const noexcept {
    return quiescent.load(std::memory_order_acquire);
+}
+
+void compiler_session::impl::child::remove_workspace() {
+   if (!process_drained())
+      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler workspace still has a live child");
+   if (!workspace_pending.load(std::memory_order_acquire))
+      return;
+   auto error = std::error_code{};
+   std::filesystem::remove_all(workspace, error);
+   if (error)
+      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler helper workspace cleanup is incomplete");
+   workspace.clear();
+   workspace_pending.store(false, std::memory_order_release);
 }
 
 bool compiler_session::impl::child::drained() const noexcept {
@@ -586,7 +612,7 @@ compiler_session::impl::child::run_owned(std::shared_ptr<child> self, std::vecto
       self->quiescent.store(true, std::memory_order_release);
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "compiler helper was not launched");
    }
-   if (self->is_quiescent()) {
+   if (self->process_drained()) {
       // A cleanup actor can finish before normal activation is scheduled. Do
       // not rearm IO, re-adopt a reaped PID, or report an empty successful reply.
       if (self->failure)
@@ -638,7 +664,7 @@ compiler_session::impl::child::run_owned(std::shared_ptr<child> self, std::vecto
       if (self->incomplete)
          FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler helper ownership/reap is unresolved");
       self->refresh_quiescent();
-      if (self->is_quiescent()) {
+      if (self->process_drained()) {
          self->stop_registration.reset(); // actual unregister/join on host, after all actor drains
          if (self->failure) {
             self->append_deadline_context();
@@ -661,7 +687,7 @@ compiler_session::impl::child::cleanup_owned(std::shared_ptr<child> self,
       self->failure = self->cancelled_error;
    self->stop_requested.store(true, std::memory_order_release);
    self->changed.notify();
-   if (self->is_quiescent())
+   if (self->process_drained())
       co_return;
    if (self->unresolved)
       FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler helper ownership is unconfirmed");
@@ -679,7 +705,7 @@ compiler_session::impl::child::cleanup_owned(std::shared_ptr<child> self,
       if (self->incomplete)
          FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler helper cleanup is incomplete");
       self->refresh_quiescent();
-      if (self->is_quiescent()) {
+      if (self->process_drained()) {
          self->stop_registration.reset();
          co_return;
       }

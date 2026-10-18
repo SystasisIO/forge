@@ -225,17 +225,167 @@ class service_node {
 - `forge::vm::wasm::interpret` owns neutral WebAssembly parsing, validation, execution,
   host-function mechanics, guarded memory, deterministic floating point,
   watchdog behavior and supported execution backends.
-- The approved EOS VM OC port adds `forge::vm::wasm::optimizing` as a sibling
-  leaf. It owns native artifacts, execution, cache mechanics and the bounded
-  async client of an isolated compiler process. It reuses the existing WASM
-  parser/validation and host mechanisms; a second parser or backend facade is
-  forbidden. Products own backend selection, cache budgets and activation policy.
-- LLVM lowering and the private compiler worker belong to the optional
-  `forge::tooling::wasm_compiler` leaf. Runtime VM consumers must not acquire
-  LLVM headers or link dependencies merely by using native execution.
-- VM libraries must not contain blockchain controller behavior, state access,
-  contract policy, transaction/resource accounting, code-cache policy or
-  product-specific host functions.
+- The WASM family groups independent `interpret`, `optimizing`, `compiler` and
+  `execution` leaves. Family membership does not imply linking every leaf.
+  `compiler` owns optional isolated WASM-to-native compilation; LLVM stays
+  private to that target. The explicitly selected LLVM JIT runtime is a narrow
+  exception with its own private LLVM dependency, not a dependency of ordinary
+  interpreter/AOT builds. Tooling commands may invoke the compiler leaf but own
+  no VM/codegen algorithms.
+- `execution` owns bounded pure Contract SDK action invocation. Its SDK/Chain
+  name dependencies must not leak into the generic interpreter, optimized
+  executor or compiler. Low-level VM leaves must not import `execution`.
+- No VM leaf owns blockchain controller behavior, state persistence, Chain
+  authorization, transaction/resource billing or product-specific host functions.
+  Existing bounded compiler-session/cache ownership must not be duplicated.
+- Shared engine lifetime, numeric rules, memory checks and generic host calls
+  have one owner. Do not copy them into each mode or into the SDK adapter.
+  WAMR types stay private; do not introduce an aggregate WASM module/target.
+- The accepted shared WAMR bridge is owned by `interpret`: `prepared_module`
+  admits original WASM, and its source-plus-native path must admit that source
+  before loading native output; `runtime_context` serves both execution modes.
+  `optimizing` consumes these neutral mechanisms and owns its existing session,
+  cache and executor lifecycle; it must not duplicate WAMR instance/binding state.
+- Guest initialization/start is part of an invocation, not an unbounded setup
+  step. Install cancellation before any guest code; preserve host FP state on
+  success, trap and cancellation. Do not treat test-only WAMR bindings or a
+  native stack-byte limit as a complete public backend or logical resource policy.
+- Generic WAMR host bindings are immutable and module-local. SDK adapters derive
+  signatures from the canonical registry; do not replace process-global native
+  registrations during module loading. Preserve typed host exceptions outside
+  C/generated frames, including their precedence over racing cancellation.
+- Logical memory limits use WASM's 64 KiB pages, not upstream coalesced page
+  counts. Reject an initial allocation above the caller cap before instantiation;
+  guest memory accessed only through host imports must not be silently shrunk.
+- The revised page-cap PROPOSAL is 65,535 (`UINT32_MAX / 65536`), or 4 GiB
+  minus 64 KiB. The previous 65,536-page proposal was not qualified support:
+  its byte count narrows to zero in the u32 usage-allocation callback ABI.
+  Reject over-cap initial memory/unsupported configuration before narrowing or effects,
+  with typed profile/configuration errors rather than ambiguous operational
+  failures. Keep valid zero-initial-memory behavior distinct. Do not widen WAMR
+  counters/callbacks; require fresh source-boundary and compiler/runtime tests.
+  A declared maximum of 65,536 or no maximum is not an over-cap initial memory;
+  growth still intersects the profile. Explicit configuration 65,536 through
+  `UINT32_MAX - 1` is refused; the existing `UINT32_MAX` sentinel stays unbounded
+  only within the common profile.
+- Metadata-only checks are not full admission. Instruction/stack/call-depth
+  limits and artifact-profile validation remain mandatory for an API switch.
+- The maintainer-approved WAMR replacement uses an explicit bounded deterministic
+  profile, not the full historical EOS capacity range. Do not widen WAMR counters
+  to retain unused extremes. Preserve consumer APIs, required donor contracts,
+  numeric behavior, safety, cancellation and isolation within the admitted profile.
+  The 65,536-local fixture is an expected rejection in interpreter and AOT admission,
+  not a missing capacity feature; retain it and document the intentional break.
+- Derive/version common profile constants with the public interpreter and AOT
+  owners; do not invent caps from a small contract corpus or silently clamp caller
+  budgets. Keep 8/16 KiB function-budget and configured 251/1024-depth acceptance
+  tests. Logical limits do not establish physical stack safety: account frame
+  overhead, live native frames and concurrent invocations separately. See
+  `docs/donors/forge-wamr-public-profile-v1.md` for the decision and open gates.
+- The shared P1 profile requires `max_function_results = 1`: reject multi-result
+  types before projecting public signatures in runtime, validator and compiler
+  admission. Other declared numeric caps remain provisional until the complete
+  boundary/physical qualification; single-result policy is not full acceptance.
+- The maintainer explicitly approved retiring three historical malformed-WASM
+  permissions: `allow_code_after_function_end`, `allow_invalid_empty_local_set`
+  and `allow_u32_limits_flags`. Document them as unsupported/deprecated in the
+  WAMR profile; new tests must reject their invalid inputs even when enabled.
+  Preserve historical evidence. This does not cover `allow_zero_blocktype`.
+- Preserve `allow_zero_blocktype` through the existing loader policy: default
+  numeric-only admission; enabled mode treats only a literal zero byte as void.
+  Runtime and compiler must agree, retain original caller bytes and reject
+  type-index/overlong encodings outside the numeric profile. Do not add a parser.
+- The separately approved raw OC machine-entry API break is limited to
+  `artifact::entry()` and `entry_function`, with exact dependent surfaces
+  confirmed by the AOT owner and documented in the release note. Do not deliver
+  an always-throw compatibility placeholder or a raw-entry adapter. Preserve
+  `compiled_module`, host APIs, executor and existing session/cache ownership;
+  migrate raw invocation through the public executor and WAMR's own ABI.
+- On 2026-10-17 the maintainer also approved retiring `interpreter::parser`,
+  `null_backend::parser/context`, `jit_allocator` and `growable_allocator`.
+  Document the exact source removals and migrate validation through the public
+  backend/prepared-module API. Preserve `interpreter::context`, caller-owned
+  `wasm_allocator`, host bindings, limits, cancellation and session/cache.
+  This approval does not retire other live value or host-conversion contracts.
+- On 2026-10-18 the maintainer explicitly approved retiring only these native
+  signal types: `native_signal_fault`, `native_signal_ranges`,
+  `signal_boundary_stage`, `signal_boundary_status`, `native_signal_result`
+  and `signal_recovery_entry`; and these functions:
+  `prepare_signal_recovery_thread`, `release_signal_recovery_thread`,
+  `invoke_native_with_signals`, `leave_native_with_signals` and
+  `invoke_without_signal_recovery`. Record the intentional source/API break in
+  `docs/releases/unreleased-wamr-bounded-profile.md`; do not restore these names
+  as stubs, casts or compatibility wrappers. Migrate WASM calls through the
+  existing backend, prepared context or executor and their real WAMR transport,
+  not source-compatible signatures for the retired boundary. Preserve watchdog,
+  `invoke_with_signal_handler` including `nullptr` helpers, and numeric/FP
+  utility APIs. This approval does not authorize any broader API retirement.
+- `jit_profile` remains required. Spring exposes instruction-level profiling
+  through `--profile-account`; the absence of a current Spine/Turbine caller
+  does not authorize deleting it. Implement the native-PC to WASM-instruction
+  mapping using WAMR/LLVM facilities and qualify sampling/lifetime behavior.
+  Public observers retain the complete preparation owner, not only executable
+  pages or a copied map. Publish immutable maps before execution; translation
+  during sampling must not allocate or lock. Stop/join sampling before moving
+  or destroying its observer. Plain JIT must not acquire profiling overhead.
+  Keep source review, runtime sampling and platform acceptance separate.
+  Function-only counters, ordinary JIT, or a compile-time rejection do not
+  satisfy this profiling requirement. Keep it explicitly open until verified.
+- Export names are length-bearing WASM byte strings. Empty and embedded-NUL
+  exports remain distinct through admission, instance lookup, AOT serialization
+  and C API byte vectors. Never use `strlen`/`strcmp` for their identity or
+  accounting; strict import/symbol strings are a different boundary. Extend
+  the existing loader/metadata owners, not a second parser or name cache.
+- These scoped approvals do not waive real-consumer API/lifetime compatibility:
+  qualify sequential cached-context handoff on one caller allocator, the existing
+  three-argument absolute-deadline `timed_run` and `interrupt_options`. Preserve
+  f6 legacy timed-run recovery through fresh initialization after a failed scope
+  closes; a transported host exception alone must not permanently poison that
+  legacy backend. Strict `with_invocation` poisoning remains unchanged. A budget
+  guard is not implicit VM reset or host/application/DB rollback. Private
+  system-provider/profile passes are not product consumer acceptance.
+- Preserve the neutral `guest_trap : interpreter` contract and typed memory/local
+  resource distinctions in `tests/vm_wasm/WAMR_COMPATIBILITY.md`. The first host
+  failure recorded by an active timed/invocation scope precedes cancellation,
+  logical-depth flags and structured engine errors, even across raw context
+  reset/clear/reinitialization. An old failure from a closed scope must not
+  override a future pre-canceled or empty scope. Never classify by message text
+  or turn unknown/auxiliary-stack reasons or physical stack/allocation failure
+  into a canonical guest result without an approved rule.
+- Use the reviewed fork/source identity in `docs/donors/forge-wamr-fork-v1.md`
+  (published draft candidate `69c107c`, full qualification pending), not historical
+  prepared-source paths or build-time patches.
+  The reviewed usage-0 low-level checks do not qualify the common usage-1 profile.
+- The approved usage-1 allocator plan reuses the existing `wasm_allocator` as the
+  sole public linear-memory mapping, with synchronized instance ownership and one
+  process-lifetime usage dispatcher plus scoped owners. No second buffer or public
+  system-provider fallback is allowed. Implementation/freeze and fresh full tests
+  remain gates. A real private system provider is not public allocator evidence.
+- Allocator reset/handoff retires an idle instance before changing its pages.
+  Active guest/host execution and argument conversion must prevent external
+  mutation; callback/destruction lifetime must synchronize. Ordinary cached
+  A-reset-B-reset-A must not require a product-specific retirement workaround.
+- The maintainer approved replacing exact prospective preparation sizing with a
+  conservative, enforced reservation ceiling. Reserve before allocation; account
+  WAMR heap storage, native mappings, temporary overlap and C++ bridge storage.
+  Publish only within that ceiling and refund unused reservation after the
+  corresponding storage is released. Document the changed `prepared_byte_size()`
+  contract. The isolated owner prototype alone does not close this gate: keep
+  production preparation fail-closed until real-loader and session integration
+  pass independent review. A guessed multiplier or after-load measurement is
+  not a preallocation bound. See
+  `docs/iterations/forge-wamr-preparation-reservation/design.md`.
+- Completion of the WAMR migration includes replacing the remaining EOS-derived
+  x86 JIT, not silently disabling it or routing it to AOT. Use WAMR's existing JIT
+  mechanism; ARM64 JIT is in scope only where supported by upstream WAMR, without
+  writing a new architecture backend. Interpreter and AOT-only consumers must
+  retain an LLVM-free runtime; any LLVM JIT configuration is explicit and optional.
+- Logical call depth includes guest-to-host calls and guest initialization.
+  Exported imports must preserve their raw native ABI in AOT; never route them
+  through a generated-code trampoline with a different signature.
+- Keep immutable baseline/evidence records unchanged when moving libraries.
+  Document old-to-new names and qualify installed consumers separately from
+  source builds. Optional compiler byte caps do not prove peak-memory/time bounds.
 - Native ports must preserve donor behavior and licensing. Downstream
   compatibility aliases, donor namespaces and donor macro families are not
   public Forge API.
@@ -248,7 +398,7 @@ class service_node {
 - The WASM effect response type describes the whole result. HTTP body rules
   are separate host-selected capability policy. Serializable context facts
   are not authentication or authorization capabilities.
-- `forge::execution` is an empty family root. `forge::execution::wasm` owns
+- `forge::vm::wasm::execution` owns
   bounded pure SDK action invocation over `forge_vm_wasm_interpret`, not a
   scheduler, cache policy, persistence, networking or Chain authorization.
 - A production WASM invocation must exclusively own its compiled code
@@ -261,10 +411,9 @@ class service_node {
   deterministic contract test host are independent optional package
   components.
 - Host contract libraries are enabled by `FORGE_ENABLE_TOOLING`.
-  ABI and attribute components may depend on Clang/LLVM. The separately opt-in
-  WASM optimizing compiler is the explicitly approved additional LLVM owner;
-  it does not enable unrelated contract tooling. Default configuration remains
-  free of the optimizing compiler and does not build LLVM.
+  Within tooling, only ABI and attribute components depend directly on
+  Clang/LLVM. The optional VM compiler owns its own LLVM dependency; a compiler
+  command uses that leaf, not a second compiler implementation.
 - `guest/` owns wasm32 code, the sysroot, contract examples and guest tests.
   Normal Forge configuration must not enter this project or build LLVM.
 - `tools/` owns thin host programs. Programs may parse no domain model and
@@ -323,6 +472,10 @@ representation or variant of `A`.
 - If yes, `A` may be a family root and `B` may be its member.
 - If no, and `B` exposes, adapts, depends on or uses `A`, do not name it as
   `A::B`; root it in the dependent medium or artifact category instead.
+
+The explicitly approved WASM family also groups its domain-specific compiler
+and SDK execution adapter. These remain independent leaves with one-way
+dependencies; this does not authorize moving arbitrary consumers into the VM.
 
 Group by what the artifact is, not by an implementation detail:
 

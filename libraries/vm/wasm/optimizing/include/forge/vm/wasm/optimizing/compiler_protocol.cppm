@@ -16,7 +16,7 @@ export import forge.vm.wasm.optimizing.exceptions;
 
 export namespace forge::vm::wasm::optimizing::compiler_protocol {
 
-inline constexpr std::uint32_t current_version = 2;
+inline constexpr std::uint32_t current_version = 3;
 inline constexpr std::uint32_t magic = 0x464f4343;
 enum class message_kind : std::uint8_t { hello, request, reply, hello_ack, preflight };
 
