@@ -9,8 +9,11 @@
 #include <boost/test/unit_test.hpp>
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -43,6 +46,17 @@ boost::asio::awaitable<bool> wait_for_cancellation(
 boost::asio::awaitable<void> notify(forge::asio::notification* signal) {
    signal->notify();
    co_return;
+}
+
+boost::asio::awaitable<bool> wait_with_both_cancellation_sources(
+   forge::asio::notification& signal, std::stop_token stop) {
+   try {
+      static_cast<void>(co_await signal.async_wait_until(signal.epoch(),
+         std::chrono::steady_clock::now() + std::chrono::seconds{3}, stop));
+   } catch (const boost::system::system_error& error) {
+      co_return error.code() == boost::asio::error::operation_aborted;
+   }
+   co_return false;
 }
 
 boost::asio::awaitable<bool> wait_owned_early_completion(bool sticky) {
@@ -204,4 +218,28 @@ BOOST_AUTO_TEST_CASE(asio_notification_stop_is_sticky_prompt_and_preserves_calle
    auto successor = boost::asio::co_spawn(caller, signal.async_wait(observed), boost::asio::use_future);
    BOOST_REQUIRE(successor.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
    BOOST_CHECK_NE(successor.get(), observed);
+}
+
+BOOST_AUTO_TEST_CASE(asio_notification_combines_native_and_standard_stop_without_waiting_for_notify) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 4}};
+   auto serial = boost::asio::make_strand(runtime.context());
+   auto notification = forge::asio::notification{};
+   for (auto attempt = 0U; attempt < 32U; ++attempt) {
+      auto stop = std::stop_source{};
+      auto native = boost::asio::cancellation_signal{};
+      auto waiting = boost::asio::co_spawn(serial, wait_with_both_cancellation_sources(notification, stop.get_token()),
+         boost::asio::bind_cancellation_slot(native.slot(), boost::asio::use_future));
+      auto armed = std::promise<void>{};
+      auto ready = armed.get_future();
+      boost::asio::post(serial, [&armed] { armed.set_value(); });
+      BOOST_REQUIRE(ready.wait_for(std::chrono::seconds{1}) == std::future_status::ready);
+      boost::asio::post(serial, [&native] { native.emit(boost::asio::cancellation_type::all); });
+      auto stopper = std::jthread{[&] { if (attempt % 2U != 0U) { stop.request_stop(); } }};
+      stopper.join();
+      const auto completed = waiting.wait_for(std::chrono::seconds{1}) == std::future_status::ready;
+      if (!completed) { notification.notify(); }
+      BOOST_REQUIRE(completed);
+      BOOST_CHECK(waiting.get());
+      BOOST_CHECK(stop.stop_requested() == (attempt % 2U != 0U));
+   }
 }

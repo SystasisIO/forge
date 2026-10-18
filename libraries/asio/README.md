@@ -26,7 +26,11 @@ race-safe notifications and single-thread affine execution.
 - `forge.asio.task` — bounded priority scheduler and task handles.
 - `forge.asio.compute` — bounded FIFO execution for synchronous CPU work.
 - `forge.asio.gate` — cancellation-aware FIFO admission with RAII tickets.
+  `acquire(stop_token)` combines an explicit standard stop token with existing
+  Asio cancellation without changing the caller's cancellation policy.
 - `forge.asio.notification` — sticky epoch notifications for shared async state.
+  Explicit stop-token waits also retain associated Asio cancellation; both
+  sources wake the same mutex-protected waiter without changing caller filters.
 - `forge.asio.affine` — bounded synchronous execution on one owned OS thread.
 
 Target: `forge_asio`.

@@ -210,6 +210,10 @@ class service_node {
 - `forge::swarm::core` owns neutral immutable-file descriptors, identities,
   Merkle proofs and deterministic transfer mechanisms. It reuses Crypto/Raw
   and must not depend on Chain, DB, API, Asio, App or plugins.
+- Filesystem-neutral Swarm store/checkpoint contracts may name Boost.Asio
+  awaitables. They do not import or link Forge Asio or perform I/O. The
+  `swarm.storage` leaf owns file resources and uses caller-owned Forge Asio
+  disk/CPU executors; no payload DB or hidden worker pool belongs there.
 - The Swarm descriptor uses canonical Forge Raw. BEP 52 algorithm fixtures do
   not establish BitTorrent or IPFS wire compatibility.
 - Payload files, persistence adapters, active runtime and product admission

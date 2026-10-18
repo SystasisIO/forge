@@ -19,11 +19,45 @@ padding are different.
 | `forge.swarm.core.descriptor` | File entries, descriptor version, independent limits, validation and exact bounded encoding/decoding |
 | `forge.swarm.core.merkle` | SHA-256 block/piece trees, streaming file hasher and piece proofs |
 | `forge.swarm.core.identity` | `swarm_id` and validated identity calculation |
+| `forge.swarm.core.checkpoint` | Bounded versioned resume values and checksummed Raw encoding |
+| `forge.swarm.core.store` | Filesystem-neutral asynchronous store/checkpoint contracts, writer ownership and leases |
 | `forge.swarm.core.exceptions` | Typed errors over existing Forge exception machinery |
 
 There is no `forge.swarm` or `forge.swarm.core` facade module. Values have no
 pimpl or hidden runtime resources. All indices in Merkle APIs are file-local;
 there is no ambiguous global piece index.
+
+## Storage Contracts
+
+`store` names Boost.Asio awaitables but acquires no Forge Asio dependency and
+does not execute I/O. `store::writer` owns one unfinished piece until commit,
+discard or destruction. Blocks may arrive in any order at aligned offsets;
+unverified progress never establishes availability. `store::lease` is a
+move-only hold which a concrete store drains before closing its resources.
+Closing is explicit; destroying a value never implicitly deletes product files.
+
+`checkpoint_store` is the single selected durable metadata authority. A
+successful `async_save()` must atomically persist the whole checkpoint and
+report failures. The file implementation's sidecar is used only when no
+external adapter is supplied. Object Store models/adapter follow in PR3.
+An external adapter binds its content/locator and atomically rejects stale or
+nonmonotonic checkpoint generations; a successful return is not a queued write.
+
+Checkpoint v1 is canonical Raw `pair<resume_state, sha256>`. The digest covers
+the canonical Raw state (not the digest itself). It detects accidental metadata
+corruption, not hostile modification: content must still be verified after
+reopen. The state contains uint32 version, content identity, uint64 generation,
+published flag, little-bit-first verified bitmap and ordered unfinished records
+with exact block bitmaps. Bits beyond the declared geometry must be zero;
+verified and unfinished entries cannot overlap. At most 64 unfinished pieces
+and 1 MiB encoded metadata are accepted. A published checkpoint is complete.
+Unknown versions, noncanonical counts, wrong identity/checksum/geometry and
+excess allocation are typed `invalid_checkpoint` errors. The decoder uses
+bounded Forge Raw rather than a separate codec.
+
+This restart-cache layout is **Preview** independently of the immutable
+descriptor v1 format. A future incompatible cache revision requires an explicit
+version/reset path; there is no silent legacy decoder.
 
 ## Frozen V1 Raw Layout
 

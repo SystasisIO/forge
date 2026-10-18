@@ -22,6 +22,11 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
       name = source.relative_to(root)
       if re.search(r"\bnamespace\s+forge::swarm\s*\{", text):
          errors.append(f"{name}: symbols must belong to a Swarm leaf namespace")
+      if "storage" in source.relative_to(family).parts:
+         if re.search(r"\bimport\s+forge\.(?:chain|api|app|net|plugins|execution|vm|rocksdb|db\.(?:blob|rocksdb|mdbx))(?:[.;])", text):
+            errors.append(f"{name}: file storage imports an unrelated runtime or payload backend")
+         if re.search(r"\bstd::(?:async|thread|jthread)\b|\bboost::asio::thread_pool\b", text):
+            errors.append(f"{name}: file storage creates a private worker runtime")
       if "core" not in source.relative_to(family).parts:
          continue
       if re.search(r"\bimport\s+forge\.(?:chain|db|api|asio|app|net|plugins|execution|vm)(?:[.;])", text):
@@ -32,6 +37,10 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
       errors.append("libraries/swarm/core: target definition is missing")
    elif re.search(r"\bforge_(?:chain|db|api|asio|app|net|plugins|execution|vm)(?:_|\b)", cmake.read_text()):
       errors.append("libraries/swarm/core: target depends on an upper layer")
+
+   storage = family / "storage/CMakeLists.txt"
+   if storage.is_file() and re.search(r"\bforge_(?:chain|api|app|net|plugins|execution|vm|rocksdb|db_(?:blob|rocksdb|mdbx))(?:_|\b)", storage.read_text()):
+      errors.append("libraries/swarm/storage: target depends on an unrelated runtime or payload backend")
 
    conversion = root / "libraries/core/include/forge/core/conversion.cppm"
    if not conversion.is_file():

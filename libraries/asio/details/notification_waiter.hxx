@@ -18,20 +18,13 @@ class notification_waiter final : public std::enable_shared_from_this<notificati
 
    boost::asio::awaitable<boost::system::error_code> wait_until(
        std::chrono::steady_clock::time_point deadline);
-   boost::asio::awaitable<boost::system::error_code> wait_until_cancellable(
-       std::chrono::steady_clock::time_point deadline);
    boost::asio::awaitable<boost::system::error_code> wait_until(
        std::chrono::steady_clock::time_point deadline, std::stop_token stop);
    void wake() noexcept;
 
  private:
-   enum class cancellation_mode {
-      disabled,
-      associated,
-   };
-
    boost::asio::awaitable<boost::system::error_code> wait_until_impl(
-       std::chrono::steady_clock::time_point deadline, cancellation_mode mode);
+       std::chrono::steady_clock::time_point deadline);
 
    boost::asio::steady_timer timer_;
    mutable std::mutex mutex_;

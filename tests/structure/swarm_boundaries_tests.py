@@ -53,6 +53,21 @@ class SwarmBoundariesTests(unittest.TestCase):
                  "import forge.swarm.core.descriptor;\ntemplate <class T> class conversion;\n")
       self.assertTrue(any("acquire dependencies" in e for e in self.errors()))
 
+   def test_storage_reuses_asio_but_not_payload_backends(self):
+      name = "libraries/swarm/storage/file_store.cpp"
+      self.write(name, "import forge.asio.compute;\nimport forge.swarm.core.store;\n")
+      self.assertEqual(self.errors(), [])
+      for module in ("net.p2p.node", "db.blob.store", "db.rocksdb.driver", "rocksdb.database", "api.core"):
+         with self.subTest(module=module):
+            self.write(name, f"import forge.{module};\n")
+            self.assertTrue(any("payload backend" in e for e in self.errors()))
+
+   def test_storage_cannot_create_its_own_thread_pool(self):
+      for source in ("std::jthread worker;", "std::async(work);", "boost::asio::thread_pool pool;"):
+         with self.subTest(source=source):
+            self.write("libraries/swarm/storage/file_store.cpp", source)
+            self.assertTrue(any("private worker runtime" in e for e in self.errors()))
+
 
 if __name__ == "__main__":
    unittest.main()
