@@ -7,6 +7,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from swarm_boundaries import check_swarm_boundaries
 
 SOURCE_SUFFIXES = {".cpp", ".cppm", ".hpp", ".hxx"}
 LAYOUT_ROOTS = ("libraries", "plugins", "guest/libraries")
@@ -2763,6 +2764,7 @@ def main() -> int:
    files = source_files(root, SCAN_ROOTS)
 
    check_layout(root, errors)
+   check_swarm_boundaries(root, errors)
    check_aggregates(root, errors)
    check_tls_context_ownership(root, errors)
    check_http_cookie_asset_boundaries(root, errors)

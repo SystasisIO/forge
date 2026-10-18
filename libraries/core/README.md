@@ -24,6 +24,8 @@ logging or network dependencies.
 - `forge.core.uint128` — retained 128-bit value support.
 - `forge.core.utf8` — UTF-8 validation/cleanup wrappers.
 - `forge.core.utility` — small utility primitives such as `yield_function_t`.
+- `forge.core.conversion` — primary `forge::core::conversion<Result>` template
+  declaration; domain conversion libraries own explicit specializations.
 - `forge.core.version`, `forge.core.git_revision` — build/version metadata.
 
 Target: `forge_core`.
@@ -42,6 +44,17 @@ import forge.core.string;
 auto value = forge::to_uint64("18446744073709551615");
 auto printable = forge::escape_str("line\nbreak", 64);
 ```
+
+### Declare A Domain Conversion
+
+Import `forge.core.conversion` in a domain conversion module and specialize
+`forge::core::conversion<Result>` in `namespace forge::core`. The specialization
+owns its input types, validation and assembly; Core supplies no default mapping,
+virtual interface, registry or serialization. Its target depends on its input
+and result libraries, while those libraries do not depend on the conversion.
+
+Unsupported result types remain incomplete. A conversion must not implicitly
+read a database, commit state or treat remote input as trusted local state.
 
 ## Risks And Anti-Patterns
 

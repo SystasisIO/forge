@@ -204,6 +204,20 @@ class service_node {
 - Product blockchains may build runtime layers on top of the Chain family, but
   downstream product names and assumptions must not enter its public API.
 
+## Swarm Library Boundary
+
+- `forge::swarm` is an empty family root. Public symbols belong to its leaves.
+- `forge::swarm::core` owns neutral immutable-file descriptors, identities,
+  Merkle proofs and deterministic transfer mechanisms. It reuses Crypto/Raw
+  and must not depend on Chain, DB, API, Asio, App or plugins.
+- The Swarm descriptor uses canonical Forge Raw. BEP 52 algorithm fixtures do
+  not establish BitTorrent or IPFS wire compatibility.
+- Payload files, persistence adapters, active runtime and product admission
+  policy have separate owners as recorded in the Swarm implementation plan.
+- `forge.core.conversion` declares only the common primary template. Domain
+  conversion leaves own explicit specializations in its C++ namespace; Core
+  must not acquire domain or serialization dependencies through customization.
+
 ## VM Library Boundary
 
 - `forge::vm` and its WASM child are empty family roots; public symbols live

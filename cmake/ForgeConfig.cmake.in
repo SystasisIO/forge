@@ -30,6 +30,7 @@ set(
    raw
    db_ids
    compression
+   swarm_core
    chain_core
    chain_savanna_values
    chain_protocol
@@ -172,6 +173,11 @@ macro(_forge_add_component component)
          _forge_add_component(variant)
       elseif("${component}" STREQUAL "compression")
          _forge_add_component(exceptions)
+      elseif("${component}" STREQUAL "swarm_core")
+         _forge_add_component(core)
+         _forge_add_component(exceptions)
+         _forge_add_component(raw)
+         _forge_add_component(crypto_digest)
       elseif("${component}" STREQUAL "chain_core")
          _forge_add_component(exceptions)
          _forge_add_component(raw)

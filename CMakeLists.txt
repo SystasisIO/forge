@@ -336,6 +336,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/variant/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/raw/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/compression/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/protocol/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/transaction/include"
@@ -803,6 +804,7 @@ add_subdirectory(libraries/db/object)
 add_subdirectory(libraries/config/core)
 add_subdirectory(libraries/codec/json)
 add_subdirectory(libraries/crypto)
+add_subdirectory(libraries/swarm)
 add_subdirectory(libraries/asio)
 
 set(
@@ -816,6 +818,7 @@ set(
    forge_log
    forge_raw
    forge_compression
+   forge_swarm_core
    forge_chain_core
    forge_chain_savanna_values
    forge_chain_protocol
@@ -1014,6 +1017,7 @@ set(
    raw
    db_ids
    compression
+   swarm_core
    chain_core
    chain_savanna_values
    chain_protocol
@@ -1212,6 +1216,7 @@ set(
    libraries/raw/include/forge
    libraries/db/ids/include/forge
    libraries/compression/include/forge
+   libraries/swarm/core/include/forge
    libraries/chain/core/include/forge
    libraries/chain/protocol/include/forge
    libraries/chain/transaction/include/forge
