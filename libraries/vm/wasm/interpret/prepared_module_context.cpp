@@ -14,6 +14,7 @@ module;
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "details/engine_instance.hxx"
@@ -72,6 +73,13 @@ namespace {
 } // namespace
 
 struct prepared_module::context::impl {
+   struct ancestor_interruption final : exceptions::canceled {
+      explicit ancestor_interruption(const std::shared_ptr<impl>& origin)
+          : exceptions::canceled("WASM invocation canceled"), origin(origin), thread(std::this_thread::get_id()) {}
+      std::weak_ptr<impl> origin;
+      std::thread::id thread;
+   };
+
    prepared_module& source;
    std::uint32_t depth;
    const execution_mode mode = execution_mode::interpreter;
@@ -88,6 +96,29 @@ struct prepared_module::context::impl {
    failure_scope* failures{};
    std::byte* native_stack_boundary{};
    std::size_t active_calls = 0;
+   std::size_t call_depth = 0;
+   std::exception_ptr interruption;
+
+   static std::shared_ptr<impl> interruption_origin(const std::exception_ptr& error) noexcept {
+      if (!error)
+         return {};
+      try {
+         std::rethrow_exception(error);
+      } catch (const ancestor_interruption& transport) {
+         if (transport.thread != std::this_thread::get_id())
+            return {};
+         auto origin = transport.origin.lock();
+         if (!origin)
+            return {};
+         const auto lock = std::unique_lock{origin->gate, std::try_to_lock};
+         // Exact exception identity is live only until its owning outer call
+         // unwinds. A saved/replayed or cross-thread host exception is not transport.
+         if (lock.owns_lock() && origin->call_depth && origin->interruption == error)
+            return origin;
+      } catch (...) {
+      }
+      return {};
+   }
 
    auto scoped_exit() {
       auto previous = std::exchange(normal_exit, {});
@@ -246,8 +277,12 @@ void prepared_module::context::initialize(void* host, std::stop_token stop) {
    } catch (const detail::engine_instance::initialization_trap& error) {
       throw_trap(error.reason);
    } catch (...) {
-      if (_impl->failure)
-         std::rethrow_exception(_impl->failure);
+      if (_impl->failure) {
+         const auto failure = _impl->failure;
+         if (impl::interruption_origin(failure))
+            _impl->failure = {};
+         std::rethrow_exception(failure);
+      }
       throw exceptions::execution_unavailable{"Local WASM instantiation resources are unavailable"};
    }
 }
@@ -356,6 +391,11 @@ std::optional<operand_stack_elem> prepared_module::context::call(void* host, std
                                                                  std::span<const operand_stack_elem> arguments,
                                                                  std::stop_token stop) {
    auto operation = scoped_activity();
+   ++_impl->call_depth;
+   const auto call_scope = scope_guard{[&] {
+      if (!--_impl->call_depth)
+         _impl->interruption = {};
+   }};
    if (!_impl->instance)
       throw exceptions::interpreter{"Backend is not initialized"};
    if (_impl->failure)
@@ -404,6 +444,12 @@ std::optional<operand_stack_elem> prepared_module::context::call(void* host, std
    } catch (...) {
       _impl->failure = _impl->instance->host_failure();
       if (_impl->failure) {
+         if (const auto origin = impl::interruption_origin(_impl->failure)) {
+            const auto transport = std::exchange(_impl->failure, {});
+            if (origin.get() == _impl.get() && _impl->call_depth == 1)
+               throw exceptions::canceled{"WASM invocation canceled"};
+            std::rethrow_exception(transport);
+         }
          if (_impl->failure == _impl->normal_exit && _impl->instance->consume_normal_exit(_impl->normal_exit)) {
             _impl->failure = {};
             return {};
@@ -414,6 +460,11 @@ std::optional<operand_stack_elem> prepared_module::context::call(void* host, std
       try {
          throw;
       } catch (const detail::engine_instance::canceled&) {
+         if (_impl->call_depth > 1) {
+            if (!_impl->interruption)
+               _impl->interruption = std::make_exception_ptr(impl::ancestor_interruption{_impl});
+            std::rethrow_exception(_impl->interruption);
+         }
          throw exceptions::canceled{"WASM invocation canceled"};
       } catch (const detail::engine_instance::depth_exceeded&) {
          throw exceptions::guest_trap{exceptions::guest_trap_kind::logical_depth, "WASM logical call depth exceeded"};

@@ -7,6 +7,7 @@ module;
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <latch>
 #include <mutex>
@@ -340,6 +341,118 @@ BOOST_AUTO_TEST_CASE(scoped_invocation_unwinds_private_ancestor_interruption_wit
          BOOST_REQUIRE(result.has_value());
          BOOST_TEST(result->to_ui32() == 42U);
       });
+   });
+}
+
+BOOST_AUTO_TEST_CASE(ancestor_transport_through_inner_guest_preserves_real_host_failures) {
+   if (!child_case("ancestor_transport_through_inner_guest_preserves_real_host_failures"))
+      return;
+   each_backend([]<typename Implementation> {
+      auto outer = interruption_owner<Implementation>{};
+      auto code = registered_interruption_fixture();
+      auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
+      auto inner = wasm::backend<interruption_functions, Implementation>{
+          pointer, code.size(), nullptr, wasm::default_options{}, false, false};
+      auto inner_host = interruption_host{};
+      auto external = std::stop_source{};
+      auto carrier = std::exception_ptr{};
+      auto continued = 0U;
+      inner_host.hook = [&] {
+         external.request_stop();
+         try {
+            outer.instance.call(outer.host, "env", "healthy");
+         } catch (...) {
+            carrier = std::current_exception();
+            throw;
+         }
+         ++continued;
+      };
+      outer.host.hook = [&] {
+         inner.with_invocation(&inner_host, {}, 1s, {}, [&] {
+            inner.call(inner_host, "env", "host");
+            ++continued;
+         });
+         ++continued;
+      };
+      BOOST_CHECK_THROW(outer.instance.timed_run(steady_clock::now() + 2s, {{}, external.get_token()},
+                                                 [&] { outer.instance.call(outer.host, "env", "host"); }),
+                        wasm::exceptions::interrupted);
+      BOOST_REQUIRE(static_cast<bool>(carrier));
+      BOOST_TEST(continued == 0U);
+      BOOST_TEST(outer.host.cleaned == 1U);
+      BOOST_TEST(inner_host.cleaned == 1U);
+      outer.healthy();
+      inner_host.hook = {};
+      inner.with_invocation(&inner_host, {}, 1s, {}, [&] {
+         const auto result = inner.call_with_return(inner_host, "env", "healthy");
+         BOOST_REQUIRE(result.has_value());
+         BOOST_TEST(result->to_ui32() == 42U);
+      });
+
+      // Same public canceled type, but genuinely thrown by this host: it must
+      // retain exact identity ahead of the owner's racing external interruption.
+      const auto host_error = std::make_exception_ptr(wasm::exceptions::canceled{"real host cancellation"});
+      external = std::stop_source{};
+      outer.host.hook = [&] {
+         external.request_stop();
+         std::rethrow_exception(host_error);
+      };
+      auto received = std::exception_ptr{};
+      try {
+         outer.instance.timed_run(steady_clock::now() + 2s, {{}, external.get_token()},
+                                  [&] { outer.instance.call(outer.host, "env", "host"); });
+      } catch (...) {
+         received = std::current_exception();
+      }
+      BOOST_CHECK(received == host_error);
+      outer.healthy();
+
+      // Replaying an expired carrier is an actual host error, not permission
+      // to clear failure state or reuse a failed strict invocation.
+      inner_host.hook = [&] { std::rethrow_exception(carrier); };
+      received = {};
+      try {
+         inner.with_invocation(&inner_host, {}, 1s, {}, [&] { inner.call(inner_host, "env", "host"); });
+      } catch (...) {
+         received = std::current_exception();
+      }
+      BOOST_CHECK(received == carrier);
+      BOOST_CHECK_THROW(inner.with_invocation(&inner_host, {}, 1s, {}, [] {}), wasm::exceptions::unusable);
+
+      // The origin context remains alive, but ownership never transfers with
+      // an exception_ptr to a different execution thread.
+      auto worker_error = std::exception_ptr{};
+      auto worker = std::jthread{[&] {
+         try {
+            auto worker_code = registered_interruption_fixture();
+            auto worker_pointer = wasm::wasm_code_ptr{worker_code.data(), worker_code.size()};
+            auto receiver = wasm::backend<interruption_functions, Implementation>{
+                worker_pointer, worker_code.size(), nullptr, wasm::default_options{}, false, false};
+            auto worker_host = interruption_host{};
+            worker_host.hook = [&] { std::rethrow_exception(carrier); };
+            auto error = std::exception_ptr{};
+            try {
+               receiver.with_invocation(&worker_host, {}, 1s, {}, [&] { receiver.call(worker_host, "env", "host"); });
+            } catch (...) {
+               error = std::current_exception();
+            }
+            if (error != carrier)
+               throw std::runtime_error("Cross-thread carrier lost its host exception identity");
+            auto poisoned = false;
+            try {
+               receiver.with_invocation(&worker_host, {}, 1s, {}, [] {});
+            } catch (const wasm::exceptions::unusable&) {
+               poisoned = true;
+            }
+            if (!poisoned)
+               throw std::runtime_error("Cross-thread carrier allowed strict backend reuse");
+         } catch (...) {
+            worker_error = std::current_exception();
+         }
+      }};
+      worker.join();
+      if (worker_error)
+         std::rethrow_exception(worker_error);
    });
 }
 
