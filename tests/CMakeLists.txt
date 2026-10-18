@@ -1006,6 +1006,19 @@ target_link_libraries(
 )
 add_test(NAME test_forge_crypto_keystore COMMAND test_forge_crypto_keystore WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+if(UNIX)
+   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+   add_executable(forge_password_input_helper crypto/password_input_helper.cpp)
+   target_link_libraries(forge_password_input_helper PRIVATE forge_crypto_keystore)
+   add_test(NAME test_forge_crypto_password_cancellation COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/crypto/password_cancellation.py --binary $<TARGET_FILE:forge_password_input_helper>)
+   set_tests_properties(test_forge_crypto_password_cancellation PROPERTIES TIMEOUT 30)
+   add_test(NAME test_forge_crypto_password_fifo COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/crypto/password_cancellation.py
+      --binary $<TARGET_FILE:forge_password_input_helper> --gate fifo)
+   set_tests_properties(test_forge_crypto_password_fifo PROPERTIES TIMEOUT 10)
+endif()
+
 add_executable(test_forge_crypto_wallet unit/main.cpp crypto_wallet/wallet_tests.cpp crypto_wallet/composition_tests.cpp)
 target_link_libraries(test_forge_crypto_wallet forge_plugins_crypto_wallet forge_plugins_chain_signer Boost::included_unit_test_framework)
 add_test(NAME test_forge_crypto_wallet COMMAND test_forge_crypto_wallet WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -1153,6 +1166,18 @@ target_link_libraries(test_forge_http_response_body_limit PRIVATE forge_net_http
 add_test(NAME test_forge_http_response_body_limit COMMAND test_forge_http_response_body_limit
    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_forge_http_response_body_limit PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_http_multipart_stream unit/main.cpp http/multipart_stream_tests.cpp)
+target_link_libraries(test_forge_http_multipart_stream PRIVATE forge_net_http forge_asio
+   Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_multipart_stream COMMAND test_forge_http_multipart_stream)
+set_tests_properties(test_forge_http_multipart_stream PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_http_api_response_limit unit/main.cpp api/http_response_limit_tests.cpp)
+target_link_libraries(test_forge_http_api_response_limit PRIVATE forge_api_http forge_net_http forge_asio
+   Boost::included_unit_test_framework)
+add_test(NAME test_forge_http_api_response_limit COMMAND test_forge_http_api_response_limit)
+set_tests_properties(test_forge_http_api_response_limit PROPERTIES TIMEOUT 60)
 
 add_executable(
    test_forge_yamux
@@ -1304,7 +1329,24 @@ add_executable(
    http_websocket/api_live_stream_tests.cpp
    http_websocket/network_tests.cpp
 )
-target_link_libraries(test_forge_http_websocket forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_http_websocket PRIVATE
+   forge_api_core
+   forge_api_core_values
+   forge_api_auth
+   forge_api_http
+   forge_api_websocket
+   forge_asio
+   forge_net_http
+   forge_net_transport
+   forge_net_tls
+   forge_net_websocket
+   forge_codec_json
+   forge_codec_xml
+   forge_raw
+   forge_schema
+   forge_variant
+   Boost::included_unit_test_framework
+)
 add_test(NAME test_forge_http_websocket COMMAND test_forge_http_websocket WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(test_forge_http_client_preparation unit/main.cpp http_websocket/client_preparation_tests.cpp)

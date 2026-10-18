@@ -9143,6 +9143,8 @@ BOOST_AUTO_TEST_CASE(http_multipart_writer_generates_safe_boundaries_and_quoted_
    BOOST_REQUIRE_EQUAL(form.files.size(), 1U);
    BOOST_TEST(form.files.front().name == "file");
    BOOST_TEST(form.files.front().content_type == "text/plain");
+   BOOST_REQUIRE(form.files.front().filename.has_value());
+   BOOST_TEST(*form.files.front().filename == "..\\secret\"quoted.txt");
    BOOST_TEST(form.files.front().text() == "file-body");
 }
 

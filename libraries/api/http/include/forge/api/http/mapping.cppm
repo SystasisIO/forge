@@ -5,6 +5,7 @@ module;
 #include <boost/mp11.hpp>
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -74,6 +75,7 @@ struct route {
    error_codec error_body_codec = error_codec::json;
    cache_policy cache = cache_policy::unspecified;
    std::optional<std::string> timeout_field;
+   std::optional<std::uint64_t> max_response_body_bytes;
 };
 
 class route_builder {
@@ -136,6 +138,12 @@ class route_builder {
 
    route_builder&& timeout(std::string field) && {
       route_.timeout_field = std::move(field);
+      return std::move(*this);
+   }
+
+   route_builder&& response_body_limit(std::uint64_t bytes) &&
+   {
+      route_.max_response_body_bytes = bytes;
       return std::move(*this);
    }
 
