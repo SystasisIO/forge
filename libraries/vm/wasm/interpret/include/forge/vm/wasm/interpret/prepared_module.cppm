@@ -231,6 +231,8 @@ class prepared_module::context::failure_scope {
    failure_scope(const failure_scope&) = delete;
    failure_scope& operator=(const failure_scope&) = delete;
    std::exception_ptr failure() const noexcept;
+   // Internal timed-boundary classification only; never consumes or clears it.
+   static bool is_live_ancestor_interruption(const std::exception_ptr&) noexcept;
 
  private:
    friend struct context::impl;

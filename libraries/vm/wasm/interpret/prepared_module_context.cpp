@@ -310,6 +310,9 @@ std::exception_ptr prepared_module::context::failure_scope::failure() const noex
    const auto lock = std::lock_guard{_impl->gate};
    return _failure;
 }
+bool prepared_module::context::failure_scope::is_live_ancestor_interruption(const std::exception_ptr& error) noexcept {
+   return static_cast<bool>(impl::interruption_origin(error));
+}
 
 prepared_module::context::activity::activity(context& context) : activity(context, false) {}
 prepared_module::context::activity::activity(context& context, bool initializing)

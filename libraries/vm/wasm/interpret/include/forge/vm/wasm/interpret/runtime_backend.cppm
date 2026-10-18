@@ -352,6 +352,10 @@ class runtime_backend {
       } else if (_context && _context->host_failure()) {
          std::rethrow_exception(_context->host_failure());
       }
+      // A live ancestor's transport retains its owner even if this scope's
+      // watchdog fired too. Genuine host failures above still take precedence.
+      if (runtime_context::failure_scope::is_live_ancestor_interruption(failure))
+         std::rethrow_exception(failure);
       const auto fired = reason.load(std::memory_order_acquire);
       if constexpr (Typed) {
          if (failure) {
