@@ -57,6 +57,9 @@ checkpoint failures and ownership. Test executable interposition injects short
 I/O, syscall errors and bounded pauses; child processes exit before/after sync
 barriers. No test bypass enters production code. Process crashes do not prove
 physical power-loss behavior, storage firmware or hardware fsync honesty.
+Exact rename-boundary race and injected `EXDEV` evidence is Darwin-only.
+Those two tests are not registered on Linux because raw `renameat2` bypasses
+the test executable's libc interposition; Linux proof is not claimed.
 
 The destination parent and process credentials are trusted local administration
 boundaries. Path checks do not sandbox an administrator who directly rewrites

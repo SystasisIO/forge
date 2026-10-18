@@ -85,6 +85,10 @@ of the destination basename. They contain Core's versioned, checksummed Raw
 checkpoint, never payload. Supplying one `checkpoint_store` selects that
 external authority instead; an existing sidecar is rejected rather than kept
 as a second authoritative state. ObjectDB composition follows in PR3.
+Both persistence paths validate Core checkpoint invariants before saving. If
+a published file is later corrupted, a failed read clears its availability;
+checkpoint/close then report `invalid_checkpoint` without replacing the last
+valid durable checkpoint or calling the external adapter with invalid state.
 The exclusive checkpoint temporary uses one fixed slot per key, bounding crash
 leftovers to one file. Retry validates its type, owner, permissions, device,
 link count and size before removing it. Symlinks and hardlinks fail without
@@ -146,6 +150,10 @@ payload corruption, source replacement, atomic conflicts, ownership,
 cancellation and syscall failure/crash scenarios. Test executable interposition
 changes no production syscall implementation. Process-crash tests do not claim
 to simulate a physical disk losing acknowledged writes or full production soak.
+The injected `EXDEV` and exact no-overwrite rename-race cases are registered
+only on Darwin, whose libc rename entry point can be interposed. Linux uses
+raw `renameat2`; those two injected cases are not proven there and are not
+registered as passing substitutes. Native Linux acceptance remains separate.
 
 ```sh
 cmake --build build/pr2 -j 4 --target \

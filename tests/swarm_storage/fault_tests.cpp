@@ -356,6 +356,8 @@ BOOST_AUTO_TEST_CASE(explicit_resource_close_reports_eio_but_releases_ownership_
    run(reopened->async_close());
 }
 
+#if defined(__APPLE__)
+// Linux uses raw renameat2; this executable only interposes Darwin's libc entry point.
 BOOST_AUTO_TEST_CASE(publication_exdev_is_typed_and_never_falls_back_to_copy) {
    BOOST_REQUIRE_MESSAGE(faults::rename_available(),
       "NOT_PROVEN: macOS renameatx_np is required; Linux publication uses a non-interposed raw renameat2 syscall");
@@ -381,6 +383,7 @@ BOOST_AUTO_TEST_CASE(publication_exdev_is_typed_and_never_falls_back_to_copy) {
    fault.disarm();
    run(store->async_close());
 }
+#endif
 
 BOOST_AUTO_TEST_CASE(checkpoint_process_crash_before_and_after_every_observed_fsync) { crash_matrix(false); }
 BOOST_AUTO_TEST_CASE(publication_process_crash_before_and_after_every_observed_fsync) { crash_matrix(true); }

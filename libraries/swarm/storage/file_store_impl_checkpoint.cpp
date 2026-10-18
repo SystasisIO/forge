@@ -142,6 +142,13 @@ boost::asio::awaitable<core::resume_state> file_store::impl::save(std::shared_pt
       }
       state = self->checkpoint_locked(++self->next_checkpoint);
    }
+   if (self->config.checkpoint) {
+      state = co_await self->config.cpu.execute({"swarm.checkpoint.validate", token},
+         [self, state = std::move(state)]() mutable {
+            core::validate_checkpoint(state, self->config.manifest);
+            return std::move(state);
+         });
+   }
    co_await self->config.disk.execute({"swarm.checkpoint.sync", token}, [self] {
       self->layout->sync_payload();
       if (self->config.checkpoint) { self->layout->sync_parent(); }

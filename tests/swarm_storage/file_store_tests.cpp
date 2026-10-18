@@ -277,6 +277,56 @@ BOOST_AUTO_TEST_CASE(external_checkpoint_is_the_only_authority_and_failed_commit
    BOOST_CHECK_THROW(run(storage::file_store::async_open(options)), storage::exceptions::conflict);
 }
 
+BOOST_AUTO_TEST_CASE(external_checkpoint_rejects_corrupted_published_state_before_calling_the_backend) {
+   class backend final : public core::checkpoint_store {
+    public:
+      std::optional<core::resume_state> value;
+      std::size_t saves = 0;
+      boost::asio::awaitable<std::optional<core::resume_state>> async_load(core::swarm_id, std::stop_token) override { co_return value; }
+      boost::asio::awaitable<void> async_save(core::resume_state state, std::stop_token) override {
+         ++saves;
+         value = std::move(state);
+         co_return;
+      }
+   };
+   for (const bool seed : {false, true}) {
+      auto env = fixture{};
+      const auto bytes = data(17);
+      const auto manifest = describe({bytes});
+      if (seed) { write_file(env.root / "result", bytes); }
+      auto db = std::make_shared<backend>();
+      auto options = env.options(manifest, seed ? storage::open_mode::seed : storage::open_mode::create);
+      options.checkpoint = db;
+      auto store = run(storage::file_store::async_open(options));
+      if (!seed) {
+         fill(*store, manifest, {bytes});
+         run(store->async_publish());
+      } else {
+         static_cast<void>(run(store->async_checkpoint()));
+      }
+      const auto previous = db->value;
+      const auto saves = db->saves;
+      const auto durable = store->snapshot().durable_generation;
+      BOOST_REQUIRE(previous.has_value());
+      auto corrupt = bytes;
+      corrupt[0] ^= 1U;
+      write_file(env.root / "result", corrupt);
+      BOOST_CHECK_THROW(run(store->async_read({0, 0}, 0, 1)), core::exceptions::integrity_failure);
+      BOOST_CHECK_THROW(run(store->async_checkpoint()), core::exceptions::invalid_checkpoint);
+      BOOST_CHECK_THROW(run(store->async_close()), core::exceptions::invalid_checkpoint);
+      BOOST_CHECK_EQUAL(db->saves, saves);
+      BOOST_CHECK(db->value == previous);
+      BOOST_CHECK_EQUAL(store->snapshot().durable_generation, durable);
+      core::validate_checkpoint(*db->value, manifest);
+      store.reset();
+      write_file(env.root / "result", bytes);
+      options.mode = storage::open_mode::resume;
+      store = run(storage::file_store::async_open(options));
+      BOOST_CHECK(run(store->async_read({0, 0}, 0, 17)) == bytes);
+      run(store->async_close());
+   }
+}
+
 BOOST_AUTO_TEST_CASE(invalid_pool_and_resource_limits_fail_before_touching_payload) {
    auto env = fixture{};
    auto options = env.options(describe({data(1)}));
