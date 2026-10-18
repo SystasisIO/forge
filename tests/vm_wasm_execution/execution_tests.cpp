@@ -4,8 +4,13 @@
 #include <type_traits>
 #include "fixtures.hxx"
 
-import forge.vm.wasm.execution.compiled_module;
+import forge.chain.protocol.values;
+import forge.raw.codec;
+import forge.vm.wasm.execution.exceptions;
+import forge.vm.wasm.execution.invocation;
+import forge.vm.wasm.execution.limits;
 import forge.vm.wasm.execution.profile;
+import forge.vm.wasm.execution.compiled_module;
 
 namespace execution = forge::vm::wasm::execution;
 using namespace std::chrono_literals;
