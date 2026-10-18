@@ -3,6 +3,8 @@ add_library(
       plugin.cpp
       api_impl.cpp
       config.cpp
+      types.cpp
+      version_types.cpp
       plugin_impl.cpp
       plugin_impl_versions.cpp
       version_store.cpp

@@ -2263,6 +2263,7 @@ add_test(NAME test_forge_crypto_secrets COMMAND test_forge_crypto_secrets WORKIN
 add_executable(test_forge_crypto_secrets_versions
    unit/main.cpp
    plugins/crypto/secrets_versions_tests.cpp
+   plugins/crypto/secrets_schema_consumer_tests.cpp
    plugins/crypto/secrets_faults.cpp
 )
 target_link_libraries(test_forge_crypto_secrets_versions PRIVATE
