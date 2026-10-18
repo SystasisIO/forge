@@ -11,6 +11,7 @@ module;
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 
 export module forge.asio.gate;
 
@@ -37,6 +38,7 @@ class gate {
    gate& operator=(gate&&) = delete;
 
    boost::asio::awaitable<ticket> acquire();
+   boost::asio::awaitable<ticket> acquire(std::stop_token);
    void close() noexcept;
    [[nodiscard]] bool closed() const noexcept;
 
