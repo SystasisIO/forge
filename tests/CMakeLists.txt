@@ -1,5 +1,49 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(test_forge_swarm_core
+   swarm_core/main.cpp
+   swarm_core/descriptor_tests.cpp
+   swarm_core/merkle_tests.cpp
+)
+target_link_libraries(test_forge_swarm_core PRIVATE forge_swarm_core Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_core COMMAND test_forge_swarm_core)
+set_tests_properties(test_forge_swarm_core PROPERTIES TIMEOUT 60)
+
+set(FORGE_SWARM_LIBTORRENT_DONOR_ROOT "" CACHE PATH "Pinned libtorrent source used only by Swarm algorithm acceptance")
+if(FORGE_SWARM_LIBTORRENT_DONOR_ROOT)
+   execute_process(
+      COMMAND git -C "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}" rev-parse HEAD
+      OUTPUT_VARIABLE _swarm_donor_sha OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _swarm_donor_status
+   )
+   if(NOT _swarm_donor_status EQUAL 0 OR NOT _swarm_donor_sha STREQUAL "b4e9e2471e7abce2a58585a7d7fbc4e8d1edc47e")
+      message(FATAL_ERROR "Swarm donor probe requires libtorrent b4e9e2471e7abce2a58585a7d7fbc4e8d1edc47e")
+   endif()
+   execute_process(
+      COMMAND git -C "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}" diff --quiet HEAD -- include src
+      RESULT_VARIABLE _swarm_donor_dirty
+   )
+   if(NOT _swarm_donor_dirty EQUAL 0)
+      message(FATAL_ERROR "Swarm donor probe requires unchanged libtorrent source and headers")
+   endif()
+   add_executable(test_forge_swarm_libtorrent
+      swarm_core/libtorrent_probe.cpp
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/merkle.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/hasher.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/sha1.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/sha256.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/sha1_hash.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/hex.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/bitfield.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/ffs.cpp"
+   )
+   target_include_directories(test_forge_swarm_libtorrent PRIVATE "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/include")
+   target_compile_definitions(test_forge_swarm_libtorrent PRIVATE TORRENT_STATIC_LINK)
+   target_link_libraries(test_forge_swarm_libtorrent PRIVATE forge_swarm_core Boost::headers)
+   add_test(NAME test_forge_swarm_libtorrent COMMAND test_forge_swarm_libtorrent)
+   set_tests_properties(test_forge_swarm_libtorrent PROPERTIES TIMEOUT 60)
+endif()
+
 if(FORGE_ENABLE_S3)
    add_subdirectory(net_s3)
 endif()
@@ -24,6 +68,10 @@ add_test(
 add_test(
    NAME test_forge_net_plugin_structure
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/net_plugins_tests.py
+)
+add_test(
+   NAME test_forge_swarm_structure
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/swarm_boundaries_tests.py
 )
 add_test(
    NAME test_forge_app_lifecycle_structure
@@ -3158,6 +3206,17 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
+   test_forge_package_swarm_core_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_core_component
+      ${CMAKE_BINARY_DIR}/forge-package-swarm-core-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_swarm_core_component
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
    test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -4235,6 +4294,17 @@ add_test(
       --test-command forge_package_chain_core_component
 )
 set_tests_properties(test_forge_package_chain_core_component PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_swarm_core_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_core_component
+      ${CMAKE_BINARY_DIR}/forge-package-swarm-core-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_swarm_core_component
+)
+set_tests_properties(test_forge_package_swarm_core_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}

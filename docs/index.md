@@ -67,6 +67,7 @@ Documents below explain cross-library architecture decisions.
 | [iterations/forge-chain-remote-state-v1.md](iterations/forge-chain-remote-state-v1.md) | Accepted direction for transport-neutral typed contract-state reads and chain transaction submission over Forge API. |
 | [donors/forge-chain-remote-state-v1.md](donors/forge-chain-remote-state-v1.md) | Spring/CDT donor boundaries for guest tables, remote state reads and transaction submission. |
 | [iterations/forge-content-swarm-v1.md](iterations/forge-content-swarm-v1.md) | Accepted direction for live Forge API streaming, P2P provider discovery, file-backed immutable swarm mechanics and the product boundary for user-facing swarm daemons. |
+| [donors/forge-swarm-core-v1.md](donors/forge-swarm-core-v1.md) | BEP 52/libtorrent mapping, Forge Raw identity and descriptor/Merkle acceptance boundaries. |
 | [donors/forge-api-live-streaming-v2.md](donors/forge-api-live-streaming-v2.md) | gRPC, HTTP/2 and QUIC donor mechanics for bounded live API streams and directional flow control. |
 | [migration/forge-api-live-streaming-v2.md](migration/forge-api-live-streaming-v2.md) | Mechanical migration from vector streaming and Forge API wire v1 to live streaming wire v2. |
 | [iterations/forge-net-family-restructure-v1.md](iterations/forge-net-family-restructure-v1.md) | Future direction for grouping network libraries under `forge::net::*`. |
