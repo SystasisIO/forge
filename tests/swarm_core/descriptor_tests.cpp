@@ -214,4 +214,16 @@ BOOST_AUTO_TEST_CASE(all_variable_length_fields_are_checked_before_decode_alloca
    BOOST_CHECK_THROW((void)core::validate_descriptor(value), core::exceptions::limit_exceeded);
 }
 
+BOOST_AUTO_TEST_CASE(complete_wire_preserves_typed_path_validation_errors) {
+   auto value = one_file();
+   value.files[0].path = {std::string(core::max_component_size + 1U, 'a')};
+   BOOST_CHECK_THROW((void)core::decode_descriptor(forge::raw::pack(value)), core::exceptions::limit_exceeded);
+   value.files[0].path.assign(core::max_path_depth + 1U, "a");
+   BOOST_CHECK_THROW((void)core::decode_descriptor(forge::raw::pack(value)), core::exceptions::limit_exceeded);
+   value.files[0].path.clear();
+   BOOST_CHECK_THROW((void)core::decode_descriptor(forge::raw::pack(value)), core::exceptions::invalid_path);
+   value.files[0].path = {""};
+   BOOST_CHECK_THROW((void)core::decode_descriptor(forge::raw::pack(value)), core::exceptions::invalid_path);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

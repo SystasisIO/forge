@@ -109,7 +109,8 @@ forge::raw::unpack_limits preflight(std::span<const std::uint8_t> bytes) {
    if (files == 0U) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_descriptor, "descriptor must contain at least one file");
    }
-   if (files > stream.remaining() / 44U) {
+   // Even an invalid empty path needs its depth, size, root and piece-count fields.
+   if (files > stream.remaining() / 42U) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_encoding, "file count cannot fit the descriptor frame");
    }
    if (files > max_files) {
@@ -124,16 +125,22 @@ forge::raw::unpack_limits preflight(std::span<const std::uint8_t> bytes) {
    constexpr auto max_elements = max_files + max_files * max_path_depth + max_piece_count;
    for (auto file = 0U; file < files; ++file) {
       const auto depth = read_count(stream);
-      if (depth == 0U || depth > max_path_depth || depth > stream.remaining() / 2U) {
-         FORGE_THROW_EXCEPTION(exceptions::invalid_encoding, "path depth exceeds its bound or remaining frame");
+      if (depth > stream.remaining() / 2U) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_encoding, "path depth exceeds the remaining frame");
+      }
+      if (depth == 0U) {
+         FORGE_THROW_EXCEPTION(exceptions::invalid_path, "file path has an invalid component count");
+      }
+      if (depth > max_path_depth) {
+         FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "file path exceeds 32 components");
       }
       account(elements, depth, max_elements);
       largest_container = std::max(largest_container, depth);
       auto path_size = std::uint64_t{depth - 1U};
       for (auto component = 0U; component < depth; ++component) {
          const auto length = read_count(stream);
-         if (length == 0U || length > max_component_size || length > stream.remaining()) {
-            FORGE_THROW_EXCEPTION(exceptions::invalid_encoding, "path component exceeds its bound or remaining frame");
+         if (length > stream.remaining()) {
+            FORGE_THROW_EXCEPTION(exceptions::invalid_encoding, "path component exceeds the remaining frame");
          }
          validate_component(std::string_view{reinterpret_cast<const char*>(stream.pos()), length});
          account(path_size, length, max_path_size);
