@@ -17,6 +17,12 @@ enum class code : std::uint16_t {
    invalid_geometry = 5,
    invalid_content = 6,
    invalid_encoding = 7,
+   invalid_checkpoint = 8,
+   storage_closed = 9,
+   storage_busy = 10,
+   unverified_piece = 11,
+   invalid_write = 12,
+   integrity_failure = 13,
 };
 
 using unsupported_version = forge::exceptions::coded_exception<code, code::unsupported_version>;
@@ -26,6 +32,12 @@ using limit_exceeded = forge::exceptions::coded_exception<code, code::limit_exce
 using invalid_geometry = forge::exceptions::coded_exception<code, code::invalid_geometry>;
 using invalid_content = forge::exceptions::coded_exception<code, code::invalid_content>;
 using invalid_encoding = forge::exceptions::coded_exception<code, code::invalid_encoding>;
+using invalid_checkpoint = forge::exceptions::coded_exception<code, code::invalid_checkpoint>;
+using storage_closed = forge::exceptions::coded_exception<code, code::storage_closed>;
+using storage_busy = forge::exceptions::coded_exception<code, code::storage_busy>;
+using unverified_piece = forge::exceptions::coded_exception<code, code::unverified_piece>;
+using invalid_write = forge::exceptions::coded_exception<code, code::invalid_write>;
+using integrity_failure = forge::exceptions::coded_exception<code, code::integrity_failure>;
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.swarm.core")
 
