@@ -6,6 +6,7 @@ module;
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -18,7 +19,7 @@ import forge.asio.exceptions;
 namespace forge::net::http {
 
 callback_body_source::callback_body_source(body_reader::callback_type callback, std::function<void()> cancel)
-  : _callback(std::move(callback))
+  : _callback(std::make_shared<body_reader::callback_type>(std::move(callback)))
   , _cancel(std::move(cancel))
 {
 }
@@ -30,9 +31,9 @@ boost::asio::awaitable<std::optional<body_chunk>> callback_body_source::async_re
       FORGE_THROW_EXCEPTION(forge::asio::exceptions::canceled, "HTTP body source was cancelled");
    }
 
-   // A coroutine callback may borrow its closure; keep that closure alive through the complete awaited call.
+   // Keep one mutable callable and retain its coroutine closure through the complete awaited call.
    auto callback = _callback;
-   auto result = co_await callback();
+   auto result = co_await (*callback)();
    if (_cancelled)
    {
       FORGE_THROW_EXCEPTION(forge::asio::exceptions::canceled, "HTTP body source was cancelled");

@@ -247,4 +247,31 @@ BOOST_AUTO_TEST_CASE(multipart_stream_owns_materialized_file_after_its_path_is_e
    forge::asio::blocking::run(runtime, compute.shutdown());
 }
 
+BOOST_AUTO_TEST_CASE(callback_body_preserves_mutable_value_capture_across_reads_until_eof)
+{
+   auto runtime = forge::asio::runtime{};
+   auto body = forge::net::http::body_reader::from_callback(
+       [position = std::uint8_t{}]() mutable
+           -> boost::asio::awaitable<std::optional<forge::net::http::body_chunk>>
+       {
+          if (position == 3)
+          {
+             co_return std::nullopt;
+          }
+
+          ++position;
+          co_return forge::net::http::body_chunk{.bytes = {static_cast<std::byte>(position)}};
+       });
+   for (auto expected = std::uint8_t{1}; expected <= 3; ++expected)
+   {
+      const auto chunk = forge::asio::blocking::run(runtime, body.async_read());
+      BOOST_REQUIRE(chunk.has_value());
+      BOOST_REQUIRE_EQUAL(chunk->bytes.size(), 1U);
+      BOOST_TEST(std::to_integer<unsigned>(chunk->bytes.front()) == expected);
+   }
+
+   BOOST_TEST(!forge::asio::blocking::run(runtime, body.async_read()).has_value());
+   BOOST_TEST(body.bytes_read() == 3U);
+}
+
 } // namespace forge::tests::http_multipart_stream

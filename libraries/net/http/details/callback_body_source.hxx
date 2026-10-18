@@ -11,7 +11,7 @@ class callback_body_source final : public body_reader::source
    void cancel() noexcept override;
 
  private:
-   body_reader::callback_type _callback;
+   std::shared_ptr<body_reader::callback_type> _callback;
    std::function<void()> _cancel;
    std::atomic<std::uint64_t> _bytes = 0;
    std::atomic_bool _cancelled = false;
