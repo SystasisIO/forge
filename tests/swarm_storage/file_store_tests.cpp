@@ -288,4 +288,51 @@ BOOST_AUTO_TEST_CASE(invalid_pool_and_resource_limits_fail_before_touching_paylo
    BOOST_CHECK(std::filesystem::is_empty(env.root));
 }
 
+BOOST_AUTO_TEST_CASE(repeated_orphan_checkpoint_recovery_uses_one_private_slot) {
+   auto env = fixture{};
+   const auto manifest = describe({data(17)});
+   auto store = run(storage::file_store::async_open(env.options(manifest)));
+   const auto first = run(store->async_checkpoint());
+   const auto temporary = std::filesystem::path{env.sidecar().string() + ".tmp-0"};
+   for (auto attempt = 0U; attempt < 16U; ++attempt) {
+      write_file(temporary, data(7));
+      std::filesystem::permissions(temporary, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+      const auto next = run(store->async_checkpoint());
+      BOOST_TEST(next.generation > first.generation);
+      BOOST_CHECK(!std::filesystem::exists(temporary));
+      auto sidecars = 0U;
+      for (const auto& entry : std::filesystem::directory_iterator(env.root)) {
+         sidecars += entry.path().extension() == ".resume";
+         BOOST_CHECK(entry.path().filename().string().find(".tmp-") == std::string::npos);
+      }
+      BOOST_TEST(sidecars == 1U);
+   }
+   run(store->async_close());
+}
+
+BOOST_AUTO_TEST_CASE(untrusted_temporary_symlink_and_hardlink_never_delete_their_target_or_checkpoint) {
+   auto env = fixture{};
+   const auto manifest = describe({data(17)});
+   auto store = run(storage::file_store::async_open(env.options(manifest)));
+   static_cast<void>(run(store->async_checkpoint()));
+   const auto checkpoint = read_file(env.sidecar());
+   const auto temporary = std::filesystem::path{env.sidecar().string() + ".tmp-0"};
+   const auto outside = env.root / "foreign";
+   const auto foreign = data(11, 97);
+   write_file(outside, foreign);
+   std::filesystem::create_symlink(outside, temporary);
+   BOOST_CHECK_THROW(run(store->async_checkpoint()), storage::exceptions::unsafe_path);
+   BOOST_CHECK(std::filesystem::is_symlink(temporary));
+   BOOST_CHECK(read_file(outside) == foreign);
+   BOOST_CHECK(read_file(env.sidecar()) == checkpoint);
+   std::filesystem::remove(temporary);
+   std::filesystem::create_hard_link(outside, temporary);
+   BOOST_CHECK_THROW(run(store->async_checkpoint()), storage::exceptions::unsafe_path);
+   BOOST_CHECK(std::filesystem::exists(temporary));
+   BOOST_CHECK(read_file(outside) == foreign);
+   BOOST_CHECK(read_file(env.sidecar()) == checkpoint);
+   std::filesystem::remove(temporary);
+   run(store->async_close());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

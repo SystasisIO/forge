@@ -85,6 +85,10 @@ of the destination basename. They contain Core's versioned, checksummed Raw
 checkpoint, never payload. Supplying one `checkpoint_store` selects that
 external authority instead; an existing sidecar is rejected rather than kept
 as a second authoritative state. ObjectDB composition follows in PR3.
+The exclusive checkpoint temporary uses one fixed slot per key, bounding crash
+leftovers to one file. Retry validates its type, owner, permissions, device,
+link count and size before removing it. Symlinks and hardlinks fail without
+deletion. No directory-wide cache sweep is performed.
 
 Normal writes may overlap. Checkpoint/publication reserve a short admission
 barrier, await active work without a state mutex, then perform:

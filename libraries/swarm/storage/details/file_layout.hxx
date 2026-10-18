@@ -48,6 +48,7 @@ class file_layout {
    void check_node(std::uint32_t index, int fd) const;
    void verify_root() const;
    void verify_checkpoint() const;
+   void remove_stale_temporary(const std::string&);
    void initialize_nodes(bool create);
    void validate_range(std::uint32_t file, std::uint64_t offset, std::size_t length) const;
 

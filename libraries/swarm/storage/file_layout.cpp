@@ -8,7 +8,6 @@ module;
 #include <boost/scope/scope_exit.hpp>
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -199,7 +198,8 @@ file_layout::file_layout(const core::descriptor& descriptor, std::filesystem::pa
    _stage_name = ".forge-swarm-" + storage_key + ".part";
    _checkpoint_name = ".forge-swarm-" + storage_key + ".resume";
    _lock_name = ".forge-swarm-" + storage_key + ".lock";
-   if (_destination_name == _stage_name || _destination_name == _checkpoint_name || _destination_name == _lock_name) {
+   if (_destination_name == _stage_name || _destination_name == _checkpoint_name || _destination_name == _lock_name ||
+       _destination_name == _checkpoint_name + ".tmp-0") {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "destination aliases a storage control name");
    }
    try {
@@ -667,6 +667,21 @@ std::optional<std::vector<std::uint8_t>> file_layout::read_checkpoint() const {
    return bytes;
 }
 
+void file_layout::remove_stale_temporary(const std::string& name) {
+   const auto previous = named_stat(_parent, name);
+   if (!previous) { return; }
+   check_regular(*previous, _parent_identity.device);
+   if (previous->st_uid != ::geteuid() || (previous->st_mode & 0777) != 0600 ||
+       static_cast<std::uint64_t>(previous->st_size) > checkpoint_limit) {
+      FORGE_THROW_EXCEPTION(exceptions::unsafe_path, "checkpoint temporary is not a bounded private owned file");
+   }
+   const auto current = named_stat(_parent, name);
+   if (!current || !same_inode(*previous, *current)) {
+      FORGE_THROW_EXCEPTION(exceptions::unsafe_path, "checkpoint temporary changed before cleanup");
+   }
+   checked(::unlinkat(_parent, name.c_str(), 0), "remove stale checkpoint temporary");
+}
+
 void file_layout::write_checkpoint(std::span<const std::uint8_t> bytes) {
    assert_current();
    if (_has_external_checkpoint) {
@@ -676,19 +691,12 @@ void file_layout::write_checkpoint(std::span<const std::uint8_t> bytes) {
       FORGE_THROW_EXCEPTION(exceptions::invalid_options, "checkpoint exceeds 1 MiB");
    }
    verify_checkpoint();
-   static auto next_temporary = std::atomic<std::uint64_t>{0};
-   auto temporary = std::string{};
-   auto fd = -1;
-   for (auto attempt = 0U; attempt < 16U; ++attempt) {
-      temporary = _checkpoint_name + ".tmp-" + std::to_string(::getpid()) + "-" +
-          std::to_string(next_temporary.fetch_add(1U, std::memory_order_relaxed));
-      fd = ::openat(_parent, temporary.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
-      if (fd >= 0) break;
-      if (errno != EEXIST) checked(-1, "create checkpoint temporary");
-   }
-   if (fd < 0) {
-      FORGE_THROW_EXCEPTION(exceptions::conflict, "checkpoint temporary names are occupied");
-   }
+   // flock and the maintenance gate give this key one writer; one slot also
+   // bounds crash-left metadata without enumerating or deleting other content.
+   const auto temporary = _checkpoint_name + ".tmp-0";
+   remove_stale_temporary(temporary);
+   auto fd = checked(::openat(_parent, temporary.c_str(),
+      O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600), "create checkpoint temporary");
    const auto close_file = boost::scope::scope_exit{[&fd] { if (fd >= 0) ::close(fd); }};
    const auto initial = fd_stat(fd);
    bool renamed = false;
