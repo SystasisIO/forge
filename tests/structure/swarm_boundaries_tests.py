@@ -39,14 +39,17 @@ class SwarmBoundariesTests(unittest.TestCase):
       self.assertTrue(any("leaf namespace" in e for e in self.errors()))
 
    def test_upper_layer_import_is_rejected(self):
-      for layer in ("chain.core.types", "db.object.store", "api.core", "asio.task", "app.plugin", "net.p2p.node"):
+      for layer in ("chain.core.types", "db.object.store", "api.core", "asio.task", "app.plugin", "net.p2p.node",
+                    "swarm.db.content", "swarm.storage.catalog", "swarm.runtime.session"):
          with self.subTest(layer=layer):
             self.write("libraries/swarm/core/descriptor.cpp", f"import forge.{layer};\n")
             self.assertTrue(any("imports an upper layer" in e for e in self.errors()))
 
    def test_upper_layer_link_is_rejected(self):
-      self.write("libraries/swarm/core/CMakeLists.txt", "target_link_libraries(forge_swarm_core PUBLIC forge_db_object)\n")
-      self.assertTrue(any("target depends" in e for e in self.errors()))
+      for target in ("forge_db_object", "forge_swarm_db", "forge_swarm_storage"):
+         with self.subTest(target=target):
+            self.write("libraries/swarm/core/CMakeLists.txt", f"target_link_libraries(forge_swarm_core PUBLIC {target})\n")
+            self.assertTrue(any("target depends" in e for e in self.errors()))
 
    def test_core_customization_cannot_import_domain(self):
       self.write("libraries/core/include/forge/core/conversion.cppm",
@@ -67,6 +70,19 @@ class SwarmBoundariesTests(unittest.TestCase):
          with self.subTest(source=source):
             self.write("libraries/swarm/storage/file_store.cpp", source)
             self.assertTrue(any("private worker runtime" in e for e in self.errors()))
+
+   def test_metadata_models_do_not_import_concrete_runtime(self):
+      name = "libraries/swarm/db/content.cppm"
+      self.write(name, "import forge.swarm.core.checkpoint;\nimport forge.db.object.index;\n")
+      self.assertEqual(self.errors(), [])
+      for module in ("swarm.storage.catalog", "swarm.protocol.types", "db.rocksdb.driver", "db.blob.store", "net.p2p.node"):
+         with self.subTest(module=module):
+            self.write(name, f"import forge.{module};\n")
+            self.assertTrue(any("indexed metadata imports" in e for e in self.errors()))
+
+   def test_metadata_target_does_not_link_concrete_runtime(self):
+      self.write("libraries/swarm/db/CMakeLists.txt", "target_link_libraries(forge_swarm_db PUBLIC forge_swarm_storage)\n")
+      self.assertTrue(any("models depend" in e for e in self.errors()))
 
 
 if __name__ == "__main__":

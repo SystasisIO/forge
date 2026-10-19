@@ -84,7 +84,7 @@ Standalone sidecars are hidden siblings keyed by content identity and a digest
 of the destination basename. They contain Core's versioned, checksummed Raw
 checkpoint, never payload. Supplying one `checkpoint_store` selects that
 external authority instead; an existing sidecar is rejected rather than kept
-as a second authoritative state. ObjectDB composition follows in PR3.
+as a second authoritative state. ObjectDB composition is provided by `catalog`.
 Both persistence paths validate Core checkpoint invariants before saving. If
 a published file is later corrupted, a failed read clears its availability;
 checkpoint/close then report `invalid_checkpoint` without replacing the last
@@ -141,6 +141,72 @@ ignore advisory locks cannot be made into an atomic filesystem transaction by
 path checks. This library is not a sandbox for a malicious local administrator.
 Returned data is independently rehashed and restart metadata is never trusted
 as proof of payload integrity. No raw path/content is included in error text.
+
+## Object Store Catalog
+
+`import forge.swarm.storage.catalog;` provides the indexed metadata adapter.
+The `swarm_db` component owns its declarative models, not a live database.
+Composition opens a named Object Store namespace, calls
+`catalog::register_objects(objects)` before starting operations, then awaits
+`catalog::async_open(objects, options)`. The Object Store must use single-writer
+transactions and monotonic IDs. Schema mismatch reports `schema_mismatch`; no
+automatic namespace deletion or implicit schema migration occurs.
+
+`options.cpu` is the existing caller-owned compute executor. `options.database`
+is a caller-owned Asio executor suitable for the selected DB driver. In
+particular RocksDB commit/flush are synchronous inside awaitables: use an
+executor isolated from the application's network/event-loop threads. The catalog
+creates no pool and does not open or close the DB. Await all operations and drop
+consumers before the owner closes executors or the driver.
+
+```cpp
+catalog::register_objects(objects);
+auto metadata = co_await catalog::async_open(objects,
+   {.cpu = cpu_executor, .database = database_executor});
+auto entry = co_await metadata->async_create(manifest, normalized_local_path,
+   {.state = forge::swarm::db::job_state::downloading});
+auto resume = co_await metadata->async_checkpoint_store(entry.swarm, entry.locator);
+auto files = co_await file_store::async_open(
+   {.manifest = entry.manifest, .destination = entry.locator,
+    .disk = disk_executor, .cpu = cpu_executor, .checkpoint = resume});
+// Write/verify content, then checkpoint/publish and await files->async_close().
+```
+
+The locator is a bounded local opaque string, never a network path claim. Its
+normalization and filesystem aliases belong to composition; file ownership and
+safe traversal remain enforced by `file_store`. Job state is scheduling metadata,
+not proof of verified payload. `async_update()` changes only job settings;
+checkpoint saves cannot clobber a concurrent priority/expiry update. Erase removes
+metadata only. An old binding cannot recreate erased/replaced content.
+
+Default admission is eight outstanding operations (maximum 32), including work
+waiting for the DB executor. Queries default to 16 rows and reject limits above
+32; use the Object Store cursor in the next bounded query. These are live
+per-page reads, not a catalog-wide snapshot across concurrent updates. Identity,
+state/descending-priority and exclusive-expiry queries use Object Store indexes,
+without enumerating unrelated history. `INT64_MAX` expiry means no expiry.
+
+The v1 row and all its secondary indexes are updated atomically. A checkpoint ACK
+requires commit followed by `objects.driver()->async_flush(true)`. A failure after
+commit may leave the row visible; it is not a rollback guarantee. An identical
+generation retry repeats flush; older or conflicting equal-generation values fail
+with `stale_checkpoint`. Checkpoint load validates and restores the durability
+fence before returning restart state. File bytes are still independently checked
+by PR2, even when a row says the download was complete.
+
+The DB is locally administered: generic Object Store Raw decoding precedes domain
+validation. Post-decode descriptor/checkpoint bounds are not a preallocation
+sandbox for malicious DB files. No remote input is persisted by implicit import.
+
+Cancellation is joined, not a promise to interrupt an already running driver
+syscall. Native Asio cancellation remains connected to cancellable dependency
+waits; explicit stop tokens are checked at operation boundaries and CPU work.
+Once commit starts, its commit/flush section is awaited without cancellation;
+the caller then observes cancellation without a false success or abandoned
+durability operation. Public calls reserve admission before DB dispatch and
+may synchronously reject overload. Destroying an unstarted awaitable releases
+its reservation; a started operation or checkpoint handle retains its own state
+independently of the original catalog facade.
 
 ## Evidence
 

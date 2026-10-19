@@ -337,6 +337,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/raw/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/compression/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/core/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/db/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/storage/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/protocol/include"
@@ -820,6 +821,7 @@ set(
    forge_raw
    forge_compression
    forge_swarm_core
+   forge_swarm_db
    forge_swarm_storage
    forge_chain_core
    forge_chain_savanna_values
@@ -1020,6 +1022,7 @@ set(
    db_ids
    compression
    swarm_core
+   swarm_db
    swarm_storage
    chain_core
    chain_savanna_values
@@ -1220,6 +1223,7 @@ set(
    libraries/db/ids/include/forge
    libraries/compression/include/forge
    libraries/swarm/core/include/forge
+   libraries/swarm/db/include/forge
    libraries/swarm/storage/include/forge
    libraries/chain/core/include/forge
    libraries/chain/protocol/include/forge

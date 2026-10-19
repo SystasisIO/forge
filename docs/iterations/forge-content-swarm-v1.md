@@ -1120,6 +1120,26 @@ tests do not constitute physical power-loss or production proof.
   one operation has exactly one checkpoint authority. Schema/model registration
   occurs in composition before startup, never through model import side effects.
 
+PR3 freezes metadata schema v1 in `forge.swarm.db.content` and
+`forge.swarm.db.schema`: a version singleton and one content object with
+canonical identity/descriptor, local opaque locator, job state/priority, optional
+expiry (Unix seconds; `INT64_MAX` means no expiry) and optional PR2 resume state.
+Identity and locator are unique; ordered state/descending-priority and expiry
+indexes serve bounded cursor queries. Related fields and indexes change in one
+Object Store transaction. There are no payload or per-network-block objects.
+
+`forge.swarm.storage.catalog` adapts an externally owned Object Store. Composition
+explicitly registers models, supplies separate CPU and database executors, and
+retains DB lifecycle ownership. The DB executor is necessary because a RocksDB
+awaitable does not itself offload blocking work. Catalog requires single-writer,
+monotonic-ID Object Store policy and bounds in-flight work and page sizes.
+Checkpoint handles bind one immutable object ID, identity and locator; erase or
+replacement cannot revive an old handle. Saves validate monotonic generations,
+commit then flush the same driver; identical retries repeat the durability fence.
+Checkpoint loads restore that fence after ambiguous prior commit errors. Existing
+file verification and sync ordering remain PR2's authority. Expiry selection and
+metadata erase do not silently delete payload or decide product retention policy.
+
 ### PR4: Deterministic transfer mechanisms
 
 - **Owner/API:** `forge_swarm_core`; availability, picker and transfer state with
