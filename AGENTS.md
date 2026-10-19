@@ -353,7 +353,7 @@ class service_node {
   or turn unknown/auxiliary-stack reasons or physical stack/allocation failure
   into a canonical guest result without an approved rule.
 - Use the reviewed fork/source identity in `docs/donors/forge-wamr-fork-v1.md`
-  (published draft candidate `69c107c`, full qualification pending), not historical
+  (published draft candidate `f6fe6d5`, full qualification pending), not historical
   prepared-source paths or build-time patches.
   The reviewed usage-0 low-level checks do not qualify the common usage-1 profile.
 - The approved usage-1 allocator plan reuses the existing `wasm_allocator` as the

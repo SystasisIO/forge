@@ -477,7 +477,7 @@ class ProvisioningTests(unittest.TestCase):
         self.assertTrue(command.startswith("/usr/bin/cmake "))
         return source, command.replace("/usr/bin/cmake", "capture_cmake", 1)
 
-    def test_final_runtimes_bind_stage_a_before_compiler_checks(self):
+    def test_final_runtimes_use_driver_headers_and_bind_stage_a_link_search(self):
         _, command = self.final_runtime_command()
         environment = dict(os.environ, prefix="/fixture/install", source="/fixture/source", work="/fixture/work")
         script = 'set -euo pipefail\ncapture_cmake() { printf "%s\\n" "$@"; }\n' + command
@@ -486,7 +486,7 @@ class ProvisioningTests(unittest.TestCase):
         args = result.stdout.splitlines()
         for flag in ("-DCMAKE_C_COMPILER=/fixture/install/bin/clang",
                      "-DCMAKE_CXX_COMPILER=/fixture/install/bin/clang++",
-                     "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -isystem /fixture/install/include/c++/v1",
+                     "-DCMAKE_CXX_FLAGS=-stdlib=libc++",
                      "-DCMAKE_BUILD_RPATH=/fixture/install/lib",
                      "-DCMAKE_INSTALL_RPATH=$ORIGIN", "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF"):
             self.assertIn(flag, args)
@@ -494,8 +494,80 @@ class ProvisioningTests(unittest.TestCase):
             with self.subTest(linker=kind):
                 self.assertIn(f"-DCMAKE_{kind}_LINKER_FLAGS=-L/fixture/install/lib -fuse-ld=/usr/bin/ld.lld-22", args)
         for forbidden in ("-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY", "-DCMAKE_CXX_COMPILER_WORKS=ON",
-                          "-DCMAKE_CXX_COMPILER_WORKS=TRUE", "-stdlib=libstdc++"):
+                          "-DCMAKE_CXX_COMPILER_WORKS=TRUE", "-stdlib=libstdc++", "-isystem", "-nostdinc++",
+                          "-DCOMPILER_RT_BUILD_LIBFUZZER=OFF", "-DCOMPILER_RT_BUILD_SANITIZERS=OFF",
+                          "-DLIBFUZZER_LINK_LIBCXX=OFF"):
             self.assertNotIn(forbidden, " ".join(args))
+
+    def final_runtime_header_checks(self):
+        source, _ = self.final_runtime_command()
+        checks = "   log_run final-runtimes-headers " + source.split("   log_run final-runtimes-headers ", 1)[1]
+        return source, checks.split("   log_run final-runtimes-configure ", 1)[0]
+
+    def test_final_runtime_header_check_uses_installed_tools_without_include_override(self):
+        source, checks = self.final_runtime_header_checks()
+        command = checks.split("   log_run final-runtimes-header-prefix ", 1)[0]
+        script = 'set -euo pipefail\nlog_run() { printf "%s\\n" "$@"; }\n' + command
+        environment = dict(os.environ, prefix="/fixture/install", checker="/fixture/checker.py", evidence="/fixture/evidence")
+        result = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "final-runtimes-headers", "env", "CC=/fixture/install/bin/clang", "CXX=/fixture/install/bin/clang++",
+            "CXXFLAGS=-stdlib=libc++", "python3", "/fixture/checker.py", "headers", "/fixture/evidence/final-runtimes-headers"])
+        self.assertLess(source.index("log_run llvm-install "), source.index("log_run final-runtimes-headers "))
+        self.assertLess(source.index("log_run final-runtimes-header-prefix "), source.index("log_run final-runtimes-configure "))
+
+    def test_final_runtime_header_prefix_guard_resolves_files_and_refuses_escape(self):
+        _, checks = self.final_runtime_header_checks()
+        command = checks.split("   log_run final-runtimes-header-prefix ", 1)[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefix = root / "install"
+            prefix.mkdir()
+            outside = root / "install-other"
+            outside.mkdir()
+            for directory in (prefix, outside):
+                for name in ("vector", "functional"):
+                    (directory / name).touch()
+            (prefix / "escaped").symlink_to(outside / "vector")
+            evidence = root / "evidence/final-runtimes-headers"
+            evidence.mkdir(parents=True)
+            script = 'set -euo pipefail\n' + command + '\necho PREFIX_ACCEPTED\n'
+            environment = dict(os.environ, prefix=str(prefix), evidence=str(evidence.parent))
+            for kind in ("owned", "outside", "symlink", "missing", "incomplete"):
+                headers = {name: str(prefix / name) for name in ("vector", "functional")}
+                if kind == "outside":
+                    headers["vector"] = str(outside / "vector")
+                elif kind == "symlink":
+                    headers["vector"] = str(prefix / "escaped")
+                elif kind == "missing":
+                    headers["vector"] = str(prefix / "absent")
+                elif kind == "incomplete":
+                    del headers["functional"]
+                (evidence / "header-result.json").write_text(json.dumps({"headers": headers}))
+                result = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True, timeout=10)
+                with self.subTest(kind=kind):
+                    if kind == "owned":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("PREFIX_ACCEPTED", result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertNotIn("PREFIX_ACCEPTED", result.stdout)
+
+    def test_final_runtime_header_failure_prevents_configure(self):
+        source, checks = self.final_runtime_header_checks()
+        prologue = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[0]
+        script = (prologue + '\nenv() { echo "fixture header failure" >&2; return 79; }\n'
+                  + checks + '\necho UNEXPECTED_CONFIGURE\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix="/fixture/install")
+            result = subprocess.run(["bash", "-c", script, "runtime-header-test", temporary], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 79)
+            self.assertIn("HARNESS_ERROR", result.stderr)
+            self.assertNotIn("UNEXPECTED_CONFIGURE", result.stdout)
+            self.assertIn("fixture header failure", (Path(temporary) / "final-runtimes-headers.log").read_text())
+            self.assertFalse((Path(temporary) / "final-runtimes-header-prefix.command").exists())
 
     def test_final_runtime_compiler_check_failure_remains_fatal(self):
         source, command = self.final_runtime_command()

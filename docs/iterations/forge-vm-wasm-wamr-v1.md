@@ -1,6 +1,6 @@
 # WAMR Replacement Experiment
 
-Status: experimental, pending changes, NOT ACCEPTED. Updated: 2026-10-18.
+Status: experimental, pending changes, NOT ACCEPTED. Updated: 2026-10-20.
 
 This branch investigates replacement of both EOS-derived execution and the OC
 implementation with WAMR interpreter, AOT (ahead-of-time native compilation)
@@ -170,8 +170,39 @@ PR 187; updating to this dev base alone does not close its full-process gate.
 
 ## Current Qualification Checkpoint
 
-The [2026-10-18 follow-up](../donors/forge-wamr-dev-integration-20261018.md)
-records published draft candidate `12d1f906668cde93c03e7d864e71ee1e10dfb194`, public
+The [current follow-up](../donors/forge-wamr-dev-integration-20261018.md)
+records Forge head `3bcbf790` and WAMR `f6fe6d5`, published in draft PR190.
+CI58 actually checks synthetic merge `9cd98e54` with dev `94657d50`, not the
+identical PR-head tree. VM/SDK sources and WAMR pins match; the combined build
+and package graph includes the newer dev APIs. ARM JIT/AOT passes 82/82,
+including the original 8193-instance case, live guest-PC profiling, 53 AOT
+registrations and nested installed compiler/session 5/5. ARM interpreter passes
+25/25, Intel interpreter Debug and Release pass 27/27 each. CI58 completed with
+a failed Linux source producer: LLVM Stage B and Stage C configure pass, but
+the final compiler-rt build fails in libFuzzer's nested libc++ graph. No qualified
+toolchain artifact is published. All five dependent Linux jobs fail at artifact
+download, before Forge/WAMR configure or execution; their runtime gates are NOT_RUN.
+
+Fresh exact-head Darwin OFF build/install/physical relocation qualifies 27 root
+tests, two direct installed smokes and two installed AOT/session tests. Runtime
+dependency and loaded-image checks exclude LLVM/Clang and require the intended
+OpenSSL3 provider. The separate compiler helper is not LLVM-free. A preserved
+old-helper revision mismatch was correctly rejected; a normally built/installed
+matching helper closes that delivery subcase without changing the identity guard.
+The complete ON cache is restored; its 83-test selection passes. This is scoped
+delivery evidence, not whole-project or product acceptance.
+
+Fresh isolated product verification uses the coherent CI58 merge tree: current
+Turbine needs three HTTP APIs absent from the exact PR head. No API copying,
+compatibility shim, live pin edit or merge is authorized by that validation.
+Full product, Linux, bounded-profile, performance and final delivered-provenance
+requirements below remain open. Workspace evidence is under
+`wamr-ci-190-20261020-r10`; earlier failures and revision-scoped passes remain.
+
+### Historical Checkpoints
+
+The earlier 2026-10-18 follow-up recorded draft candidate
+`12d1f906668cde93c03e7d864e71ee1e10dfb194`, public
 profiling, length-aware export names and recorded current-dev prerequisites.
 Independent source reviews are clear within their stated scope. Fresh combined
 tests, installation and isolated product acceptance are in progress; older
@@ -358,21 +389,21 @@ only the named subcase, not closure of a row.
 
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
-| Boundaries | Reviewed owner/dependency map; no VM-to-SDK/tooling reverse imports, duplicate engine owners or mandatory LLVM; explicit migration for any approved rename | PARTIAL: layout implemented and source build qualified; public compiler/optimized migration open |
-| API | Installed package consumer compilation; documented minimal binding edits; no vendor types in public modules | PARTIAL: current local usage-1 selected CTest 4/4 and execution 27/27 pass; old-pin trap failures remain historical. Installed/full AOT, cached-context allocator handoff and absolute-deadline watchdog consumer compatibility remain open |
-| Profile | Versioned constants, equal interpreter/AOT admission, retained rejection fixtures, explicit migration; no silent clamping | Bounded policy and P1 single-result rejection ACCEPTED; other numeric caps PROPOSAL. Historical usage-0 32 KiB/+4 and 65,536-local source-admission cases pass classic/fast/AOT; fresh usage-1/full public/physical profile open |
-| Admission | Every current option classified and enforced within the approved profile; malformed modules, forbidden imports, signatures, limits, start and exports | PARTIAL: three named malformed-parser permissions explicitly retired; new-profile rejection tests required, historical evidence unchanged. `allow_zero_blocktype` is not waived; full options/early load bounds/public wiring remain open |
-| Host bridge | Canonical registry-generated imports, bounds/alignment/NUL/overflow checks, nested calls, compiler builtins and host error propagation | PARTIAL: private scalar/range/string bindings and typed host failures qualified in interpreter/AOT; production registry/converters and full SDK open |
-| Donor contracts | Original required donor WASM; ABI, DB, authorization, inline actions and financial FP scenarios | NOT_RUN |
-| Numeric | Full f32/f64 operation/conversion corpus, NaN/sNaN, signed zero, subnormals, min/max, rounding, constant folding and FP-state restoration | PARTIAL: local ARM64 corpus passes; full/cross-platform gate open |
-| Resources | Equal logical limits; deterministic growth policy; local allocation/stack failure never masquerades as a canonical contract result | PARTIAL: historical local public classic padded-local matrix passes; usage-1 allocator and typed page-boundary refusal in progress. Revised 65,535/65,536-page source/config/compiler/runtime and zero-initial-memory tests NOT_RUN; full physical profile/live AOT/concurrency/allocation/growth/lifetime gates open |
-| Start and cancellation | One invocation scope covers instantiation/imported or defined start/post-instantiate/apply; cancellation before/during start, pure loops and host boundaries | PARTIAL: imported initialization fix included in 66e6be6; reviewed usage-0 follow-up includes 184 initialization checks. Fresh usage-1/full public deadline/admission scope and blocking host calls remain open |
-| Isolation | Fresh memory/globals/tables, nested and parallel calls; cancel A while B is active; safe reuse or typed poison after every failure | PARTIAL: tested A/B and nested FP; complete failure policy open |
-| Native execution | Interpreter cold start without compiler; optimized execution on Linux x86_64 and macOS ARM64; Linux ARM64 tracked separately | PARTIAL: macOS ARM64 probe only |
-| Compiler process | Bounded jobs/bytes, deadlines, cancellation, crash/restart and shutdown; no stuck child or zombie | NOT_RUN |
-| Artifacts/cache | Identity, compiler provenance, tamper rejection, atomic publication, quota/eviction/invalidation and rebuild | Full acceptance NOT_RUN; the current passing session test expects fail-closed exact-reservation refusal, not successful session/cache use |
-| Product effects | Correct rollback; no replay/fallback after effects without rollback; retries preserve the original deadline | NOT_RUN |
-| Packaging | Runtime install/relocation without LLVM; SDK/testhost/validator use new implementation; no EOS implementation linked transitively | NOT_RUN for installed/runtime-only acceptance. Prior OpenSSL header failure is historical: coordinator root OpenSSL 4 build included real execution; optional compiler/helper/exports configure. Neither is fresh usage-1 execution or installed qualification |
+| Boundaries | Reviewed owner/dependency map; no VM-to-SDK/tooling reverse imports, duplicate engine owners or mandatory LLVM; explicit migration for any approved rename | PARTIAL: current source/public packages use independent VM leaves and an optional compiler/JIT. Exact-head relocated interpreter/AOT runtime is LLVM-free; Linux and complete delivery/provenance remain open |
+| API | Installed package consumer compilation; documented minimal binding edits; no vendor types in public modules | PARTIAL: ordinary installed interpreter/execution/AOT/session consumers pass, including matching-helper handshake. Approved removals/rename are documented; full current-product compatibility remains open |
+| Profile | Versioned constants, equal interpreter/AOT admission, retained rejection fixtures, explicit migration; no silent clamping | Bounded policy and P1 single-result rejection ACCEPTED; other numeric caps remain PROPOSAL. Current scoped admission/boundary tests are not acceptance of the complete physical envelope |
+| Admission | Every current option classified and enforced within the approved profile; malformed modules, forbidden imports, signatures, limits, start and exports | PARTIAL: current public unit/spec, malformed-profile and provenance checks pass on reviewed macOS lanes. Full option/profile and cross-platform admission closure remains required; `allow_zero_blocktype` is not waived |
+| Host bridge | Canonical registry-generated imports, bounds/alignment/NUL/overflow checks, nested calls, compiler builtins and host error propagation | PARTIAL: current public invocation/SDK execution and installed consumers pass. Fresh product-generated registry, donor intrinsics and complete SDK/product acceptance remain open |
+| Donor contracts | Original required donor WASM; ABI, DB, authorization, inline actions and financial FP scenarios | PARTIAL: original donor unit/spec/oracle evidence and revision-scoped F6 contract tests exist. Fresh required-contract execution and effects through current products remain open |
+| Numeric | Full f32/f64 operation/conversion corpus, NaN/sNaN, signed zero, subnormals, min/max, rounding, constant folding and FP-state restoration | PARTIAL: current ARM JIT/AOT and Intel interpreter numeric/FP checks pass. Complete cross-platform/mode corpus, including pending Linux, remains open |
+| Resources | Equal logical limits; deterministic growth policy; local allocation/stack failure never masquerades as a canonical contract result | PARTIAL: current owner/reservation, memory, cancellation and heavy AOT checks pass, including zero-width/growable-zero regressions. Complete revised capacity/physical/concurrency envelope remains open; no smaller limit is implied |
+| Start and cancellation | One invocation scope covers instantiation/imported or defined start/post-instantiate/apply; cancellation before/during start, pure loops and host boundaries | PARTIAL: current public invocation/execution, nested watchdog and AOT cancel/deadline checks pass. Full profile/platform and product-effect evidence remains required |
+| Isolation | Fresh memory/globals/tables, nested and parallel calls; cancel A while B is active; safe reuse or typed poison after every failure | PARTIAL: current public owner handoff, host-failure priority, nested/parallel FP and reuse tests execute. Complete profile/platform/product failure policy remains open |
+| Native execution | Interpreter cold start without compiler; optimized execution on Linux x86_64 and macOS ARM64; Linux ARM64 tracked separately | PARTIAL: full scoped ARM interpreter/JIT/AOT and Intel interpreter lanes pass, not merely private probes. Linux qualification remains pending |
+| Compiler process | Bounded jobs/bytes, deadlines, cancellation, crash/restart and shutdown; no stuck child or zombie | PARTIAL: standalone AOT/session and installed matching-helper paths execute successfully, including cancellation/cleanup subsets. Full bounded process/recovery acceptance across required platforms remains open |
+| Artifacts/cache | Identity, compiler provenance, tamper rejection, atomic publication, quota/eviction/invalidation and rebuild | PARTIAL: current positive compile/load/execute/session, identity/rejection and owner cleanup checks pass; this is no longer an expected exact-reservation refusal only. Full cache/process/platform acceptance remains open |
+| Product effects | Correct rollback; no replay/fallback after effects without rollback; retries preserve the original deadline | OPEN: historical F6 product results retain their revisions; fresh coherent current-product builds and real-process effects are in progress, not accepted |
+| Packaging | Runtime install/relocation without LLVM; SDK/testhost/validator use new implementation; no EOS implementation linked transitively | PARTIAL: fresh exact-head Darwin runtime OFF install/relocation and public consumers pass without LLVM/Clang, independently reviewed. External compiler contains LLVM. Full SDK/product/Linux and EOS-derived delivered-code audit remain open |
 | Performance | Same corpus/configuration: cold/warm latency, native throughput, peak memory and compilation cost; accepted regression budget | NOT_RUN |
 | Provenance | Residual EOS-derived parser/numeric/conversion/allocator/OC dependencies removed from replacement targets; required notices retained | NOT_RUN |
 

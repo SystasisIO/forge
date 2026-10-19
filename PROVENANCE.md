@@ -5,7 +5,7 @@ license by itself; see `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES`.
 
 Audit date: 2026-08-10.
 
-WASM source-lineage/runtime clarification: 2026-10-19. Other audit sections and
+WASM source-lineage/runtime clarification: 2026-10-20. Other audit sections and
 historical qualification records are not re-audited by this clarification.
 
 ## Experimental WAMR Replacement
@@ -13,7 +13,7 @@ historical qualification records are not re-audited by this clarification.
 The replacement engine source is maintained in
 `SystasisIO/wasm-micro-runtime` on `forge-runtime-profile-v1`. This experimental
 working tree selects published draft fork candidate
-`69c107c54b040b5b0ced5e764f0ddd0c17249029` through
+`f6fe6d5ae1c14b2cc4301e2fca0b3364be6a692b` through
 `cmake/ForgeWamrSource.cmake` and a clean `vendor/wamr` checkout. A fast-forward
 push and remote-ref read confirmed this commit in the existing draft branch/PR
 on 2026-10-19. Publication is not a merge or production acceptance.
@@ -48,9 +48,12 @@ exec-env, after its previous scalar fields and outside the AOT-visible prefix.
 Nested guards retain the first failure; only the embedder's outer operation may
 clear it. This distinguishes a failed FP transition from ordinary guest control
 flow without changing the public C API. The three-file change passed scoped
-source review and private interpreter probes; a full rebuild, installed delivery,
-AOT/JIT execution and product qualification remain pending for this pin. Earlier
-`12d1f906` framework and product results retain their original source identity.
+source review and private interpreter probes at that historical checkpoint;
+its then-pending rebuild/delivery gates are not the current qualification state.
+Earlier `12d1f906` framework and product results retain their original source
+identity. The current fork also includes the reviewed Darwin DWARF unwind
+registration change in `f6fe6d5`; current CI and installed-runtime results are
+revision-scoped in the integration note, not complete product acceptance.
 
 WAMR remains under its upstream Apache License 2.0 with LLVM Exceptions,
 preserved in `vendor/wamr/LICENSE`. This dependency record does not relicense

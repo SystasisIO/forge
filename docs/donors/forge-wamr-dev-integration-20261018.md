@@ -1,6 +1,6 @@
 # WAMR Public Profiling And Delivery Follow-Up
 
-Date: 2026-10-18; latest checkpoint 2026-10-19. Status: pending changes,
+Date: 2026-10-18; latest checkpoint 2026-10-20. Status: pending changes,
 NOT ACCEPTED as a complete migration.
 
 This follows the [previous checkpoint](forge-wamr-dev-integration-20261017.md).
@@ -8,6 +8,66 @@ The F6 integration branch remains `vm-wasm-wamr-dev-integration-v1`, based on
 `3a6e388f29c1535d9d9c642877d416ca7e52e83a`. Earlier worktrees and evidence are
 preserved. Workspace evidence for this follow-up lives in
 `wamr-dev-integration-20261018-r5`.
+
+## CI58 Follow-Up (2026-10-20)
+
+[VM run58](https://github.com/SystasisIO/forge/actions/runs/39293832722) uses
+published Forge head `3bcbf790` and WAMR `f6fe6d5`. Its actual checkout is the
+synthetic merge `9cd98e54`, parents dev `94657d50` and the PR head, not an
+identical copy of the published head. VM/SDK sources and all vendor pins match;
+other dev APIs and the combined build/package graph belong to that merge context.
+Independent raw-artifact review confirms ARM JIT/AOT **82/82**, ARM interpreter
+**25/25**, and Intel interpreter Debug/Release **27/27** each. No CTest failures,
+disabled or skipped cases occur. The ARM lane includes the unchanged original
+8193-instance case, ten profiling cases with live guest-PC unwind, 53 standalone
+AOT registrations and nested installed compiler/session 5/5. The Intel numerical
+process failures and provenance mismatches from run57 do not recur. CI58 finishes
+with a failed Linux source producer. Stage B LLVM build/install and Stage C
+configure pass; final compiler-rt compilation fails in libFuzzer's nested libc++
+graph. No qualified toolchain artifact is published. All five dependent Linux
+jobs fail at that missing artifact before Forge/WAMR configure or execution;
+native, sanitizer and package runtime acceptance remain NOT_RUN, not VM failures.
+
+The follow-up removes Stage C's global Stage A header override, which otherwise
+survives the nested libFuzzer libc++ build's `-nostdinc++` and breaks C-wrapper
+`include_next`. Before configure, the existing header checker now verifies the
+newly installed driver, actual libc++220108 headers and resolved prefix ownership.
+Stage B, all three linker/LLD settings, RPATH, libFuzzer, sanitizers and final
+relocation/ABI admission remain unchanged. Metadata tests pass **60/60**; a real
+Darwin header-search witness fails with two roots and passes with one. This is
+not a successful Linux build: the patched producer and its dependent lanes need
+fresh remote qualification.
+
+Fresh exact-head Darwin runtime-OFF installation and physical relocation pass
+**27/27** root tests, **2/2** direct installed smokes and **2/2** installed
+AOT/session consumers. Recursive dependencies for four runtime executables and
+actual loaded images of both optimizing consumers exclude LLVM/Clang; each has
+one intended OpenSSL3 crypto provider. The separate compiler prefix deliberately
+contains LLVM and is not included in that runtime-free claim. Immutable source,
+prefix and fixture hashes are checked; all 787 ON cache keys restore unchanged
+and the restored 83-test ON selection passes. Independent review is scoped GO
+for this OFF delivery, not full migration or product acceptance.
+
+The retained first OFF attempts include a harness SONAME false positive and a
+genuine helper/runtime revision mismatch. Apple's exact system
+`/usr/lib/libcrypto.46.dylib` was identified through version APIs and `dladdr` as
+LibreSSL 3.3.6, not OpenSSL4. The harness now distinguishes that platform image
+from the intended OpenSSL3 provider; forbidden-ABI controls remain enforced.
+The old preserved helper reports `2d4c3cab` while runtime reports `3bcbf790`;
+session correctly rejects it with `4040006` before the compiler-work ACK. A new
+normally built/installed matching helper passes without changing the identity
+guard. Neither failed attempt is overwritten or relabeled as a pass.
+
+Current Spine/Turbine verification is being prepared from the coherent CI58
+merge tree. The exact PR head lacks three newer HTTP APIs required by current
+Turbine; individual API copies or compatibility stubs are not used. Product
+sources/pins remain unchanged except the approved eight-file execution-module
+rename in the isolated Turbine copy. Fresh full Forge tooling/RocksDB install,
+matching SDK, donor contracts and real-process effects remain open. Workspace
+raw evidence, reviews, immutable archives and approved historical-build
+retirement records are under `wamr-ci-190-20261020-r10`. No merge or live product
+change is performed; performance, full bounded-profile and final delivered
+provenance requirements remain open, including retained EOS-derived utilities.
 
 ## CI57 Follow-Up (2026-10-19)
 

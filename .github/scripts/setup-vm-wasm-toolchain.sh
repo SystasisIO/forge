@@ -240,12 +240,22 @@ elif [[ "$mode" == bootstrap-linux ]]; then
 
    # Stage C is a separate upstream runtime graph, serialized after the LLVM graph.
    # This prevents a nested runtime Ninja from exceeding the two-job/one-linker budget.
-   # Bind Stage A before project() probes the newly installed libc++-default driver.
+   # The installed driver finds its own libc++; verify that before project().
+   # A global -isystem would survive nested libc++'s -nostdinc++ and break include_next.
+   log_run final-runtimes-headers env CC="$prefix/bin/clang" CXX="$prefix/bin/clang++" \
+      CXXFLAGS=-stdlib=libc++ python3 "$checker" headers "$evidence/final-runtimes-headers"
+   log_run final-runtimes-header-prefix python3 -c '
+import json, pathlib, sys
+prefix = pathlib.Path(sys.argv[1]).resolve(strict=True)
+headers = json.loads(pathlib.Path(sys.argv[2]).read_text())["headers"]
+if set(headers) != {"vector", "functional"} or not all(pathlib.Path(p).resolve(strict=True).is_relative_to(prefix) for p in headers.values()):
+    raise SystemExit("HARNESS_ERROR: Stage C C++ headers outside installed prefix")
+' "$prefix" "$evidence/final-runtimes-headers/header-result.json"
    log_run final-runtimes-configure /usr/bin/cmake -S "$source/runtimes" -B "$work/final-runtimes" -G Ninja \
       -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DCMAKE_C_COMPILER="$prefix/bin/clang" -DCMAKE_CXX_COMPILER="$prefix/bin/clang++" \
-      "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -isystem $prefix/include/c++/v1" \
+      -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
       "-DCMAKE_EXE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       "-DCMAKE_SHARED_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       "-DCMAKE_MODULE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \

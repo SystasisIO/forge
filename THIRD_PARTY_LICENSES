@@ -247,7 +247,7 @@ WebAssembly Micro Runtime (WAMR)
 --------------------------------
 
 Vendored under `vendor/wamr` from the SystasisIO/wasm-micro-runtime fork,
-commit `69c107c54b040b5b0ced5e764f0ddd0c17249029`, based on upstream
+commit `f6fe6d5ae1c14b2cc4301e2fca0b3364be6a692b`, based on upstream
 wasm-micro-runtime/wasm-micro-runtime commit
 `ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a`.
 
