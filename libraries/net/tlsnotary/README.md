@@ -4,6 +4,7 @@ Experimental C++ source API over upstream TLSNotary at the exact commit recorded
 in [native/Cargo.toml](native/Cargo.toml) and [native/Cargo.lock](native/Cargo.lock).
 Enable `FORGE_ENABLE_TLSNOTARY=ON`; link `Forge::forge_net_tlsnotary` and request
 the installed `net_tlsnotary` package component. This is host code only.
+Consumers which also import Asio modules link `Forge::forge_asio` explicitly.
 
 Use this library when two peers must jointly authenticate selected TLS transcript
 bytes without disclosing the remaining request bytes to the verifier. Applications
