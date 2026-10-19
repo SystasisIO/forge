@@ -12,3 +12,7 @@ endif()
 add_subdirectory(quic)
 add_subdirectory(pnet)
 add_subdirectory(p2p)
+
+if(FORGE_ENABLE_TLSNOTARY)
+   add_subdirectory(tlsnotary)
+endif()

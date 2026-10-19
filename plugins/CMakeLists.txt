@@ -20,3 +20,7 @@ target_link_libraries(
       forge_plugins_log_otlp
       forge_plugins_db_store
 )
+
+if(TARGET forge_plugins_net_tlsnotary_session)
+   target_link_libraries(forge_plugins INTERFACE forge_plugins_net_tlsnotary_session)
+endif()

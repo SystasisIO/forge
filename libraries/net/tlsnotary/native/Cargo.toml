@@ -1,0 +1,23 @@
+[package]
+name = "forge-tlsnotary-worker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tlsn_insecure)"] }
+
+[dependencies]
+tlsn = { git = "https://github.com/tlsnotary/tlsn", rev = "5f67389de3f8962227fddffd71d78a852acc9b01" }
+mpz-common = { git = "https://github.com/tlsnotary/mpz2", rev = "8f897838f4e24aff9da8e8b012e8ba35ae770141" }
+futures = "0.3"
+rangeset = "0.4"
+rayon = "1.12"
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "io-util", "sync"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+[profile.release]
+debug = 0
+strip = "debuginfo"

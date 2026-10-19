@@ -37,85 +37,34 @@ namespace forge::vm::wasm::optimizing {
 static_assert(std::is_nothrow_move_constructible_v<boost::asio::awaitable<void>>);
 static_assert(std::is_nothrow_move_constructible_v<target_profile>);
 
-#if defined(__APPLE__)
-// Serializes only our cold registration changes, not foreign signal users or
-// child reapers. Asio still owns the actual handler and process-wide fanout.
-std::mutex compiler_session::impl::signal_mutex;
-std::size_t compiler_session::impl::signal_registrations = 0;
-std::optional<struct sigaction> compiler_session::impl::signal_disposition;
-
-bool compiler_session::impl::same_signal_disposition(const struct sigaction& current) noexcept {
-   if (!signal_disposition || current.sa_flags != signal_disposition->sa_flags)
-      return false;
-   if ((current.sa_flags & SA_SIGINFO) != 0) {
-      if (current.sa_sigaction != signal_disposition->sa_sigaction)
-         return false;
-   } else if (current.sa_handler != signal_disposition->sa_handler) {
-      return false;
-   }
-   for (auto signal = 1; signal < NSIG; ++signal)
-      if (sigismember(&current.sa_mask, signal) != sigismember(&signal_disposition->sa_mask, signal))
-         return false;
-   return true;
-}
-#endif
-
 void compiler_session::impl::acquire_signal_owner() {
 #if defined(__APPLE__)
-   const auto lock = std::scoped_lock{signal_mutex};
-#endif
-   struct sigaction current{};
-   if (::sigaction(SIGCHLD, nullptr, &current) != 0 || (current.sa_flags & SA_NOCLDWAIT) != 0)
+   try {
+      signal_owner.acquire(runtime.context().get_executor());
+   } catch (const asio::exceptions::rejected&) {
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "incompatible existing SIGCHLD ownership");
-#if defined(__APPLE__)
-   const auto cold_default = (current.sa_flags & SA_SIGINFO) == 0 && current.sa_handler == SIG_DFL;
-   if (signal_owner || (signal_registrations == 0 ? !cold_default : !same_signal_disposition(current)))
-      FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "incompatible existing SIGCHLD ownership");
-   if (signal_registrations == std::numeric_limits<std::size_t>::max())
-      FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "SIGCHLD registration capacity exhausted");
-   auto owner = std::make_unique<boost::asio::signal_set>(runtime.context().get_executor());
-   auto error = boost::system::error_code{};
-   owner->add(SIGCHLD, error);
-   if (error)
-      FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "SIGCHLD registration failed",
-                            forge::exceptions::ctx("native_code", error.value()));
-   // Commit without allocation before the observation below can fail. Any
-   // failed initialization retains this SAME registration for explicit shutdown.
-   signal_owner = std::move(owner);
-   ++signal_registrations;
-   struct sigaction installed{};
-   if (::sigaction(SIGCHLD, nullptr, &installed) != 0)
+   } catch (const asio::exceptions::invalid_state&) {
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "SIGCHLD registration could not be verified");
-   const auto native_handler = (installed.sa_flags & (SA_SIGINFO | SA_NOCLDWAIT)) == 0 &&
-                               installed.sa_handler != SIG_DFL && installed.sa_handler != SIG_IGN;
-   if (signal_registrations == 1 && native_handler)
-      signal_disposition = installed;
-   if (!native_handler || !same_signal_disposition(installed))
-      FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "SIGCHLD registration changed during initialization");
+   } catch (const asio::exceptions::internal&) {
+      FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "SIGCHLD registration failed");
+   }
 #else
-   if (current.sa_handler != SIG_DFL)
+   struct sigaction current{};
+   if (::sigaction(SIGCHLD, nullptr, &current) != 0 || (current.sa_flags & SA_NOCLDWAIT) != 0 ||
+       current.sa_handler != SIG_DFL)
       FORGE_THROW_EXCEPTION(exceptions::compiler_unavailable, "incompatible existing SIGCHLD ownership");
 #endif
 }
 
 void compiler_session::impl::release_signal_owner() {
 #if defined(__APPLE__)
-   const auto lock = std::scoped_lock{signal_mutex};
-   if (!signal_owner)
-      return;
-   struct sigaction current{};
-   if (signal_registrations == 0 || ::sigaction(SIGCHLD, nullptr, &current) != 0 ||
-       (current.sa_flags & SA_NOCLDWAIT) != 0 || !same_signal_disposition(current))
+   try {
+      signal_owner.release();
+   } catch (const asio::exceptions::invalid_state&) {
       FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "SIGCHLD registration no longer has confirmed ownership");
-   auto error = boost::system::error_code{};
-   signal_owner->clear(error); // Public checked unregister; last Asio owner restores SIG_DFL.
-   if (error)
-      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "SIGCHLD registration could not be released",
-                            forge::exceptions::ctx("native_code", error.value()));
-   --signal_registrations;
-   signal_owner.reset(); // Already empty: destructor cannot overwrite another disposition.
-   if (signal_registrations == 0)
-      signal_disposition.reset();
+   } catch (const asio::exceptions::internal&) {
+      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "SIGCHLD registration could not be released");
+   }
 #endif
 }
 

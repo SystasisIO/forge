@@ -40,6 +40,7 @@ class socket_stream final : public transport::detail::stream_concept,
    boost::asio::awaitable<void> async_write(std::span<const std::uint8_t> bytes) override;
    boost::asio::awaitable<std::vector<std::uint8_t>> async_read() override;
    boost::asio::awaitable<transport::chunk> async_read_chunk() override;
+   boost::asio::awaitable<void> async_close_write() override;
    boost::asio::awaitable<void> async_close() override;
    void cancel() override;
    void request_cancel() noexcept;
@@ -57,6 +58,7 @@ class socket_stream final : public transport::detail::stream_concept,
    std::shared_ptr<forge::asio::notification> terminal_completed_;
    std::shared_ptr<void> lifetime_;
    std::atomic_bool ownership_active_ = false;
+   bool write_closed_ = false; // Accessed only on strand_.
 };
 
 [[nodiscard]] std::pair<std::shared_ptr<socket_stream>, transport::stream>

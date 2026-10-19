@@ -210,8 +210,11 @@ unsafe fork/exec. Linux uses atomic SOCK_CLOEXEC plus public spawn closefrom.
 Unmanaged Boost.Process v2 async wait is the sole child reaper. The embedding
 application must establish default SIGCHLD, no SA_NOCLDWAIT/competing reaper and
 keep runtime/compute pool, executor and storage alive through cleanup. On Darwin,
-the first cold session registers through the existing public Asio signal set;
-other sessions, including sessions on distinct runtimes, may join only while
+the first cold session uses the shared `forge.asio.child_signal_registration`
+guard and requires exact native default (`SIG_DFL`, zero flags, empty mask);
+custom flags/masks on a default handler are rejected without mutation. The guard
+uses the existing public Asio signal set. Other sessions, including sessions on
+distinct runtimes, may join only while
 known own registrations are live and the captured handler, flags and mask are
 unchanged. Each session retains its own runtime-bound registration until its
 child/task/compute drains. Checked public unregister failure or an observed
@@ -220,9 +223,13 @@ registration and runtime; quiescence is not claimed. The last successful Asio
 unregister restores default disposition. Failed startup after registration also
 requires explicit shutdown before destroying injected owners.
 
+VM boundary exceptions remain `compiler_unavailable` for acquisition failure and
+`shutdown_incomplete` for release failure. The stricter cold profile changes
+which host dispositions are admitted; public error categories stay unchanged.
+
 This is ownership coordination, not a signal handler or reaper replacement.
-Child waits remain exact-PID Boost.Process operations. The private mutex
-serializes only these session registrations; it cannot synchronize unrelated
+Child waits remain exact-PID Boost.Process operations. The shared guard's private
+mutex serializes only cooperating Forge registrations; it cannot synchronize unrelated
 signal mutation or foreign waitpid calls. An embedding host must not replace
 the handler or introduce a competing reaper while registrations are live.
 Checks reject observed changes at acquire/release, not continuously monitor the
