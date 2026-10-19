@@ -32,13 +32,13 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
             r"\bimport\s+forge\.(?:swarm\.(?:storage|runtime|protocol|api|conversion)|chain|net|api|app|plugins|rocksdb|db\.(?:blob|rocksdb|mdbx))(?:[.;])", text):
             errors.append(f"{name}: indexed metadata imports a runtime or concrete backend")
          continue
-      if re.search(r"\bimport\s+forge\.(?:chain|db|api|asio|app|net|plugins|execution|vm)(?:[.;])", text):
+      if re.search(r"\bimport\s+forge\.(?:swarm\.(?:db|storage|runtime|protocol|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm)(?:[.;])", text):
          errors.append(f"{name}: deterministic Swarm core imports an upper layer")
 
    cmake = family / "core/CMakeLists.txt"
    if not cmake.is_file():
       errors.append("libraries/swarm/core: target definition is missing")
-   elif re.search(r"\bforge_(?:chain|db|api|asio|app|net|plugins|execution|vm)(?:_|\b)", cmake.read_text()):
+   elif re.search(r"\bforge_(?:swarm_(?:db|storage|runtime|protocol|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm)(?:_|\b)", cmake.read_text()):
       errors.append("libraries/swarm/core: target depends on an upper layer")
 
    storage = family / "storage/CMakeLists.txt"
