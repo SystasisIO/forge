@@ -1,0 +1,83 @@
+name: Attestation F1
+run-name: Attestation F1 / ${{ github.ref_name }} / ${{ github.sha }}
+
+on:
+  push:
+    branches: [auth-attestation-jwt-v1]
+  pull_request:
+    branches: [dev]
+    paths:
+      - "libraries/auth/attestation/**"
+      - "libraries/auth/api/**"
+      - "libraries/crypto/jose/**"
+      - "libraries/schema/**"
+      - "libraries/variant/**"
+      - "libraries/codec/json/**"
+      - "tests/attestation*/**"
+      - ".github/workflows/attestation.yml"
+      - ".github/scripts/attestation.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attestation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  CTEST_PARALLEL_LEVEL: "1"
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned dependencies
+        run: bash .github/scripts/attestation.sh dependencies
+      - name: Compile focused tests and public boundary
+        run: bash .github/scripts/attestation.sh build
+      - name: JWT, schema and regression tests
+        run: bash .github/scripts/attestation.sh test
+      - name: Python and Java bidirectional interoperability
+        run: bash .github/scripts/attestation.sh interop
+      - name: Installed consumers and dependency isolation
+        run: bash .github/scripts/attestation.sh packages
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/forge-attestation/sysroot
+          key: attestation-sysroot-llvm22-${{ runner.os }}-${{ runner.arch }}-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1-${{ hashFiles('guest/sysroot/build.sh', 'guest/sysroot/include/**') }}
+      - name: Installed guest SDK and independent WASM artifact consumer
+        run: bash .github/scripts/attestation.sh guest
+      - name: Collect bounded evidence and clean generated trees
+        if: always()
+        run: bash .github/scripts/attestation.sh evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attestation-${{ matrix.os }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-attestation/evidence/
+          if-no-files-found: error
+          retention-days: 14

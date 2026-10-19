@@ -9,6 +9,7 @@ from pathlib import Path
 ARCHIVES = (
     "libforge_guest_runtime.a",
     "libforge_guest_raw.a",
+    "libforge_guest_auth_attestation.a",
     "libforge_guest_net_http_values.a",
     "libforge_guest_api_wasm.a",
     "libforge_guest_codec_base64.a",

@@ -86,6 +86,7 @@ set(
    crypto_asymmetric_values
    crypto_asymmetric
    crypto_signer
+   crypto_jose
    crypto_keystore
    crypto_wallet
    crypto_pki
@@ -105,6 +106,8 @@ set(
    net_yamux
    auth_oauth2
    auth_credential
+   auth_attestation
+   auth_api
    auth_liboauth2
    auth_appauth
    auth_oidc_agent
@@ -545,6 +548,18 @@ macro(_forge_add_component component)
       elseif("${component}" STREQUAL "auth_credential")
          _forge_add_component(exceptions)
          _forge_add_component(raw)
+      elseif("${component}" STREQUAL "auth_attestation")
+         _forge_add_component(raw)
+         _forge_add_component(schema)
+         _forge_add_component(variant)
+      elseif("${component}" STREQUAL "auth_api")
+         _forge_add_component(auth_attestation)
+         _forge_add_component(api_auth)
+         _forge_add_component(api_core)
+      elseif("${component}" STREQUAL "crypto_jose")
+         _forge_add_component(crypto_asymmetric)
+         _forge_add_component(crypto_digest)
+         _forge_add_component(codec_json)
       elseif("${component}" STREQUAL "auth_liboauth2")
          _forge_add_component(auth_oauth2)
          _forge_add_component(asio)
@@ -835,6 +850,9 @@ endif()
 if("compression" IN_LIST _FORGE_COMPONENTS)
    list(APPEND _FORGE_BOOST_MODULES iostreams)
 endif()
+if("schema" IN_LIST _FORGE_COMPONENTS)
+   list(APPEND _FORGE_BOOST_MODULES regex)
+endif()
 if(_FORGE_BOOST_MODULES)
    list(REMOVE_DUPLICATES _FORGE_BOOST_MODULES)
    _forge_require_package(Boost 1.90 CONFIG COMPONENTS ${_FORGE_BOOST_MODULES})
@@ -962,13 +980,18 @@ endif()
 if("net_s3" IN_LIST _FORGE_COMPONENTS)
    _forge_require_package(AWSSDK 1.11.900 EXACT CONFIG COMPONENTS s3)
 endif()
-if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS)
+if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS OR "crypto_jose" IN_LIST _FORGE_COMPONENTS)
    # The build-tree package keeps its dependency beside the Forge export;
    # installed consumers discover the normal adjacent cjose package instead.
    if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose/cjoseConfig.cmake")
       _forge_require_package(cjose 0.8.1 EXACT CONFIG COMPONENTS static
          PATHS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose" NO_DEFAULT_PATH)
    endif()
+endif()
+if("crypto_jose" IN_LIST _FORGE_COMPONENTS)
+   _forge_require_package(CJOSE)
+endif()
+if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS)
    _forge_require_package(OAuth2Dependencies)
 endif()
 

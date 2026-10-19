@@ -2,6 +2,23 @@
 # The including build defines forge_contract_register_guest_component().
 
 forge_contract_register_guest_component(
+   ID forge.auth.attestation
+   TARGET forge_auth_attestation
+   ARCHIVE libforge_guest_auth_attestation.a
+   PUBLIC_LIBRARIES forge.raw
+   MODULES
+      forge/auth/attestation/document.cppm
+      forge/auth/attestation/exceptions.cppm
+      forge/auth/attestation/signed_document.cppm
+      forge/auth/attestation/verification_policy.cppm
+   MODULE_NAMES
+      forge.auth.attestation.document
+      forge.auth.attestation.exceptions
+      forge.auth.attestation.signed_document
+      forge.auth.attestation.verification_policy
+)
+
+forge_contract_register_guest_component(
    ID forge.codec.json_values
    TARGET forge_codec_json_values
    PUBLIC_LIBRARIES forge.raw

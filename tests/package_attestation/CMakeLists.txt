@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.31)
+project(ForgePackageAttestation LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Forge CONFIG REQUIRED COMPONENTS auth_attestation auth_api crypto_jose codec_json)
+foreach(component forge_auth_attestation forge_auth_api forge_crypto_jose)
+   get_target_property(links Forge::${component} INTERFACE_LINK_LIBRARIES)
+   if(links MATCHES "forge_(chain|net|plugins)_|oauth2-internal|CURL::|PCRE2")
+      message(FATAL_ERROR "${component} exports an unrelated runtime/backend dependency")
+   endif()
+endforeach()
+if(TARGET OAuth2::OAuth2 OR TARGET oauth2-internal OR TARGET CURL::libcurl)
+   message(FATAL_ERROR "The attestation-only package consumer discovered OAuth transport dependencies")
+endif()
+
+add_executable(forge_package_attestation main.cpp)
+target_link_libraries(forge_package_attestation PRIVATE
+   Forge::forge_auth_api Forge::forge_crypto_jose Forge::forge_codec_json)
+enable_testing()
+add_test(NAME test_forge_package_attestation COMMAND forge_package_attestation)

@@ -1,5 +1,44 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(test_forge_auth_attestation unit/main.cpp test_auth_attestation.cpp)
+target_link_libraries(test_forge_auth_attestation PRIVATE
+   forge_auth_attestation forge_codec_json forge_variant Boost::included_unit_test_framework)
+add_test(NAME test_forge_auth_attestation COMMAND test_forge_auth_attestation)
+
+add_executable(test_forge_api_attestation unit/main.cpp test_api_attestation.cpp)
+target_link_libraries(test_forge_api_attestation PRIVATE
+   forge_auth_api forge_api_core forge_codec_json Boost::included_unit_test_framework)
+add_test(NAME test_forge_api_attestation COMMAND test_forge_api_attestation)
+
+add_executable(test_forge_schema_attestation unit/main.cpp test_schema_attestation.cpp)
+target_link_libraries(test_forge_schema_attestation PRIVATE
+   forge_schema forge_variant forge_codec_json forge_api_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_schema_attestation COMMAND test_forge_schema_attestation)
+
+add_executable(test_forge_json_strict unit/main.cpp test_json_strict.cpp)
+target_link_libraries(test_forge_json_strict PRIVATE
+   forge_codec_json forge_variant Boost::included_unit_test_framework)
+add_test(NAME test_forge_json_strict COMMAND test_forge_json_strict)
+
+add_subdirectory(${PROJECT_SOURCE_DIR}/guest/tests/attestation/protocol attestation-protocol)
+add_executable(forge_attestation_schema_fixture attestation_boundary/schema_fixture.cpp)
+target_link_libraries(forge_attestation_schema_fixture PRIVATE
+   attestation_fixture_protocol forge_auth_attestation forge_codec_json forge_variant)
+add_executable(forge_attestation_boundary attestation_boundary/consumer.cpp)
+target_link_libraries(forge_attestation_boundary PRIVATE
+   forge_chain_api forge_codec_json forge_execution_wasm forge_variant forge_crypto_digest)
+
+if(TARGET forge_crypto_jose)
+   add_executable(test_forge_crypto_jose unit/main.cpp test_crypto_jose.cpp)
+   target_link_libraries(test_forge_crypto_jose PRIVATE
+      forge_crypto_jose forge_codec_base64 forge_codec_hex forge_codec_json
+      Boost::included_unit_test_framework)
+   add_test(NAME test_forge_crypto_jose COMMAND test_forge_crypto_jose)
+   add_executable(forge_attestation_interop attestation_interop/driver.cpp)
+   target_link_libraries(forge_attestation_interop PRIVATE
+      forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_base64 forge_codec_hex)
+endif()
+
 add_executable(test_forge_swarm_core
    swarm_core/main.cpp
    swarm_core/descriptor_tests.cpp

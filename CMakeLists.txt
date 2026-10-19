@@ -27,6 +27,7 @@ option(FORGE_ENABLE_MDBX "Build the vendored MDBX-backed FORGE database driver" 
 option(FORGE_ENABLE_TOOLING "Build optional Forge Contract Tooling host libraries" OFF)
 option(FORGE_ENABLE_S3 "Build the optional AWS SDK-backed S3 client" OFF)
 option(FORGE_ENABLE_LIBOAUTH2 "Build the resource-token verification backend" OFF)
+option(FORGE_ENABLE_JOSE "Build the qualified JOSE external-signing adapter" OFF)
 option(FORGE_ENABLE_VM_WASM_OPTIMIZING "Build the optional WASM optimizing native artifact/runtime leaf" OFF)
 if(FORGE_ENABLE_VM_WASM_OPTIMIZING AND
    (NOT ((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$") OR
@@ -61,6 +62,7 @@ if(FORGE_BUILD_PROFILE STREQUAL "contract-sdk-host")
    set(FORGE_ENABLE_LIBP2P_INTEROP OFF CACHE BOOL "Run libp2p interoperability tests" FORCE)
    set(FORGE_ENABLE_OIDC_AGENT OFF CACHE STRING "Build the oidc-agent authentication backend" FORCE)
    set(FORGE_ENABLE_LIBOAUTH2 OFF CACHE BOOL "Build the resource-token verification backend" FORCE)
+   set(FORGE_ENABLE_JOSE OFF CACHE BOOL "Build the qualified JOSE external-signing adapter" FORCE)
 endif()
 
 if(FORGE_CONTRACT_SDK_HOST_PROFILE)
@@ -107,7 +109,7 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
-set(_forge_boost_components headers date_time iostreams)
+set(_forge_boost_components headers date_time iostreams regex)
 if(FORGE_ENABLE_VM_WASM_OPTIMIZING)
    list(APPEND _forge_boost_components process)
 endif()
@@ -140,6 +142,9 @@ else()
    find_package(Ngtcp2 REQUIRED)
 endif()
 
+if(FORGE_ENABLE_LIBOAUTH2 OR FORGE_ENABLE_JOSE)
+   include(ForgeCJOSE)
+endif()
 if(FORGE_ENABLE_LIBOAUTH2)
    include(ForgeOAuth2)
 endif()
@@ -377,6 +382,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/symmetric/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/asymmetric/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/signer/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/jose/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/keystore/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/pki/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/crypto/math/include"
@@ -399,6 +405,8 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/net/pnet/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/oauth2/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/credential/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/attestation/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/api/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/liboauth2/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/workload/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/auth/appauth/include"
@@ -805,6 +813,8 @@ add_subdirectory(libraries/db/core)
 add_subdirectory(libraries/db/object)
 add_subdirectory(libraries/config/core)
 add_subdirectory(libraries/codec/json)
+include("${CMAKE_CURRENT_SOURCE_DIR}/guest/cmake/ForgeContractLibraries.cmake")
+add_subdirectory(libraries/auth/attestation)
 add_subdirectory(libraries/crypto)
 add_subdirectory(libraries/swarm)
 add_subdirectory(libraries/asio)
@@ -841,6 +851,7 @@ set(
    forge_codec_base58
    forge_codec_hex
    forge_codec_json
+   forge_auth_attestation
    forge_crypto_core
    forge_crypto_digest
    forge_crypto_symmetric
@@ -917,6 +928,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_auth_workload
       forge_auth_session
       forge_auth_http
+      forge_auth_api
       forge_api_http
       forge_net_websocket
       forge_net_transport
@@ -950,6 +962,10 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    if(TARGET forge_auth_liboauth2)
       list(APPEND FORGE_LEAF_TARGETS forge_auth_liboauth2)
    endif()
+endif()
+
+if(TARGET forge_crypto_jose)
+   list(APPEND FORGE_LEAF_TARGETS forge_crypto_jose)
 endif()
 
 if(FORGE_ENABLE_TOOLING)
@@ -1042,6 +1058,7 @@ set(
    codec_hex
    codec_json
    codec_json_values
+   auth_attestation
    crypto_core
    crypto_digest
    crypto_symmetric
@@ -1091,6 +1108,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       auth_credential
       auth_session
       auth_http
+      auth_api
       app
       net_http
       api_http
@@ -1120,6 +1138,9 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    if(TARGET forge_auth_liboauth2)
       list(APPEND FORGE_BUILT_COMPONENTS auth_liboauth2)
    endif()
+endif()
+if(TARGET forge_crypto_jose)
+   list(APPEND FORGE_BUILT_COMPONENTS crypto_jose)
 endif()
 if(TARGET forge_vm_wasm_optimizing)
    list(APPEND FORGE_BUILT_COMPONENTS vm_wasm_optimizing tooling_wasm_compiler)
@@ -1179,14 +1200,24 @@ if(DEFINED BUILD_TESTING AND BUILD_TESTING AND NOT FORGE_CONTRACT_SDK_HOST_PROFI
    add_subdirectory(tests)
 endif()
 
-install(
-   TARGETS forge ${FORGE_LEAF_TARGETS}
-   EXPORT ForgeTargets
-   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT dev EXCLUDE_FROM_ALL
-   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT dev EXCLUDE_FROM_ALL
-   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT dev EXCLUDE_FROM_ALL
-   FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} COMPONENT dev EXCLUDE_FROM_ALL
-)
+foreach(_forge_install_target IN ITEMS forge ${FORGE_LEAF_TARGETS})
+   set(_forge_install_file_sets)
+   foreach(_forge_set_property IN ITEMS INTERFACE_CXX_MODULE_SETS INTERFACE_HEADER_SETS)
+      get_target_property(_forge_owned_sets ${_forge_install_target} ${_forge_set_property})
+      if(_forge_owned_sets)
+         foreach(_forge_owned_set IN LISTS _forge_owned_sets)
+            list(APPEND _forge_install_file_sets
+               FILE_SET ${_forge_owned_set} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} COMPONENT dev EXCLUDE_FROM_ALL)
+         endforeach()
+      endif()
+   endforeach()
+   install(TARGETS ${_forge_install_target}
+      EXPORT ForgeTargets
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT dev EXCLUDE_FROM_ALL
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT dev EXCLUDE_FROM_ALL
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT dev EXCLUDE_FROM_ALL
+      ${_forge_install_file_sets})
+endforeach()
 
 set(FORGE_INTERNAL_TARGETS secp256k1-internal secp256k1 bn256 bls12-381 softfloat)
 if(TARGET appauth-internal)
@@ -1236,6 +1267,7 @@ set(
    libraries/codec/base58/include/forge
    libraries/codec/hex/include/forge
    libraries/codec/json/include/forge
+   libraries/auth/attestation/include/forge
    libraries/config/core/include/forge
    libraries/crypto/core/include/forge
    libraries/crypto/digest/include/forge
@@ -1287,6 +1319,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/auth/pairing/include/forge
       libraries/auth/session/include/forge
       libraries/auth/http/include/forge
+      libraries/auth/api/include/forge
       libraries/net/p2p/include/forge
       libraries/cli/include/forge
       libraries/app/include/forge
@@ -1307,6 +1340,9 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
    if(TARGET forge_auth_liboauth2)
       list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/auth/liboauth2/include/forge)
    endif()
+endif()
+if(TARGET forge_crypto_jose)
+   list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/crypto/jose/include/forge)
 endif()
 if(TARGET forge_net_s3)
    list(APPEND FORGE_INSTALL_INCLUDE_DIRS libraries/net/s3/include/forge)

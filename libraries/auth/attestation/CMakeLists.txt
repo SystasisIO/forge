@@ -10,12 +10,16 @@ if(NOT FORGE_CONTRACT_GUEST)
    list(APPEND _sources document_schema.cpp)
 endif()
 
+set(_raw forge_raw)
+if(TARGET Forge::forge_raw)
+   set(_raw Forge::forge_raw)
+endif()
 forge_add_contract_library(forge_auth_attestation
    ID forge.auth.attestation
    MODULE_BASE_DIRS include
    MODULE_SOURCES ${_modules}
    SOURCES ${_sources}
-   PUBLIC_LIBRARIES Forge::forge_raw
+   PUBLIC_LIBRARIES ${_raw}
 )
 
 if(NOT FORGE_CONTRACT_GUEST)

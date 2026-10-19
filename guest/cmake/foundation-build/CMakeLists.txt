@@ -82,6 +82,22 @@ forge_guest_add_implementation_archive(
 )
 
 set(_http "${FORGE_SOURCE_DIR}/libraries/net/http")
+set(_attestation "${FORGE_SOURCE_DIR}/libraries/auth/attestation")
+forge_guest_add_implementation_archive(
+   forge_guest_auth_attestation
+   MODULE_DIRS "${_attestation}/include"
+   MODULES
+      "${_attestation}/include/forge/auth/attestation/document.cppm"
+      "${_attestation}/include/forge/auth/attestation/exceptions.cppm"
+      "${_attestation}/include/forge/auth/attestation/signed_document.cppm"
+      "${_attestation}/include/forge/auth/attestation/verification_policy.cppm"
+   SOURCES
+      "${_attestation}/document.cpp"
+      "${_attestation}/signed_document.cpp"
+      "${_attestation}/verification_policy.cpp"
+   DEPENDENCIES forge_guest_raw_modules
+)
+
 forge_guest_add_implementation_archive(
    forge_guest_net_http_values
    MODULE_DIRS "${_http}/include"

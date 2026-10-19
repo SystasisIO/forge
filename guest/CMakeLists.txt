@@ -622,6 +622,14 @@ install(
 )
 install(
    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/auth/attestation/include/forge/auth/attestation/document.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/auth/attestation/include/forge/auth/attestation/exceptions.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/auth/attestation/include/forge/auth/attestation/signed_document.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/auth/attestation/include/forge/auth/attestation/verification_policy.cppm"
+   DESTINATION "${CMAKE_INSTALL_DATADIR}/forge-contract/modules/forge/auth/attestation"
+)
+install(
+   FILES
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/payload.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/continuation.cppm"
       "${CMAKE_CURRENT_SOURCE_DIR}/../libraries/api/wasm/include/forge/api/wasm/effect.cppm"

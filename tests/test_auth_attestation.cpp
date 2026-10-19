@@ -15,6 +15,7 @@ import forge.auth.attestation.document;
 import forge.auth.attestation.document_schema;
 import forge.auth.attestation.signed_document;
 import forge.codec.json;
+import forge.codec.hex;
 import forge.raw.raw;
 import forge.reflect.reflect;
 import forge.schema.constraint;
@@ -114,6 +115,13 @@ BOOST_AUTO_TEST_CASE(shared_fields_are_physically_named_and_raw_uses_one_model) 
 
    const auto value = document();
    const auto raw = forge::raw::pack(value);
+   const auto golden = std::string_view{
+       "1668747470733a2f2f6973737565722e6578616d706c651475726e3a7265736f757263653a66697874757265"
+       "42675f303132333435363738396162636465663031323334353637383961626364656630313233343536373839"
+       "6162636465663031323334353637383961626364656664000000000000006900000000000000a000000000000000"
+       "01000000000000000c666978747572652e726561641575726e3a666978747572653a636c61696d733a7631"
+       "1039303037313939323534373430393933"};
+   BOOST_CHECK(forge::codec::hex::encode(raw) == golden);
    const auto fields = std::tuple{value.iss, value.aud, value.jti, value.iat, value.nbf, value.exp,
                                   std::tuple{value.att.v, value.att.purpose, value.att.schema,
                                              std::tuple{value.att.claims.counter}}};
