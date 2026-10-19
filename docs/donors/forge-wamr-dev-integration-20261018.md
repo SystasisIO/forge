@@ -118,6 +118,16 @@ object only: these ten final WAMR images do not extract that state. This result
 does not establish runtime thread behavior or an LLVM-free package; LLVM22.1.8
 is expected in this JIT-ON graph. Separate installed/product gates remain open.
 
+Run51's Linux producer passes the signed, version/hash-pinned stage0 install
+and disk admission (about 85 GiB free), then fails configuring libc++'s optional
+clang-tidy test helpers because their installed Clang package requires another
+LLVM dev package. The follow-up excludes upstream toolchain test/benchmark/doc
+targets explicitly from both runtime-build graphs, matching the producer's
+existing LLVM test exclusion. This does not remove Forge/WAMR/SDK tests or the
+executed ABI, exception, destruction and sanitizer-runtime preflight. The new
+metadata regression passes with the other checks (26/26); native source build
+and remote runtime acceptance remain unqualified.
+
 Linux toolchain work remains qualification in progress. The candidate makes
 LLVM22.1.8/libc++220108 source provisioning an explicit, resource-bounded CI
 producer, not a hidden package fallback. Its output must pass the existing

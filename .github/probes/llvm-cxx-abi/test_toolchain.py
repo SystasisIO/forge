@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tarfile
 import tempfile
@@ -210,6 +211,21 @@ class Stage0Tests(unittest.TestCase):
 
 
 class ProvisioningTests(unittest.TestCase):
+    def test_runtime_graphs_exclude_helper_tests_and_retain_runtime_checks(self):
+        tokens = shlex.split((ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text(), comments=True)
+        for name in ("runtimes-configure", "final-runtimes-configure"):
+            start = tokens.index(name) + 1
+            args = tokens[start:tokens.index("log_run", start)]
+            with self.subTest(graph=name):
+                for flag in ("LLVM_INCLUDE_TESTS", "LIBCXX_INCLUDE_TESTS", "LIBCXXABI_INCLUDE_TESTS",
+                             "LIBUNWIND_INCLUDE_TESTS", "LIBCXX_INCLUDE_BENCHMARKS", "LIBCXX_INCLUDE_DOCS"):
+                    self.assertIn(f"-D{flag}=OFF", args)
+                self.assertIn("-DLIBCXX_ENABLE_EXCEPTIONS=ON", args)
+                self.assertIn("-DLIBCXXABI_ENABLE_EXCEPTIONS=ON", args)
+                if name == "final-runtimes-configure":
+                    self.assertIn("-DCOMPILER_RT_INCLUDE_TESTS=OFF", args)
+                    self.assertIn("-DCOMPILER_RT_BUILD_SANITIZERS=ON", args)
+
     def test_insufficient_bootstrap_disk_refuses_and_records_actual_free(self):
         with tempfile.TemporaryDirectory() as temporary:
             evidence = Path(temporary) / "disk.json"
