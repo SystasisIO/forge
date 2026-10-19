@@ -210,6 +210,36 @@ The existing native compiler/header/host/runtime gates still decide acceptance.
 Independent scoped review and all 51 metadata tests pass; this does not qualify
 the corrected native dependency closure without its fresh CI execution.
 
+The completed ARM JIT/compiler-AOT job117957074632 builds successfully but
+passes only 22/82 root CTests; 60 fail, with no disabled or skipped root tests.
+Raw JIT output reports `Native JIT write protection is unavailable`. The AOT
+subset fails 48/53 tests, mostly behind a generic preparation resource-admission
+error; this does not prove memory-budget exhaustion or one common cause for
+all failures. Its nested installed optimizing consumer actually runs five
+tests: three pass and two runtime/session tests fail. These remote failures
+are distinct from the local OpenSSL-blocked package attempt above.
+
+The pinned WAMR already includes TargetConditionals.h directly; a missing-header
+explanation was checked and rejected. On Darwin ARM, an ineffective pthread
+write-protection facility must not be treated as safe MAP_JIT execution.
+Before any mapping-policy correction, a separate bounded OS-only diagnostic
+records the raw pthread capability and tests ordinary, non-MAP_JIT RW-to-RX
+execution, denied RX writes and denied RW execution in isolated children.
+It does not qualify Forge, WAMR, compiler output, memory admission or products.
+No runtime guard, memory budget or mandatory test is weakened for this probe.
+
+Run55 refuses to load the pinned Z3 formula because the current Homebrew
+requires explicit trust of non-official formula names. The next bounded CI
+correction uses Homebrew's documented per-formula trust only for the two
+checksum-verified managed formulas after source/patch/derived checks, before
+metadata loading. It does not trust the entire tap, disable a security guard
+or grant trust on the user's machine. Native Intel acceptance still requires
+the unchanged real compiler/header/ABI and runtime checks. All 53 metadata
+tests pass, including trust ordering and fatal unsupported-command controls.
+The local OS-only diagnostic reports raw pthread support1, RX execution42,
+and SIGBUS for both forbidden RX writes and RW execution; this is not evidence
+of the remote runner's capability.
+
 ## Language-Version Differences
 
 The bounded numeric profile uses WAMR's existing modern encoding and typing

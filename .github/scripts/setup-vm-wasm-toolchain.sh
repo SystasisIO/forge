@@ -75,6 +75,10 @@ if [[ "$mode" == intel-runtime-off ]]; then
    log_run intel-derived-formula python3 "$checker" intel-derived-formula \
       "$formula" "$tap_formula" "$dependency_patch" "$evidence/intel-derived-formula.json"
    shasum -a 256 "$tap_formula" "$tap_z3_formula" "$dependency_patch" > "$evidence/intel-tap-formula.sha256"
+   # Homebrew trust is name-scoped, not a content pin. Grant it only after the
+   # upstream/derived formula and patch checks, before either formula is loaded.
+   log_run intel-z3-trust brew trust --formula forge/vm-ci/z3
+   log_run intel-llvm-trust brew trust --formula forge/vm-ci/llvm
    brew info --json=v2 "$z3_target" > "$evidence/intel-z3-formula.json"
    log_run intel-z3-formula python3 "$checker" intel-z3-formula "$evidence/intel-z3-formula.json"
    brew info --json=v2 "$target_formula" > "$evidence/intel-tap-formula.json"

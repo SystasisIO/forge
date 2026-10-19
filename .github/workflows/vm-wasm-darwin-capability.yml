@@ -1,0 +1,64 @@
+name: Darwin JIT OS Capability Only
+
+"on":
+  pull_request:
+    branches: [dev]
+    paths:
+      - .github/probes/darwin-jit-capability.cpp
+      - .github/workflows/vm-wasm-darwin-capability.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  os-capability:
+    name: macos-15 ARM / OS capability only, not WAMR acceptance
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Capture OS identity, compile and run isolated diagnostic
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/darwin-jit-capability"
+          mkdir -p "$out"
+          /usr/bin/sw_vers > "$out/sw_vers.txt"
+          /usr/bin/uname -m > "$out/uname-m.txt"
+          /usr/bin/clang++ --version > "$out/compiler.txt" 2>&1
+          /usr/bin/xcode-select -p > "$out/xcode-path.txt"
+          sdk=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+          printf '%s\n' "$sdk" > "$out/sdk-path.txt"
+          /usr/bin/xcrun --sdk macosx --show-sdk-version > "$out/sdk-version.txt"
+          source=.github/probes/darwin-jit-capability.cpp
+          command=(/usr/bin/clang++ -std=c++23 -O2 -Wall -Wextra -Werror -isysroot "$sdk" "$source" -o "$out/probe")
+          printf '%q ' "${command[@]}" > "$out/compile-command.txt"
+          printf '\n' >> "$out/compile-command.txt"
+          /usr/bin/shasum -a 256 "$source" > "$out/source.sha256"
+          set +e
+          "${command[@]}" > "$out/compile.log" 2>&1
+          compile_status=$?
+          printf '%s\n' "$compile_status" > "$out/compile-exit.txt"
+          if [[ "$compile_status" != 0 ]]; then
+            exit "$compile_status"
+          fi
+          /usr/bin/shasum -a 256 "$out/probe" > "$out/binary.sha256"
+          "$out/probe" > "$out/receipt.json" 2> "$out/probe.stderr"
+          run_status=$?
+          printf '%s\n' "$run_status" > "$out/run-exit.txt"
+          exit "$run_status"
+
+      - name: Upload raw OS diagnostic immediately, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-jit-os-capability-only
+          path: ${{ runner.temp }}/darwin-jit-capability/
+          if-no-files-found: error
+          retention-days: 14

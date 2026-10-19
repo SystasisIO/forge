@@ -471,6 +471,40 @@ class IntelRuntimeTests(unittest.TestCase):
 
 
 class ProvisioningTests(unittest.TestCase):
+    def test_intel_trust_is_only_two_pinned_formula_names_after_checks_before_load(self):
+        source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
+        branch = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[1].split('elif [[ "$mode" == stage0-linux', 1)[0]
+        trusts = [line.strip() for line in branch.splitlines() if "brew trust" in line and shlex.split(line, comments=True)]
+        self.assertEqual([shlex.split(line) for line in trusts], [
+            ["log_run", "intel-z3-trust", "brew", "trust", "--formula", "forge/vm-ci/z3"],
+            ["log_run", "intel-llvm-trust", "brew", "trust", "--formula", "forge/vm-ci/llvm"]])
+        first_trust = branch.index(trusts[0])
+        for check in ('intel-archive "$archive"', 'intel-z3-inputs "$z3_formula"',
+                      'cmp -- "$z3_formula" "$tap_z3_formula"', 'intel-derived-formula \\\n',
+                      'shasum -a 256 "$tap_formula"'):
+            self.assertLess(branch.index(check), first_trust)
+        self.assertLess(branch.index(trusts[-1]), branch.index("brew info"))
+        for line in trusts:
+            self.assertNotIn("||", line)
+        for forbidden in ("HOMEBREW_DEVELOPER", "HOMEBREW_INTERNAL_ALLOW", "--tap", "--all"):
+            self.assertNotIn(forbidden, branch)
+
+    def test_unsupported_formula_trust_is_fatal_without_running_host_brew(self):
+        source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
+        prologue = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[0]
+        trusts = "\n".join(line for line in source.splitlines() if "brew trust" in line and shlex.split(line, comments=True))
+        # Exercise the actual logging/error wrapper with a shell-local Brew stub.
+        script = prologue + '\nbrew() { echo "unsupported brew trust" >&2; return 64; }\n' + trusts + '\necho UNEXPECTED_SUCCESS\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT))
+            result = subprocess.run(["bash", "-c", script, "trust-test", temporary], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 64)
+            self.assertIn("HARNESS_ERROR", result.stderr)
+            self.assertIn("unsupported brew trust", result.stdout)
+            self.assertNotIn("UNEXPECTED_SUCCESS", result.stdout)
+            self.assertFalse((Path(temporary) / "intel-llvm-trust.log").exists())
+
     def test_llvm_pic_checks_precede_native_build_without_masking_driver_warnings(self):
         source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
         tokens = shlex.split(source, comments=True)
