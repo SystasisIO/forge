@@ -5,6 +5,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -115,38 +116,11 @@ bool matches_canonical_json_value(const variant& source, const variant& canonica
 }
 
 schema::input_value to_schema_input(const variant& source) {
-   switch (source.get_type()) {
-   case variant::null_type:
-      return {};
-   case variant::int64_type:
-      return schema::input_value{source.as_int64()};
-   case variant::uint64_type:
-      return schema::input_value{source.as_uint64()};
-   case variant::double_type:
-      return schema::input_value{source.as_double()};
-   case variant::bool_type:
-      return schema::input_value{source.as_bool()};
-   case variant::string_type:
-      return schema::input_value{source.get_string()};
-   case variant::array_type: {
-      auto output = schema::input_value::array_type{};
-      output.reserve(source.get_array().size());
-      for (const auto& entry : source.get_array()) {
-         output.push_back(to_schema_input(entry));
-      }
-      return schema::input_value{std::move(output)};
-   }
-   case variant::object_type: {
-      auto output = schema::input_value::object_type{};
-      for (const auto& entry : source.get_object()) {
-         output.emplace(entry.key(), to_schema_input(entry.value()));
-      }
-      return schema::input_value{std::move(output)};
-   }
-   case variant::blob_type:
-      FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "JSON schema records cannot contain blob values");
-   }
-   FORGE_THROW_EXCEPTION(schema::exceptions::invalid_value, "unsupported JSON schema value");
+   // Parsing owns the caller's read_options budgets. Conversion of that
+   // already-bounded tree must not impose the dynamic adapter's smaller caps.
+   constexpr auto maximum = std::numeric_limits<std::size_t>::max();
+   return variant_schema::to_input(source, {.max_depth = maximum, .max_nodes = maximum,
+      .max_string_bytes = maximum, .max_container_size = maximum});
 }
 
 void append_schema_diagnostics(std::vector<schema::diagnostic>& output, std::vector<schema::diagnostic> diagnostics) {

@@ -2484,6 +2484,7 @@ def check_crypto_family(root: Path, files: list[Path], errors: list[str]) -> Non
       "asymmetric",
       "bls",
       "bn256",
+      "jose",
       "core",
       "digest",
       "keystore",

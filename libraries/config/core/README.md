@@ -102,7 +102,10 @@ if (!decoded.ok()) {
 ```
 
 `encode<T>` performs the inverse schema mapping and emits canonical field names rather
-than C++ member names. Format adapters use it for schema-bound typed writes.
+than C++ member names. It validates schema rules before encoding, including nested
+records, and throws `forge::schema::encoding_error` for an invalid typed record
+(for example, a port outside its declared range). Valid existing records keep
+the same mapping. Format adapters use it for schema-bound typed writes.
 
 Nested object lists are decoded through `forge_schema` rules too. Diagnostics use
 indexed paths such as `plugins.db.store.stores[0].path`, while the config

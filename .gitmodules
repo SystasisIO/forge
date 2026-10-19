@@ -28,3 +28,6 @@
 [submodule "vendor/oidc-agent"]
 	path = vendor/oidc-agent
 	url = https://github.com/SystasisIO/oidc-agent.git
+[submodule "vendor/cjose"]
+	path = vendor/cjose
+	url = https://github.com/SystasisIO/cjose.git

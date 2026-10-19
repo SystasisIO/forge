@@ -1,5 +1,13 @@
 # forge_api_http
 
+For native records with explicit `schema::rules<T>`, OpenAPI uses
+`schema::export_constraints<T>()` and the same `schema::json_schema()` exporter
+as standalone artifacts. Canonical schema names, required fields, exact integer
+ranges, sizes, constants/enums and decimal-string bounds are retained in both
+record schemas and request field metadata. Unrepresentable rules fail with
+`schema::exceptions::unsupported_export`; they are never silently omitted.
+The supported bounded subset is documented by `libraries/schema/README.md`.
+
 `FORGE_HTTP_RESPONSE_BODY_LIMIT(bytes)` (or route_builder::response_body_limit)
 sets the finite client response payload bound for that route. Generated DTO and
 positional clients apply it through the existing transport request_options on

@@ -1,5 +1,6 @@
 add_subdirectory(oauth2)
 add_subdirectory(credential)
+add_subdirectory(api)
 if(FORGE_ENABLE_LIBOAUTH2)
    add_subdirectory(liboauth2)
 endif()

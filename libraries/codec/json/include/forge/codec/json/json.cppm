@@ -71,6 +71,11 @@ struct read_options {
    std::size_t max_depth = 128;
    unknown_field_policy unknown_fields = unknown_field_policy::warn;
    described_record_policy described_records = described_record_policy::permissive;
+   std::size_t max_bytes = std::numeric_limits<std::size_t>::max();
+   std::size_t max_nodes = std::numeric_limits<std::size_t>::max();
+   std::size_t max_container_size = std::numeric_limits<std::size_t>::max();
+   std::size_t max_string_bytes = std::numeric_limits<std::size_t>::max();
+   bool reject_nul = true; // Applied to decoded keys/strings in exact mode.
 };
 
 struct write_options {
@@ -264,6 +269,10 @@ template <typename T> [[nodiscard]] read_result<T> decode(variant input, read_op
    }
    return detail::decode_variant<T>(std::move(input), rules, options);
 }
+
+// An artifact consumer needs no C++ declaration of the document being validated.
+[[nodiscard]] read_result<variant> read(std::string_view input, const schema::artifact& rules,
+                                        read_options options = {});
 
 template <typename T> [[nodiscard]] read_result<T> read(std::string_view input, read_options options = {}) {
    const auto rules = schema::rules<T>::define();

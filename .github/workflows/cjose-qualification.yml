@@ -1,0 +1,81 @@
+name: CJOSE Qualification
+run-name: CJOSE Qualification / ${{ github.ref_name }} / ${{ github.sha }}
+
+on:
+  push:
+    branches: [cjose-external-signing-qualification-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cjose-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+jobs:
+  backend:
+    if: github.ref == 'refs/heads/cjose-external-signing-qualification-v1'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install backend-only dependencies
+        run: bash .github/scripts/cjose-qualification.sh dependencies
+
+      - name: Resolve immutable sources and dependency manifest
+        id: prepare
+        run: bash .github/scripts/cjose-qualification.sh prepare
+
+      - name: Q1 unmodified upstream 0.8.1
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash .github/scripts/cjose-qualification.sh baseline
+
+      - name: Q1 candidate with original and patched test suites
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash .github/scripts/cjose-qualification.sh candidate
+
+      - name: Q2-Q4 and Q8a installed shared and static public C consumers
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash .github/scripts/cjose-qualification.sh consumers
+
+      - name: Q8a unchanged historical C binary with old and patched shared libraries
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash .github/scripts/cjose-qualification.sh legacy-abi
+
+      - name: Q5 instrumented backend and bounded fuzz
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash .github/scripts/cjose-qualification.sh sanitizers
+
+      - name: Select sanitized evidence and enforce all required results
+        if: always()
+        run: bash .github/scripts/cjose-qualification.sh evidence
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cjose-${{ matrix.os }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-cjose-qualification/evidence/
+          if-no-files-found: error
+          retention-days: 14

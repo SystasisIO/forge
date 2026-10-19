@@ -1,5 +1,48 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(test_forge_auth_attestation unit/main.cpp test_auth_attestation.cpp)
+target_link_libraries(test_forge_auth_attestation PRIVATE
+   forge_auth_attestation forge_codec_json forge_variant Boost::included_unit_test_framework)
+add_test(NAME test_forge_auth_attestation COMMAND test_forge_auth_attestation)
+
+add_executable(test_forge_api_attestation unit/main.cpp test_api_attestation.cpp)
+target_link_libraries(test_forge_api_attestation PRIVATE
+   forge_auth_api forge_api_core forge_codec_json Boost::included_unit_test_framework)
+add_test(NAME test_forge_api_attestation COMMAND test_forge_api_attestation)
+
+add_executable(test_forge_schema_attestation unit/main.cpp test_schema_attestation.cpp)
+target_link_libraries(test_forge_schema_attestation PRIVATE
+   forge_schema forge_variant forge_codec_json forge_api_http Boost::included_unit_test_framework)
+add_test(NAME test_forge_schema_attestation COMMAND test_forge_schema_attestation)
+
+add_executable(test_forge_json_strict unit/main.cpp test_json_strict.cpp)
+target_link_libraries(test_forge_json_strict PRIVATE
+   forge_codec_json forge_variant Boost::included_unit_test_framework)
+add_test(NAME test_forge_json_strict COMMAND test_forge_json_strict)
+
+if(TARGET forge_crypto_jose)
+   add_executable(test_forge_crypto_jose unit/main.cpp test_crypto_jose.cpp)
+   target_link_libraries(test_forge_crypto_jose PRIVATE
+      forge_crypto_jose forge_codec_base64 forge_codec_hex forge_codec_json
+      Boost::included_unit_test_framework)
+   add_test(NAME test_forge_crypto_jose COMMAND test_forge_crypto_jose)
+   add_executable(test_forge_attestation_policy unit/main.cpp attestation_boundary/policy_tests.cpp)
+   target_link_libraries(test_forge_attestation_policy PRIVATE
+      forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_base64 forge_codec_hex
+      forge_schema forge_variant Boost::included_unit_test_framework)
+   add_test(NAME test_forge_attestation_policy COMMAND test_forge_attestation_policy)
+   add_executable(forge_attestation_interop attestation_interop/driver.cpp)
+   target_link_libraries(forge_attestation_interop PRIVATE
+      forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_base64 forge_codec_hex)
+   add_test(NAME test_forge_attestation_emit COMMAND forge_attestation_interop
+      emit "${CMAKE_CURRENT_BINARY_DIR}/attestation-emit-smoke")
+   add_test(NAME test_forge_attestation_schema_export COMMAND forge_attestation_interop
+      schema "${CMAKE_CURRENT_BINARY_DIR}/attestation-schema-smoke")
+   add_executable(forge_attestation_benchmark attestation_boundary/benchmark.cpp)
+   target_link_libraries(forge_attestation_benchmark PRIVATE
+      forge_asio forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_hex forge_variant)
+endif()
+
 add_executable(test_forge_swarm_core
    swarm_core/main.cpp
    swarm_core/descriptor_tests.cpp
@@ -1395,7 +1438,7 @@ target_sources(
       FILE_SET CXX_MODULES
       FILES yaml/schema_types.cppm
 )
-target_link_libraries(test_forge_codec_yaml forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_codec_yaml forge_codec_yaml Boost::included_unit_test_framework)
 add_test(NAME test_forge_codec_yaml COMMAND test_forge_codec_yaml WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(

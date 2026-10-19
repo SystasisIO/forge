@@ -691,9 +691,9 @@ def qualify(probe):
         for gate, cases in F0_MATRIX.items()}
     emit({"fixture_valid": fixture_valid, "regression_passed": all_passed,
           "case_count": len(CASES), "f0_public_api_ready": all_passed,
-          "scope": "patched-liboauth2-public-api-f0", "cjose": "0.6.2.8",
+          "scope": "patched-liboauth2-public-api-f0",
           "platform": sys.platform,
-          "expected_cjose_source_sha": "e787ace6a203d483038a793fd58f958a2f9b48c1",
+          "backend_provenance": "not-measured-by-this-harness; use invoking CI provenance",
           "f0_matrix": matrix, "required_result_cache_option": "verify.cache=none",
           "coordinator_not_run": COORDINATOR_NOT_RUN})
     return 2 if not fixture_valid else (0 if all_passed else 1)

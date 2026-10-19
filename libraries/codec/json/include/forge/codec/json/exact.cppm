@@ -336,6 +336,10 @@ void validate_exact(const variant& source, std::string_view path, std::vector<sc
       if (!source.is_null()) {
          validate_exact<typename pointer_traits<value_type>::value_type>(source, path, diagnostics);
       }
+   } else if constexpr (std::same_as<value_type, forge::variant_object>) {
+      if (!source.is_object()) {
+         add_exact_error(diagnostics, std::string{path}, "json.object", "dynamic object must be a JSON object");
+      }
    } else if constexpr (std::same_as<value_type, bool> || schema::integral_value<value_type> ||
                         std::floating_point<value_type> || std::same_as<value_type, std::string>) {
       try {

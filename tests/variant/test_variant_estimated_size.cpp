@@ -1,4 +1,5 @@
 #include <boost/test/unit_test.hpp>
+#include <cstddef>
 #include <string>
 
 import forge.variant.exceptions;
@@ -17,7 +18,7 @@ using std::string;
 
 BOOST_AUTO_TEST_SUITE(variant_estimated_size_suite)
 BOOST_AUTO_TEST_CASE(null_variant_estimated_size_test) {
-   constexpr nullptr_t np = nullptr;
+   constexpr std::nullptr_t np = nullptr;
 
    variant v;
    variant v_nullptr(np);
