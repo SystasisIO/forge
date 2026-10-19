@@ -102,6 +102,7 @@ void write_file(const std::filesystem::path& path, std::string_view value) {
    identifier.min_size = 1;
    identifier.max_size = 128;
    schema::constraint decimal{.kind = schema::constraint_kind::string};
+   decimal.ascii = true;
    decimal.pattern = "^(0|[1-9][0-9]*)$";
    decimal.decimal_minimum = 0;
    decimal.decimal_maximum = std::numeric_limits<std::uint64_t>::max();

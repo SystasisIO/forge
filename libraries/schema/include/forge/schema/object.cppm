@@ -1690,13 +1690,16 @@ template <typename T> [[nodiscard]] constraint export_constraint(std::size_t dep
          for (const auto& field : definitions.fields()) {
             if (field.name.empty() || field.name.find('.') != std::string::npos || !field.aliases.empty() ||
                 field.unsupported_constraints || field.validators.size() != field.exported_validators)
-               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "unrepresentable schema field: {}", field.name);
+               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "unrepresentable schema field",
+                                     forge::exceptions::ctx("field", field.name));
             auto type = field.shape ? *field.shape : field.export_type(depth + 1);
             type.nullable = type.nullable || field.optional;
             if (field.shape && field.export_type(depth + 1).kind != type.kind)
-               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "shape changes JSON kind: {}", field.name);
+               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "shape changes JSON kind",
+                                     forge::exceptions::ctx("field", field.name));
             if (!result.properties.emplace(field.name, refine_constraint(type, field.constraints)).second)
-               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "duplicate schema field: {}", field.name);
+               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "duplicate schema field",
+                                     forge::exceptions::ctx("field", field.name));
             if (!field.optional || field.required) result.required.push_back(field.name);
          }
          return result;

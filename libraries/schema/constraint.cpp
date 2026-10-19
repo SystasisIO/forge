@@ -33,7 +33,8 @@ using object = input_value::object_type;
 using array = input_value::array_type;
 
 [[noreturn]] void unsupported(std::string_view reason) {
-   FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "unsupported constraint artifact: {}", reason);
+   FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "unsupported constraint artifact",
+                         forge::exceptions::ctx("reason", reason));
 }
 
 constexpr std::string_view names[] = {"any", "null", "boolean", "integer", "number", "string", "array", "object"};
@@ -119,8 +120,12 @@ auto compile_pattern(const std::string& pattern) {
    try {
       auto result = boost::basic_regex<char, traits>{};
       result.imbue(std::locale::classic());
-      result.assign(pattern, boost::regex_constants::ECMAScript | boost::regbase::no_perl_ex |
-         boost::regex_constants::no_mod_m | boost::regex_constants::no_mod_s);
+      using flag_type = boost::regex_constants::syntax_option_type;
+      constexpr auto flags = static_cast<flag_type>(boost::regex_constants::ECMAScript) |
+         static_cast<flag_type>(boost::regbase::no_perl_ex) |
+         static_cast<flag_type>(boost::regex_constants::no_mod_m) |
+         static_cast<flag_type>(boost::regex_constants::no_mod_s);
+      result.assign(pattern, flags);
       return result;
    } catch (const boost::regex_error& error) { pattern_error(error); }
    catch (const std::bad_alloc&) {

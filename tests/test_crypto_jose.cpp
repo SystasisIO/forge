@@ -11,6 +11,7 @@
 #include <vector>
 
 import forge.crypto.jose.codec;
+import forge.exceptions;
 import forge.codec.base64;
 import forge.codec.hex;
 
@@ -112,6 +113,24 @@ BOOST_AUTO_TEST_CASE(crypto_jose_rfc7515_a3_known_vector) {
    BOOST_TEST(verified.payload() == plaintext);
    BOOST_TEST(verified.key_binding().identity == jose::identify_key(rfc_key()).identity);
    BOOST_TEST(verified.trust_snapshot().identity() == keys.identity());
+}
+
+BOOST_AUTO_TEST_CASE(crypto_jose_bounded_mutation_corpus_rejects_changed_signed_bytes) {
+   const auto original = issue();
+   const auto keys = snapshot();
+   const auto verifier = jose::verifier{};
+   for (std::size_t index = 0; index != 5000; ++index) {
+      auto changed = original;
+      const auto position = (index * 37U + 11U) % changed.size();
+      changed[position] = static_cast<char>(static_cast<unsigned char>(changed[position]) ^ (1U << (index % 7U)));
+      bool rejected = false;
+      try {
+         static_cast<void>(verifier.verify(changed, keys));
+      } catch (const forge::exceptions::base&) {
+         rejected = true;
+      }
+      BOOST_CHECK(rejected);
+   }
 }
 
 BOOST_AUTO_TEST_CASE(crypto_jose_owns_prepared_inputs_and_verifies_real_signature) {

@@ -22,16 +22,46 @@ permissions:
   contents: read
 
 concurrency:
-  group: attestation-${{ github.ref }}
+  group: attestation-refs/heads/${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 env:
+  ATTESTATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
   CMAKE_BUILD_PARALLEL_LEVEL: "4"
   CTEST_PARALLEL_LEVEL: "1"
 
 jobs:
+  sanitizers:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ATTESTATION_SHA }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned dependencies
+        run: bash .github/scripts/attestation.sh dependencies
+      - name: ASan UBSan and bounded mutation corpus
+        run: bash .github/scripts/attestation.sh sanitizers
+      - name: Collect bounded evidence and clean generated trees
+        if: always()
+        run: bash .github/scripts/attestation.sh evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attestation-sanitizers-${{ env.ATTESTATION_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-attestation/evidence/
+          if-no-files-found: error
+          retention-days: 14
   native:
     strategy:
       fail-fast: false
@@ -45,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.ATTESTATION_SHA }}
           persist-credentials: false
           submodules: recursive
       - uses: actions/setup-python@v5
@@ -77,7 +107,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attestation-${{ matrix.os }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: attestation-${{ matrix.os }}-${{ env.ATTESTATION_SHA }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/forge-attestation/evidence/
           if-no-files-found: error
           retention-days: 14

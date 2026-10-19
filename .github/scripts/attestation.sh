@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-readonly phase="${1:?usage: attestation.sh <dependencies|build|test|interop|packages|guest|evidence>}"
-case "$phase" in dependencies|build|test|interop|packages|guest|evidence) ;; *) exit 2 ;; esac
+readonly phase="${1:?usage: attestation.sh <dependencies|build|test|interop|packages|guest|sanitizers|evidence>}"
+case "$phase" in dependencies|build|test|interop|packages|guest|sanitizers|evidence) ;; *) exit 2 ;; esac
 readonly root="$(git rev-parse --show-toplevel)"
 readonly work="${RUNNER_TEMP:?}/forge-attestation"
 readonly build="$work/build"
@@ -56,7 +56,7 @@ PY
    exit 0
 fi
 
-[[ "${GITHUB_SHA:?}" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+[[ "${ATTESTATION_SHA:?}" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$ATTESTATION_SHA" ]]
 export CMAKE_TOOLCHAIN_FILE="$work/compile-pools.cmake"
 if [[ "$RUNNER_OS" == Linux ]]; then
    export CC=/usr/bin/clang-22 CXX=/usr/bin/clang++-22
@@ -98,7 +98,7 @@ if [[ "$phase" == dependencies ]]; then
    cmake --build "$work/jansson-build" -j4
    cmake --install "$work/jansson-build"
    printf 'forge=%s\ncjose=%s\njansson=ed5cae4ed0621ef409510f94270c9f8f263736d0\n' \
-      "$GITHUB_SHA" "$(git -C vendor/cjose rev-parse HEAD)" > "$work/evidence/provenance.txt"
+      "$ATTESTATION_SHA" "$(git -C vendor/cjose rev-parse HEAD)" > "$work/evidence/provenance.txt"
    "$CC" --version >> "$work/evidence/provenance.txt"
    brew list --versions boost openssl@3 cmake ninja >> "$work/evidence/provenance.txt"
    exit 0
@@ -133,7 +133,7 @@ case "$phase" in
          -DFORGE_ENABLE_MDBX=ON -DFORGE_ENABLE_ROCKSDB=OFF -DFORGE_ENABLE_TUI=OFF -DBUILD_TESTING=ON \
          -DFORGE_ENABLE_TOOLING=ON -DClang_DIR="$llvm_root/lib/cmake/clang" -DLLVM_DIR="$llvm_root/lib/cmake/llvm"
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
-         test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict \
+         test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy \
          test_forge_schema test_forge_variant test_forge_codec_json test_forge_raw \
          test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
          test_forge_openapi_wire_baseline \
@@ -143,7 +143,23 @@ case "$phase" in
    test)
       ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
-         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|schema|variant|codec_json|raw|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
+         > "$work/raw/tests.log" 2>&1
+      ;;
+   sanitizers)
+      cmake -S "$root" -B "$build" "${options[@]}" -DFORGE_ENABLE_MODULES=ON \
+         -DFORGE_ENABLE_JOSE=ON -DFORGE_ENABLE_LIBOAUTH2=OFF -DFORGE_ENABLE_OIDC_AGENT=OFF \
+         -DFORGE_ENABLE_MDBX=OFF -DFORGE_ENABLE_ROCKSDB=OFF -DFORGE_ENABLE_TUI=OFF \
+         -DFORGE_ENABLE_TOOLING=OFF -DBUILD_TESTING=ON \
+         '-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -g1' \
+         '-DCMAKE_CXX_FLAGS=-stdlib=libstdc++ -fsanitize=address,undefined -fno-omit-frame-pointer -g1' \
+         '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined'
+      cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
+         test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy -j4 2>&1 | tee "$work/raw/compile.log"
+      ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+         ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
+         --output-junit "$work/results.xml" \
+         -R '^test_forge_(crypto_jose|auth_attestation|schema_attestation|json_strict|attestation_policy)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    interop)

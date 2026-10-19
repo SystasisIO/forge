@@ -34,6 +34,11 @@ if(TARGET forge_crypto_jose)
       forge_crypto_jose forge_codec_base64 forge_codec_hex forge_codec_json
       Boost::included_unit_test_framework)
    add_test(NAME test_forge_crypto_jose COMMAND test_forge_crypto_jose)
+   add_executable(test_forge_attestation_policy unit/main.cpp attestation_boundary/policy_tests.cpp)
+   target_link_libraries(test_forge_attestation_policy PRIVATE
+      forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_base64 forge_codec_hex
+      forge_schema forge_variant Boost::included_unit_test_framework)
+   add_test(NAME test_forge_attestation_policy COMMAND test_forge_attestation_policy)
    add_executable(forge_attestation_interop attestation_interop/driver.cpp)
    target_link_libraries(forge_attestation_interop PRIVATE
       forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_base64 forge_codec_hex)
