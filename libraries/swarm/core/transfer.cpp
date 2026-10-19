@@ -342,7 +342,10 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
    validate_time(now);
    auto& source = peer(id);
    auto result = std::vector<request>{};
-   if (_stopped || source.choked || count == 0U) {
+   const auto remaining_bytes = [&] {
+      return std::min(_limits.request_bytes - _request_bytes, _limits.request_bytes_per_peer - source.bytes);
+   };
+   if (_stopped || source.choked || count == 0U || remaining_bytes() == 0U) {
       _time = now;
       return result;
    }
@@ -368,9 +371,9 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
          partials.push_back(index);
    }
    std::sort(partials.begin(), partials.end(), [&](auto a, auto b) { return key(a) < key(b); });
-   const auto fits = [&](std::uint32_t length) {
-      return length <= _limits.request_bytes - _request_bytes &&
-             length <= _limits.request_bytes_per_peer - source.bytes;
+   const auto fits = [&](std::uint32_t length) { return length <= remaining_bytes(); };
+   const auto minimum_block_length = [&](std::uint32_t index) {
+      return block_length(index, (_pieces[index].length - 1U) / block_size);
    };
    const auto first_new_generation = _next_generation;
    const auto previous_time = _time;
@@ -384,7 +387,8 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
          while (cursor != _order.end()) {
             const auto index = std::get<3>(*cursor++);
             if (_partials.contains(index) || !bitmap_test(source.availability, index) ||
-                _pieces[index].length > _limits.unfinished_bytes - _unfinished_bytes)
+                _pieces[index].length > _limits.unfinished_bytes - _unfinished_bytes ||
+                !fits(minimum_block_length(index)))
                continue;
             return index;
          }
@@ -412,7 +416,7 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
          const auto index = use_partial ? partials[partial_position++] : *base;
          auto partial = _partials.find(index);
          const auto blocks = (_pieces[index].length + block_size - 1U) / block_size;
-         for (auto block = 0U; block < blocks; ++block) {
+         for (auto block = 0U; block < blocks && fits(minimum_block_length(index)); ++block) {
             if (partial != _partials.end() &&
                 (partial->second.blocks[block].received || partial->second.blocks[block].requests != 0U))
                continue;
@@ -420,7 +424,7 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
                continue;
             result.push_back(issue(id, index, block, now, deadline));
             partial = _partials.find(index);
-            if (result.size() == count)
+            if (result.size() == count || remaining_bytes() == 0U)
                return result;
          }
          if (!use_partial)
@@ -439,7 +443,8 @@ std::vector<transfer::request> transfer::pick(peer_id id, transfer_time now, std
             owned.emplace(value.piece, value.offset);
       }
       for (const auto& [index, partial] : _partials) {
-         if (_pieces[index].priority == 0U || !bitmap_test(source.availability, index))
+         if (_pieces[index].priority == 0U || !bitmap_test(source.availability, index) ||
+             !fits(minimum_block_length(index)))
             continue;
          for (auto block = 0U; block < partial.blocks.size(); ++block) {
             const auto& state = partial.blocks[block];

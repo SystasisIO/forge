@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 import forge.swarm.core.transfer;
@@ -61,6 +62,18 @@ void measure_maximum_descriptor() {
    auto donor_available = donor::typed_bitfield<donor::piece_index_t>{static_cast<int>(count), true};
    for (unsigned i = 0; i < count; ++i)
       expected.inc_refcount(donor::piece_index_t{static_cast<int>(i)}, nullptr);
+   // Both selectors enter the timing loop with their initial index prepared.
+   // Libtorrent builds its lazy index on first pick, unlike Forge's add_peer.
+   const auto warm_requests = actual.pick(peer, now, 16);
+   for (const auto& request : warm_requests)
+      static_cast<void>(actual.cancel(peer, request.id, now));
+   auto warm_selected = std::vector<donor::piece_block>{};
+   auto warm_counters = donor::counters{};
+   expected.pick_pieces(donor_available, warm_selected, 16, 0, nullptr, donor::piece_picker::rarest_first, {}, 1,
+                        warm_counters);
+   if (warm_requests.size() != 16U || warm_selected.size() != 16U) {
+      throw std::runtime_error{"maximum descriptor warmup failed"};
+   }
    constexpr auto rounds = 32U;
    for (unsigned mode = 0; mode < 3; ++mode) {
       auto forge_elapsed = std::chrono::nanoseconds{};
@@ -101,6 +114,44 @@ void measure_maximum_descriptor() {
                 << "; Forge update/pick "
                 << std::chrono::duration_cast<std::chrono::microseconds>(forge_elapsed).count() << " us, donor pick "
                 << std::chrono::duration_cast<std::chrono::microseconds>(donor_elapsed).count() << " us\n";
+   }
+}
+
+void measure_exhausted_budget() {
+   // Four one-TiB files reach both 262144 pieces and 1024 blocks per piece
+   // without allocating payload. Valid piece layers supply metadata geometry.
+   const auto layer = std::vector<core::sha256>(core::max_file_size / core::max_piece_size, core::sha256{});
+   const auto root = core::root_from_piece_layer(layer, core::max_file_size, core::max_piece_size);
+   auto descriptor = core::descriptor{core::descriptor_version::v1, core::max_piece_size, {}};
+   for (unsigned i = 0; i < 4; ++i) {
+      descriptor.files.push_back({{"file" + std::to_string(i)}, core::max_file_size, root, layer});
+   }
+   for (unsigned residual = 0; residual < 2; ++residual) {
+      auto limits = core::transfer::config{};
+      limits.requests_per_peer = 32;
+      limits.request_bytes = limits.request_bytes_per_peer = core::block_size + residual;
+      auto state = core::transfer{descriptor, limits, 41};
+      state.set_selection(core::transfer::selection::sequential);
+      const auto bitmap = std::vector<std::uint8_t>(core::max_piece_count / 8U, 255U);
+      const auto peer = state.add_peer(bitmap);
+      const auto now = core::transfer_time{};
+      static_cast<void>(state.set_choked(peer, false, now));
+      const auto start = std::chrono::steady_clock::now();
+      const auto first = state.pick(peer, now, 32);
+      if (first.size() != 1U)
+         throw std::runtime_error{"byte-limited batch must admit exactly one full block"};
+      for (unsigned i = 0; i < 4; ++i) {
+         if (!state.pick(peer, now, 32).empty())
+            throw std::runtime_error{"byte-limited batch over-admitted"};
+      }
+      const auto elapsed = std::chrono::steady_clock::now() - start;
+      if (state.inspect().requests != 1U || state.inspect().request_bytes != core::block_size ||
+          state.inspect().unfinished_pieces != 1U || !state.cancel(peer, first.front().id, now)) {
+         throw std::runtime_error{"byte-limited batch damaged ownership or resource accounting"};
+      }
+      std::cout << "PROFILE: 262144 pieces x 1024 blocks, remaining byte budget " << residual
+                << ", admission plus four blocked picks "
+                << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
    }
 }
 
@@ -196,5 +247,6 @@ unsigned compare_libtorrent_picker() {
       throw std::runtime_error{"late canceled response revived a retired request"};
    }
    measure_maximum_descriptor();
+   measure_exhausted_budget();
    return cases;
 }

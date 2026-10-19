@@ -28,6 +28,16 @@ core::descriptor manifest(std::uint32_t pieces = 4, std::uint32_t blocks = 1, st
    return {core::descriptor_version::v1, blocks * core::block_size, {{{"payload"}, size, hashes.root, hashes.pieces}}};
 }
 
+core::descriptor wide_manifest() {
+   // Metadata-only geometry fixture: these tests do not receive or verify payload.
+   const auto digest = core::hash_file(std::array<std::uint8_t, 1>{42U}, core::block_size).root;
+   const auto layer = std::vector<core::sha256>(4U, digest);
+   const auto size = std::uint64_t{4U} * core::max_piece_size;
+   return {core::descriptor_version::v1,
+           core::max_piece_size,
+           {{{"payload"}, size, core::root_from_piece_layer(layer, size, core::max_piece_size), layer}}};
+}
+
 core::peer_id connect(core::transfer& state, std::initializer_list<std::uint8_t> bitmap,
                       core::transfer_time now = at(0)) {
    const auto bytes = std::vector<std::uint8_t>(bitmap);
@@ -532,6 +542,116 @@ BOOST_AUTO_TEST_CASE(byte_caps_allow_short_tail_without_admitting_full_block) {
    BOOST_TEST(picks[0].piece.index == 1U);
    BOOST_TEST(state.inspect().request_bytes == 1U);
    BOOST_CHECK(state.pick(a, at(0), 1U).empty());
+}
+
+BOOST_AUTO_TEST_CASE(wide_pieces_exhaust_bytes_inside_batch_independently_of_count_caps) {
+   using namespace transfer_test;
+   const auto description = wide_manifest();
+   for (const auto budget : {core::block_size, 16U * core::block_size}) {
+      auto limits = core::transfer::config{};
+      limits.requests = 64U;
+      limits.requests_per_peer = 32U;
+      limits.request_bytes = 2U * budget;
+      limits.request_bytes_per_peer = budget;
+      auto state = core::transfer{description, limits, 77U};
+      state.set_selection(core::transfer::selection::sequential);
+      const auto a = connect(state, {15U});
+      const auto b = connect(state, {15U});
+      const auto c = connect(state, {15U});
+      const auto first = state.pick(a, at(0), 32U);
+      BOOST_REQUIRE_EQUAL(first.size(), budget / core::block_size);
+      BOOST_TEST(first.size() < limits.requests_per_peer);
+      BOOST_TEST(state.inspect().request_bytes == budget);
+      const auto checkpoint = state.progress();
+      BOOST_CHECK(state.pick(a, at(0), 32U).empty());
+      BOOST_CHECK(state.progress() == checkpoint);
+      // Per-peer exhaustion must not prevent another peer using global capacity.
+      const auto second = state.pick(b, at(0), 32U);
+      BOOST_REQUIRE_EQUAL(second.size(), budget / core::block_size);
+      BOOST_TEST(state.inspect().request_bytes == limits.request_bytes);
+      BOOST_TEST(state.inspect().requests < limits.requests);
+      // Peer c has its entire allowance; only the global byte cap blocks it.
+      for (auto i = 0U; i < 4U; ++i)
+         BOOST_CHECK(state.pick(c, at(0), 32U).empty());
+      BOOST_CHECK(state.cancel(a, first[0].id, at(1)));
+      const auto replacement = state.pick(a, at(1), 32U);
+      BOOST_REQUIRE_EQUAL(replacement.size(), 1U);
+      BOOST_TEST(replacement[0].id > first[0].id);
+      BOOST_TEST(state.inspect().request_bytes == limits.request_bytes);
+      BOOST_CHECK(!state.receive(a, first[0].id, first[0].length, at(1)).accepted);
+      BOOST_REQUIRE_EQUAL(state.stop(at(1)).size(), first.size() + second.size());
+      empty(state);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(wide_full_pieces_cannot_fit_a_nonzero_sub_block_residual) {
+   using namespace transfer_test;
+   auto limits = core::transfer::config{};
+   limits.requests = 64U;
+   limits.requests_per_peer = 32U;
+   limits.request_bytes = core::block_size + 1U;
+   limits.request_bytes_per_peer = core::block_size + 1U;
+   auto state = core::transfer{wide_manifest(), limits, 77U};
+   state.set_selection(core::transfer::selection::sequential);
+   const auto a = connect(state, {15U});
+   const auto first = state.pick(a, at(0), 32U);
+   BOOST_REQUIRE_EQUAL(first.size(), 1U);
+   BOOST_TEST(first[0].length == core::block_size);
+   const auto checkpoint = state.progress();
+   for (auto i = 0U; i < 4U; ++i)
+      BOOST_CHECK(state.pick(a, at(0), 32U).empty());
+   BOOST_TEST(state.inspect().requests == 1U);
+   BOOST_TEST(state.inspect().request_bytes == core::block_size);
+   BOOST_CHECK(state.progress() == checkpoint);
+}
+
+BOOST_AUTO_TEST_CASE(wide_partial_piece_keeps_its_short_tail_requestable_under_residual_budget) {
+   using namespace transfer_test;
+   auto description = wide_manifest();
+   description.files[0].size = core::max_piece_size - core::block_size + 1U;
+   description.files[0].pieces.clear();
+   auto limits = core::transfer::config{};
+   limits.requests = 64U;
+   limits.requests_per_peer = 32U;
+   limits.request_bytes = core::block_size + 1U;
+   limits.request_bytes_per_peer = core::block_size + 1U;
+   auto state = core::transfer{description, limits, 77U};
+   const auto a = connect(state, {1U});
+   const auto first = state.pick(a, at(0), 1U);
+   BOOST_REQUIRE_EQUAL(first.size(), 1U);
+   BOOST_TEST(first[0].offset == 0U);
+   BOOST_TEST(first[0].length == core::block_size);
+   const auto tail = state.pick(a, at(0), 32U);
+   BOOST_REQUIRE_EQUAL(tail.size(), 1U);
+   BOOST_CHECK(tail[0].piece == first[0].piece);
+   BOOST_TEST(tail[0].offset == core::max_piece_size - core::block_size);
+   BOOST_TEST(tail[0].length == 1U);
+   BOOST_TEST(state.inspect().request_bytes == limits.request_bytes);
+   BOOST_CHECK(state.pick(a, at(0), 32U).empty());
+}
+
+BOOST_AUTO_TEST_CASE(residual_budget_skips_wide_pieces_but_admits_another_files_short_tail) {
+   using namespace transfer_test;
+   auto description = wide_manifest();
+   const auto digest = core::hash_file(std::array<std::uint8_t, 1>{42U}, core::block_size).root;
+   description.files.push_back({{"z"}, 1U, digest, {}});
+   auto limits = core::transfer::config{};
+   limits.requests = 64U;
+   limits.requests_per_peer = 32U;
+   limits.request_bytes = core::block_size + 1U;
+   limits.request_bytes_per_peer = core::block_size + 1U;
+   auto state = core::transfer{description, limits, 77U};
+   state.set_selection(core::transfer::selection::sequential);
+   const auto a = connect(state, {31U});
+   const auto picks = state.pick(a, at(0), 32U);
+   BOOST_REQUIRE_EQUAL(picks.size(), 2U);
+   BOOST_CHECK(picks[0].piece == (core::piece_id{0, 0}));
+   BOOST_TEST(picks[0].length == core::block_size);
+   BOOST_CHECK(picks[1].piece == (core::piece_id{1, 0}));
+   BOOST_TEST(picks[1].length == 1U);
+   BOOST_TEST(state.inspect().unfinished_bytes == core::max_piece_size + 1U);
+   BOOST_TEST(state.inspect().request_bytes == limits.request_bytes);
+   BOOST_CHECK(state.pick(a, at(0), 32U).empty());
 }
 
 BOOST_AUTO_TEST_CASE(stop_preserves_received_restart_evidence_but_invalidates_callbacks) {

@@ -92,11 +92,16 @@ upper-layer dependency leakage.
 The maximum-descriptor probe exercises 262144 pieces with stable inventory,
 repeated identical bitmaps and single-bit updates. It reports measurements
 without a machine-dependent timing assertion. Setup is outside the measured
-loop; Forge's `pick` includes admission, the donor's does not. Forge accepts a
+loop and both initial indexes are warmed explicitly; Forge's `pick` includes
+admission, the donor's does not. Forge accepts a
 complete bitmap while the donor sparse update takes one piece index. These are
 not equivalent total-work timings and do not establish overall performance
 superiority. Source review verifies maintained ordering and sparse updates;
 the probe catches repeated full sorting in the common request path.
+Another maximum-geometry fixture has 262144 pieces with 1024 blocks each,
+independent request/byte limits, and zero/one-byte remaining credit. It checks
+bounded ownership and reports the cost of exhausted-budget picks without
+materializing the four-TiB payload. Short-tail selection has separate unit tests.
 
 The PR acceptance record retains exact revisions, commands, raw results and
 independent reviews. Runtime/network readiness is not inferred from these tests.
