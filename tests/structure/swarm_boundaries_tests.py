@@ -68,6 +68,19 @@ class SwarmBoundariesTests(unittest.TestCase):
             self.write("libraries/swarm/storage/file_store.cpp", source)
             self.assertTrue(any("private worker runtime" in e for e in self.errors()))
 
+   def test_metadata_models_do_not_import_concrete_runtime(self):
+      name = "libraries/swarm/db/content.cppm"
+      self.write(name, "import forge.swarm.core.checkpoint;\nimport forge.db.object.index;\n")
+      self.assertEqual(self.errors(), [])
+      for module in ("swarm.storage.catalog", "swarm.protocol.types", "db.rocksdb.driver", "db.blob.store", "net.p2p.node"):
+         with self.subTest(module=module):
+            self.write(name, f"import forge.{module};\n")
+            self.assertTrue(any("indexed metadata imports" in e for e in self.errors()))
+
+   def test_metadata_target_does_not_link_concrete_runtime(self):
+      self.write("libraries/swarm/db/CMakeLists.txt", "target_link_libraries(forge_swarm_db PUBLIC forge_swarm_storage)\n")
+      self.assertTrue(any("models depend" in e for e in self.errors()))
+
 
 if __name__ == "__main__":
    unittest.main()

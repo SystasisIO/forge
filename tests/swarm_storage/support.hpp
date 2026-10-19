@@ -14,6 +14,7 @@
 #include <span>
 #include <stop_token>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <unistd.h>
@@ -26,11 +27,21 @@ namespace swarm_test {
 namespace core = forge::swarm::core;
 namespace storage = forge::swarm::storage;
 
+template <typename T> boost::asio::awaitable<std::optional<T>> boxed(boost::asio::awaitable<T> work) {
+   co_return co_await std::move(work);
+}
+
 template <typename T> T run(boost::asio::awaitable<T> work) {
    auto io = boost::asio::io_context{};
-   auto result = boost::asio::co_spawn(io, std::move(work), boost::asio::use_future);
-   io.run();
-   return result.get();
+   if constexpr (std::is_void_v<T>) {
+      auto result = boost::asio::co_spawn(io, std::move(work), boost::asio::use_future);
+      io.run();
+      result.get();
+   } else {
+      auto result = boost::asio::co_spawn(io, boxed(std::move(work)), boost::asio::use_future);
+      io.run();
+      return std::move(result.get()).value();
+   }
 }
 
 inline std::vector<std::uint8_t> data(std::size_t size, std::uint8_t seed = 1) {

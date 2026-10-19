@@ -21,6 +21,30 @@ target_link_libraries(test_forge_swarm_storage PRIVATE forge_swarm_storage Boost
 add_test(NAME test_forge_swarm_storage COMMAND test_forge_swarm_storage)
 set_tests_properties(test_forge_swarm_storage PROPERTIES TIMEOUT 180)
 
+add_executable(test_forge_swarm_metadata swarm_storage/main.cpp swarm_storage/catalog_tests.cpp)
+if(TARGET forge_db_mdbx OR TARGET forge_db_rocksdb)
+   target_sources(test_forge_swarm_metadata PRIVATE swarm_storage/metadata_crash_tests.cpp)
+   add_executable(forge_swarm_metadata_crash_helper swarm_storage/metadata_crash_helper.cpp)
+   target_link_libraries(forge_swarm_metadata_crash_helper PRIVATE forge_swarm_storage)
+   target_compile_definitions(test_forge_swarm_metadata PRIVATE FORGE_SWARM_METADATA_CRASH_HELPER="$<TARGET_FILE:forge_swarm_metadata_crash_helper>")
+   add_dependencies(test_forge_swarm_metadata forge_swarm_metadata_crash_helper)
+endif()
+target_link_libraries(test_forge_swarm_metadata PRIVATE forge_swarm_storage Boost::included_unit_test_framework)
+if(TARGET forge_db_mdbx)
+   target_link_libraries(test_forge_swarm_metadata PRIVATE forge_db_mdbx)
+   target_compile_definitions(test_forge_swarm_metadata PRIVATE FORGE_TEST_HAS_MDBX)
+   target_link_libraries(forge_swarm_metadata_crash_helper PRIVATE forge_db_mdbx)
+   target_compile_definitions(forge_swarm_metadata_crash_helper PRIVATE FORGE_TEST_HAS_MDBX)
+endif()
+if(TARGET forge_db_rocksdb)
+   target_link_libraries(test_forge_swarm_metadata PRIVATE forge_db_rocksdb)
+   target_compile_definitions(test_forge_swarm_metadata PRIVATE FORGE_TEST_HAS_ROCKSDB)
+   target_link_libraries(forge_swarm_metadata_crash_helper PRIVATE forge_db_rocksdb)
+   target_compile_definitions(forge_swarm_metadata_crash_helper PRIVATE FORGE_TEST_HAS_ROCKSDB)
+endif()
+add_test(NAME test_forge_swarm_metadata COMMAND test_forge_swarm_metadata)
+set_tests_properties(test_forge_swarm_metadata PROPERTIES TIMEOUT 180)
+
 set(FORGE_SWARM_LIBTORRENT_DONOR_ROOT "" CACHE PATH "Pinned libtorrent source used only by Swarm algorithm acceptance")
 if(FORGE_SWARM_LIBTORRENT_DONOR_ROOT)
    execute_process(
@@ -3248,6 +3272,17 @@ add_custom_target(
    DEPENDS test_forge_package_install
 )
 add_custom_target(
+   test_forge_package_swarm_db_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_db_component
+      ${CMAKE_BINARY_DIR}/forge-package-swarm-db-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_swarm_db_component
+   DEPENDS test_forge_package_install
+)
+add_custom_target(
    test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}
       --build-and-test
@@ -4347,6 +4382,17 @@ add_test(
       --test-command forge_package_swarm_storage_component
 )
 set_tests_properties(test_forge_package_swarm_storage_component PROPERTIES DEPENDS test_forge_package_install)
+add_test(
+   NAME test_forge_package_swarm_db_component
+   COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test
+      ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_db_component
+      ${CMAKE_BINARY_DIR}/forge-package-swarm-db-component
+      --build-generator ${CMAKE_GENERATOR}
+      --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+      --test-command forge_package_swarm_db_component
+)
+set_tests_properties(test_forge_package_swarm_db_component PROPERTIES DEPENDS test_forge_package_install)
 add_test(
    NAME test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}

@@ -216,6 +216,11 @@ class service_node {
   disk/CPU executors; no payload DB or hidden worker pool belongs there.
 - The Swarm descriptor uses canonical Forge Raw. BEP 52 algorithm fixtures do
   not establish BitTorrent or IPFS wire compatibility.
+- `swarm.db` owns declarative Object Store models only. `swarm.storage` may
+  adapt externally owned Object Store services, but must not open/close a DB
+  driver, import concrete DB backends, store payload or create worker pools.
+  Schema registration is explicit composition. Metadata is never proof of
+  present/verified file bytes, and one file operation has one checkpoint authority.
 - Payload files, persistence adapters, active runtime and product admission
   policy have separate owners as recorded in the Swarm implementation plan.
 - `forge.core.conversion` declares only the common primary template. Domain
