@@ -79,38 +79,26 @@ def intel_scope(scope):
 def intel_archive(archive, formula, evidence):
     require(sha256(archive) == INTEL_BOTTLE_SHA256, "historical Intel bottle SHA mismatch")
     require(sha256(formula) == INTEL_FORMULA_SHA256, "historical Intel formula SHA/ref mismatch")
-    root = "llvm/22.1.8/"
-    wanted = {root + "INSTALL_RECEIPT.json": 1024 * 1024, root + ".brew/llvm.rb": 256 * 1024}
-    metadata = {}
-    # Read only the two standard metadata members; never extract or relocate ourselves.
-    with tarfile.open(archive, "r|gz") as source:
-        for member in source:
-            if member.name not in wanted:
-                continue
-            require(member.name not in metadata and member.isfile() and member.size <= wanted[member.name],
-                    "invalid historical Intel bottle metadata member")
-            metadata[member.name] = source.extractfile(member).read().decode("utf-8")
-            if len(metadata) == len(wanted):
-                break
-    require(metadata.keys() == wanted.keys(), "missing historical Intel bottle metadata")
-    receipt = json.loads(metadata[root + "INSTALL_RECEIPT.json"])
-    require(receipt.get("arch") == "x86_64" and receipt.get("built_on", {}).get("os_version") == "macOS 14.8",
-            "historical Intel bottle architecture/platform mismatch")
-    embedded = metadata[root + ".brew/llvm.rb"]
-    require(f"llvmorg-{VERSION}/llvm-project-{VERSION}.src.tar.xz" in embedded and SOURCE_SHA256 in embedded,
-            "historical Intel bottle source version mismatch")
-    evidence.write_text(json.dumps({"scope": "intel-runtime-off", "bottle_sha256": INTEL_BOTTLE_SHA256,
+    # Homebrew owns bottle metadata and generates INSTALL_RECEIPT.json during pour.
+    evidence.write_text(json.dumps({"state": "SHA_VERIFIED", "scope": "intel-runtime-off",
+                                    "bottle_sha256": INTEL_BOTTLE_SHA256,
                                     "formula_ref": INTEL_FORMULA_REF, "formula_sha256": INTEL_FORMULA_SHA256,
-                                    "embedded_formula_sha256": hashlib.sha256(embedded.encode()).hexdigest(),
-                                    "built_on": receipt["built_on"], "arch": receipt["arch"],
+                                    "metadata_owner": "Homebrew", "native_qualification": "PENDING",
                                     "LLVM_library_qualification": "NOT_APPLICABLE_RUNTIME_OFF"}, indent=2) + "\n")
-    print("READY: pinned Intel bottle metadata; installation and host qualification still required")
+    print("READY: Intel bottle/formula SHA verified; metadata Homebrew-owned; native qualification pending")
 
 
 def intel_formula(file):
-    formula = json.loads(file.read_text())["formulae"][0]
-    require(formula["name"] == "llvm" and formula["versions"]["stable"] == VERSION,
-            "Homebrew did not load the historical local llvm22.1.8 formula")
+    formulae = json.loads(file.read_text())["formulae"]
+    require(len(formulae) == 1, "ambiguous historical Intel tap formula metadata")
+    formula = formulae[0]
+    require(formula["name"] == "llvm" and formula.get("full_name") == "forge/vm-ci/llvm"
+            and formula["versions"]["stable"] == VERSION,
+            "Homebrew did not load the pinned forge/vm-ci/llvm22.1.8 formula")
+    record = formula.get("bottle", {}).get("stable", {}).get("files", {}).get("sonoma", {})
+    require(record.get("sha256") == INTEL_BOTTLE_SHA256
+            and record.get("url") == f"https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:{INTEL_BOTTLE_SHA256}",
+            "historical Intel tap formula must select the pinned Homebrew core Sonoma bottle")
 
 
 def intel_headers(prefix, evidence):

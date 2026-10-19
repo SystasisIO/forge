@@ -19,6 +19,8 @@ log_run() {
 if [[ "$mode" == intel-runtime-off ]]; then
    # Historical compiler/headers only: never use this keg to qualify LLVM/JIT.
    log_run intel-scope python3 "$checker" intel-scope "$mode"
+   test "${GITHUB_ACTIONS:-}" = true
+   test "${CI:-}" = true
    test "$RUNNER_OS" = macOS
    test "$(sysctl -n sysctl.proc_translated 2>/dev/null || printf 0)" != 1
    command -v brew >/dev/null
@@ -41,12 +43,27 @@ if [[ "$mode" == intel-runtime-off ]]; then
       https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48 \
       --output "$archive"
    log_run intel-archive python3 "$checker" intel-archive "$archive" "$formula" "$evidence/intel-bottle.json"
-   brew info --json=v2 "$archive" > "$evidence/intel-local-formula.json"
-   log_run intel-formula python3 "$checker" intel-formula "$evidence/intel-local-formula.json"
+   # Default Homebrew forbids formula/bottle file-path arguments. Use its normal
+   # local-tap API with the unchanged pinned formula, never a path-policy override.
+   tap=forge/vm-ci
+   target_formula="$tap/llvm"
+   brew tap > "$evidence/intel-taps-before.txt"
+   if grep -Fxq "$tap" "$evidence/intel-taps-before.txt"; then
+      echo 'HARNESS_ERROR: Intel CI tap already exists; refusing mutable formula reuse' >&2
+      exit 2
+   fi
+   log_run intel-tap-create brew tap-new --no-git "$tap"
+   tap_formula="$(brew --repository "$tap")/Formula/llvm.rb"
+   test ! -e "$tap_formula"
+   cp "$formula" "$tap_formula"
+   cmp -- "$formula" "$tap_formula"
+   shasum -a 256 "$tap_formula" > "$evidence/intel-tap-formula.sha256"
+   brew info --json=v2 "$target_formula" > "$evidence/intel-tap-formula.json"
+   log_run intel-formula python3 "$checker" intel-formula "$evidence/intel-tap-formula.json"
 
    # Nested Homebrew installers do not inherit --force-bottle. Install leaves first
    # and refuse newly missing children so no nested installer can build from source.
-   brew deps --missing --topological --formula "$archive" > "$evidence/intel-missing-deps.txt"
+   brew deps --missing --topological --formula "$target_formula" > "$evidence/intel-missing-deps.txt"
    index=0
    while IFS= read -r dependency; do
       [[ -n "$dependency" && "$dependency" != -* && "$dependency" != *[[:space:]]* ]]
@@ -55,9 +72,9 @@ if [[ "$mode" == intel-runtime-off ]]; then
       test ! -s "$evidence/intel-dependency-$index-missing.txt"
       log_run "intel-dependency-$index-install" brew install --force-bottle --formula "$dependency"
    done < "$evidence/intel-missing-deps.txt"
-   brew deps --missing --formula "$archive" > "$evidence/intel-remaining-deps.txt"
+   brew deps --missing --formula "$target_formula" > "$evidence/intel-remaining-deps.txt"
    test ! -s "$evidence/intel-remaining-deps.txt"
-   log_run intel-bottle-install brew install --force-bottle --skip-link "$archive"
+   log_run intel-bottle-install brew install --force-bottle --skip-link "$target_formula"
    log_run intel-installed-receipt cat "$prefix/INSTALL_RECEIPT.json"
 
    sdk="$(xcrun --show-sdk-path)"

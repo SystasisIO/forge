@@ -183,6 +183,19 @@ No unrelated OpenSSL4 compatibility edits, partial prefix or source fallback
 is used to turn that failure into a package pass. Workspace receipts are under
 `wamr-ci-190-20261019-r7`; the complete migration remains unaccepted.
 
+Run53 then exposes a provisioning-only assumption: the exact Intel bottle
+contains no INSTALL_RECEIPT.json; Homebrew creates that receipt during pour.
+The real 386,191,529-byte archive passes its pinned SHA check. Its metadata,
+format and relocation are now left to Homebrew rather than a parallel tar
+receipt validator. Current Homebrew also rejects formula/bottle path arguments
+by default. The follow-up uses a disposable CI-local `forge/vm-ci` tap created
+with `tap-new --no-git`, copies the unchanged SHA-verified upstream formula,
+and invokes ordinary qualified-name info/deps/bottle installation. It creates
+no remote repository and disables no path-security guard. Full formula name,
+version, official Sonoma bottle SHA/origin and all installed compiler/header/
+host ABI checks remain mandatory. All 44 metadata tests and a real-payload SHA
+admission check pass; actual native Intel installation remains unqualified.
+
 ## Language-Version Differences
 
 The bounded numeric profile uses WAMR's existing modern encoding and typing
