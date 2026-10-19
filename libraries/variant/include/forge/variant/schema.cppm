@@ -34,6 +34,7 @@ export module forge.variant.schema;
 import forge.reflect.reflect;
 import forge.schema.diagnostic;
 import forge.schema.object;
+import forge.schema.value_kind;
 import forge.variant.value;
 import forge.variant.conversion;
 import forge.variant.containers;
@@ -810,6 +811,11 @@ void materialize(variant& source, std::string_view path, std::vector<schema::dia
 
 export namespace forge::variant_schema {
 
+[[nodiscard]] schema::input_value to_input(const variant& input, schema::constraint_limits limits = {});
+[[nodiscard]] variant from_input(const schema::input_value& input, schema::constraint_limits limits = {});
+[[nodiscard]] std::vector<schema::diagnostic> validate(const schema::artifact& rules, const variant& input,
+                                                      schema::constraint_limits limits = {});
+
 template <typename T> [[nodiscard]] variant encode(const T& input) {
    auto output = variant{};
    to_variant(input, output);
@@ -830,3 +836,14 @@ template <typename T>
 }
 
 } // namespace forge::variant_schema
+
+export namespace forge::schema {
+
+template <> struct value_adapter<forge::variant_object> {
+   static constexpr value_kind kind = value_kind::object;
+   [[nodiscard]] static input_value encode(const forge::variant_object& input);
+   [[nodiscard]] static forge::variant_object decode(const input_value& input);
+   [[nodiscard]] static constraint constraints();
+};
+
+} // namespace forge::schema

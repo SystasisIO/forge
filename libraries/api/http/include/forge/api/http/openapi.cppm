@@ -34,7 +34,9 @@ import forge.api.http.parameters;
 import forge.core.type_name;
 import forge.reflect.reflect;
 import forge.schema.scalar;
+import forge.schema.object;
 import forge.variant.value;
+import forge.variant.schema;
 
 export namespace forge::api::http {
 
@@ -257,6 +259,9 @@ template <typename T> [[nodiscard]] forge::variant make_json_schema() {
       return forge::variant{forge::mutable_variant_object{}(
           "oneOf", variant_schemas<value_type>(std::make_index_sequence<size>{}))};
    } else if constexpr (forge::reflect::is_described_object_v<value_type>) {
+      if constexpr (forge::schema::has_explicit_rules_v<value_type>) {
+         return forge::variant_schema::from_input(forge::schema::json_schema(forge::schema::export_constraints<value_type>()));
+      }
       auto properties = forge::mutable_variant_object{};
       auto required = forge::variants{};
       forge::reflect::for_each_member<value_type>([&](const char* name, auto member) {
@@ -387,6 +392,26 @@ template <typename Request> [[nodiscard]] std::vector<openapi_field> request_fie
    auto output = std::vector<openapi_field>{};
    using request_type = clean_type<Request>;
    if constexpr (forge::reflect::is_described_object_v<request_type>) {
+      if constexpr (forge::schema::has_explicit_rules_v<request_type>) {
+         const auto definitions = forge::schema::rules<request_type>::define();
+         const auto constraints = forge::schema::export_constraints<request_type>();
+         const auto exported = forge::variant_schema::from_input(forge::schema::json_schema(constraints));
+         const auto& properties = exported.get_object()["properties"].get_object();
+         forge::reflect::for_each_member<request_type>([&](const char* name, auto member) {
+            using member_type = clean_type<decltype(std::declval<request_type>().*member)>;
+            const auto found = std::ranges::find_if(definitions.fields(), [&](const auto& rule) {
+               return rule.member_name == name;
+            });
+            if (found == definitions.fields().end()) return;
+            auto field = request_field<member_type>(found->name);
+            if (field.source == openapi_field_source::value) {
+               field.schema = properties[found->name];
+               field.required = !found->optional || found->required;
+            }
+            output.push_back(std::move(field));
+         });
+         return output;
+      }
       forge::reflect::for_each_member<request_type>([&](const char* name, auto member) {
          using member_type = clean_type<decltype(std::declval<request_type>().*member)>;
          output.push_back(request_field<member_type>(name));

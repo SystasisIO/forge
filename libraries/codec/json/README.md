@@ -1,5 +1,40 @@
 # forge_codec_json
 
+## Strict Bounded Native Reads
+
+Use `read_options::described_records = described_record_policy::exact` for
+untrusted exact JSON. `max_bytes`, `max_nodes`, `max_container_size`, and
+`max_string_bytes` bound input bytes, all value nodes (including root), each
+object/array and decoded UTF-8 string/key bytes. Container depth starts at one
+for the root container. Glaze's existing lazy view checks structural budgets
+before DOM construction; Glaze still owns syntax/unescaping/number parsing and
+complete trailing-input validation. There is no second parser.
+Exact mode rejects escaped duplicate keys at every depth, invalid UTF-8,
+unpaired surrogates, raw NUL, and by default decoded NUL in strings/keys.
+`reject_nul = false` permits decoded NUL only where explicitly needed; it never
+permits raw NUL/trailing bytes. Byte-limited file loads stop before accumulating
+an oversized document. Typed writes/saves return schema validation diagnostics
+before emitting invalid constrained values.
+
+`read(text, const schema::artifact&, options)` forces exact parsing and validates
+the dynamic value against an already loaded local artifact. It needs no product
+C++ declarations. A native consumer links `forge_codec_json` and imports
+`forge.codec.json`, `forge.schema.object` and `forge.variant.schema`:
+
+```cpp
+auto parsed_artifact = forge::codec::json::read_value(local_artifact_text,
+   {.described_records = forge::codec::json::described_record_policy::exact});
+// Check parsed_artifact.ok() before using its value.
+auto artifact = forge::schema::load_artifact(forge::variant_schema::to_input(parsed_artifact.value));
+auto document = forge::codec::json::read(document_text, artifact,
+   {.max_depth = 8, .max_bytes = 8192, .max_nodes = 512,
+    .max_container_size = 128, .max_string_bytes = 2048});
+```
+
+Local artifacts are pinned by the application. This API never retrieves remote
+schemas or interprets arbitrary JSON Schema. Codec byte/UTF-8/syntax validation
+and schema constraint validation remain separate owners.
+
 ## Opaque shared JSON values
 
 `forge.codec.json.document` is a guest-safe owned `document { std::string text; }`.

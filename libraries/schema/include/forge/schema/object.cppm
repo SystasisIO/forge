@@ -31,9 +31,10 @@ export module forge.schema.object;
 
 import forge.schema.diagnostic;
 import forge.schema.exceptions;
-import forge.schema.value_kind;
+export import forge.schema.value_kind;
 import forge.schema.enums;
 import forge.schema.scalar;
+export import forge.schema.constraint;
 
 namespace forge::schema::detail {
 
@@ -106,31 +107,8 @@ template <typename T, auto Member> [[nodiscard]] std::string described_member_na
    return output;
 }
 
-struct input_value {
-   using array_type = std::vector<input_value>;
-   using object_type = std::map<std::string, input_value>;
-   using storage_type =
-       std::variant<std::monostate, bool, std::int64_t, std::uint64_t, double, std::string, array_type, object_type>;
-
-   storage_type storage;
-
-   input_value() = default;
-   input_value(bool input) : storage{input} {}
-   input_value(std::int64_t input) : storage{input} {}
-   input_value(std::uint64_t input) : storage{input} {}
-   input_value(double input) : storage{input} {}
-   input_value(std::string input) : storage{std::move(input)} {}
-   input_value(array_type input) : storage{std::move(input)} {}
-   input_value(object_type input) : storage{std::move(input)} {}
-
-   [[nodiscard]] const array_type* as_array() const noexcept {
-      return std::get_if<array_type>(&storage);
-   }
-
-   [[nodiscard]] const object_type* as_object() const noexcept {
-      return std::get_if<object_type>(&storage);
-   }
-};
+template <typename T> [[nodiscard]] constraint export_constraint(std::size_t depth = 0);
+template <typename T> [[nodiscard]] artifact export_constraints();
 
 } // namespace forge::schema
 
@@ -443,6 +421,12 @@ template <typename T> struct field_rule {
    std::function<const void*(const T&)> member_address;
    std::function<std::optional<std::size_t>(const T&)> read_size;
    std::vector<std::function<void(const T&, std::string_view, std::vector<diagnostic>&)>> validators;
+   std::function<constraint(std::size_t)> export_type;
+   constraint constraints;
+   std::optional<constraint> shape;
+   std::size_t exported_validators = 0;
+   bool validate_constraints = false;
+   bool unsupported_constraints = false;
 };
 
 template <typename T> class field_builder;
@@ -463,6 +447,7 @@ template <typename T> class object_schema {
       rule.kind = member_kind<member_type>::value;
       rule.type = std::type_index{typeid(member_type)};
       rule.optional = is_optional<member_type>::value;
+      rule.export_type = [](std::size_t depth) { return export_constraint<member_type>(depth); };
       rule.assign_any = [](T& object, const std::any& value) {
          if constexpr (is_optional<member_type>::value) {
             using item_type = typename is_optional<member_type>::value_type;
@@ -662,6 +647,19 @@ template <typename T> class object_schema {
          }
          for (const auto& validator : field.validators) {
             validator(object, base_path, result);
+         }
+         if ((field.shape || field.validate_constraints) && field.read_validation_any(object)) {
+            const auto path = append_path(base_path, field.name);
+            try {
+               const auto value = field.read_input(object, path);
+               auto type = field.shape ? *field.shape : field.export_type(0);
+               auto checks = schema::validate(refine_constraint(type, field.constraints), value, path);
+               result.insert(result.end(), checks.begin(), checks.end());
+            } catch (const exceptions::constraint_limit&) {
+               throw;
+            } catch (const std::exception&) {
+               result.push_back(make_path_error(path, "schema.type", "field cannot be validated exactly"));
+            }
          }
       }
       return result;
@@ -878,6 +876,50 @@ template <typename T> class field_builder {
       current().minimum = static_cast<long double>(min);
       current().maximum = static_cast<long double>(max);
       current().compare_range = [min, max](const std::any& value) { return compare_any_range(value, min, max); };
+      if constexpr (integral_value<Min> && integral_value<Max> && sizeof(Min) <= 8 && sizeof(Max) <= 8) {
+         current().constraints.minimum = to_input_value(min);
+         current().constraints.maximum = to_input_value(max);
+      } else {
+         current().unsupported_constraints = true;
+      }
+      return *this;
+   }
+
+   field_builder& length(std::size_t minimum, std::size_t maximum) {
+      current().validate_constraints = true;
+      current().constraints.min_size = std::max(current().constraints.min_size.value_or(0), minimum);
+      current().constraints.max_size = std::min(current().constraints.max_size.value_or(maximum), maximum);
+      return *this;
+   }
+
+   field_builder& pattern(std::string expression) {
+      current().validate_constraints = true;
+      current().constraints.ascii = true;
+      current().constraints.pattern = std::move(expression);
+      return *this;
+   }
+
+   field_builder& ascii() {
+      current().validate_constraints = true;
+      current().constraints.ascii = true;
+      return *this;
+   }
+
+   field_builder& constant(input_value value) {
+      current().validate_constraints = true;
+      current().constraints.constant = std::move(value);
+      return *this;
+   }
+
+   field_builder& decimal_range(std::uint64_t minimum, std::uint64_t maximum) {
+      current().validate_constraints = true;
+      current().constraints.decimal_minimum = minimum;
+      current().constraints.decimal_maximum = maximum;
+      return *this;
+   }
+
+   field_builder& shape(constraint value) {
+      current().shape = std::move(value);
       return *this;
    }
 
@@ -909,6 +951,9 @@ template <typename T> class field_builder {
    }
 
    field_builder& non_empty() {
+      if (current().kind != value_kind::string) current().unsupported_constraints = true;
+      current().constraints.min_size = std::max(current().constraints.min_size.value_or(0), std::size_t{1});
+      ++current().exported_validators;
       current().validators.push_back([state = std::weak_ptr{schema_.fields_}, index = index_](const T& object,
                                                                                std::string_view base_path,
                                                                                std::vector<diagnostic>& diagnostics) {
@@ -932,6 +977,9 @@ template <typename T> class field_builder {
    }
 
    field_builder& min_items(std::size_t count) {
+      if (!current().read_size) current().unsupported_constraints = true;
+      current().constraints.min_size = std::max(current().constraints.min_size.value_or(0), count);
+      ++current().exported_validators;
       current().validators.push_back(
           [state = std::weak_ptr{schema_.fields_}, index = index_, count](const T& object, std::string_view base_path,
                                                            std::vector<diagnostic>& diagnostics) {
@@ -950,6 +998,9 @@ template <typename T> class field_builder {
    }
 
    field_builder& max_items(std::size_t count) {
+      if (!current().read_size) current().unsupported_constraints = true;
+      current().constraints.max_size = std::min(current().constraints.max_size.value_or(count), count);
+      ++current().exported_validators;
       current().validators.push_back(
           [state = std::weak_ptr{schema_.fields_}, index = index_, count](const T& object, std::string_view base_path,
                                                            std::vector<diagnostic>& diagnostics) {
@@ -968,6 +1019,10 @@ template <typename T> class field_builder {
    }
 
    field_builder& each_non_empty() {
+      if (current().type != typeid(std::vector<std::string>) &&
+          current().type != typeid(std::optional<std::vector<std::string>>)) current().unsupported_constraints = true;
+      current().constraints.items = {constraint{.kind = constraint_kind::string, .min_size = 1}};
+      ++current().exported_validators;
       current().validators.push_back([state = std::weak_ptr{schema_.fields_}, index = index_](const T& object,
                                                                                std::string_view base_path,
                                                                                std::vector<diagnostic>& diagnostics) {
@@ -1597,5 +1652,74 @@ template <typename T> struct rules {
 
 template <typename T>
 inline constexpr bool has_explicit_rules_v = !requires { typename rules<std::remove_cvref_t<T>>::default_definition; };
+
+template <typename T> [[nodiscard]] constraint export_constraint(std::size_t depth) {
+   using value_type = std::remove_cvref_t<T>;
+   if (depth >= 32) FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "schema exceeds export depth");
+   if constexpr (is_optional<value_type>::value) {
+      auto result = export_constraint<typename is_optional<value_type>::value_type>(depth + 1);
+      result.nullable = true;
+      return result;
+   } else if constexpr (requires { value_adapter<value_type>::constraints(); }) {
+      return value_adapter<value_type>::constraints();
+   } else if constexpr (std::same_as<value_type, bool>) {
+      return constraint{.kind = constraint_kind::boolean};
+   } else if constexpr (integral_value<value_type> && sizeof(value_type) <= 8) {
+      return constraint{.kind = constraint_kind::integer,
+                        .minimum = to_input_value(std::numeric_limits<value_type>::min()),
+                        .maximum = to_input_value(std::numeric_limits<value_type>::max())};
+   } else if constexpr (std::floating_point<value_type>) {
+      FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "floating point schema export is outside the bounded subset");
+   } else if constexpr (std::same_as<value_type, std::string>) {
+      return constraint{.kind = constraint_kind::string};
+   } else if constexpr (std::is_enum_v<value_type> && boost::describe::has_describe_enumerators<value_type>::value) {
+      auto result = constraint{.kind = constraint_kind::string};
+      boost::mp11::mp_for_each<boost::describe::describe_enumerators<value_type>>([&](auto descriptor) {
+         const auto name = enum_to_config_string(descriptor.value);
+         if (!name) FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "enum has no canonical name");
+         result.enum_values.emplace_back(*name);
+      });
+      return result;
+   } else if constexpr (is_vector<value_type>::value) {
+      return constraint{.kind = constraint_kind::array,
+                        .items = {export_constraint<typename vector_item<value_type>::type>(depth + 1)}};
+   } else {
+      auto result = constraint{.kind = constraint_kind::object};
+      const auto definitions = rules<value_type>::define();
+      if (!definitions.fields().empty()) {
+         for (const auto& field : definitions.fields()) {
+            if (field.name.empty() || field.name.find('.') != std::string::npos || !field.aliases.empty() ||
+                field.unsupported_constraints || field.validators.size() != field.exported_validators)
+               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "unrepresentable schema field: {}", field.name);
+            auto type = field.shape ? *field.shape : field.export_type(depth + 1);
+            type.nullable = type.nullable || field.optional;
+            if (field.shape && field.export_type(depth + 1).kind != type.kind)
+               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "shape changes JSON kind: {}", field.name);
+            if (!result.properties.emplace(field.name, refine_constraint(type, field.constraints)).second)
+               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "duplicate schema field: {}", field.name);
+            if (!field.optional || field.required) result.required.push_back(field.name);
+         }
+         return result;
+      }
+      if constexpr (boost::describe::has_describe_members<value_type>::value) {
+         using members = boost::describe::describe_members<value_type, boost::describe::mod_any_access |
+                                                                       boost::describe::mod_inherited>;
+         boost::mp11::mp_for_each<members>([&](auto descriptor) {
+            using member_type = std::remove_cvref_t<decltype(std::declval<value_type>().*descriptor.pointer)>;
+            result.properties.emplace(descriptor.name, export_constraint<member_type>(depth + 1));
+            if constexpr (!is_optional<member_type>::value) result.required.emplace_back(descriptor.name);
+         });
+         return result;
+      } else {
+         FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "type has no bounded schema export");
+      }
+   }
+}
+
+template <typename T> [[nodiscard]] artifact export_constraints() {
+   auto output = artifact{.root = export_constraint<T>()};
+   check_artifact(output);
+   return output;
+}
 
 } // namespace forge::schema
