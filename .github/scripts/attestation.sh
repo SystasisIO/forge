@@ -277,9 +277,9 @@ PY
       printf 'PASS\n' > "$work/evidence/missing-backend.txt"
       # Relocate Forge without its sibling backend. Resolve a separately
       # installed qualified CJOSE through ordinary dependency discovery.
-      cmake --install "$build" --prefix "$work/forge-external" >> "$work/raw/compile.log" 2>&1
+      cmake --install "$build" --prefix "$work/forge-external" --component dev >> "$work/raw/compile.log" 2>&1
       cmake -E rm -rf "$work/forge-external/lib/cmake/cjose"
-      cmake --install "$build/vendor/cjose" --prefix "$work/cjose-external" >> "$work/raw/compile.log" 2>&1
+      cmake --install "$build/vendor/cjose" --prefix "$work/cjose-external" --component dev >> "$work/raw/compile.log" 2>&1
       cmake -S tests/package_attestation -B "$work/package-external" "${options[@]}" \
          -C "$build/tests/ForgePackageConsumerCache.cmake" \
          -DForge_DIR="$work/forge-external/lib/cmake/Forge" \
