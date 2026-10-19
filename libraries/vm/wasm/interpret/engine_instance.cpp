@@ -132,7 +132,10 @@ engine_instance::engine_instance(std::shared_ptr<engine_module> source, std::uin
       // A zero override means "unset" upstream. Apply the logical byte budget
       // to this instance before deferred guest initialization, including zero.
       for (std::uint32_t index = 0; auto* memory = wasm_runtime_get_memory(_instance, index); ++index) {
-         const auto pages = static_cast<std::uint64_t>(max_pages) * 65536 / memory->num_bytes_per_page;
+         // WAMR coalesces fixed zero-initial memory to zero-byte pages.
+         const auto pages = memory->num_bytes_per_page == 0
+                                ? 0
+                                : static_cast<std::uint64_t>(max_pages) * 65536 / memory->num_bytes_per_page;
          memory->max_page_count = static_cast<std::uint32_t>(std::min<std::uint64_t>(memory->max_page_count, pages));
       }
       _env = wasm_runtime_create_exec_env(_instance, stack_bytes);

@@ -6,7 +6,7 @@
   "harness_inputs": [
     {
       "path": "CMakeLists.txt",
-      "sha256": "429b37f5031dd7f6f6a671b17c6a1df6cb4bc7d5b26cb01fa9b591c2cfbe2167"
+      "sha256": "4cbd3ccedcdec79a4ea22010e510de807cbeb22bfa1b131d5eb6d15a483ecf38"
     },
     {
       "path": "test_support.hpp",

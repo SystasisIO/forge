@@ -6,11 +6,19 @@ are unfinished. This note does not switch the default backend.
 The [fork provenance](../donors/forge-wamr-fork-v1.md) records the immutable
 runtime/compiler source and identity; patch files referenced by earlier reports
 are retained as provenance only, not applied during builds.
-The current published draft engine candidate is `cb1eb77`; the
+The current draft engine source candidate is `f6fe6d5`; the
 [follow-up record](../donors/forge-wamr-dev-integration-20261018.md) distinguishes
 implementation, review, publication and fresh qualification. Earlier reviewed usage-0 results
 (256/256 plus one Release layout probe) do not qualify the new usage-1 allocator
 profile or constitute public/product release acceptance.
+
+The `f6fe6d5` Darwin JIT path uses LLVM's existing DWARF EH registration instead
+of compact-unwind's 32-bit image-relative offsets. It preserves the bounded
+allocator, W^X, native unwind and explicit WASM initialization; Linux setup
+is unchanged. The matching Forge instance fix handles WAMR's coalesced
+zero-width memory without integer division by zero or a page-limit bypass.
+No additional public API break or accepted-profile relaxation is introduced.
+CI57 failures remain recorded; fresh remote qualification is still required.
 
 The `cb1eb77` follow-up records actual committed native-code protection rather
 than inferring it from OS capability alone. Supported Darwin MAP_JIT execution

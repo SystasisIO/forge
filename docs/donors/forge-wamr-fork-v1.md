@@ -7,11 +7,32 @@ The runtime and compiler source is maintained in the
 The upstream baseline is
 [`ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a`](https://github.com/wasm-micro-runtime/wasm-micro-runtime/commit/ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a).
 The Forge submodule pins
-[`cb1eb77dd4d788bf475162223884b4fbfd7fe30a`](https://github.com/SystasisIO/wasm-micro-runtime/commit/cb1eb77dd4d788bf475162223884b4fbfd7fe30a)
-on the published `forge-runtime-profile-v1` draft branch. Its predecessor is
-[`69c107c54b040b5b0ced5e764f0ddd0c17249029`](https://github.com/SystasisIO/wasm-micro-runtime/commit/69c107c54b040b5b0ced5e764f0ddd0c17249029).
+[`f6fe6d5ae1c14b2cc4301e2fca0b3364be6a692b`](https://github.com/SystasisIO/wasm-micro-runtime/commit/f6fe6d5ae1c14b2cc4301e2fca0b3364be6a692b)
+on the experimental `forge-runtime-profile-v1` draft branch. The fork commit
+must be published before the parent Forge pin update. Its predecessor is
+[`cb1eb77dd4d788bf475162223884b4fbfd7fe30a`](https://github.com/SystasisIO/wasm-micro-runtime/commit/cb1eb77dd4d788bf475162223884b4fbfd7fe30a).
 Full qualification remains pending. Review is tracked in
 [fork PR 1](https://github.com/SystasisIO/wasm-micro-runtime/pull/1).
+
+## Darwin JIT Unwind Registration
+
+Commit `f6fe6d5` keeps the existing bounded JIT allocator and W^X policy, but
+uses LLVM's `EHFrameRegistrationPlugin` with always-emitted DWARF EH on Darwin.
+Mach-O compact-unwind encodes image-relative offsets in 32 bits; independent
+code/data mappings have no such proximity guarantee. CI57 exposed this during
+the unchanged 8193-instance donor test. Darwin's DWARF FDE encoding uses
+pointer-width PC-relative references instead.
+
+The existing LLVM plugin removes compact-unwind before pruning and registers
+and deregisters EH frames through the same allocation actions already owned
+by the bounded load owner. Plugin-creation failures remain recoverable.
+`setUpInactivePlatform` disables only generic LLVM global ctor/dtor discovery:
+this WAMR pipeline has no such globals and owns WASM start/initialization
+explicitly. Process-symbol lookup remains independent. Linux setup is unchanged.
+No new allocator, mapping registry, public API or relaxed instance limit is
+introduced. Fresh runtime and remote qualification are recorded in the
+[CI follow-up](forge-wamr-dev-integration-20261018.md), not inferred from the
+preceding pin's results below.
 
 ## Committed Native Protection Policy
 

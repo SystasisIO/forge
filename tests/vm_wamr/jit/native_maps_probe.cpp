@@ -27,6 +27,8 @@
 #include <thread>
 #include <vector>
 #if defined(BH_PLATFORM_DARWIN)
+#include <llvm/ExecutionEngine/JITLink/JITLink.h>
+#include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #endif
@@ -46,6 +48,32 @@ void checked(LLVMErrorRef error) {
    LLVMDisposeErrorMessage(text);
    throw std::runtime_error(owned);
 }
+
+#if defined(BH_PLATFORM_DARWIN)
+constexpr char fixture_ro_section[] = "__TEXT,__forge_ro";
+
+class read_only_fixture_plugin final : public llvm::orc::ObjectLinkingLayer::Plugin {
+ public:
+   void modifyPassConfig(llvm::orc::MaterializationResponsibility&, llvm::jitlink::LinkGraph&,
+                         llvm::jitlink::PassConfiguration& passes) override {
+      passes.PrePrunePasses.push_back([](llvm::jitlink::LinkGraph& graph) -> llvm::Error {
+         auto* section = graph.findSectionByName(fixture_ro_section);
+         if (!section)
+            return llvm::make_error<llvm::StringError>("Native mapping fixture is missing its read-only section",
+                                                       llvm::inconvertibleErrorCode());
+         section->setMemProt(llvm::orc::MemProt::Read);
+         return llvm::Error::success();
+      });
+   }
+   llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override {
+      return llvm::Error::success();
+   }
+   llvm::Error notifyRemovingResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey) override {
+      return llvm::Error::success();
+   }
+   void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey, llvm::orc::ResourceKey) override {}
+};
+#endif
 
 struct trace {
    struct mapping {
@@ -544,6 +572,12 @@ void trial(scenario test) {
    os_thread_jit_write_protect_np(false);
 #endif
    if (!result) {
+#if defined(BH_PLATFORM_DARWIN)
+      auto* layer = llvm::dyn_cast<llvm::orc::ObjectLinkingLayer>(
+          reinterpret_cast<llvm::orc::ObjectLayer*>(LLVMOrcLLJITGetObjLinkingLayer(jit.get())));
+      require(layer != nullptr, "Native mapping fixture requires the JITLink object layer");
+      layer->addPlugin(std::make_shared<read_only_fixture_plugin>());
+#endif
       constexpr char ir[] = R"(
 @immutable = constant i32 41
 @counter = global i32 1
@@ -569,6 +603,11 @@ define i32 @answer() {
          LLVMOrcDisposeThreadSafeContext(context);
          throw std::runtime_error(diagnostic);
       }
+#if defined(BH_PLATFORM_DARWIN)
+      auto immutable = LLVMGetNamedGlobal(module, "immutable");
+      require(immutable != nullptr, "Native mapping fixture is missing its immutable global");
+      LLVMSetSection(immutable, fixture_ro_section);
+#endif
       if (test == scenario::factory)
          pass_recovery(module);
       auto safe = LLVMOrcCreateNewThreadSafeModule(module, context);

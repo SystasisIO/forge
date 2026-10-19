@@ -240,10 +240,16 @@ elif [[ "$mode" == bootstrap-linux ]]; then
 
    # Stage C is a separate upstream runtime graph, serialized after the LLVM graph.
    # This prevents a nested runtime Ninja from exceeding the two-job/one-linker budget.
+   # Bind Stage A before project() probes the newly installed libc++-default driver.
    log_run final-runtimes-configure /usr/bin/cmake -S "$source/runtimes" -B "$work/final-runtimes" -G Ninja \
       -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DCMAKE_C_COMPILER="$prefix/bin/clang" -DCMAKE_CXX_COMPILER="$prefix/bin/clang++" \
+      "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -isystem $prefix/include/c++/v1" \
+      "-DCMAKE_EXE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
+      "-DCMAKE_SHARED_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
+      "-DCMAKE_MODULE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
+      -DCMAKE_BUILD_RPATH="$prefix/lib" \
       -DLLVM_CONFIG_PATH="$prefix/bin/llvm-config" -DLLVM_DIR="$prefix/lib/cmake/llvm" \
       -DCMAKE_JOB_POOLS=link=1 -DCMAKE_JOB_POOL_LINK=link \
       '-DLLVM_ENABLE_RUNTIMES=compiler-rt;libunwind;libcxxabi;libcxx' \

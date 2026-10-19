@@ -9,7 +9,80 @@ The F6 integration branch remains `vm-wasm-wamr-dev-integration-v1`, based on
 preserved. Workspace evidence for this follow-up lives in
 `wamr-dev-integration-20261018-r5`.
 
-## Current F6 Checkpoint
+## CI57 Follow-Up (2026-10-19)
+
+[VM run57](https://github.com/SystasisIO/forge/actions/runs/39268640394) is
+complete at PR head `2d4c3cab`, WAMR `cb1eb77`, and is not accepted as a full
+pass. ARM interpreter passes 25/25. ARM JIT/AOT passes 81/82, including all
+53 standalone AOT tests and the installed optimizing component with 5/5
+nested tests. The sole failure is the original 8193-instance JIT case:
+Mach-O compact-unwind cannot represent an address delta `0x50000c314`.
+
+Both Intel interpreter configurations build successfully after the BLS fix
+and pass 23/27 CTests. Unit/spec processes terminate with a numerical exception;
+source diagnosis identifies division by WAMR's zero-byte coalesced memory page
+width in the Forge instance ceiling calculation. Numerical exit alone is not
+native-PC or floating-point evidence. The other two failures are independent
+provenance checks: a missing FP-module map entry and a stale CMake harness hash.
+All original donor test bodies, oracle rules, assertion and fixture hashes
+remain unchanged when refreshing this metadata.
+
+The Linux Stage B LLVM build/install completes. Stage C final-runtime CMake
+compiler smoke fails with `cannot find -lc++`, before relocated ABI
+qualification. The fix explicitly binds Stage A headers/libraries and pinned
+LLD before `project()` compiler checks; final relocation/provider/ABI admission
+remains unchanged. Two new regressions bring metadata tests to 57/57.
+Dependent Linux runtime, JIT, sanitizer and package jobs do not execute because
+the qualified toolchain artifact is absent; those are not VM runtime results.
+
+The follow-up uses fork `f6fe6d5` and LLVM's existing Darwin DWARF EH plugin,
+not another allocator or a reduced multi-instance test. The Forge zero-width
+memory guard preserves ceiling zero; growable-zero controls still enforce the
+configured page cap before guest initialization. API, limits, deterministic
+numeric behavior, cancellation, W^X and cleanup requirements are unchanged.
+Fresh remote qualification remains required.
+Raw evidence and independent reviews are under `wamr-ci-190-20261019-r9`.
+No merge or live product change is performed.
+
+The first local combined follow-up is retained as 88/89: the native mapping
+fixture lacked a genuine RO input once compact-unwind metadata was removed.
+LLVM's Mach-O graph builder assigns RW to non-instruction input sections.
+A test-only JITLink plugin now marks the fixture's unique constant section
+Read through LLVM's graph API; mutable counter data remains RW. All original
+`maps >= 3`, actual permission, 42/43 execution, fault, refund and recovery
+assertions remain unchanged. This corrects the object-mapper test input rather
+than weakening protection or introducing production mapping policy.
+
+The final coherent Darwin ARM64 candidate passes **89/89 CTests in 126.11
+seconds**, with zero failures, disabled or skipped tests: all 84 selected VM
+gates (including both provenance checks), BLS, signer, normal dev install and
+the two other canonical package consumers. The three installed VM consumers
+pass, including 5/5 nested compiler/AOT/session checks. This includes the
+unchanged full unit/spec suites, original 8193-instance case, all 53 standalone
+AOT registrations, live guest-PC unwind, native-map denial/cleanup/recovery,
+deterministic numeric/FP behavior and cancellation tests. Metadata tests are
+57/57 and oracle transformation selftests 21/21; formatting, shell and diff
+checks pass. R1 remains 88/89. This is local JIT-ON qualification, not fresh
+Intel/Linux CI, physical LLVM-free OFF delivery or current-product acceptance.
+
+The read-only product-gate snapshot identifies Spine `origin/dev` at
+`230d41029d8e5f1a1986508577d7248f486acf33` and the published Turbine feature
+branch `codex/compute-sdk-contract` at
+`e8807e7f9e3d8e047c7224edde250158a0bf4317`. Turbine's `origin/dev` is only a
+bootstrap snapshot, not its current implementation. That feature branch still
+uses the retired `forge.execution.wasm` module/namespace/target in eight files;
+the approved mechanical migration to `forge.vm.wasm.execution` is needed in an
+isolated validation copy. It directly builds `vendor/forge`, so setting only
+`Forge_DIR` does not switch its consumer source. This inspection is not a
+current product build or process acceptance; no live copy or pin is changed.
+
+The same-source BLS Debug retry has also recovered its missing artifact:
+1/1 PASS in 1408.42 seconds, all 45 call markers, 16486 checks/zero failures,
+and all 27 recorded source hashes match. This closes only that donor evidence
+gap, not the Forge runtime, current-product or complete-release gates. The
+initial upload failure and its original results below remain historical facts.
+
+## Historical F6 Checkpoint
 
 The maintained engine candidate is now the published draft pin
 `69c107c54b040b5b0ced5e764f0ddd0c17249029`. The old `12d1f90` sections below

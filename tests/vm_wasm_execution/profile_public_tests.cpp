@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <stdexcept>
 #include <sys/time.h>
+#include <unwind.h>
 #if defined(__APPLE__)
 #include <sys/ucontext.h>
 #else
@@ -268,6 +269,50 @@ BOOST_AUTO_TEST_CASE(profile_public_legacy_builder_moves_without_dangling_observ
 }
 
 #if FORGE_VM_WASM_INTERPRET_HAS_JIT
+BOOST_AUTO_TEST_CASE(profile_public_unwinds_live_guest_frames_and_reuses_registered_code) {
+   struct unwind_host {
+      const vm::profile_instr_map* map = nullptr;
+      unsigned frames = 0;
+      unsigned guest_frames = 0;
+
+      std::uint32_t capture() {
+         frames = guest_frames = 0;
+         _Unwind_Backtrace(
+             [](_Unwind_Context* context, void* argument) {
+                auto& self = *static_cast<unwind_host*>(argument);
+                ++self.frames;
+                const auto pc = _Unwind_GetIP(context);
+                if (pc && self.map->translate(reinterpret_cast<const void*>(pc - 1)) != UINT32_MAX)
+                   ++self.guest_frames;
+                return _URC_NO_REASON;
+             },
+             this);
+         return 41;
+      }
+   };
+   using functions = vm::registered_host_functions<unwind_host>;
+   using unwind_backend = vm::backend<functions, vm::jit_profile, vm::default_options, vm::profile_instr_map>;
+   functions::add<&unwind_host::capture>("env", "capture");
+   fixtures::bytes wasm{0, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
+   fixtures::section(wasm, 1, {1, 0x60, 0, 1, 0x7f});
+   fixtures::section(wasm, 2, {1, 3, 'e', 'n', 'v', 7, 'c', 'a', 'p', 't', 'u', 'r', 'e', 0, 0});
+   fixtures::section(wasm, 3, {1, 0});
+   fixtures::section(wasm, 7, {1, 3, 'r', 'u', 'n', 0, 1});
+   // The addition after the import prevents replacing the guest frame with a tail call.
+   fixtures::section(wasm, 10, {1, 7, 0, 0x10, 0, 0x41, 1, 0x6a, 0x0b});
+   for (unsigned iteration = 0; iteration != 4; ++iteration) {
+      auto host = unwind_host{};
+      auto backend = unwind_backend{wasm, host, nullptr};
+      auto map = backend.get_module().get_debug();
+      host.map = &map;
+      for (unsigned call = 0; call != 2; ++call) {
+         BOOST_TEST(backend.call_with_return(host, "env", "run")->to_ui32() == 42U);
+         BOOST_TEST(host.frames > 0U);
+         BOOST_TEST(host.guest_frames > 0U);
+      }
+   }
+}
+
 BOOST_AUTO_TEST_CASE(profile_public_samples_two_functions_and_independent_objects_without_flooring_gaps) {
    profile_fixture fixture;
    const auto original = fixture.wasm;

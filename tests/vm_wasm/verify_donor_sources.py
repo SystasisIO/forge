@@ -74,6 +74,7 @@ RETIRED_COMPONENTS = {
 
 WAMR_COMPONENTS = {
     "capacity_profile.cppm": "forge.vm.wasm.interpret.capacity_profile",
+    "floating_point_environment.cppm": "forge.vm.wasm.interpret.floating_point_environment",
     "prepared_module.cppm": "forge.vm.wasm.interpret.prepared_module",
     "runtime_backend.cppm": "forge.vm.wasm.interpret.backend:runtime_backend",
 }

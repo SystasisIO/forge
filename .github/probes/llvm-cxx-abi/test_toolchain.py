@@ -471,6 +471,47 @@ class IntelRuntimeTests(unittest.TestCase):
 
 
 class ProvisioningTests(unittest.TestCase):
+    def final_runtime_command(self):
+        source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
+        command = source.split("   log_run final-runtimes-configure ", 1)[1].split("\n   log_run ", 1)[0]
+        self.assertTrue(command.startswith("/usr/bin/cmake "))
+        return source, command.replace("/usr/bin/cmake", "capture_cmake", 1)
+
+    def test_final_runtimes_bind_stage_a_before_compiler_checks(self):
+        _, command = self.final_runtime_command()
+        environment = dict(os.environ, prefix="/fixture/install", source="/fixture/source", work="/fixture/work")
+        script = 'set -euo pipefail\ncapture_cmake() { printf "%s\\n" "$@"; }\n' + command
+        result = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = result.stdout.splitlines()
+        for flag in ("-DCMAKE_C_COMPILER=/fixture/install/bin/clang",
+                     "-DCMAKE_CXX_COMPILER=/fixture/install/bin/clang++",
+                     "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -isystem /fixture/install/include/c++/v1",
+                     "-DCMAKE_BUILD_RPATH=/fixture/install/lib",
+                     "-DCMAKE_INSTALL_RPATH=$ORIGIN", "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF"):
+            self.assertIn(flag, args)
+        for kind in ("EXE", "SHARED", "MODULE"):
+            with self.subTest(linker=kind):
+                self.assertIn(f"-DCMAKE_{kind}_LINKER_FLAGS=-L/fixture/install/lib -fuse-ld=/usr/bin/ld.lld-22", args)
+        for forbidden in ("-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY", "-DCMAKE_CXX_COMPILER_WORKS=ON",
+                          "-DCMAKE_CXX_COMPILER_WORKS=TRUE", "-stdlib=libstdc++"):
+            self.assertNotIn(forbidden, " ".join(args))
+
+    def test_final_runtime_compiler_check_failure_remains_fatal(self):
+        source, command = self.final_runtime_command()
+        prologue = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[0]
+        script = (prologue + '\ncapture_cmake() { echo "fixture linker failure" >&2; return 78; }\n'
+                  + "log_run final-runtimes-configure " + command + '\necho UNEXPECTED_SUCCESS\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix="/fixture/install",
+                               source="/fixture/source", work="/fixture/work")
+            result = subprocess.run(["bash", "-c", script, "runtime-test", temporary], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 78)
+            self.assertIn("HARNESS_ERROR", result.stderr)
+            self.assertNotIn("UNEXPECTED_SUCCESS", result.stdout)
+            self.assertIn("fixture linker failure", (Path(temporary) / "final-runtimes-configure.log").read_text())
+
     def test_linux_graphs_execute_the_tools_hashed_by_the_recipe(self):
         source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
         branch = source.split('elif [[ "$mode" == bootstrap-linux ]]; then', 1)[1].split('\nelif ', 1)[0]
