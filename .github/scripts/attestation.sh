@@ -347,6 +347,7 @@ PY
       cmake --install "$work/contract-sdk" --prefix "$work/contract-sdk-prefix" >> "$work/raw/compile.log" 2>&1
       cmake -S guest/tests/attestation/guest -B "$work/guest" -G Ninja -DCMAKE_BUILD_TYPE=Release \
          -DCMAKE_TOOLCHAIN_FILE="$work/contract-sdk-prefix/lib/cmake/ForgeContract/ForgeContractToolchain.cmake" \
+         -DFORGE_CONTRACT_SOURCE_ROOT="$root/guest/tests/attestation" \
          -DForgeContract_DIR="$work/contract-sdk-prefix/lib/cmake/ForgeContract"
       cmake --build "$work/guest" -j4 >> "$work/raw/compile.log" 2>&1
       "$build/tests/forge_attestation_schema_fixture" "$work/constraints.json"
