@@ -17,14 +17,31 @@ Forge must not reconstruct failures from vendor log messages or implement a
 second JOSE/HTTP engine. The original upstream qualification report remains
 historical evidence, not an approval of the patched backend.
 
-The dependency qualification uses Jansson 2.14.1 commit
+The original dependency qualification used Jansson 2.14.1 commit
 `ed5cae4ed0621ef409510f94270c9f8f263736d0` and CJOSE 0.6.2.8 commit
-`e787ace6a203d483038a793fd58f958a2f9b48c1`. They are package dependencies,
-not copied Forge modules. See `THIRD_PARTY_LICENSES` for their distinct
+`e787ace6a203d483038a793fd58f958a2f9b48c1`. That report remains historical;
+the external-signing candidate below replaces CJOSE, not OAuth policy.
+See `THIRD_PARTY_LICENSES` for their distinct
 license boundaries. CJOSE 0.6.2.5 is deliberately excluded after review of
 upstream advisory [GHSA-f6wf-pqg3-6wqq](https://github.com/OpenIDC/cjose/security/advisories/GHSA-f6wf-pqg3-6wqq).
 Although the resource profile uses signed tokens rather than JWE encryption,
 the qualified dependency must carry the upstream fix.
+
+## JOSE External Signing Candidate
+
+`vendor/cjose` pins the SystasisIO fork of OpenIDC/cjose, based on release
+0.8.1 commit `6fdb5fe75a86acb9cd34ca2eb13d9e090a6df588`. Its additive C API
+prepares immutable ES256 signing input and completes it only after verifying
+the external signature with a frozen public key. CJOSE does not acquire private
+keys, transports or an asynchronous runtime. Upstream encoding and crypto
+remain the implementation, not copied Forge modules.
+
+The optional OAuth backend uses the same vendored static target. Jansson
+remains pinned to 2.14.1; CJOSE and Forge share `OpenSSL::Crypto`.
+This is a qualification branch, not approval of the backend or a new public
+Forge signing API. See the [F0-B report](docs/donors/cjose-external-signing-qualification.md)
+for the candidate revision and CI evidence. Upstream issue/PR publication is
+not part of this change.
 
 ## Linux Native Token Acquisition
 

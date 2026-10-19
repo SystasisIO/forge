@@ -465,7 +465,8 @@ std::vector<observation> run(std::string_view mode, const std::string& origin,
                             bool& crypto_control) {
    require(std::strcmp(oauth2_version(), "2.4.0") == 0 &&
       std::strcmp(OAUTH2_PACKAGE_VERSION, "2.4.0") == 0 &&
-      std::strcmp(CJOSE_VERSION, "0.6.2.8") == 0 && std::strcmp(cjose_version(), "0.6.2.8") == 0);
+      std::strcmp(CJOSE_VERSION, "0.8.1") == 0 && std::strcmp(cjose_version(), "0.8.1") == 0 &&
+      CJOSE_JWS_EXTERNAL_SIGNING_API == 1);
    vendor_state state;
    const bool same_kid = mode == "jwks-two-issuers-same-kid";
    auto first = new_key(same_kid ? "same-kid" : "key-a");

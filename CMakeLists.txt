@@ -1497,6 +1497,15 @@ if(TARGET oauth2-internal)
    )
 endif()
 
+if(TARGET cjose_static)
+   install(
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cjose/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Forge/CJOSE"
+      COMPONENT dev
+      EXCLUDE_FROM_ALL
+   )
+endif()
+
 if(TARGET forge_auth_oidc_agent)
    install(
       FILES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/oidc-agent/LICENSE"

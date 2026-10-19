@@ -19,12 +19,27 @@ Distributed under the Apache License 2.0. The complete upstream license is
 preserved at `vendor/liboauth2/LICENSE` and installed under
 `share/doc/Forge/liboauth2` when this optional host backend is built.
 
-Its separately supplied dependencies retain their own licenses: Jansson
-2.14.1 (MIT, including notices for separately attributed source files), CJOSE
-0.6.2.8 (MIT), libcurl (curl license), PCRE2 (BSD-3-Clause), and OpenSSL 3
+Its dependencies retain their own licenses: Jansson
+2.14.1 (MIT, including notices for separately attributed source files), the
+vendored CJOSE backend described below, libcurl (curl license), PCRE2 (BSD-3-Clause), and OpenSSL 3
 (Apache-2.0). This notice does not replace those dependency distributions'
 complete notices. Apache/NGINX bindings and optional Redis/memcache adapters
 are not included in the Forge target.
+
+
+CJOSE External Signing Backend
+------------------------------
+
+Vendored under `vendor/cjose` from the SystasisIO fork of OpenIDC/cjose,
+based on upstream 0.8.1, commit `6fdb5fe75a86acb9cd34ca2eb13d9e090a6df588`.
+The gitlink records the exact candidate. The additive external-signing API
+reuses CJOSE encoding and verification; it never receives a custody private key.
+
+Copyright (c) 2014-2016 Cisco Systems, Inc.
+Distributed under the MIT License. The complete upstream license is preserved
+at `vendor/cjose/LICENSE` and installed under `share/doc/Forge/CJOSE`.
+Jansson and OpenSSL remain separately supplied dependencies; their complete
+license notices accompany those distributions.
 
 
 oidc-agent Linux Token Acquisition Backend
