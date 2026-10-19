@@ -143,7 +143,7 @@ forge_swarm_protocol -> forge_swarm_core + Forge Raw/reflection
 forge_swarm_db -> forge_swarm_core + forge_db_object
 forge_swarm_conversion -> forge_core + forge_swarm_db + forge_swarm_protocol
 forge_swarm_storage -> forge_swarm_core + forge_swarm_db + Forge Asio
-forge_swarm_api -> forge_swarm_protocol + forge_api_core
+forge_swarm_api -> forge_swarm_protocol + forge_api_core + forge_api_auth
 forge_swarm_runtime -> forge_swarm_core + forge_swarm_api + Forge Asio
 forge_plugins_swarm_node -> forge_swarm_runtime + forge_swarm_storage
                          + Forge.App + official P2P/DB Store APIs
@@ -1202,6 +1202,26 @@ data sync and publication still follow PR2's storage ordering.
   identity/completeness rejection and rejection of remote local-state claims.
   Builders never own DB I/O or commit; a blind DTO-to-persisted-record save is
   forbidden. Installed protocol/API consumers must not link Swarm DB/storage.
+
+The concrete PR5 contract is `forge.swarm.peer` 1.0: a `metadata` server stream
+and an `exchange` duplex stream. Both take an existing required
+`forge::api::auth::authenticated_caller` fixed argument, injected from immutable
+trusted invocation context. No Swarm caller DTO or second authority mechanism
+is introduced. A transport fingerprint is an identity handoff, not admission;
+PR6 must enforce product permission and quotas, including for local typed calls.
+
+Metadata chunks carry canonical Core descriptor bytes in ordered 16 KiB pieces,
+with a 16 MiB total bound. Full assembly validates canonical encoding and the
+requested content identity. Peer messages have bounded Raw decoders installed
+through the normal Forge.API descriptor customization path in both directions.
+There is no separate Swarm framing. Session ordering, request ownership and
+block verification still belong to the PR4 Core/PR6 runtime composition.
+
+Conversion exports public metadata from an indexed content row, including a
+partially downloaded job with valid metadata. It omits private locator, job ID,
+local verification/checkpoint and policy fields. Validated imports yield only a
+Core descriptor: local row identity, payload availability and transactional save
+remain the owner's responsibility. No reverse `conversion<db::content>` exists.
 
 ### PR6: Library runtime and policy enforcement
 

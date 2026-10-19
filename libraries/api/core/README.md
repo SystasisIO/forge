@@ -273,6 +273,16 @@ auto result = co_await call.async_finish();
 Destroying an unfinished call cancels that call only. A call keeps its
 implementation or remote invoker alive independently of the source handle.
 
+Contracts with tighter item semantics can install `method_builder::input_decoder`
+and `output_decoder` callbacks in `method_descriptor_customization<Interface>`.
+These replace the default Raw item validators, not the transport or typed
+invokers. Callbacks must decode exactly one complete item, enforce domain bounds
+before allocation and honor the supplied `raw::unpack_limits` (never widen them).
+Input callbacks require a client/duplex stream; output callbacks require a
+server/duplex stream. Empty callbacks and non-Raw descriptors are rejected.
+Customization is applied to the generated proxy descriptor too, so do not install
+validation only in a hand-written `Interface::describe()` wrapper.
+
 ## API Over Transport
 
 `forge.api.stream` is the reusable binding for API-over-stream serving. It

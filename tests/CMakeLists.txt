@@ -11,6 +11,32 @@ target_link_libraries(test_forge_swarm_core PRIVATE forge_swarm_core Boost::incl
 add_test(NAME test_forge_swarm_core COMMAND test_forge_swarm_core)
 set_tests_properties(test_forge_swarm_core PROPERTIES TIMEOUT 60)
 
+add_executable(test_forge_swarm_protocol
+   swarm_protocol/main.cpp
+   swarm_protocol/metadata_tests.cpp
+   swarm_protocol/message_tests.cpp
+)
+target_link_libraries(test_forge_swarm_protocol PRIVATE forge_swarm_protocol forge_codec_hex Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_protocol COMMAND test_forge_swarm_protocol)
+set_tests_properties(test_forge_swarm_protocol PROPERTIES TIMEOUT 120)
+
+add_executable(test_forge_swarm_conversion
+   swarm_conversion/main.cpp
+   swarm_conversion/conversion_tests.cpp
+)
+target_link_libraries(test_forge_swarm_conversion PRIVATE forge_swarm_conversion Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_conversion COMMAND test_forge_swarm_conversion)
+set_tests_properties(test_forge_swarm_conversion PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_swarm_api unit/main.cpp swarm_api/peer_tests.cpp)
+target_link_libraries(test_forge_swarm_api PRIVATE forge_swarm_api forge_api_transport forge_api_stream forge_net_tcp
+   forge_asio forge_raw Boost::included_unit_test_framework)
+add_test(NAME test_forge_swarm_api COMMAND test_forge_swarm_api)
+set_tests_properties(test_forge_swarm_api PROPERTIES TIMEOUT 90)
+add_test(NAME test_forge_package_dependency_boundary
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/package_dependency_boundary_tests.py)
+set_tests_properties(test_forge_package_dependency_boundary PROPERTIES TIMEOUT 60)
+
 add_executable(test_forge_swarm_allocation swarm_core/allocation_probe.cpp)
 target_link_libraries(test_forge_swarm_allocation PRIVATE forge_swarm_core)
 add_test(NAME test_forge_swarm_allocation COMMAND test_forge_swarm_allocation)
@@ -1401,6 +1427,7 @@ add_executable(
    unit/main.cpp
    api/api_tests.cpp
    api/api_module_smoke_tests.cpp
+   api/stream_decoder_tests.cpp
 )
 target_link_libraries(test_forge_api_core
    forge_api_core forge_asio forge_crypto_digest forge_raw forge_reflect forge_variant
@@ -3296,6 +3323,18 @@ add_custom_target(
       --test-command forge_package_swarm_db_component
    DEPENDS test_forge_package_install
 )
+foreach(swarm_component IN ITEMS protocol conversion api)
+   add_custom_target(test_forge_package_swarm_${swarm_component}_component
+      COMMAND ${CMAKE_CTEST_COMMAND}
+         --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_${swarm_component}_component
+         ${CMAKE_BINARY_DIR}/forge-package-swarm-${swarm_component}-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_swarm_${swarm_component}_component
+      DEPENDS test_forge_package_install
+   )
+endforeach()
 add_custom_target(
    test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}
@@ -4407,6 +4446,18 @@ add_test(
       --test-command forge_package_swarm_db_component
 )
 set_tests_properties(test_forge_package_swarm_db_component PROPERTIES DEPENDS test_forge_package_install)
+foreach(swarm_component IN ITEMS protocol conversion api)
+   add_test(NAME test_forge_package_swarm_${swarm_component}_component
+      COMMAND ${CMAKE_CTEST_COMMAND}
+         --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_swarm_${swarm_component}_component
+         ${CMAKE_BINARY_DIR}/forge-package-swarm-${swarm_component}-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_swarm_${swarm_component}_component
+   )
+   set_tests_properties(test_forge_package_swarm_${swarm_component}_component PROPERTIES DEPENDS test_forge_package_install)
+endforeach()
 add_test(
    NAME test_forge_package_chain_protocol_component
    COMMAND ${CMAKE_CTEST_COMMAND}

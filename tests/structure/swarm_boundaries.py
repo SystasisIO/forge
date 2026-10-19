@@ -1,4 +1,4 @@
-"""Swarm's deterministic core must remain independent of its future runtime."""
+"""Enforce ownership boundaries between Swarm values, adapters and runtime."""
 
 from __future__ import annotations
 
@@ -22,6 +22,19 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
       name = source.relative_to(root)
       if re.search(r"\bnamespace\s+forge::swarm\s*\{", text):
          errors.append(f"{name}: symbols must belong to a Swarm leaf namespace")
+      leaf = source.relative_to(family).parts[0]
+      forbidden = {
+         "protocol": r"swarm\.(?:db|storage|runtime|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm",
+         "api": r"swarm\.(?:db|storage|runtime|conversion)|chain|db|net|app|plugins|execution|vm",
+         "conversion": r"swarm\.(?:storage|runtime|api)|chain|api|asio|app|net|plugins|execution|vm",
+      }
+      if leaf in forbidden:
+         if re.search(r"\bimport\s+forge\.(?:" + forbidden[leaf] + r")(?:[.;])", text):
+            errors.append(f"{name}: {leaf} imports an unrelated runtime or reverse dependency")
+         if re.search(r"\bstd::(?:async|thread|jthread)\b|\bboost::asio::(?:thread_pool|io_context)\b", text):
+            errors.append(f"{name}: {leaf} creates a private worker runtime")
+      if leaf == "conversion" and re.search(r"template\s*<\s*(?:class|typename)\b[^>]+>\s*class\s+conversion", text):
+         errors.append(f"{name}: conversion must specialize the Core primary template")
       if "storage" in source.relative_to(family).parts:
          if re.search(r"\bimport\s+forge\.(?:chain|api|app|net|plugins|execution|vm|rocksdb|db\.(?:blob|rocksdb|mdbx))(?:[.;])", text):
             errors.append(f"{name}: file storage imports an unrelated runtime or payload backend")
@@ -53,6 +66,16 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
    models = family / "db/CMakeLists.txt"
    if models.is_file() and re.search(r"\bforge_(?:swarm_(?:storage|runtime|protocol|api|conversion)|chain|net|api|app|plugins|rocksdb|db_(?:blob|rocksdb|mdbx))(?:_|\b)", models.read_text()):
       errors.append("libraries/swarm/db: models depend on a runtime or concrete backend")
+
+   forbidden_targets = {
+      "protocol": r"swarm_(?:db|storage|runtime|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm",
+      "api": r"swarm_(?:db|storage|runtime|conversion)|chain|db|net|app|plugins|execution|vm",
+      "conversion": r"swarm_(?:storage|runtime|api)|chain|api|asio|app|net|plugins|execution|vm",
+   }
+   for leaf, forbidden in forbidden_targets.items():
+      cmake = family / leaf / "CMakeLists.txt"
+      if cmake.is_file() and re.search(r"\bforge_(?:" + forbidden + r")(?:_|\b)", cmake.read_text()):
+         errors.append(f"libraries/swarm/{leaf}: target has a reverse dependency")
 
    conversion = root / "libraries/core/include/forge/core/conversion.cppm"
    if not conversion.is_file():

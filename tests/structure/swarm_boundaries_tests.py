@@ -100,6 +100,38 @@ class SwarmBoundariesTests(unittest.TestCase):
       self.write("libraries/swarm/db/CMakeLists.txt", "target_link_libraries(forge_swarm_db PUBLIC forge_swarm_storage)\n")
       self.assertTrue(any("models depend" in e for e in self.errors()))
 
+   def test_protocol_api_conversion_ownership(self):
+      allowed = {
+         "protocol": ("swarm.core.descriptor", "raw.codec"),
+         "api": ("swarm.protocol.peer_message", "api.auth.authenticated_caller"),
+         "conversion": ("core.conversion", "swarm.db.content", "swarm.protocol.metadata"),
+      }
+      rejected = {
+         "protocol": ("swarm.db.content", "api.core.connection", "net.p2p.node"),
+         "api": ("swarm.db.content", "swarm.storage.catalog", "net.p2p.node"),
+         "conversion": ("swarm.storage.catalog", "swarm.api.peer", "asio.task"),
+      }
+      for leaf, modules in allowed.items():
+         self.write(f"libraries/swarm/{leaf}/entity.cpp", "".join(f"import forge.{m};\n" for m in modules))
+      self.assertEqual(self.errors(), [])
+      for leaf, modules in rejected.items():
+         for module in modules:
+            name = f"libraries/swarm/{leaf}/entity.cpp"
+            with self.subTest(leaf=leaf, module=module):
+               original = "".join(f"import forge.{m};\n" for m in allowed[leaf])
+               self.write(name, f"import forge.{module};\n")
+               self.assertTrue(any("reverse dependency" in e for e in self.errors()))
+               self.write(name, original)
+      for leaf, target in (("protocol", "forge_swarm_db"), ("api", "forge_net_p2p"),
+                           ("conversion", "forge_swarm_storage")):
+         with self.subTest(leaf=leaf, target=target):
+            self.write(f"libraries/swarm/{leaf}/CMakeLists.txt", f"target_link_libraries(forge_swarm_{leaf} PUBLIC {target})\n")
+            self.assertTrue(any("reverse dependency" in e for e in self.errors()))
+
+   def test_domain_cannot_redeclare_conversion_primary(self):
+      self.write("libraries/swarm/conversion/conversion.cppm", "template <class Result> class conversion;\n")
+      self.assertTrue(any("Core primary" in e for e in self.errors()))
+
 
 if __name__ == "__main__":
    unittest.main()
