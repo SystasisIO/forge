@@ -376,6 +376,11 @@ class service_node {
   wrapper reference or an engine-module reference alone is insufficient. Compare
   preparation identity and execution mode, not reusable wrapper addresses. Reuse
   the existing owner rather than adding another lifetime registry or cache.
+- Validation-only backends with a registered host profile must resolve import
+  names and complete signatures before admission, without running start/host
+  callbacks. Reuse the existing host-function resolver. An explicitly empty
+  profile rejects function imports; bare `nullptr_t` validation may leave them
+  unresolved. No execution binding is not permission to skip typed admission.
 - The maintainer approved replacing exact prospective preparation sizing with a
   conservative, enforced reservation ceiling. Reserve before allocation; account
   WAMR heap storage, native mappings, temporary overlap and C++ bridge storage.

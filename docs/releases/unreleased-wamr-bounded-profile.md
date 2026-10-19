@@ -420,6 +420,21 @@ ambient `CPATH` removed only from child processes. This source-level checkpoint
 does not replace installed Forge/SDK, full Spine, Turbine or remote qualification.
 See the [current checkpoint](../donors/forge-wamr-dev-integration-20261018.md#prepared-context-owner-follow-up-2026-10-20).
 
+## Typed Validation-Only Admission
+
+The registered-host `null_backend` contract includes import-name and complete
+signature validation, not just structurally valid WASM. Reuse
+`Registered::resolve()` on the existing prepared module before admission; this
+does not execute start functions or host callbacks. Bare `nullptr_t` validation
+may leave imports unresolved, while an explicitly empty registered profile
+rejects all function imports. Execution-path bindings and public APIs remain
+unchanged. This closes a migration regression rather than approving a looser
+profile. Five unchanged regression scenarios demonstrate the old missing
+refusals and then pass with the fix (22 assertions). Both complete canonical
+targets pass: prepared validation (13 cases) and execution (54 cases).
+Independent review, broad JIT/AOT and installed-product qualification remain
+required; structural loading alone is not evidence for this contract.
+
 ## Migration
 
 Before adopting the replacement, validate original WASM and caller budgets

@@ -2,13 +2,52 @@
 
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
 import forge.vm.wasm.interpret.backend;
+import forge.vm.wasm.interpret.host_function;
 
 namespace {
 namespace wasm = forge::vm::wasm::interpret;
+
+struct validation_profile_host {
+   static inline std::uint32_t calls = 0;
+
+   std::uint32_t probe(std::uint32_t value) {
+      ++calls;
+      return value;
+   }
+};
+
+struct empty_validation_profile_host {};
+
+using validation_profile = wasm::registered_host_functions<validation_profile_host>;
+using empty_validation_profile = wasm::registered_host_functions<empty_validation_profile_host>;
+
+void register_validation_profile() {
+   static const auto registered = [] {
+      validation_profile::add<&validation_profile_host::probe>("env", "probe");
+      return true;
+   }();
+   static_cast<void>(registered);
+}
+
+wasm::wasm_code imported_start(std::string_view module = "env", std::string_view name = "probe",
+                               std::uint8_t parameter = 0x7f, std::uint8_t result = 0x7f) {
+   auto code = wasm::wasm_code{0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 9, 2, 0x60, 1, parameter, 1, result, 0x60, 0, 0};
+   auto imports = std::vector<std::uint8_t>{1, static_cast<std::uint8_t>(module.size())};
+   imports.insert(imports.end(), module.begin(), module.end());
+   imports.push_back(static_cast<std::uint8_t>(name.size()));
+   imports.insert(imports.end(), name.begin(), name.end());
+   imports.insert(imports.end(), {0, 0});
+   code.insert(code.end(), {2, static_cast<std::uint8_t>(imports.size())});
+   code.insert(code.end(), imports.begin(), imports.end());
+   code.insert(code.end(), {3, 2, 1, 1, 8, 1, 1, 10, 9, 1, 7, 0,
+                            static_cast<std::uint8_t>(parameter == 0x7e ? 0x42 : 0x41), 0, 0x10, 0, 0x1a, 0x0b});
+   return code;
+}
 
 template <typename Implementation>
 concept has_parser = requires {
@@ -53,6 +92,62 @@ void check_memory_index_encoding(std::uint8_t opcode, std::span<const std::uint8
    BOOST_CHECK(code == original);
 }
 } // namespace
+
+BOOST_AUTO_TEST_CASE(validation_host_profile_bare_accepts_unlinked_function_imports_without_effects) {
+   register_validation_profile();
+   validation_profile_host::calls = 0;
+   using validator = wasm::backend<std::nullptr_t, wasm::null_backend>;
+   for (auto code : {imported_start(), imported_start("other", "missing", 0x7e, 0x7e)}) {
+      const auto original = code;
+      auto value = validator{code, nullptr};
+      BOOST_CHECK_NO_THROW(value.validate());
+      BOOST_CHECK(code == original);
+   }
+   BOOST_TEST(validation_profile_host::calls == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(validation_host_profile_explicit_empty_rejects_function_imports) {
+   using validator = wasm::backend<empty_validation_profile, wasm::null_backend>;
+   auto code = imported_start();
+   const auto original = code;
+   BOOST_CHECK_THROW((validator{code, nullptr}), wasm::exceptions::link);
+   BOOST_CHECK(code == original);
+}
+
+BOOST_AUTO_TEST_CASE(validation_host_profile_valid_signature_never_executes_host_or_start) {
+   register_validation_profile();
+   validation_profile_host::calls = 0;
+   using validator = wasm::backend<validation_profile, wasm::null_backend>;
+   auto code = imported_start();
+   const auto original = code;
+   auto value = validator{code, nullptr};
+   BOOST_CHECK_NO_THROW(value.validate());
+   BOOST_CHECK_NO_THROW(value.validate());
+   BOOST_CHECK(code == original);
+   BOOST_TEST(validation_profile_host::calls == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(validation_host_profile_rejects_unknown_name_module_and_incompatible_signatures) {
+   register_validation_profile();
+   validation_profile_host::calls = 0;
+   using validator = wasm::backend<validation_profile, wasm::null_backend>;
+   for (auto code : {imported_start("env", "missing"), imported_start("other"), imported_start("env", "probe", 0x7e),
+                     imported_start("env", "probe", 0x7f, 0x7e)}) {
+      const auto original = code;
+      BOOST_CHECK_THROW((validator{code, nullptr}), wasm::exceptions::link);
+      BOOST_CHECK(code == original);
+   }
+   BOOST_TEST(validation_profile_host::calls == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(validation_host_profile_empty_and_registered_accept_no_function_imports) {
+   register_validation_profile();
+   auto code = wasm::wasm_code{0, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
+   using empty_validator = wasm::backend<empty_validation_profile, wasm::null_backend>;
+   using registered_validator = wasm::backend<validation_profile, wasm::null_backend>;
+   BOOST_CHECK_NO_THROW((empty_validator{code, nullptr}));
+   BOOST_CHECK_NO_THROW((registered_validator{code, nullptr}));
+}
 
 BOOST_AUTO_TEST_CASE(validation_only_backend_rejects_malformed_wasm_without_an_allocator) {
    auto invalid = wasm::wasm_code{0, 0, 0, 0};

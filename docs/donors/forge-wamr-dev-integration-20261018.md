@@ -126,6 +126,34 @@ results retain their original revision scope; they do not qualify this fix.
 Full product, Linux, bounded-profile, performance and final delivered-source
 provenance gates remain open. PR190 stays draft and unmerged.
 
+## Typed Admission Follow-Up (2026-10-20)
+
+The full Spine run exposes a second source-confirmed migration regression.
+The typed validation-only backend passes its registered host profile to
+preparation, but only the execution purpose installs engine bindings and no
+separate typed import resolution follows. Pre-migration Forge `3a6e388f`
+resolved the host profile for `null_backend` too. Structurally valid WASM with
+a wrong registered import signature can therefore pass this admission path.
+This is not classified as harmless diagnostic drift. The exact cause of the
+observed DB error still requires its own product reproduction.
+
+The two-line correction calls existing `Registered::resolve(*_module)` after
+module construction only for typed validation. It reuses the existing
+`function_imports()` metadata and name/signature checker; execution binding
+code is unchanged. Bare `nullptr_t` validation may keep unresolved imports,
+but an explicitly empty registered profile rejects them. No new API, parser,
+registry, engine patch, guest execution or host callback is introduced.
+
+At local base `6ccbce61` plus the two-file candidate, the new five-case corpus
+first records five missing-throw assertions against the old implementation
+(two cases fail, three controls pass), then passes unchanged with the fix:
+**5/5 cases, 22 assertions**. The full canonical prepared-validation target
+passes **13/13 cases**, and the full execution target remains **54/54**.
+An initial test-constructor compile error is preserved separately and is not
+counted as behavioral RED. Independent review, the complete JIT/AOT registry,
+normal installed delivery and post-fix product checks remain required.
+Evidence: `wamr-ci-190-20261020-r10/typed-validation-host-profile-r1`.
+
 ## CI57 Follow-Up (2026-10-19)
 
 [VM run57](https://github.com/SystasisIO/forge/actions/runs/39268640394) is

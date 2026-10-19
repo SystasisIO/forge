@@ -408,6 +408,8 @@ class runtime_backend {
       } else {
          _module = std::make_shared<prepared_module>(code, _policy, std::move(bindings), use);
       }
+      if constexpr (ValidateOnly && !std::is_same_v<Registered, std::nullptr_t>)
+         Registered::resolve(*_module);
       if (owns || ValidateOnly)
          _module->validate();
       if constexpr (Profile && std::is_same_v<DebugInfo, profile_instr_map>)
