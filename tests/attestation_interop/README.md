@@ -110,8 +110,11 @@ Native fixture claims, with exact names and types:
 
 Claims have exactly `object`, `generation`, `ranges`, `note`; every range has
 exactly `offset`, `length`. All are required. `object` is a nonempty string;
-`note` is also nonempty. Both strings have the native fixture's 128-byte
-product bound. `ranges` is an array of **1..8** items. These are narrower
+`note` is also nonempty. Both strings have the native fixture's **1..128
+Unicode scalar values** product bound, matching JSON Schema `minLength` /
+`maxLength`; this is neither a UTF-8 byte count nor a UTF-16 code-unit count.
+The separate global 2,048 UTF-8 byte cap still applies to every string/key.
+`ranges` is an array of **1..8** items. These are narrower
 product limits than the global F1 envelope bounds below. Counters are canonical decimal **strings**, `0` or a
 nonzero leading digit followed by digits, at most `18446744073709551615`.
 No float conversion, coercion, unknown fields or NUL is accepted. No business
@@ -168,7 +171,7 @@ this tests algorithm/profile rejection, not acceptance under the false alg.
 Tamper/encoding/wrong-key cases are identified separately by manifest `mode`.
 
 The corpus includes positive reordered/escaped JSON, exact byte limits,
-UTF-8/product string limits, product array boundaries and decimal boundaries; negatives cover
+UTF-8 wire/product scalar string limits, product array boundaries and decimal boundaries; negatives cover
 missing/unknown fields at all modeled levels, header substitution, OAuth-style
 types/claims, malformed JSON, bounds, wrong numeric kinds, overflow, time
 ordering/lifetime/expiry, tampering and same-`kid` wrong-key verification.
@@ -199,6 +202,21 @@ input and root class name `Attestation` are the only generator adaptations.
 Remote references are rejected before code generation; schema validation also
 has an explicitly offline reference registry.
 
+Lookaround patterns, including the exporter's strict-end `(?![\s\S])`, do not
+require a CLI override or model patch. The pinned generator automatically emits
+`ConfigDict(regex_engine="python-re")` for models whose fields use lookaround;
+this upstream support dates to
+[0.25.7 / PR 1945](https://datamodel-code-generator.koxudaxi.dev/changelog/#0257-2024-06-11)
+and is present in the audited official 0.83.0 wheel's Pydantic v2 backend.
+The generated Python `re` configuration is intentional; the default Rust regex
+engine does not support these assertions. The native/exported patterns remain
+unchanged. CI imports the untouched generated module before qualification,
+checks its hash immediately after import and during validation, and records
+`generated_import`, per-model `regex_engines`, and `regex_policy` in both
+`schema_evidence.json` and the runner's safe evidence. `pydantic-default` means
+that model declares no regex engine override, not that every model must switch.
+An import/configuration failure is a harness error, never a qualified result.
+
 Generation writes untouched `python/models.py`. Structural qualification
 checks the actual exported schema before the generated strict model, including
 required/extra common and nested product fields, range bounds, decimal max+1,
@@ -210,6 +228,16 @@ records schema/model/donor hashes, versions and safe per-case verdicts, never
 input JSON. Raw-model acceptance is an observation; the qualified consumer is
 schema-first. The runner includes these safe rows in evidence on a schema
 regression. No fallback to a manual schema is allowed if the export is missing.
+
+Unicode length cases cover both `object` and `note`: BMP U+00E9 and
+supplementary U+1D11E at 1, 65, 128 and 129 scalars, plus escaped surrogate
+pairs at the supplementary boundary and boundary+1. In particular, 65 BMP
+scalars exceeding 128 UTF-8 bytes must pass, as must 128 supplementary scalars
+occupying 256 UTF-16 units / 512 UTF-8 bytes. At 129 scalars both must fail.
+For these cases, the actual exported schema, untouched raw Pydantic model and
+schema-first consumer must all agree, independently of manual profile checks.
+The common wire byte caps, NUL rejection and malformed-surrogate rejection
+are unchanged; no Unicode normalization is performed.
 
 Global JSON byte/depth/node/UTF-8 limits and cross-field time policy remain
 explicit checks; JSON Schema cannot describe all of them. Pydantic validates

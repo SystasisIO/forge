@@ -34,6 +34,9 @@ auto document = forge::codec::json::read(document_text, artifact,
 Local artifacts are pinned by the application. This API never retrieves remote
 schemas or interprets arbitrary JSON Schema. Codec byte/UTF-8/syntax validation
 and schema constraint validation remain separate owners.
+For already parsed values, `decode<T>` structural conversion reuses Variant's
+existing bridge without imposing a second, smaller depth/node/string/container
+budget. Raw input budgets remain those supplied to `read_value`/`read<T>`.
 
 ## Opaque shared JSON values
 

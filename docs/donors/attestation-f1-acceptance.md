@@ -41,10 +41,10 @@ Source base: Forge `7061cd35` plus qualified CJOSE branch
 | J1/J5/J8 | `test_forge_crypto_jose`: RFC vector, exact bytes, signed malformed headers, wrong key/type, immutable preparation and snapshot separation | NOT_RUN |
 | J2/J3 | `tests/attestation_interop`: pinned joserfc and Nimbus, both directions, independently signed negative corpus | NOT_RUN |
 | J4 | `guest/tests/attestation`, build companion and independent `forge_attestation_boundary`; bound ABI/metadata/schema artifacts, actual WASM Raw parity, wide counters | NOT_RUN |
-| J6 | `test_forge_json_strict` and schema tests: duplicate/escaped keys, Unicode/NUL/trailing input, exact kinds and limits | NOT_RUN |
+| J6 | `test_forge_json_strict` and schema tests: duplicate/escaped keys, Unicode/NUL/trailing input, exact kinds and limits; ASan/UBSan and bounded signed-byte mutation corpus | NOT_RUN |
 | J7 | `test_forge_auth_attestation`: time, lifetime/skew, checked bounds and document ID format; existing crypto RNG in native test issuer | NOT_RUN |
 | J9/Q8b | Installed `tests/package_attestation`, actual guest SDK, optional backend isolation and structural gates | NOT_RUN |
-| J10 | Verified key/snapshot retention and independent trust-domain/profile/keyset identities; product authorization remains a downstream responsibility | NOT_RUN |
+| J10 | `test_forge_attestation_policy`: exact object/range/provider, actual key/delegation, revoked generation/stale state, expiry/request rechecks on cache hits, independent snapshot identities and key/header-policy changes | NOT_RUN |
 | Regressions | Existing Raw, variant, JSON, schema, API, OpenAPI and liboauth2 tests | NOT_RUN |
 
 The workflow `attestation.yml` runs Linux and macOS against the exact pushed
@@ -52,6 +52,13 @@ commit. Build diagnostics and whitelisted results are retained; token/private
 material and generated build trees are not uploaded. A passing source check or
 plan review is not runtime acceptance. F0-B evidence is historical backend
 qualification and is not relabelled as F1 acceptance.
+
+The first implementation review returned NEEDS_CHANGES. Its regression fixes
+cover nested writer validation, exact-decode budget preservation, non-widening
+shape refinement and Unicode length parity. Product schema lengths count Unicode
+scalar values; parser/profile byte limits remain separate. The J10 policy/cache
+is an explicit test fixture, not a production issuer, second ACL or distributed
+revocation implementation.
 
 ## Downstream Gates
 

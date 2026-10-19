@@ -43,7 +43,7 @@ def vectors():
         cases.append({"id": name, "accept": accept, "header": encoded(h),
                       "payload": encoded(p), "mode": mode})
 
-    def change(name, path, value=None, remove=False, accept=False):
+    def change(name, path, value=None, remove=False, accept=False, escaped=False):
         document = copy.deepcopy(EXPECTED)
         target = document
         for part in path[:-1]:
@@ -52,7 +52,9 @@ def vectors():
             del target[path[-1]]
         else:
             target[path[-1]] = value
-        add(name, accept, p=json_bytes(document))
+        raw = (json.dumps(document, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+               if escaped else json_bytes(document))
+        add(name, accept, p=raw)
 
     add("valid", True)
     # Legal order, whitespace and escapes must not be mistaken for canonical JSON.
@@ -63,6 +65,15 @@ def vectors():
     add("valid-payload-8192", True, p=payload + b" " * (8192 - len(payload)))
     change("valid-note-128-bytes", ["att", "claims", "note"], "a" * 128, accept=True)
     change("valid-note-128-utf8-bytes", ["att", "claims", "note"], "\u00e9" * 64, accept=True)
+    # Product maxLength counts scalars, neither UTF-8 bytes nor UTF-16 units.
+    for field in ("object", "note"):
+        for label, scalar in (("bmp", "\u00e9"), ("supplementary", "\U0001d11e")):
+            for count in (1, 65, 128, 129):
+                name = f"product-unicode-{field}-{label}-{count}"
+                change(name, ["att", "claims", field], scalar * count, accept=count <= 128)
+                if label == "supplementary" and count in (128, 129):
+                    change(name + "-escaped", ["att", "claims", field], scalar * count,
+                           accept=count <= 128, escaped=True)
     change("valid-ranges-8", ["att", "claims", "ranges"],
            [{"offset": str(i), "length": "1"} for i in range(8)], accept=True)
     change("valid-counter-zero", ["att", "claims", "generation"], "0", accept=True)

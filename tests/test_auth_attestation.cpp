@@ -272,6 +272,37 @@ BOOST_AUTO_TEST_CASE(native_payload_rejects_unknown_fields_and_non_exact_kinds) 
    BOOST_CHECK(!forge::codec::json::read<native_document>(text, strict_options()).ok());
 }
 
+BOOST_AUTO_TEST_CASE(j8_decoded_typed_intent_equality_ignores_json_order_but_not_field_changes) {
+   // Only intent equality is exercised here, not signature verification or the G2 response workflow.
+   const auto intended = document();
+   const auto original = forge::codec::json::write(intended);
+   BOOST_REQUIRE(original.ok());
+   constexpr auto reordered_json = std::string_view{
+       R"({"exp":160,"att":{"claims":{"counter":"9007199254740993"},"schema":"urn:fixture:claims:v1","purpose":"fixture.read","v":1},"nbf":105,"jti":"g_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","iat":100,"aud":"urn:resource:fixture","iss":"https://issuer.example"})"};
+   BOOST_CHECK(original.text != reordered_json);
+   const auto reordered = forge::codec::json::read<typed_document>(reordered_json, strict_options());
+   BOOST_REQUIRE(reordered.ok());
+   BOOST_CHECK_NO_THROW(reordered.value.validate(policy(), clock_at(105)));
+   BOOST_CHECK(reordered.value == intended);
+
+   auto changed_audience = intended;
+   changed_audience.aud = "urn:resource:other";
+   auto changed_claims = intended;
+   changed_claims.att.claims.counter = "9007199254740994";
+   auto changed_expiry = intended;
+   --changed_expiry.exp;
+   BOOST_CHECK_NO_THROW(changed_claims.validate(policy(), clock_at(105)));
+   BOOST_CHECK_NO_THROW(changed_expiry.validate(policy(), clock_at(105)));
+   for (const auto& changed : {changed_audience, changed_claims, changed_expiry}) {
+      const auto encoded = forge::codec::json::write(changed);
+      BOOST_REQUIRE(encoded.ok());
+      const auto decoded = forge::codec::json::read<typed_document>(encoded.text, strict_options());
+      BOOST_REQUIRE(decoded.ok());
+      BOOST_CHECK(decoded.value == changed);
+      BOOST_CHECK(decoded.value != intended);
+   }
+}
+
 BOOST_AUTO_TEST_CASE(product_decimal_claim_rules_export_and_validate_without_double) {
    auto value = document();
    value.att.claims.counter = "18446744073709551615";

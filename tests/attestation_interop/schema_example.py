@@ -14,7 +14,7 @@ import sys
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as SchemaValidationError
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from referencing import Registry
 
 from profile_checks import require
@@ -75,6 +75,14 @@ class ExportedModels:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        require(sha(self.output) == self.generated_hash)
+        self.regex_engines = {
+            name: model.model_config.get("regex_engine", "pydantic-default")
+            for name, model in vars(module).items()
+            if isinstance(model, type) and issubclass(model, BaseModel) and model.__module__ == module.__name__
+        }
+        require(self.regex_engines and all(engine in {"python-re", "rust-regex", "pydantic-default"}
+                                          for engine in self.regex_engines.values()))
         self.model = module.Attestation
 
     def validate_json(self, raw):
@@ -94,7 +102,9 @@ class ExportedModels:
                       "schema-257", "jti-short", "jti-long"}
         for case in cases:
             name = case["id"]
+            unicode_length = name.startswith("product-unicode-")
             selected = (case["accept"] or name in structural or name.startswith("decimal-")
+                        or unicode_length
                         or name.startswith("forbidden-claim-")
                         or (name.startswith("date-") and name.rsplit("-", 1)[-1] in {"0", "1", "2", "4", "5"})
                         or (name.startswith("missing-") and not name.startswith("missing-header-")))
@@ -115,13 +125,26 @@ class ExportedModels:
                 qualified_ok = False
             # Schema alone must preserve required/unknown/nested/decimal bounds;
             # a stricter manual profile must not hide a broken native exporter.
+            matches = (schema_ok is case["accept"] and qualified_ok is case["accept"]
+                       and (not unicode_length or model_ok is case["accept"]))
             rows.append({"id": name, "expected_accept": case["accept"], "schema_ok": schema_ok,
                          "raw_model_ok": model_ok, "qualified_model_ok": qualified_ok,
-                         "status": "PASS" if schema_ok is case["accept"] and qualified_ok is case["accept"] else "FAILED"})
+                         "raw_model_parity_required": unicode_length,
+                         "status": "PASS" if matches else "FAILED"})
         require(rows and any(row["id"] == "decimal-length-0" for row in rows))
+        required_unicode = {
+            f"product-unicode-{field}-{label}-{count}{suffix}"
+            for field in ("object", "note")
+            for label in ("bmp", "supplementary")
+            for count in (1, 65, 128, 129)
+            for suffix in (("", "-escaped") if label == "supplementary" and count in (128, 129) else ("",))
+        }
+        require(required_unicode <= {row["id"] for row in rows})
         passed = all(row["status"] == "PASS" for row in rows)
         report = {"status": "PASS" if passed else "FAILED", "scope": "actual-export structural/model fixture; not full J4",
                   "schema_sha256": sha(self.source), "generated_sha256": self.generated_hash,
+                  "generated_import": "PASS", "regex_engines": self.regex_engines,
+                  "regex_policy": "pinned generator automatic lookaround detection; no override",
                   "versions": self.versions, "rows": rows,
                   "donor_hashes": {name: sha(DONOR / name) for name in ("qualify.py", "validated_models.py", "requirements.txt")}}
         (root / "python" / "schema_evidence.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -5,6 +5,9 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
 #include <vector>
 
 import forge.schema.object;
@@ -26,10 +29,20 @@ struct record {
 
 struct item { std::string key; };
 struct unsupported { std::vector<item> values; };
+struct nested_record { record payload; };
+struct envelope { nested_record section; };
+struct bounded_byte { std::uint8_t value = 0; };
+struct object_shape { bounded_byte value; };
+struct dynamic_shape { forge::variant_object value; };
 
 BOOST_DESCRIBE_STRUCT(record, (), (label, count, amount, data, note))
 BOOST_DESCRIBE_STRUCT(item, (), (key))
 BOOST_DESCRIBE_STRUCT(unsupported, (), (values))
+BOOST_DESCRIBE_STRUCT(nested_record, (), (payload))
+BOOST_DESCRIBE_STRUCT(envelope, (), (section))
+BOOST_DESCRIBE_STRUCT(bounded_byte, (), (value))
+BOOST_DESCRIBE_STRUCT(object_shape, (), (value))
+BOOST_DESCRIBE_STRUCT(dynamic_shape, (), (value))
 
 } // namespace schema_constraint_tests
 
@@ -52,6 +65,45 @@ template <> struct rules<schema_constraint_tests::unsupported> {
    static object_schema<schema_constraint_tests::unsupported> define() {
       using record = schema_constraint_tests::unsupported;
       return object<record>().field<&record::values>("values").unique_by<&schema_constraint_tests::item::key>();
+   }
+};
+
+template <> struct rules<schema_constraint_tests::nested_record> {
+   static object_schema<schema_constraint_tests::nested_record> define() {
+      using type = schema_constraint_tests::nested_record;
+      return object<type>().field<&type::payload>("payload");
+   }
+};
+
+template <> struct rules<schema_constraint_tests::envelope> {
+   static object_schema<schema_constraint_tests::envelope> define() {
+      using type = schema_constraint_tests::envelope;
+      return object<type>().field<&type::section>("section");
+   }
+};
+
+template <> struct rules<schema_constraint_tests::bounded_byte> {
+   static object_schema<schema_constraint_tests::bounded_byte> define() {
+      using type = schema_constraint_tests::bounded_byte;
+      return object<type>().field<&type::value>("value").shape(constraint{.kind = constraint_kind::integer});
+   }
+};
+
+template <> struct rules<schema_constraint_tests::object_shape> {
+   static object_schema<schema_constraint_tests::object_shape> define() {
+      using type = schema_constraint_tests::object_shape;
+      return object<type>().field<&type::value>("value").shape(constraint{.kind = constraint_kind::object});
+   }
+};
+
+template <> struct rules<schema_constraint_tests::dynamic_shape> {
+   static object_schema<schema_constraint_tests::dynamic_shape> define() {
+      using type = schema_constraint_tests::dynamic_shape;
+      auto shape = constraint{.kind = constraint_kind::object};
+      shape.properties.emplace("counter", constraint{.kind = constraint_kind::integer,
+         .minimum = input_value{std::int64_t{0}}, .maximum = input_value{std::int64_t{10}}});
+      shape.required = {"counter"};
+      return object<type>().field<&type::value>("value").shape(std::move(shape));
    }
 };
 
@@ -119,6 +171,38 @@ BOOST_AUTO_TEST_CASE(schema_typed_and_artifact_rules_have_one_source) {
       R"({"label":"read","count":1,"amount":"1","data":{}})"}) {
       BOOST_TEST(!forge::codec::json::read(invalid, loaded).ok());
       BOOST_TEST(!forge::codec::json::read<record>(invalid,
+         {.described_records = forge::codec::json::described_record_policy::exact}).ok());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(schema_writer_validates_nested_records_before_emitting_json) {
+   auto value = schema_constraint_tests::envelope{};
+   value.section.payload.label = "read";
+   value.section.payload.amount = "1";
+   BOOST_REQUIRE(forge::codec::json::write(value).ok());
+   value.section.payload.count = 253402300800;
+   const auto written = forge::codec::json::write(value);
+   BOOST_TEST(!written.ok());
+   BOOST_TEST(written.text.empty());
+   BOOST_REQUIRE(!written.diagnostics.empty());
+   BOOST_TEST(written.diagnostics.front().path == "section.payload.count");
+   BOOST_CHECK_THROW(forge::variant_schema::encode(value), forge::schema::encoding_error);
+}
+
+BOOST_AUTO_TEST_CASE(schema_shapes_preserve_integer_type_bounds_and_reject_unsupported_object_intersections) {
+   const auto artifact = forge::schema::export_constraints<schema_constraint_tests::bounded_byte>();
+   const auto& field = artifact.root.properties.at("value");
+   BOOST_REQUIRE(field.maximum.has_value());
+   BOOST_TEST(std::get<std::uint64_t>(field.maximum->storage) == 255U);
+   BOOST_TEST(forge::codec::json::read(R"({"value":255})", artifact).ok());
+   BOOST_TEST(!forge::codec::json::read(R"({"value":300})", artifact).ok());
+   BOOST_CHECK_THROW(forge::schema::export_constraints<schema_constraint_tests::object_shape>(),
+                     forge::schema::exceptions::unsupported_export);
+   const auto dynamic = forge::schema::export_constraints<schema_constraint_tests::dynamic_shape>();
+   BOOST_TEST(forge::codec::json::read(R"({"value":{"counter":10}})", dynamic).ok());
+   for (const auto* invalid : {R"({"value":{"counter":11}})", R"({"value":{"counter":1,"extra":0}})"}) {
+      BOOST_TEST(!forge::codec::json::read(invalid, dynamic).ok());
+      BOOST_TEST(!forge::codec::json::read<schema_constraint_tests::dynamic_shape>(invalid,
          {.described_records = forge::codec::json::described_record_policy::exact}).ok());
    }
 }
@@ -191,6 +275,49 @@ BOOST_AUTO_TEST_CASE(schema_local_artifact_loader_rejects_versions_refs_kinds_an
    BOOST_CHECK_THROW(load_artifact(valid, {.max_nodes = 2}), exceptions::unsupported_export);
    auto invalid = artifact{.root = constraint{.kind = constraint_kind::integer, .pattern = "^x$"}};
    BOOST_CHECK_THROW(json_schema(invalid), exceptions::unsupported_export);
+}
+
+BOOST_AUTO_TEST_CASE(schema_export_errors_preserve_structured_context) {
+   const auto expect_context = [](auto action, std::string_view message, std::string_view key,
+                                   std::string_view value) {
+      try {
+         action();
+         BOOST_FAIL("expected unsupported_export");
+      } catch (const forge::schema::exceptions::unsupported_export& error) {
+         BOOST_TEST(error.message() == message);
+         BOOST_REQUIRE_EQUAL(error.context().size(), 1U);
+         BOOST_TEST(error.context().front().key == key);
+         BOOST_TEST(error.context().front().value == value);
+      }
+   };
+   expect_context([] { static_cast<void>(forge::schema::json_schema(forge::schema::artifact{.version = 2})); },
+      "unsupported constraint artifact", "reason", "unsupported version");
+   expect_context([] { static_cast<void>(forge::schema::export_constraints<schema_constraint_tests::unsupported>()); },
+      "unrepresentable schema field", "field", "values");
+}
+
+BOOST_AUTO_TEST_CASE(schema_unicode_lengths_and_json_byte_budgets_are_distinct) {
+   using record = schema_constraint_tests::record;
+   const auto artifact = forge::schema::export_constraints<record>();
+   const auto exported = forge::variant_schema::from_input(forge::schema::json_schema(artifact));
+   const auto& note = exported.get_object()["properties"].get_object()["note"].get_object()["anyOf"].get_array()[0];
+   BOOST_TEST(note.get_object()["maxLength"].as_uint64() == 32U);
+   for (const auto& scalar : {std::string{"\xc3\xa9"}, std::string{"\xf0\x9f\x98\x80"}}) {
+      auto text = std::string{};
+      for (unsigned count = 0; count < 32; ++count) text += scalar;
+      const auto document = [&](const std::string& value) {
+         return std::string{R"({"label_name":"read","count":1,"amount":"1","data":{},"note":")"} + value + R"("})";
+      };
+      BOOST_TEST(forge::codec::json::read<record>(document(text),
+         {.described_records = forge::codec::json::described_record_policy::exact}).ok());
+      BOOST_TEST(forge::codec::json::read(document(text), artifact).ok());
+      BOOST_TEST(!forge::codec::json::read_value(document(text),
+         {.described_records = forge::codec::json::described_record_policy::exact, .max_string_bytes = 32}).ok());
+      text += scalar;
+      BOOST_TEST(!forge::codec::json::read<record>(document(text),
+         {.described_records = forge::codec::json::described_record_policy::exact}).ok());
+      BOOST_TEST(!forge::codec::json::read(document(text), artifact).ok());
+   }
 }
 
 BOOST_AUTO_TEST_CASE(schema_artifact_patterns_use_bounded_backend_not_safety_analysis) {

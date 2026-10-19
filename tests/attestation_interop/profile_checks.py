@@ -16,6 +16,13 @@ def text(value, minimum=0, maximum=2048):
     return value
 
 
+def product_text(value, minimum, maximum):
+    # Keep the wire byte cap and Unicode validation separate from schema length.
+    text(value)
+    require(minimum <= len(value) <= maximum)
+    return value
+
+
 def bounded_tree(value):
     nodes = 0
 
@@ -68,8 +75,8 @@ def check_document(value):
     claims = att["claims"]
     fields(claims, "object generation ranges note")
     # Product fixture bounds come from the coordinator's native product_schema.
-    text(claims["object"], 1, 128)
-    text(claims["note"], 1, 128)
+    product_text(claims["object"], 1, 128)
+    product_text(claims["note"], 1, 128)
     counter(claims["generation"])
     require(type(claims["ranges"]) is list and 1 <= len(claims["ranges"]) <= 8)
     for item in claims["ranges"]:

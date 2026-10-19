@@ -324,9 +324,6 @@ template <typename T> [[nodiscard]] write_result write(const T& input, write_opt
    try {
       const auto rules = schema::rules<T>::define();
       if (!rules.fields().empty()) {
-         auto validation = rules.validate(input);
-         if (std::ranges::any_of(validation, [](const auto& entry) { return entry.level == schema::severity::error; }))
-            return write_result{.diagnostics = std::move(validation)};
          return write_document(config::core::encode(input), std::move(options));
       }
       if constexpr (requires(const T& source, variant& output) { to_variant(source, output); }) {
@@ -353,9 +350,6 @@ template <typename T>
    try {
       const auto rules = schema::rules<T>::define();
       if (!rules.fields().empty()) {
-         auto validation = rules.validate(input);
-         if (std::ranges::any_of(validation, [](const auto& entry) { return entry.level == schema::severity::error; }))
-            return write_result{.diagnostics = std::move(validation)};
          return save_document(path, config::core::encode(input), std::move(options));
       }
       if constexpr (requires(const T& source, variant& output) { to_variant(source, output); }) {

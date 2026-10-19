@@ -93,6 +93,14 @@ public class AttestationInterop {
         return result;
     }
 
+    static String productText(Object value, int minimum, int maximum) throws InvalidCredential {
+        // Validate Unicode and the wire byte cap before counting scalar values.
+        String result = text(value, 0, 2048);
+        int scalars = result.codePointCount(0, result.length());
+        require(scalars >= minimum && scalars <= maximum);
+        return result;
+    }
+
     // Gson's streaming parser supplies tokenization; this small test-only walk
     // adds duplicate-key, lexical number, Unicode and container-bound assertions.
     static Object readJson(JsonReader reader, int depth, int[] nodes, boolean bounded) throws Exception {
@@ -223,8 +231,8 @@ public class AttestationInterop {
         require(SCHEMA.equals(text(att.get("schema"), 1, 256)));
         Map<String, Object> claims = object(att.get("claims"));
         fields(claims, "object", "generation", "ranges", "note");
-        text(claims.get("object"), 1, 128);
-        text(claims.get("note"), 1, 128);
+        productText(claims.get("object"), 1, 128);
+        productText(claims.get("note"), 1, 128);
         counter(claims.get("generation"));
         require(claims.get("ranges") instanceof List);
         List<?> ranges = (List<?>) claims.get("ranges");

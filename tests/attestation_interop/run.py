@@ -151,7 +151,8 @@ def run(args, evidence):
         safe_schema = json.loads(schema_report.read_text())
         evidence["schema_checks"] = safe_schema["rows"]
         evidence["schema_qualification"] = {
-            **{key: safe_schema[key] for key in ("status", "schema_sha256", "generated_sha256", "versions", "donor_hashes")},
+            **{key: safe_schema[key] for key in ("status", "schema_sha256", "generated_sha256", "versions", "donor_hashes",
+                                               "generated_import", "regex_engines", "regex_policy")},
             "report_sha256": sha(schema_report),
         }
         if safe_schema["status"] == "FAILED":

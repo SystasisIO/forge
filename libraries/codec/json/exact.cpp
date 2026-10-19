@@ -5,6 +5,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -115,7 +116,11 @@ bool matches_canonical_json_value(const variant& source, const variant& canonica
 }
 
 schema::input_value to_schema_input(const variant& source) {
-   return variant_schema::to_input(source);
+   // Parsing owns the caller's read_options budgets. Conversion of that
+   // already-bounded tree must not impose the dynamic adapter's smaller caps.
+   constexpr auto maximum = std::numeric_limits<std::size_t>::max();
+   return variant_schema::to_input(source, {.max_depth = maximum, .max_nodes = maximum,
+      .max_string_bytes = maximum, .max_container_size = maximum});
 }
 
 void append_schema_diagnostics(std::vector<schema::diagnostic>& output, std::vector<schema::diagnostic> diagnostics) {

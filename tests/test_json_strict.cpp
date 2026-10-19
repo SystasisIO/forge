@@ -3,12 +3,30 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 import forge.codec.json;
+import forge.schema.object;
+import forge.variant.value;
 
 namespace json_strict_tests {
 struct value { std::int64_t count = 0; };
+struct large_value { std::vector<std::int64_t> values; std::string text; };
 BOOST_DESCRIBE_STRUCT(value, (), (count))
+BOOST_DESCRIBE_STRUCT(large_value, (), (values, text))
+}
+
+namespace forge::schema {
+template <> struct rules<json_strict_tests::large_value> {
+   static object_schema<json_strict_tests::large_value> define() {
+      using type = json_strict_tests::large_value;
+      auto result = object<type>();
+      result.field<&type::values>("values").required().min_items(1).max_items(5000);
+      result.field<&type::text>("text").length(0, 20000);
+      return result;
+   }
+};
 }
 
 BOOST_AUTO_TEST_CASE(json_strict_rejects_escaped_duplicates_invalid_text_and_trailing_input) {
@@ -60,4 +78,31 @@ BOOST_AUTO_TEST_CASE(json_strict_does_not_coerce_integer_kinds_or_bounds) {
       BOOST_TEST(!forge::codec::json::read<json_strict_tests::value>(input, options).ok());
    }
    BOOST_TEST(forge::codec::json::read<json_strict_tests::value>(R"({"count":9223372036854775807})", options).ok());
+}
+
+BOOST_AUTO_TEST_CASE(json_exact_decode_has_no_hidden_dynamic_adapter_limits) {
+   auto options = forge::codec::json::read_options{
+      .max_depth = 64, .described_records = forge::codec::json::described_record_policy::exact,
+      .max_nodes = 5000, .max_container_size = 5000, .max_string_bytes = 20000};
+   for (const auto count : {257U, 4097U}) {
+      auto values = forge::variants{};
+      for (unsigned i = 0; i < count; ++i) values.emplace_back(std::int64_t{i});
+      const auto input = forge::variant{forge::mutable_variant_object{}("values", std::move(values))
+         ("text", std::string(16385, 'x'))};
+      const auto written = forge::codec::json::write_value(input);
+      BOOST_REQUIRE(written.ok());
+      auto parsed = forge::codec::json::read_value(written.text, options);
+      BOOST_REQUIRE(parsed.ok());
+      const auto decoded = forge::codec::json::decode<json_strict_tests::large_value>(std::move(parsed.value), options);
+      BOOST_REQUIRE(decoded.ok());
+      BOOST_TEST(decoded.value.values.size() == count);
+      BOOST_TEST(decoded.value.text.size() == 16385U);
+      auto field_rules = forge::schema::object<json_strict_tests::large_value>();
+      field_rules.field<&json_strict_tests::large_value::values>("values").length(1, 5000);
+      BOOST_TEST(field_rules.validate(decoded.value).empty());
+      BOOST_TEST(forge::codec::json::write(decoded.value).ok());
+      auto smaller = options;
+      smaller.max_container_size = 256;
+      BOOST_TEST(!forge::codec::json::read_value(written.text, smaller).ok());
+   }
 }

@@ -68,6 +68,12 @@ also export their constraints. A non-optional field is required in exact mode;
 optional fields may be absent or null. String lengths count Unicode scalars;
 with `.ascii()` they are also UTF-8 byte lengths. Parser-level byte limits
 remain separate. URI semantics and cross-field/business checks are not inferred.
+Typed field validation does not impose the artifact API's default global
+depth/node/string/container caps: parser/caller policy owns those budgets.
+Each field's explicit constraints and the regex engine budgets still apply.
+Ordinary `encode_object()` validates each typed record before encoding, so
+nested records/lists cannot bypass their own rules during JSON writing/saving.
+The separate diagnostic/redaction encoder does not acquire this validation.
 
 Supported artifact rules: exact JSON kinds; closed object properties/required
 names (or explicit `additional_properties`); homogeneous arrays/items; size
@@ -111,6 +117,11 @@ are depth 32, 4096 nodes, 16384 bytes/string and 256 entries/container.
 Export rejects aliases/dotted paths, arbitrary validators such as `unique_by`,
 floating/wide-integer rules and unsupported adapted types with
 `schema::exceptions::unsupported_export`. It must not silently drop a rule.
+`.shape()` intersects scalar/item bounds with the C++ type's constraints; it
+cannot widen integer ranges, enum domains, decimal bounds or nullability.
+Exact property-shape substitution is supported only for an open dynamic object.
+Intersecting a shape with an already typed object property contract is refused
+instead of replacing its fields or weakening their constraints.
 Authority, URI or other product semantic checks remain explicit and are not
 advertised as JSON Schema guarantees. These artifacts and the RTTI-based schema
 metadata are native only, not part of a guest contract library.

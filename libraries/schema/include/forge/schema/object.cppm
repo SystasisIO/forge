@@ -601,6 +601,9 @@ template <typename T> class object_schema {
    }
 
    [[nodiscard]] input_value::object_type encode_object(const T& input, std::string_view base_path = {}) const {
+      for (const auto& entry : validate(input, base_path)) {
+         if (entry.level == severity::error) throw encoding_error{entry.path, entry.message};
+      }
       return encode_object_with(
           input,
           [](const auto& field, const T& object, std::string_view path) { return field.read_input(object, path); },
@@ -652,8 +655,14 @@ template <typename T> class object_schema {
             const auto path = append_path(base_path, field.name);
             try {
                const auto value = field.read_input(object, path);
-               auto type = field.shape ? *field.shape : field.export_type(0);
-               auto checks = schema::validate(refine_constraint(type, field.constraints), value, path);
+               auto type = field.export_type(0);
+               if (field.shape) type = refine_constraint(type, *field.shape);
+               // Typed rules constrain the field itself. Parser/caller budgets
+               // must not be replaced by the artifact API's default limits.
+               constexpr auto maximum = std::numeric_limits<std::size_t>::max();
+               auto checks = schema::validate(refine_constraint(type, field.constraints), value, path,
+                  {.max_depth = maximum, .max_nodes = maximum,
+                   .max_string_bytes = maximum, .max_container_size = maximum});
                result.insert(result.end(), checks.begin(), checks.end());
             } catch (const exceptions::constraint_limit&) {
                throw;
@@ -1692,11 +1701,14 @@ template <typename T> [[nodiscard]] constraint export_constraint(std::size_t dep
                 field.unsupported_constraints || field.validators.size() != field.exported_validators)
                FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "unrepresentable schema field",
                                      forge::exceptions::ctx("field", field.name));
-            auto type = field.shape ? *field.shape : field.export_type(depth + 1);
+            auto type = field.export_type(depth + 1);
+            if (field.shape) {
+               if (field.shape->kind != constraint_kind::any && field.shape->kind != type.kind)
+                  FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "shape changes JSON kind",
+                                        forge::exceptions::ctx("field", field.name));
+               type = refine_constraint(type, *field.shape);
+            }
             type.nullable = type.nullable || field.optional;
-            if (field.shape && field.export_type(depth + 1).kind != type.kind)
-               FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "shape changes JSON kind",
-                                     forge::exceptions::ctx("field", field.name));
             if (!result.properties.emplace(field.name, refine_constraint(type, field.constraints)).second)
                FORGE_THROW_EXCEPTION(exceptions::unsupported_export, "duplicate schema field",
                                      forge::exceptions::ctx("field", field.name));

@@ -427,14 +427,38 @@ constraint refine_constraint(const constraint& type, const constraint& refinemen
       if (!result.pattern.empty() && result.pattern != refinement.pattern) unsupported("multiple patterns");
       result.pattern = refinement.pattern;
    }
-   if (refinement.constant) result.constant = refinement.constant;
+   if (refinement.constant) {
+      if (result.constant && !equal(*result.constant, *refinement.constant)) unsupported("conflicting constants");
+      result.constant = refinement.constant;
+   }
    result.ascii = result.ascii || refinement.ascii;
-   result.nullable = result.nullable || refinement.nullable;
-   if (!refinement.enum_values.empty()) result.enum_values = refinement.enum_values;
-   if (refinement.decimal_minimum) result.decimal_minimum = refinement.decimal_minimum;
-   if (refinement.decimal_maximum) result.decimal_maximum = refinement.decimal_maximum;
+   if (refinement.nullable && !type.nullable) unsupported("refinement widens nullability");
+   if (!refinement.enum_values.empty()) {
+      if (result.enum_values.empty()) result.enum_values = refinement.enum_values;
+      else {
+         std::erase_if(result.enum_values, [&](const auto& value) {
+            return std::ranges::none_of(refinement.enum_values, [&](const auto& candidate) { return equal(value, candidate); });
+         });
+         if (result.enum_values.empty()) unsupported("disjoint enum constraints");
+      }
+   }
+   if (refinement.decimal_minimum)
+      result.decimal_minimum = std::max(result.decimal_minimum.value_or(0), *refinement.decimal_minimum);
+   if (refinement.decimal_maximum)
+      result.decimal_maximum = std::min(result.decimal_maximum.value_or(*refinement.decimal_maximum), *refinement.decimal_maximum);
+   if (refinement.kind == constraint_kind::object) {
+      // Only an open dynamic object has no pre-existing property contract to
+      // intersect. Refuse other object shapes rather than erase typed fields.
+      if (!type.additional_properties || !type.properties.empty())
+         unsupported("typed object shape intersection is outside the supported subset");
+      result.properties = refinement.properties;
+      result.required = refinement.required;
+      result.additional_properties = refinement.additional_properties;
+   } else if (!refinement.properties.empty() || !refinement.required.empty() || refinement.additional_properties) {
+      unsupported("object refinement needs an explicit object kind");
+   }
    if (!refinement.items.empty()) {
-      if (result.items.size() != 1) unsupported("item refinement without item type");
+      if (result.items.size() != 1 || refinement.items.size() != 1) unsupported("item refinement without one item type");
       result.items.front() = refine_constraint(result.items.front(), refinement.items.front());
    }
    return result;

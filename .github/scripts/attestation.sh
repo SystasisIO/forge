@@ -41,6 +41,16 @@ if report.is_file():
     except Exception:
         summary['status'] = 'HARNESS_ERROR'
 (work / 'evidence' / 'tests.json').write_text(json.dumps(summary, indent=2) + '\n')
+# Preserve failure locations, never assertion operands or credential values.
+locations = []
+test_log = work / 'raw' / 'tests.log'
+if test_log.is_file():
+    for line in test_log.read_text(errors='replace').splitlines():
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm))\((\d+)\): (?:fatal error|error): in "([A-Za-z0-9_]+)"', line)
+        if found:
+            locations.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
+(work / 'evidence' / 'failure-locations.json').write_text(json.dumps(locations, indent=2) + '\n')
+print(json.dumps({'tests': summary, 'failure_locations': locations}))
 # Compile diagnostics contain no runtime values; cap retained output.
 compile_log = work / 'raw' / 'compile.log'
 if compile_log.is_file():
@@ -134,11 +144,18 @@ case "$phase" in
          -DFORGE_ENABLE_TOOLING=ON -DClang_DIR="$llvm_root/lib/cmake/clang" -DLLVM_DIR="$llvm_root/lib/cmake/llvm"
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
          test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy \
+         forge_attestation_interop -j4 2>&1 | tee "$work/raw/compile.log"
+      ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
+         --output-junit "$work/results.xml" \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy)$' \
+         > "$work/raw/tests.log" 2>&1
+      # Fail fast on the new contracts before compiling the larger ABI/VM graph.
+      cmake --build "$build" --target \
          test_forge_schema test_forge_variant test_forge_codec_json test_forge_raw \
          test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
          test_forge_openapi_wire_baseline \
-         forge_attestation_interop forge_attestation_schema_fixture forge_attestation_boundary \
-         -j4 2>&1 | tee "$work/raw/compile.log"
+         forge_attestation_schema_fixture forge_attestation_boundary \
+         -j4 2>&1 | tee -a "$work/raw/compile.log"
       ;;
    test)
       ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \

@@ -2,8 +2,6 @@ name: Attestation F1
 run-name: Attestation F1 / ${{ github.ref_name }} / ${{ github.sha }}
 
 on:
-  push:
-    branches: [auth-attestation-jwt-v1]
   pull_request:
     branches: [dev]
     paths:
