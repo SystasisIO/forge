@@ -182,6 +182,12 @@ boost::asio::awaitable<void> session::impl::writer_loop() {
             wake_session();
             release_outbound_capacity(*next);
             complete_receipt(next->receipt, std::current_exception());
+            if (kind != forge::api::core::frame_kind::session_hello) {
+               const auto found = calls.find(id);
+               if (found != calls.end() && found->second->writes_in_flight > 0) {
+                  --found->second->writes_in_flight;
+               }
+            }
             throw;
          }
 
@@ -217,6 +223,11 @@ boost::asio::awaitable<void> session::impl::writer_loop() {
       if (!closing) {
          fail_session(std::current_exception());
          stop_transport();
+      } else {
+         // Owned shutdown must drain cleanup without turning its transport
+         // error into a new session failure or replacing a received API error.
+         stop_transport();
+         fail_calls(std::current_exception());
       }
       co_return;
    }

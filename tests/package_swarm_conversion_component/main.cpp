@@ -1,4 +1,5 @@
 #include <array>
+#include <cstdint>
 #include <utility>
 
 import forge.swarm.conversion.conversion;

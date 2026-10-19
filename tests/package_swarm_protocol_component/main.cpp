@@ -1,4 +1,6 @@
 #include <array>
+#include <cstdint>
+#include <utility>
 #include <variant>
 
 import forge.swarm.protocol.metadata;

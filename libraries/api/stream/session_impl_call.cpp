@@ -247,7 +247,9 @@ session::impl::async_call_on_strand(forge::api::core::frame request, forge::api:
       if (call->error) {
          std::rethrow_exception(call->error);
       }
-      throw;
+      if (!call->terminal || call->terminal->kind != forge::api::core::frame_kind::error) {
+         throw;
+      }
    }
 
    if (call->error) {
@@ -568,6 +570,20 @@ void session::impl::cancel_call(const std::shared_ptr<call_state>& call, std::ex
    }
    call->done = true;
    call->error = error ? std::move(error) : cancelled_call_error(call->id.value);
+   if (notify_peer && (!call->local_origin || call->request_written) && !call->terminal) {
+      call->crossed_terminal_pending = call->local_origin;
+      if (call->inbound) {
+         const auto& flow = *call->inbound;
+         call->canceled_inbound.emplace(tombstone_flow{
+             .direction = flow.direction,
+             .transferred_items = flow.transferred_items,
+             .transferred_bytes = flow.transferred_bytes,
+             .limit_items = flow.limit_items,
+             .limit_bytes = flow.limit_bytes,
+             .ended = flow.ended,
+         });
+      }
+   }
    call->deadline.cancel();
    if (call->handler_running) {
       call->handler_cancel.emit(boost::asio::cancellation_type::all);
@@ -615,6 +631,22 @@ void session::impl::discard_inbound(const std::shared_ptr<call_state>& call) noe
    replenish_inbound_credit();
 }
 
+void session::impl::retire_failed_terminal_writes(const std::exception_ptr& error) {
+   for (auto current = calls.begin(); current != calls.end();) {
+      const auto call = (current++)->second;
+      const auto received_error =
+          call->local_origin && call->terminal && call->terminal->kind == forge::api::core::frame_kind::error;
+      if (call->done && (call->error || received_error)) {
+         // The transport cannot deliver cleanup now. Preserve the first failed
+         // result without waiting for an acknowledgment or claiming it was written.
+         call->terminal_enqueued = false;
+         fail_outbound(call, call->error ? call->error : error);
+         finish_call(call);
+         wake_call(call);
+      }
+   }
+}
+
 void session::impl::finish_call(const std::shared_ptr<call_state>& call) {
    const auto found = calls.find(call->id.value);
    if (found == calls.end() || found->second != call) {
@@ -654,6 +686,8 @@ void session::impl::remember_tombstone(const std::shared_ptr<call_state>& call) 
        .api = call->api,
        .method = call->method,
        .codec = call->codec,
+       .inbound = call->canceled_inbound,
+       .crossed_terminal_pending = call->crossed_terminal_pending,
    };
    if (!call->local_origin && call->inbound && call->inbound->discarding && !call->inbound->ended) {
       const auto& flow = *call->inbound;
@@ -665,11 +699,12 @@ void session::impl::remember_tombstone(const std::shared_ptr<call_state>& call) 
           .limit_bytes = flow.limit_bytes,
           .ended = flow.ended,
       });
+      state.draining = true;
    }
    const auto id = call->id.value;
    if (tombstones.emplace(id, std::move(state)).second) {
       const auto& inserted = tombstones.at(id);
-      if (!inserted.inbound || inserted.inbound->ended) {
+      if (!inserted.draining) {
          tombstone_order.push_back(id);
       }
    }
@@ -681,9 +716,11 @@ void session::impl::remember_tombstone(const std::shared_ptr<call_state>& call) 
 
 void session::impl::complete_tombstone(std::uint64_t id) {
    const auto found = tombstones.find(id);
-   if (found == tombstones.end() || !found->second.inbound || !found->second.inbound->ended) {
+   if (found == tombstones.end() || !found->second.draining || !found->second.inbound ||
+       !found->second.inbound->ended) {
       return;
    }
+   found->second.draining = false;
    tombstone_order.push_back(id);
    while (tombstone_order.size() > settings.max_tombstones) {
       tombstones.erase(tombstone_order.front());
@@ -692,8 +729,7 @@ void session::impl::complete_tombstone(std::uint64_t id) {
 }
 
 std::size_t session::impl::draining_tombstones() const noexcept {
-   return std::count_if(tombstones.begin(), tombstones.end(),
-                        [](const auto& entry) { return entry.second.inbound && !entry.second.inbound->ended; });
+   return std::count_if(tombstones.begin(), tombstones.end(), [](const auto& entry) { return entry.second.draining; });
 }
 
 void session::impl::install_inbound_observer(const std::shared_ptr<call_state>& call) {

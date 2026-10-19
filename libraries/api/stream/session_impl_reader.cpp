@@ -120,6 +120,7 @@ boost::asio::awaitable<void> session::impl::reader_loop() {
           std::all_of(calls.begin(), calls.end(), [](const auto& entry) { return entry.second->done; });
       if (closing || (calls_terminal && is_clean_close(error))) {
          closed.store(true, std::memory_order_release);
+         retire_failed_terminal_writes(std::current_exception());
          wake_session();
          wake_writer();
          co_return;
@@ -185,6 +186,9 @@ boost::asio::awaitable<void> session::impl::handle_inbound_frame(forge::api::cor
                             forge::exceptions::ctx("call_id", value.id.value));
    }
    if (call->done) {
+      if (handle_crossed_frame(call->canceled_inbound, call->crossed_terminal_pending, value)) {
+         co_return;
+      }
       if (value.kind == forge::api::core::frame_kind::stream_item && call->inbound && call->inbound->discarding) {
          handle_stream_item(call, std::move(value));
          co_return;
@@ -441,6 +445,10 @@ void session::impl::handle_terminal(const std::shared_ptr<call_state>& call, for
 
 void session::impl::handle_cancel(const std::shared_ptr<call_state>& call) {
    if (call->done) {
+      call->crossed_terminal_pending = false;
+      if (call->canceled_inbound) {
+         call->canceled_inbound->ended = true;
+      }
       if (call->inbound && call->inbound->discarding && !call->inbound->ended) {
          call->inbound->ended = true;
          wake_call(call);
@@ -454,13 +462,10 @@ void session::impl::handle_cancel(const std::shared_ptr<call_state>& call) {
        false);
 }
 
-void session::impl::handle_tombstone_frame(tombstone_state& tombstone, const forge::api::core::frame& value) {
-   if (value.api != tombstone.api || value.method != tombstone.method || value.codec != tombstone.codec) {
-      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
-                            "API stream late frame identity does not match its completed call");
-   }
-   if (value.kind == forge::api::core::frame_kind::stream_item && tombstone.inbound && !tombstone.inbound->ended) {
-      auto& flow = *tombstone.inbound;
+bool session::impl::handle_crossed_frame(std::optional<tombstone_flow>& inbound, bool& terminal_pending,
+                                         const forge::api::core::frame& value) {
+   if (value.kind == forge::api::core::frame_kind::stream_item && inbound && !inbound->ended) {
+      auto& flow = *inbound;
       if (value.payload.size() > negotiated_limits.max_item_bytes || flow.transferred_items >= flow.limit_items ||
           flow.transferred_bytes > flow.limit_bytes ||
           value.payload.size() > flow.limit_bytes - flow.transferred_bytes) {
@@ -469,22 +474,42 @@ void session::impl::handle_tombstone_frame(tombstone_state& tombstone, const for
       }
       ++flow.transferred_items;
       flow.transferred_bytes += value.payload.size();
-      return;
+      return true;
    }
-   if (value.kind == forge::api::core::frame_kind::stream_end) {
-      if (!tombstone.inbound) {
-         return;
-      }
+   if (value.kind == forge::api::core::frame_kind::stream_end && inbound) {
       const auto end = decode_end(value);
-      if (tombstone.inbound->ended || end.direction != tombstone.inbound->direction) {
+      if (inbound->ended || end.direction != inbound->direction) {
          FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
                                "API stream late end is duplicated or has the wrong direction");
       }
-      tombstone.inbound->ended = true;
+      inbound->ended = true;
+      return true;
+   }
+   if (terminal_pending &&
+       (value.kind == forge::api::core::frame_kind::response || value.kind == forge::api::core::frame_kind::error)) {
+      terminal_pending = false;
+      if (inbound) {
+         inbound->ended = true;
+      }
+      return true;
+   }
+   return false;
+}
+
+void session::impl::handle_tombstone_frame(tombstone_state& tombstone, const forge::api::core::frame& value) {
+   if (value.api != tombstone.api || value.method != tombstone.method || value.codec != tombstone.codec) {
+      FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error,
+                            "API stream late frame identity does not match its completed call");
+   }
+   if (handle_crossed_frame(tombstone.inbound, tombstone.crossed_terminal_pending, value)) {
       complete_tombstone(value.id.value);
       return;
    }
+   if (value.kind == forge::api::core::frame_kind::stream_end && !tombstone.inbound) {
+      return;
+   }
    if (value.kind == forge::api::core::frame_kind::cancel) {
+      tombstone.crossed_terminal_pending = false;
       if (tombstone.inbound && !tombstone.inbound->ended) {
          tombstone.inbound->ended = true;
          complete_tombstone(value.id.value);

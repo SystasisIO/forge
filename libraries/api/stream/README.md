@@ -54,12 +54,23 @@ into an unknown-call session failure. Destroying an unfinished typed call
 cancels only that call; callers still use `async_finish()` to observe the
 terminal result.
 
+A locally canceled call keeps only its previously advertised ingress credit
+in bounded, evictable history, not a pinned inflight drain. Matching crossing
+items consume that old credit and are discarded without delivery or replenishment.
+One already-sent peer terminal may cross a local cancellation; it cannot replace
+the cancellation result or reopen the call. Duplicate terminals, identity mismatch,
+data after end and credit violations still fail the session. A received peer cancel
+also closes this crossing allowance.
+
 Credit for a locally originated call is advertised only after its request is
 written, including when other calls trigger credit redistribution. Receiving a
 terminal remote error also stops unfinished local input: queued data is discarded
 and a cancel closes the peer's remaining ingress drain. A failed duplex call
 must not permanently consume the peer's inflight capacity. These transitions
 use existing wire-v2 frames, not a second acknowledgement protocol.
+If the peer disappears before that cleanup can be written, the already received
+method error remains authoritative; cleanup I/O must not leave `async_finish()`
+waiting indefinitely or replace the method error with an EOF.
 
 An item read may report EOF or generic cancellation before the typed terminal
 result is projected. `async_finish()` is mandatory for the precise method error;
