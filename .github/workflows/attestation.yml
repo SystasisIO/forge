@@ -85,12 +85,16 @@ jobs:
           java-version: '21'
       - name: Install pinned dependencies
         run: bash .github/scripts/attestation.sh dependencies
-      - name: Compile focused tests and public boundary
+      - name: Compile and qualify focused contracts
         run: bash .github/scripts/attestation.sh build
-      - name: JWT, schema and regression tests
-        run: bash .github/scripts/attestation.sh test
       - name: Python and Java bidirectional interoperability
         run: bash .github/scripts/attestation.sh interop
+      - name: Bounded executor measurements and worker failure
+        run: bash .github/scripts/attestation.sh benchmark
+      - name: Compile regressions and independent ABI VM consumer
+        run: bash .github/scripts/attestation.sh boundary
+      - name: JWT, schema and regression tests
+        run: bash .github/scripts/attestation.sh test
       - name: Installed consumers and dependency isolation
         run: bash .github/scripts/attestation.sh packages
       - uses: actions/cache@v4

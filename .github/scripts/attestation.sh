@@ -3,8 +3,8 @@ set -euo pipefail
 umask 077
 ulimit -c 0
 
-readonly phase="${1:?usage: attestation.sh <dependencies|build|test|interop|packages|guest|sanitizers|evidence>}"
-case "$phase" in dependencies|build|test|interop|packages|guest|sanitizers|evidence) ;; *) exit 2 ;; esac
+readonly phase="${1:?usage: attestation.sh <dependencies|build|boundary|test|benchmark|interop|packages|guest|sanitizers|evidence>}"
+case "$phase" in dependencies|build|boundary|test|benchmark|interop|packages|guest|sanitizers|evidence) ;; *) exit 2 ;; esac
 readonly root="$(git rev-parse --show-toplevel)"
 readonly work="${RUNNER_TEMP:?}/forge-attestation"
 readonly build="$work/build"
@@ -159,18 +159,20 @@ case "$phase" in
          -DFORGE_ENABLE_TOOLING=ON -DClang_DIR="$llvm_root/lib/cmake/clang" -DLLVM_DIR="$llvm_root/lib/cmake/llvm"
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
          test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy \
-         forge_attestation_interop -j4 2>&1 | tee "$work/raw/compile.log"
+         forge_attestation_interop forge_attestation_benchmark -j4 2>&1 | tee "$work/raw/compile.log"
       ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy)$' \
          > "$work/raw/tests.log" 2>&1
-      # Fail fast on the new contracts before compiling the larger ABI/VM graph.
+      ;;
+   boundary)
+      # Reuse the same build tree after the independent early qualification.
       cmake --build "$build" --target \
          test_forge_schema test_forge_variant test_forge_codec_json test_forge_raw \
          test_forge_config_core test_forge_codec_yaml test_forge_codec_xml \
          test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
          test_forge_openapi_wire_baseline \
-         forge_attestation_schema_fixture forge_attestation_boundary forge_attestation_benchmark \
+         forge_attestation_schema_fixture forge_attestation_boundary \
          -j4 2>&1 | tee -a "$work/raw/compile.log"
       ;;
    test)
@@ -178,6 +180,8 @@ case "$phase" in
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
          > "$work/raw/tests.log" 2>&1
+      ;;
+   benchmark)
       python3 - "$build/tests/forge_attestation_benchmark" "$work/evidence" <<'PY'
 import json
 from pathlib import Path
