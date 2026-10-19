@@ -319,6 +319,40 @@ The user authorizes cancelling only obsolete runs53-55:53 had already failed,
 54/55 are cancelled. Run56 and the OS diagnostic are not cancelled. No merge,
 live Spine/Turbine edit, license change or mandatory-gate waiver is performed.
 
+### Intel BLS Dependency
+
+The authorized BLS fork is now pinned experimentally to
+`c0d27c3bace8dc24cfb16fae34de661df196e538`. Its production delta selects the
+existing portable C++ arithmetic on Darwin x86 instead of ELF assembly. The
+portable path also had an existing carry/borrow overflow bug: boundary and
+fixed-seed checks reproduce 12 mismatches before the two minimal helper fixes
+and zero afterwards. No cryptosystem, assembly implementation, license or API
+is replaced. This is not a constant-time or performance-equivalence claim.
+
+Native donor Release suites pass on Linux normal/no-BMI2, Darwin x86 and ARM.
+The full original Debug suite twice exceeds the initial 900-second CI budget;
+diagnostic-only progress preserves all 45 calls, order, assertions and inputs.
+A reviewed, one-shot Intel Debug CI budget of 1800 seconds then completes the
+full suite: 1/1 PASS in 1403.54 seconds with strict XML verification. Other
+entries remain at 900 seconds; VM/product deadlines and limits never change.
+
+That job subsequently fails only uploading its evidence after five network
+timeouts. Its raw log and checkout identity are retained, but the missing
+Debug artifact keeps the complete donor evidence gate NOT_ACCEPTED. Scoped
+review permits experimental pinning, not release/merge approval. Only the
+failed job is retried at the same source; all fresh Forge native/platform and
+artifact gates remain mandatory. See [native run3](https://github.com/SystasisIO/bls12-381/actions/runs/39261942138).
+
+With this pin, the normal Forge BLS/signer/dev-install build and coherent VM
+test rebuild pass. The final combined selection passes 86/86 in 201.22 seconds,
+with zero failures, disabled or skipped tests: all 82 selected VM gates plus
+BLS, signer and the two other canonical package consumers. BLS executes 24
+Boost cases and signer 37; nested compiler/AOT/session tests pass 5/5. The
+same strict registry checker verifies all 82 VM commands/helpers/maps before
+execution. Workspace evidence is `wamr-ci-190-20261019-r8/bls-forge-integration-r1`;
+this local result does not reclassify missing remote Debug artifacts or qualify
+remote Intel/Linux, physical LLVM-free OFF delivery or downstream processes.
+
 ## Language-Version Differences
 
 The bounded numeric profile uses WAMR's existing modern encoding and typing

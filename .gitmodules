@@ -6,7 +6,7 @@
 	url = https://github.com/AntelopeIO/bn256
 [submodule "vendor/bls12-381"]
 	path = vendor/bls12-381
-	url = https://github.com/AntelopeIO/bls12-381
+	url = https://github.com/SystasisIO/bls12-381
 [submodule "vendor/pugixml"]
 	path = vendor/pugixml
 	url = https://github.com/zeux/pugixml
