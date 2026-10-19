@@ -469,42 +469,51 @@ void session::impl::fail_session(std::exception_ptr error) noexcept {
    }
    accepting = false;
    closed.store(true, std::memory_order_release);
+   fail_calls(failure);
+   if (idle_timer) {
+      try {
+         idle_timer->cancel();
+      } catch (...) {
+         // Session completion paths remain noexcept.
+      }
+   }
+}
+
+void session::impl::fail_calls(const std::exception_ptr& error) noexcept {
    auto active_calls = std::vector<std::shared_ptr<call_state>>{};
    active_calls.reserve(calls.size());
    for (const auto& [_, call] : calls) {
       active_calls.push_back(call);
    }
    for (const auto& call : active_calls) {
-      call->error = failure;
+      const auto received_error =
+          call->local_origin && call->terminal && call->terminal->kind == forge::api::core::frame_kind::error;
+      if (!call->error && !received_error) {
+         call->error = error;
+      }
+      const auto terminal_error = call->error ? call->error : error;
       call->done = true;
       try {
          call->deadline.cancel();
       } catch (...) {
-         // Session failure remains authoritative during timer cancellation.
+         // The first call result remains authoritative during cleanup.
       }
       if (call->handler_running) {
          try {
             call->handler_cancel.emit(boost::asio::cancellation_type::all);
          } catch (...) {
-            // Session failure remains authoritative during cancellation.
+            // The first call result remains authoritative during cleanup.
          }
       }
       if (call->inbound && call->inbound->endpoint) {
-         call->inbound->endpoint->fail(failure);
+         call->inbound->endpoint->fail(terminal_error);
       }
-      if (call->outbound && call->outbound->endpoint) {
-         call->outbound->endpoint->fail(failure);
-      }
-      for (auto& queued : call->write_queue) {
-         release_outbound_capacity(queued);
-         complete_receipt(queued.receipt, failure);
-      }
-      call->write_queue.clear();
+      fail_outbound(call, terminal_error);
       wake_call(call);
    }
    calls.clear();
    for (auto& queued : control_queue) {
-      complete_receipt(queued.receipt, failure);
+      complete_receipt(queued.receipt, error);
    }
    control_queue.clear();
    round_robin.clear();
@@ -513,13 +522,6 @@ void session::impl::fail_session(std::exception_ptr error) noexcept {
    wake_outbound_capacity();
    wake_session();
    wake_writer();
-   if (idle_timer) {
-      try {
-         idle_timer->cancel();
-      } catch (...) {
-         // Session completion paths remain noexcept.
-      }
-   }
 }
 
 } // namespace forge::api::stream

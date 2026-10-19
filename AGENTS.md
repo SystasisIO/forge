@@ -223,6 +223,13 @@ class service_node {
   present/verified file bytes, and one file operation has one checkpoint authority.
 - Payload files, persistence adapters, active runtime and product admission
   policy have separate owners as recorded in the Swarm implementation plan.
+- `swarm.protocol` owns bounded network values and metadata assembly; it must
+  not depend on DB, storage, API, Asio or a concrete transport. `swarm.api`
+  reuses Forge.API streams and required `authenticated_caller` injection,
+  without owning a node, storage or a second identity/authorization mechanism.
+- `swarm.conversion` projects local models into public metadata and validates
+  imports into Core descriptors only. Network values cannot allocate local row
+  IDs, restore checkpoints, claim payload verification or commit DB state.
 - `forge.core.conversion` declares only the common primary template. Domain
   conversion leaves own explicit specializations in its C++ namespace; Core
   must not acquire domain or serialization dependencies through customization.

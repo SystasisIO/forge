@@ -33,6 +33,9 @@ set(
    swarm_core
    swarm_db
    swarm_storage
+   swarm_protocol
+   swarm_conversion
+   swarm_api
    chain_core
    chain_savanna_values
    chain_protocol
@@ -189,6 +192,19 @@ macro(_forge_add_component component)
          _forge_add_component(db_object)
          _forge_add_component(db_core)
          _forge_add_component(asio)
+      elseif("${component}" STREQUAL "swarm_protocol")
+         _forge_add_component(swarm_core)
+         _forge_add_component(raw)
+         _forge_add_component(reflect)
+         _forge_add_component(exceptions)
+      elseif("${component}" STREQUAL "swarm_conversion")
+         _forge_add_component(core)
+         _forge_add_component(swarm_db)
+         _forge_add_component(swarm_protocol)
+      elseif("${component}" STREQUAL "swarm_api")
+         _forge_add_component(swarm_protocol)
+         _forge_add_component(api_core)
+         _forge_add_component(api_auth)
       elseif("${component}" STREQUAL "chain_core")
          _forge_add_component(exceptions)
          _forge_add_component(raw)

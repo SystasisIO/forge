@@ -339,6 +339,9 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/db/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/storage/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/protocol/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/conversion/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/api/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/protocol/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/transaction/include"
@@ -823,6 +826,8 @@ set(
    forge_swarm_core
    forge_swarm_db
    forge_swarm_storage
+   forge_swarm_protocol
+   forge_swarm_conversion
    forge_chain_core
    forge_chain_savanna_values
    forge_chain_protocol
@@ -902,6 +907,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_config_env
       forge_api_core
       forge_api_auth
+      forge_swarm_api
       forge_api_stream
       forge_api_transport
       forge_api_quic
@@ -1024,6 +1030,8 @@ set(
    swarm_core
    swarm_db
    swarm_storage
+   swarm_protocol
+   swarm_conversion
    chain_core
    chain_savanna_values
    chain_protocol
@@ -1072,6 +1080,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       config_env
       api_core
       api_auth
+      swarm_api
       api_stream
       api_transport
       api_quic
@@ -1225,6 +1234,8 @@ set(
    libraries/swarm/core/include/forge
    libraries/swarm/db/include/forge
    libraries/swarm/storage/include/forge
+   libraries/swarm/protocol/include/forge
+   libraries/swarm/conversion/include/forge
    libraries/chain/core/include/forge
    libraries/chain/protocol/include/forge
    libraries/chain/transaction/include/forge
@@ -1262,6 +1273,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/config/env/include/forge
       libraries/api/core/include/forge
       libraries/api/auth/include/forge
+      libraries/swarm/api/include/forge
       libraries/api/http/include/forge
       libraries/api/stream/include/forge
       libraries/api/transport/include/forge
