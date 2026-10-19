@@ -1402,7 +1402,7 @@ target_sources(
       FILE_SET CXX_MODULES
       FILES yaml/schema_types.cppm
 )
-target_link_libraries(test_forge_codec_yaml forge Boost::included_unit_test_framework)
+target_link_libraries(test_forge_codec_yaml forge_codec_yaml Boost::included_unit_test_framework)
 add_test(NAME test_forge_codec_yaml COMMAND test_forge_codec_yaml WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(
