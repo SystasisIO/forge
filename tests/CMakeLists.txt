@@ -5,10 +5,16 @@ add_executable(test_forge_swarm_core
    swarm_core/descriptor_tests.cpp
    swarm_core/merkle_tests.cpp
    swarm_core/checkpoint_tests.cpp
+   swarm_core/transfer_tests.cpp
 )
 target_link_libraries(test_forge_swarm_core PRIVATE forge_swarm_core Boost::included_unit_test_framework)
 add_test(NAME test_forge_swarm_core COMMAND test_forge_swarm_core)
 set_tests_properties(test_forge_swarm_core PROPERTIES TIMEOUT 60)
+
+add_executable(test_forge_swarm_allocation swarm_core/allocation_probe.cpp)
+target_link_libraries(test_forge_swarm_allocation PRIVATE forge_swarm_core)
+add_test(NAME test_forge_swarm_allocation COMMAND test_forge_swarm_allocation)
+set_tests_properties(test_forge_swarm_allocation PROPERTIES TIMEOUT 30)
 
 add_executable(test_forge_swarm_storage
    swarm_storage/main.cpp
@@ -64,6 +70,14 @@ if(FORGE_SWARM_LIBTORRENT_DONOR_ROOT)
    endif()
    add_executable(test_forge_swarm_libtorrent
       swarm_core/libtorrent_probe.cpp
+      swarm_core/libtorrent_picker_probe.cpp
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/piece_picker.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/performance_counters.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/random.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/error_code.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/string_util.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/parse_url.cpp"
+      "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/cpuid.cpp"
       "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/merkle.cpp"
       "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/hasher.cpp"
       "${FORGE_SWARM_LIBTORRENT_DONOR_ROOT}/src/sha1.cpp"

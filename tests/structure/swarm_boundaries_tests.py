@@ -51,6 +51,22 @@ class SwarmBoundariesTests(unittest.TestCase):
             self.write("libraries/swarm/core/CMakeLists.txt", f"target_link_libraries(forge_swarm_core PUBLIC {target})\n")
             self.assertTrue(any("target depends" in e for e in self.errors()))
 
+   def test_core_receives_time_and_randomness_explicitly(self):
+      name = "libraries/swarm/core/transfer.cpp"
+      self.write(name, "using time = std::chrono::steady_clock::time_point;\n")
+      self.assertEqual(self.errors(), [])
+      for source in ("std::chrono::steady_clock::now();", "system_clock::now();",
+                     "using clock = std::chrono::steady_clock; clock::now();"):
+         with self.subTest(source=source):
+            self.write(name, source)
+            self.assertTrue(any("time explicitly" in e for e in self.errors()))
+      for source in ("std::random_device random;", "std::jthread worker;",
+                     "boost::asio::steady_timer timer;", "boost::asio::thread_pool pool;",
+                     "boost::asio::io_context context;", "boost::asio::io_service service;"):
+         with self.subTest(source=source):
+            self.write(name, source)
+            self.assertTrue(any("runtime execution" in e for e in self.errors()))
+
    def test_core_customization_cannot_import_domain(self):
       self.write("libraries/core/include/forge/core/conversion.cppm",
                  "import forge.swarm.core.descriptor;\ntemplate <class T> class conversion;\n")

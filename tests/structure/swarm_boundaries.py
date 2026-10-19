@@ -34,6 +34,11 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
          continue
       if re.search(r"\bimport\s+forge\.(?:swarm\.(?:db|storage|runtime|protocol|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm)(?:[.;])", text):
          errors.append(f"{name}: deterministic Swarm core imports an upper layer")
+      # Lexical tripwires complement review; they do not resolve arbitrary C++ aliases.
+      if re.search(r"\bstd::(?:async|thread|jthread|random_device)\b|\bboost::asio::(?:thread_pool|io_context|io_service|steady_timer|system_timer)\b", text):
+         errors.append(f"{name}: deterministic Swarm core owns runtime execution or hidden randomness")
+      if re.search(r"\b[A-Za-z_]\w*::now\s*\(", text):
+         errors.append(f"{name}: deterministic Swarm core must receive time explicitly")
 
    cmake = family / "core/CMakeLists.txt"
    if not cmake.is_file():

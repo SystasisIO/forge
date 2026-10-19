@@ -23,6 +23,7 @@ enum class code : std::uint16_t {
    unverified_piece = 11,
    invalid_write = 12,
    integrity_failure = 13,
+   invalid_transfer = 14,
 };
 
 using unsupported_version = forge::exceptions::coded_exception<code, code::unsupported_version>;
@@ -38,6 +39,7 @@ using storage_busy = forge::exceptions::coded_exception<code, code::storage_busy
 using unverified_piece = forge::exceptions::coded_exception<code, code::unverified_piece>;
 using invalid_write = forge::exceptions::coded_exception<code, code::invalid_write>;
 using integrity_failure = forge::exceptions::coded_exception<code, code::integrity_failure>;
+using invalid_transfer = forge::exceptions::coded_exception<code, code::invalid_transfer>;
 
 FORGE_DECLARE_EXCEPTION_CATEGORY(code, "forge.swarm.core")
 
