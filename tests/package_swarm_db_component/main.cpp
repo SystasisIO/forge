@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdint>
 #include <type_traits>
+#include <string>
 
 import forge.swarm.db.content;
 import forge.swarm.db.schema;

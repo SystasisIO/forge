@@ -15,8 +15,8 @@ version and migration/reset decision, never a silent reinterpretation.
 Target `forge_swarm_db` (installed `Forge::forge_swarm_db`), package component
 `swarm_db`. Dependencies are `forge_swarm_core`, `forge_db_object` and
 `Boost::headers`. No concrete database driver or Swarm file store is selected.
-The STATIC target owns the two real module interface units; it has no dummy
-implementation source or import-only facade.
+The STATIC target owns two real module interface units and the pure locator-key
+derivation in `content.cpp`; it has no dummy source or import-only facade.
 
 - `forge.swarm.db.content`: `content`, `job_state`, `content_index` and query tags.
 - `forge.swarm.db.schema`: `schema_state`, `schema_index`, `schema_version` and
@@ -58,13 +58,17 @@ Index ordinals and key order are part of metadata v1:
 | --- | --- | --- |
 | 0 / `by_id` | Primary unique | Object ID |
 | 1 / `by_swarm` | Ordered unique | `swarm.value`, raw digest bytes, not hex |
-| 2 / `by_locator` | Ordered unique | Exact locator string |
+| 2 / `by_locator` | Ordered unique | SHA-256 of the exact locator bytes |
 | 3 / `by_state_priority` | Ordered non-unique | State ascending, priority descending, swarm bytes ascending |
 | 4 / `by_expiry` | Ordered non-unique | Expiry ascending, swarm bytes ascending |
 
 Nested `member` extraction reuses DB Object's digest sorting; no hash-to-hex
 allocation or custom key encoder is introduced. The unique swarm index also
 makes the final composite-key tie breaker deterministic.
+Locator keys use the existing SHA-256 and `const_mem_fun` DSL so a 4096-byte
+locator does not exceed MDBX's 4-KiB-page key limit. No digest field is duplicated
+in Raw. The full string is retained for binding checks; a digest collision fails
+closed as a uniqueness conflict, never selecting or overwriting another path.
 
 ## Explicit Composition And Bounded Queries
 

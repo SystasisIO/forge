@@ -26,6 +26,11 @@ locator, job settings and optional bounded checkpoint. No object per received
 block, payload-in-DB storage, hand-written physical key or second index engine.
 Identity and locator are unique. State/descending-priority and expiry queries
 use ordered composite indexes with bounded cursor pages, not catalog scans.
+The locator index derives a fixed SHA-256 key with the existing Object Store
+`const_mem_fun` extractor and Crypto digest. A raw long string exceeded MDBX's
+4-KiB-page key limit in a retained failing regression. The full locator remains
+in the row and binding; digest collisions reject admission rather than confusing
+paths. No custom physical-key encoding or second persisted digest is added.
 
 File store verifies and syncs actual bytes and directory entries first. Adapter
 transaction checks immutable binding identity, object ID and locator, changes

@@ -510,6 +510,23 @@ BOOST_AUTO_TEST_CASE(recovery_reconciles_renamed_payload_with_the_last_durable_s
 }
 
 #if defined(FORGE_TEST_HAS_MDBX)
+BOOST_AUTO_TEST_CASE(mdbx_four_kib_pages_support_bounded_long_storage_locators) {
+   auto files = fixture{};
+   auto database = boost::asio::thread_pool{1};
+   auto driver = run(forge::db::mdbx::driver::open(
+      {.path = (files.root / "long-locator").string(), .families = {"objectdb"}, .map = {.page_size = 4096}},
+      forge::asio::affine::lane::options{.thread_name = "swarm-locator"}));
+   auto objects = run(dbo::store::open(driver));
+   storage::catalog::register_objects(objects);
+   auto catalog = run(storage::catalog::async_open(objects, {files.cpu.get_executor(), database.get_executor()}));
+   const auto manifest = describe({data(17)});
+   const auto locator = std::string(4096, 'a');
+   const auto row = run(catalog->async_create(manifest, locator, {}));
+   BOOST_CHECK_EQUAL(row.locator, locator);
+   BOOST_CHECK_THROW(run(catalog->async_create(manifest, locator, {})), storage::exceptions::conflict);
+   run(driver->async_close());
+}
+
 BOOST_AUTO_TEST_CASE(mdbx_file_store_checkpoint_parity_and_native_reopen) {
    auto files = fixture{};
    const auto path = files.root / "mdbx";

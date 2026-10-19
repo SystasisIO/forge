@@ -31,6 +31,7 @@ struct content : forge::db::object::object<content, 81, 2> {
    std::int64_t expires_at = std::numeric_limits<std::int64_t>::max();
    std::optional<core::resume_state> checkpoint;
 
+   [[nodiscard]] core::sha256 locator_key() const;
    bool operator==(const content&) const = default;
 };
 
@@ -46,7 +47,7 @@ using content_index = forge::db::object::object_index<
       forge::db::object::primary_unique<by_id>,
       forge::db::object::ordered_unique<
          by_swarm, forge::db::object::member<&content::swarm, &core::swarm_id::value>>,
-      forge::db::object::ordered_unique<by_locator, forge::db::object::member<&content::locator>>,
+      forge::db::object::ordered_unique<by_locator, forge::db::object::const_mem_fun<&content::locator_key>>,
       forge::db::object::ordered_non_unique<
          by_state_priority,
          forge::db::object::composite_key<

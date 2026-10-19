@@ -184,7 +184,7 @@ boost::asio::awaitable<db::content> catalog::impl::create(
          if (co_await self->lookup(tx, row.swarm, token)) {
             throw exceptions::conflict{"catalog identity is already present"};
          }
-         auto existing = co_await tx.index<db::content_index, db::by_locator>().find(row.locator);
+         auto existing = co_await tx.index<db::content_index, db::by_locator>().find(row.locator_key());
          if (existing) {
             static_cast<void>(co_await self->validate(std::move(*existing), token));
             throw exceptions::conflict{"catalog locator is already present"};

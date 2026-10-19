@@ -1,4 +1,4 @@
-add_library(forge_swarm_db STATIC)
+add_library(forge_swarm_db STATIC content.cpp)
 forge_target_modules_at(forge_swarm_db swarm/db)
 
 target_include_directories(forge_swarm_db PUBLIC ${FORGE_PUBLIC_INCLUDE_DIRS})
