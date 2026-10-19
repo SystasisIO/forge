@@ -3,20 +3,22 @@ set -euo pipefail
 umask 077
 ulimit -c 0
 
-readonly phase="${1:?usage: attestation.sh <dependencies|build|boundary|test|benchmark|interop|packages|guest|sanitizers|evidence>}"
-case "$phase" in dependencies|build|boundary|test|benchmark|interop|packages|guest|sanitizers|evidence) ;; *) exit 2 ;; esac
+readonly phase="${1:?usage: attestation.sh <dependencies|build|boundary|test|benchmark|interop|packages|guest|sanitizers|checkpoint|evidence>}"
+case "$phase" in dependencies|build|boundary|test|benchmark|interop|packages|guest|sanitizers|checkpoint|evidence) ;; *) exit 2 ;; esac
 readonly root="$(git rev-parse --show-toplevel)"
 readonly work="${RUNNER_TEMP:?}/forge-attestation"
 readonly build="$work/build"
 readonly deps="$work/deps"
 readonly glaze="$work/glaze"
+readonly python="${pythonLocation:?setup-python must provide Python 3.12}/bin/python3"
+"$python" -c 'import platform, sys; assert platform.python_implementation() == "CPython" and sys.version_info[:2] == (3, 12), "CPython 3.12 required"'
 mkdir -p "$work/evidence" "$work/raw"
 trap 'printf "%s\t%d\n" "$phase" "$?" >> "$work/evidence/phases.tsv"' EXIT
 
-if [[ "$phase" == evidence ]]; then
+if [[ "$phase" == evidence || "$phase" == checkpoint ]]; then
    # Only build diagnostics, public schemas/models and test result metadata
    # leave the runner. Runtime logs, credentials and private keys stay private.
-   python3 - "$work" <<'PY'
+   "$python" - "$work" "$phase" <<'PY'
 import json
 import pathlib
 import re
@@ -25,6 +27,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 work = pathlib.Path(sys.argv[1])
+cleanup = sys.argv[2] == 'evidence'
 summary = {'tests': [], 'status': 'NOT_RUN'}
 report = work / 'results.xml'
 if report.is_file():
@@ -34,9 +37,20 @@ if report.is_file():
             name = case.get('name', '')
             if not re.fullmatch(r'test_forge_[a-z0-9_]+', name):
                 raise ValueError('unexpected case')
-            summary['tests'].append({'name': name, 'status': 'FAIL' if
+            item = {'name': name, 'status': 'FAIL' if
                 case.find('failure') is not None else ('NOT_RUN' if
-                case.find('skipped') is not None else 'PASS')})
+                case.find('skipped') is not None else 'PASS')}
+            elapsed = case.get('time', '')
+            if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', elapsed):
+                item['elapsed_seconds'] = float(elapsed)
+            failure = case.find('failure')
+            if failure is not None:
+                detail = (failure.get('message', '') + '\n' + (failure.text or '')).lower()
+                item['failure_kind'] = next((kind for text, kind in (
+                    ('timeout', 'timeout'), ('segfault', 'segfault'),
+                    ('segmentation fault', 'segfault'), ('subprocess aborted', 'aborted'),
+                    ('test setup error', 'setup_error')) if text in detail), 'test_failure')
+            summary['tests'].append(item)
         summary['status'] = 'PASS' if cases and all(
             item['status'] == 'PASS' for item in summary['tests']) else 'FAIL'
     except Exception:
@@ -45,6 +59,7 @@ if report.is_file():
 # Preserve failure locations, never assertion operands or credential values.
 locations = []
 sanitizers = []
+progress = []
 sanitizer_kinds = {'heap-use-after-free', 'heap-buffer-overflow', 'stack-buffer-overflow',
                    'stack-use-after-return', 'stack-use-after-scope', 'global-buffer-overflow',
                    'use-after-poison', 'double-free', 'alloc-dealloc-mismatch', 'SEGV', 'unknown-crash'}
@@ -55,6 +70,9 @@ if test_log.is_file():
         found = re.search(r'([^/ ]+\.(?:cpp|cppm)|unknown location)\((\d+)\): (?:fatal error|error): in "([A-Za-z0-9_/]+)"', line)
         if found:
             locations.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm))\((\d+)\): Entering test case "([A-Za-z0-9_]+)"', line)
+        if found:
+            progress.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
         found = re.search(r'ERROR: AddressSanitizer: ([A-Za-z0-9_-]+)', line)
         if found:
             sanitizers.append({'backend': 'ASan', 'kind': found[1] if found[1] in sanitizer_kinds else 'unknown'})
@@ -65,6 +83,7 @@ if test_log.is_file():
             sanitizers.append({'backend': 'UBSan', 'source': found[1], 'line': int(found[2])})
 (work / 'evidence' / 'failure-locations.json').write_text(json.dumps(locations, indent=2) + '\n')
 (work / 'evidence' / 'sanitizers.json').write_text(json.dumps(sanitizers, indent=2) + '\n')
+(work / 'evidence' / 'test-progress.json').write_text(json.dumps(progress[-100:], indent=2) + '\n')
 print(json.dumps({'tests': summary, 'failure_locations': locations, 'sanitizers': sanitizers}))
 # Compile diagnostics contain no runtime values; cap retained output.
 compile_log = work / 'raw' / 'compile.log'
@@ -77,13 +96,19 @@ for relative in ('document.schema.json', 'python/models.py', 'python/schema_evid
         target = work / 'evidence' / 'public-schema' / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
-for name in ('build', 'package-consumer', 'interop', 'jansson-build', 'jansson-source',
-             'llvm-project', 'contract-runtimes', 'contract-sdk', 'contract-sdk-prefix', 'guest'):
-    path = work / name
-    if path.is_dir():
-        shutil.rmtree(path)
+if cleanup:
+    for name in ('build', 'package-consumer', 'package-missing-backend', 'package-external',
+                 'package-unpatched', 'forge-external', 'cjose-external', 'cjose-upstream-source',
+                 'cjose-upstream-build', 'cjose-upstream-prefix', 'cjose-upstream-control', 'interop',
+                 'jansson-build', 'jansson-source', 'llvm-project', 'contract-runtimes',
+                 'contract-sdk', 'contract-sdk-prefix', 'guest', 'python'):
+        path = work / name
+        if path.is_dir():
+            shutil.rmtree(path)
 PY
-   df -Pk "$work" > "$work/evidence/disk-after.txt"
+   if [[ "$phase" == evidence ]]; then
+      df -Pk "$work" > "$work/evidence/disk-after.txt"
+   fi
    exit 0
 fi
 
@@ -132,6 +157,8 @@ if [[ "$phase" == dependencies ]]; then
       "$ATTESTATION_SHA" "$(git -C vendor/cjose rev-parse HEAD)" > "$work/evidence/provenance.txt"
    "$CC" --version >> "$work/evidence/provenance.txt"
    brew list --versions boost openssl@3 cmake ninja >> "$work/evidence/provenance.txt"
+   "$python" -c 'import platform, sys; print("python=" + sys.executable); print("python_version=" + platform.python_version()); print("python_arch=" + platform.machine())' \
+      >> "$work/evidence/provenance.txt"
    exit 0
 fi
 
@@ -162,13 +189,15 @@ case "$phase" in
       cmake -S "$root" -B "$build" "${options[@]}" -DFORGE_ENABLE_MODULES=ON \
          -DFORGE_ENABLE_JOSE=ON -DFORGE_ENABLE_LIBOAUTH2=ON -DFORGE_ENABLE_OIDC_AGENT=OFF \
          -DFORGE_ENABLE_MDBX=ON -DFORGE_ENABLE_ROCKSDB=OFF -DFORGE_ENABLE_TUI=OFF -DBUILD_TESTING=ON \
+         -DFORGE_OPENAPI_PARITY_PYTHON="$work/python/bin/python" \
          -DFORGE_ENABLE_TOOLING=ON -DClang_DIR="$llvm_root/lib/cmake/clang" -DLLVM_DIR="$llvm_root/lib/cmake/llvm"
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
          test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy \
-         forge_attestation_interop forge_attestation_benchmark -j4 2>&1 | tee "$work/raw/compile.log"
-      ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
+         forge_attestation_interop forge_attestation_benchmark test_forge_openapi_wire_baseline \
+         -j4 2>&1 | tee "$work/raw/compile.log"
+      BOOST_TEST_LOG_LEVEL=test_suite ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
-         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export)$' \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|openapi_wire_baseline)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    boundary)
@@ -177,18 +206,18 @@ case "$phase" in
          test_forge_schema test_forge_variant test_forge_codec_json test_forge_raw \
          test_forge_config_core test_forge_codec_yaml test_forge_codec_xml \
          test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
-         test_forge_openapi_wire_baseline \
+         test_forge_openapi_wire_baseline test_forge_openapi_parity_fixture \
          forge_attestation_schema_fixture forge_attestation_boundary \
          -j4 2>&1 | tee -a "$work/raw/compile.log"
       ;;
    test)
-      ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
+      BOOST_TEST_LOG_LEVEL=test_suite ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
-         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|openapi_python_parity|openapi_python_harness|structure|contract_sdk_cmake_runtime_policy)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    benchmark)
-      python3 - "$build/tests/forge_attestation_benchmark" "$work/evidence" <<'PY'
+      "$python" - "$build/tests/forge_attestation_benchmark" "$work/evidence" <<'PY'
 import json
 from pathlib import Path
 import subprocess
@@ -221,15 +250,17 @@ PY
          '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined'
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
          test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy -j4 2>&1 | tee "$work/raw/compile.log"
-      ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+      ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 BOOST_TEST_LOG_LEVEL=test_suite \
          ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|schema_attestation|json_strict|attestation_policy)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    interop)
-      python3 -m venv "$work/python"
-      "$work/python/bin/pip" install --disable-pip-version-check -r tests/attestation_interop/requirements.txt
+      "$python" -m venv "$work/python"
+      "$work/python/bin/python" -m pip --version >> "$work/evidence/provenance.txt"
+      "$work/python/bin/python" -m pip install --disable-pip-version-check -r tests/attestation_interop/requirements.txt
+      "$work/python/bin/python" -m pip check
       "$work/python/bin/python" tests/attestation_interop/run.py \
          --driver "$build/tests/forge_attestation_interop" --work "$work/interop" \
          --evidence "$work/evidence/interop.json"
@@ -244,6 +275,44 @@ PY
       cmake -S tests/package_attestation_missing_backend -B "$work/package-missing-backend" "${options[@]}" \
          -C "$build/tests/ForgePackageConsumerCache.cmake"
       printf 'PASS\n' > "$work/evidence/missing-backend.txt"
+      # Relocate Forge without its sibling backend. Resolve a separately
+      # installed qualified CJOSE through ordinary dependency discovery.
+      cmake --install "$build" --prefix "$work/forge-external" >> "$work/raw/compile.log" 2>&1
+      cmake -E rm -rf "$work/forge-external/lib/cmake/cjose"
+      cmake --install "$build/vendor/cjose" --prefix "$work/cjose-external" >> "$work/raw/compile.log" 2>&1
+      cmake -S tests/package_attestation -B "$work/package-external" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake" \
+         -DForge_DIR="$work/forge-external/lib/cmake/Forge" \
+         -DCMAKE_PREFIX_PATH="$work/cjose-external;$prefixes" \
+         -DFORGE_ATTESTATION_EXPECTED_CJOSE_LIBDIR="$work/cjose-external/lib"
+      cmake --build "$work/package-external" -j4 >> "$work/raw/compile.log" 2>&1
+      ctest --test-dir "$work/package-external" --no-tests=error -j1 \
+         --output-junit "$work/evidence/packages-external.xml"
+      printf 'PASS\n' > "$work/evidence/external-backend.txt"
+      # Reuse the F0 immutable upstream and feature-detection control, never
+      # a patched-library stub, to prove rejection of a real unpatched backend.
+      read -r upstream_url upstream_sha < <("$python" -c \
+         'import json,re,sys; p=json.load(open(sys.argv[1])); assert p["upstream_url"] == "https://github.com/OpenIDC/cjose.git" and re.fullmatch("[0-9a-f]{40}", p["upstream_sha"]); print(p["upstream_url"], p["upstream_sha"])' \
+         tests/cjose_qualification/pins.json)
+      git init --quiet "$work/cjose-upstream-source"
+      git -C "$work/cjose-upstream-source" remote add origin "$upstream_url"
+      git -C "$work/cjose-upstream-source" fetch --quiet --depth=1 origin "$upstream_sha"
+      git -C "$work/cjose-upstream-source" checkout --quiet --detach FETCH_HEAD
+      [[ "$(git -C "$work/cjose-upstream-source" rev-parse HEAD)" == "$upstream_sha" ]]
+      cmake -S "$work/cjose-upstream-source" -B "$work/cjose-upstream-build" "${options[@]}" \
+         -DCMAKE_INSTALL_PREFIX="$work/cjose-upstream-prefix" \
+         -DCJOSE_BUILD_SHARED=OFF -DCJOSE_BUILD_STATIC=ON -DCJOSE_BUILD_TESTS=OFF
+      cmake --build "$work/cjose-upstream-build" -j4 >> "$work/raw/compile.log" 2>&1
+      cmake --install "$work/cjose-upstream-build" >> "$work/raw/compile.log" 2>&1
+      cmake -S tests/cjose_qualification/feature_detection -B "$work/cjose-upstream-control" "${options[@]}" \
+         -DCMAKE_PREFIX_PATH="$work/cjose-upstream-prefix;$prefixes" \
+         -DFORGE_CMAKE_MODULES="$root/cmake" -DEXPECT_EXTENSION=OFF
+      cmake -S tests/package_attestation_missing_backend -B "$work/package-unpatched" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake" \
+         -DForge_DIR="$work/forge-external/lib/cmake/Forge" \
+         -DCMAKE_PREFIX_PATH="$work/cjose-upstream-prefix;$prefixes" \
+         -DFORGE_ATTESTATION_MISSING_JANSSON=OFF
+      printf 'PASS\n' > "$work/evidence/unpatched-backend-rejected.txt"
       ;;
    guest)
       if [[ ! -d "$work/sysroot/include/c++/v1" ]]; then
@@ -267,7 +336,7 @@ PY
          -DForgeContract_DIR="$work/contract-sdk-prefix/lib/cmake/ForgeContract"
       cmake --build "$work/guest" -j4 >> "$work/raw/compile.log" 2>&1
       "$build/tests/forge_attestation_schema_fixture" "$work/constraints.json"
-      python3 tests/attestation_boundary/bind_artifacts.py \
+      "$python" tests/attestation_boundary/bind_artifacts.py \
          --abi "$work/guest/artifacts/granttest.abi" \
          --metadata "$work/guest/artifacts/granttest.abi.metadata.json" \
          --constraints "$work/constraints.json" --output "$work/binding.json"

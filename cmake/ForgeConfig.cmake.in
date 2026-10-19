@@ -981,11 +981,14 @@ if("net_s3" IN_LIST _FORGE_COMPONENTS)
    _forge_require_package(AWSSDK 1.11.900 EXACT CONFIG COMPONENTS s3)
 endif()
 if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS OR "crypto_jose" IN_LIST _FORGE_COMPONENTS)
-   # The build-tree package keeps its dependency beside the Forge export;
-   # installed consumers discover the normal adjacent cjose package instead.
+   # Resolve the co-installed dependency even when a consumer supplies only
+   # Forge_DIR. Without either local package, retain external discovery.
    if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose/cjoseConfig.cmake")
       _forge_require_package(cjose 0.8.1 EXACT CONFIG COMPONENTS static
          PATHS "${CMAKE_CURRENT_LIST_DIR}/vendor/cjose" NO_DEFAULT_PATH)
+   elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../cjose/cjoseConfig.cmake")
+      _forge_require_package(cjose 0.8.1 EXACT CONFIG COMPONENTS static
+         PATHS "${CMAKE_CURRENT_LIST_DIR}/../cjose" NO_DEFAULT_PATH)
    endif()
 endif()
 if("crypto_jose" IN_LIST _FORGE_COMPONENTS)

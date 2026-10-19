@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <optional>
+#include <variant>
 #include <vector>
 
 import forge.config.core.key_path;

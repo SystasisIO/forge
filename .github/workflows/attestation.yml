@@ -94,6 +94,16 @@ jobs:
       - name: Bounded executor measurements and worker failure
         if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh benchmark
+      - name: Collect early qualification evidence without cleaning the active build
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/attestation.sh checkpoint
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: attestation-early-${{ matrix.os }}-${{ env.ATTESTATION_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-attestation/evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Compile regressions and independent ABI VM consumer
         id: boundary
         if: ${{ !cancelled() && steps.focused.outcome == 'success' }}

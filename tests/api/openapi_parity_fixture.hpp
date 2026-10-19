@@ -347,12 +347,12 @@ inline std::vector<case_definition> make_cases() {
        "http_strict", "Variant indexes must not be fractional numbers.");
    add_compatibility<std::int8_t>(cases, "integer decimal spelling", "Int8", "7.0", true, false, false,
        "integer_lexical", "JSON Schema integer is mathematical; exact native decoding requires an integer JSON token.");
-   add_compatibility<std::int8_t>(cases, "integer exponent spelling", "Int8", "7e0", true, true, true,
-       "integer_lexical", "Glaze integer parsing accepts nonnegative exponents; exact native decoding receives integer 7.");
+   add_compatibility<std::int8_t>(cases, "integer exponent spelling", "Int8", "7e0", true, false, false,
+       "integer_lexical", "JSON Schema integer is mathematical; exact native decoding rejects exponent tokens.");
    add_compatibility<indexed_choice>(cases, "index decimal spelling", "IndexedChoice", "[0.0,7]", true, false, false,
        "integer_lexical", "JSON Schema const 0 matches 0.0; exact native variant indexes require integer tokens.");
-   add_compatibility<indexed_choice>(cases, "index exponent spelling", "IndexedChoice", "[0e0,7]", true, true, true,
-       "integer_lexical", "Glaze integer parsing accepts nonnegative exponents; exact native decoding receives integer index 0.");
+   add_compatibility<indexed_choice>(cases, "index exponent spelling", "IndexedChoice", "[0e0,7]", true, false, false,
+       "integer_lexical", "JSON Schema const 0 matches 0e0; exact native variant indexes require integer tokens.");
    add_compatibility<indexed_choice>(cases, "boolean false index", "IndexedChoice", "[false,7]", false, false, false,
        "literal_index", "Schema and HTTP reject boolean indexes; raw Pydantic literals remain separately observable.");
    add_compatibility<indexed_choice>(cases, "boolean true index", "IndexedChoice", R"([true,"text"])", false, false, false,
