@@ -1,5 +1,6 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_state.hpp>
@@ -34,12 +35,12 @@ namespace forge::swarm::storage {
 catalog::impl::impl(forge::db::object::store value, options settings)
    : objects(std::move(value)), config(std::move(settings)) {
    if (!config.cpu.valid() || !config.database || config.max_inflight == 0U || config.max_inflight > 32U) {
-      throw exceptions::invalid_options{"catalog requires CPU/DB executors and max_inflight in 1..32"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "catalog requires CPU/DB executors and max_inflight in 1..32");
    }
    const auto runtime = objects.runtime_options();
    if (runtime.writes != forge::db::object::write_policy::single_writer ||
        runtime.id_allocation != forge::db::object::id_allocation_policy::monotonic) {
-      throw exceptions::invalid_options{"catalog requires single-writer ObjectDB with monotonic IDs"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "catalog requires single-writer ObjectDB with monotonic IDs");
    }
 }
 
@@ -47,7 +48,7 @@ catalog::impl::admission::admission(std::shared_ptr<impl> value) : owner(std::mo
    auto count = owner->inflight.load(std::memory_order_relaxed);
    do {
       if (count >= owner->config.max_inflight) {
-         throw core::exceptions::storage_busy{"catalog operation limit is exhausted"};
+         FORGE_THROW_EXCEPTION(core::exceptions::storage_busy, "catalog operation limit is exhausted");
       }
    } while (!owner->inflight.compare_exchange_weak(count, count + 1U, std::memory_order_relaxed));
 }
@@ -58,14 +59,14 @@ catalog::impl::admission::~admission() {
 }
 
 void catalog::impl::check_token(std::stop_token token) {
-   if (token.stop_requested()) throw forge::asio::exceptions::canceled{"catalog operation canceled"};
+   if (token.stop_requested()) { FORGE_THROW_EXCEPTION(forge::asio::exceptions::canceled, "catalog operation canceled"); }
 }
 
 boost::asio::awaitable<void> catalog::impl::check_stop(std::stop_token token) {
    check_token(token);
    const auto state = co_await boost::asio::this_coro::cancellation_state;
    if (state.cancelled() != boost::asio::cancellation_type::none) {
-      throw forge::asio::exceptions::canceled{"catalog operation canceled"};
+      FORGE_THROW_EXCEPTION(forge::asio::exceptions::canceled, "catalog operation canceled");
    }
 }
 
@@ -76,17 +77,17 @@ void catalog::impl::validate_state(db::job_state state) {
       case db::job_state::seeding:
       case db::job_state::failed: return;
    }
-   throw exceptions::invalid_metadata{"catalog job state is invalid"};
+   FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog job state is invalid");
 }
 
 void catalog::impl::validate_settings(const job_settings& value) {
    validate_state(value.state);
-   if (value.expires_at < 0) throw exceptions::invalid_metadata{"catalog expiry must be nonnegative Unix seconds"};
+   if (value.expires_at < 0) { FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog expiry must be nonnegative Unix seconds"); }
 }
 
 void catalog::impl::validate_locator(const std::string& value) {
    if (value.empty() || value.size() > 4096U || value.find('\0') != std::string::npos) {
-      throw exceptions::invalid_metadata{"catalog locator must contain 1..4096 non-NUL bytes"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog locator must contain 1..4096 non-NUL bytes");
    }
 }
 
@@ -95,17 +96,17 @@ void catalog::impl::validate_row(const db::content& row) {
    validate_settings({row.state, row.priority, row.expires_at});
    try {
       if (core::calculate_swarm_id(row.manifest) != row.swarm) {
-         throw exceptions::invalid_metadata{"catalog descriptor does not match its identity"};
+         FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog descriptor does not match its identity");
       }
       if (row.checkpoint) core::validate_checkpoint(*row.checkpoint, row.manifest);
    } catch (const forge::exceptions::context_error&) {
-      throw exceptions::invalid_metadata{"catalog descriptor or checkpoint is inconsistent"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog descriptor or checkpoint is inconsistent");
    }
 }
 
 void catalog::impl::validate_page(const forge::db::core::page_request& page) {
    if (page.limit == 0U || page.limit > 32U) {
-      throw exceptions::invalid_options{"catalog pages must request 1..32 rows"};
+      FORGE_THROW_EXCEPTION(exceptions::invalid_options, "catalog pages must request 1..32 rows");
    }
 }
 
@@ -151,7 +152,7 @@ boost::asio::awaitable<std::shared_ptr<catalog>> catalog::impl::open(
       const auto contents = co_await tx.index<db::content_index, db::by_id>()
          .lower_bound(db::content::id_t{0}).page({.limit = 1});
       if (!contents.items.empty() || contents.next) {
-         throw exceptions::schema_mismatch{"catalog content exists without its schema singleton"};
+         FORGE_THROW_EXCEPTION(exceptions::schema_mismatch, "catalog content exists without its schema singleton");
       }
       co_await check_stop(token);
       co_await tx.insert(db::schema_state{});
@@ -182,12 +183,12 @@ boost::asio::awaitable<db::content> catalog::impl::create(
       [self, token, row = std::move(row)](forge::db::object::transaction& tx) mutable
          -> boost::asio::awaitable<db::content> {
          if (co_await self->lookup(tx, row.swarm, token)) {
-            throw exceptions::conflict{"catalog identity is already present"};
+            FORGE_THROW_EXCEPTION(exceptions::conflict, "catalog identity is already present");
          }
          auto existing = co_await tx.index<db::content_index, db::by_locator>().find(row.locator_key());
          if (existing) {
             static_cast<void>(co_await self->validate(std::move(*existing), token));
-            throw exceptions::conflict{"catalog locator is already present"};
+            FORGE_THROW_EXCEPTION(exceptions::conflict, "catalog locator is already present");
          }
          co_await check_stop(token);
          co_return co_await tx.create<db::content>([row = std::move(row)](db::content& value) mutable {
@@ -212,7 +213,7 @@ boost::asio::awaitable<void> catalog::impl::update(
    co_await mutate<void>(self, token, [self, id, settings, token](forge::db::object::transaction& tx)
       -> boost::asio::awaitable<void> {
       const auto row = co_await self->lookup(tx, id, token);
-      if (!row) throw exceptions::missing_metadata{"catalog content is missing"};
+      if (!row) { FORGE_THROW_EXCEPTION(exceptions::missing_metadata, "catalog content is missing"); }
       co_await check_stop(token);
       co_await tx.modify(row->id, [settings](db::content& current) {
          current.state = settings.state;
@@ -227,7 +228,7 @@ boost::asio::awaitable<void> catalog::impl::erase(
    co_await mutate<void>(self, token, [self, id, token](forge::db::object::transaction& tx)
       -> boost::asio::awaitable<void> {
       const auto row = co_await self->lookup(tx, id, token);
-      if (!row) throw exceptions::missing_metadata{"catalog content is missing"};
+      if (!row) { FORGE_THROW_EXCEPTION(exceptions::missing_metadata, "catalog content is missing"); }
       co_await check_stop(token);
       co_await tx.erase(row->id);
    });
@@ -245,7 +246,7 @@ boost::asio::awaitable<forge::db::object::object_page<db::content>> catalog::imp
       .equal_range(state).page(std::move(page));
    for (auto& row : result.items) {
       row = co_await self->validate(std::move(row), token);
-      if (row.state != state) throw exceptions::invalid_metadata{"catalog state index is inconsistent"};
+      if (row.state != state) { FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog state index is inconsistent"); }
    }
    co_await check_stop(token);
    co_return result;
@@ -262,7 +263,7 @@ boost::asio::awaitable<forge::db::object::object_page<db::content>> catalog::imp
       .range(std::numeric_limits<std::int64_t>::min(), exclusive).page(std::move(page));
    for (auto& row : result.items) {
       row = co_await self->validate(std::move(row), token);
-      if (row.expires_at >= exclusive) throw exceptions::invalid_metadata{"catalog expiry index is inconsistent"};
+      if (row.expires_at >= exclusive) { FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog expiry index is inconsistent"); }
    }
    co_await check_stop(token);
    co_return result;

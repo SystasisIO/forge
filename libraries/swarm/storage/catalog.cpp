@@ -1,5 +1,6 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/co_spawn.hpp>

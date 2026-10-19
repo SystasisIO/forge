@@ -66,7 +66,7 @@ struct catalog::impl {
          .lower_bound(db::schema_state::id_t{0}).page({.limit = 2});
       if (rows.items.size() != 1U || rows.next || rows.items.front().id != db::schema_id ||
           rows.items.front().version != db::schema_version) {
-         throw exceptions::schema_mismatch{"catalog requires exactly the current schema singleton"};
+         FORGE_THROW_EXCEPTION(exceptions::schema_mismatch, "catalog requires exactly the current schema singleton");
       }
    }
 
@@ -78,7 +78,7 @@ struct catalog::impl {
       if (row) {
          row = co_await validate(std::move(*row), token);
          if (row->swarm != id) {
-            throw exceptions::invalid_metadata{"catalog identity index points to a different content row"};
+            FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "catalog identity index points to a different content row");
          }
       }
       co_await check_stop(token);

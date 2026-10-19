@@ -1,5 +1,6 @@
 module;
 
+#include <forge/exceptions/macros.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -38,7 +39,7 @@ catalog::checkpoint::~checkpoint() = default;
 void catalog::checkpoint::validate_binding(const db::content& row, const binding& expected) {
    if (row.id != expected.row || row.swarm != expected.swarm || row.locator != expected.locator ||
        row.manifest != expected.manifest) {
-      throw exceptions::missing_metadata{"checkpoint binding no longer identifies the same catalog content"};
+      FORGE_THROW_EXCEPTION(exceptions::missing_metadata, "checkpoint binding no longer identifies the same catalog content");
    }
 }
 
@@ -51,7 +52,7 @@ boost::asio::awaitable<std::shared_ptr<core::checkpoint_store>> catalog::impl::b
    co_await require_schema(read);
    auto row = co_await self->lookup(read, id, token);
    if (!row || row->locator != locator) {
-      throw exceptions::missing_metadata{"checkpoint content or locator is missing"};
+      FORGE_THROW_EXCEPTION(exceptions::missing_metadata, "checkpoint content or locator is missing");
    }
    co_await check_stop(token);
    co_return std::make_shared<checkpoint>(std::move(self), std::move(*row));
@@ -75,13 +76,13 @@ boost::asio::awaitable<void> catalog::checkpoint::async_save(core::resume_state 
 boost::asio::awaitable<std::optional<core::resume_state>> catalog::checkpoint::load(
    std::shared_ptr<impl> self, std::shared_ptr<const binding> expected,
    core::swarm_id id, std::stop_token token) {
-   if (id != expected->swarm) throw exceptions::invalid_metadata{"checkpoint requested for a different identity"};
+   if (id != expected->swarm) { FORGE_THROW_EXCEPTION(exceptions::invalid_metadata, "checkpoint requested for a different identity"); }
    co_await impl::check_stop(token);
    auto read = co_await self->objects.begin_read();
    co_await impl::require_schema(read);
    co_await impl::check_stop(token);
    auto row = co_await read.find(expected->row);
-   if (!row) throw exceptions::missing_metadata{"checkpoint catalog content was erased"};
+   if (!row) { FORGE_THROW_EXCEPTION(exceptions::missing_metadata, "checkpoint catalog content was erased"); }
    row = co_await self->validate(std::move(*row), token);
    row = co_await self->config.cpu.execute({"swarm.catalog.binding", token},
       [row = std::move(*row), expected]() mutable {
@@ -114,14 +115,14 @@ boost::asio::awaitable<void> catalog::checkpoint::save(
          co_await impl::check_stop(token);
          // Re-read under ObjectDB's writer gate; never replace a row captured by the handle.
          auto row = co_await tx.find(expected->row);
-         if (!row) throw exceptions::missing_metadata{"checkpoint catalog content was erased"};
+         if (!row) { FORGE_THROW_EXCEPTION(exceptions::missing_metadata, "checkpoint catalog content was erased"); }
          row = co_await self->validate(std::move(*row), token);
          auto checked = co_await self->config.cpu.execute({"swarm.catalog.checkpoint.compare", token},
             [expected, row = std::move(*row), state = std::move(state)]() mutable {
                validate_binding(row, *expected);
                if (row.checkpoint && (state.generation < row.checkpoint->generation ||
                    (state.generation == row.checkpoint->generation && state != *row.checkpoint))) {
-                  throw exceptions::stale_checkpoint{"checkpoint generation is stale or conflicting"};
+                  FORGE_THROW_EXCEPTION(exceptions::stale_checkpoint, "checkpoint generation is stale or conflicting");
                }
                const bool identical = row.checkpoint && state == *row.checkpoint;
                return std::pair{std::move(state), identical};
