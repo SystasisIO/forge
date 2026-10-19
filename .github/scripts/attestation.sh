@@ -97,7 +97,8 @@ for relative in ('document.schema.json', 'python/models.py', 'python/schema_evid
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
 if cleanup:
-    for name in ('build', 'package-consumer', 'package-missing-backend', 'package-external',
+    for name in ('build', 'package-core-lightweight', 'package-consumer', 'package-oauth2',
+                 'package-missing-backend', 'package-external',
                  'package-unpatched', 'forge-external', 'cjose-external', 'cjose-upstream-source',
                  'cjose-upstream-build', 'cjose-upstream-prefix', 'cjose-upstream-control', 'interop',
                  'jansson-build', 'jansson-source', 'llvm-project', 'contract-runtimes',
@@ -199,6 +200,13 @@ case "$phase" in
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|openapi_wire_baseline)$' \
          > "$work/raw/tests.log" 2>&1
+      # Reuse the existing Core consumer to reject eager backend discovery or
+      # cross-export guards before the larger installed-package/SDK checks.
+      cmake -S tests/package_core_lightweight -B "$work/package-core-lightweight" "${options[@]}" \
+         -DForge_DIR="$build" -DCMAKE_DISABLE_FIND_PACKAGE_CJOSE=ON -DCMAKE_DISABLE_FIND_PACKAGE_cjose=ON
+      cmake --build "$work/package-core-lightweight" -j4 >> "$work/raw/compile.log" 2>&1
+      "$work/package-core-lightweight/forge_package_core_lightweight"
+      printf 'PASS\n' > "$work/evidence/core-backend-isolation.txt"
       ;;
    boundary)
       # Reuse the same build tree after the independent early qualification.
@@ -272,6 +280,11 @@ PY
       cmake --build "$work/package-consumer" -j4 >> "$work/raw/compile.log" 2>&1
       ctest --test-dir "$work/package-consumer" --no-tests=error -j1 \
          --output-junit "$work/evidence/packages.xml"
+      cmake -S tests/package_auth_liboauth2_component -B "$work/package-oauth2" "${options[@]}" \
+         -C "$build/tests/ForgePackageConsumerCache.cmake" -DFORGE_TEST_ATTESTATION_LOOKUPS=ON
+      cmake --build "$work/package-oauth2" -j4 >> "$work/raw/compile.log" 2>&1
+      "$work/package-oauth2/forge_package_auth_liboauth2_component"
+      printf 'PASS\n' > "$work/evidence/oauth2-backend-link.txt"
       cmake -S tests/package_attestation_missing_backend -B "$work/package-missing-backend" "${options[@]}" \
          -C "$build/tests/ForgePackageConsumerCache.cmake"
       printf 'PASS\n' > "$work/evidence/missing-backend.txt"
@@ -324,6 +337,7 @@ PY
       fi
       cmake -S guest -B "$work/contract-sdk" "${options[@]}" \
          -DFORGE_CONTRACT_PROFILE=developer \
+         -DCMAKE_DISABLE_FIND_PACKAGE_CJOSE=ON -DCMAKE_DISABLE_FIND_PACKAGE_cjose=ON \
          -DFORGE_CONTRACT_FORGE_DIR="$build/forge-package-install/lib/cmake/Forge" \
          -DClang_DIR="$llvm_root/lib/cmake/clang" -DLLVM_DIR="$llvm_root/lib/cmake/llvm" \
          -DFORGE_CONTRACT_SYSROOT="$work/sysroot" -DFORGE_CONTRACT_CLANG="$llvm_root/bin/clang++" \

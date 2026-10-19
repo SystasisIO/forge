@@ -1000,6 +1000,22 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ForgeTargets.cmake")
 
+# A native dependency from another export set must not impose a package-wide
+# missing-target guard on unrequested components. Restore each original edge
+# only after its component-scoped backend qualification has succeeded.
+if("crypto_jose" IN_LIST _FORGE_COMPONENTS)
+   get_target_property(_forge_jose_links Forge::forge_crypto_jose INTERFACE_LINK_LIBRARIES)
+   if(NOT "$<LINK_ONLY:cjose::cjose_static>" IN_LIST _forge_jose_links)
+      target_link_libraries(Forge::forge_crypto_jose INTERFACE "$<LINK_ONLY:cjose::cjose_static>")
+   endif()
+endif()
+if("auth_liboauth2" IN_LIST _FORGE_COMPONENTS)
+   get_target_property(_forge_oauth2_links Forge::oauth2_internal INTERFACE_LINK_LIBRARIES)
+   if(NOT "cjose::cjose_static" IN_LIST _forge_oauth2_links)
+      target_link_libraries(Forge::oauth2_internal INTERFACE cjose::cjose_static)
+   endif()
+endif()
+
 foreach(_forge_component IN LISTS _FORGE_REQUESTED_COMPONENTS)
    if("${_forge_component}" STREQUAL "all")
       if(NOT TARGET Forge::forge)

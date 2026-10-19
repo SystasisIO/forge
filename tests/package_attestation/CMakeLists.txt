@@ -4,7 +4,21 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(Forge CONFIG REQUIRED COMPONENTS core)
+if(TARGET cjose::cjose_static)
+   message(FATAL_ERROR "Core-only lookup must not discover the JOSE backend")
+endif()
 find_package(Forge CONFIG REQUIRED COMPONENTS auth_attestation auth_api crypto_jose codec_json)
+get_target_property(_attestation_links_before Forge::forge_crypto_jose INTERFACE_LINK_LIBRARIES)
+if(NOT "$<LINK_ONLY:cjose::cjose_static>" IN_LIST _attestation_links_before
+   OR "cjose::cjose_static" IN_LIST _attestation_links_before)
+   message(FATAL_ERROR "JOSE must retain its private qualified backend link")
+endif()
+find_package(Forge CONFIG REQUIRED COMPONENTS crypto_jose)
+get_target_property(_attestation_links_after Forge::forge_crypto_jose INTERFACE_LINK_LIBRARIES)
+if(NOT _attestation_links_before STREQUAL _attestation_links_after)
+   message(FATAL_ERROR "Repeated JOSE lookup changed the qualified backend binding")
+endif()
 
 # Override expectations only, never discovery, for a separate external-backend consumer.
 set(_attestation_cjose_libdir "${Forge_DIR}/../..")

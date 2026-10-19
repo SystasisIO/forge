@@ -60,8 +60,7 @@ target_link_libraries(oauth2-internal PUBLIC
    OpenSSL::SSL
    OpenSSL::Crypto
    Jansson::Jansson
-   "$<BUILD_INTERFACE:cjose::cjose_static>"
-   "$<INSTALL_INTERFACE:cjose::cjose_static>"
+   "$<BUILD_LOCAL_INTERFACE:cjose::cjose_static>"
    PkgConfig::FORGE_OAUTH2_PCRE2
    Threads::Threads
 )
