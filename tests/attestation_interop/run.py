@@ -62,6 +62,13 @@ def invoke(command, stage, evidence):
                                  timeout=TIMEOUT, env=env, check=False)
     except (OSError, subprocess.TimeoutExpired):
         raise HarnessError() from None
+    detail = process.stderr.decode("ascii", errors="replace").strip()
+    allowed = {"arguments", "public-jwk-write", "claims-parse", "document-validate", "payload-write",
+               "jose-prepare", "sign", "jose-complete", "self-verify", "token-write", "schema-export",
+               "schema-write", "load-key", "token-read"}
+    prefix = "interop harness error; step="
+    if process.returncode == 2 and detail.startswith(prefix) and detail[len(prefix):] in allowed:
+        evidence["last_driver_step"] = detail[len(prefix):]
     return process
 
 
@@ -217,7 +224,8 @@ def main():
     except Exception:
         print("HARNESS_ERROR: evidence not written", file=sys.stderr)
         return 2
-    print("J2/J3 " + report["status"] + "; last_step=" + report["last_step"])
+    detail = "; driver_step=" + report["last_driver_step"] if "last_driver_step" in report else ""
+    print("J2/J3 " + report["status"] + "; last_step=" + report["last_step"] + detail)
     return {"PASS": 0, "FAILED": 1, "HARNESS_ERROR": 2}[report["status"]]
 
 

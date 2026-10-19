@@ -42,6 +42,10 @@ if(TARGET forge_crypto_jose)
    add_executable(forge_attestation_interop attestation_interop/driver.cpp)
    target_link_libraries(forge_attestation_interop PRIVATE
       forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_base64 forge_codec_hex)
+   add_test(NAME test_forge_attestation_emit COMMAND forge_attestation_interop
+      emit "${CMAKE_CURRENT_BINARY_DIR}/attestation-emit-smoke")
+   add_test(NAME test_forge_attestation_schema_export COMMAND forge_attestation_interop
+      schema "${CMAKE_CURRENT_BINARY_DIR}/attestation-schema-smoke")
    add_executable(forge_attestation_benchmark attestation_boundary/benchmark.cpp)
    target_link_libraries(forge_attestation_benchmark PRIVATE
       forge_asio forge_crypto_jose forge_auth_attestation forge_codec_json forge_codec_hex forge_variant)

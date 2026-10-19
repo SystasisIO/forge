@@ -162,7 +162,7 @@ case "$phase" in
          forge_attestation_interop forge_attestation_benchmark -j4 2>&1 | tee "$work/raw/compile.log"
       ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
-         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy)$' \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    boundary)
@@ -178,7 +178,7 @@ case "$phase" in
    test)
       ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
-         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|attestation_emit|attestation_schema_export|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    benchmark)

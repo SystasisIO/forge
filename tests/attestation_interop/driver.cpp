@@ -29,6 +29,7 @@ namespace jose = forge::crypto::jose;
 namespace schema = forge::schema;
 namespace base64 = forge::codec::base64;
 using document = att::document<forge::variant_object>;
+std::string_view last_step = "arguments";
 
 constexpr auto issuer = "https://issuer.example.test";
 constexpr auto audience = "https://resource.example.test";
@@ -66,8 +67,7 @@ void write_file(const std::filesystem::path& path, std::string_view value) {
    }
 }
 
-[[nodiscard]] std::string write_json(const auto& value) {
-   auto result = json::write(value);
+[[nodiscard]] std::string checked_json(json::write_result result) {
    if (!result.ok()) {
       throw std::runtime_error{"cannot encode test artifact"};
    }
@@ -146,7 +146,9 @@ void emit(const std::filesystem::path& directory) {
    public_jwk("kty", "EC")("crv", "P-256")("kid", key.kid)
        ("x", base64::encode(std::span<const std::uint8_t>{point}.subspan(1, 32), encoding))
        ("y", base64::encode(std::span<const std::uint8_t>{point}.subspan(33, 32), encoding));
-   write_file(directory / "public.jwk", write_json(forge::variant{public_jwk}));
+   last_step = "public-jwk-write";
+   write_file(directory / "public.jwk", checked_json(json::write_value(forge::variant{public_jwk})));
+   last_step = "claims-parse";
    const auto claims = json::read_value(
        R"({"object":"o_17","generation":"18446744073709551615","ranges":[{"offset":"9007199254740993","length":"1"}],"note":"\u043c\u0435\u0434\u0438\u0430"})",
        strict_options());
@@ -157,21 +159,32 @@ void emit(const std::filesystem::path& directory) {
    const auto value = document{.iss = issuer, .aud = audience,
        .jti = "g_" + forge::codec::hex::encode(random), .iat = 1800000000, .nbf = 1800000000, .exp = 1800000300,
        .att = {.purpose = purpose, .schema = schema_id, .claims = claims.value.get_object()}};
+   last_step = "document-validate";
    value.validate(profile(), std::chrono::sys_seconds{std::chrono::seconds{1800000100}});
-   auto prepared = jose::prepare(write_json(value), key, {.typ = "forge-attestation+jwt"});
+   last_step = "payload-write";
+   const auto payload = checked_json(json::write(value));
+   last_step = "jose-prepare";
+   auto prepared = jose::prepare(payload, key, {.typ = "forge-attestation+jwt"});
+   last_step = "sign";
    const auto private_key = forge::crypto::asymmetric::p256::private_key::regenerate(
        forge::crypto::digest::sha256{std::string(63, '0') + '1'});
    const auto signature = private_key.sign_compact(prepared.signing_digest());
+   last_step = "jose-complete";
    const auto token = prepared.complete(std::span<const std::uint8_t>{signature}.subspan(1));
+   last_step = "self-verify";
    verify(token, key);
+   last_step = "token-write";
    write_file(directory / "forge.jwt", token);
 }
 
 void export_schema(const std::filesystem::path& directory) {
+   last_step = "schema-export";
+   std::filesystem::create_directories(directory);
    auto rules = att::document_schema<forge::variant_object>();
    rules.root.properties.at("att").properties.at("claims") = product_schema().root;
    const auto exported = forge::variant_schema::from_input(schema::json_schema(rules));
-   write_file(directory / "document.schema.json", write_json(exported));
+   last_step = "schema-write";
+   write_file(directory / "document.schema.json", checked_json(json::write_value(exported)));
 }
 } // namespace
 
@@ -188,6 +201,7 @@ int main(int argc, char** argv) {
          return 0;
       }
       if (argc == 4 && std::string_view{argv[1]} == "verify") {
+         last_step = "load-key";
          const auto key = load_key(argv[3]);
          if (!std::filesystem::is_regular_file(argv[2])) {
             throw std::runtime_error{"missing test token"};
@@ -196,6 +210,7 @@ int main(int argc, char** argv) {
             std::cout << "REJECT\n";
             return 1;
          }
+         last_step = "token-read";
          const auto token = read_file(argv[2], att::max_compact_bytes);
          try {
             verify(token, key);
@@ -207,7 +222,7 @@ int main(int argc, char** argv) {
          return 0;
       }
    } catch (const std::exception&) {
-      std::cerr << "interop harness error\n";
+      std::cerr << "interop harness error; step=" << last_step << '\n';
    }
    return 2;
 }
