@@ -33,7 +33,18 @@ including an intermediate scope's own stop, without suppressing real host
 failures. The seven prior WASM fixture hashes remain unchanged. See the
 [publication checkpoint](../donors/forge-wamr-dev-integration-20261018.md#publication-checkpoint-2026-10-19)
 for strict proof boundaries and actual CI toolchain failures. Fresh remote,
-physical-provider, package and product gates remain open; this is not acceptance.
+package and product gates remain open; this is not acceptance.
+
+The CI50 follow-up reproduces the executor namespace crash in CMake4.4.3's
+synthetic BMI graph. The same configuration with CMake3.31.6 compiles and passes
+43/43 JIT-OFF SDK cases (1,397 assertions, no skips or expected failures).
+CI pins checksum-verified CMake3.31.6 without changing runtime FP flags or APIs;
+fresh remote confirmation is still required. The scoped publication map audit
+finds one correct WAMR C provider per execution/compiler image and forty physical
+WAMR TLS descriptor/backing matches. It does not qualify runtime TLS behavior,
+the unused final-image SoftFloat state, an LLVM-free package or downstream
+processes. The explicit Linux source-toolchain candidate remains unqualified
+until its native ABI checks and the unchanged full Forge gates actually run.
 
 The publication reconciliation also retires unregistered EOS-OC compiler-test
 scaffolding that depends on the approved-removed raw entry ABI. Its immutable

@@ -9,6 +9,8 @@ on:
       - .github/scripts/check-llvm-cxx-abi.py
       - .github/scripts/check-vm-wasm-toolchain.py
       - .github/scripts/setup-vm-wasm-toolchain.sh
+      - .github/scripts/capture-vm-wasm-module-failure.py
+      - .github/scripts/setup-vm-wasm-cmake.sh
       - .github/probes/llvm-cxx-abi/**
       - .github/scripts/install-glaze.sh
       - .clang-format
@@ -73,6 +75,58 @@ env:
     test_forge_wamr_load_args
 
 jobs:
+  linux-toolchain:
+    name: ubuntu-24.04 / dedicated LLVM22.1.8 libc++ source bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      key: ${{ steps.identity.outputs.key }}
+      sha256: ${{ steps.bootstrap.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test metadata and fail-closed admission helpers (no LLVM build)
+        run: python3 .github/probes/llvm-cxx-abi/test_toolchain.py
+
+      - name: Install and qualify pinned noble Clang22.1.8 stage0 (not the output C++ runtime)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3 binutils xz-utils \
+            build-essential zlib1g-dev libzstd-dev ca-certificates gnupg
+          mkdir -p build/linux-toolchain
+          bash .github/scripts/setup-vm-wasm-toolchain.sh build/linux-toolchain stage0-linux
+          dpkg-query --show > build/linux-toolchain/stage0-packages.txt
+
+      - name: Bind source, recipe, stage0 and platform identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          key=$(python3 .github/scripts/check-vm-wasm-toolchain.py recipe build/linux-toolchain/recipe.json)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Explicit source build and relocated ABI qualification (-j2, one linker)
+        id: bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/setup-vm-wasm-toolchain.sh build/linux-toolchain bootstrap-linux \
+            "$RUNNER_TEMP/linux-toolchain-bundle" build/linux-toolchain/recipe.json
+
+      - name: Publish only the qualified immutable toolchain
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm22.1.8-linux-x86-${{ steps.identity.outputs.key }}
+          path: ${{ runner.temp }}/linux-toolchain-bundle/*
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-llvm-source-bootstrap-evidence
+          path: build/linux-toolchain/**
+
   style:
     name: ubuntu-26.04 / clang-format 22
     runs-on: ubuntu-26.04
@@ -100,6 +154,9 @@ jobs:
             tests/vm_wasm/context_exit_allocation_failure_probe.cpp \
             tests/package_vm_wasm_interpret_component/main.cpp \
             .github/probes/llvm-cxx-abi/main.cpp \
+            .github/probes/llvm-cxx-abi/bootstrap_abi.hxx \
+            .github/probes/llvm-cxx-abi/bootstrap_abi.cpp \
+            .github/probes/llvm-cxx-abi/bootstrap_abi_main.cpp \
             | xargs -0 clang-format-22 --dry-run --Werror
 
   native:
@@ -108,16 +165,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, macos-15-intel]
+        os: [macos-15-intel]
         build_type: [Debug, Release]
-    steps:
+    steps: &native-steps
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Install exact22.1.8 VM toolchain without source fallback
+        if: runner.os == 'macOS'
         timeout-minutes: 20
         run: bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm/toolchain
+
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
+          path: ${{ runner.temp }}/linux-toolchain-bundle
+
+      - name: Verify and consume the qualified Linux toolchain (no source fallback)
+        if: runner.os == 'Linux'
+        run: >-
+          bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm/toolchain consume-linux
+          "$RUNNER_TEMP/linux-toolchain-bundle" "$RUNNER_TEMP/forge-linux-toolchain"
+          '${{ needs.linux-toolchain.outputs.sha256 }}' '${{ needs.linux-toolchain.outputs.key }}'
 
       - name: Require live libc++220108 headers before Forge configure
         shell: bash
@@ -138,6 +209,9 @@ jobs:
           echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           "$GITHUB_WORKSPACE/.github/scripts/install-glaze.sh" "$RUNNER_TEMP/forge-glaze"
           echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/forge-glaze;$(brew --prefix);$(brew --prefix boost);$(brew --prefix libngtcp2);$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Activate qualified CMake3.31.6 after dependency installation
+        run: bash .github/scripts/setup-vm-wasm-cmake.sh build/vm-wasm/toolchain/cmake
 
       - name: Check out pinned donor for the mapping gate
         shell: bash
@@ -208,10 +282,22 @@ jobs:
             build/vm-wasm/runtime-registry.json
             build/vm-wasm/Testing/Temporary/LastTest.log
             build/vm-wasm/CMakeFiles/CMakeConfigureLog.yaml
-            build/vm-wasm/toolchain/*
+            build/vm-wasm/toolchain/**
             build/vm-wasm/tests/vm_wasm_execution/fp_status/*.linkmap
 
-  # Linux must qualify the official package's actual C++ ABI before any Forge build.
+  native-linux:
+    needs: linux-toolchain
+    if: ${{ !cancelled() }}
+    name: ${{ matrix.os }} / ${{ matrix.build_type }} / WAMR interpreter
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04]
+        build_type: [Debug, Release]
+    steps: *native-steps
+
+  # LLVM-OFF runtime tests remain separate from the JIT/compiler qualification.
   llvm-wamr:
     name: ${{ matrix.os }} / ${{ matrix.arch }} / WAMR ${{ matrix.backend }} / compiler-AOT=${{ (github.event_name == 'pull_request' || inputs.qualify_compiler_aot) && matrix.backend == 'jit' }}
     runs-on: ${{ matrix.os }}
@@ -221,41 +307,28 @@ jobs:
         include:
           - {os: macos-15, arch: arm64, backend: interpreter}
           - {os: macos-15, arch: arm64, backend: jit}
-          - {os: ubuntu-24.04, arch: x86_64, backend: jit}
-    env:
+    env: &wamr-env
       WAMR_JIT: ${{ matrix.backend == 'jit' && 'ON' || 'OFF' }}
       WAMR_AOT: ${{ (github.event_name == 'pull_request' || inputs.qualify_compiler_aot) && matrix.backend == 'jit' && 'ON' || 'OFF' }}
       WAMR_INTERPRETER_ONLY: ${{ matrix.backend == 'interpreter' && 'ON' || 'OFF' }}
       WAMR_BUILD_DIR: build/vm-wasm-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.backend }}
-    steps:
+    steps: &wamr-steps
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Qualify the official Linux X64 LLVM archive (mandatory on x86)
+      - uses: actions/download-artifact@v4
         if: runner.os == 'Linux'
-        timeout-minutes: 30
-        shell: bash
-        run: |
-          set -euo pipefail
-          trap 'echo "HARNESS_ERROR: official LLVM Linux X64 bootstrap/preflight failed" >&2' ERR
-          test "$(uname -s)" = Linux
-          test "$(uname -m)" = x86_64
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3 binutils xz-utils \
-            zlib1g-dev libzstd-dev libxml2-dev libedit-dev libffi-dev libtinfo6
-          archive="$RUNNER_TEMP/LLVM-22.1.8-Linux-X64.tar.xz"
-          curl --fail --location --retry 3 --max-time 900 \
-            https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz \
-            --output "$archive"
-          echo "df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384  $archive" | sha256sum --check --strict
-          mkdir -p "$WAMR_BUILD_DIR"
-          tar -tJf "$archive" > "$WAMR_BUILD_DIR/llvm-archive-files.txt"
-          llvm_prefix="$RUNNER_TEMP/forge-official-llvm-22.1.8"
-          mkdir "$llvm_prefix"
-          tar -xJf "$archive" --strip-components=1 -C "$llvm_prefix"
-          python3 .github/scripts/check-llvm-cxx-abi.py "$llvm_prefix" \
-            "$WAMR_BUILD_DIR/llvm-abi-preflight" 2>&1 | tee "$WAMR_BUILD_DIR/llvm-abi-preflight.log"
+        with:
+          name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
+          path: ${{ runner.temp }}/linux-toolchain-bundle
+
+      - name: Verify and consume the qualified Linux toolchain (no source fallback)
+        if: runner.os == 'Linux'
+        run: >-
+          bash .github/scripts/setup-vm-wasm-toolchain.sh "$WAMR_BUILD_DIR/toolchain" consume-linux
+          "$RUNNER_TEMP/linux-toolchain-bundle" "$RUNNER_TEMP/forge-linux-toolchain"
+          '${{ needs.linux-toolchain.outputs.sha256 }}' '${{ needs.linux-toolchain.outputs.key }}'
 
       - name: Install qualified ARM22.1.8 bottle without source fallback
         if: runner.os == 'macOS'
@@ -284,6 +357,9 @@ jobs:
           "$GITHUB_WORKSPACE/.github/scripts/install-glaze.sh" "$RUNNER_TEMP/forge-glaze"
           echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/forge-glaze;$(brew --prefix);$(brew --prefix boost);$(brew --prefix libngtcp2);$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Activate qualified CMake3.31.6 after dependency installation
+        run: bash .github/scripts/setup-vm-wasm-cmake.sh "$WAMR_BUILD_DIR/toolchain/cmake"
 
       - name: Require the qualified LLVM package for JIT and compiler
         shell: bash
@@ -349,6 +425,10 @@ jobs:
           fi
           cmake --build "$WAMR_BUILD_DIR" --target "${targets[@]}" -j 2
 
+      - name: Capture exact module failure inputs without compiling
+        if: failure()
+        run: python3 .github/scripts/capture-vm-wasm-module-failure.py "$WAMR_BUILD_DIR" "$WAMR_BUILD_DIR/module-failure"
+
       - name: Verify every selected test and helper is built
         shell: bash
         run: |
@@ -371,8 +451,8 @@ jobs:
         with:
           name: wamr-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.backend }}-compiler-aot-${{ env.WAMR_AOT }}
           path: |
-            ${{ env.WAMR_BUILD_DIR }}/llvm-archive-files.txt
-            ${{ env.WAMR_BUILD_DIR }}/toolchain/*
+            ${{ env.WAMR_BUILD_DIR }}/module-failure/**
+            ${{ env.WAMR_BUILD_DIR }}/toolchain/**
             ${{ env.WAMR_BUILD_DIR }}/llvm-abi-preflight.log
             ${{ env.WAMR_BUILD_DIR }}/llvm-abi-preflight/*.txt
             ${{ env.WAMR_BUILD_DIR }}/llvm-abi-preflight/*.json
@@ -390,7 +470,22 @@ jobs:
             ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-optimizing-component/package-tests.*
             ${{ env.WAMR_BUILD_DIR }}/forge-package-vm-wasm-optimizing-component/*.linkmap
 
+  llvm-wamr-linux:
+    needs: linux-toolchain
+    if: ${{ !cancelled() }}
+    name: ${{ matrix.os }} / ${{ matrix.arch }} / WAMR ${{ matrix.backend }} / compiler-AOT=${{ (github.event_name == 'pull_request' || inputs.qualify_compiler_aot) && matrix.backend == 'jit' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, arch: x86_64, backend: jit}
+    env: *wamr-env
+    steps: *wamr-steps
+
   sanitizer:
+    needs: linux-toolchain
+    if: ${{ !cancelled() }}
     name: ubuntu-26.04 / interpreter / ASan+UBSan
     runs-on: ubuntu-26.04
     steps:
@@ -398,9 +493,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install exact22.1.8 VM toolchain without source fallback
-        timeout-minutes: 20
-        run: bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm-sanitizer/toolchain
+      - uses: actions/download-artifact@v4
+        with:
+          name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
+          path: ${{ runner.temp }}/linux-toolchain-bundle
+
+      - name: Verify and consume the qualified Linux toolchain (no source fallback)
+        run: >-
+          bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm-sanitizer/toolchain consume-linux
+          "$RUNNER_TEMP/linux-toolchain-bundle" "$RUNNER_TEMP/forge-linux-toolchain"
+          '${{ needs.linux-toolchain.outputs.sha256 }}' '${{ needs.linux-toolchain.outputs.key }}'
 
       - name: Require live libc++220108 headers before Forge configure
         shell: bash
@@ -421,6 +523,9 @@ jobs:
           echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           "$GITHUB_WORKSPACE/.github/scripts/install-glaze.sh" "$RUNNER_TEMP/forge-glaze"
           echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/forge-glaze;$(brew --prefix);$(brew --prefix boost);$(brew --prefix libngtcp2);$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Activate qualified CMake3.31.6 after dependency installation
+        run: bash .github/scripts/setup-vm-wasm-cmake.sh build/vm-wasm-sanitizer/toolchain/cmake
 
       - name: Configure sanitizer build
         shell: bash
@@ -477,9 +582,11 @@ jobs:
             build/vm-wasm-sanitizer/sanitizer-ctest.*
             build/vm-wasm-sanitizer/Testing/Temporary/LastTest.log
             build/vm-wasm-sanitizer/CMakeFiles/CMakeConfigureLog.yaml
-            build/vm-wasm-sanitizer/toolchain/*
+            build/vm-wasm-sanitizer/toolchain/**
 
   package:
+    needs: linux-toolchain
+    if: ${{ !cancelled() }}
     name: ubuntu-26.04 / relocatable package
     runs-on: ubuntu-26.04
     steps:
@@ -487,9 +594,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install exact22.1.8 VM toolchain without source fallback
-        timeout-minutes: 20
-        run: bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm-package/toolchain
+      - uses: actions/download-artifact@v4
+        with:
+          name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
+          path: ${{ runner.temp }}/linux-toolchain-bundle
+
+      - name: Verify and consume the qualified Linux toolchain (no source fallback)
+        run: >-
+          bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm-package/toolchain consume-linux
+          "$RUNNER_TEMP/linux-toolchain-bundle" "$RUNNER_TEMP/forge-linux-toolchain"
+          '${{ needs.linux-toolchain.outputs.sha256 }}' '${{ needs.linux-toolchain.outputs.key }}'
 
       - name: Require live libc++220108 headers before Forge configure
         shell: bash
@@ -510,6 +624,9 @@ jobs:
           echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           "$GITHUB_WORKSPACE/.github/scripts/install-glaze.sh" "$RUNNER_TEMP/forge-glaze"
           echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/forge-glaze;$(brew --prefix);$(brew --prefix boost);$(brew --prefix libngtcp2);$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Activate qualified CMake3.31.6 after dependency installation
+        run: bash .github/scripts/setup-vm-wasm-cmake.sh build/vm-wasm-package/toolchain/cmake
 
       - name: Configure package build
         shell: bash
@@ -541,7 +658,7 @@ jobs:
         if: always()
         with:
           name: wamr-package-toolchain
-          path: build/vm-wasm-package/toolchain/*
+          path: build/vm-wasm-package/toolchain/**
 
   donor-oracle:
     name: ubuntu-24.04 / original Catch2 bodies

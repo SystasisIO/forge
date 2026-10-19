@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed qualification of the SHA-pinned official Linux LLVM archive."""
+"""Fail-closed qualification of a pinned, relocated Linux LLVM/libc++ package."""
 
 import argparse
 import hashlib
@@ -62,7 +62,7 @@ def main():
     out = args.evidence.resolve()
     out.mkdir(parents=True, exist_ok=False)
     tools = {name: prefix / "bin" / name for name in ("clang", "clang++", "clang-scan-deps", "llvm-config", "llvm-nm")}
-    require(all(tool.is_file() for tool in tools.values()), "incomplete official LLVM toolchain")
+    require(all(tool.is_file() for tool in tools.values()), "incomplete pinned LLVM toolchain")
     version = command([tools["llvm-config"], "--version"], out / "version.txt").strip()
     require(version == "22.1.8", f"LLVM version is {version}")
     for tool in ("clang", "clang++", "clang-scan-deps"):
@@ -73,27 +73,45 @@ def main():
     targets = command([tools["llvm-config"], "--targets-built"], out / "targets.txt").split()
     require("X86" in targets, "LLVM native X86 target missing")
     cxxflags = command([tools["llvm-config"], "--cxxflags"], out / "llvm-cxxflags.txt")
-    require("-stdlib=libstdc++" not in cxxflags and "-fno-rtti" not in cxxflags, "contrary LLVM C++ metadata")
+    require("-stdlib=libstdc++" not in cxxflags and "-fno-rtti" not in cxxflags and "-fno-exceptions" not in cxxflags,
+            "contrary LLVM C++ metadata")
     lib = Path(command([tools["clang++"], "-stdlib=libc++", "-print-file-name=libc++.so"],
                        out / "libcxx-path.txt").strip())
     require(lib.is_absolute() and lib.is_file() and inside(lib, prefix), "bundled shared libc++ not resolved")
     libdir = lib.parent
     flags = "-stdlib=libc++"
     ldflags = f"-stdlib=libc++ -L{libdir} -Wl,-rpath,{libdir}"
-    env = dict(os.environ, CXXFLAGS=flags, LDFLAGS=ldflags,
-               LD_LIBRARY_PATH=f"{libdir}:{prefix / 'lib'}")
+    env = dict(os.environ, CC=str(tools["clang"]), CXX=str(tools["clang++"]), CXXFLAGS=flags, LDFLAGS=ldflags)
+    for variable in ("LD_LIBRARY_PATH", "LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH"):
+        env.pop(variable, None)
     probe = Path(__file__).resolve().parents[1] / "probes" / "llvm-cxx-abi"
-    preprocessed = command([tools["clang++"], "-stdlib=libc++", "-std=c++23", "-E", "-H",
-                            "-x", "c++", "-include", "vector", "/dev/null"], out / "headers.txt", env)
-    header_lines = [line for line in preprocessed.splitlines() if re.match(r"^\.+ ", line)]
-    require(header_lines, "missing actual header path evidence")
-    for line in header_lines:
-        header = Path(re.sub(r"^\.+ ", "", line).split(" (", 1)[0])
-        if "c++" in header.parts:
-            require(inside(header, prefix), f"C++ header outside pinned prefix: {header}")
-    macros = command([tools["clang++"], "-stdlib=libc++", "-std=c++23", "-dM", "-E", "-x", "c++",
-                      "-include", "vector", "/dev/null"], out / "macros.txt", env)
-    require(re.search(r"^#define _LIBCPP_VERSION 220108$", macros, re.M), "libc++ header version is not 220108")
+    command([sys.executable, Path(__file__).with_name("check-vm-wasm-toolchain.py"), "headers", out / "headers"],
+            out / "headers.txt", env)
+    reported = json.loads((out / "headers/header-result.json").read_text())
+    for header in reported["headers"].values():
+        require(inside(Path(header), prefix), f"C++ header outside pinned prefix: {header}")
+    tool_libraries = []
+    for name, tool in tools.items():
+        tool_libraries += dependencies(tool.resolve(), out, env, prefix, name)
+    for library in ("libc++.", "libc++abi.", "libunwind."):
+        require(any(file.name.startswith(library) for file in tool_libraries), f"missing actual {library} dependency")
+    command([prefix / "bin/forge-bootstrap-abi"], out / "bootstrap-abi-run.txt", env)
+    command([prefix / "bin/forge-bootstrap-abi-stage0"], out / "bootstrap-stage0-run.txt", env)
+    dependencies(prefix / "lib/libforge_bootstrap_abi.so", out, env, prefix, "bootstrap-dso")
+    dependencies(prefix / "bin/forge-bootstrap-abi", out, env, prefix, "bootstrap-client")
+    runtime = Path(command([tools["clang"], "--print-runtime-dir"], out / "compiler-rt-path.txt", env).strip())
+    require(inside(runtime, prefix) and list(runtime.glob("libclang_rt.asan*.a"))
+            and list(runtime.glob("libclang_rt.ubsan_standalone*.a")), "ASan/UBSan compiler-rt archives missing")
+    sanitizer = out / "bootstrap-abi-sanitized"
+    command([tools["clang++"], "-std=c++23", "-stdlib=libc++", "-fsanitize=address,undefined", "-shared-libasan",
+             probe / "bootstrap_abi_main.cpp", f"-L{prefix / 'lib'}", "-lforge_bootstrap_abi",
+             f"-Wl,-rpath,{prefix / 'lib'}", f"-Wl,-rpath,{runtime}", "-o", sanitizer],
+            out / "sanitizer-build.txt", env)
+    sanitizer_libraries = dependencies(sanitizer, out, env, prefix, "sanitizer")
+    require(any(file.name.startswith("libclang_rt.asan") for file in sanitizer_libraries),
+            "sanitizer smoke did not resolve bundled ASan")
+    command([sanitizer], out / "sanitizer-run.txt", dict(env, ASAN_OPTIONS="detect_leaks=1",
+                                                      UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"))
     build = out / "build"
     command(["cmake", "-S", probe, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
              f"-DCMAKE_C_COMPILER={tools['clang']}", f"-DCMAKE_CXX_COMPILER={tools['clang++']}",
@@ -143,8 +161,8 @@ def main():
                                                 "selected_libraries": len(selected), "libcxx": str(lib.resolve())}, indent=2) + "\n")
     with Path(os.environ["GITHUB_ENV"]).open("a") as github:
         github.write(f"CC={tools['clang']}\nCXX={tools['clang++']}\nLLVM_PREFIX={prefix}\n")
-        github.write(f"CXXFLAGS={flags}\nLDFLAGS={ldflags}\nLD_LIBRARY_PATH={env['LD_LIBRARY_PATH']}\n")
-    print("READY: official LLVM22.1.8 X86/RTTI/libc++ ABI preflight; full Forge tests still required")
+        github.write(f"CXXFLAGS={flags}\nLDFLAGS={ldflags}\n")
+    print("READY: pinned LLVM22.1.8 X86/RTTI/EH/libc++ ABI preflight; full Forge tests still required")
 
 
 if __name__ == "__main__":

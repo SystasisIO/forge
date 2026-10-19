@@ -79,14 +79,53 @@ rechecks 5,241 source/dependency paths with six explicitly reviewed overrides,
 an unchanged configuration and a clean source tree before/after execution.
 Documentation-only descendants do not relabel the tested source commit.
 
-Remote runs48/49 establish real blockers, not runtime passes: exact 22.1.8 apt
+Remote runs48/49/50 establish real blockers, not runtime passes: exact 22.1.8 apt
 packages and the Intel macOS bottle are unavailable; the official Linux X64
 LLVM archive passes its hash check but has `RTTI=NO`, rejected by the current
-integration gate. The corrected ARM profiles still require a fresh CI run.
+integration gate. Run50 still fails both ARM profiles at the same executor
+namespace lookup; direct leaf imports alone did not fix it.
 Fresh publication link-map/provider and installed/product qualification also
 remain separate gates. In particular, this JIT-ON matrix is not an LLVM-free
 runtime or performance-equivalence claim, and does not transfer the F6 package
 or product results to the publication branch. The migration remains unaccepted.
+
+## CI50 Follow-Up (2026-10-19)
+
+The ARM failure is reproduced locally with the actual Forge target graph and
+CMake4.4.3: `profile.cppm:8` and `compiled_module.cppm:14` produce ambiguous
+`forge` declarations, followed by the Clang ASTReader crash (frontend exit139).
+The graph contains additional `@synth_0` BMI variants. A flat twelve-module
+graph, the actual CI LLVM bottle and the full Boost1.92 headers did not reproduce
+it independently. This is a generator/compiler graph interaction, not evidence
+that the execution API or numeric profile needs to change.
+
+A fresh control changes only CMake to the qualified 3.31.6 generator. Its
+executor object builds without those variants; the complete JIT-OFF executor
+then builds and passes **43/43 cases and 1,397 assertions**, with zero failures,
+skips, aborts, timeouts or expected failures. Seven JIT cases are absent from
+this compile-time OFF profile; the prior JIT-ON fifty-case result stays separate.
+CI now selects checksum-pinned official CMake3.31.6 packages rather than changing
+public namespaces, floating-point flags or test selection. CMake4.4 is not
+qualified by this checkpoint. A fresh remote run is still required.
+
+The publication's eight reviewed map-only relinks preserve every binary byte
+and all 1,998 protected inputs. The physical audit covers seven execution
+images, three compiler images and one byte-only generator. All sixty exact
+WAMR marker definitions have a single correct role; no live cross-role WAMR
+C provider was found. Forty WAMR TLS descriptor/backing checks resolve to
+thread-local sections. SoftFloat's four TLS pairs are proven in its archive
+object only: these ten final WAMR images do not extract that state. This result
+does not establish runtime thread behavior or an LLVM-free package; LLVM22.1.8
+is expected in this JIT-ON graph. Separate installed/product gates remain open.
+
+Linux toolchain work remains qualification in progress. The candidate makes
+LLVM22.1.8/libc++220108 source provisioning an explicit, resource-bounded CI
+producer, not a hidden package fallback. Its output must pass the existing
+header, RTTI, C++ ABI and actual-library checks before any Forge lane consumes
+it. Static harness checks do not qualify the native build, performance, package
+or downstream products. Intel macOS provisioning is still a separate blocker.
+No runtime source, engine pin, public API, license or live product pin changes
+in this follow-up. Workspace receipts are under `wamr-ci-190-20261019-r6`.
 
 ## Language-Version Differences
 
