@@ -1259,6 +1259,15 @@ add_executable(
 target_link_libraries(test_forge_asio forge_asio Boost::included_unit_test_framework)
 add_test(NAME test_forge_asio COMMAND test_forge_asio WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
+if(APPLE AND (FORGE_ENABLE_VM_WASM_OPTIMIZING OR FORGE_ENABLE_TLSNOTARY))
+   find_package(Boost 1.90 REQUIRED CONFIG COMPONENTS process)
+   add_executable(test_forge_asio_child_signal_registration unit/main.cpp asio/child_signal_registration_tests.cpp)
+   target_link_libraries(test_forge_asio_child_signal_registration PRIVATE
+      forge_asio Boost::process Boost::included_unit_test_framework)
+   add_test(NAME test_forge_asio_child_signal_registration COMMAND test_forge_asio_child_signal_registration)
+   set_tests_properties(test_forge_asio_child_signal_registration PROPERTIES TIMEOUT 30)
+endif()
+
 # Keep replaceable allocation symbols out of the general Asio test executable.
 add_executable(test_forge_asio_task_admission asio/task_admission_tests.cpp)
 target_link_libraries(test_forge_asio_task_admission forge_asio Boost::included_unit_test_framework)
@@ -5100,4 +5109,31 @@ if(TARGET forge_auth_liboauth2)
          --test-command forge_package_auth_liboauth2_component
    )
    set_tests_properties(test_forge_package_auth_liboauth2_component PROPERTIES DEPENDS test_forge_package_install)
+endif()
+
+if(TARGET forge_net_tlsnotary)
+   add_executable(forge_tlsnotary_fault_worker tlsnotary/worker_fault.cpp)
+   add_executable(test_forge_net_tlsnotary tlsnotary/runtime_tests.cpp)
+   target_link_libraries(test_forge_net_tlsnotary PRIVATE forge_net_tlsnotary forge_net_tcp forge_crypto_pki OpenSSL::SSL)
+   target_compile_definitions(test_forge_net_tlsnotary PRIVATE
+      FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}"
+      FORGE_TLSNOTARY_FAULT_WORKER="$<TARGET_FILE:forge_tlsnotary_fault_worker>"
+      FORGE_TLSNOTARY_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}")
+   add_dependencies(test_forge_net_tlsnotary forge_tlsnotary_fault_worker)
+   add_test(NAME test_forge_net_tlsnotary COMMAND test_forge_net_tlsnotary)
+   set_tests_properties(test_forge_net_tlsnotary PROPERTIES TIMEOUT 450)
+   add_executable(test_forge_plugins_net_tlsnotary_session tlsnotary/plugin_tests.cpp)
+   target_link_libraries(test_forge_plugins_net_tlsnotary_session PRIVATE forge_plugins_net_tlsnotary_session forge_net_tcp forge_crypto_pki OpenSSL::SSL)
+   target_compile_definitions(test_forge_plugins_net_tlsnotary_session PRIVATE FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}")
+   add_test(NAME test_forge_plugins_net_tlsnotary_session COMMAND test_forge_plugins_net_tlsnotary_session)
+   set_tests_properties(test_forge_plugins_net_tlsnotary_session PROPERTIES TIMEOUT 120)
+   add_test(NAME test_forge_package_net_tlsnotary_component
+      COMMAND ${CMAKE_CTEST_COMMAND} --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_net_tlsnotary_component
+         ${CMAKE_BINARY_DIR}/forge-package-net-tlsnotary-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+         --test-command forge_package_net_tlsnotary_component
+            "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBEXECDIR}/forge/forge-tlsnotary-worker")
+   set_tests_properties(test_forge_package_net_tlsnotary_component PROPERTIES DEPENDS test_forge_package_install TIMEOUT 180)
 endif()

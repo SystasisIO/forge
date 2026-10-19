@@ -15,11 +15,11 @@ class NetPluginTests(unittest.TestCase):
       self.directory = tempfile.TemporaryDirectory(prefix="forge-net-layout-")
       self.addCleanup(self.directory.cleanup)
       self.root = Path(self.directory.name)
-      for family, children in (("net", ("http", "p2p")), ("net/http", ("server",)),
-                               ("net/p2p", ("node", "resolver"))):
+      for family, children in (("net", ("http", "p2p", "tlsnotary")), ("net/http", ("server",)),
+                               ("net/p2p", ("node", "resolver")), ("net/tlsnotary", ("session",))):
          self.write(f"plugins/{family}/CMakeLists.txt",
                     "".join(f"add_subdirectory({child})\n" for child in children))
-      for leaf in ("http/server", "p2p/node", "p2p/resolver"):
+      for leaf in ("http/server", "p2p/node", "p2p/resolver", "tlsnotary/session"):
          identity = "forge.plugins.net." + leaf.replace("/", ".")
          self.write(f"plugins/net/{leaf}/CMakeLists.txt",
                     f"add_library({identity.replace('.', '_')} STATIC plugin.cpp)\n")
@@ -47,6 +47,15 @@ class NetPluginTests(unittest.TestCase):
 
    def test_nested_families_pass(self):
       self.assertEqual(self.errors(), [])
+
+   def test_tlsnotary_leaf_identity_must_match_path(self):
+      self.write("plugins/net/tlsnotary/session/include/forge/plugins/net/tlsnotary/session/plugin.cppm",
+                 "export module forge.plugins.tlsnotary.session.plugin;\n")
+      self.assertTrue(any("network plugin module does not match its path" in error for error in self.errors()))
+
+   def test_tlsnotary_group_cannot_own_target(self):
+      self.write("plugins/net/tlsnotary/CMakeLists.txt", "add_library(forge_plugins_net_tlsnotary INTERFACE)\n")
+      self.assertTrue(any("grouping may only" in error for error in self.errors()))
 
    def test_descriptor_only_units_fail(self):
       for path in ("plugins/db/store/descriptor.cpp",

@@ -32,10 +32,31 @@ race-safe notifications and single-thread affine execution.
   Explicit stop-token waits also retain associated Asio cancellation; both
   sources wake the same mutex-protected waiter without changing caller filters.
 - `forge.asio.affine` — bounded synchronous execution on one owned OS thread.
+- `forge.asio.child_signal_registration` — checked native SIGCHLD registration
+  shared by child-process owners across injected runtimes on macOS. It owns no
+  child, process handle, scheduler, signal callback, or wait/reap policy.
 
 Target: `forge_asio`.
 
 Dependencies: Boost.Asio and threads.
+
+`child_signal_registration` starts empty. Call `acquire(executor)` outside a
+throwing owner constructor: a failure after native registration commits retains
+that same registration for explicit cleanup. The first owner requires the exact
+native default SIGCHLD disposition (`SIG_DFL`, zero flags, empty mask). Later
+owners may join only the unchanged registration installed by this component.
+Foreign handlers, ignored signals, custom default flags/masks, and auto-reaping
+are rejected without changing the disposition. Do not install another handler
+or reap another owner's child while registrations are active.
+
+After every owned child has exited/reaped and every process handle and callback
+has drained, call `release()` while its executor's context remains alive. Release
+is idempotent. A foreign change or checked unregister failure retains ownership
+and reports a typed Asio error; callers must restore the agreed handler and
+retry cleanup. Destroying an acquired registration terminates rather than
+silently unregistering or overwriting a foreign handler. Normal shutdown must
+explicitly release before destroying runtimes. This is a registration guard,
+not a process or shutdown framework.
 
 ## Stability
 

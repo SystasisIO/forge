@@ -131,6 +131,7 @@ Each library guide must be useful without reading source first:
 - [app](../libraries/app/README.md)
 - [net/http](../libraries/net/http/README.md)
 - [net/tls](../libraries/net/tls/README.md)
+- [net/tlsnotary](../libraries/net/tlsnotary/README.md) — optional native MPC-TLS sessions.
 - [net/websocket](../libraries/net/websocket/README.md)
 - [net/transport](../libraries/net/transport/README.md)
 - [net/tcp](../libraries/net/tcp/README.md)

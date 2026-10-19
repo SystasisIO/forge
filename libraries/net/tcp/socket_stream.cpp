@@ -28,6 +28,7 @@ module;
 module forge.net.tcp.connection;
 
 import forge.asio.notification;
+import forge.net.transport.exceptions;
 import forge.net.transport.stream;
 
 #include "details/socket_stream.hxx"
@@ -100,7 +101,7 @@ boost::asio::awaitable<void> socket_stream::async_write(std::span<const std::uin
    co_await asio::co_spawn(
        strand_,
        [self = std::move(self), bytes]() -> asio::awaitable<void> {
-          if (!self->valid()) {
+          if (!self->valid() || self->write_closed_) {
              FORGE_THROW_EXCEPTION(exceptions::closed, "invalid tcp stream");
           }
           auto error = boost::system::error_code{};
@@ -125,6 +126,9 @@ boost::asio::awaitable<std::vector<std::uint8_t>> socket_stream::async_read() {
           auto error = boost::system::error_code{};
           const auto size = co_await self->socket_->async_read_some(
               asio::buffer(writable), asio::redirect_error(asio::use_awaitable, error));
+          if (error == asio::error::eof) {
+             FORGE_THROW_EXCEPTION(transport::exceptions::end_of_stream, "tcp stream reached orderly EOF");
+          }
           if (error) {
              throw_read_write_error(error);
           }
@@ -148,6 +152,9 @@ boost::asio::awaitable<transport::chunk> socket_stream::async_read_chunk() {
           auto error = boost::system::error_code{};
           const auto size = co_await self->socket_->async_read_some(
               asio::buffer(writable), asio::redirect_error(asio::use_awaitable, error));
+          if (error == asio::error::eof) {
+             FORGE_THROW_EXCEPTION(transport::exceptions::end_of_stream, "tcp stream reached orderly EOF");
+          }
           if (error) {
              throw_read_write_error(error);
           }
@@ -155,6 +162,27 @@ boost::asio::awaitable<transport::chunk> socket_stream::async_read_chunk() {
        },
        asio::use_awaitable);
    co_return builder.commit(size);
+}
+
+boost::asio::awaitable<void> socket_stream::async_close_write() {
+   auto self = shared_from_this();
+   co_await asio::co_spawn(
+       strand_,
+       [self = std::move(self)]() -> asio::awaitable<void> {
+          if (!self->valid()) {
+             FORGE_THROW_EXCEPTION(exceptions::closed, "invalid tcp stream");
+          }
+          if (self->write_closed_) {
+             co_return;
+          }
+          auto error = boost::system::error_code{};
+          self->socket_->shutdown(asio_tcp::socket::shutdown_send, error);
+          if (error) {
+             throw_read_write_error(error);
+          }
+          self->write_closed_ = true;
+       },
+       asio::use_awaitable);
 }
 
 boost::asio::awaitable<void> socket_stream::async_close() {

@@ -547,9 +547,11 @@ implementation-library namespaces. For plugin family/role decisions, follow
 
 ## Plugins
 
-- Network plugins live in the nested families `net.http` and `net.p2p`:
-  `plugins/net/http/server` and `plugins/net/p2p/{node,resolver}`.
-  The `net`, `net.http` and `net.p2p` grouping namespaces contain no types or
+- Network plugins live in the nested families `net.http`, `net.p2p` and `net.tlsnotary`:
+  `plugins/net/http/server`, `plugins/net/p2p/{node,resolver}` and
+  `plugins/net/tlsnotary/session`. The TLSNotary session leaf owns bounded
+  native session lifecycle only; HTTP/P2P and product admission remain external.
+  The `net`, `net.http`, `net.p2p` and `net.tlsnotary` grouping namespaces contain no types or
   aggregate modules/targets; each leaf keeps its own dependencies and lifecycle.
 - The P2P node owns consumer PubSub, diagnostics and host events through separate
   `pubsub_api`, `diagnostics_api` and `events_api` modules. Standalone PubSub and

@@ -29,6 +29,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/socket_base.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -281,6 +282,54 @@ boost::asio::awaitable<void> tcp_read_chunk_limit_is_behavioral() {
 
    co_await client.stream.async_close();
    co_await server.stream.async_close();
+   co_await listener.async_close();
+}
+
+boost::asio::awaitable<void> tcp_stream_half_close_preserves_read_and_reports_orderly_eof() {
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto listener = forge::net::tcp::listener{executor, loopback(0)};
+   auto accept = boost::asio::co_spawn(executor, listener.async_accept(), boost::asio::use_awaitable);
+   auto connector = forge::net::tcp::connector{executor};
+   auto client = co_await connector.async_connect(listener.local_endpoint());
+   auto server = co_await std::move(accept);
+   const auto request = text_bytes("request before FIN");
+   co_await client.stream.async_write(request);
+   co_await client.stream.async_close_write();
+   co_await client.stream.async_close_write();
+   BOOST_CHECK(client.stream.valid());
+   BOOST_CHECK_THROW(co_await client.stream.async_write(request), forge::net::tcp::exceptions::closed);
+   auto received = co_await server.stream.async_read();
+   BOOST_CHECK_EQUAL_COLLECTIONS(received.begin(), received.end(), request.begin(), request.end());
+   BOOST_CHECK_THROW((void)co_await server.stream.async_read_chunk(), forge::net::transport::exceptions::end_of_stream);
+   const auto response = text_bytes("response after EOF");
+   co_await server.stream.async_write(response);
+   co_await server.stream.async_close_write();
+   received = co_await client.stream.async_read();
+   BOOST_CHECK_EQUAL_COLLECTIONS(received.begin(), received.end(), response.begin(), response.end());
+   BOOST_CHECK_THROW((void)co_await client.stream.async_read(), forge::net::transport::exceptions::end_of_stream);
+   co_await client.stream.async_close();
+   co_await server.stream.async_close();
+   co_await listener.async_close();
+}
+
+boost::asio::awaitable<void> tcp_stream_reset_is_not_orderly_eof() {
+   auto executor = co_await boost::asio::this_coro::executor;
+   auto listener = forge::net::tcp::listener{executor, loopback(0)};
+   auto accept = boost::asio::co_spawn(executor, listener.async_accept_connection(), boost::asio::use_awaitable);
+   auto connector = forge::net::tcp::connector{executor};
+   auto client = co_await connector.async_connect(listener.local_endpoint());
+   auto server = co_await std::move(accept);
+   auto native = std::move(server).release_socket();
+   native.set_option(boost::asio::socket_base::linger{true, 0});
+   native.close();
+   try {
+      static_cast<void>(co_await client.stream.async_read());
+      BOOST_FAIL("reset must fail the read");
+   } catch (const forge::net::transport::exceptions::end_of_stream&) {
+      BOOST_FAIL("reset must not be converted to orderly EOF");
+   } catch (const forge::net::tcp::exceptions::closed&) {
+   }
+   co_await client.stream.async_close();
    co_await listener.async_close();
 }
 
@@ -1233,6 +1282,17 @@ BOOST_AUTO_TEST_CASE(tcp_stream_roundtrip_and_framing) {
 BOOST_AUTO_TEST_CASE(tcp_options_affect_stream_reads) {
    auto runtime = forge::asio::runtime{};
    forge::asio::blocking::run(runtime, tcp_read_chunk_limit_is_behavioral());
+}
+
+BOOST_AUTO_TEST_CASE(tcp_generic_stream_half_close_preserves_read_and_reports_orderly_eof) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   BOOST_CHECK(forge::asio::blocking::run_for(runtime, tcp_stream_half_close_preserves_read_and_reports_orderly_eof(),
+                                              std::chrono::seconds{5}));
+}
+
+BOOST_AUTO_TEST_CASE(tcp_generic_stream_reset_is_not_orderly_eof) {
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 2}};
+   BOOST_CHECK(forge::asio::blocking::run_for(runtime, tcp_stream_reset_is_not_orderly_eof(), std::chrono::seconds{5}));
 }
 
 BOOST_AUTO_TEST_CASE(tcp_connection_supports_native_handoff) {
