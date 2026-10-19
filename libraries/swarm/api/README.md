@@ -27,6 +27,8 @@ auto validated = std::move(assembly).finish();
   sequential write-all/read-all can deadlock under receiver-driven backpressure.
 - `cancel()` cancels one call; call destruction cancels an unfinished call.
   Always await `async_finish()` to observe terminal success or typed failure.
+  A read can end or report cancellation before that terminal projection; it does
+  not itself guarantee the precise method error type.
 
 Local outbound item rejection cancels only that call. A hostile wire item
 rejected by the inbound descriptor decoder is a session-level protocol failure

@@ -28,12 +28,14 @@ import forge.api.core.error_projection;
 import forge.api.core.trusted_invocation;
 import forge.api.transport.connection;
 import forge.api.stream.server;
+import forge.api.stream.session;
 import forge.asio.blocking;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.asio.notification;
 import forge.net.tcp.listener;
 import forge.net.tcp.connector;
+import forge.net.transport.exceptions;
 import forge.raw.raw;
 
 namespace swarm_api_test {
@@ -178,7 +180,8 @@ class unchecked_peer : public api::contract<unchecked_peer, api::surface::remote
 
 template <typename Interface = peer, typename Scenario>
 void run(const std::shared_ptr<service>& implementation, Scenario exercise,
-         api::trusted_invocation authority = trusted()) {
+         api::trusted_invocation authority = trusted(),
+         std::optional<wire::exceptions::code> expected_server_error = std::nullopt) {
    auto runtime = forge::asio::runtime{};
    auto scheduler = forge::asio::task::scheduler{runtime};
    auto body = [&]() -> boost::asio::awaitable<void> {
@@ -197,10 +200,13 @@ void run(const std::shared_ptr<service>& implementation, Scenario exercise,
       options.control_timeout = 2s;
       options.idle_timeout = 3s;
       options.disconnect_grace = 500ms;
+      auto server_session = std::shared_ptr<forge::api::stream::session>{};
       auto server = scheduler.submit(forge::asio::task::awaitable{
           .name = "swarm-api-test-server", .work = [&](forge::asio::task::context&) -> boost::asio::awaitable<void> {
              auto accepted = co_await listener.async_accept();
-             co_await forge::api::stream::serve_stream(std::move(accepted.stream), plan, options, {}, authority);
+             server_session = std::make_shared<forge::api::stream::session>(std::move(accepted.stream), plan, options,
+                                                                            api::metadata{}, authority);
+             co_await server_session->async_serve();
           }});
       auto connector = forge::net::tcp::connector{executor};
       auto connection = forge::api::transport::connection{};
@@ -210,10 +216,18 @@ void run(const std::shared_ptr<service>& implementation, Scenario exercise,
          connection = forge::api::transport::connection{std::move(connected.stream), options};
          auto remote = co_await connection.get_remote_api<Interface>();
          co_await exercise(std::move(remote), *implementation);
+         BOOST_TEST_MESSAGE("RPC scenario completed before teardown");
       } catch (...) {
          failure = std::current_exception();
          connection.cancel();
          server.cancel();
+      }
+      try {
+         if (server_session)
+            co_await server_session->async_close();
+      } catch (...) {
+         if (!failure)
+            failure = std::current_exception();
       }
       try {
          co_await connection.async_close();
@@ -223,12 +237,22 @@ void run(const std::shared_ptr<service>& implementation, Scenario exercise,
       }
       co_await listener.async_close();
       co_await connector.async_stop();
+      auto expected_failure_seen = false;
       try {
          co_await server.wait();
+      } catch (const forge::exceptions::base& error) {
+         BOOST_TEST_MESSAGE("Server termination: " << error.what());
+         if (expected_server_error && error.code() == wire::exceptions::make_error_code(*expected_server_error)) {
+            expected_failure_seen = true;
+         } else if (!failure) {
+            failure = std::current_exception();
+         }
       } catch (...) {
          if (!failure)
             failure = std::current_exception();
       }
+      if (expected_server_error)
+         BOOST_CHECK(expected_failure_seen);
       co_await scheduler.shutdown();
       if (failure)
          std::rethrow_exception(failure);
@@ -254,8 +278,8 @@ boost::asio::awaitable<void> read_metadata(api::handle<peer> remote, service& im
 template <typename Exception, typename Call> boost::asio::awaitable<void> expect_terminal_error(Call& call) {
    auto failed = false;
    try {
-      static_cast<void>(co_await call.async_read());
-   } catch (const Exception&) {
+      failed = !(co_await call.async_read());
+   } catch (const api::exceptions::cancelled&) {
       failed = true;
    }
    BOOST_CHECK(failed);
@@ -566,7 +590,8 @@ BOOST_AUTO_TEST_CASE(hostile_wire_item_fails_the_session_before_service_decode) 
    using namespace swarm_api_test;
    auto implementation = std::make_shared<service>();
    run<unchecked_peer>(
-       implementation, [](api::handle<unchecked_peer> remote, service& state) -> boost::asio::awaitable<void> {
+       implementation,
+       [](api::handle<unchecked_peer> remote, service& state) -> boost::asio::awaitable<void> {
           auto call = co_await remote.async_open<&unchecked_peer::exchange>(
               limits(), wire::exchange_request{state.content.swarm, "test"}, caller{});
           co_await call.async_write(hello(state));
@@ -593,12 +618,24 @@ BOOST_AUTO_TEST_CASE(hostile_wire_item_fails_the_session_before_service_decode) 
           try {
              auto next = co_await remote.async_open<&unchecked_peer::exchange>(
                  limits(), wire::exchange_request{state.content.swarm, "test"}, caller{});
+             co_await next.async_write(hello(state));
+             co_await next.async_close();
+             const auto reply = co_await next.async_read();
+             BOOST_REQUIRE(reply);
+             BOOST_CHECK(std::holds_alternative<wire::handshake>(reply->body));
+             BOOST_CHECK(!(co_await next.async_read()));
              co_await next.async_finish();
-          } catch (const std::exception&) {
+          } catch (const forge::net::tcp::exceptions::closed&) {
+             failed = true;
+          } catch (const forge::net::transport::exceptions::closed&) {
+             failed = true;
+          } catch (const api::exceptions::protocol_error&) {
              failed = true;
           }
           BOOST_CHECK(failed);
-       });
+          BOOST_TEST(state.exchange_calls.load() == 1U);
+       },
+       trusted(), wire::exceptions::code::invalid_message);
 }
 
 BOOST_AUTO_TEST_CASE(deadline_wakes_blocked_read_without_closing_neighboring_calls) {

@@ -408,6 +408,12 @@ void session::impl::handle_terminal(const std::shared_ptr<call_state>& call, for
    call->done = true;
    call->deadline.cancel();
    if (call->terminal->kind == forge::api::core::frame_kind::error) {
+      // An enqueued end is not yet a delivered end: dropping it also requires
+      // cancellation to retire the server's bounded ingress drain.
+      const auto cancel_input = call->outbound && (!call->outbound->ended || !call->write_queue.empty());
+      if (cancel_input) {
+         call->terminal_enqueued = true;
+      }
       auto error = std::make_exception_ptr(forge::api::core::exceptions::cancelled{"API stream call failed remotely"});
       if (call->inbound && call->inbound->endpoint) {
          call->inbound->pending_items.clear();
@@ -416,8 +422,15 @@ void session::impl::handle_terminal(const std::shared_ptr<call_state>& call, for
          call->inbound->ended = true;
          call->inbound->endpoint->fail(error);
       }
-      if (call->outbound && call->outbound->endpoint) {
-         call->outbound->endpoint->fail(error);
+      fail_outbound(call, error);
+      if (cancel_input) {
+         enqueue_control(forge::api::core::frame{
+             .kind = forge::api::core::frame_kind::cancel,
+             .id = call->id,
+             .api = call->api,
+             .method = call->method,
+             .codec = call->codec,
+         });
       }
    } else if (call->outbound && call->outbound->endpoint) {
       call->outbound->endpoint->close();

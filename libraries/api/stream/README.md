@@ -28,9 +28,10 @@ priority is bounded, so a sustained window-update stream cannot starve data.
 
 Default limits are 16 items and 1 MiB of byte credit per call, 1 MiB per item,
 16 MiB aggregate buffered bytes, 60 seconds idle timeout, no total call
-deadline and 5 seconds disconnect grace. Protocol violations, deadlines and
-cancellation wake blocked reads, writes and credit waits without terminating
-unrelated calls.
+deadline and 5 seconds disconnect grace. Per-call deadlines and cancellation
+wake blocked reads, writes and credit waits without terminating unrelated calls.
+Malformed wire frames and inbound item-decoder violations fail the offending
+session; they are not call-local validation errors.
 
 Completing hello negotiation does not revive a failed or cancelled call. The
 session checks terminal state before accepting handshake completion and again
@@ -52,6 +53,17 @@ continues to consume an inflight slot, so credited crossing items cannot turn
 into an unknown-call session failure. Destroying an unfinished typed call
 cancels only that call; callers still use `async_finish()` to observe the
 terminal result.
+
+Credit for a locally originated call is advertised only after its request is
+written, including when other calls trigger credit redistribution. Receiving a
+terminal remote error also stops unfinished local input: queued data is discarded
+and a cancel closes the peer's remaining ingress drain. A failed duplex call
+must not permanently consume the peer's inflight capacity. These transitions
+use existing wire-v2 frames, not a second acknowledgement protocol.
+
+An item read may report EOF or generic cancellation before the typed terminal
+result is projected. `async_finish()` is mandatory for the precise method error;
+EOF must never be treated as successful completion on its own.
 
 Server-side `session` and `serve_stream` preserve their trusted-metadata
 arguments and accept an optional typed trusted invocation after that metadata.

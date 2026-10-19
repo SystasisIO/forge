@@ -331,6 +331,9 @@ boost::asio::awaitable<void> session::impl::pump_outbound(std::shared_ptr<call_s
             }
             throw;
          }
+         if (call->done && !drains_after_terminal()) {
+            break;
+         }
          if (!item) {
             auto& flow = *call->outbound;
             flow.ended = true;
@@ -548,6 +551,17 @@ boost::asio::awaitable<void> session::impl::wait_deadline(std::shared_ptr<call_s
    }
 }
 
+void session::impl::fail_outbound(const std::shared_ptr<call_state>& call, const std::exception_ptr& error) noexcept {
+   if (call->outbound && call->outbound->endpoint) {
+      call->outbound->endpoint->fail(error);
+   }
+   for (auto& queued : call->write_queue) {
+      release_outbound_capacity(queued);
+      complete_receipt(queued.receipt, error);
+   }
+   call->write_queue.clear();
+}
+
 void session::impl::cancel_call(const std::shared_ptr<call_state>& call, std::exception_ptr error, bool notify_peer) {
    if (call->done) {
       return;
@@ -566,14 +580,7 @@ void session::impl::cancel_call(const std::shared_ptr<call_state>& call, std::ex
       call->inbound->ended = true;
       call->inbound->endpoint->fail(call->error);
    }
-   if (call->outbound && call->outbound->endpoint) {
-      call->outbound->endpoint->fail(call->error);
-   }
-   for (auto& queued : call->write_queue) {
-      release_outbound_capacity(queued);
-      complete_receipt(queued.receipt, call->error);
-   }
-   call->write_queue.clear();
+   fail_outbound(call, call->error);
    if (notify_peer && peer_hello_received && !closed.load(std::memory_order_acquire)) {
       call->terminal_enqueued = true;
       enqueue_control(forge::api::core::frame{
@@ -763,7 +770,8 @@ void session::impl::replenish_inbound_credit() {
                    ? std::numeric_limits<std::uint64_t>::max()
                    : buffered + outstanding;
    for (auto& [_, call] : calls) {
-      if (!call->inbound || call->inbound->ended || call->done) {
+      // Control frames may bypass the call queue, but never its initial request.
+      if (!call->inbound || call->inbound->ended || call->done || (call->local_origin && !call->request_written)) {
          continue;
       }
       auto& flow = *call->inbound;

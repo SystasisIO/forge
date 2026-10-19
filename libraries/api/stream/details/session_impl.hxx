@@ -161,6 +161,7 @@ struct session::impl final : std::enable_shared_from_this<session::impl> {
    boost::asio::awaitable<void> wait_for_outbound_pump(const std::shared_ptr<call_state>& call);
    void start_deadline(const std::shared_ptr<call_state>& call, std::chrono::milliseconds value);
    boost::asio::awaitable<void> wait_deadline(std::shared_ptr<call_state> call);
+   void fail_outbound(const std::shared_ptr<call_state>& call, const std::exception_ptr& error) noexcept;
    void cancel_call(const std::shared_ptr<call_state>& call, std::exception_ptr error, bool notify_peer);
    void discard_inbound(const std::shared_ptr<call_state>& call) noexcept;
    void finish_call(const std::shared_ptr<call_state>& call);
