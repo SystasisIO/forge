@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+ulimit -c 0
 
 readonly phase="${1:?usage: attestation.sh <dependencies|build|test|interop|packages|guest|sanitizers|evidence>}"
 case "$phase" in dependencies|build|test|interop|packages|guest|sanitizers|evidence) ;; *) exit 2 ;; esac
@@ -46,7 +47,8 @@ locations = []
 test_log = work / 'raw' / 'tests.log'
 if test_log.is_file():
     for line in test_log.read_text(errors='replace').splitlines():
-        found = re.search(r'([^/ ]+\.(?:cpp|cppm))\((\d+)\): (?:fatal error|error): in "([A-Za-z0-9_]+)"', line)
+        line = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', line)
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm)|unknown location)\((\d+)\): (?:fatal error|error): in "([A-Za-z0-9_/]+)"', line)
         if found:
             locations.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
 (work / 'evidence' / 'failure-locations.json').write_text(json.dumps(locations, indent=2) + '\n')
@@ -145,7 +147,7 @@ case "$phase" in
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
          test_forge_api_attestation test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy \
          forge_attestation_interop -j4 2>&1 | tee "$work/raw/compile.log"
-      ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
+      ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy)$' \
          > "$work/raw/tests.log" 2>&1
@@ -155,14 +157,16 @@ case "$phase" in
          test_forge_config_core test_forge_codec_yaml test_forge_codec_xml \
          test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
          test_forge_openapi_wire_baseline \
-         forge_attestation_schema_fixture forge_attestation_boundary \
+         forge_attestation_schema_fixture forge_attestation_boundary forge_attestation_benchmark \
          -j4 2>&1 | tee -a "$work/raw/compile.log"
       ;;
    test)
-      ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
+      ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
          > "$work/raw/tests.log" 2>&1
+      "$build/tests/forge_attestation_benchmark" --iterations 256 --workers 2 --inflight 4 \
+         > "$work/evidence/benchmark.json"
       ;;
    sanitizers)
       cmake -S "$root" -B "$build" "${options[@]}" -DFORGE_ENABLE_MODULES=ON \
@@ -175,7 +179,7 @@ case "$phase" in
       cmake --build "$build" --target test_forge_crypto_jose test_forge_auth_attestation \
          test_forge_schema_attestation test_forge_json_strict test_forge_attestation_policy -j4 2>&1 | tee "$work/raw/compile.log"
       ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
-         ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
+         ctest --test-dir "$build" --no-tests=error --output-on-failure -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|schema_attestation|json_strict|attestation_policy)$' \
          > "$work/raw/tests.log" 2>&1
