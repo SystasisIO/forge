@@ -152,6 +152,7 @@ case "$phase" in
       # Fail fast on the new contracts before compiling the larger ABI/VM graph.
       cmake --build "$build" --target \
          test_forge_schema test_forge_variant test_forge_codec_json test_forge_raw \
+         test_forge_config_core test_forge_codec_yaml test_forge_codec_xml \
          test_forge_api_core test_forge_http_strict_json test_forge_auth_liboauth2 \
          test_forge_openapi_wire_baseline \
          forge_attestation_schema_fixture forge_attestation_boundary \
@@ -160,7 +161,7 @@ case "$phase" in
    test)
       ctest --test-dir "$build" --no-tests=error -j1 --timeout 180 \
          --output-junit "$work/results.xml" \
-         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
+         -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
          > "$work/raw/tests.log" 2>&1
       ;;
    sanitizers)

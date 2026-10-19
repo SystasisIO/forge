@@ -1,3 +1,4 @@
+#include <boost/asio/awaitable.hpp>
 #include <boost/describe.hpp>
 #include <boost/test/unit_test.hpp>
 #include <cstdint>
@@ -6,6 +7,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -16,6 +18,7 @@ import forge.variant.value;
 import forge.variant.schema;
 import forge.codec.json;
 import forge.api.http.openapi;
+import forge.api.http.mapping;
 
 namespace schema_constraint_tests {
 
@@ -34,6 +37,12 @@ struct envelope { nested_record section; };
 struct bounded_byte { std::uint8_t value = 0; };
 struct object_shape { bounded_byte value; };
 struct dynamic_shape { forge::variant_object value; };
+struct bounded_response {};
+struct response_envelope { bounded_response value; };
+struct response_service {
+   virtual ~response_service() = default;
+   virtual boost::asio::awaitable<bounded_response> get() = 0;
+};
 
 BOOST_DESCRIBE_STRUCT(record, (), (label, count, amount, data, note))
 BOOST_DESCRIBE_STRUCT(item, (), (key))
@@ -43,10 +52,19 @@ BOOST_DESCRIBE_STRUCT(envelope, (), (section))
 BOOST_DESCRIBE_STRUCT(bounded_byte, (), (value))
 BOOST_DESCRIBE_STRUCT(object_shape, (), (value))
 BOOST_DESCRIBE_STRUCT(dynamic_shape, (), (value))
+BOOST_DESCRIBE_STRUCT(response_envelope, (), (value))
+static_assert(!boost::describe::has_describe_members<bounded_response>::value);
 
 } // namespace schema_constraint_tests
 
 namespace forge::schema {
+
+template <> struct value_adapter<schema_constraint_tests::bounded_response> {
+   static constexpr value_kind kind = value_kind::string;
+   static constraint constraints() {
+      return {.kind = constraint_kind::string, .min_size = 1, .max_size = 16384, .ascii = true};
+   }
+};
 
 template <> struct rules<schema_constraint_tests::record> {
    static object_schema<schema_constraint_tests::record> define() {
@@ -260,6 +278,29 @@ BOOST_AUTO_TEST_CASE(schema_json_schema_and_openapi_preserve_names_ranges_and_de
                      forge::schema::exceptions::unsupported_export);
    BOOST_CHECK_THROW(forge::api::http::detail::make_json_schema<schema_constraint_tests::unsupported>(),
                      forge::schema::exceptions::unsupported_export);
+}
+
+BOOST_AUTO_TEST_CASE(schema_openapi_response_delegates_non_described_value_adapter_constraints) {
+   using response = schema_constraint_tests::bounded_response;
+   namespace http = forge::api::http;
+   const auto expected = forge::variant_schema::from_input(
+      forge::schema::json_schema(forge::schema::export_constraints<response>()));
+   const auto operation = http::detail::make_openapi_operation<
+      &schema_constraint_tests::response_service::get, std::tuple<>, response>(
+         http::route{.method_name = "get", .target = "/value"});
+   BOOST_TEST(forge::codec::json::write_value(operation.response_schema).text ==
+              forge::codec::json::write_value(expected).text);
+   const auto& schema = operation.response_schema.get_object();
+   BOOST_TEST(schema["type"].as_string() == "string");
+   BOOST_TEST(schema["minLength"].as_uint64() == 1U);
+   BOOST_TEST(schema["maxLength"].as_uint64() == 16384U);
+   BOOST_TEST(!schema.contains("x-forge-cpp-type"));
+   const auto optional = http::detail::make_json_schema<std::optional<response>>();
+   BOOST_TEST(forge::codec::json::write_value(optional.get_object()["anyOf"].get_array().front()).text ==
+              forge::codec::json::write_value(expected).text);
+   const auto nested = http::detail::make_json_schema<schema_constraint_tests::response_envelope>();
+   BOOST_TEST(forge::codec::json::write_value(nested.get_object()["properties"].get_object()["value"]).text ==
+              forge::codec::json::write_value(expected).text);
 }
 
 BOOST_AUTO_TEST_CASE(schema_local_artifact_loader_rejects_versions_refs_kinds_and_limits) {

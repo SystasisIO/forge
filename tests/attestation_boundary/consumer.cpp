@@ -53,7 +53,9 @@ int run(int argc, char** argv) {
            expected["schema"].get_string() == "https://schemas.example.test/grant/v1",
            "unsupported artifact binding");
    for (const auto& item : {std::pair{2, "abi"}, std::pair{3, "metadata"}, std::pair{4, "constraints"}}) {
-      require(forge::crypto::digest::sha256::hash(load(argv[item.first])).str() == expected[item.second].get_string(),
+      const auto bytes = load(argv[item.first]);
+      require(forge::crypto::digest::sha256::hash(std::span<const std::uint8_t>{bytes}).str() ==
+                  expected[item.second].get_string(),
               "artifact content does not match installed binding");
    }
    const auto abi = json::load<chain::abi_def>(argv[2], options);

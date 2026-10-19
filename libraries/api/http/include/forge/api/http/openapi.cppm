@@ -186,6 +186,9 @@ template <typename T> [[nodiscard]] forge::variant make_json_schema() {
    using value_type = clean_type<T>;
    if constexpr (requires { json_schema_traits<value_type>::make(); }) {
       return json_schema_traits<value_type>::make();
+   } else if constexpr (requires { forge::schema::value_adapter<value_type>::constraints(); }) {
+      return forge::variant_schema::from_input(
+          forge::schema::json_schema(forge::schema::export_constraints<value_type>()));
    } else if constexpr (std::same_as<value_type, void> || std::same_as<value_type, std::tuple<>>) {
       return forge::variant{forge::mutable_variant_object{}("type", "object")("maxProperties", std::uint64_t{0})};
    } else if constexpr (std::same_as<value_type, forge::variant>) {
