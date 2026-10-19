@@ -26,6 +26,15 @@ dependencies contain no LLVM; the full-ON compiler helper is a separate process.
 Publication-branch, wider Turbine, x86 and remote CI qualification remain
 separate gates. Results from the prior `12d1f90` pin are historical, not transferable.
 
+The separate publication source `7d0556d1` subsequently passed 55/55 local
+Darwin ARM64 CTests: 53 AOT checks, the full 301-case unit suite and SDK execution.
+This closes the observed nested-cancellation classification failure locally,
+including an intermediate scope's own stop, without suppressing real host
+failures. The seven prior WASM fixture hashes remain unchanged. See the
+[publication checkpoint](../donors/forge-wamr-dev-integration-20261018.md#publication-checkpoint-2026-10-19)
+for strict proof boundaries and actual CI toolchain failures. Fresh remote,
+physical-provider, package and product gates remain open; this is not acceptance.
+
 The publication reconciliation also retires unregistered EOS-OC compiler-test
 scaffolding that depends on the approved-removed raw entry ABI. Its immutable
 `05f9edaf` preimages and historical golden references remain available. The 47

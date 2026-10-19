@@ -4,7 +4,7 @@ Date: 2026-10-18; latest checkpoint 2026-10-19. Status: pending changes,
 NOT ACCEPTED as a complete migration.
 
 This follows the [previous checkpoint](forge-wamr-dev-integration-20261017.md).
-The working branch remains `vm-wasm-wamr-dev-integration-v1`, based on
+The F6 integration branch remains `vm-wasm-wamr-dev-integration-v1`, based on
 `3a6e388f29c1535d9d9c642877d416ca7e52e83a`. Earlier worktrees and evidence are
 preserved. Workspace evidence for this follow-up lives in
 `wamr-dev-integration-20261018-r5`.
@@ -41,9 +41,52 @@ unchanged. Its actual runtime compile commands select `69c107c`; this source-mod
 interpreter selection is not a full daemon, AOT/JIT or live-product result.
 The broader selection is blocked
 by an independently reproduced non-VM Clang/libc++ `std::any` error. Linux/x86
-and remote CI remain unqualified. Publication is being reconciled separately
-onto `05f9edaf`; its merge/toolchain/test changes need their own CI results.
+and remote CI remain unqualified. The separate publication branch is based on
+`05f9edaf`; its results and remaining gates are recorded below.
 No live product pin or released default is changed by these local results.
+
+## Publication Checkpoint (2026-10-19)
+
+The clean branch `vm-wasm-wamr-ci-v1` is published as
+[draft PR190](https://github.com/SystasisIO/forge/pull/190), targeting `dev`.
+No merge or live Spine/Turbine change is authorized by this checkpoint.
+The later Swarm commit `4b097418` merges without textual conflicts; this is
+not a claim that all Swarm or whole-project tests were executed locally.
+
+Source commit `7d0556d18a8940b9936e6f7bfb5374408353fdbd` passed the fresh
+Darwin ARM64, Clang/libc++ 22.1.8, JIT-ON matrix: **55/55 CTests in 60.61s**.
+It includes all 53 AOT registrations, the full 301-case unit suite and the SDK
+execution suite. All seven previous WASM fixture hashes match; the six new
+public-API oracles exercise integer/control-flow/memory/FP and benchmark
+checksums. No skipped, disabled or expected-failure cases were used.
+The explicit 1 TiB diagnostic helper address-space ceiling is unchanged.
+
+The initial publication build retained an obsolete Mach-header reference;
+its failure was preserved and the omitted F6 signals implementation restored.
+The retained dev watchdog tests then found an actual nested-cancellation
+classification defect. Private transport now retains its live owner across
+an intermediate scope's own stop, without hiding genuine host failures.
+Regression checks cover body and guest/host paths, exact exception identity,
+cleanup/reuse, expired/cross-thread replay and ordinary local cancellation.
+The internal failure-scope classifier is additive; no consumer adaptation or
+engine-pin change is required by this fix. Direct SDK-test leaf imports also
+compile and execute locally; the original remote ambiguity is not declared
+closed until the corresponding CI profile passes.
+
+Workspace receipts are under `publication-qual-r3`, `publication-qual-r4` and
+`publication-qual-r5`; earlier failures are not overwritten. The final phase
+rechecks 5,241 source/dependency paths with six explicitly reviewed overrides,
+an unchanged configuration and a clean source tree before/after execution.
+Documentation-only descendants do not relabel the tested source commit.
+
+Remote runs48/49 establish real blockers, not runtime passes: exact 22.1.8 apt
+packages and the Intel macOS bottle are unavailable; the official Linux X64
+LLVM archive passes its hash check but has `RTTI=NO`, rejected by the current
+integration gate. The corrected ARM profiles still require a fresh CI run.
+Fresh publication link-map/provider and installed/product qualification also
+remain separate gates. In particular, this JIT-ON matrix is not an LLVM-free
+runtime or performance-equivalence claim, and does not transfer the F6 package
+or product results to the publication branch. The migration remains unaccepted.
 
 ## Language-Version Differences
 
