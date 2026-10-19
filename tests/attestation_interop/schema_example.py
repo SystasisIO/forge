@@ -89,12 +89,13 @@ class ExportedModels:
         value = load_json(raw.decode("utf-8"))
         self.validator.validate(value)
         parsed = self.model.model_validate_json(raw, strict=True)
-        require(equal_json(load_json(parsed.model_dump_json(exclude_unset=True)), value))
+        require(equal_json(load_json(parsed.model_dump_json(exclude_unset=True, by_alias=True)), value))
         require(sha(self.output) == self.generated_hash)
         return value
 
     def qualify(self, root, cases):
         rows = []
+        alias_regression = None
         structural = {"unknown-product-field", "unknown-range-field", "unknown-att-field", "claims-string",
                       "ranges-object", "range-null", "object-null", "object-empty", "note-number",
                       "wrong-version", "bool-version", "product-object-129", "product-note-129", "ranges-9",
@@ -114,7 +115,7 @@ class ExportedModels:
             value = load_json(raw.decode("utf-8"))
             schema_ok = self.validator.is_valid(value)
             try:
-                self.model.model_validate_json(raw, strict=True)
+                parsed = self.model.model_validate_json(raw, strict=True)
                 model_ok = True
             except ValidationError:
                 model_ok = False
@@ -127,11 +128,25 @@ class ExportedModels:
             # a stricter manual profile must not hide a broken native exporter.
             matches = (schema_ok is case["accept"] and qualified_ok is case["accept"]
                        and (not unicode_length or model_ok is case["accept"]))
-            rows.append({"id": name, "expected_accept": case["accept"], "schema_ok": schema_ok,
-                         "raw_model_ok": model_ok, "qualified_model_ok": qualified_ok,
-                         "raw_model_parity_required": unicode_length,
-                         "status": "PASS" if matches else "FAILED"})
+            if name == "valid":
+                aliased = load_json(parsed.model_dump_json(exclude_unset=True, by_alias=True)) if model_ok else {}
+                by_name = load_json(parsed.model_dump_json(exclude_unset=True, by_alias=False)) if model_ok else {}
+                att = aliased.get("att", {})
+                alias_regression = {
+                    "by_alias_roundtrip": equal_json(aliased, value),
+                    "by_name_roundtrip": equal_json(by_name, value),
+                    "physical_att_schema": type(att) is dict and "schema" in att and "schema_" not in att,
+                }
+                matches = matches and alias_regression["by_alias_roundtrip"] and alias_regression["physical_att_schema"]
+            row = {"id": name, "expected_accept": case["accept"], "schema_ok": schema_ok,
+                   "raw_model_ok": model_ok, "qualified_model_ok": qualified_ok,
+                   "raw_model_parity_required": unicode_length,
+                   "status": "PASS" if matches else "FAILED"}
+            if name == "valid":
+                row["alias_roundtrip"] = alias_regression
+            rows.append(row)
         require(rows and any(row["id"] == "decimal-length-0" for row in rows))
+        require(alias_regression is not None)
         required_unicode = {
             f"product-unicode-{field}-{label}-{count}{suffix}"
             for field in ("object", "note")

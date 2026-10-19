@@ -86,22 +86,32 @@ jobs:
       - name: Install pinned dependencies
         run: bash .github/scripts/attestation.sh dependencies
       - name: Compile and qualify focused contracts
+        id: focused
         run: bash .github/scripts/attestation.sh build
       - name: Python and Java bidirectional interoperability
+        if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh interop
       - name: Bounded executor measurements and worker failure
+        if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh benchmark
       - name: Compile regressions and independent ABI VM consumer
+        id: boundary
+        if: ${{ !cancelled() && steps.focused.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh boundary
       - name: JWT, schema and regression tests
+        if: ${{ !cancelled() && steps.boundary.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh test
       - name: Installed consumers and dependency isolation
+        id: packages
+        if: ${{ !cancelled() && steps.boundary.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh packages
       - uses: actions/cache@v4
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         with:
           path: ${{ runner.temp }}/forge-attestation/sysroot
           key: attestation-sysroot-llvm22-${{ runner.os }}-${{ runner.arch }}-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1-${{ hashFiles('guest/sysroot/build.sh', 'guest/sysroot/include/**') }}
       - name: Installed guest SDK and independent WASM artifact consumer
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         run: bash .github/scripts/attestation.sh guest
       - name: Collect bounded evidence and clean generated trees
         if: always()

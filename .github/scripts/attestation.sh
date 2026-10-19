@@ -14,8 +14,8 @@ mkdir -p "$work/evidence" "$work/raw"
 trap 'printf "%s\t%d\n" "$phase" "$?" >> "$work/evidence/phases.tsv"' EXIT
 
 if [[ "$phase" == evidence ]]; then
-   # Only build diagnostics and test result metadata leave the runner. Runtime
-   # logs, generated credentials, private keys and caches stay private.
+   # Only build diagnostics, public schemas/models and test result metadata
+   # leave the runner. Runtime logs, credentials and private keys stay private.
    python3 - "$work" <<'PY'
 import json
 import pathlib
@@ -71,6 +71,12 @@ compile_log = work / 'raw' / 'compile.log'
 if compile_log.is_file():
     lines = compile_log.read_text(errors='replace').splitlines()
     (work / 'evidence' / 'compile.txt').write_text('\n'.join(lines[-600:]) + '\n')
+for relative in ('document.schema.json', 'python/models.py', 'python/schema_evidence.json'):
+    source = work / 'interop' / relative
+    if source.is_file() and not source.is_symlink() and source.stat().st_size <= 1024 * 1024:
+        target = work / 'evidence' / 'public-schema' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
 for name in ('build', 'package-consumer', 'interop', 'jansson-build', 'jansson-source',
              'llvm-project', 'contract-runtimes', 'contract-sdk', 'contract-sdk-prefix', 'guest'):
     path = work / name

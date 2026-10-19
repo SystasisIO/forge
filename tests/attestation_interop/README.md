@@ -229,6 +229,21 @@ input JSON. Raw-model acceptance is an observation; the qualified consumer is
 schema-first. The runner includes these safe rows in evidence on a schema
 regression. No fallback to a manual schema is allowed if the export is missing.
 
+Roundtrip comparison uses the supported Pydantic call
+`model_dump_json(exclude_unset=True, by_alias=True)` to preserve physical JSON
+names recursively. Generated Python attributes may be renamed to avoid
+`BaseModel` members (for example `schema_` with wire alias `schema`); dumping
+attribute names is not a wire roundtrip. The flag is present in the audited
+Pydantic 2.14.1 `BaseModel.model_dump_json` and is passed to its native serializer;
+see the [official serialization API](https://docs.pydantic.dev/latest/api/base_model/#pydantic.BaseModel.model_dump_json).
+The `valid` case explicitly tests the untouched generated model: alias-based
+serialization must preserve the full original document and physical
+`att.schema`, without emitting `att.schema_`. Its safe `alias_roundtrip`
+evidence records these booleans and the attribute-name dump verdict as an
+observation, not an acceptance exception. Missing regression coverage fails.
+No alias mapper, generated-file rewrite, model config override or relaxed
+schema is introduced.
+
 Unicode length cases cover both `object` and `note`: BMP U+00E9 and
 supplementary U+1D11E at 1, 65, 128 and 129 scalars, plus escaped surrogate
 pairs at the supplementary boundary and boundary+1. In particular, 65 BMP
