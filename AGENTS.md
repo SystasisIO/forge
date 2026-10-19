@@ -91,6 +91,11 @@ The repository must stay neutral. Public APIs must not contain downstream produc
 - Local validation builds should use `cmake --build ... -j 4` or higher by
   default. Use lower parallelism only for a specific target when it is proven
   flaky or resource-constrained, and state that exception in the report.
+- Verify actual header dependencies, not just package discovery or compiler
+  command lines. An ambient `CPATH` can precede CMake's `-isystem` roots and
+  select another Boost or standard-library version. For isolated qualification,
+  remove a conflicting variable only from child-process environments and record
+  the resolved headers; do not edit global packages or mask the mismatch in code.
 
 ## Public API Declaration Shape
 
@@ -365,6 +370,12 @@ class service_node {
   Active guest/host execution and argument conversion must prevent external
   mutation; callback/destruction lifetime must synchronize. Ordinary cached
   A-reset-B-reset-A must not require a product-specific retirement workaround.
+- A prepared context must retain the existing complete preparation owner until
+  instance/binding teardown, even after its backend/module wrapper is destroyed.
+  Retain its PMR resource, host bindings, metadata and budget together; a raw
+  wrapper reference or an engine-module reference alone is insufficient. Compare
+  preparation identity and execution mode, not reusable wrapper addresses. Reuse
+  the existing owner rather than adding another lifetime registry or cache.
 - The maintainer approved replacing exact prospective preparation sizing with a
   conservative, enforced reservation ceiling. Reserve before allocation; account
   WAMR heap storage, native mappings, temporary overlap and C++ bridge storage.

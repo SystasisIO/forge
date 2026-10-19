@@ -23,6 +23,11 @@ struct prepared_module::impl {
    impl(std::span<const std::uint8_t>, std::span<const std::uint8_t>, const options&, std::span<host_binding>,
         std::optional<preparation> = {});
    ~impl();
+   void validate() const;
+   std::uint32_t get_exported_function(std::string_view) const;
+   function_type get_function_type(std::uint32_t) const;
+   signature_view function_signature(std::uint32_t) const;
+   bool has_linear_memory() const noexcept;
    static void invoke(const void*, std::size_t, detail::engine_bindings::call&);
    static std::shared_ptr<detail::engine_load_budget> load_budget(const preparation&);
    static void check_budget(const std::shared_ptr<detail::engine_load_budget>&);

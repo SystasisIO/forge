@@ -80,7 +80,8 @@ struct prepared_module::context::impl {
       std::thread::id thread;
    };
 
-   prepared_module& source;
+   // Keep callbacks, PMR storage and their charge alive through instance teardown.
+   const std::shared_ptr<prepared_module::impl> source;
    std::uint32_t depth;
    const execution_mode mode = execution_mode::interpreter;
    std::recursive_mutex gate;
@@ -182,18 +183,18 @@ prepared_module::context::context(prepared_module& source, std::uint32_t depth)
                   ? source._impl->engine->llvm_jit_profile_ready() ? execution_mode::jit_profile : execution_mode::jit
                   : execution_mode::interpreter) {}
 prepared_module::context::context(prepared_module& source, std::uint32_t depth, execution_mode mode)
-    : _impl(std::make_shared<impl>(source, depth, mode)) {
+    : _impl(std::make_shared<impl>(source._impl, depth, mode)) {
    if (mode != execution_mode::interpreter && mode != execution_mode::jit && mode != execution_mode::jit_profile)
       throw exceptions::profile{"Unsupported WASM execution mode"};
    if (mode != execution_mode::interpreter &&
-       (source._impl->engine != source._impl->source || !source._impl->engine->llvm_jit_ready()))
+       (_impl->source->engine != _impl->source->source || !_impl->source->engine->llvm_jit_ready()))
       throw exceptions::execution_unavailable{"WASM JIT module has not completed preparation"};
-   if (mode == execution_mode::jit_profile && !source._impl->engine->llvm_jit_profile_ready())
+   if (mode == execution_mode::jit_profile && !_impl->source->engine->llvm_jit_profile_ready())
       FORGE_THROW_EXCEPTION(exceptions::profile, "WASM JIT module has no instruction profile");
 }
 prepared_module::context::~context() = default;
 bool prepared_module::context::matches(const prepared_module& source, execution_mode mode) const noexcept {
-   return std::addressof(_impl->source) == std::addressof(source) && _impl->mode == mode;
+   return _impl->source == source._impl && _impl->mode == mode;
 }
 void prepared_module::context::set_wasm_allocator(wasm_allocator* value) {
    const auto lock = std::unique_lock{_impl->gate, std::try_to_lock};
@@ -224,7 +225,7 @@ void prepared_module::context::initialize(void* host, std::stop_token stop) {
    if (!lock.owns_lock())
       throw exceptions::busy{"Context is executing"};
    reset();
-   if (_impl->source._impl->use == purpose::validation_only)
+   if (_impl->source->use == purpose::validation_only)
       throw exceptions::invocation_state{"Validation-only modules cannot execute"};
    if (stop.stop_requested())
       throw exceptions::canceled{"WASM invocation canceled"};
@@ -232,7 +233,7 @@ void prepared_module::context::initialize(void* host, std::stop_token stop) {
       throw exceptions::allocation{"Linear memory requires an allocator"};
    if (_impl->depth > capacity_profile::max_call_depth)
       throw exceptions::profile{"Call depth exceeds capacity profile v1"};
-   _impl->source.validate();
+   _impl->source->validate();
    const auto cleanup = scope_guard{[&] {
       if (!_impl->instance) {
          _impl->borrow.reset();
@@ -257,8 +258,8 @@ void prepared_module::context::initialize(void* host, std::stop_token stop) {
       if (_impl->borrow)
          _impl->borrow->reset(0);
       _impl->instance = std::make_unique<detail::engine_instance>(
-          _impl->source._impl->engine, _impl->source._impl->limits->interpreter_stack_bytes(_impl->depth), stop, host,
-          _impl->pages, _impl->depth, &_impl->failure, _impl->native_stack_boundary, &_impl->memory,
+          _impl->source->engine, _impl->source->limits->interpreter_stack_bytes(_impl->depth), stop, host, _impl->pages,
+          _impl->depth, &_impl->failure, _impl->native_stack_boundary, &_impl->memory,
           _impl->mode != execution_mode::interpreter ? Mode_LLVM_JIT : Mode_Interp, &_impl->normal_exit);
    } catch (const detail::engine_instance::canceled&) {
       throw exceptions::canceled{"WASM invocation canceled"};
@@ -341,7 +342,7 @@ bool prepared_module::context::initialized() const noexcept {
    return static_cast<bool>(_impl->instance);
 }
 bool prepared_module::context::has_linear_memory() const noexcept {
-   return _impl->source.has_linear_memory();
+   return _impl->source->has_linear_memory();
 }
 std::exception_ptr prepared_module::context::host_failure() const noexcept {
    const auto lock = std::lock_guard{_impl->gate};
@@ -387,7 +388,7 @@ std::uint32_t prepared_module::context::current_linear_memory() const {
 std::optional<operand_stack_elem> prepared_module::context::call(void* host, std::string_view name,
                                                                  std::span<const operand_stack_elem> arguments,
                                                                  std::stop_token stop) {
-   return call(host, _impl->source.get_exported_function(name), arguments, stop);
+   return call(host, _impl->source->get_exported_function(name), arguments, stop);
 }
 
 std::optional<operand_stack_elem> prepared_module::context::call(void* host, std::uint32_t index,
@@ -405,7 +406,7 @@ std::optional<operand_stack_elem> prepared_module::context::call(void* host, std
       std::rethrow_exception(_impl->failure);
    if (!_impl->depth)
       FORGE_THROW_EXCEPTION(exceptions::interpreter, "WASM call depth is zero");
-   const auto type = _impl->source.get_function_type(index);
+   const auto type = _impl->source->get_function_type(index);
    if (type.param_types.size() != arguments.size())
       throw exceptions::interpreter{"WASM argument count mismatch"};
    std::vector<std::uint32_t> cells;

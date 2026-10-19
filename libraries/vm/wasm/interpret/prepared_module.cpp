@@ -219,8 +219,12 @@ prepared_module::~prepared_module() {
 }
 
 void prepared_module::validate() const {
+   _impl->validate();
+}
+
+void prepared_module::impl::validate() const {
    try {
-      _impl->limits->validate_instantiation();
+      limits->validate_instantiation();
    } catch (const detail::engine_limits::invalid_instantiation& error) {
       if (error.memory)
          throw exceptions::memory{"WASM active data segment is out of bounds"};
@@ -240,7 +244,11 @@ void prepared_module::check_limits(const options& policy) const {
 }
 
 std::uint32_t prepared_module::get_exported_function(std::string_view name) const {
-   const auto& module = *reinterpret_cast<const WASMModule*>(_impl->source->get());
+   return _impl->get_exported_function(name);
+}
+
+std::uint32_t prepared_module::impl::get_exported_function(std::string_view name) const {
+   const auto& module = *reinterpret_cast<const WASMModule*>(source->get());
    for (std::uint32_t i = 0; i < module.export_count; ++i)
       if (module.exports[i].kind == EXPORT_KIND_FUNC &&
           std::string_view{module.exports[i].name, module.exports[i].name_len} == name)
@@ -249,6 +257,9 @@ std::uint32_t prepared_module::get_exported_function(std::string_view name) cons
 }
 
 prepared_module::function_type prepared_module::get_function_type(std::uint32_t index) const {
+   return _impl->get_function_type(index);
+}
+prepared_module::function_type prepared_module::impl::get_function_type(std::uint32_t index) const {
    const auto type = function_signature(index);
    return {types::func,
            {type.params.begin(), type.params.end()},
@@ -256,8 +267,11 @@ prepared_module::function_type prepared_module::get_function_type(std::uint32_t 
            type.results.empty() ? static_cast<value_type>(types::ret_void) : type.results.front()};
 }
 prepared_module::signature_view prepared_module::function_signature(std::uint32_t index) const {
+   return _impl->function_signature(index);
+}
+prepared_module::signature_view prepared_module::impl::function_signature(std::uint32_t index) const {
    try {
-      const auto type = _impl->source->function_type(index);
+      const auto type = source->function_type(index);
       return {type.parameters, type.results};
    } catch (const std::out_of_range&) {
       throw exceptions::interpreter{"Invalid function index"};
@@ -296,7 +310,10 @@ std::size_t prepared_module::code_size() const noexcept {
    return _impl->bytes;
 }
 bool prepared_module::has_linear_memory() const noexcept {
-   return reinterpret_cast<const WASMModule*>(_impl->source->get())->memory_count != 0;
+   return _impl->has_linear_memory();
+}
+bool prepared_module::impl::has_linear_memory() const noexcept {
+   return reinterpret_cast<const WASMModule*>(source->get())->memory_count != 0;
 }
 
 std::vector<std::uint32_t> prepared_module::native_function_stack_bytes() const {

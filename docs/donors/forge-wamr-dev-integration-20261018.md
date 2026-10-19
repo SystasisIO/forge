@@ -69,6 +69,63 @@ retirement records are under `wamr-ci-190-20261020-r10`. No merge or live produc
 change is performed; performance, full bounded-profile and final delivered
 provenance requirements remain open, including retained EOS-derived utilities.
 
+## Prepared Context Owner Follow-Up (2026-10-20)
+
+Current Spine dev `230d4102` with the coherent CI58 merge tree `9cd98e54`
+reproduces a native cleanup fault in the original
+`cached_and_uncached_invocations_reset_memory_globals_and_run_start_once` case.
+Its first, uncached half destroys the backend before resetting the allocator;
+the external context remains alive. The context held a raw module-wrapper
+reference and retained the engine module, but not the full preparation owner.
+Its host-binding destructor therefore accessed an already-destroyed PMR
+resource. The cached half had not yet executed. This is a real consumer
+lifetime defect, not proof of a WAMR numeric failure or another provider copy.
+
+The Forge-only correction pins the existing `prepared_module::impl` as the
+first context member so that it is released after instance/binding teardown.
+Five existing metadata operations move onto that same private owner; their
+public methods delegate without signature changes. Matching checks preparation
+identity and execution mode, avoiding wrapper-address reuse. No new owner
+registry, parser, allocator, cache, WAMR patch, limit or cancellation policy is
+introduced. Caller-owned host lifetime is unchanged.
+
+The frozen candidate is published base `ae50b6f8` plus three runtime files and
+one regression source, with WAMR still `f6fe6d5`. The normal fresh public build
+proves four regressions fail against the old runtime (three native exits and
+one failed identity assertion), then pass unchanged with the correction:
+**4/4 cases, 37 assertions**. The complete canonical execution target passes
+**54/54 cases**. Independent source and evidence review is scoped GO. Actual
+dependency records resolve Boost 1.90 and libc++220108; the conflicting ambient
+`CPATH=/usr/local/include`, which selected Boost 1.85 in the first fresh
+attempt, is removed only from child-process environments. The failed attempt
+and original product crash are retained, not relabelled.
+
+Normal reinstall, matching SDK rebuild and all sixteen Spine guest contracts
+pass with unchanged ABI goldens. The original focused reset/start case now
+passes all twenty assertions for cache capacities zero and 32. This is not a
+full product pass: the unfiltered 104-case chain suite reports eleven failures,
+including obsolete diagnostic expectations and an unregistered DB object error
+whose cause remains under investigation. The complete controller build fails
+at two additional state-API test units with Clang source-location exhaustion;
+its full suite and four optimizing gates remain blocked, not waived. All nine
+original gates plus the full controller executable are still required. The
+validation source is `9cd98e54` plus exactly the same runtime postimages, not
+an unmodified published revision. Its VM/SDK sources match the PR base; the
+newer CI59 synthetic merge `a92eb494` differs only in the seven published
+CI/documentation files. Isolated Spine test adapters preserve assertions:
+the removed parser container becomes `std::span`, the malformed-WASM oracle
+uses the neutral parse error, and a private verifier-factory split reduces
+one test module's compiler source-location load. The split still needs a real
+full executable build and all original factory-using cases. No production
+product source, live pin or public facade is changed by those test adapters.
+
+Raw RED/GREEN results, actual header dependency records, preserved failing
+binary, source freezes and independent reviews are under workspace evidence
+`wamr-ci-190-20261020-r10/context-owner-fix-r1`. Earlier CI58/LLVM-free OFF
+results retain their original revision scope; they do not qualify this fix.
+Full product, Linux, bounded-profile, performance and final delivered-source
+provenance gates remain open. PR190 stays draft and unmerged.
+
 ## CI57 Follow-Up (2026-10-19)
 
 [VM run57](https://github.com/SystasisIO/forge/actions/runs/39268640394) is

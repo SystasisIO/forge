@@ -400,6 +400,26 @@ must not override a later pre-canceled or empty scope. This correction adds no
 public WAMR types or application error policy; installed and product reruns
 remain required for the corrected snapshot.
 
+## Prepared Context Lifetime Correction
+
+This compatible fix preserves public signatures, limits, cancellation rules and
+the bounded profile. A context now retains the existing complete preparation
+owner after its backend/module wrapper is destroyed. Instance/binding teardown
+therefore still has its original PMR resource, host-call metadata and budget
+owner. Private metadata operations use that same owner; no second allocator,
+registry, cache or public WAMR API is introduced. Preparation matching uses
+owner identity and execution mode, not a wrapper address that can be reused.
+Caller-owned host objects remain the caller's responsibility.
+
+An unchanged current Spine test exposed the old cleanup fault when destroying
+the backend before resetting its allocator. Four new public-API regressions
+fail with the previous runtime and pass with this fix (37 assertions); the
+canonical execution target passes all 54 cases. Those results use a fresh
+normal graph with verified Boost 1.90/libc++220108 headers and the conflicting
+ambient `CPATH` removed only from child processes. This source-level checkpoint
+does not replace installed Forge/SDK, full Spine, Turbine or remote qualification.
+See the [current checkpoint](../donors/forge-wamr-dev-integration-20261018.md#prepared-context-owner-follow-up-2026-10-20).
+
 ## Migration
 
 Before adopting the replacement, validate original WASM and caller budgets

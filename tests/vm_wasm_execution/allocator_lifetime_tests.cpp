@@ -1,14 +1,19 @@
 #include <boost/test/unit_test.hpp>
+#include <array>
 #include <atomic>
 #include <barrier>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <thread>
+#include <utility>
+#include <vector>
 #include "fixtures.hxx"
 
 import forge.vm.wasm.interpret.backend;
@@ -97,9 +102,192 @@ struct converter : vm::type_converter<conversion_host> {
 };
 using conversion_functions = vm::registered_host_functions<conversion_host, vm::execution_interface, converter>;
 using conversion_backend = vm::backend<conversion_functions, vm::interpreter>;
+
+fixtures::bytes owner_module() {
+   auto code = fixtures::bytes{0, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
+   fixtures::section(code, 1, {2, 0x60, 3, 0x7e, 0x7e, 0x7e, 0, 0x60, 0, 0});
+   fixtures::section(code, 2, {1, 3, 'e', 'n', 'v', 6, 'e', 'f', 'f', 'e', 'c', 't', 0, 0});
+   fixtures::section(code, 3, {2, 0, 1});
+   fixtures::section(code, 5, {1, 1, 1, 2});
+   fixtures::section(code, 6, {1, 0x7f, 1, 0x41, 0, 0x0b});
+   fixtures::section(code, 7, {1, 5, 'a', 'p', 'p', 'l', 'y', 0, 1});
+   fixtures::section(code, 8, {2});
+   auto bodies = fixtures::bytes{2};
+   for (const auto& body :
+        {fixtures::bytes{0,    0x23, 0,    0x41, 7,    0x47, 0x04, 0x40, 0,    0x0b, 0x41, 0, 0x2d, 0,
+                         0,    0x41, 7,    0x47, 0x04, 0x40, 0,    0x0b, 0x20, 0,    0x20, 1, 0x20, 2,
+                         0x10, 0,    0x41, 9,    0x24, 0,    0x41, 0,    0x41, 9,    0x3a, 0, 0,    0x0b},
+         fixtures::bytes{0, 0x41, 7, 0x24, 0, 0x41, 0, 0x41, 7, 0x3a, 0, 0, 0x0b}}) {
+      fixtures::size(bodies, body.size());
+      bodies.insert(bodies.end(), body.begin(), body.end());
+   }
+   fixtures::section(code, 10, bodies);
+   return code;
+}
+
+struct owner_host {
+   unsigned calls = 0;
+   void effect(std::uint64_t first, std::uint64_t second, std::uint64_t third) {
+      if (first != 11 || second != 22 || third != 33)
+         throw std::logic_error("Retained host binding received different arguments");
+      ++calls;
+   }
+};
+using owner_functions = vm::registered_host_functions<owner_host>;
+using owner_backend = vm::backend<owner_functions, vm::interpreter, vm::options>;
+
+vm::host_binding owner_binding(std::shared_ptr<unsigned> pin = {}) {
+   return {"env",
+           "effect",
+           {{vm::types::i64, vm::types::i64, vm::types::i64}, {}},
+           [pin = std::move(pin)](void* host, vm::execution_interface interface) {
+              const auto third = interface.pop_operand().to_ui64();
+              const auto second = interface.pop_operand().to_ui64();
+              const auto first = interface.pop_operand().to_ui64();
+              if (pin)
+                 ++*pin;
+              static_cast<owner_host*>(host)->effect(first, second, third);
+           }};
+}
+
+const std::array<vm::operand_stack_elem, 3> owner_arguments{
+    vm::i64_const_t{UINT64_C(11)}, vm::i64_const_t{UINT64_C(22)}, vm::i64_const_t{UINT64_C(33)}};
+
+struct charge_lifetime {
+   bool* released;
+   explicit charge_lifetime(bool& value) : released(&value) {}
+   ~charge_lifetime() {
+      *released = true;
+   }
+};
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(allocator_lifetime)
+
+BOOST_AUTO_TEST_CASE(external_context_survives_backend_destruction_allocator_retirement_and_reinitialization) {
+   static const auto registered = [] {
+      owner_functions::add<&owner_host::effect>("env", "effect");
+      return true;
+   }();
+   static_cast<void>(registered);
+   auto code = owner_module();
+   auto pointer = vm::wasm_code_ptr{code.data(), code.size()};
+   auto backend = std::make_unique<owner_backend>(pointer, code.size(), nullptr, vm::options{}, true, false);
+   auto memory = vm::wasm_allocator{};
+   auto context = std::make_unique<vm::runtime_context>(backend->get_module(), 251, vm::execution_mode::interpreter);
+   const auto index = backend->get_module().get_exported_function("apply");
+   context->initialize_globals();
+   backend->set_context(context.get());
+   backend->set_wasm_allocator(&memory);
+   auto host = owner_host{};
+   backend->initialize(&host);
+   BOOST_TEST(context->linear_memory()[0] == 7);
+   context->call(&host, "apply", owner_arguments);
+   BOOST_TEST(context->linear_memory()[0] == 9);
+   backend.reset();
+   BOOST_CHECK_NO_THROW(memory.reset());
+   BOOST_CHECK(!context->initialized());
+   BOOST_CHECK(context->has_linear_memory());
+   BOOST_CHECK_NO_THROW(context->initialize(&host));
+   BOOST_TEST(context->linear_memory()[0] == 7);
+   context->call(&host, index, owner_arguments);
+   BOOST_TEST(context->linear_memory()[0] == 9);
+   BOOST_TEST(host.calls == 2U);
+   context.reset();
+   BOOST_CHECK_NO_THROW(memory.reset());
+   BOOST_TEST(memory.get_current_page() == -1);
+}
+
+BOOST_AUTO_TEST_CASE(external_context_can_first_initialize_and_resolve_metadata_after_wrapper_destruction) {
+   auto module = std::make_unique<vm::prepared_module>(owner_module(), vm::options{},
+                                                       std::vector<vm::host_binding>{owner_binding()});
+   auto memory = vm::wasm_allocator{};
+   auto context = std::make_unique<vm::runtime_context>(*module, 251, vm::execution_mode::interpreter);
+   context->set_wasm_allocator(&memory);
+   module.reset();
+   BOOST_CHECK(context->has_linear_memory());
+   auto host = owner_host{};
+   context->initialize(&host);
+   BOOST_TEST(context->linear_memory()[0] == 7);
+   BOOST_CHECK_THROW(context->call(&host, "absent", owner_arguments), vm::exceptions::interpreter);
+   BOOST_CHECK_THROW(context->call(&host, "apply", {}), vm::exceptions::interpreter);
+   context->call(&host, "apply", owner_arguments);
+   BOOST_TEST(host.calls == 1U);
+   BOOST_TEST(context->linear_memory()[0] == 9);
+   context.reset();
+   BOOST_CHECK_NO_THROW(memory.reset());
+}
+
+BOOST_AUTO_TEST_CASE(context_identity_is_not_reused_wrapper_storage_or_a_different_execution_mode) {
+   auto module = std::optional<vm::prepared_module>{std::in_place, owner_module(), vm::options{},
+                                                    std::vector<vm::host_binding>{owner_binding()}};
+   auto context = vm::runtime_context{*module, 251, vm::execution_mode::interpreter};
+   const auto* address = &*module;
+   BOOST_CHECK(context.matches(*module, vm::execution_mode::interpreter));
+   BOOST_CHECK(!context.matches(*module, vm::execution_mode::jit));
+   module.reset();
+   module.emplace(owner_module(), vm::options{}, std::vector<vm::host_binding>{owner_binding()});
+   BOOST_REQUIRE(&*module == address);
+   BOOST_CHECK(!context.matches(*module, vm::execution_mode::interpreter));
+   auto memory = vm::wasm_allocator{};
+   context.set_wasm_allocator(&memory);
+   auto host = owner_host{};
+   context.initialize(&host);
+   context.call(&host, "apply", owner_arguments);
+   BOOST_TEST(host.calls == 1U);
+   memory.reset();
+}
+
+BOOST_AUTO_TEST_CASE(context_retains_bounded_preparation_callable_and_charge_until_last_owner) {
+   using budget = vm::prepared_module::preparation;
+   constexpr std::uint64_t ceiling = 1024 * 1024; // Same ceiling as preparation_budget_tests.cpp.
+   bool released = false;
+   auto account = std::optional<budget>{std::in_place, budget::limits{ceiling, ceiling}};
+   const auto root = account->current_bytes();
+   account->attach_resident_charge(std::make_shared<charge_lifetime>(released));
+   auto pin = std::make_shared<unsigned>(0);
+   const auto weak = std::weak_ptr{pin};
+   auto bindings = std::vector<vm::host_binding>{owner_binding(pin)};
+   pin.reset();
+   auto module = std::make_unique<vm::prepared_module>(owner_module(), vm::options{}, std::span{bindings},
+                                                       vm::prepared_module::purpose::execution, *account);
+   BOOST_REQUIRE(!bindings[0].invoke);
+   const auto retained = account->current_bytes();
+   BOOST_TEST(retained > root);
+   BOOST_TEST(account->seal() == retained);
+   auto memory = vm::wasm_allocator{};
+   auto context = std::make_unique<vm::runtime_context>(*module, 251, vm::execution_mode::interpreter);
+   context->set_wasm_allocator(&memory);
+   module.reset();
+   BOOST_TEST(account->current_bytes() == retained);
+   BOOST_CHECK(!weak.expired());
+   auto host = owner_host{};
+   context->initialize(&host);
+   context->call(&host, "apply", owner_arguments);
+   memory.reset();
+   BOOST_TEST(account->current_bytes() == retained);
+   BOOST_CHECK(!released);
+   BOOST_CHECK(!weak.expired());
+   context.reset();
+   BOOST_TEST(account->current_bytes() == root);
+   BOOST_CHECK(weak.expired());
+   BOOST_CHECK(!released);
+
+   account.reset();
+   BOOST_CHECK(released);
+   released = false;
+   account.emplace(budget::limits{ceiling, ceiling});
+   account->attach_resident_charge(std::make_shared<charge_lifetime>(released));
+   bindings[0] = owner_binding();
+   module = std::make_unique<vm::prepared_module>(owner_module(), vm::options{}, std::span{bindings},
+                                                  vm::prepared_module::purpose::execution, *account);
+   context = std::make_unique<vm::runtime_context>(*module, 251, vm::execution_mode::interpreter);
+   module.reset();
+   account.reset();
+   BOOST_CHECK(!released);
+   context.reset();
+   BOOST_CHECK(released);
+}
 
 BOOST_AUTO_TEST_CASE(retirement_pins_owner_until_callback_finishes_even_when_context_owner_is_destroyed) {
    auto memory = vm::wasm_allocator{};
