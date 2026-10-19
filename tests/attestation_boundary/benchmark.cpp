@@ -29,6 +29,7 @@
 
 import forge.asio.blocking;
 import forge.asio.compute;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 import forge.auth.attestation.document_schema;
@@ -89,8 +90,9 @@ using clock_type = std::chrono::steady_clock;
 using object = forge::mutable_variant_object;
 using document = att::document<forge::variant_object>;
 constexpr std::size_t warmup_iterations = 16;
-struct options { std::size_t iterations = 1000, workers = 2, inflight = 4; };
+struct options { std::size_t iterations = 1000, workers = 2, inflight = 4; bool fail_worker = false; };
 struct invalid_arguments {};
+struct injected_worker_failure {};
 options parse_options(int argc, char** argv) {
    options result;
    unsigned seen = 0;
@@ -100,12 +102,17 @@ options parse_options(int argc, char** argv) {
       std::size_t value = 0;
       const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
       if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || value == 0) throw invalid_arguments{};
-      const unsigned bit = name == "--iterations" ? 1 : name == "--workers" ? 2 : name == "--inflight" ? 4 : 0;
+      const unsigned bit = name == "--iterations" ? 1 : name == "--workers" ? 2 : name == "--inflight" ? 4 :
+                           name == "--fail-worker" ? 8 : 0;
       if (bit == 0 || (seen & bit) != 0) throw invalid_arguments{};
       seen |= bit;
       if (bit == 1) result.iterations = value;
       if (bit == 2) result.workers = value;
       if (bit == 4) result.inflight = value;
+      if (bit == 8) {
+         if (value != 1) throw invalid_arguments{};
+         result.fail_worker = true;
+      }
    }
    if (result.iterations > 100'000 || result.workers > 8 || result.inflight > 64) throw invalid_arguments{};
    return result;
@@ -214,6 +221,7 @@ forge::variant sequential(const fixture& input, const jose::trusted_keys& keys,
 struct heartbeat_state {
    std::atomic_bool done{false};
    std::atomic_size_t active_compute{0};
+   forge::asio::notification started;
    std::uint64_t ticks = 0, ticks_during_compute = 0, max_lateness_ns = 0;
 };
 boost::asio::awaitable<void> heartbeat_loop(task::context& context, std::shared_ptr<heartbeat_state> state) {
@@ -224,7 +232,7 @@ boost::asio::awaitable<void> heartbeat_loop(task::context& context, std::shared_
       timer.expires_at(deadline);
       co_await timer.async_wait(boost::asio::use_awaitable);
       if (state->done.load()) break;
-      ++state->ticks;
+      if (++state->ticks == 1) state->started.notify();
       if (state->active_compute.load() != 0) ++state->ticks_during_compute;
       state->max_lateness_ns = std::max(state->max_lateness_ns, elapsed_ns(deadline));
    }
@@ -234,9 +242,17 @@ boost::asio::awaitable<forge::variant> load(compute::pool& pool, task::scheduler
     const att::verification_policy& expected, options settings) {
    std::array<series, 2> samples{series{settings.iterations}, series{settings.iterations}};
    auto beat = std::make_shared<heartbeat_state>();
+   // request_stop() cannot retire an already running heartbeat; every exit must signal it.
+   const auto stop_heartbeat = boost::scope::scope_exit{[beat]() noexcept { beat->done.store(true); }};
+   const auto started_epoch = beat->started.epoch();
    auto heartbeat = scheduler.submit(task::awaitable{.name = "attestation-benchmark-heartbeat",
        .work = [beat](task::context& context) { return heartbeat_loop(context, beat); }});
    if (!heartbeat.accepted()) throw std::runtime_error{"heartbeat admission failed"};
+   if (settings.fail_worker) {
+      const auto observed = co_await beat->started.async_wait_until(
+          started_epoch, clock_type::now() + std::chrono::seconds{1});
+      if (observed == started_epoch) throw std::runtime_error{"heartbeat startup timed out"};
+   }
    const auto executor = pool.get_executor();
    const auto start = clock_type::now();
    const auto total = settings.iterations * fixtures.size();
@@ -246,9 +262,11 @@ boost::asio::awaitable<forge::variant> load(compute::pool& pool, task::scheduler
       operations.reserve(count);
       for (std::size_t i = 0; i < count; ++i) {
          const auto* input = &fixtures[(first + i) % fixtures.size()];
-         operations.push_back(co_await executor.submit({.name = "attestation-benchmark-verify"}, [input, &keys, &expected, beat] {
+         const auto inject = settings.fail_worker && first == 0 && i == 0;
+         operations.push_back(co_await executor.submit({.name = "attestation-benchmark-verify"}, [input, &keys, &expected, beat, inject] {
             beat->active_compute.fetch_add(1);
             const auto finish = boost::scope::scope_exit{[beat] { beat->active_compute.fetch_sub(1); }};
+            if (inject) throw injected_worker_failure{};
             return measure([&] { return verify_parse(*input, keys, expected); });
          }));
       }
@@ -274,7 +292,8 @@ forge::variant run(options settings) {
                                         {.typ = std::string{att::token_type}}};
    const auto expected = profile();
    forge::variants sequential_results;
-   for (const auto& input : fixtures) sequential_results.push_back(sequential(input, keys, expected, settings.iterations));
+   if (!settings.fail_worker)
+      for (const auto& input : fixtures) sequential_results.push_back(sequential(input, keys, expected, settings.iterations));
    forge::asio::runtime runtime{{.worker_threads = 1}};
    compute::pool pool{{.worker_threads = settings.workers, .max_pending_tasks = settings.inflight,
                        .max_waiting_submissions = 1}};
@@ -319,8 +338,11 @@ int main(int argc, char** argv) {
       std::cout << metrics.text << '\n';
       return 0;
    } catch (const invalid_arguments&) {
-      std::cout << R"({"status":"HARNESS_ERROR","reason":"invalid_arguments","cli":"--iterations 1..100000 --workers 1..8 --inflight 1..64"})" << '\n';
+      std::cout << R"({"status":"HARNESS_ERROR","reason":"invalid_arguments","cli":"--iterations 1..100000 --workers 1..8 --inflight 1..64 [--fail-worker 1]"})" << '\n';
       return 2;
+   } catch (const injected_worker_failure&) {
+      std::cout << R"({"status":"HARNESS_ERROR","reason":"injected_worker_failure"})" << '\n';
+      return 1;
    } catch (...) {
       std::cout << R"({"status":"HARNESS_ERROR","reason":"benchmark_failed"})" << '\n';
       return 1;

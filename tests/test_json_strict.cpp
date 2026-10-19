@@ -9,15 +9,28 @@
 import forge.codec.json;
 import forge.schema.object;
 import forge.variant.value;
+import forge.variant.schema;
 
 namespace json_strict_tests {
 struct value { std::int64_t count = 0; };
 struct large_value { std::vector<std::int64_t> values; std::string text; };
+struct floating_value { double number = 0; };
+struct nested_value { value nested; std::vector<value> list; };
+struct dynamic_value { forge::variant_object claims; };
 BOOST_DESCRIBE_STRUCT(value, (), (count))
 BOOST_DESCRIBE_STRUCT(large_value, (), (values, text))
+BOOST_DESCRIBE_STRUCT(floating_value, (), (number))
+BOOST_DESCRIBE_STRUCT(nested_value, (), (nested, list))
+BOOST_DESCRIBE_STRUCT(dynamic_value, (), (claims))
 }
 
 namespace forge::schema {
+template <> struct rules<json_strict_tests::dynamic_value> {
+   static object_schema<json_strict_tests::dynamic_value> define() {
+      return object<json_strict_tests::dynamic_value>().field<&json_strict_tests::dynamic_value::claims>("claims");
+   }
+};
+
 template <> struct rules<json_strict_tests::large_value> {
    static object_schema<json_strict_tests::large_value> define() {
       using type = json_strict_tests::large_value;
@@ -74,10 +87,61 @@ BOOST_AUTO_TEST_CASE(json_strict_does_not_coerce_integer_kinds_or_bounds) {
    const auto options = forge::codec::json::read_options{
       .described_records = forge::codec::json::described_record_policy::exact};
    for (const auto* input : {R"({"count":"1"})", R"({"count":true})", R"({"count":null})",
-      R"({"count":1.0})", R"({"count":1e0})", R"({"count":9223372036854775808})"}) {
+      R"({"count":1.0})", R"({"count":1e0})", R"({"count":1e2})", R"({"count":1E+2})",
+      R"({"count":-1e0})", R"({"count":9223372036854775808})"}) {
       BOOST_TEST(!forge::codec::json::read<json_strict_tests::value>(input, options).ok());
    }
    BOOST_TEST(forge::codec::json::read<json_strict_tests::value>(R"({"count":9223372036854775807})", options).ok());
+}
+
+BOOST_AUTO_TEST_CASE(json_strict_preserves_floating_tokens_and_permissive_numeric_storage) {
+   const auto options = forge::codec::json::read_options{
+      .described_records = forge::codec::json::described_record_policy::exact};
+   const std::pair<std::string_view, double> examples[] = {
+      {"1.0", 1.0}, {"1e0", 1.0}, {"1e2", 100.0}, {"1E+2", 100.0}, {"-1e2", -100.0}, {"1e-1", 0.1}};
+   for (const auto& [text, expected] : examples) {
+      const auto parsed = forge::codec::json::read_value(text, options);
+      BOOST_REQUIRE(parsed.ok());
+      BOOST_REQUIRE(parsed.value.is_double());
+      BOOST_TEST(parsed.value.as_double() == expected);
+      const auto typed = forge::codec::json::read<json_strict_tests::floating_value>(
+         std::string{"{\"number\":"} + std::string{text} + "}", options);
+      BOOST_REQUIRE(typed.ok());
+      BOOST_TEST(typed.value.number == expected);
+   }
+   const auto legacy = forge::codec::json::read_value("1e2");
+   BOOST_REQUIRE(legacy.ok());
+   BOOST_REQUIRE(legacy.value.is_uint64());
+   BOOST_TEST(legacy.value.as_uint64() == 100U);
+   BOOST_TEST(forge::codec::json::read<json_strict_tests::value>(R"({"count":1e2})").ok());
+   const auto bytes = std::string{"1e2unused"};
+   const auto bounded = forge::codec::json::read_value(std::string_view{bytes.data(), 3}, options);
+   BOOST_REQUIRE(bounded.ok());
+   BOOST_REQUIRE(bounded.value.is_double());
+   BOOST_TEST(bounded.value.as_double() == 100.0);
+}
+
+BOOST_AUTO_TEST_CASE(json_strict_rejects_nested_integer_exponents_but_keeps_dynamic_floats) {
+   const auto options = forge::codec::json::read_options{
+      .described_records = forge::codec::json::described_record_policy::exact};
+   for (const auto* input : {R"({"nested":{"count":1e0},"list":[{"count":2}]})",
+      R"({"nested":{"count":1},"list":[{"count":1e2}]})"}) {
+      BOOST_TEST(!forge::codec::json::read<json_strict_tests::nested_value>(input, options).ok());
+   }
+   const auto dynamic = forge::codec::json::read<json_strict_tests::dynamic_value>(
+      R"({"claims":{"numbers":[1e0,1.0,1e-1,18446744073709551615],"nested":{"\u0078":1e2}}})", options);
+   BOOST_REQUIRE(dynamic.ok());
+   const auto& numbers = dynamic.value.claims["numbers"].get_array();
+   BOOST_REQUIRE_EQUAL(numbers.size(), 4U);
+   for (std::size_t index = 0; index < 3; ++index) BOOST_TEST(numbers[index].is_double());
+   BOOST_TEST(numbers[0].as_double() == 1.0);
+   BOOST_TEST(numbers[1].as_double() == 1.0);
+   BOOST_TEST(numbers[2].as_double() == 0.1);
+   BOOST_REQUIRE(numbers[3].is_uint64());
+   BOOST_TEST(numbers[3].as_uint64() == UINT64_MAX);
+   const auto& nested = dynamic.value.claims["nested"].get_object()["x"];
+   BOOST_REQUIRE(nested.is_double());
+   BOOST_TEST(nested.as_double() == 100.0);
 }
 
 BOOST_AUTO_TEST_CASE(json_exact_decode_has_no_hidden_dynamic_adapter_limits) {

@@ -9,6 +9,10 @@ object/array and decoded UTF-8 string/key bytes. Container depth starts at one
 for the root container. Glaze's existing lazy view checks structural budgets
 before DOM construction; Glaze still owns syntax/unescaping/number parsing and
 complete trailing-input validation. There is no second parser.
+After full validation, exact reads preserve tokens with a decimal point or
+exponent as `double` through the same Glaze lazy view and numeric decoder, so
+integer fields reject `1.0` and `1e0` while dynamic/floating fields retain them.
+Permissive numeric storage is unchanged.
 Exact mode rejects escaped duplicate keys at every depth, invalid UTF-8,
 unpaired surrogates, raw NUL, and by default decoded NUL in strings/keys.
 `reject_nul = false` permits decoded NUL only where explicitly needed; it never

@@ -237,6 +237,43 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
    return true;
 }
 
+[[nodiscard]] bool preserve_lexical_number_kinds(const glz::lazy_json_view<json_lazy_options>& input,
+                                                codec_value& output, std::string_view path,
+                                                std::vector<schema::diagnostic>& diagnostics) {
+   if (input.is_number()) {
+      // Glaze's integer reader accepts positive exponents. Keep their lexical
+      // floating kind, but leave all numeric parsing/conversion to Glaze.
+      if (input.raw_json().find_first_of(".eE") != std::string_view::npos) {
+         auto value = double{};
+         if (input.read_into(value)) {
+            diagnostics.push_back(make_error(std::string{path}, "json.parse", "failed to decode floating JSON number"));
+            return false;
+         }
+         output = value;
+      }
+   } else if (input.is_array()) {
+      auto& array = std::get<codec_value::array_t>(output.data);
+      auto index = std::size_t{};
+      for (const auto& entry : input) {
+         if (!preserve_lexical_number_kinds(entry, array.at(index), array_path(path, index), diagnostics)) return false;
+         ++index;
+      }
+   } else if (input.is_object()) {
+      auto& object = std::get<codec_value::object_t>(output.data);
+      for (const auto& entry : input) {
+         const auto key = decode_object_key(entry.key());
+         const auto found = object.find(key);
+         const auto entry_path = object_path(path, key);
+         if (found == object.end()) {
+            diagnostics.push_back(make_error(entry_path, "json.parse", "JSON backend object does not match source"));
+            return false;
+         }
+         if (!preserve_lexical_number_kinds(entry, found->second, entry_path, diagnostics)) return false;
+      }
+   }
+   return true;
+}
+
 [[nodiscard]] variant to_variant_value(const codec_value& input);
 [[nodiscard]] config::core::value to_config_value(const codec_value& input);
 [[nodiscard]] codec_value from_variant_value(const variant& input);
@@ -438,6 +475,8 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
       result.diagnostics.push_back(make_error(options.source_name, "json.parse", glz::format_error(error, input)));
       return result;
    }
+   if (options.described_records == described_record_policy::exact &&
+       !preserve_lexical_number_kinds(lazy->root(), parsed, {}, result.diagnostics)) return result;
    result.value = std::move(parsed);
    return result;
 }

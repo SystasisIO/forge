@@ -44,6 +44,10 @@ if report.is_file():
 (work / 'evidence' / 'tests.json').write_text(json.dumps(summary, indent=2) + '\n')
 # Preserve failure locations, never assertion operands or credential values.
 locations = []
+sanitizers = []
+sanitizer_kinds = {'heap-use-after-free', 'heap-buffer-overflow', 'stack-buffer-overflow',
+                   'stack-use-after-return', 'stack-use-after-scope', 'global-buffer-overflow',
+                   'use-after-poison', 'double-free', 'alloc-dealloc-mismatch', 'SEGV', 'unknown-crash'}
 test_log = work / 'raw' / 'tests.log'
 if test_log.is_file():
     for line in test_log.read_text(errors='replace').splitlines():
@@ -51,8 +55,17 @@ if test_log.is_file():
         found = re.search(r'([^/ ]+\.(?:cpp|cppm)|unknown location)\((\d+)\): (?:fatal error|error): in "([A-Za-z0-9_/]+)"', line)
         if found:
             locations.append({'source': found[1], 'line': int(found[2]), 'case': found[3]})
+        found = re.search(r'ERROR: AddressSanitizer: ([A-Za-z0-9_-]+)', line)
+        if found:
+            sanitizers.append({'backend': 'ASan', 'kind': found[1] if found[1] in sanitizer_kinds else 'unknown'})
+        if 'ERROR: LeakSanitizer: detected memory leaks' in line:
+            sanitizers.append({'backend': 'LSan', 'kind': 'memory_leak'})
+        found = re.search(r'([^/ ]+\.(?:cpp|cppm|c|h|hpp|hxx)):(\d+):\d+: runtime error:', line)
+        if found:
+            sanitizers.append({'backend': 'UBSan', 'source': found[1], 'line': int(found[2])})
 (work / 'evidence' / 'failure-locations.json').write_text(json.dumps(locations, indent=2) + '\n')
-print(json.dumps({'tests': summary, 'failure_locations': locations}))
+(work / 'evidence' / 'sanitizers.json').write_text(json.dumps(sanitizers, indent=2) + '\n')
+print(json.dumps({'tests': summary, 'failure_locations': locations, 'sanitizers': sanitizers}))
 # Compile diagnostics contain no runtime values; cap retained output.
 compile_log = work / 'raw' / 'compile.log'
 if compile_log.is_file():
@@ -165,8 +178,28 @@ case "$phase" in
          --output-junit "$work/results.xml" \
          -R '^test_forge_(crypto_jose|auth_attestation|api_attestation|schema_attestation|json_strict|attestation_policy|schema|variant|codec_json|raw|config_core|codec_yaml|codec_xml|api_core|http_strict_json|auth_liboauth2|openapi_wire_baseline|structure|contract_sdk_cmake_runtime_policy)$' \
          > "$work/raw/tests.log" 2>&1
-      "$build/tests/forge_attestation_benchmark" --iterations 256 --workers 2 --inflight 4 \
-         > "$work/evidence/benchmark.json"
+      python3 - "$build/tests/forge_attestation_benchmark" "$work/evidence" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+executable, evidence = sys.argv[1], Path(sys.argv[2])
+normal = subprocess.run([executable, '--iterations', '256', '--workers', '2', '--inflight', '4'],
+                        capture_output=True, timeout=60, check=False)
+metrics = json.loads(normal.stdout)
+(evidence / 'benchmark.json').write_text(json.dumps(metrics, indent=2) + '\n')
+if normal.returncode != 0 or metrics.get('status') != 'MEASURED':
+    raise SystemExit('benchmark measurement failed')
+failure = subprocess.run([executable, '--iterations', '1', '--workers', '1', '--inflight', '1',
+                          '--fail-worker', '1'], capture_output=True, timeout=20, check=False)
+if failure.returncode != 1 or json.loads(failure.stdout) != {
+        'status': 'HARNESS_ERROR', 'reason': 'injected_worker_failure'}:
+    raise SystemExit('benchmark worker-failure regression failed')
+(evidence / 'benchmark-failure.json').write_text(json.dumps({
+    'status': 'PASS', 'exit_code': failure.returncode, 'timeout_seconds': 20,
+    'heartbeat_started_before_worker_failure': True}) + '\n')
+PY
       ;;
    sanitizers)
       cmake -S "$root" -B "$build" "${options[@]}" -DFORGE_ENABLE_MODULES=ON \
