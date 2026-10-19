@@ -21,6 +21,9 @@ VERSION = "22.1.8"
 SOURCE_SHA256 = "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888"
 MIN_BOOTSTRAP_FREE_BYTES = 40 * 1024 ** 3
 PACKAGE_MANIFEST = "share/forge-vm-ci-toolchain.json"
+INTEL_BOTTLE_SHA256 = "2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48"
+INTEL_FORMULA_REF = "75d8fa416b18bc8caedacf1696831422902a2bb3"
+INTEL_FORMULA_SHA256 = "2fa9df2ef5b3ad8cbf3c9bc3fe0b4f3d7133a7b9cf0e00647560d4fd44e665e8"
 STAGE0_VERSION = "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80"
 STAGE0_CC = "/usr/bin/clang-22"
 STAGE0_CXX = "/usr/bin/clang++-22"
@@ -58,6 +61,74 @@ def bottle(file, tag):
     require(record and record.get("url") and re.fullmatch(r"[0-9a-f]{64}", record.get("sha256", "")),
             f"no qualified llvm@22 22.1.8 native bottle for {tag}; source build forbidden")
     print(f"READY: llvm@22 {VERSION} bottle {tag} sha256={record['sha256']}")
+
+
+def intel_scope(scope):
+    require(scope == "intel-runtime-off", "historical Intel candidate supports only intel-runtime-off")
+    require(platform.system() == "Darwin" and platform.machine() == "x86_64"
+            and platform.mac_ver()[0].startswith("15."), "historical Intel candidate requires native x86_64 macOS15")
+    for variable in ("WAMR_JIT", "WAMR_AOT", "FORGE_ENABLE_VM_WASM_LLVM_JIT", "FORGE_ENABLE_VM_WASM_OPTIMIZING",
+                     "FORGE_ENABLE_WASM_COMPILER", "FORGE_ENABLE_TOOLING"):
+        require(os.environ.get(variable, "OFF") == "OFF", f"unsupported Intel runtime-only scope: {variable}")
+    for variable in ("LLVM_PREFIX", "LLVM_DIR", "Clang_DIR"):
+        require(not os.environ.get(variable), f"runtime-only candidate must not select {variable}")
+    for variable in ("CMAKE_DISABLE_FIND_PACKAGE_LLVM", "CMAKE_DISABLE_FIND_PACKAGE_Clang"):
+        require(os.environ.get(variable, "ON") == "ON", f"runtime-only candidate must disable {variable}")
+
+
+def intel_archive(archive, formula, evidence):
+    require(sha256(archive) == INTEL_BOTTLE_SHA256, "historical Intel bottle SHA mismatch")
+    require(sha256(formula) == INTEL_FORMULA_SHA256, "historical Intel formula SHA/ref mismatch")
+    root = "llvm/22.1.8/"
+    wanted = {root + "INSTALL_RECEIPT.json": 1024 * 1024, root + ".brew/llvm.rb": 256 * 1024}
+    metadata = {}
+    # Read only the two standard metadata members; never extract or relocate ourselves.
+    with tarfile.open(archive, "r|gz") as source:
+        for member in source:
+            if member.name not in wanted:
+                continue
+            require(member.name not in metadata and member.isfile() and member.size <= wanted[member.name],
+                    "invalid historical Intel bottle metadata member")
+            metadata[member.name] = source.extractfile(member).read().decode("utf-8")
+            if len(metadata) == len(wanted):
+                break
+    require(metadata.keys() == wanted.keys(), "missing historical Intel bottle metadata")
+    receipt = json.loads(metadata[root + "INSTALL_RECEIPT.json"])
+    require(receipt.get("arch") == "x86_64" and receipt.get("built_on", {}).get("os_version") == "macOS 14.8",
+            "historical Intel bottle architecture/platform mismatch")
+    embedded = metadata[root + ".brew/llvm.rb"]
+    require(f"llvmorg-{VERSION}/llvm-project-{VERSION}.src.tar.xz" in embedded and SOURCE_SHA256 in embedded,
+            "historical Intel bottle source version mismatch")
+    evidence.write_text(json.dumps({"scope": "intel-runtime-off", "bottle_sha256": INTEL_BOTTLE_SHA256,
+                                    "formula_ref": INTEL_FORMULA_REF, "formula_sha256": INTEL_FORMULA_SHA256,
+                                    "embedded_formula_sha256": hashlib.sha256(embedded.encode()).hexdigest(),
+                                    "built_on": receipt["built_on"], "arch": receipt["arch"],
+                                    "LLVM_library_qualification": "NOT_APPLICABLE_RUNTIME_OFF"}, indent=2) + "\n")
+    print("READY: pinned Intel bottle metadata; installation and host qualification still required")
+
+
+def intel_formula(file):
+    formula = json.loads(file.read_text())["formulae"][0]
+    require(formula["name"] == "llvm" and formula["versions"]["stable"] == VERSION,
+            "Homebrew did not load the historical local llvm22.1.8 formula")
+
+
+def intel_headers(prefix, evidence):
+    intel_scope("intel-runtime-off")
+    require(prefix == Path("/usr/local/Cellar/llvm/22.1.8"), "Intel compiler must use the exact native Cellar keg")
+    for variable, name in (("CC", "clang"), ("CXX", "clang++")):
+        require(os.environ.get(variable) == str(prefix / "bin" / name), "Intel compiler alias/outside-keg path refused")
+    for name in ("clang", "clang++", "clang-scan-deps"):
+        tool = prefix / "bin" / name
+        require(tool.is_file() and tool.resolve().is_relative_to(prefix), "Intel tool resolves outside exact Cellar keg")
+    headers(evidence)
+    result = json.loads((evidence / "header-result.json").read_text())
+    require(all(Path(file).resolve().is_relative_to(prefix) for file in result["headers"].values()),
+            "Intel libc++ headers resolve outside exact Cellar keg")
+    macros = (evidence / "macros.txt").read_text()
+    for name in ("__EXCEPTIONS", "__GXX_RTTI"):
+        require(re.search(rf"^#define {name} 1$", macros, re.M), f"Intel host feature disabled: {name}")
+    print("READY: Intel runtime-OFF compiler/headers/host RTTI+EH; not LLVM/JIT/compiler qualification")
 
 
 def apt_packages(evidence):
@@ -271,6 +342,17 @@ def main():
     check = mode.add_parser("bottle")
     check.add_argument("file", type=Path)
     check.add_argument("tag")
+    intel = mode.add_parser("intel-scope")
+    intel.add_argument("scope")
+    intel_payload = mode.add_parser("intel-archive")
+    intel_payload.add_argument("archive", type=Path)
+    intel_payload.add_argument("formula", type=Path)
+    intel_payload.add_argument("evidence", type=Path)
+    intel_info = mode.add_parser("intel-formula")
+    intel_info.add_argument("file", type=Path)
+    intel_live = mode.add_parser("intel-headers")
+    intel_live.add_argument("prefix", type=Path)
+    intel_live.add_argument("evidence", type=Path)
     apt = mode.add_parser("apt-packages")
     apt.add_argument("evidence", type=Path)
     stage0_install = mode.add_parser("stage0-packages")
@@ -296,6 +378,14 @@ def main():
     args = parser.parse_args()
     if args.mode == "bottle":
         bottle(args.file, args.tag)
+    elif args.mode == "intel-scope":
+        intel_scope(args.scope)
+    elif args.mode == "intel-archive":
+        intel_archive(args.archive, args.formula, args.evidence)
+    elif args.mode == "intel-formula":
+        intel_formula(args.file)
+    elif args.mode == "intel-headers":
+        intel_headers(args.prefix, args.evidence)
     elif args.mode == "apt-packages":
         apt_packages(args.evidence)
     elif args.mode == "stage0-packages":

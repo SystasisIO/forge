@@ -16,7 +16,77 @@ log_run() {
    "$@" 2>&1 | tee "$evidence/$name.log"
 }
 
-if [[ "$mode" == stage0-linux ]]; then
+if [[ "$mode" == intel-runtime-off ]]; then
+   # Historical compiler/headers only: never use this keg to qualify LLVM/JIT.
+   log_run intel-scope python3 "$checker" intel-scope "$mode"
+   test "$RUNNER_OS" = macOS
+   test "$(sysctl -n sysctl.proc_translated 2>/dev/null || printf 0)" != 1
+   command -v brew >/dev/null
+   test "$(brew --prefix)" = /usr/local
+   test "$(brew --cellar)" = /usr/local/Cellar
+   export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_INSTALL_UPGRADE=1
+   export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
+   prefix=/usr/local/Cellar/llvm/22.1.8
+   test ! -e "$prefix"
+   work="$RUNNER_TEMP/forge-intel-runtime-off-22.1.8"
+   mkdir "$work"
+   archive="$work/llvm--22.1.8.sonoma.bottle.tar.gz"
+   formula="$work/llvm.rb"
+   log_run intel-formula-download curl --fail --location --max-time 120 \
+      https://raw.githubusercontent.com/Homebrew/homebrew-core/75d8fa416b18bc8caedacf1696831422902a2bb3/Formula/l/llvm.rb \
+      --output "$formula"
+   # Homebrew's public anonymous GHCR credential; not an account token.
+   log_run intel-bottle-download curl --fail --location --max-time 900 \
+      --header 'Authorization: Bearer QQ==' \
+      https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48 \
+      --output "$archive"
+   log_run intel-archive python3 "$checker" intel-archive "$archive" "$formula" "$evidence/intel-bottle.json"
+   brew info --json=v2 "$archive" > "$evidence/intel-local-formula.json"
+   log_run intel-formula python3 "$checker" intel-formula "$evidence/intel-local-formula.json"
+
+   # Nested Homebrew installers do not inherit --force-bottle. Install leaves first
+   # and refuse newly missing children so no nested installer can build from source.
+   brew deps --missing --topological --formula "$archive" > "$evidence/intel-missing-deps.txt"
+   index=0
+   while IFS= read -r dependency; do
+      [[ -n "$dependency" && "$dependency" != -* && "$dependency" != *[[:space:]]* ]]
+      index=$((index + 1))
+      brew deps --missing --formula "$dependency" > "$evidence/intel-dependency-$index-missing.txt"
+      test ! -s "$evidence/intel-dependency-$index-missing.txt"
+      log_run "intel-dependency-$index-install" brew install --force-bottle --formula "$dependency"
+   done < "$evidence/intel-missing-deps.txt"
+   brew deps --missing --formula "$archive" > "$evidence/intel-remaining-deps.txt"
+   test ! -s "$evidence/intel-remaining-deps.txt"
+   log_run intel-bottle-install brew install --force-bottle --skip-link "$archive"
+   log_run intel-installed-receipt cat "$prefix/INSTALL_RECEIPT.json"
+
+   sdk="$(xcrun --show-sdk-path)"
+   unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH \
+      DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_INSERT_LIBRARIES
+   export CC="$prefix/bin/clang" CXX="$prefix/bin/clang++" SDKROOT="$sdk"
+   export CXXFLAGS="-stdlib=libc++ -isysroot $sdk" LDFLAGS="-stdlib=libc++ -isysroot $sdk"
+   log_run intel-headers python3 "$checker" intel-headers "$prefix" "$evidence/headers"
+   probe="$GITHUB_WORKSPACE/.github/probes/llvm-cxx-abi"
+   host="$work/host-abi"
+   mkdir "$host"
+   host_flags=(-std=c++23 -stdlib=libc++ -isysroot "$sdk")
+   log_run intel-host-dso "$CXX" "${host_flags[@]}" -dynamiclib "$probe/bootstrap_abi.cpp" \
+      -Wl,-install_name,@rpath/libforge_bootstrap_abi.dylib -o "$host/libforge_bootstrap_abi.dylib"
+   log_run intel-host-client "$CXX" "${host_flags[@]}" "$probe/bootstrap_abi_main.cpp" \
+      -L"$host" -lforge_bootstrap_abi -Wl,-rpath,@loader_path -o "$host/host-abi"
+   log_run intel-host-linkage otool -L "$host/host-abi" "$host/libforge_bootstrap_abi.dylib"
+   log_run intel-host-run "$host/host-abi"
+   {
+      echo "CC=$CC"
+      echo "CXX=$CXX"
+      echo "CXXFLAGS=$CXXFLAGS"
+      echo "LDFLAGS=$LDFLAGS"
+      echo "SDKROOT=$SDKROOT"
+   } >> "$GITHUB_ENV"
+   echo "$prefix/bin" >> "$GITHUB_PATH"
+   echo 'READY: Intel runtime-OFF host toolchain only; Forge runtime gates remain required'
+   exit 0
+elif [[ "$mode" == stage0-linux ]]; then
    test "$RUNNER_OS" = Linux
    test "$(uname -m)" = x86_64
    grep -qx 'VERSION_CODENAME=noble' /etc/os-release
@@ -102,7 +172,7 @@ elif [[ "$mode" == bootstrap-linux ]]; then
    log_run llvm-configure cmake -S "$source/llvm" -B "$work/llvm" -G Ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DCMAKE_C_COMPILER=/usr/bin/clang-22 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
-      "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -nostdinc++ -isystem $prefix/include/c++/v1" \
+      "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -isystem $prefix/include/c++/v1" \
       "-DCMAKE_EXE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       "-DCMAKE_SHARED_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       -DCMAKE_BUILD_RPATH="$prefix/lib" -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
@@ -110,6 +180,7 @@ elif [[ "$mode" == bootstrap-linux ]]; then
       '-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra' \
       -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
       -DLLVM_ENABLE_LIBCXX=ON -DLLVM_ENABLE_RTTI=ON -DLLVM_ENABLE_EH=ON \
+      -DLLVM_ENABLE_PIC=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
       -DLLVM_BUILD_LLVM_DYLIB=ON -DLLVM_LINK_LLVM_DYLIB=ON \
       -DCLANG_LINK_CLANG_DYLIB=ON -DCLANG_DEFAULT_CXX_STDLIB=libc++ \
       -DLLVM_ENABLE_LTO=OFF -DLLVM_PARALLEL_COMPILE_JOBS=2 -DLLVM_PARALLEL_LINK_JOBS=1 \
@@ -117,6 +188,9 @@ elif [[ "$mode" == bootstrap-linux ]]; then
       -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF \
       -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_ENABLE_LIBXML2=OFF \
       -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_FFI=OFF
+   cp "$work/llvm/CMakeCache.txt" "$evidence/llvm-CMakeCache.txt"
+   log_run llvm-c-pic-check grep -Fx 'C_SUPPORTS_FPIC:INTERNAL=1' "$work/llvm/CMakeCache.txt"
+   log_run llvm-cxx-pic-check grep -Fx 'CXX_SUPPORTS_FPIC:INTERNAL=1' "$work/llvm/CMakeCache.txt"
    log_run llvm-build cmake --build "$work/llvm" -j 2
    log_run llvm-install cmake --install "$work/llvm" --strip
 

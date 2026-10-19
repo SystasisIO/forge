@@ -137,6 +137,52 @@ or downstream products. Intel macOS provisioning is still a separate blocker.
 No runtime source, engine pin, public API, license or live product pin changes
 in this follow-up. Workspace receipts are under `wamr-ci-190-20261019-r6`.
 
+## CI52 Follow-Up (2026-10-19)
+
+The qualified-generator control now passes remotely: ARM64 interpreter job
+117957074640 completes 25/25 root CTests in 4.51 seconds, with zero CTest
+failures, disabled or skipped tests. Its raw counts include unit178, spec2428
+and SDK executor43 cases; JIT-only cases are outside this OFF profile. The unit
+output retains 45 assertionless-case warnings, so zero CTest skips is not a
+claim that every historical donor case executes assertions. Independent review
+matches the registry, XML, actual commands and checksum-verified artifact.
+
+The actual tested checkout is merge `90e0c67e8c16c79adc47174c0c017a1f74087814`,
+PR head `ddf9f44ef388b2adad1d88a2588c95e563fc6cb1` over dev
+`7061cd35714535765811f3e338ae30bee3b0df3b`. The ancillary run metadata's base
+field is not substituted for these verified checkout parents. CMake3.31.6 is
+used; this validates the generator selection, not an upstream CMake4.4 repair.
+The OFF upload does not contain complete physical LLVM-free linkage or any
+installed-package acceptance. ARM JIT/compiler-AOT remains a separate gate.
+
+The Linux producer passes StageA runtime installation and its stage0 DSO/client
+ABI probe, then fails linking the StageB shared LLVM library. LLVM's real CXX
+PIC probe fails: Clang22's Linux driver reports unused -stdlib under -Werror
+when combined with -nostdinc++. A syntax-only Linux-target driver control
+reproduces that error and passes after removing only -nostdinc++; it is not
+native Linux runtime evidence. The correction retains explicit libc++ and
+StageA headers, enables PIC, saves the real CMake cache, and requires both C
+and CXX PIC support checks before the expensive native build. No cached
+support result is fabricated, warning suppressed or linker refusal bypassed.
+
+Intel's explicit candidate uses the checksum-pinned historical LLVM22.1.8
+Sonoma bottle through normal Homebrew installation and relocation, with only
+bottled dependencies. It is restricted to the native macOS15 x86 interpreter
+OFF profile. Exact compiler/scanner paths, live libc++220108 headers and host
+RTTI/EH remain required. LLVM library EH=OFF does not describe generated host
+C++ exception support and does not qualify this bottle for JIT/compiler use.
+The combined static/metadata suite passes 44/44; native Intel installation and
+the corrected Linux bootstrap still require fresh remote qualification.
+
+The fresh publication package attempt reaches the normal aggregate install
+prerequisite but fails in unchanged crypto/pki x509 compilation: generic
+Homebrew OpenSSL4 headers precede the selected OpenSSL3 include directory,
+while the configured libraries remain OpenSSL3. No install prefix is produced;
+installed interpreter, executor and optimizing/session tests are NOT_RUN.
+No unrelated OpenSSL4 compatibility edits, partial prefix or source fallback
+is used to turn that failure into a package pass. Workspace receipts are under
+`wamr-ci-190-20261019-r7`; the complete migration remains unaccepted.
+
 ## Language-Version Differences
 
 The bounded numeric profile uses WAMR's existing modern encoding and typing

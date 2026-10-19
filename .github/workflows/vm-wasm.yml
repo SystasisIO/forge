@@ -175,7 +175,7 @@ jobs:
       - name: Install exact22.1.8 VM toolchain without source fallback
         if: runner.os == 'macOS'
         timeout-minutes: 20
-        run: bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm/toolchain
+        run: bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm/toolchain intel-runtime-off
 
       - uses: actions/download-artifact@v4
         if: runner.os == 'Linux'
