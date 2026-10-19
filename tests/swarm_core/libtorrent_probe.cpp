@@ -15,6 +15,8 @@ import forge.swarm.core.merkle;
 namespace core = forge::swarm::core;
 namespace donor = libtorrent;
 
+unsigned compare_libtorrent_picker();
+
 namespace {
 
 bool same(const core::sha256& actual, const donor::sha256_hash& expected) {
@@ -92,6 +94,9 @@ int main() {
          }
       }
       std::cout << "PASS: " << cases << " file/piece geometries against unchanged libtorrent b4e9e2471e7a\n";
+      const auto picker_cases = compare_libtorrent_picker();
+      std::cout << "PASS: " << picker_cases
+                << " picker decisions against unchanged libtorrent b4e9e2471e7a\n";
       return 0;
    } catch (const std::exception& error) {
       std::cerr << error.what() << '\n';

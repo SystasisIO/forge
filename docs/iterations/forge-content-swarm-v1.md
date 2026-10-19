@@ -13,6 +13,10 @@
 > **Plan revision, 2026-10-16:** reusable runtime belongs to `forge::swarm`;
 > the optional plugin is a thin application adapter. Paid and free serving use
 > product-supplied admission and quota policies over the same engine.
+> **Scope clarification, 2026-10-19:** current encrypted provider fragments stay
+> on the product provider API. Swarm integration for those fragments is future
+> product work; neutral storage adapters and admission/quota enforcement remain
+> part of this plan.
 > The same revision makes Swarm a library family: Object Store metadata belongs
 > to `swarm.db`, network records to `swarm.protocol`, and remote contracts to
 > `swarm.api`. The family root stays empty; focused PRs deliver its leaves.
@@ -976,17 +980,23 @@ operation ownership without duplicating these primitives.
 
 ### 12.6 Downstream decision record
 
-The maintainer decision of 2026-10-16 maps paid serving to Storlane `providerd`
-and free distribution to `swarmd`. Both consume the same `forge::swarm` engine,
-optionally through `forge_plugins_swarm_node`. This records the use case, not a
-claim that either integration has been implemented.
+The maintainer clarification of 2026-10-19 keeps current Storlane `providerd`
+serving its encrypted storage fragments through the specialized Storlane API.
+The free `swarmd` composition serves explicitly published Swarm objects.
+Integrating paid provider fragments with Swarm is not a current deliverable.
 
 Storlane owns payment admission, shared budgets and settlement. Forge owns
 enforcement of supplied permissions/allowances and neutral transfer facts.
-An ordinary provider holding erasure fragments is not automatically a Swarm
-seed: a product bridge must supply verified canonical pieces when needed.
-Erasure reconstruction, paid receipts and automatic origin fallback are not
-introduced into Forge by this plan.
+The reusable engine still supports product storage adapters and both explicit
+free and quota-controlled policies. Encryption alone does not prevent Swarm
+transfer: a future product adapter may expose an encrypted fragment as its own
+immutable object, with a canonical descriptor, identity and verified pieces.
+That mapping needs explicit discovery, authorization and accounting contracts;
+it does not inherently require decrypting or reconstructing the original file.
+Alternatively a product may reconstruct canonical file content before exposing
+it. Neither mapping, erasure reconstruction, paid receipts nor automatic origin
+fallback is introduced into Forge by this plan. Failure of a paid path must not
+enable an unrestricted Swarm route.
 
 The first separate downstream pilot remains finalized Spine snapshots. Free
 and quota-controlled adapters are both required in Forge's own fixtures; the
@@ -1152,6 +1162,24 @@ metadata erase do not silently delete payload or decide product retention policy
   response handling, request ownership, endgame cancellation and bounded
   state under long sequences. No sockets, timers or plugin lifecycle in these
   deterministic mechanisms.
+
+PR4's concrete leaves inside the existing target are `peer_observation`,
+`transfer` and `choker`. Connection-local IDs, explicit monotonic `std::chrono`
+time and a caller-supplied tie seed keep the state reproducible. `transfer`
+owns request identities, availability ordering, bounded unfinished-piece
+reservations and verification generations; it does not retain payload.
+`choker` returns serving-slot decisions, not authorization. Its samples and
+selection do not impose paid/free admission or a durable reputation system.
+
+The maintained picker order receives sparse availability/priority updates;
+ordinary requests must not re-sort the entire descriptor. Acceptance includes
+maximum-size stable inventory, identical bitmaps and single-bit changes, plus
+allocation-failure rollback with exact capacities. Donor comparison is limited
+to documented common mechanisms, not BitTorrent wire equivalence. See the
+[Core contract](../../libraries/swarm/core/README.md) and
+[donor traceability](../donors/forge-swarm-transfer-v1.md). Existing descriptor
+and checkpoint wire layouts remain unchanged. Persistence, hash verification,
+data sync and publication still follow PR2's storage ordering.
 
 ### PR5: Protocol DTOs and peer API
 
