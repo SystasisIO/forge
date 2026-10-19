@@ -296,7 +296,8 @@ class IntelRuntimeTests(unittest.TestCase):
         self.assertFalse(self.evidence.exists())
 
     def brew_formula_metadata(self):
-        return {"name": "llvm", "full_name": "forge/vm-ci/llvm", "versions": {"stable": "22.1.8"}, "bottle": {
+        return {"name": "llvm", "full_name": "forge/vm-ci/llvm", "versions": {"stable": "22.1.8"},
+                "dependencies": ["python@3.14", "xz", "zstd", "forge/vm-ci/z3"], "bottle": {
             "stable": {"files": {"sonoma": {"sha256": TOOLCHAIN.INTEL_BOTTLE_SHA256,
                 "url": f"https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:{TOOLCHAIN.INTEL_BOTTLE_SHA256}"}}}}}
 
@@ -331,6 +332,108 @@ class IntelRuntimeTests(unittest.TestCase):
         self.formula.write_text(json.dumps({"formulae": [self.brew_formula_metadata()] * 2}))
         with self.assertRaisesRegex(ValueError, "ambiguous historical Intel tap"):
             TOOLCHAIN.intel_formula(self.formula)
+
+    def test_llvm_missing_or_core_z3_dependency_refused(self):
+        for dependencies in ([], ["z3"], ["homebrew/core/z3"], ["forge/vm-ci/z3", "z3"]):
+            with self.subTest(dependencies=dependencies):
+                formula = self.brew_formula_metadata()
+                formula["dependencies"] = dependencies
+                self.formula.write_text(json.dumps({"formulae": [formula]}))
+                with self.assertRaisesRegex(ValueError, "qualified forge/vm-ci/z3"):
+                    TOOLCHAIN.intel_formula(self.formula)
+
+    def z3_metadata(self):
+        return {"name": "z3", "full_name": "forge/vm-ci/z3", "versions": {"stable": "4.16.0"},
+                "dependencies": [], "bottle": {"stable": {"files": {"sonoma": {
+                    "sha256": TOOLCHAIN.INTEL_Z3_BOTTLE_SHA256,
+                    "url": f"https://ghcr.io/v2/homebrew/core/z3/blobs/sha256:{TOOLCHAIN.INTEL_Z3_BOTTLE_SHA256}"}}}}}
+
+    def test_pinned_z3_has_no_runtime_dependency_tree(self):
+        self.formula.write_text(json.dumps({"formulae": [self.z3_metadata()]}))
+        TOOLCHAIN.intel_z3_formula(self.formula)
+
+    def test_z3_wrong_identity_bottle_or_runtime_dependency_refused(self):
+        for field, value in (("full_name", "z3"), ("versions", {"stable": "5.1.0"}), ("dependencies", ["gmp"]),
+                             ("sha256", "0" * 64), ("url", "https://fixture/other-bottle")):
+            with self.subTest(field=field):
+                formula = self.z3_metadata()
+                if field in ("sha256", "url"):
+                    formula["bottle"]["stable"]["files"]["sonoma"][field] = value
+                else:
+                    formula[field] = value
+                self.formula.write_text(json.dumps({"formulae": [formula]}))
+                with self.assertRaises(ValueError):
+                    TOOLCHAIN.intel_z3_formula(self.formula)
+
+    def test_z3_inputs_reject_wrong_formula_or_patch_sha(self):
+        for digests in (("0" * 64,), (TOOLCHAIN.INTEL_Z3_FORMULA_SHA256, "0" * 64)):
+            with self.subTest(digests=digests), patch.object(TOOLCHAIN, "sha256", side_effect=digests):
+                with self.assertRaisesRegex(ValueError, "SHA mismatch"):
+                    TOOLCHAIN.intel_z3_inputs(self.formula, self.root / "dependency.patch")
+
+    def test_derived_formula_records_pins_and_rejects_any_other_bytes(self):
+        digests = [TOOLCHAIN.INTEL_FORMULA_SHA256, TOOLCHAIN.INTEL_Z3_PATCH_SHA256, TOOLCHAIN.INTEL_DERIVED_FORMULA_SHA256]
+        for wrong in (None, 0, 1, 2):
+            values = list(digests)
+            if wrong is not None:
+                values[wrong] = "0" * 64
+            with self.subTest(wrong=wrong), patch.object(TOOLCHAIN, "sha256", side_effect=values):
+                args = (self.formula, self.root / "derived.rb", self.root / "dependency.patch", self.evidence)
+                if wrong is None:
+                    TOOLCHAIN.intel_derived_formula(*args)
+                    result = json.loads(self.evidence.read_text())
+                    self.assertEqual(result["original_llvm_formula_sha256"], digests[0])
+                    self.assertEqual(result["dependency_patch_sha256"], digests[1])
+                    self.assertEqual(result["derived_llvm_formula_sha256"], digests[2])
+                    self.assertEqual(result["upstream_z3_formula_sha256"], TOOLCHAIN.INTEL_Z3_FORMULA_SHA256)
+                    self.assertEqual(result["native_qualification"], "PENDING")
+                    self.evidence.unlink()
+                else:
+                    with self.assertRaises(ValueError):
+                        TOOLCHAIN.intel_derived_formula(*args)
+                    self.assertFalse(self.evidence.exists())
+
+    def test_reviewed_dependency_patch_has_one_delta_and_requires_exact_context(self):
+        dependency_patch = ROOT / ".github/probes/llvm-cxx-abi/intel-llvm-z3.patch"
+        self.assertEqual(TOOLCHAIN.sha256(dependency_patch), TOOLCHAIN.INTEL_Z3_PATCH_SHA256)
+        lines = dependency_patch.read_text().splitlines()
+        self.assertEqual([line for line in lines if line.startswith("-") and not line.startswith("---")],
+                         ['-    depends_on "z3"'])
+        self.assertEqual([line for line in lines if line.startswith("+") and not line.startswith("+++")],
+                         ['+    depends_on "forge/vm-ci/z3"'])
+        context = "\n".join(line[1:] for line in lines[3:] if not line.startswith("+")) + "\n"
+        for valid in (True, False):
+            original = "\n" * 48 + (context if valid else context.replace("on_system", "changed_context"))
+            self.formula.write_text(original)
+            result = subprocess.run(["patch", "-t", "-N", "-F", "0", str(self.formula), str(dependency_patch)],
+                                    capture_output=True, text=True, timeout=10)
+            with self.subTest(valid=valid):
+                if valid:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.formula.read_text(), original.replace('depends_on "z3"', 'depends_on "forge/vm-ci/z3"'))
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.formula.read_text(), original)
+
+    def test_z3_library_requires_owned_keg_and_packaged_dylib_target(self):
+        keg = Path("/usr/local/Cellar/z3/4.16.0")
+        payload = keg / "lib/libz3.4.16.0.0.dylib"
+        for wrong_keg, missing_library in ((False, False), (True, False), (False, True)):
+            def resolved(file, strict=False):
+                if file == Path("/usr/local/opt/z3"):
+                    return Path("/outside") if wrong_keg else keg
+                return payload
+
+            with self.subTest(wrong_keg=wrong_keg, missing_library=missing_library), \
+                    patch.object(Path, "is_symlink", return_value=True), patch.object(Path, "resolve", resolved), \
+                    patch.object(Path, "is_file", return_value=not missing_library), \
+                    patch.object(TOOLCHAIN, "sha256", return_value="a" * 64):
+                if wrong_keg or missing_library:
+                    with self.assertRaises(ValueError):
+                        TOOLCHAIN.intel_z3_library(self.evidence)
+                else:
+                    TOOLCHAIN.intel_z3_library(self.evidence)
+                    self.assertEqual(json.loads(self.evidence.read_text())["payload"], str(payload))
 
     def inspect_headers(self, macros="#define __EXCEPTIONS 1\n#define __GXX_RTTI 1\n", outside=False):
         def fake_headers(directory):
@@ -415,9 +518,17 @@ class ProvisioningTests(unittest.TestCase):
         self.assertIn("sysctl.proc_translated", branch)
         self.assertIn("bootstrap_abi.cpp", branch)
         self.assertIn("bootstrap_abi_main.cpp", branch)
+        self.assertIn('test ! -e /usr/local/Cellar/z3 && test ! -L /usr/local/Cellar/z3', branch)
+        self.assertIn('test ! -e /usr/local/opt/z3 && test ! -L /usr/local/opt/z3', branch)
+        self.assertIn('cmp -- "$z3_formula" "$tap_z3_formula"', branch)
+        self.assertIn('patch -t -N -F 0 "$tap_formula" "$dependency_patch"', branch)
+        self.assertLess(branch.index('intel-z3-inputs "$z3_formula"'), branch.index("brew tap-new"))
+        self.assertLess(branch.index('intel-derived-formula \\\n'), branch.index('brew info --json=v2 "$target_formula"'))
+        self.assertLess(branch.index('intel-z3-library "$evidence/intel-z3-library.json"'), branch.index('intel-headers "$prefix"'))
         for forbidden in ("--build-from-source", "--ignore-dependencies", "LLVM_PREFIX=", "LLVM_DIR=",
                           "check-llvm-cxx-abi.py", "cmake --build", "HOMEBREW_DEVELOPER", "HOMEBREW_INTERNAL_ALLOW",
-                          'brew info --json=v2 "$archive"', '--formula "$archive"', '--skip-link "$archive"'):
+                          'brew info --json=v2 "$archive"', '--formula "$archive"', '--skip-link "$archive"',
+                          "brew unlink", "brew uninstall", "install_name_tool", "ln -s", "export DYLD"):
             self.assertNotIn(forbidden, branch)
 
     def test_runtime_graphs_exclude_helper_tests_and_retain_runtime_checks(self):

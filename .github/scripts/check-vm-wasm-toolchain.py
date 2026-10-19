@@ -24,6 +24,10 @@ PACKAGE_MANIFEST = "share/forge-vm-ci-toolchain.json"
 INTEL_BOTTLE_SHA256 = "2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48"
 INTEL_FORMULA_REF = "75d8fa416b18bc8caedacf1696831422902a2bb3"
 INTEL_FORMULA_SHA256 = "2fa9df2ef5b3ad8cbf3c9bc3fe0b4f3d7133a7b9cf0e00647560d4fd44e665e8"
+INTEL_Z3_FORMULA_SHA256 = "6dc219c3882bb64259408b786da411d7d61e25dc089a2e89768eba8f6b82c26c"
+INTEL_Z3_BOTTLE_SHA256 = "a520309ac4d170897f5bcd9b238231bdec1cbb4f0f326c62abe7eb06b7616975"
+INTEL_Z3_PATCH_SHA256 = "2e3922d6f8f6ed7ad678fa0c6df9ccc3fde6cbbe2aa9925fbd3c67b1b1a24d43"
+INTEL_DERIVED_FORMULA_SHA256 = "3a3a71e07c7f242faeab9489194ced8eb5baf75440c5adc6db9b8b2bca2ef484"
 STAGE0_VERSION = "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80"
 STAGE0_CC = "/usr/bin/clang-22"
 STAGE0_CXX = "/usr/bin/clang++-22"
@@ -99,6 +103,52 @@ def intel_formula(file):
     require(record.get("sha256") == INTEL_BOTTLE_SHA256
             and record.get("url") == f"https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:{INTEL_BOTTLE_SHA256}",
             "historical Intel tap formula must select the pinned Homebrew core Sonoma bottle")
+    dependencies = formula.get("dependencies", [])
+    require("forge/vm-ci/z3" in dependencies and "z3" not in dependencies and "homebrew/core/z3" not in dependencies,
+            "historical Intel LLVM must depend on qualified forge/vm-ci/z3, not current core Z3")
+
+
+def intel_z3_inputs(formula, dependency_patch):
+    require(sha256(formula) == INTEL_Z3_FORMULA_SHA256, "historical Intel Z3 formula SHA mismatch")
+    require(sha256(dependency_patch) == INTEL_Z3_PATCH_SHA256, "historical Intel dependency patch SHA mismatch")
+    print("READY: pinned upstream Z3 formula and reviewed LLVM dependency patch")
+
+
+def intel_derived_formula(original, derived, dependency_patch, evidence):
+    require(sha256(original) == INTEL_FORMULA_SHA256, "historical Intel original LLVM formula changed")
+    require(sha256(dependency_patch) == INTEL_Z3_PATCH_SHA256, "historical Intel dependency patch SHA mismatch")
+    require(sha256(derived) == INTEL_DERIVED_FORMULA_SHA256, "historical Intel derived LLVM formula SHA mismatch")
+    evidence.write_text(json.dumps({"scope": "intel-runtime-off", "upstream_ref": INTEL_FORMULA_REF,
+                                    "original_llvm_formula_sha256": INTEL_FORMULA_SHA256,
+                                    "derived_llvm_formula_sha256": INTEL_DERIVED_FORMULA_SHA256,
+                                    "dependency_patch_sha256": INTEL_Z3_PATCH_SHA256,
+                                    "upstream_z3_formula_sha256": INTEL_Z3_FORMULA_SHA256,
+                                    "native_qualification": "PENDING"}, indent=2) + "\n")
+
+
+def intel_z3_formula(file):
+    formulae = json.loads(file.read_text())["formulae"]
+    require(len(formulae) == 1, "ambiguous historical Intel Z3 formula metadata")
+    formula = formulae[0]
+    require(formula["name"] == "z3" and formula.get("full_name") == "forge/vm-ci/z3"
+            and formula["versions"]["stable"] == "4.16.0", "Homebrew did not load pinned forge/vm-ci/z3 4.16.0")
+    record = formula.get("bottle", {}).get("stable", {}).get("files", {}).get("sonoma", {})
+    require(record.get("sha256") == INTEL_Z3_BOTTLE_SHA256
+            and record.get("url") == f"https://ghcr.io/v2/homebrew/core/z3/blobs/sha256:{INTEL_Z3_BOTTLE_SHA256}",
+            "historical Intel Z3 must select the pinned Homebrew core Sonoma bottle")
+    require(formula.get("dependencies") == [], "historical Intel Z3 must have no runtime dependencies")
+
+
+def intel_z3_library(evidence):
+    opt = Path("/usr/local/opt/z3")
+    keg = Path("/usr/local/Cellar/z3/4.16.0")
+    require(opt.is_symlink() and opt.resolve(strict=True) == keg, "Intel Z3 opt must resolve to the owned 4.16.0 keg")
+    library = opt / "lib/libz3.4.16.dylib"
+    payload = keg / "lib/libz3.4.16.0.0.dylib"
+    require(library.is_file() and library.resolve(strict=True) == payload, "Intel Z3 4.16 dylib is missing/outside owned keg")
+    evidence.write_text(json.dumps({"scope": "intel-runtime-off", "opt": str(opt), "keg": str(keg),
+                                    "library": str(library), "payload": str(payload),
+                                    "payload_sha256": sha256(payload), "native_qualification": "PENDING"}, indent=2) + "\n")
 
 
 def intel_headers(prefix, evidence):
@@ -341,6 +391,18 @@ def main():
     intel_live = mode.add_parser("intel-headers")
     intel_live.add_argument("prefix", type=Path)
     intel_live.add_argument("evidence", type=Path)
+    z3_inputs = mode.add_parser("intel-z3-inputs")
+    z3_inputs.add_argument("formula", type=Path)
+    z3_inputs.add_argument("dependency_patch", type=Path)
+    derived = mode.add_parser("intel-derived-formula")
+    derived.add_argument("original", type=Path)
+    derived.add_argument("derived", type=Path)
+    derived.add_argument("dependency_patch", type=Path)
+    derived.add_argument("evidence", type=Path)
+    z3_formula = mode.add_parser("intel-z3-formula")
+    z3_formula.add_argument("file", type=Path)
+    z3_library = mode.add_parser("intel-z3-library")
+    z3_library.add_argument("evidence", type=Path)
     apt = mode.add_parser("apt-packages")
     apt.add_argument("evidence", type=Path)
     stage0_install = mode.add_parser("stage0-packages")
@@ -374,6 +436,14 @@ def main():
         intel_formula(args.file)
     elif args.mode == "intel-headers":
         intel_headers(args.prefix, args.evidence)
+    elif args.mode == "intel-z3-inputs":
+        intel_z3_inputs(args.formula, args.dependency_patch)
+    elif args.mode == "intel-derived-formula":
+        intel_derived_formula(args.original, args.derived, args.dependency_patch, args.evidence)
+    elif args.mode == "intel-z3-formula":
+        intel_z3_formula(args.file)
+    elif args.mode == "intel-z3-library":
+        intel_z3_library(args.evidence)
     elif args.mode == "apt-packages":
         apt_packages(args.evidence)
     elif args.mode == "stage0-packages":

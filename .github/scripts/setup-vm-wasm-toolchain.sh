@@ -30,6 +30,9 @@ if [[ "$mode" == intel-runtime-off ]]; then
    export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
    prefix=/usr/local/Cellar/llvm/22.1.8
    test ! -e "$prefix"
+   # Do not unlink or replace any preexisting Z3 owned by the runner/user.
+   test ! -e /usr/local/Cellar/z3 && test ! -L /usr/local/Cellar/z3
+   test ! -e /usr/local/opt/z3 && test ! -L /usr/local/opt/z3
    work="$RUNNER_TEMP/forge-intel-runtime-off-22.1.8"
    mkdir "$work"
    archive="$work/llvm--22.1.8.sonoma.bottle.tar.gz"
@@ -43,10 +46,17 @@ if [[ "$mode" == intel-runtime-off ]]; then
       https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48 \
       --output "$archive"
    log_run intel-archive python3 "$checker" intel-archive "$archive" "$formula" "$evidence/intel-bottle.json"
+   z3_formula="$work/z3.rb"
+   dependency_patch="$GITHUB_WORKSPACE/.github/probes/llvm-cxx-abi/intel-llvm-z3.patch"
+   log_run intel-z3-formula-download curl --fail --location --max-time 120 \
+      https://raw.githubusercontent.com/Homebrew/homebrew-core/75d8fa416b18bc8caedacf1696831422902a2bb3/Formula/z/z3.rb \
+      --output "$z3_formula"
+   log_run intel-z3-inputs python3 "$checker" intel-z3-inputs "$z3_formula" "$dependency_patch"
    # Default Homebrew forbids formula/bottle file-path arguments. Use its normal
-   # local-tap API with the unchanged pinned formula, never a path-policy override.
+   # local-tap API, never a path-policy override; only the reviewed Z3 dependency changes.
    tap=forge/vm-ci
    target_formula="$tap/llvm"
+   z3_target="$tap/z3"
    brew tap > "$evidence/intel-taps-before.txt"
    if grep -Fxq "$tap" "$evidence/intel-taps-before.txt"; then
       echo 'HARNESS_ERROR: Intel CI tap already exists; refusing mutable formula reuse' >&2
@@ -57,7 +67,16 @@ if [[ "$mode" == intel-runtime-off ]]; then
    test ! -e "$tap_formula"
    cp "$formula" "$tap_formula"
    cmp -- "$formula" "$tap_formula"
-   shasum -a 256 "$tap_formula" > "$evidence/intel-tap-formula.sha256"
+   tap_z3_formula="$(brew --repository "$tap")/Formula/z3.rb"
+   test ! -e "$tap_z3_formula"
+   cp "$z3_formula" "$tap_z3_formula"
+   cmp -- "$z3_formula" "$tap_z3_formula"
+   log_run intel-llvm-z3-patch patch -t -N -F 0 "$tap_formula" "$dependency_patch"
+   log_run intel-derived-formula python3 "$checker" intel-derived-formula \
+      "$formula" "$tap_formula" "$dependency_patch" "$evidence/intel-derived-formula.json"
+   shasum -a 256 "$tap_formula" "$tap_z3_formula" "$dependency_patch" > "$evidence/intel-tap-formula.sha256"
+   brew info --json=v2 "$z3_target" > "$evidence/intel-z3-formula.json"
+   log_run intel-z3-formula python3 "$checker" intel-z3-formula "$evidence/intel-z3-formula.json"
    brew info --json=v2 "$target_formula" > "$evidence/intel-tap-formula.json"
    log_run intel-formula python3 "$checker" intel-formula "$evidence/intel-tap-formula.json"
 
@@ -74,6 +93,7 @@ if [[ "$mode" == intel-runtime-off ]]; then
    done < "$evidence/intel-missing-deps.txt"
    brew deps --missing --formula "$target_formula" > "$evidence/intel-remaining-deps.txt"
    test ! -s "$evidence/intel-remaining-deps.txt"
+   log_run intel-z3-library python3 "$checker" intel-z3-library "$evidence/intel-z3-library.json"
    log_run intel-bottle-install brew install --force-bottle --skip-link "$target_formula"
    log_run intel-installed-receipt cat "$prefix/INSTALL_RECEIPT.json"
 

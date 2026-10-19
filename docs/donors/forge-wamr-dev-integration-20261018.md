@@ -196,6 +196,20 @@ version, official Sonoma bottle SHA/origin and all installed compiler/header/
 host ABI checks remain mandatory. All 44 metadata tests and a real-payload SHA
 admission check pass; actual native Intel installation remains unqualified.
 
+Run54 passes ordinary Intel bottle installation, then actual compiler startup
+refuses a missing libz3.4.16.dylib: the dependency installer selected current
+Z3 5.1 rather than the bottle's ABI4.16 dependency. A compatible Z3 4.16.0
+Sonoma bottle and its upstream formula are checksum-pinned from the same
+historical Homebrew ref. Read-only inspection of the actual x86_64 library
+shows only system libc++/libSystem dependencies. The bounded correction pins
+this one ABI leaf through the same managed tap and an explicit reviewed
+one-line LLVM recipe dependency patch. Upstream input hashes, the recipe patch
+and derived formula identity are retained. No engine source changes, fake ABI
+symlink, loader override, dependency bypass or source-build fallback is allowed.
+The existing native compiler/header/host/runtime gates still decide acceptance.
+Independent scoped review and all 51 metadata tests pass; this does not qualify
+the corrected native dependency closure without its fresh CI execution.
+
 ## Language-Version Differences
 
 The bounded numeric profile uses WAMR's existing modern encoding and typing
