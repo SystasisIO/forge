@@ -1,4 +1,5 @@
 #include "../../libraries/vm/wasm/interpret/details/engine_module.hxx"
+#include "../../libraries/vm/wasm/interpret/details/engine_instance.hxx"
 
 #include <algorithm>
 #include <atomic>
@@ -94,12 +95,20 @@ void verify_data_pages(const void* data, std::size_t bytes) {
 
 void verify_module_protections(const engine::engine_module& loaded) {
    const auto& module = *reinterpret_cast<const AOTModule*>(loaded.get());
+   const auto policy = wasm_runtime_get_native_code_policy(loaded.get());
+   require(policy == (module.func_count == 0 ? WASM_NATIVE_CODE_NONE
+                      : module.load_jit_code ? WASM_NATIVE_CODE_MAP_JIT
+                                             : WASM_NATIVE_CODE_RX),
+           "AOT module policy differs from its committed native mapping mechanism");
    if (module.code_size) {
       const auto flags = query_permissions(module.code);
       require(flags.read && flags.execute, "AOT text is not executable");
 #if defined(__APPLE__) && defined(__aarch64__)
-      require(module.load_jit_code && os_thread_jit_write_protect_supported() && os_thread_jit_write_protect_state(),
-              "Darwin code did not retain its supported MAP_JIT per-thread W^X mechanism");
+      if (module.load_jit_code)
+         require(os_thread_jit_write_protect_supported() && os_thread_jit_write_protect_state(),
+                 "Darwin code did not retain its supported MAP_JIT per-thread W^X mechanism");
+      else
+         require(!flags.write, "Ordinary Darwin AOT text retained write permission");
 #else
       require(!flags.write, "AOT text retained write permission");
 #endif
@@ -364,6 +373,64 @@ void module_lifetime(const std::shared_ptr<engine::engine_runtime>& runtime, con
    verify_module_protections(legacy_native);
 }
 
+void aot_policy_lifecycle(const std::shared_ptr<engine::engine_runtime>& runtime,
+                          const std::vector<std::uint8_t>& native) {
+   auto owner = budget::create(64ULL * 1024 * 1024);
+   auto compiled = std::make_shared<engine::engine_module>(runtime, native, nullptr, true, false, owner);
+   auto& module = *reinterpret_cast<AOTModule*>(compiled->get());
+   require(module.func_count != 0, "AOT policy fixture must contain real native guest bodies");
+   const auto policy = wasm_runtime_get_native_code_policy(compiled->get());
+   require(policy == WASM_NATIVE_CODE_RX || policy == WASM_NATIVE_CODE_MAP_JIT,
+           "Loaded AOT bodies have no committed protection policy");
+   for (const auto invalid :
+        {WASM_NATIVE_CODE_UNCOMMITTED, WASM_NATIVE_CODE_NONE, static_cast<WASMNativeCodePolicy>(255)}) {
+      module.native_code_policy = invalid; // Test-only corruption, never a capability override.
+      bool refused = false;
+      try {
+         engine::engine_instance rejected(compiled, 64 * 1024);
+      } catch (const engine::engine_instance::unavailable&) {
+         refused = true;
+      }
+      module.native_code_policy = policy;
+      require(refused, "Invalid AOT policy reached guest initialization");
+   }
+   const auto initial = os_thread_jit_write_protect_state();
+   struct restore_state {
+      bool value;
+      ~restore_state() {
+         os_thread_jit_write_protect_np(value);
+      }
+   } restore{initial};
+   for (const bool previous : {false, true}) {
+      os_thread_jit_write_protect_np(previous);
+      {
+         engine::engine_instance initialized(compiled, 64 * 1024);
+      }
+      require(os_thread_jit_write_protect_state() == previous,
+              "AOT initialization changed its caller protection state");
+      std::stop_source stop;
+      stop.request_stop();
+      bool cancelled = false;
+      try {
+         engine::engine_instance rejected(compiled, 64 * 1024, stop.get_token());
+      } catch (const engine::engine_instance::canceled&) {
+         cancelled = true;
+      }
+      require(cancelled && os_thread_jit_write_protect_state() == previous,
+              "AOT cancellation changed caller protection or was ignored");
+      {
+         engine::engine_instance fresh(compiled, 64 * 1024);
+      }
+      require(wasm_runtime_get_native_code_policy(compiled->get()) == policy &&
+                  os_thread_jit_write_protect_state() == previous,
+              "Fresh AOT initialization changed policy or caller protection");
+   }
+   std::thread unload{[compiled = std::move(compiled)]() mutable { compiled.reset(); }};
+   unload.join();
+   require(owner->current_bytes() == owner->root_bytes(), "AOT lifecycle retained charged module storage");
+   std::cout << "PASS AOT policy refusal, initialization, cancellation and caller-state restoration\n";
+}
+
 void large_native_data_mapping() {
    constexpr auto requested = std::size_t{2 * 1024 * 1024 + 1};
    std::size_t retained = 0, peak = 0;
@@ -454,6 +521,7 @@ int main(int argc, char** argv) {
       const auto source = read(argv[1]);
       const auto native = read(argv[2]);
       module_lifetime(runtime, source, native);
+      aot_policy_lifecycle(runtime, native);
       large_native_data_mapping();
       repeated_real_module_cleanup(runtime, native);
       std::cout << "PASS cross-thread module/weak/token lifetime and legacy loading\n";

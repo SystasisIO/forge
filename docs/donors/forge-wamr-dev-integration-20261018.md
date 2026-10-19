@@ -240,6 +240,85 @@ The local OS-only diagnostic reports raw pthread support1, RX execution42,
 and SIGBUS for both forbidden RX writes and RW execution; this is not evidence
 of the remote runner's capability.
 
+## CI56 And Native Protection Follow-Up
+
+The [remote OS-only diagnostic](https://github.com/SystasisIO/forge/actions/runs/39240391860)
+completes successfully on macOS15.7.9 ARM64. Raw pthread JIT protection support
+is zero. Ordinary non-MAP_JIT RW/NX-to-RX code returns42; RX writes and RW
+execution are independently denied with SIGBUS. Mapping/protection/cleanup
+errors and compile/run exits are zero. The artifact/source/binary hashes are
+verified; no downloaded binary is executed locally. This is an OS proof, not
+runtime, package or product acceptance.
+
+Fork `cb1eb77` and the matching Forge caller now use an immutable committed
+native-code protection policy. Supported MAP_JIT keeps its real per-thread
+protection. Support=0 uses ordinary writable/nonexecuting preparation followed
+by checked, sealed RX; it does not turn an unsupported MAP_JIT mapping into
+unchecked execution. AOT and ORC policy publication follows complete loader/
+allocation finalization. Unknown/uncommitted native code is rejected before
+guest initialization or calls. Existing owner records/allocators are reused.
+
+The broader local R1 source suite passes80/81, exposing a separate invocation
+cancellation-delivery race. The fix uses the existing absolute watchdog for
+the runtime-owned stop-forwarding callback, with a saturating deadline and
+unchanged overlap/error precedence. Generic duration-watchdog callback delivery
+is not changed. Ten fresh invocation repetitions pass; the added tests require
+the C++ continuation after synchronous cancellation to remain zero, across
+interpreter/JIT initialization, calls, maximum-duration budgets and reuse.
+
+The coherent cb1 compiler/runtime R3 source matrix passes81/81 in99.45s,
+including all53 AOT tests, with no disabled/skipped CTests. The standalone
+production-private real-loader graph separately passes1/1 using fresh raw AOT
+from the same compiler identity. It checks shared accounting, one-byte budget
+shortfall, actual text/data protections, allocation/mapping/protection/cancel/
+unmap faults, cross-thread unload and recovery after repeated cleanup failures.
+These results do not substitute for the installed-package gate excluded from
+this local source selection. Its new normal aggregate dev-component build and
+install complete after selecting the actual Boost keg dependency configs;
+the real x509 compile command no longer places broad Homebrew OpenSSL4 headers
+before the selected OpenSSL3 headers/libraries. No compatibility shim, source
+fallback or partial install is used. Fresh canonical installed consumers then
+pass3/3 in95.18s: optimizing69.34s, SDK execution7.83s and relocated interpreter/
+JIT/profile17.99s. The optimizing consumer's nested real compiler/runtime/
+session suite passes5/5 in10.23s, with no skipped/disabled tests. Raw logs/XML
+are retained in workspace `wamr-ci-190-20261019-r8`. This is local JIT-ON package
+evidence, not a physically LLVM-free OFF delivery, remote or product pass.
+
+The proposed REL-to-XIP header-flip controls are withdrawn: they did not emit
+valid indirect XIP code and failed before the claimed canonical check. The
+R2 evidence remains77/81, not relabelled a pass. Independent review confirms
+that only those new invalid controls were removed; all original assertions,
+registrations, quotas and error types remain. The small canonical admission
+guard stays defense in depth; a reachable borrowed-XIP boundary defect is not
+claimed. Real private-policy refusal and mapping-fault controls remain.
+
+In [VM run56](https://github.com/SystasisIO/forge/actions/runs/39240391559),
+ARM interpreter OFF passes25/25, independently reviewed against the source,
+registry, XML and raw artifact. Actual checkout is merge `e8947533` from dev
+`67ca70c0` and PR head `1b92ac38`; the runtime pin is69c107c, not cb1.
+The Intel bottle/ABI installation now passes; both Intel builds then fail in
+the donor BLS library's ELF assembly selection on Mach-O. The authorized
+SystasisIO BLS fork is tracked in [draft PR1](https://github.com/SystasisIO/bls12-381/pull/1), with native donor evidence kept
+separate from Forge qualification. ARM JIT/AOT subsequently completes22/82:
+60 root CTests fail, no root skips/disabled tests. The actual JIT diagnostic
+again refuses unavailable native write protection. Generic AOT admission
+errors do not by themselves prove budget exhaustion or one common cause.
+This is old69c evidence, not a remote result for the new cb1 policy.
+
+Run56's Linux producer fails because GitHub reports that the hosted runner
+lost communication. Logs return BlobNotFound and its final evidence upload
+never runs. Downstream Linux gates therefore have no qualified toolchain;
+these failures do not establish a VM defect or a source-bootstrap pass.
+The preserved run53 evidence separately proves a missing StageB MODULE LLD
+flag and mismatched PATH-selected CMake/Ninja identities. The follow-up pins
+MODULE like EXE/SHARED and invokes the actual hashed /usr/bin CMake/Ninja in
+all source/qualification graphs. All55 metadata tests pass; fresh native
+bootstrap and relocation/ABI checks remain mandatory.
+
+The user authorizes cancelling only obsolete runs53-55:53 had already failed,
+54/55 are cancelled. Run56 and the OS diagnostic are not cancelled. No merge,
+live Spine/Turbine edit, license change or mandatory-gate waiver is performed.
+
 ## Language-Version Differences
 
 The bounded numeric profile uses WAMR's existing modern encoding and typing

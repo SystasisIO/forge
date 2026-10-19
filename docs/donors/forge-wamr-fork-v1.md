@@ -7,11 +7,39 @@ The runtime and compiler source is maintained in the
 The upstream baseline is
 [`ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a`](https://github.com/wasm-micro-runtime/wasm-micro-runtime/commit/ea5dd88e9ca40a44b6a5d9ffeb87a20833b13b8a).
 The Forge submodule pins
-[`12d1f906668cde93c03e7d864e71ee1e10dfb194`](https://github.com/SystasisIO/wasm-micro-runtime/commit/12d1f906668cde93c03e7d864e71ee1e10dfb194)
+[`cb1eb77dd4d788bf475162223884b4fbfd7fe30a`](https://github.com/SystasisIO/wasm-micro-runtime/commit/cb1eb77dd4d788bf475162223884b4fbfd7fe30a)
 on the published `forge-runtime-profile-v1` draft branch. Its predecessor is
-[`ed5c12ae6bcec88f2863aa7c541b6d829d657a4c`](https://github.com/SystasisIO/wasm-micro-runtime/commit/ed5c12ae6bcec88f2863aa7c541b6d829d657a4c).
+[`69c107c54b040b5b0ced5e764f0ddd0c17249029`](https://github.com/SystasisIO/wasm-micro-runtime/commit/69c107c54b040b5b0ced5e764f0ddd0c17249029).
 Full qualification remains pending. Review is tracked in
 [fork PR 1](https://github.com/SystasisIO/wasm-micro-runtime/pull/1).
+
+## Committed Native Protection Policy
+
+Commit `cb1eb77` adds internal module protection provenance: uncommitted, no
+defined guest bodies, sealed ordinary RX, or Darwin MAP_JIT. No public Forge
+API, public WAMR C API, parallel allocator or global mapping registry is added.
+The existing ORC allocation record becomes committed only after checked
+protection, finalization, unwind registration and temporary-storage cleanup.
+The AOT loader publishes its policy only after successful complete loading.
+
+On Darwin ARM64 with actual pthread JIT protection support, the existing
+MAP_JIT path and nested caller-state restoration remain required. If the OS
+reports no such support, code uses an ordinary non-MAP_JIT mapping: writable
+and nonexecuting during preparation, checked RX before publication. Ordinary
+RWX is never used, and failed MAP_JIT setup does not silently retry another
+policy. Unsupported or uncommitted native modules are rejected before guest
+initialization/calls. Empty/import-only modules may have no native code.
+
+The independent macOS15 ARM OS-only diagnostic verifies support=0, ordinary
+RW-to-RX execution and rejection of RX writes/RW execution. It is not itself a
+WAMR or Forge qualification. Fresh local coherent runtime/compiler builds at
+this pin pass 81/81 source CTests, including 53 AOT tests, and the standalone
+real-loader budget/fault suite passes 1/1. A subsequent normal local dev install
+passes all three canonical package consumers, including relocated interpreter/
+JIT/profile and five nested compiler/AOT/session tests. This JIT-ON package is
+not a physically LLVM-free OFF proof. Remote support=0, installed delivery on
+other platforms, x86 and product acceptance remain separate gates; see the
+[CI follow-up](forge-wamr-dev-integration-20261018.md).
 
 ## Transferred Changes
 

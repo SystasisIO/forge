@@ -251,13 +251,16 @@ template <typename Impl> bool strict_exercise(std::string_view name, bool start,
 enum class denial { start_restore, function_enter, function_restore, nested_enter, initialize_enter, host_priority };
 
 template <typename Impl>
-bool fp_exercise(std::string_view name, denial at, bool reset, bool normal_exit_after = false) {
+bool fp_exercise(std::string_view name, denial at, bool reset, bool normal_exit_after = false, bool cancel = false) {
    const bool start = at == denial::start_restore;
    const bool host_priority = at == denial::host_priority;
    auto code = fixture<Impl>(start);
    auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
    auto engine = backend<Impl>{pointer, code.size(), nullptr, wasm::default_options{}, true, false};
    auto receiver = host<Impl>{&engine, host_priority ? action::first_error : action::api};
+   auto stop = std::stop_source{};
+   const auto token = cancel ? stop.get_token() : std::stop_token{};
+   receiver.cancel_on_exit = cancel ? &stop : nullptr;
    receiver.restore_on_host = start;
    receiver.nested_fp = at == denial::nested_enter;
    context_exit_probe_fault(0, 0);
@@ -270,7 +273,7 @@ bool fp_exercise(std::string_view name, denial at, bool reset, bool normal_exit_
    bool first_host_error_preserved = false;
    bool poisoned = false;
    try {
-      engine.with_invocation(&receiver, wasm::default_options{}, std::chrono::seconds{5}, {}, [&] {
+      engine.with_invocation(&receiver, wasm::default_options{}, std::chrono::seconds{5}, token, [&] {
          ++bodies;
          if (at == denial::function_enter)
             context_exit_probe_fault(1, 0);
@@ -326,12 +329,14 @@ bool fp_exercise(std::string_view name, denial at, bool reset, bool normal_exit_
    const bool pass =
        (host_priority ? first_host_error_preserved && !typed_refusal : typed_refusal && !first_host_error_preserved) &&
        exact_failure && poisoned && receiver.calls == calls && counts && context_exit_probe_denials() == 1 &&
-       (!reset || recovered_inside) && (!normal_exit_after || normal_exited_after);
+       (!reset || recovered_inside) && (!normal_exit_after || normal_exited_after) &&
+       (!cancel || stop.stop_requested());
    std::cout << (pass ? "PASS" : "FAIL") << " case=" << name << " fp_refusal=" << typed_refusal
              << " first_host_error=" << first_host_error_preserved << " exact_failure=" << exact_failure
              << " body_caught=" << bool(caught) << " reset_recovered=" << recovered_inside
              << " normal_exit_after=" << normal_exited_after << " poisoned=" << poisoned << " host_calls=" << calls
-             << " bodies=" << bodies << " denials=" << context_exit_probe_denials() << '\n';
+             << " bodies=" << bodies << " cancel_requested=" << stop.stop_requested()
+             << " denials=" << context_exit_probe_denials() << '\n';
    return pass;
 }
 #endif
@@ -396,6 +401,48 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(synchronous_cancel_before_function_exit_is_not_nor
       BOOST_TEST(value->to_ui32() == 0U);
    });
    BOOST_TEST(receiver.calls == 2U);
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(maximum_invocation_budget_keeps_cancel_exit_synchronous_and_reusable, Impl,
+                              implementations) {
+   constexpr unsigned repetitions = 32;
+   constexpr auto budget = std::chrono::steady_clock::duration::max();
+   for (const bool start : {false, true}) {
+      auto code = fixture<Impl>(start);
+      auto pointer = wasm::wasm_code_ptr{code.data(), code.size()};
+      auto engine = backend<Impl>{pointer, code.size(), nullptr, wasm::default_options{}, true, false};
+      auto receiver = host<Impl>{&engine, action::api};
+      unsigned bodies = 0;
+      for (unsigned iteration = 0; iteration != repetitions; ++iteration) {
+         auto stop = std::stop_source{};
+         receiver.cancel_on_exit = &stop;
+         unsigned continued = 0;
+         BOOST_CHECK_THROW(engine.with_invocation(&receiver, {}, budget, stop.get_token(),
+                                                  [&] {
+                                                     ++bodies;
+                                                     if (!start)
+                                                        engine.call_with_return(receiver, "", "call_exit");
+                                                     ++continued; // C++ body, not guest instruction counting.
+                                                  }),
+                           wasm::exceptions::canceled);
+         BOOST_TEST(stop.stop_requested());
+         BOOST_TEST(receiver.calls == iteration + 1U);
+         BOOST_TEST(bodies == (start ? 0U : iteration + 1U));
+         BOOST_TEST(continued == 0U);
+         BOOST_CHECK_THROW(engine.get_context(), wasm::exceptions::interpreter);
+      }
+      receiver.cancel_on_exit = nullptr;
+      engine.with_invocation(&receiver, {}, budget, {}, [&] {
+         if (!start)
+            engine.call_with_return(receiver, "", "call_exit");
+         BOOST_TEST(engine.get_context().current_linear_memory() == 1U);
+         const auto value = engine.call_with_return(receiver, "", "run");
+         BOOST_REQUIRE(value.has_value());
+         BOOST_TEST(value->to_ui32() == (start ? 7U : 0U));
+      });
+      BOOST_TEST(receiver.calls == repetitions + 1U);
+      BOOST_CHECK_THROW(engine.get_context(), wasm::exceptions::interpreter);
+   }
 }
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(owned_start_normal, Impl, implementations) {
@@ -503,6 +550,16 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(initialize_enter_caught_reset_exit, Impl, implemen
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(first_host_error_before_fp_and_api_exit, Impl, implementations) {
    BOOST_REQUIRE(fp_exercise<Impl>("first_host_error_before_fp_and_api_exit", denial::host_priority, false, false));
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(start_restore_failure_before_synchronous_cancel_exit, Impl, implementations) {
+   BOOST_REQUIRE(fp_exercise<Impl>("start_restore_failure_before_synchronous_cancel_exit", denial::start_restore, false,
+                                   false, true));
+}
+
+BOOST_AUTO_TEST_CASE_TEMPLATE(function_restore_failure_before_synchronous_cancel_exit, Impl, implementations) {
+   BOOST_REQUIRE(fp_exercise<Impl>("function_restore_failure_before_synchronous_cancel_exit", denial::function_restore,
+                                   false, false, true));
 }
 
 #endif

@@ -37,6 +37,8 @@ add_executable(wamr_load_budget_probe ../load_budget_probe.cpp
    "${_interpret}/engine_load_budget.cpp" "${_interpret}/engine_runtime.cpp"
    "${_interpret}/engine_memory.cpp" "${_interpret}/engine_module.cpp"
    "${_interpret}/engine_module_jit.cpp"
+   "${_interpret}/engine_instance.cpp" "${_interpret}/engine_thread_scope.cpp"
+   "${_interpret}/engine_exception.cpp"
    "${_interpret}/engine_bindings.cpp")
 target_compile_features(wamr_load_budget_probe PRIVATE cxx_std_23)
 target_compile_options(wamr_load_budget_probe PRIVATE -Wall -Wextra -Wpedantic -Werror

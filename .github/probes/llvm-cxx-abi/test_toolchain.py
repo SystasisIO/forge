@@ -471,6 +471,28 @@ class IntelRuntimeTests(unittest.TestCase):
 
 
 class ProvisioningTests(unittest.TestCase):
+    def test_linux_graphs_execute_the_tools_hashed_by_the_recipe(self):
+        source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
+        branch = source.split('elif [[ "$mode" == bootstrap-linux ]]; then', 1)[1].split('\nelif ', 1)[0]
+        tokens = shlex.split(branch, comments=True)
+        for graph in ("runtimes", "llvm", "final-runtimes"):
+            for operation in ("configure", "build", "install"):
+                name = f"{graph}-{operation}"
+                with self.subTest(command=name):
+                    start = tokens.index(name) + 1
+                    self.assertEqual(tokens[start], "/usr/bin/cmake")
+                    if operation == "configure":
+                        args = tokens[start:tokens.index("log_run", start)]
+                        self.assertIn("-DCMAKE_MAKE_PROGRAM=/usr/bin/ninja", args)
+        self.assertNotIn("cmake", tokens)
+
+    def test_linux_qualification_uses_the_same_recipe_tools(self):
+        source = (ROOT / ".github/scripts/check-llvm-cxx-abi.py").read_text()
+        self.assertIn('command(["/usr/bin/cmake", "-S"', source)
+        self.assertIn('"-DCMAKE_MAKE_PROGRAM=/usr/bin/ninja"', source)
+        self.assertIn('command(["/usr/bin/cmake", "--build"', source)
+        self.assertNotIn('command(["cmake"', source)
+
     def test_intel_trust_is_only_two_pinned_formula_names_after_checks_before_load(self):
         source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
         branch = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[1].split('elif [[ "$mode" == stage0-linux', 1)[0]
@@ -513,6 +535,8 @@ class ProvisioningTests(unittest.TestCase):
         args = tokens[start:stop]
         self.assertIn("-DLLVM_ENABLE_PIC=ON", args)
         self.assertIn("-DCMAKE_POSITION_INDEPENDENT_CODE=ON", args)
+        for kind in ("EXE", "SHARED", "MODULE"):
+            self.assertIn(f"-DCMAKE_{kind}_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22", args)
         flags = next(arg for arg in args if arg.startswith("-DCMAKE_CXX_FLAGS="))
         self.assertIn("-stdlib=libc++ -isystem $prefix/include/c++/v1", flags)
         self.assertNotIn("-nostdinc++", flags)

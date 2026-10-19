@@ -6,11 +6,25 @@ are unfinished. This note does not switch the default backend.
 The [fork provenance](../donors/forge-wamr-fork-v1.md) records the immutable
 runtime/compiler source and identity; patch files referenced by earlier reports
 are retained as provenance only, not applied during builds.
-The current published draft engine candidate is `69c107c`; the
+The current published draft engine candidate is `cb1eb77`; the
 [follow-up record](../donors/forge-wamr-dev-integration-20261018.md) distinguishes
 implementation, review, publication and fresh qualification. Earlier reviewed usage-0 results
 (256/256 plus one Release layout probe) do not qualify the new usage-1 allocator
 profile or constitute public/product release acceptance.
+
+The `cb1eb77` follow-up records actual committed native-code protection rather
+than inferring it from OS capability alone. Supported Darwin MAP_JIT execution
+keeps per-thread protection and nested restoration; support=0 uses ordinary
+RW/NX preparation followed by checked, sealed RX. Uncommitted/unknown policy
+is refused before initialization or calls. There is no ordinary RWX fallback.
+The same follow-up fixes synchronous stop delivery in `with_invocation` using
+the existing absolute-deadline watchdog; generic duration-watchdog delivery
+semantics stay unchanged. Local source qualification passes 81/81 CTests and
+the real-loader budget/fault suite passes 1/1. A subsequent normal dev install
+passes3/3 local canonical package tests, including relocated interpreter/JIT/
+profile and5/5 nested compiler/AOT/session tests. This JIT-ON result is not a
+physically LLVM-free OFF delivery proof. Remote native/installed delivery and
+downstream-process gates remain open, not implied by these local results.
 
 The new candidate adds an internal, first-failure FP status without changing
 the public C API or the existing AOT prefix. Its F6 local checkpoint passed

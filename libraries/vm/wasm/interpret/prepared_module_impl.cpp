@@ -197,6 +197,10 @@ prepared_module::impl::impl(std::span<const std::uint8_t> code, std::span<const 
             throw exceptions::profile{"AOT function types differ from the admitted source"};
       }
       compiled->check_memory_limit(policy.max_pages);
+      const auto native_policy = wasm_runtime_get_native_code_policy(compiled->get());
+      if (native_policy != WASM_NATIVE_CODE_RX && native_policy != WASM_NATIVE_CODE_MAP_JIT &&
+          !(native_policy == WASM_NATIVE_CODE_NONE && aot.func_count == 0))
+         throw exceptions::execution_unavailable{"AOT native code protection is not committed"};
       engine = std::move(compiled);
    } catch (const detail::engine_load_budget::error&) {
       if (allocation)

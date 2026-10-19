@@ -180,7 +180,8 @@ elif [[ "$mode" == bootstrap-linux ]]; then
    tar -xJf "$archive" --strip-components=1 -C "$source"
 
    # Stage A: upstream standalone runtimes, built by the qualified pinned stage0.
-   log_run runtimes-configure cmake -S "$source/runtimes" -B "$work/runtimes" -G Ninja \
+   log_run runtimes-configure /usr/bin/cmake -S "$source/runtimes" -B "$work/runtimes" -G Ninja \
+      -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DCMAKE_C_COMPILER=/usr/bin/clang-22 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
       -DCMAKE_JOB_POOLS=link=1 -DCMAKE_JOB_POOL_LINK=link \
@@ -192,8 +193,8 @@ elif [[ "$mode" == bootstrap-linux ]]; then
       -DLIBUNWIND_USE_COMPILER_RT=OFF -DLIBCXX_ENABLE_EXCEPTIONS=ON \
       -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DCMAKE_INSTALL_RPATH='$ORIGIN' \
       -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
-   log_run runtimes-build cmake --build "$work/runtimes" -j 2
-   log_run runtimes-install cmake --install "$work/runtimes" --strip
+   log_run runtimes-build /usr/bin/cmake --build "$work/runtimes" -j 2
+   log_run runtimes-install /usr/bin/cmake --install "$work/runtimes" --strip
 
    probe="$GITHUB_WORKSPACE/.github/probes/llvm-cxx-abi"
    abi_flags=(-std=c++23 -stdlib=libc++ -nostdinc++ -isystem "$prefix/include/c++/v1" \
@@ -210,12 +211,14 @@ elif [[ "$mode" == bootstrap-linux ]]; then
 
    # Stage B: explicitly bind both headers and link search to Stage A libc++.
    # Upstream llvm-config exports only its stdlib/ABI flags, not this staging include path.
-   log_run llvm-configure cmake -S "$source/llvm" -B "$work/llvm" -G Ninja \
+   log_run llvm-configure /usr/bin/cmake -S "$source/llvm" -B "$work/llvm" -G Ninja \
+      -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DCMAKE_C_COMPILER=/usr/bin/clang-22 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
       "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -isystem $prefix/include/c++/v1" \
       "-DCMAKE_EXE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       "-DCMAKE_SHARED_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
+      "-DCMAKE_MODULE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       -DCMAKE_BUILD_RPATH="$prefix/lib" -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
       -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF \
       '-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra' \
@@ -232,12 +235,13 @@ elif [[ "$mode" == bootstrap-linux ]]; then
    cp "$work/llvm/CMakeCache.txt" "$evidence/llvm-CMakeCache.txt"
    log_run llvm-c-pic-check grep -Fx 'C_SUPPORTS_FPIC:INTERNAL=1' "$work/llvm/CMakeCache.txt"
    log_run llvm-cxx-pic-check grep -Fx 'CXX_SUPPORTS_FPIC:INTERNAL=1' "$work/llvm/CMakeCache.txt"
-   log_run llvm-build cmake --build "$work/llvm" -j 2
-   log_run llvm-install cmake --install "$work/llvm" --strip
+   log_run llvm-build /usr/bin/cmake --build "$work/llvm" -j 2
+   log_run llvm-install /usr/bin/cmake --install "$work/llvm" --strip
 
    # Stage C is a separate upstream runtime graph, serialized after the LLVM graph.
    # This prevents a nested runtime Ninja from exceeding the two-job/one-linker budget.
-   log_run final-runtimes-configure cmake -S "$source/runtimes" -B "$work/final-runtimes" -G Ninja \
+   log_run final-runtimes-configure /usr/bin/cmake -S "$source/runtimes" -B "$work/final-runtimes" -G Ninja \
+      -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DCMAKE_C_COMPILER="$prefix/bin/clang" -DCMAKE_CXX_COMPILER="$prefix/bin/clang++" \
       -DLLVM_CONFIG_PATH="$prefix/bin/llvm-config" -DLLVM_DIR="$prefix/lib/cmake/llvm" \
@@ -251,8 +255,8 @@ elif [[ "$mode" == bootstrap-linux ]]; then
       -DLIBUNWIND_USE_COMPILER_RT=OFF -DLIBCXX_ENABLE_EXCEPTIONS=ON \
       -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DCOMPILER_RT_BUILD_SANITIZERS=ON \
       -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
-   log_run final-runtimes-build cmake --build "$work/final-runtimes" -j 2
-   log_run final-runtimes-install cmake --install "$work/final-runtimes" --strip
+   log_run final-runtimes-build /usr/bin/cmake --build "$work/final-runtimes" -j 2
+   log_run final-runtimes-install /usr/bin/cmake --install "$work/final-runtimes" --strip
    sha256sum --check --strict "$evidence/stage0-dso.sha256"
    log_run final-client "$prefix/bin/clang++" -std=c++23 -stdlib=libc++ \
       "$probe/bootstrap_abi_main.cpp" -L"$prefix/lib" -lforge_bootstrap_abi \

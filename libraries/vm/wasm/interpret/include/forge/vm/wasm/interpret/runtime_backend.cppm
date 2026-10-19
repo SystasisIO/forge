@@ -197,7 +197,12 @@ class runtime_backend {
       }};
       const auto failures = runtime_context::failure_scope{context};
       try {
-         timed_run(watchdog{budget, stop}, [&] {
+         const auto started = std::chrono::steady_clock::now();
+         const auto deadline = budget >= std::chrono::steady_clock::time_point::max() - started
+                                   ? std::chrono::steady_clock::time_point::max()
+                                   : started + budget;
+         // This owned callback only forwards stop; it may run on the requester.
+         timed_run_impl<false>(watchdog{deadline, interrupt_options{.cancel = stop}}, [&] {
             initialize(host, policy);
             std::invoke(std::forward<F>(body));
             if (const auto error = failures.failure())

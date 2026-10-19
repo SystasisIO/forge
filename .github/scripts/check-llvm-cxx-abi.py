@@ -113,7 +113,8 @@ def main():
     command([sanitizer], out / "sanitizer-run.txt", dict(env, ASAN_OPTIONS="detect_leaks=1",
                                                       UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"))
     build = out / "build"
-    command(["cmake", "-S", probe, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+    command(["/usr/bin/cmake", "-S", probe, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+             "-DCMAKE_MAKE_PROGRAM=/usr/bin/ninja",
              f"-DCMAKE_C_COMPILER={tools['clang']}", f"-DCMAKE_CXX_COMPILER={tools['clang++']}",
              f"-DLLVM_DIR={prefix / 'lib/cmake/llvm'}", f"-DCMAKE_CXX_FLAGS={flags}",
              f"-DCMAKE_EXE_LINKER_FLAGS={ldflags}"], out / "configure.txt", env)
@@ -149,7 +150,7 @@ def main():
             dependencies(library, out, env, prefix, f"library-{index}")
     (out / "selected-library-audit.json").write_text(json.dumps(summaries, indent=2) + "\n")
     require(positive, "no positive libc++ ABI witness in selected LLVM libraries")
-    command(["cmake", "--build", build, "--target", "llvm_cxx_abi", "-j", "2"], out / "build.txt", env)
+    command(["/usr/bin/cmake", "--build", build, "--target", "llvm_cxx_abi", "-j", "2"], out / "build.txt", env)
     binary = build / "llvm_cxx_abi"
     linkmap = (build / "llvm-cxx-abi.linkmap").read_text()
     require(any(str(file) in linkmap for file in selected_paths), "no selected LLVM provider in smoke link map")

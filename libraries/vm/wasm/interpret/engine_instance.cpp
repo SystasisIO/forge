@@ -2,6 +2,7 @@
 #include "details/engine_thread_scope.hxx"
 #include <wasm_exec_env.h>
 #include <wasm_runtime.h>
+#include <wasm_runtime_common.h>
 #include <aot_runtime.h>
 
 #include <array>
@@ -17,22 +18,37 @@ constexpr auto no_fp_failure = WASM_FP_FAILURE_NONE;
 
 class native_execution_scope {
  public:
-   explicit native_execution_scope(wasm_module_inst_t instance) {
+   native_execution_scope(const WASMModuleCommon* module, wasm_module_inst_t instance) {
+      if (instance->module_type != Wasm_Module_AoT && wasm_runtime_get_running_mode(instance) != Mode_LLVM_JIT)
+         return;
+      switch (wasm_runtime_get_native_code_policy(module)) {
+      case WASM_NATIVE_CODE_NONE:
+         if ((module->module_type == Wasm_Module_AoT && reinterpret_cast<const AOTModule*>(module)->func_count == 0) ||
+             (module->module_type == Wasm_Module_Bytecode &&
+              reinterpret_cast<const WASMModule*>(module)->function_count == 0))
+            return;
+         throw engine_instance::unavailable{};
+      case WASM_NATIVE_CODE_RX:
+         return;
+      case WASM_NATIVE_CODE_MAP_JIT:
 #if defined(BH_PLATFORM_DARWIN) && defined(BUILD_TARGET_AARCH64)
-      _native = instance->module_type == Wasm_Module_AoT || wasm_runtime_get_running_mode(instance) == Mode_LLVM_JIT;
-      if (_native) {
          if (!os_thread_jit_write_protect_supported())
             throw engine_instance::unavailable{};
          _previous = os_thread_jit_write_protect_state();
          os_thread_jit_write_protect_np(true);
-      }
+         _restore = true;
+         return;
 #else
-      (void)instance;
+         throw engine_instance::unavailable{};
 #endif
+      case WASM_NATIVE_CODE_UNCOMMITTED:
+      default:
+         throw engine_instance::unavailable{};
+      }
    }
    ~native_execution_scope() {
 #if defined(BH_PLATFORM_DARWIN) && defined(BUILD_TARGET_AARCH64)
-      if (_native)
+      if (_restore)
          os_thread_jit_write_protect_np(_previous);
 #endif
    }
@@ -41,7 +57,7 @@ class native_execution_scope {
 
  private:
 #if defined(BH_PLATFORM_DARWIN) && defined(BUILD_TARGET_AARCH64)
-   bool _native = false;
+   bool _restore = false;
    bool _previous = true;
 #endif
 };
@@ -131,7 +147,7 @@ engine_instance::engine_instance(std::shared_ptr<engine_module> source, std::uin
       const std::stop_callback callback(stop, [this] { cancel(); });
       if (stop.stop_requested())
          throw canceled{};
-      const native_execution_scope execution(_instance);
+      const native_execution_scope execution(_source->get(), _instance);
       _env->forge_fp_failure = no_fp_failure;
       const bool initialized = wasm_runtime_initialize_with_exec_env(_instance, _env);
       const bool normal_exit_requested = is_normal_exit();
@@ -273,7 +289,7 @@ bool engine_instance::invoke_function(wasm_function_inst_t function, std::uint32
    const std::stop_callback callback(stop, [this] { cancel(); });
    if (stop.stop_requested())
       throw canceled{};
-   const native_execution_scope execution(_instance);
+   const native_execution_scope execution(_source->get(), _instance);
    const bool result = wasm_runtime_call_wasm(_env, function, argument_cells, cells.data());
    auto normal_exit_failure = std::exception_ptr{};
    if (is_normal_exit())

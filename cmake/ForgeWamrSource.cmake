@@ -4,7 +4,7 @@ function(forge_prepare_wamr output_source output_identity)
    find_package(Git REQUIRED)
    get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
    set(_vendor "${_root}/vendor/wamr")
-   set(_revision "69c107c54b040b5b0ced5e764f0ddd0c17249029")
+   set(_revision "cb1eb77dd4d788bf475162223884b4fbfd7fe30a")
    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${_vendor}" rev-parse HEAD
       OUTPUT_VARIABLE _head OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${_vendor}" status --porcelain
