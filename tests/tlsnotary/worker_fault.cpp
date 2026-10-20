@@ -21,6 +21,19 @@ static bool read_all(void* output, std::size_t size) {
    return true;
 }
 
+static bool write_all(const void* input, std::size_t size) {
+   auto* cursor = static_cast<const char*>(input);
+   while (size) {
+      const auto count = ::write(0, cursor, size);
+      if (count <= 0)
+         return false;
+      cursor += count;
+      size -= count;
+   }
+
+   return true;
+}
+
 int main(int, char** argv) {
    auto header = std::array<std::uint8_t, 5>{};
    if (!read_all(header.data(), header.size()))
@@ -46,6 +59,28 @@ int main(int, char** argv) {
 
    if (mode == "crash")
       return 9;
+   if (mode == "success-queued") {
+      // Host ownership/drain fixture only. This worker performs no TLSNotary
+      // operation and provides no evidence about cryptographic authentication.
+      const auto queued = std::array<std::uint8_t, 9>{1, 0, 0, 0, 4, 't', 'a', 'i', 'l'};
+      if (!write_all(queued.data(), queued.size()) || !read_all(header.data(), header.size()) ||
+          header != std::array<std::uint8_t, 5>{6, 0, 0, 0, 0})
+         return 4;
+      auto payload = std::vector<std::uint8_t>{};
+      const auto put = [&](std::uint32_t value) {
+         for (auto shift = 24; shift >= 0; shift -= 8)
+            payload.push_back(static_cast<std::uint8_t>(value >> shift));
+      };
+      put(0);
+      payload.push_back(1);
+      const auto name = std::string{"tlsn.local"};
+      put(name.size());
+      payload.insert(payload.end(), name.begin(), name.end());
+      for (auto index = 0; index != 4; ++index)
+         put(0);
+      header = {128, 0, 0, 0, static_cast<std::uint8_t>(payload.size())};
+      return write_all(header.data(), header.size()) && write_all(payload.data(), payload.size()) ? 0 : 5;
+   }
    if (mode == "oversize") {
       auto frame = std::array<std::uint8_t, 5>{128, 255, 255, 255, 255};
       ::write(0, frame.data(), frame.size());

@@ -82,6 +82,13 @@ runtime resources. An unpolled awaitable still holds the caller-supplied streams
 destroy or finish all such awaitables before destroying those streams' runtimes.
 Unpolled operations have not been accepted and are not engine shutdown work.
 
+Successful native completion drains the existing bridge writes and write-FIN
+acknowledgements before releasing its result. The host then joins the child and
+closes the raw streams gracefully under the same session deadline. Terminal
+stream cancellation and worker termination remain the failure, timeout and
+explicit cancellation paths; successful cleanup must not reset a QUIC stream
+whose final writes are still queued.
+
 The C++ side bounds active/queued sessions, retained root/range/request capacities, frame
 sizes and raw stream bytes/capacity before copying. A logically small vector with
 an oversized reserved allocation is intentionally rejected and released. Credit-based binary IPC bounds each

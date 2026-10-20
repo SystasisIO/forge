@@ -22,6 +22,7 @@ class native_exchange : public std::enable_shared_from_this<native_exchange> {
    void decide_handoff(bool started) noexcept;
    void kill_owned() noexcept;
    void adopt();
+   void close_ipc_on_strand() noexcept;
    void stop_on_strand() noexcept;
    boost::asio::awaitable<void> send(std::uint8_t kind, std::vector<std::uint8_t> bytes);
    boost::asio::awaitable<void> read_channel(bool server, std::uint32_t credit);
@@ -62,6 +63,7 @@ class native_exchange : public std::enable_shared_from_this<native_exchange> {
    std::atomic<bool> _abort{false};
    bool _finishing = false;
    bool _expired = false;
+   bool _timer_pending = false;
    std::exception_ptr _error;
    forge::asio::gate _writer;
    forge::asio::notification _changed;

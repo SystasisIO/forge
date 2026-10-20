@@ -29,7 +29,7 @@ struct temporary_directory {
       auto name = std::string{FORGE_TLSNOTARY_TEST_OUTPUT "/faults-XXXXXX"};
       check(::mkdtemp(name.data()) != nullptr, "test temporary directory failed");
       path = name;
-      for (const auto* mode : {"hang", "crash", "oversize", "truncated", "unknown", "read", "flood"})
+      for (const auto* mode : {"hang", "crash", "oversize", "truncated", "unknown", "read", "flood", "success-queued"})
          std::filesystem::create_symlink(FORGE_TLSNOTARY_FAULT_WORKER, path / mode);
    }
 
@@ -190,6 +190,128 @@ class delayed_close_stream final : public forge::net::transport::detail::stream_
    std::atomic<bool> close_done{false};
    forge::asio::notification changed;
 };
+
+class queued_close_stream final : public forge::net::transport::detail::stream_concept {
+ public:
+   bool valid() const noexcept override {
+      return !closed.load();
+   }
+
+   std::int64_t id() const noexcept override {
+      return 21;
+   }
+
+   asio::awaitable<void> async_write(std::span<const std::uint8_t> bytes) override {
+      const auto lock = std::scoped_lock{mutex};
+      queued.insert(queued.end(), bytes.begin(), bytes.end());
+      co_return;
+   }
+
+   asio::awaitable<std::vector<std::uint8_t>> async_read() override {
+      throw std::runtime_error{"ownership fixture did not request a peer read"};
+      co_return std::vector<std::uint8_t>{};
+   }
+
+   asio::awaitable<void> async_close() override {
+      close_entered.store(true);
+      changed.notify();
+      while (!released.load() && !cancelled.load()) {
+         const auto epoch = changed.epoch();
+         if (!released.load() && !cancelled.load())
+            static_cast<void>(co_await changed.async_wait(epoch));
+      }
+
+      {
+         const auto lock = std::scoped_lock{mutex};
+         delivered.insert(delivered.end(), queued.begin(), queued.end());
+         queued.clear();
+      }
+      closed.store(true);
+   }
+
+   void cancel() override {
+      {
+         const auto lock = std::scoped_lock{mutex};
+         discarded += queued.size();
+         queued.clear();
+      }
+      cancelled.store(true);
+      changed.notify();
+   }
+
+   void release() {
+      released.store(true);
+      changed.notify();
+   }
+
+   asio::awaitable<void> wait_for_close() {
+      while (!close_entered.load()) {
+         const auto epoch = changed.epoch();
+         if (!close_entered.load())
+            static_cast<void>(co_await changed.async_wait(epoch));
+      }
+   }
+
+   std::atomic<bool> close_entered{false};
+   std::atomic<bool> released{false};
+   std::atomic<bool> cancelled{false};
+   std::atomic<bool> closed{false};
+   forge::asio::notification changed;
+   std::mutex mutex;
+   std::vector<std::uint8_t> queued;
+   std::vector<std::uint8_t> delivered;
+   std::size_t discarded = 0;
+};
+
+void successful_teardown_tests(const temporary_directory& files, const identity& identity) {
+   // Only host ownership is exercised with this fault worker. Native MPC tests
+   // below remain the evidence for authentication and source/disclosure rules.
+   auto runtime = forge::asio::runtime{{.worker_threads = 2}};
+   auto compute = forge::asio::compute::pool{{.worker_threads = 1}};
+   for (auto mode = 0; mode != 3; ++mode) {
+      auto owner = tlsn::engine{runtime, compute.get_executor(), {.worker_path = files.path / "success-queued"}};
+      const auto cleanup = engine_cleanup{runtime, owner};
+      auto stream = std::make_shared<queued_close_stream>();
+      const auto release = boost::scope::scope_exit{[stream] { stream->release(); }};
+      auto stop = std::stop_source{};
+      auto configuration = options(90 + mode);
+      configuration.reveal_sent.clear();
+      configuration.reveal_received.clear();
+      configuration.timeout = 2s;
+      configuration.stop = stop.get_token();
+      auto request = tlsn::verifier_request{.peer = forge::net::transport::detail::stream_access::make_cancelable(
+                                                stream, [stream]() noexcept { stream->cancel(); }),
+                                            .source = {.server_name = "tlsn.local", .trust_roots_der = {identity.root}},
+                                            .options = configuration};
+      auto completion = asio::co_spawn(runtime.context(), owner.verify(std::move(request)), asio::use_future);
+      auto closing = asio::co_spawn(runtime.context(), stream->wait_for_close(), asio::use_future);
+      check(closing.wait_for(3s) == std::future_status::ready, "successful worker did not enter graceful close");
+      closing.get();
+      check(completion.wait_for(20ms) == std::future_status::timeout, "session bypassed the graceful close barrier");
+      check(!stream->cancelled.load(), "successful worker reset its peer before graceful close");
+      {
+         const auto lock = std::scoped_lock{stream->mutex};
+         check(stream->queued.size() == 4 && stream->discarded == 0, "successful worker discarded queued final bytes");
+      }
+      if (mode == 0) {
+         stream->release();
+         static_cast<void>(completion.get());
+         const auto lock = std::scoped_lock{stream->mutex};
+         check(stream->delivered.size() == 4 && stream->discarded == 0, "graceful close did not drain final bytes");
+      } else if (mode == 1) {
+         throws<tlsn::exceptions::deadline_exceeded>([&] { static_cast<void>(completion.get()); });
+         check(stream->cancelled.load(), "graceful close deadline did not cancel its transport");
+      } else {
+         stop.request_stop();
+         throws<tlsn::exceptions::cancelled>([&] { static_cast<void>(completion.get()); });
+         check(stream->cancelled.load(), "caller cancellation did not stop graceful close");
+      }
+      check(stream->closed.load() && owner.snapshot().active == 0, "graceful close retained its ownership barrier");
+      forge::asio::blocking::run(runtime, owner.shutdown());
+      no_children();
+   }
+   forge::asio::blocking::run(runtime, compute.shutdown());
+}
 
 void cleanup_barrier_tests(const temporary_directory& files, const identity& identity) {
    auto runtime = forge::asio::runtime{{.worker_threads = 4}};
@@ -617,6 +739,8 @@ int main(int argc, char** argv) {
       const auto worker = std::filesystem::path{argc > 1 ? argv[1] : FORGE_TLSNOTARY_WORKER_PATH};
       const auto identity = make_identity();
       const auto files = temporary_directory{};
+      std::cout << "stage successful-teardown" << std::endl;
+      successful_teardown_tests(files, identity);
       std::cout << "stage lifecycle" << std::endl;
       lifecycle_tests(files, identity);
       std::cout << "stage queued-close" << std::endl;
