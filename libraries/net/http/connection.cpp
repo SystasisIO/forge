@@ -135,7 +135,7 @@ bool cancellation_error(const boost::system::error_code& error) {
 
 void ensure_host_header(request& request_value, const base_url& endpoint) {
    if (request_value.find(field::host) == request_value.end()) {
-      request_value.set(field::host, endpoint.host);
+      request_value.set(field::host, endpoint.host_header());
    }
 }
 

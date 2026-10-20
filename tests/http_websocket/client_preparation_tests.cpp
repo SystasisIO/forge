@@ -141,13 +141,21 @@ enum class request_kind { unary, upload, download, upload_download };
 constexpr auto request_kinds = {request_kind::unary, request_kind::upload, request_kind::download,
                                 request_kind::upload_download};
 
-asio::awaitable<response> invoke(client& target, request_kind kind, request_options options = {},
+template <typename Transport>
+asio::awaitable<response> invoke(Transport& target, request_kind kind, request_options options = {},
                                  std::shared_ptr<counted_body> body = std::make_shared<counted_body>(),
-                                 std::string_view path = "/probe?resource=one") {
+                                 std::string_view path = "/probe?resource=one", std::string_view host = {}) {
+   auto request_target = std::string{path};
+   if constexpr (requires { target.make_target(path); }) {
+      request_target = target.make_target(path);
+   }
    auto value =
        request{kind == request_kind::upload || kind == request_kind::upload_download ? method::post : method::get,
-               target.make_target(path), 11};
+               std::move(request_target), 11};
    value.set("X-Resource", "one");
+   if (!host.empty()) {
+      value.set(field::host, host);
+   }
    if (kind == request_kind::unary) {
       co_return co_await target.async_request(std::move(value), options);
    }
@@ -172,6 +180,62 @@ client_options prepared_options() {
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(http_client_preparation_tests)
+
+BOOST_AUTO_TEST_CASE(host_header_preserves_nondefault_ports_and_ipv6_brackets) {
+   for (const auto& [url, expected] :
+        {std::pair{"http://example.test", "example.test"}, std::pair{"http://example.test:80", "example.test"},
+         std::pair{"https://example.test", "example.test"}, std::pair{"https://example.test:443", "example.test"},
+         std::pair{"http://127.0.0.1:8080", "127.0.0.1:8080"}, std::pair{"https://example.test:80", "example.test:80"},
+         std::pair{"https://example.test:9443", "example.test:9443"}, std::pair{"http://[::1]", "[::1]"},
+         std::pair{"https://[::1]:443", "[::1]"}, std::pair{"http://[::1]:8080", "[::1]:8080"},
+         std::pair{"https://[2001:db8::1]:9443", "[2001:db8::1]:9443"}}) {
+      BOOST_CHECK_EQUAL(parse_base_url(url).host_header(), expected);
+   }
+}
+
+BOOST_AUTO_TEST_CASE(ordinary_client_and_connection_shapes_send_the_full_authority) {
+   auto test = fixture{[](route_context& context) -> asio::awaitable<response> {
+      co_return make_text_response(context.request, status::ok, context.request[field::host]);
+   }};
+   const auto expected = test.endpoint.host + ":" + test.endpoint.port;
+   for (const auto provider : {false, true}) {
+      auto options = client_options{};
+      if (provider) {
+         options.header_provider = [](const request&) { return std::vector<header_entry>{{"X-Prepared", "yes"}}; };
+      }
+      auto target = client{test.runtime, test.endpoint, std::move(options)};
+      for (const auto kind : request_kinds) {
+         const auto result = forge::asio::blocking::run(test.runtime, invoke(target, kind, {.timeout = 2s}));
+         BOOST_CHECK_EQUAL(result.body(), expected);
+      }
+   }
+   auto target = connection{test.runtime, test.endpoint};
+   for (const auto kind : request_kinds) {
+      const auto result = forge::asio::blocking::run(test.runtime, invoke(target, kind, {.timeout = 2s}));
+      BOOST_CHECK_EQUAL(result.body(), expected);
+   }
+   BOOST_CHECK_EQUAL(test.received.load(), 12U);
+}
+
+BOOST_AUTO_TEST_CASE(ordinary_client_and_connection_shapes_preserve_explicit_host) {
+   auto test = fixture{[](route_context& context) -> asio::awaitable<response> {
+      co_return make_text_response(context.request, status::ok, context.request[field::host]);
+   }};
+   const auto expected = std::string_view{"caller-selected.example:8443"};
+   auto client_target = client{test.runtime, test.endpoint};
+   auto connection_target = connection{test.runtime, test.endpoint};
+   for (const auto kind : request_kinds) {
+      const auto client_result =
+          forge::asio::blocking::run(test.runtime, invoke(client_target, kind, {.timeout = 2s},
+                                                          std::make_shared<counted_body>(), "/probe", expected));
+      BOOST_CHECK_EQUAL(client_result.body(), expected);
+      const auto connection_result =
+          forge::asio::blocking::run(test.runtime, invoke(connection_target, kind, {.timeout = 2s},
+                                                          std::make_shared<counted_body>(), "/probe", expected));
+      BOOST_CHECK_EQUAL(connection_result.body(), expected);
+   }
+   BOOST_CHECK_EQUAL(test.received.load(), 8U);
+}
 
 BOOST_AUTO_TEST_CASE(all_request_shapes_share_async_preparation_and_exact_metadata) {
    auto test = fixture{};

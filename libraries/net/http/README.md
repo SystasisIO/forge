@@ -77,6 +77,14 @@ Dependencies: `forge_asio`, `forge_net_tls`, `forge_net_websocket`, `forge_codec
 `forge_schema`, Boost.Asio, Boost.Beast and Boost.URL.
 Server observations additionally use `forge_log` as a private implementation dependency.
 
+Ordinary client and connection requests generate a missing `Host` with
+`base_url::host_header()`: nondefault ports are included, while HTTP port 80 and
+HTTPS port 443 are omitted. Parsed IPv6 literals retain their single bracket pair.
+An explicit caller `Host` is preserved. This applies to buffered requests,
+streaming uploads, streaming responses and combined streaming. Origin-bound async
+header preparation retains its stricter Host matching rules. A port-sensitive
+signature must cover the same authority that is sent on the wire.
+
 ### Complete HTTP wire messages
 
 `serialize_request(request, sensitive_names, limits)` returns owned byte storage,
