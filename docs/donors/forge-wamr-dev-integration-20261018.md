@@ -972,3 +972,43 @@ checks are preserved.
 [drain-xml]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/full-matrix-r5.xml
 [drain-lasttest]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/full-matrix-LastTest.log
 [drain-focus]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/focused-session-LastTest.log
+
+## Linux JIT Depth And Cleanup Follow-Up, 2026-10-20
+
+CI63 on `f821d72c` finished the unchanged Linux x86 JIT/AOT selection with
+67/82 PASS and 15 FAIL, without skips. The common JIT failure was unresolved
+`aot_set_exception_with_id`: our logical-depth guard emitted the named AOT
+helper even for a JIT module. The independent official-artifact audit verified
+the ZIP digest, registry/JUnit/LastTest agreement and all 156 evidence hashes.
+The separate sanitizer failure remains the earlier donor-harness defect; it is
+not attributed to the depth helper.
+
+The fork correction is pinned at `da5892640f9168df5a097d096e6a3924192d6f86`
+and follows `core/iwasm/compilation/aot_emit_exception.c`:
+JIT calls `jit_set_exception_with_id` through its function address, ordinary
+AOT uses its existing named runtime helper, and indirect AOT uses the native
+symbol table. The depth-denied block precedes the original body, so its table
+load follows `aot_llvm.c:create_native_symbol` locally rather than borrowing a
+value defined in the body. Alloca hoisting, admission, exception ID, depth
+restoration and caller-owned runtime boundaries remain unchanged. No process
+symbol export, linker flag, public WAMR API or alternate resolver is added.
+
+The independent `wamr_optimizing_session_cleanup` failure had another cause:
+`final_pin()` enabled persistent unmap refusal before expected-success
+preparation. Linux normally releases temporary mappings while merging AOT
+text/data at load time; Darwin ARM64 does not take that merge branch. The test
+now arms the same existing fault only after successful preparation and resets
+its attempt counter. Every original refusal, retained-charge, bounded retry,
+refund and reuse assertion stays unchanged. Production cleanup and byte
+budgets are not relaxed. The focused corrected Darwin test passed on frozen
+`3515c20e` plus that one reviewed test postimage; this is not corrected Linux
+runtime proof or qualification of the new WAMR pin.
+
+Clean `3515c20e` independently passed its full Darwin 86/86 matrix, installed
+interpreter/execution 2/2, nested optimizing 5/5 and Asio/SIGCHLD 2/2 before
+these follow-ups. Those immutable receipts remain separate. Updating the
+WAMR pin changes the existing engine/profile identity; prior native artifacts
+must be rejected and regenerated, not relabelled. Full new-pin source/build,
+installed and Linux JIT/AOT/sanitizer qualification is required. Indirect AOT
+is a donor-mode source-preservation check, not a newly accepted Forge public
+mode. No merge, license change or current product acceptance is implied.

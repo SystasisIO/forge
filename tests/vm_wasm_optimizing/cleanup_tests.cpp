@@ -100,7 +100,7 @@ void direct(const std::vector<std::uint8_t>& encoded, const oc::compile_request&
 
 void final_pin(const std::vector<std::uint8_t>& encoded, const oc::compile_request& request) {
    using preparation = forge::vm::wasm::interpret::prepared_module::preparation;
-   std::atomic_bool hold = true;
+   std::atomic_bool hold = false;
    std::atomic<std::uint64_t> attempts = 0;
    std::atomic_bool refunded = false;
    const budget::fault_scope faults{{.hold_unmapping = &hold, .unmapping_attempts = &attempts}};
@@ -115,6 +115,9 @@ void final_pin(const std::vector<std::uint8_t>& encoded, const oc::compile_reque
    auto code = std::optional{
        oc::artifact::decode(encoded, oc::identify(request), 16 * 1024 * 1024, oc::artifact::origin::isolated_compiler)};
    code->prepare(oc::artifact::standalone_preparation_policy, {}, charge);
+   // Preparation may release temporary mappings; inject only final-owner cleanup.
+   attempts = 0;
+   hold = true;
    auto module = code->runtime_module();
    auto weak = std::weak_ptr{module};
    charge.reset();
