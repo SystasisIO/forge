@@ -133,3 +133,62 @@ foreach(_system_path "^/System/Library/" "^/usr/lib/" "^/lib/")
       message(FATAL_ERROR "system path is not a post-resolution exclusion: ${_system_path}")
    endif()
 endforeach()
+
+# Exercise the owning launcher's local resolution without creating ExternalProjects.
+get_filename_component(_sdk_cmake_dir "${FORGE_CONTRACT_RUNTIME_POLICY}" DIRECTORY)
+file(READ "${_sdk_cmake_dir}/ForgeContractFunctions.cmake" _launcher)
+string(REGEX MATCHALL "--parallel" _jobs_options "${_launcher}")
+list(LENGTH _jobs_options _jobs_option_count)
+string(FIND "${_launcher}"
+   [==[--target "${ARG_CONTRACT}_artifacts" --parallel "${_build_jobs}"]==]
+   _jobs_command)
+if(NOT _jobs_option_count EQUAL 1 OR _jobs_command EQUAL -1)
+   message(FATAL_ERROR "launcher must forward the resolved jobs to its only build command")
+endif()
+string(FIND "${_launcher}" "function(forge_add_contract_project target)" _jobs_begin)
+string(FIND "${_launcher}" "   cmake_parse_arguments(" _jobs_end)
+if(_jobs_begin EQUAL -1 OR _jobs_end LESS _jobs_begin)
+   message(FATAL_ERROR "launcher resolution must precede argument/ExternalProject actions")
+endif()
+math(EXPR _jobs_length "${_jobs_end} - ${_jobs_begin}")
+string(SUBSTRING "${_launcher}" ${_jobs_begin} ${_jobs_length} _jobs_probe)
+set(_jobs_output "${_runtime_test_root}/launcher-jobs.txt")
+string(APPEND _jobs_probe
+   "   file(WRITE \"${_jobs_output}\" \"\${_build_jobs}\")\n"
+   "endfunction()\n"
+   "forge_add_contract_project(probe)\n")
+set(_jobs_probe_file "${_runtime_test_root}/launcher-jobs.cmake")
+file(WRITE "${_jobs_probe_file}" "${_jobs_probe}")
+foreach(_jobs IN ITEMS unset 1 2 8 0002)
+   file(REMOVE "${_jobs_output}")
+   set(_jobs_environment --unset=CMAKE_BUILD_PARALLEL_LEVEL)
+   if(_jobs STREQUAL "unset")
+      set(_expected_jobs 4)
+   else()
+      list(APPEND _jobs_environment "CMAKE_BUILD_PARALLEL_LEVEL=${_jobs}")
+      set(_expected_jobs "${_jobs}")
+   endif()
+   execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E env ${_jobs_environment}
+         "${CMAKE_COMMAND}" -P "${_jobs_probe_file}"
+      RESULT_VARIABLE _jobs_result OUTPUT_VARIABLE _jobs_stdout ERROR_VARIABLE _jobs_stderr)
+   if(NOT _jobs_result EQUAL 0 OR NOT EXISTS "${_jobs_output}")
+      message(FATAL_ERROR "launcher rejected valid jobs '${_jobs}': ${_jobs_stdout}${_jobs_stderr}")
+   endif()
+   file(READ "${_jobs_output}" _actual_jobs)
+   if(NOT _actual_jobs STREQUAL _expected_jobs)
+      message(FATAL_ERROR "launcher jobs '${_jobs}' resolved to '${_actual_jobs}', expected '${_expected_jobs}'")
+   endif()
+endforeach()
+string(ASCII 217 162 _jobs_non_ascii)
+foreach(_jobs IN ITEMS "" 0 000 -1 1.5 native " 2" +2 "${_jobs_non_ascii}")
+   file(REMOVE "${_jobs_output}")
+   execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E env "CMAKE_BUILD_PARALLEL_LEVEL=${_jobs}"
+         "${CMAKE_COMMAND}" -P "${_jobs_probe_file}"
+      RESULT_VARIABLE _jobs_result OUTPUT_VARIABLE _jobs_stdout ERROR_VARIABLE _jobs_stderr)
+   string(CONCAT _jobs_log "${_jobs_stdout}" "${_jobs_stderr}")
+   if(_jobs_result EQUAL 0 OR EXISTS "${_jobs_output}" OR NOT _jobs_log MATCHES "positive integer")
+      message(FATAL_ERROR "launcher did not refuse invalid jobs '${_jobs}' before work: ${_jobs_log}")
+   endif()
+endforeach()

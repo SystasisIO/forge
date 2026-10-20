@@ -9,6 +9,15 @@ function(forge_add_contract_project target)
          "forge_add_contract_project(${target}) is a host-side launcher"
       )
    endif()
+   set(_build_jobs 4)
+   if(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})
+      set(_build_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+      if(NOT _build_jobs MATCHES "^[0-9]+$"
+         OR NOT _build_jobs MATCHES "[1-9]")
+         message(FATAL_ERROR "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer")
+      endif()
+   endif()
+
    cmake_parse_arguments(
       ARG
       "ABI_METADATA"
@@ -142,7 +151,7 @@ function(forge_add_contract_project target)
       BUILD_COMMAND
          "${CMAKE_COMMAND}" --build <BINARY_DIR>
          --config "$<CONFIG>"
-         --target "${ARG_CONTRACT}_artifacts" --parallel 4
+         --target "${ARG_CONTRACT}_artifacts" --parallel "${_build_jobs}"
       BUILD_BYPRODUCTS
          "${_artifact_dir}/${ARG_CONTRACT}.wasm"
          "${_artifact_dir}/${ARG_CONTRACT}.abi"

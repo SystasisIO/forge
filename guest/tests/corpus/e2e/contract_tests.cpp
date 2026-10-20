@@ -67,7 +67,7 @@ std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
    return result;
 }
 
-std::string import_text(const wasm::guarded_vector<std::uint8_t>& value) {
+std::string import_text(const std::vector<std::uint8_t>& value) {
    return {reinterpret_cast<const char*>(value.data()), value.size()};
 }
 

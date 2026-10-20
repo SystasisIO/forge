@@ -10,7 +10,7 @@ import tarfile
 import time
 from pathlib import Path
 
-from run_dual_target_fixtures import validate as validate_dual_target
+from run_dual_target_fixtures import build_jobs, validate as validate_dual_target
 
 LINUX_SDK_RUNTIME_PREFIXES = (
     "libstdc++.so",
@@ -35,7 +35,7 @@ def run(*command: str) -> None:
 
 
 def build_project(cmake: str, directory: Path) -> None:
-    run(cmake, "--build", str(directory), "--config", BUILD_CONFIGURATION, "-j", "4")
+    run(cmake, "--build", str(directory), "--config", BUILD_CONFIGURATION, "-j", build_jobs())
 
 
 def contains_path(path: Path, needle: bytes) -> bool:
@@ -145,6 +145,7 @@ def main() -> None:
     parser.add_argument("--dual-target-source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    build_jobs()
 
     output = args.output.resolve()
     forge_package = args.forge_package.resolve()
@@ -314,7 +315,7 @@ def main() -> None:
         "--target",
         "aligned_multi_index_vm_tests",
         "-j",
-        "4",
+        build_jobs(),
     )
     run(str(aligned_host_build / "aligned_multi_index_vm_tests"))
 

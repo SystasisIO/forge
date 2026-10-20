@@ -92,7 +92,7 @@ std::map<std::string, intrinsic_signature> read_database_intrinsic_golden() {
    return result;
 }
 
-std::string import_text(const wasm::guarded_vector<std::uint8_t>& value) {
+std::string import_text(const std::vector<std::uint8_t>& value) {
    return {reinterpret_cast<const char*>(value.data()), value.size()};
 }
 
@@ -973,7 +973,7 @@ BOOST_AUTO_TEST_CASE(contract_testing_host_bounds_direct_and_nested_execution) {
    }
 }
 
-#if defined(__x86_64__) || defined(_M_X64)
+#if FORGE_VM_WASM_INTERPRET_HAS_JIT
 BOOST_AUTO_TEST_CASE(jit_executes_generated_contract) {
    register_intrinsics();
    const auto code = read_contract(FORGE_CONTRACT_TEST_WASM);

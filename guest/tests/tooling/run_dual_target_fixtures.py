@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def build_jobs() -> str:
+    jobs = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "4")
+    if not jobs.isascii() or not jobs.isdecimal() or not jobs.strip("0"):
+        raise ValueError("CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer")
+    return jobs
 
 
 def run(*command: str, cwd: Path | None = None) -> str:
@@ -95,7 +103,7 @@ def build(cmake: str, directory: Path, *targets: str) -> None:
         "--target",
         *targets,
         "-j",
-        "4",
+        build_jobs(),
     )
 
 
@@ -186,7 +194,7 @@ def validate_multi_config(
         "--target",
         "configuration_guest",
         "-j",
-        "4",
+        build_jobs(),
     )
     artifact_root = build_directory / "configuration.guest" / "artifacts"
     debug_artifacts = artifact_root / "Debug"
@@ -207,7 +215,7 @@ def validate_multi_config(
         "--target",
         "configuration_guest",
         "-j",
-        "4",
+        build_jobs(),
     )
     release_artifacts = artifact_root / "Release"
     release_abi_path = release_artifacts / "configuration.abi"
@@ -423,7 +431,7 @@ class [[forge::contract("generated")]] generated final
         "--target",
         "generated_artifacts",
         "-j",
-        "4",
+        build_jobs(),
     )
     abi = json.loads(
         (build_directory / "artifacts" / "generated.abi").read_text(
@@ -1158,7 +1166,7 @@ target_compile_definitions(negative PRIVATE UNDECLARED_VALUE=2)
         "--build",
         str(mismatch_build),
         "-j",
-        "4",
+        build_jobs(),
         contains="table name does not match",
     )
 
@@ -1173,6 +1181,7 @@ def validate(
     source: Path,
     output: Path,
 ) -> None:
+    build_jobs()
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True)
 

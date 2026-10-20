@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+from run_dual_target_fixtures import build_jobs
+
 
 def run(command):
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
@@ -36,7 +38,7 @@ def build(args, root):
             f"-DCMAKE_TOOLCHAIN_FILE={args.package / 'ForgeContractToolchain.cmake'}",
         ]
     )
-    run([str(args.cmake), "--build", str(binary), "--target", "hello_artifacts", "-j", "4"])
+    run([str(args.cmake), "--build", str(binary), "--target", "hello_artifacts", "-j", build_jobs()])
     cache = (binary / "CMakeCache.txt").read_text(encoding="utf-8")
     if "CMAKE_BUILD_TYPE:STRING=Release" not in cache:
         raise RuntimeError("forge_add_contract did not propagate the parent Release build type")
@@ -50,6 +52,7 @@ def main():
     parser.add_argument("--source", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args()
+    build_jobs()
 
     if args.output.exists():
         shutil.rmtree(args.output)
