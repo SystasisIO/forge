@@ -59,6 +59,28 @@ int main(int, char** argv) {
 
    if (mode == "crash")
       return 9;
+   if (mode.starts_with("diagnostic-")) {
+      // Host bridge diagnostics only; this worker authenticates no TLS transcript.
+      const auto server = mode.ends_with("-server");
+      auto kind = std::uint8_t{};
+      auto payload = std::vector<std::uint8_t>{};
+      if (mode.starts_with("diagnostic-read-")) {
+         kind = server ? 18 : 17;
+         payload = {0, 0, 0, 8};
+      } else if (mode.starts_with("diagnostic-write-")) {
+         kind = server ? 2 : 1;
+         payload = {'x'};
+      } else if (mode.starts_with("diagnostic-close-")) {
+         kind = server ? 4 : 3;
+      } else {
+         return 6;
+      }
+      header = {kind, 0, 0, 0, static_cast<std::uint8_t>(payload.size())};
+      if (!write_all(header.data(), header.size()) || !write_all(payload.data(), payload.size()))
+         return 7;
+      for (;;)
+         ::pause();
+   }
    if (mode == "success-queued") {
       // Host ownership/drain fixture only. This worker performs no TLSNotary
       // operation and provides no evidence about cryptographic authentication.

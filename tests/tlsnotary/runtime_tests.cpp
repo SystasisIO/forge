@@ -5,6 +5,9 @@
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/system/system_error.hpp>
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -16,8 +19,12 @@
 #include <boost/scope/scope_exit.hpp>
 #include <thread>
 #include <stop_token>
+#include <source_location>
+#include <string_view>
+#include <system_error>
 
 import forge.exceptions;
+import forge.log.logger;
 import forge.net.transport.exceptions;
 
 using namespace tlsn_test;
@@ -30,6 +37,9 @@ struct temporary_directory {
       check(::mkdtemp(name.data()) != nullptr, "test temporary directory failed");
       path = name;
       for (const auto* mode : {"hang", "crash", "oversize", "truncated", "unknown", "read", "flood", "success-queued"})
+         std::filesystem::create_symlink(FORGE_TLSNOTARY_FAULT_WORKER, path / mode);
+      for (const auto* mode : {"diagnostic-read-peer", "diagnostic-read-server", "diagnostic-write-peer",
+                               "diagnostic-write-server", "diagnostic-close-peer", "diagnostic-close-server"})
          std::filesystem::create_symlink(FORGE_TLSNOTARY_FAULT_WORKER, path / mode);
    }
 
@@ -117,6 +127,93 @@ class leaking_stream final : public forge::net::transport::detail::stream_concep
    }
 
    void cancel() override {}
+};
+
+enum class channel_failure_kind { forge, boost, standard, unknown };
+
+class channel_failure_stream final : public forge::net::transport::detail::stream_concept {
+ public:
+   channel_failure_stream(channel_failure_kind kind, std::string_view operation, bool enabled)
+       : _kind{kind}, _operation{operation}, _enabled{enabled} {}
+
+   bool valid() const noexcept override {
+      return true;
+   }
+
+   std::int64_t id() const noexcept override {
+      return 17;
+   }
+
+   asio::awaitable<void> async_write(std::span<const std::uint8_t>) override {
+      if (_enabled && _operation == "write")
+         fail();
+      co_return;
+   }
+
+   asio::awaitable<std::vector<std::uint8_t>> async_read() override {
+      if (_enabled && _operation == "read")
+         fail();
+      co_return std::vector<std::uint8_t>{};
+   }
+
+   asio::awaitable<void> async_close_write() override {
+      if (_enabled && _operation == "close_write")
+         fail();
+      co_return;
+   }
+
+   asio::awaitable<void> async_close() override {
+      closed.store(true);
+      co_return;
+   }
+
+   void cancel() override {
+      cancelled.store(true);
+   }
+
+   std::atomic<bool> closed{false};
+   std::atomic<bool> cancelled{false};
+   std::source_location failure_location;
+
+ private:
+   [[noreturn]] void fail() {
+      failure_location = std::source_location::current();
+      switch (_kind) {
+      case channel_failure_kind::forge:
+         throw forge::net::transport::exceptions::closed{"secret-sentinel transport message",
+                                                         {forge::exceptions::ctx("private", "secret-sentinel context")},
+                                                         failure_location};
+      case channel_failure_kind::boost:
+         throw boost::system::system_error{boost::system::errc::make_error_code(boost::system::errc::broken_pipe),
+                                           "secret-sentinel boost message"};
+      case channel_failure_kind::standard:
+         throw std::system_error{std::make_error_code(std::errc::connection_reset), "secret-sentinel std message"};
+      case channel_failure_kind::unknown:
+         throw std::runtime_error{"secret-sentinel unknown message"};
+      }
+      throw std::runtime_error{"invalid channel failure test kind"};
+   }
+
+   channel_failure_kind _kind;
+   std::string_view _operation;
+   bool _enabled;
+};
+
+class channel_capture_sink final : public forge::sink {
+ public:
+   void log(const forge::log_record& record) override {
+      const auto lock = std::scoped_lock{_mutex};
+      _records.push_back(record);
+   }
+
+   std::vector<forge::log_record> snapshot() const {
+      const auto lock = std::scoped_lock{_mutex};
+      return _records;
+   }
+
+ private:
+   mutable std::mutex _mutex;
+   std::vector<forge::log_record> _records;
 };
 
 class oversized_stream final : public forge::net::transport::detail::stream_concept {
@@ -554,6 +651,99 @@ void lazy_operation_test(const temporary_directory& files, const identity& ident
    forge::asio::blocking::run(runtime, compute.shutdown());
 }
 
+void channel_diagnostic_tests(const temporary_directory& files, const identity& identity) {
+   struct scenario {
+      const char* worker;
+      bool server;
+      const char* operation;
+      channel_failure_kind failure;
+      const char* cause_kind;
+      const char* category;
+      int code;
+   };
+   const auto cases = std::array{
+       scenario{"diagnostic-read-peer", false, "read", channel_failure_kind::forge, "forge", "forge.net.transport", 2},
+       scenario{"diagnostic-read-server", true, "read", channel_failure_kind::boost, "boost", "generic", EPIPE},
+       scenario{"diagnostic-write-peer", false, "write", channel_failure_kind::standard, "std", "generic", ECONNRESET},
+       scenario{"diagnostic-write-server", true, "write", channel_failure_kind::forge, "forge", "forge.net.transport",
+                2},
+       scenario{"diagnostic-close-peer", false, "close_write", channel_failure_kind::unknown, "unknown", "unknown", 0},
+       scenario{"diagnostic-close-server", true, "close_write", channel_failure_kind::forge, "forge",
+                "forge.net.transport", 2}};
+   auto runtime = forge::asio::runtime{{.worker_threads = 2}};
+   auto compute = forge::asio::compute::pool{{.worker_threads = 1}};
+   auto captured = std::make_shared<channel_capture_sink>();
+   auto route = forge::logger::get("forge.net.tlsnotary");
+   const auto previous = route.get_log_level();
+   route.set_log_level(forge::log_level::warn);
+   route.add_sink(captured);
+   const auto restore = boost::scope::scope_exit{[&] {
+      route.remove_sink(captured);
+      route.set_log_level(previous);
+   }};
+   for (std::size_t index = 0; index < cases.size(); ++index) {
+      const auto& test = cases[index];
+      const auto session = 200 + index;
+      auto owner = tlsn::engine{runtime, compute.get_executor(), {.worker_path = files.path / test.worker}};
+      const auto cleanup = engine_cleanup{runtime, owner};
+      auto peer = std::make_shared<channel_failure_stream>(test.failure, test.operation, !test.server);
+      auto server = std::make_shared<channel_failure_stream>(test.failure, test.operation, test.server);
+      auto peer_stream =
+          forge::net::transport::detail::stream_access::make_cancelable(peer, [peer]() noexcept { peer->cancel(); });
+      auto completion = std::future<tlsn::result>{};
+      if (test.server) {
+         auto request =
+             tlsn::prover_request{.peer = std::move(peer_stream),
+                                  .server = forge::net::transport::detail::stream_access::make_cancelable(
+                                      server, [server]() noexcept { server->cancel(); }),
+                                  .source = {.server_name = "tlsn.local", .trust_roots_der = {identity.root}},
+                                  .request_bytes = {'x'},
+                                  .options = options(session)};
+         completion = asio::co_spawn(runtime.context(), owner.prove(std::move(request)), asio::use_future);
+      } else {
+         completion = start_verifier(runtime, owner, std::move(peer_stream), identity, session);
+      }
+      check(completion.wait_for(3s) == std::future_status::ready, "channel failure did not complete promptly");
+      throws<tlsn::exceptions::transport_failed>([&] { static_cast<void>(completion.get()); });
+      check(owner.snapshot().active == 0 && owner.snapshot().queued == 0, "channel failure retained admission");
+      check(peer->closed.load() && peer->cancelled.load(), "channel failure skipped peer cleanup");
+      if (test.server)
+         check(server->closed.load() && server->cancelled.load(), "channel failure skipped server cleanup");
+      forge::asio::blocking::run(runtime, owner.shutdown());
+      no_children();
+
+      const auto records = captured->snapshot();
+      check(records.size() == index + 1, "channel failure diagnostic was absent or duplicated");
+      const auto& record = records.back();
+      check(record.logger == "forge.net.tlsnotary" && record.level.value == forge::log_level::warn,
+            "channel failure used the wrong diagnostic boundary");
+      const auto& failed = test.server ? server : peer;
+      const auto location =
+          test.failure == channel_failure_kind::forge ? failed->failure_location : std::source_location{};
+      const auto expected = forge::log_fields{{"event", "tlsnotary.channel_failure"},
+                                              {"session", std::to_string(session)},
+                                              {"role", test.server ? "prover" : "verifier"},
+                                              {"channel", test.server ? "server" : "peer"},
+                                              {"operation", test.operation},
+                                              {"cause_kind", test.cause_kind},
+                                              {"cause_category", test.category},
+                                              {"cause_code", std::to_string(test.code)},
+                                              {"cause_file", location.file_name()},
+                                              {"cause_line", std::to_string(location.line())}};
+      check(record.fields.size() == expected.size(), "channel diagnostic contains fields outside its allowlist");
+      for (const auto& field : expected) {
+         const auto actual =
+             std::ranges::find_if(record.fields, [&](const auto& value) { return value.key == field.key; });
+         check(actual != record.fields.end() && actual->value == field.value, "channel diagnostic field changed");
+      }
+      check(forge::format_text_log_record(record).find("secret-sentinel") == std::string::npos &&
+                forge::format_json_log_record(record).find("secret-sentinel") == std::string::npos,
+            "channel diagnostic leaked exception text or context");
+      check(record.exception_chain.empty() && !record.stacktrace, "channel diagnostic captured private exception data");
+   }
+   forge::asio::blocking::run(runtime, compute.shutdown());
+}
+
 void fault_tests(const temporary_directory& files, const identity& identity) {
    auto runtime = forge::asio::runtime{{.worker_threads = 4}};
    auto compute = forge::asio::compute::pool{{.worker_threads = 2}};
@@ -757,6 +947,8 @@ int main(int argc, char** argv) {
       lazy_operation_test(files, identity);
       std::cout << "stage faults" << std::endl;
       fault_tests(files, identity);
+      std::cout << "stage channel-diagnostics" << std::endl;
+      channel_diagnostic_tests(files, identity);
       const auto cases = std::array{"deferred", "wrong-root", "wrong-server", "wrong-mask", "online", "identity-only"};
       for (unsigned failure = 0; failure < cases.size(); ++failure) {
          std::cout << "stage MPC case " << failure << " " << cases[failure] << std::endl;

@@ -9,8 +9,10 @@ import forge.asio.blocking;
 import forge.asio.compute;
 import forge.asio.runtime;
 import forge.net.tlsnotary.engine;
+#if FORGE_TLSNOTARY_TEST_PLUGIN
 import forge.plugins.net.tlsnotary.session.api;
 import forge.plugins.net.tlsnotary.session.plugin;
+#endif
 
 static_assert(std::same_as<decltype(std::declval<forge::net::tlsnotary::engine&>().verify(
                                std::declval<forge::net::tlsnotary::verifier_request>())),
@@ -20,9 +22,11 @@ int main(int argc, char** argv) {
    if (argc != 2 || !std::filesystem::is_regular_file(argv[1]))
       return 1;
 
+#if FORGE_TLSNOTARY_TEST_PLUGIN
    const auto descriptor = forge::plugins::net::tlsnotary::session::plugin::descriptor();
    if (descriptor.id.value != "forge.plugins.net.tlsnotary.session")
       return 2;
+#endif
 
    auto runtime = forge::asio::runtime{};
    auto compute = forge::asio::compute::pool{{.worker_threads = 1, .max_pending_tasks = 4}};

@@ -5135,7 +5135,7 @@ endif()
 if(TARGET forge_net_tlsnotary)
    add_executable(forge_tlsnotary_fault_worker tlsnotary/worker_fault.cpp)
    add_executable(test_forge_net_tlsnotary tlsnotary/runtime_tests.cpp)
-   target_link_libraries(test_forge_net_tlsnotary PRIVATE forge_net_tlsnotary forge_net_tcp forge_crypto_pki OpenSSL::SSL)
+   target_link_libraries(test_forge_net_tlsnotary PRIVATE forge_net_tlsnotary forge_net_tcp forge_crypto_pki forge_log OpenSSL::SSL)
    target_compile_definitions(test_forge_net_tlsnotary PRIVATE
       FORGE_TLSNOTARY_WORKER_PATH="${FORGE_TLSNOTARY_WORKER}"
       FORGE_TLSNOTARY_FAULT_WORKER="$<TARGET_FILE:forge_tlsnotary_fault_worker>"
@@ -5157,6 +5157,15 @@ if(TARGET forge_net_tlsnotary)
          --test-command forge_package_net_tlsnotary_component
             "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBEXECDIR}/forge/forge-tlsnotary-worker")
    set_tests_properties(test_forge_package_net_tlsnotary_component PROPERTIES DEPENDS test_forge_package_install TIMEOUT 180)
+   add_test(NAME test_forge_package_net_tlsnotary_leaf_component
+      COMMAND ${CMAKE_CTEST_COMMAND} --build-and-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/package_net_tlsnotary_component
+         ${CMAKE_BINARY_DIR}/forge-package-net-tlsnotary-leaf-component
+         --build-generator ${CMAKE_GENERATOR}
+         --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS} -DFORGE_TLSNOTARY_TEST_PLUGIN=OFF
+         --test-command forge_package_net_tlsnotary_component
+            "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBEXECDIR}/forge/forge-tlsnotary-worker")
+   set_tests_properties(test_forge_package_net_tlsnotary_leaf_component PROPERTIES DEPENDS test_forge_package_install TIMEOUT 180)
 endif()
 
 set(_forge_swarm_plugin_consumer
