@@ -36,7 +36,7 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    bool upload_select_locked();
    static boost::asio::awaitable<void> wait(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> close(std::shared_ptr<operation_state>);
-   static boost::asio::awaitable<void> run(std::shared_ptr<operation_state>, std::vector<std::string>);
+   static boost::asio::awaitable<void> run(std::shared_ptr<operation_state>, std::vector<std::unique_ptr<capabilities::route>>);
    static boost::asio::awaitable<bool> publish_if_complete(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> watch_deadline(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> watch_availability(std::shared_ptr<operation_state>);

@@ -6,6 +6,7 @@ module;
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 export module forge.swarm.runtime.capabilities;
@@ -17,17 +18,26 @@ export namespace forge::swarm::runtime {
 class capabilities {
  public:
    class connection;
+   class route;
    class registration;
    virtual ~capabilities();
-   // Hints only. IDs are opaque product-owned routes, never requester identities.
-   virtual boost::asio::awaitable<std::vector<std::string>> async_lookup(
+   virtual boost::asio::awaitable<std::vector<std::unique_ptr<route>>> async_lookup(
       core::swarm_id, std::string realm, std::size_t limit, std::stop_token,
       std::chrono::steady_clock::time_point deadline) = 0;
-   virtual boost::asio::awaitable<std::unique_ptr<connection>> async_connect(
-      std::string provider, std::stop_token, std::chrono::steady_clock::time_point deadline) = 0;
    virtual boost::asio::awaitable<std::unique_ptr<registration>> async_register(
       core::swarm_id, std::string realm, std::stop_token,
       std::chrono::steady_clock::time_point deadline) = 0;
+};
+
+class capabilities::route {
+ public:
+   virtual ~route();
+   // Non-authoritative diagnostic key: 1..1024 bytes, stable for this route.
+   [[nodiscard]] virtual std::string_view key() const noexcept = 0;
+   // Passive, repeatable connection factory. Backend context is immutable and
+   // bounded by the backend; the returned awaitable owns it without borrowing this.
+   virtual boost::asio::awaitable<std::unique_ptr<connection>> async_connect(
+      std::stop_token, std::chrono::steady_clock::time_point deadline) const = 0;
 };
 
 class capabilities::connection {

@@ -21,14 +21,15 @@ class peer_session : public std::enable_shared_from_this<peer_session> {
    static boost::asio::awaitable<void> serve(std::shared_ptr<operation_state>,
       forge::api::auth::authenticated_caller,
       forge::api::core::duplex_stream<protocol::peer_message, protocol::peer_message>);
-   static boost::asio::awaitable<void> connect(std::shared_ptr<operation_state>, std::string);
+   static boost::asio::awaitable<void> connect(std::shared_ptr<operation_state>, const capabilities::route&);
  private:
    static boost::asio::awaitable<void> authorize(std::shared_ptr<call_scope>, forge::api::auth::authenticated_caller, access_kind);
    static boost::asio::awaitable<void> serve_read(std::shared_ptr<peer_session>);
    static boost::asio::awaitable<void> serve_write(std::shared_ptr<peer_session>);
    static boost::asio::awaitable<void> watch_availability(std::shared_ptr<peer_session>);
    static boost::asio::awaitable<void> download_read(std::shared_ptr<peer_session>);
-   static boost::asio::awaitable<void> connect_owned(std::shared_ptr<peer_session>, std::string);
+   static boost::asio::awaitable<void> connect_owned(std::shared_ptr<peer_session>,
+      boost::asio::awaitable<std::unique_ptr<capabilities::connection>>);
    static boost::asio::awaitable<void> download_write(std::shared_ptr<peer_session>);
    static boost::asio::awaitable<void> receive(std::shared_ptr<peer_session>, protocol::block);
    static boost::asio::awaitable<void> send(std::shared_ptr<peer_session>, protocol::peer_message, std::uint64_t,

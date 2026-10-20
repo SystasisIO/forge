@@ -47,12 +47,12 @@ boost::asio::awaitable<sharing> engine::share_owned(std::shared_ptr<impl> owner,
    co_return sharing{co_await impl::create(std::move(owner), std::move(value), std::move(store), std::move(realm), false, {}, std::nullopt)};
 }
 boost::asio::awaitable<runtime::download> engine::async_download(core::descriptor value, std::shared_ptr<core::store> store,
-   std::string realm, std::vector<std::string> providers,
+   std::string realm, std::vector<std::unique_ptr<capabilities::route>> providers,
    std::optional<std::chrono::steady_clock::time_point> total_deadline) {
    return download_owned(_impl, std::move(value), std::move(store), std::move(realm), std::move(providers), total_deadline);
 }
 boost::asio::awaitable<runtime::download> engine::download_owned(std::shared_ptr<impl> owner,
-   core::descriptor value, std::shared_ptr<core::store> store, std::string realm, std::vector<std::string> providers,
+   core::descriptor value, std::shared_ptr<core::store> store, std::string realm, std::vector<std::unique_ptr<capabilities::route>> providers,
    std::optional<std::chrono::steady_clock::time_point> total_deadline) {
    co_return runtime::download{co_await impl::create(std::move(owner), std::move(value), std::move(store),
       std::move(realm), true, std::move(providers), total_deadline)};

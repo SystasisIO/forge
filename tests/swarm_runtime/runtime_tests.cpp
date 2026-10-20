@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 #include "../swarm_storage/support.hpp"
+#include "route_fixture.hxx"
 
 import forge.swarm.runtime.engine;
 import forge.api.core.trusted_invocation;
@@ -114,22 +115,31 @@ class alias_connection final : public swarm::capabilities::connection {
    std::shared_ptr<stalled_peer> implementation;
 };
 
-class aliases final : public swarm::capabilities {
+class aliases final : public swarm::capabilities, public std::enable_shared_from_this<aliases> {
  public:
    std::shared_ptr<stalled_peer> implementation = std::make_shared<stalled_peer>();
    std::atomic_uint connected{0};
    forge::asio::notification changed;
-   boost::asio::awaitable<std::vector<std::string>> async_lookup(core::swarm_id, std::string,
-      std::size_t, std::stop_token, std::chrono::steady_clock::time_point) override { co_return std::vector<std::string>{"alias-one", "alias-two"}; }
-   boost::asio::awaitable<std::unique_ptr<connection>> async_connect(std::string, std::stop_token stop,
-      std::chrono::steady_clock::time_point deadline) override {
-      ++connected; changed.notify();
-      while (true) {
-         const auto epoch = changed.epoch();
-         if (connected.load() == 2) break;
-         co_await changed.async_wait_until(epoch, deadline, stop);
+   boost::asio::awaitable<std::vector<std::unique_ptr<route>>> async_lookup(core::swarm_id, std::string,
+      std::size_t, std::stop_token, std::chrono::steady_clock::time_point) override {
+      auto result = std::vector<std::unique_ptr<route>>{};
+      for (const auto* key : {"alias-one", "alias-two"}) {
+         result.push_back(std::make_unique<forge::tests::swarm::route>(key,
+            [self = shared_from_this()](std::stop_token stop, std::chrono::steady_clock::time_point deadline) {
+               return connect(self, stop, deadline);
+            }));
       }
-      co_return std::make_unique<alias_connection>(implementation);
+      co_return result;
+   }
+   static boost::asio::awaitable<std::unique_ptr<connection>> connect(std::shared_ptr<aliases> self, std::stop_token stop,
+      std::chrono::steady_clock::time_point deadline) {
+      ++self->connected; self->changed.notify();
+      while (true) {
+         const auto epoch = self->changed.epoch();
+         if (self->connected.load() == 2) break;
+         co_await self->changed.async_wait_until(epoch, deadline, stop);
+      }
+      co_return std::make_unique<alias_connection>(self->implementation);
    }
    boost::asio::awaitable<std::unique_ptr<registration>> async_register(core::swarm_id, std::string,
       std::stop_token, std::chrono::steady_clock::time_point) override { co_return nullptr; }
@@ -233,15 +243,17 @@ class local_network final : public swarm::capabilities {
    std::shared_ptr<link_observation> observation = std::make_shared<link_observation>();
    std::size_t routes = 1;
    bool fail_identity = false;
-   boost::asio::awaitable<std::vector<std::string>> async_lookup(core::swarm_id, std::string,
+   boost::asio::awaitable<std::vector<std::unique_ptr<route>>> async_lookup(core::swarm_id, std::string,
       std::size_t limit, std::stop_token, std::chrono::steady_clock::time_point) override {
-      auto result = std::vector<std::string>{};
-      for (auto index = std::size_t{}; index < std::min(routes, limit); ++index) result.push_back(std::to_string(index));
+      auto result = std::vector<std::unique_ptr<route>>{};
+      for (auto index = std::size_t{}; index < std::min(routes, limit); ++index) {
+         result.push_back(std::make_unique<forge::tests::swarm::route>(std::to_string(index),
+            [peer = implementation, observed = observation, fail = fail_identity](std::stop_token,
+               std::chrono::steady_clock::time_point) -> boost::asio::awaitable<std::unique_ptr<connection>> {
+               co_return std::make_unique<local_connection>(peer, observed, fail);
+            }));
+      }
       co_return result;
-   }
-   boost::asio::awaitable<std::unique_ptr<connection>> async_connect(std::string, std::stop_token,
-      std::chrono::steady_clock::time_point) override {
-      co_return std::make_unique<local_connection>(implementation, observation, fail_identity);
    }
    boost::asio::awaitable<std::unique_ptr<registration>> async_register(core::swarm_id, std::string,
       std::stop_token, std::chrono::steady_clock::time_point) override { co_return nullptr; }
@@ -331,10 +343,8 @@ class registration_network final : public swarm::capabilities {
    std::function<void()> after_start;
    bool hold_registration = false;
    forge::asio::notification release_registration;
-   boost::asio::awaitable<std::vector<std::string>> async_lookup(core::swarm_id, std::string,
-      std::size_t, std::stop_token, std::chrono::steady_clock::time_point) override { co_return std::vector<std::string>{}; }
-   boost::asio::awaitable<std::unique_ptr<connection>> async_connect(std::string, std::stop_token,
-      std::chrono::steady_clock::time_point) override { co_return nullptr; }
+   boost::asio::awaitable<std::vector<std::unique_ptr<route>>> async_lookup(core::swarm_id, std::string,
+      std::size_t, std::stop_token, std::chrono::steady_clock::time_point) override { co_return std::vector<std::unique_ptr<route>>{}; }
    boost::asio::awaitable<std::unique_ptr<registration>> async_register(core::swarm_id, std::string,
       std::stop_token, std::chrono::steady_clock::time_point) override {
       auto resource = std::make_unique<observed_registration>(observation);
@@ -1383,6 +1393,70 @@ BOOST_AUTO_TEST_CASE(input_half_close_drains_delayed_block_and_successful_termin
       BOOST_CHECK_EQUAL(accounting.held, 0U);
       BOOST_CHECK_EQUAL(store->stops.load(), 0U);
       co_await server->async_close(); co_await inner->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(route_awaitable_owns_context_after_facade_destruction) {
+   auto peer = std::make_shared<stalled_peer>();
+   auto observation = std::make_shared<link_observation>();
+   auto weak = std::weak_ptr<link_observation>{observation};
+   auto route = std::make_unique<forge::tests::swarm::route>("owned-route",
+      [peer, observation](std::stop_token, std::chrono::steady_clock::time_point)
+         -> boost::asio::awaitable<std::unique_ptr<swarm::capabilities::connection>> {
+         co_return std::make_unique<local_connection>(peer, observation, false);
+      });
+   auto pending = route->async_connect({}, std::chrono::steady_clock::now() + 1s);
+   route.reset(); observation.reset();
+   BOOST_CHECK(!weak.expired());
+   auto connection = swarm_test::run(std::move(pending));
+   BOOST_CHECK(connection->remote_identity().fingerprint == principal().fingerprint);
+   swarm_test::run(connection->async_close());
+   connection.reset();
+   BOOST_CHECK(weak.expired());
+}
+
+BOOST_AUTO_TEST_CASE(explicit_owned_route_retries_without_discovery_and_retains_context_until_children_join) {
+   auto source = swarm_test::fixture{};
+   auto target = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(2U * core::block_size);
+   const auto manifest = swarm_test::describe({bytes});
+   auto seed = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(source.options(manifest)))};
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(target.options(manifest)))};
+   swarm_test::fill(*seed, manifest, {bytes});
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto config = swarm::engine::options{}; config.peers = 1; config.attempts = 3; config.upload_round = 1ms;
+   auto server = std::make_shared<swarm::engine>(tasks, source.cpu.get_executor(),
+      std::make_shared<swarm::free_admission>(), nullptr, config);
+   auto client = swarm::engine{tasks, target.cpu.get_executor(), std::make_shared<swarm::free_admission>(), nullptr, config};
+   auto attempts = std::make_shared<std::atomic_uint>(0);
+   auto observation = std::make_shared<link_observation>();
+   const auto weak = std::weak_ptr<link_observation>{observation};
+   auto routes = std::vector<std::unique_ptr<swarm::capabilities::route>>{};
+   routes.push_back(std::make_unique<forge::tests::swarm::route>("explicit-seed",
+      [server, attempts, observation](std::stop_token, std::chrono::steady_clock::time_point)
+         -> boost::asio::awaitable<std::unique_ptr<swarm::capabilities::connection>> {
+         if (attempts->fetch_add(1) == 0U) { throw std::runtime_error{"first connection unavailable"}; }
+         co_return std::make_unique<local_connection>(server, observation, false);
+      }));
+   observation.reset();
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto share = co_await server->async_share(manifest, seed);
+      auto download = co_await client.async_download(manifest, store, {}, std::move(routes),
+         std::chrono::steady_clock::now() + 3s);
+      auto failure = std::exception_ptr{};
+      try { co_await download.async_wait(); } catch (...) { failure = std::current_exception(); }
+      co_await download.async_close();
+      BOOST_CHECK_MESSAGE(!failure, failure_text(failure));
+      BOOST_CHECK(download.inspect().complete);
+      BOOST_CHECK_EQUAL(attempts->load(), 2U);
+      BOOST_CHECK(weak.expired());
+      if (!failure) BOOST_CHECK(swarm_test::read_file(target.root / "result") == bytes);
+      co_await share.async_close(); co_await client.async_close(); co_await server->async_close();
+      co_await store->async_close(); co_await seed->async_close(); co_await tasks.shutdown();
    };
    forge::asio::blocking::run(runtime, body());
 }

@@ -59,7 +59,7 @@ class engine final : public api::peer {
    boost::asio::awaitable<sharing> async_share(core::descriptor, std::shared_ptr<core::store>, std::string realm = {});
    boost::asio::awaitable<runtime::download> async_download(
       core::descriptor, std::shared_ptr<core::store>, std::string realm = {},
-      std::vector<std::string> providers = {},
+      std::vector<std::unique_ptr<capabilities::route>> routes = {},
       std::optional<std::chrono::steady_clock::time_point> total_deadline = std::nullopt);
    void cancel() noexcept;
    boost::asio::awaitable<void> async_close();
@@ -76,7 +76,7 @@ class engine final : public api::peer {
       std::shared_ptr<impl>, core::descriptor, std::shared_ptr<core::store>, std::string);
    static boost::asio::awaitable<runtime::download> download_owned(
       std::shared_ptr<impl>, core::descriptor, std::shared_ptr<core::store>, std::string,
-      std::vector<std::string>, std::optional<std::chrono::steady_clock::time_point>);
+      std::vector<std::unique_ptr<capabilities::route>>, std::optional<std::chrono::steady_clock::time_point>);
 };
 
 } // namespace forge::swarm::runtime

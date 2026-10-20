@@ -81,7 +81,7 @@ std::shared_ptr<detail::operation_state> engine::impl::find(core::swarm_id id, c
 }
 boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::create(
    std::shared_ptr<impl> self, core::descriptor manifest, std::shared_ptr<core::store> store,
-   std::string realm, bool downloading, std::vector<std::string> routes,
+   std::string realm, bool downloading, std::vector<std::unique_ptr<capabilities::route>> routes,
    std::optional<std::chrono::steady_clock::time_point> total_deadline) {
    protocol::validate_realm(realm);
    if (!store || routes.size() > self->config.peers) {
@@ -164,18 +164,20 @@ boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::c
          auto capacity = std::make_shared<detail::resource_budget::ticket>(self->budget->reserve(operation->number,
             "local:" + std::to_string(operation->number), {0, 1, 4096, 0}));
          auto owned_worker = std::make_shared<forge::asio::task::handle>();
+         auto owned_routes = std::make_shared<std::vector<std::unique_ptr<capabilities::route>>>(std::move(routes));
          operation->orchestration_capacity = capacity;
          auto worker = self->scheduler.submit(forge::asio::task::awaitable{
-            .name = "swarm-download", .work = [operation, routes = std::move(routes), capacity](forge::asio::task::context& context) mutable
+            .name = "swarm-download", .work = [operation, owned_routes, capacity](forge::asio::task::context& context) mutable
                -> boost::asio::awaitable<void> {
                std::stop_callback cancel{context.stop_token(), [operation] { operation->cancel(); }};
-               try { co_await detail::operation_state::run(operation, std::move(routes)); }
+               try { co_await detail::operation_state::run(operation, std::move(*owned_routes)); }
                catch (...) { operation->failure = std::current_exception(); }
                // Task completion may precede destruction of this callable.
                capacity->release();
                operation->changed.notify();
             }});
          if (!worker.accepted()) {
+            owned_routes->clear();
             capacity->release();
             FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm scheduler rejected worker");
          }
