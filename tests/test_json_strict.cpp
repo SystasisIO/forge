@@ -83,6 +83,46 @@ BOOST_AUTO_TEST_CASE(json_strict_limits_count_root_nodes_containers_and_decoded_
    BOOST_TEST(!forge::codec::json::read_value(deep, options).ok());
 }
 
+BOOST_AUTO_TEST_CASE(json_strict_requires_complete_nested_roots_within_the_supplied_view) {
+   const auto options =
+       forge::codec::json::read_options{.max_depth = 8,
+                                        .described_records = forge::codec::json::described_record_policy::exact,
+                                        .max_bytes = 4096,
+                                        .max_nodes = 128,
+                                        .max_container_size = 32,
+                                        .max_string_bytes = 256};
+   for (const auto text :
+        {std::string_view{R"({"outer":{"value":1}})"}, std::string_view{R"({"outer":[1,{"value":2}]})"},
+         std::string_view{R"([{"inner":[1,2]}])"}, std::string_view{R"([[1,2],{"a":{"b":true}}])"}}) {
+      const auto storage = std::string{text} + "unused";
+      BOOST_REQUIRE(forge::codec::json::read_value(std::string_view{storage.data(), text.size()}, options).ok());
+      // The physical buffer still contains every omitted closing byte. Exact
+      // parsing must not borrow it from beyond the caller's bounded view.
+      for (std::size_t size = 0; size < text.size(); ++size) {
+         const auto parsed = forge::codec::json::read_value(std::string_view{storage.data(), size}, options);
+         BOOST_REQUIRE(!parsed.ok());
+         BOOST_REQUIRE(!parsed.diagnostics.empty());
+         BOOST_TEST(parsed.diagnostics.front().code == "json.parse");
+      }
+      BOOST_TEST(forge::codec::json::read_value(std::string{text} + " \t\r\n", options).ok());
+      for (const auto suffix : {"{}", " false", "]", " trailing"})
+         BOOST_TEST(!forge::codec::json::read_value(std::string{text} + suffix, options).ok());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(json_strict_typed_and_config_reads_reject_an_unclosed_parent_container) {
+   const auto options =
+       forge::codec::json::read_options{.described_records = forge::codec::json::described_record_policy::exact};
+   const auto typed = std::string{R"({"nested":{"count":1},"list":[{"count":2}]})"};
+   BOOST_REQUIRE(forge::codec::json::read<json_strict_tests::nested_value>(typed, options).ok());
+   BOOST_REQUIRE(forge::codec::json::read_document(typed, options).ok());
+   for (const auto omitted : {1U, 2U, 3U}) {
+      const auto truncated = std::string_view{typed.data(), typed.size() - omitted};
+      BOOST_TEST(!forge::codec::json::read<json_strict_tests::nested_value>(truncated, options).ok());
+      BOOST_TEST(!forge::codec::json::read_document(truncated, options).ok());
+   }
+}
+
 BOOST_AUTO_TEST_CASE(json_strict_does_not_coerce_integer_kinds_or_bounds) {
    const auto options = forge::codec::json::read_options{
       .described_records = forge::codec::json::described_record_policy::exact};

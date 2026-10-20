@@ -408,7 +408,24 @@ template <typename Request> [[nodiscard]] std::vector<openapi_field> request_fie
             if (found == definitions.fields().end()) return;
             auto field = request_field<member_type>(found->name);
             if (field.source == openapi_field_source::value) {
-               field.schema = properties[found->name];
+               auto constrained = properties[found->name];
+               if (field.schema.is_object() && constrained.is_object()) {
+                  const auto& original = field.schema.get_object();
+                  const auto& exported_field = constrained.get_object();
+                  if (original.contains("type") && original.contains("format") && exported_field.contains("type") &&
+                      !exported_field.contains("format") && original["type"].is_string() &&
+                      exported_field["type"].is_string() && original["format"].is_string() &&
+                      original["type"].as_string() == exported_field["type"].as_string()) {
+                     const auto& wire_type = original["type"].as_string();
+                     if (wire_type == "integer" || wire_type == "number" || wire_type == "string" ||
+                         wire_type == "boolean") {
+                        auto merged = forge::mutable_variant_object{exported_field};
+                        merged.set("format", original["format"]);
+                        constrained = forge::variant{std::move(merged)};
+                     }
+                  }
+               }
+               field.schema = std::move(constrained);
                field.required = !found->optional || found->required;
             }
             output.push_back(std::move(field));

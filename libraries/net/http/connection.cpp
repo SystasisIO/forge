@@ -37,6 +37,8 @@ module;
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/version.hpp>
 
+#include "details/beast_message.hxx"
+
 module forge.net.http.connection;
 
 import forge.asio.runtime;
@@ -133,61 +135,13 @@ bool cancellation_error(const boost::system::error_code& error) {
 
 void ensure_host_header(request& request_value, const base_url& endpoint) {
    if (request_value.find(field::host) == request_value.end()) {
-      request_value.set(field::host, endpoint.host);
+      request_value.set(field::host, endpoint.host_header());
    }
-}
-
-beast_http::verb to_beast_method(method value) noexcept {
-   switch (value) {
-   case method::delete_:
-      return beast_http::verb::delete_;
-   case method::get:
-      return beast_http::verb::get;
-   case method::head:
-      return beast_http::verb::head;
-   case method::options:
-      return beast_http::verb::options;
-   case method::patch:
-      return beast_http::verb::patch;
-   case method::post:
-      return beast_http::verb::post;
-   case method::put:
-      return beast_http::verb::put;
-   case method::unknown:
-      return beast_http::verb::unknown;
-   }
-   return beast_http::verb::unknown;
-}
-
-status to_http_status(beast_http::status value) noexcept {
-   return static_cast<status>(static_cast<unsigned>(value));
-}
-
-beast_http::request<beast_http::string_body> to_beast_request(const request& source) {
-   auto target = beast_http::request<beast_http::string_body>{to_beast_method(source.method()),
-                                                              std::string{source.target()}, source.version()};
-   for (const auto& header : source.headers()) {
-      target.insert(header.name, header.text);
-   }
-   target.keep_alive(source.keep_alive());
-   target.body() = source.body();
-   target.prepare_payload();
-   return target;
-}
-
-response to_http_response(const beast_http::response<beast_http::string_body>& source) {
-   auto target = response{to_http_status(source.result()), source.version()};
-   target.keep_alive(source.keep_alive());
-   for (const auto& header : source) {
-      target.insert(header.name_string(), header.value());
-   }
-   target.body() = source.body();
-   return target;
 }
 
 response make_header_response(const beast_http::response_parser<beast_http::buffer_body>& parser) {
    const auto& source = parser.get();
-   auto output = response{to_http_status(source.result()), source.version()};
+   auto output = response{detail::to_http_status(source.result()), source.version()};
    output.keep_alive(source.keep_alive());
    for (const auto& field_value : source) {
       output.insert(field_value.name_string(), field_value.value());
@@ -368,7 +322,7 @@ template <typename Stream>
 awaitable<void> write_streaming_request(Stream& stream, const request& request_value, body_reader& body,
                                         transport_deadline deadline) {
    auto message = beast_http::request<beast_http::buffer_body>{
-       to_beast_method(request_value.method()), std::string{request_value.target()}, request_value.version()};
+       detail::to_beast_method(request_value.method()), std::string{request_value.target()}, request_value.version()};
    for (const auto& field_value : request_value.headers()) {
       message.set(field_value.name, field_value.text);
    }
@@ -607,7 +561,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_await ensure_plain_connected(deadline);
 
       ensure_host_header(request_value, endpoint);
-      auto beast_request = to_beast_request(request_value);
+      auto beast_request = detail::to_beast_request(request_value);
       require_deadline(deadline);
       co_await boost::beast::http::async_write(*plain_stream, beast_request, use_awaitable);
 
@@ -618,7 +572,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
          parser.skip(true);
       }
       co_await beast_http::async_read(*plain_stream, buffer, parser, use_awaitable);
-      auto response_value = to_http_response(parser.release());
+      auto response_value = detail::to_http_response(parser.release());
 
       if (!response_value.keep_alive()) {
          close_plain();
@@ -632,7 +586,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       co_await ensure_tls_connected(deadline);
 
       ensure_host_header(request_value, endpoint);
-      auto beast_request = to_beast_request(request_value);
+      auto beast_request = detail::to_beast_request(request_value);
       require_deadline(deadline);
       co_await boost::beast::http::async_write(*tls_stream, beast_request, use_awaitable);
 
@@ -643,7 +597,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
          parser.skip(true);
       }
       co_await beast_http::async_read(*tls_stream, buffer, parser, use_awaitable);
-      auto response_value = to_http_response(parser.release());
+      auto response_value = detail::to_http_response(parser.release());
 
       if (!response_value.keep_alive()) {
          close_tls();
@@ -671,7 +625,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       require_deadline(deadline);
       stream.expires_at(deadline);
       co_await beast_http::async_read(stream, stream_buffer, parser, use_awaitable);
-      auto response_value = to_http_response(parser.release());
+      auto response_value = detail::to_http_response(parser.release());
       record_status(response_value);
       co_return response_value;
    }
@@ -709,7 +663,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       require_deadline(deadline);
       expire_at(*stream, deadline);
       co_await beast_http::async_read(*stream, stream_buffer, parser, use_awaitable);
-      auto response_value = to_http_response(parser.release());
+      auto response_value = detail::to_http_response(parser.release());
       record_status(response_value);
       co_return response_value;
    }
@@ -726,7 +680,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       if (body.has_value()) {
          co_await write_streaming_request(stream, request_value, *body, deadline);
       } else {
-         auto beast_request = to_beast_request(request_value);
+         auto beast_request = detail::to_beast_request(request_value);
          require_deadline(deadline);
          stream.expires_at(deadline);
          co_await beast_http::async_write(stream, beast_request, use_awaitable);
@@ -774,7 +728,7 @@ struct connection::impl : std::enable_shared_from_this<connection::impl> {
       if (body.has_value()) {
          co_await write_streaming_request(*stream, request_value, *body, deadline);
       } else {
-         auto beast_request = to_beast_request(request_value);
+         auto beast_request = detail::to_beast_request(request_value);
          require_deadline(deadline);
          expire_at(*stream, deadline);
          co_await beast_http::async_write(*stream, beast_request, use_awaitable);

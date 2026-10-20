@@ -4,6 +4,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -203,8 +204,9 @@ BOOST_AUTO_TEST_CASE(json_document_direct_schema_field_preserves_json_null)
 BOOST_AUTO_TEST_CASE(json_document_requires_one_complete_json_value)
 {
    const auto nul_suffix = std::string{"null\0garbage", 12};
-   for (const auto& input : {std::string{"null garbage"}, std::string{"{}{}"}, std::string{"true false"}, nul_suffix})
-   {
+   for (const auto& input :
+        {std::string{"null garbage"}, std::string{"{}{}"}, std::string{"true false"}, nul_suffix,
+         std::string{R"({"outer":{"value":1})"}, std::string{R"({"outer":[1])"}, std::string{R"([{"inner":[]})"}}) {
       BOOST_CHECK_THROW(static_cast<void>(forge::codec::json::parse_document(input)),
                         forge::schema::exceptions::invalid_value);
       BOOST_CHECK_THROW(static_cast<void>(forge::codec::json::document_value({input})),
@@ -213,6 +215,12 @@ BOOST_AUTO_TEST_CASE(json_document_requires_one_complete_json_value)
 
    BOOST_TEST(forge::codec::json::parse_document("null \t\r\n").text == "null");
    BOOST_TEST(forge::codec::json::parse_document("{} \t\r\n").text == "{}");
+   constexpr auto expected = std::string_view{R"({"outer":[{}]})"};
+   const auto bounded = std::string{expected} + "unused";
+   BOOST_TEST(forge::codec::json::parse_document(std::string_view{bounded.data(), expected.size()}).text == expected);
+   BOOST_CHECK_THROW(
+       static_cast<void>(forge::codec::json::parse_document(std::string_view{bounded.data(), expected.size() - 1})),
+       forge::schema::exceptions::invalid_value);
 }
 
 BOOST_AUTO_TEST_CASE(json_document_schema_list_preserves_string_null_and_mixed_values)

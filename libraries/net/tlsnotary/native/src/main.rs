@@ -22,15 +22,27 @@ async fn coordinate(
     tokio::pin!(operation, input);
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
+    let mut completed = None;
     loop {
+        if tasks.is_empty() {
+            if let Some(output) = completed.take() {
+                return Ok(output);
+            }
+        }
         tokio::select! {
-            result = &mut operation => return result,
+            result = &mut operation, if completed.is_none() => match result {
+                Ok(output) => completed = Some(output),
+                Err(error) => return Err(error),
+            },
             result = &mut input => return Err(result.err().unwrap_or(Failure::Io)),
             _ = &mut deadline => return Err(Failure::Timeout),
             // A closed session driver can drop its streams before the protocol
             // future resumes its own join. All bridge jobs may therefore finish
             // first. join_next() on an empty set is immediately ready with None;
             // it must not compete with the remaining protocol/input/deadline.
+            // Conversely, local protocol completion does not drain its duplex
+            // buffers: bridge jobs must submit their final bytes and receive
+            // the host's existing write/FIN acknowledgements before result128.
             result = tasks.join_next(), if !tasks.is_empty() => match result {
                 Some(Ok(Ok(()))) => {},
                 Some(Ok(Err(error))) => return Err(error),
@@ -147,6 +159,86 @@ fn main() {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_protocol_success_waits_for_bridge_write_and_fin_acknowledgements() {
+        let (acknowledge, pending) = tokio::sync::oneshot::channel();
+        let mut bridges = JoinSet::new();
+        bridges.spawn(async move {
+            pending.await.map_err(|_| Failure::Io)?;
+            Ok(())
+        });
+        let mut completion = tokio::spawn(async move {
+            coordinate(
+                async { Ok(vec![1, 2, 3]) },
+                std::future::pending(),
+                &mut bridges,
+                Duration::from_secs(1),
+            )
+            .await
+        });
+        // The local result is immediately ready. Only the outstanding bridge
+        // acknowledgement may hold completion; the old coordinator returned it.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut completion)
+                .await
+                .is_err()
+        );
+        acknowledge.send(()).unwrap();
+        assert_eq!(completion.await.unwrap(), Ok(vec![1, 2, 3]));
+    }
+
+    #[tokio::test]
+    async fn local_protocol_success_does_not_hide_a_bridge_failure() {
+        let (release, pending) = tokio::sync::oneshot::channel();
+        let mut bridges = JoinSet::new();
+        bridges.spawn(async move {
+            pending.await.map_err(|_| Failure::Internal)?;
+            Err(Failure::Io)
+        });
+        let mut completion = tokio::spawn(async move {
+            coordinate(
+                async { Ok(Vec::new()) },
+                std::future::pending(),
+                &mut bridges,
+                Duration::from_secs(1),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut completion)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        assert_eq!(completion.await.unwrap(), Err(Failure::Io));
+    }
+
+    #[tokio::test]
+    async fn local_protocol_success_keeps_bridge_deadline_and_input_cancellation_live() {
+        let mut bridges = JoinSet::new();
+        bridges.spawn(std::future::pending());
+        assert_eq!(
+            coordinate(
+                async { Ok(Vec::new()) },
+                std::future::pending(),
+                &mut bridges,
+                Duration::from_millis(1),
+            )
+            .await,
+            Err(Failure::Timeout)
+        );
+        assert_eq!(
+            coordinate(
+                async { Ok(Vec::new()) },
+                async { Err(Failure::Cancelled) },
+                &mut bridges,
+                Duration::from_secs(1),
+            )
+            .await,
+            Err(Failure::Cancelled)
+        );
+    }
 
     #[tokio::test]
     async fn drained_bridge_workers_do_not_override_late_protocol_completion() {

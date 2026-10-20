@@ -24,6 +24,7 @@ module;
 #include "details/stream_server_access.hxx"
 #include "details/server_log.hxx"
 #include "details/request_read_ownership.hxx"
+#include "details/beast_message.hxx"
 
 #include <forge/exceptions/macros.hpp>
 
@@ -97,27 +98,6 @@ stream_limits limits_from(const server_config& config) {
        .read_timeout = config.read_timeout,
        .write_timeout = config.idle_timeout,
    };
-}
-
-method to_http_method(beast_http::verb value) noexcept {
-   switch (value) {
-   case beast_http::verb::delete_:
-      return method::delete_;
-   case beast_http::verb::get:
-      return method::get;
-   case beast_http::verb::head:
-      return method::head;
-   case beast_http::verb::options:
-      return method::options;
-   case beast_http::verb::patch:
-      return method::patch;
-   case beast_http::verb::post:
-      return method::post;
-   case beast_http::verb::put:
-      return method::put;
-   default:
-      return method::unknown;
-   }
 }
 
 beast_http::status to_beast_status(status value) noexcept {

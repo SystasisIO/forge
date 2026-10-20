@@ -325,12 +325,16 @@ void native_exchange::request_stop() noexcept {
    }
 }
 
-void native_exchange::stop_on_strand() noexcept {
-   _abort.store(true);
+void native_exchange::close_ipc_on_strand() noexcept {
    auto error = boost::system::error_code{};
    _socket.cancel(error);
    _socket.close(error);
    _writer.close();
+}
+
+void native_exchange::stop_on_strand() noexcept {
+   _abort.store(true);
+   close_ipc_on_strand();
    _peer.request_cancel();
    _server.request_cancel();
    kill_owned();
@@ -488,7 +492,7 @@ boost::asio::awaitable<void> native_exchange::discard(std::shared_ptr<native_exc
       state->_finishing = true;
       state->stop_on_strand();
       state->_timer.cancel();
-      while (state->_pumps != 0 || state->_reap_pending || state->_pid > 0) {
+      while (state->_pumps != 0 || state->_timer_pending || state->_reap_pending || state->_pid > 0) {
          if (state->_pid > 0 && !state->_reap_pending) {
             try {
                state->adopt();
@@ -498,7 +502,7 @@ boost::asio::awaitable<void> native_exchange::discard(std::shared_ptr<native_exc
          }
 
          const auto epoch = state->_changed.epoch();
-         if (state->_pumps != 0 || state->_reap_pending)
+         if (state->_pumps != 0 || state->_timer_pending || state->_reap_pending)
             static_cast<void>(co_await state->_changed.async_wait(epoch));
       }
 
@@ -527,7 +531,7 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
       try {
          if (state->_stopped.load())
             FORGE_THROW_EXCEPTION(exceptions::cancelled, "native session cancelled before launch");
-         ++state->_pumps;
+         state->_timer_pending = true;
          try {
             state->_timer.async_wait(boost::asio::bind_executor(state->_strand, [state](auto error) {
                if (!error) {
@@ -535,11 +539,11 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
                   state->stop_on_strand();
                }
 
-               --state->_pumps;
+               state->_timer_pending = false;
                state->_changed.notify();
             }));
          } catch (...) {
-            --state->_pumps;
+            state->_timer_pending = false;
             throw;
          }
 
@@ -660,8 +664,15 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
          }
       }
 
-      state->_timer.cancel();
-      state->stop_on_strand();
+      if (!failure && !state->_error && !state->_expired && !state->_stopped.load()) {
+         // The worker publishes success only after its existing bridge writes
+         // and FIN acknowledgements have drained. Preserve graceful transport
+         // close: terminal cancellation would reset QUIC and discard its queue.
+         state->close_ipc_on_strand();
+      } else {
+         state->_timer.cancel();
+         state->stop_on_strand();
+      }
       while (state->_pumps != 0 || state->_reap_pending || state->_pid > 0) {
          if (state->_pid > 0 && !state->_reap_pending) {
             try {
@@ -692,6 +703,13 @@ boost::asio::awaitable<result> native_exchange::run(std::shared_ptr<native_excha
             if (!failure)
                failure = std::make_exception_ptr(exceptions::transport_failed{"TLSNotary server cleanup failed"});
          }
+      }
+
+      state->_timer.cancel();
+      while (state->_timer_pending) {
+         const auto epoch = state->_changed.epoch();
+         if (state->_timer_pending)
+            static_cast<void>(co_await state->_changed.async_wait(epoch));
       }
 
       if (state->quiescent()) {

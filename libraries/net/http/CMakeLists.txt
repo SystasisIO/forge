@@ -16,6 +16,8 @@ endif()
 add_library(
    forge_net_http STATIC
    types.cpp
+   beast_message.cpp
+   wire.cpp
    cookie.cpp
    base_url.cpp
    target.cpp
