@@ -50,6 +50,28 @@ The donors' thread pools, polling and protocol implementations are not copied.
 Forge reuses caller-owned Asio execution and its existing live API streams.
 There is no BitTorrent/IPFS wire compatibility claim.
 
+## Compute Completion Lifetime
+
+Storage fault acceptance exposed an executor-lifetime race below Swarm. A
+separate regression reproduces it using only `forge.asio.compute`, fresh
+`io_context` instances and fast successful/failing callbacks: pool work can
+finish while its caller never receives completion. No filesystem interposition
+or crash child is needed for that reproduction.
+
+The inspected Boost 1.90 paths are `asio/detail/impl/scheduler.ipp`
+(`post_immediate_completion`, `wake_one_thread_and_unlock`) and
+`asio/detail/posix_event.hpp` (`maybe_unlock_and_signal_one`). A queued callback
+can execute before the posting worker returns from `post()`. The compute
+completion therefore retains its caller's tracked executor on the posting
+stack until `post()` returns; transferring the only work guard to that callback
+would permit the caller to drain and destroy its context too early. The queued
+operation already accounts for its own outstanding work.
+
+The regression requires both the exact result/exception and full executor
+quiescence. Its bounded failure diagnostics and the storage helper's watchdog
+abort an actual stall; they never stop an executor to manufacture completion.
+Native failure, trace and post-fix stress artifacts are retained separately.
+
 ## Evidence Boundary
 
 Focused runtime tests, real-file/API integration, installed-consumer validation
