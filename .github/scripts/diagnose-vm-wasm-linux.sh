@@ -21,19 +21,24 @@ test "$root" = "$RUNNER_TEMP/vm-wasm-linux-diagnostic-$GITHUB_RUN_ID-$GITHUB_RUN
 evidence="$root/evidence"
 build="$root/build"
 leaf="$build/forge-package-vm-wasm-optimizing-component"
-head=830b4cad6bf00dde0519cb7cd33d231a40bbeb43
-tree=141465234fdfd5ac2f1905e3eb0b6b7bc5391213
+head=be680e122ed3f8aa2f304ad3c3f0fd9f153748c4
+tree=212f0f35004ca2dba8088ea92610da2439c3c33e
+pr_head=72a9e5aeaba390389aa35bbdc0fe7fc02fc968ab
+base_parent=81093bd80cdda1296776b9d5921707869f4c3ee0
 mkdir -p "$evidence"
 
 source_check() {
    test "$(git -C "$source_root" rev-parse HEAD)" = "$head"
    test "$(git -C "$source_root" rev-parse 'HEAD^{tree}')" = "$tree"
+   test "$(git -C "$source_root" show -s --format=%P HEAD)" = "$base_parent $pr_head"
    test -z "$(git -C "$source_root" status --porcelain --untracked-files=no)"
    test "$(git -C "$source_root/vendor/wamr" rev-parse HEAD)" = da5892640f9168df5a097d096e6a3924192d6f86
    git -C "$source_root" submodule status --recursive > "$evidence/submodules-$phase.txt"
    ! grep -qE '^[-+U]' "$evidence/submodules-$phase.txt"
    git -C "$source_root" submodule foreach --quiet --recursive \
       'test -z "$(git status --porcelain --untracked-files=no)"'
+   git -C "$source_root" show -s --format='commit=%H%ntree=%T%nparents=%P' HEAD > "$evidence/source-$phase.txt"
+   printf 'api_pr_head=%s\n' "$pr_head" >> "$evidence/source-$phase.txt"
 }
 
 clean_test_env() {
@@ -68,10 +73,11 @@ trust)
 import hashlib, json, os, pathlib, stat, sys, urllib.error, urllib.parse, urllib.request, zipfile
 root, source = map(pathlib.Path, sys.argv[1:])
 out = root / "evidence"
-head = "830b4cad6bf00dde0519cb7cd33d231a40bbeb43"
-key = "cbd0880dd7325bae781da9da1ae851d7f7c42aa36d11fb28506b1f86f4d48583"
-outer = "eca6aa7420526ab4082f2a8ef1f81df34bb2cd06a3b818185198f0f34af99469"
-inner = "425f4cd6173b6130425419d0e608f6551c0fb4322a076b7618f850228438c9c3"
+head = "be680e122ed3f8aa2f304ad3c3f0fd9f153748c4"
+pr_head = "72a9e5aeaba390389aa35bbdc0fe7fc02fc968ab"
+key = "f1d097b804574c48e35b0c6bec99321e416b0fda5e92582afe9efa9236060143"
+outer = "1ea39a735d44b41334f24205185f7f918dcd7fd89bf15b7d05bc17ef461c6858"
+inner = "3e979ff1d59538a0c2c1bcd90261ba418fd3182f520e3d028b072f6e933b673d"
 base = "https://api.github.com/repos/SystasisIO/forge"
 def require(ok, message):
     if not ok:
@@ -92,38 +98,43 @@ def metadata(path, name):
     require(len(data) <= 4 * 1024 * 1024, "API metadata exceeds bound")
     (out / name).write_bytes(data)
     return json.loads(data)
-run = metadata("/actions/runs/39406169819", "trusted-run.json")
+run = metadata("/actions/runs/39461336186", "trusted-run.json")
 require(all(run.get(k) == v for k, v in {
-    "id": 39406169819, "head_sha": head, "workflow_id": 312612190,
+    "id": 39461336186, "head_sha": pr_head, "workflow_id": 312612190,
     "path": ".github/workflows/vm-wasm.yml", "event": "pull_request",
-    "run_attempt": 1, "status": "completed", "conclusion": "failure"}.items()), "trusted run identity")
+    "run_attempt": 1, "status": "completed", "conclusion": "success"}.items()), "trusted run identity")
 for field in ("repository", "head_repository"):
     require(run[field]["id"] == 1215380442 and run[field]["full_name"] == "SystasisIO/forge", "trusted repository")
 commit = metadata("/git/commits/" + head, "trusted-commit.json")
-require(commit["sha"] == head and commit["tree"]["sha"] == "141465234fdfd5ac2f1905e3eb0b6b7bc5391213", "trusted tree")
-job = metadata("/actions/jobs/118572518399", "trusted-producer-job.json")
+require(commit["sha"] == head and commit["tree"]["sha"] == "212f0f35004ca2dba8088ea92610da2439c3c33e" and
+        [p["sha"] for p in commit["parents"]] ==
+        ["81093bd80cdda1296776b9d5921707869f4c3ee0", pr_head], "trusted actual checkout tree/parents")
+pr_commit = metadata("/git/commits/" + pr_head, "trusted-pr-head-commit.json")
+require(pr_commit["sha"] == pr_head and pr_commit["tree"]["sha"] ==
+        "18d2b49b4db9e0d715bf54d8489cb99f34b1e773", "trusted PR head is distinct from actual checkout")
+job = metadata("/actions/jobs/118761279892", "trusted-producer-job.json")
 require(all(job.get(k) == v for k, v in {
-    "id": 118572518399, "run_id": 39406169819, "head_sha": head,
+    "id": 118761279892, "run_id": 39461336186, "head_sha": pr_head,
     "name": "ubuntu-24.04 / dedicated LLVM22.1.8 libc++ source bootstrap",
     "status": "completed", "conclusion": "success"}.items()), "trusted producer job")
 for name in ("Explicit source build and relocated ABI qualification (-j2, one linker)",
              "Publish only the qualified immutable toolchain"):
     require(any(s["name"] == name and s["status"] == "completed" and s["conclusion"] == "success"
                 for s in job["steps"]), "producer qualification step")
-artifact = metadata("/actions/artifacts/12266644506", "trusted-artifact.json")
-require(artifact["id"] == 12266644506 and not artifact["expired"] and
+artifact = metadata("/actions/artifacts/12294556432", "trusted-artifact.json")
+require(artifact["id"] == 12294556432 and not artifact["expired"] and
         artifact["name"] == "llvm22.1.8-linux-x86-" + key and
-        artifact["size_in_bytes"] == 281290282 and artifact["digest"] == "sha256:" + outer,
+        artifact["size_in_bytes"] == 281297384 and artifact["digest"] == "sha256:" + outer,
         "trusted artifact identity/digest")
 require(all(artifact["workflow_run"].get(k) == v for k, v in {
-    "id": 39406169819, "head_sha": head, "repository_id": 1215380442,
+    "id": 39461336186, "head_sha": pr_head, "repository_id": 1215380442,
     "head_repository_id": 1215380442}.items()), "artifact workflow binding")
 # Obtain the signed redirect without ever forwarding the GitHub token to blob storage.
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
 try:
-    urllib.request.build_opener(NoRedirect).open(request("/actions/artifacts/12266644506/zip"), timeout=60)
+    urllib.request.build_opener(NoRedirect).open(request("/actions/artifacts/12294556432/zip"), timeout=60)
     raise SystemExit("HARNESS_ERROR: expected artifact API redirect")
 except urllib.error.HTTPError as response:
     require(response.code == 302, "artifact API download status")
@@ -135,9 +146,9 @@ with urllib.request.urlopen(location, timeout=120) as response, archive.open("xb
     count = 0
     while block := response.read(1024 * 1024):
         count += len(block)
-        require(count <= 281290282, "artifact archive exceeds bound")
+        require(count <= 281297384, "artifact archive exceeds bound")
         stream.write(block)
-require(count == 281290282 and sha(archive) == outer, "outer artifact SHA/size")
+require(count == 281297384 and sha(archive) == outer, "outer artifact SHA/size")
 bundle = root / "bundle"
 bundle.mkdir()
 with zipfile.ZipFile(archive) as zipped:
@@ -297,7 +308,7 @@ for i, path in enumerate(providers):
     assert audit.returncode == 0
 env = dict(os.environ, LD_DEBUG="bindings", LD_DEBUG_OUTPUT=str(out / "profile-bindings"))
 record = {"argv": argv, "cwd": cwd, "timeout": 120, "image_and_providers_before": before,
-          "boundary": "fresh unchanged-830b rebuild, NOT original CI65 executable; LD_DEBUG observer only"}
+          "boundary": "fresh unchanged CI66 be680 merge-context rebuild, NOT original CI66 executable; LD_DEBUG observer only"}
 with (out / "profile-observer.log").open("wb") as log:
     process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
                                start_new_session=True)

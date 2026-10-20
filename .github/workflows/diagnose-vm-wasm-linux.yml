@@ -1,4 +1,4 @@
-name: Diagnose pinned Linux WAMR baseline
+name: Diagnose pinned Linux WAMR postfix
 
 on:
   push:
@@ -39,10 +39,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Read exact CI65 baseline and its pinned vendors
+      - name: Read actual CI66 merge-context source and its pinned vendors
         uses: actions/checkout@v4
         with:
-          ref: 830b4cad6bf00dde0519cb7cd33d231a40bbeb43
+          ref: be680e122ed3f8aa2f304ad3c3f0fd9f153748c4
           path: baseline-source
           submodules: recursive
           persist-credentials: false
@@ -63,15 +63,15 @@ jobs:
           GITHUB_WORKSPACE="$DIAG_SOURCE" bash "$DIAG_SOURCE/.github/scripts/setup-vm-wasm-toolchain.sh"
           "$DIAG_ROOT/evidence/toolchain" consume-linux
           "$DIAG_ROOT/bundle" "$DIAG_ROOT/llvm"
-          425f4cd6173b6130425419d0e608f6551c0fb4322a076b7618f850228438c9c3
-          cbd0880dd7325bae781da9da1ae851d7f7c42aa36d11fb28506b1f86f4d48583
+          3e979ff1d59538a0c2c1bcd90261ba418fd3182f520e3d028b072f6e933b673d
+          f1d097b804574c48e35b0c6bec99321e416b0fda5e92582afe9efa9236060143
 
       - name: Require actual libc++220108 headers
         run: >-
           python3 "$DIAG_SOURCE/.github/scripts/check-vm-wasm-toolchain.py"
           headers "$DIAG_ROOT/evidence/toolchain"
 
-      - name: Normal Linux dependencies (record actual packages, not CI65 equivalence)
+      - name: Normal Linux dependencies (record actual packages, not CI66 equivalence)
         run: bash .github/scripts/diagnose-vm-wasm-linux.sh dependencies
 
       - name: Activate the existing qualified CMake3.31.6 after Brew
@@ -79,7 +79,7 @@ jobs:
           bash "$DIAG_SOURCE/.github/scripts/setup-vm-wasm-cmake.sh"
           "$DIAG_ROOT/evidence/toolchain/cmake"
 
-      - name: Configure unchanged CI65 JIT/AOT profile
+      - name: Configure unchanged CI66 JIT/AOT profile
         run: bash .github/scripts/diagnose-vm-wasm-linux.sh configure
 
       - name: Build only Forge, helper, public profile and normal dev install
@@ -101,7 +101,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-ci65-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          name: linux-ci66-postfix-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.DIAG_ROOT }}/upload/
           include-hidden-files: true
           if-no-files-found: error
