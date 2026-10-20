@@ -143,17 +143,18 @@ boost::asio::awaitable<void> peer_session::paired(std::shared_ptr<peer_session> 
 }
 
 boost::asio::awaitable<void> peer_session::watch_availability(std::shared_ptr<peer_session> self) {
+   std::stop_callback cancel{self->_scope->stop.get_token(), [self] { self->_availability_stop.request_stop(); }};
    auto generation = self->_owner->store->snapshot().generation;
    self->_owner->changed.notify();
    try {
-      while (!self->_scope->stop.stop_requested()) {
-         const auto state = co_await self->_owner->store->async_wait_change(generation, self->_scope->stop.get_token());
+      while (!self->_availability_stop.stop_requested()) {
+         const auto state = co_await self->_owner->store->async_wait_change(generation, self->_availability_stop.get_token());
          generation = state.generation;
          // Coalesce in the existing writer; no payload queue or topology worker.
          self->_owner->changed.notify();
       }
    } catch (...) {
-      if (self->_scope->stop.stop_requested()) co_return;
+      if (self->_availability_stop.stop_requested()) co_return;
       self->interrupt(); throw;
    }
 }
@@ -222,7 +223,14 @@ boost::asio::awaitable<void> peer_session::serve_read(std::shared_ptr<peer_sessi
          self->_changed.notify();
          self->_owner->changed.notify();
       }
-      self->interrupt();
+      {
+         auto lock = std::scoped_lock{self->_mutex};
+         if (!self->_hello) {
+            FORGE_THROW_EXCEPTION(protocol::exceptions::invalid_message, "Swarm handshake missing at input EOF");
+         }
+         self->_input_closed = true;
+      }
+      self->_changed.notify(); self->_owner->changed.notify();
    } catch (...) { self->interrupt(); throw; }
 }
 
@@ -244,6 +252,13 @@ boost::asio::awaitable<void> peer_session::serve_write(std::shared_ptr<peer_sess
       while (true) {
          const auto epoch = self->_owner->changed.epoch();
          self->_scope->check();
+         bool drained;
+         { auto lock = std::scoped_lock{self->_mutex}; drained = self->_input_closed && self->_commands.empty(); }
+         if (drained) {
+            co_await self->_server->async_close();
+            self->_availability_stop.request_stop();
+            co_return;
+         }
          const auto allowed = self->_owner->upload_allowed(self->_number);
          if (self->_choked == allowed) {
             self->_choked = !allowed;

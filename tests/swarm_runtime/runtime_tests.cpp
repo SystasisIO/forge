@@ -1,12 +1,21 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/test/unit_test.hpp>
+#include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <exception>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <new>
+#include <set>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -123,6 +132,198 @@ class aliases final : public swarm::capabilities {
       std::stop_token, std::chrono::steady_clock::time_point) override { co_return nullptr; }
 };
 
+// A local binding fixture: the bridge, not request data, supplies trusted caller
+// context. Production transport bindings remain coordinator-owned integration.
+struct link_observation {
+   std::atomic_uint connected{0};
+   std::atomic_uint closed{0};
+   std::atomic_uint canceled{0};
+   std::atomic_uint succeeded{0};
+   std::atomic_uint failed{0};
+   std::atomic_uint destroyed_open{0};
+};
+
+class trusted_peer_bridge final : public peer {
+ public:
+   trusted_peer_bridge(std::shared_ptr<peer> implementation, std::shared_ptr<link_observation> observation)
+      : implementation{std::move(implementation)}, observation{std::move(observation)} {}
+   boost::asio::awaitable<void> metadata(forge::swarm::protocol::metadata_request request, caller,
+      api::stream_writer<forge::swarm::protocol::metadata_chunk> output) override {
+      co_await implementation->metadata(std::move(request), trusted(), std::move(output));
+   }
+   boost::asio::awaitable<void> exchange(forge::swarm::protocol::exchange_request request, caller,
+      api::duplex_stream<forge::swarm::protocol::peer_message, forge::swarm::protocol::peer_message> stream) override {
+      ++active;
+      try { co_await implementation->exchange(std::move(request), trusted(), std::move(stream)); ++observation->succeeded; }
+      catch (...) { ++observation->failed; --active; changed.notify(); throw; }
+      --active; changed.notify();
+   }
+   std::atomic_uint active{0};
+   forge::asio::notification changed;
+ private:
+   std::shared_ptr<peer> implementation;
+   std::shared_ptr<link_observation> observation;
+};
+
+class local_connection final : public swarm::capabilities::connection {
+ public:
+   local_connection(std::shared_ptr<peer> peer, std::shared_ptr<link_observation> observation, bool fail_identity)
+      : bridge{std::make_shared<trusted_peer_bridge>(std::move(peer), observation)},
+        observation{std::move(observation)}, fail_identity{fail_identity} { ++this->observation->connected; }
+   ~local_connection() override { if (!closed) ++observation->destroyed_open; }
+   api::handle<peer> remote() const override { return api::handle<peer>{bridge}; }
+   caller remote_identity() const override { if (fail_identity) throw std::bad_alloc{}; return principal(); }
+   void cancel() noexcept override { ++observation->canceled; }
+   boost::asio::awaitable<void> async_close() override {
+      while (true) {
+         const auto epoch = bridge->changed.epoch();
+         if (!bridge->active) break;
+         co_await bridge->changed.async_wait(epoch);
+      }
+      if (!closed) { closed = true; ++observation->closed; }
+   }
+ private:
+   std::shared_ptr<trusted_peer_bridge> bridge;
+   std::shared_ptr<link_observation> observation;
+   bool fail_identity;
+   bool closed = false;
+};
+
+class local_network final : public swarm::capabilities {
+ public:
+   explicit local_network(std::shared_ptr<peer> implementation) : implementation{std::move(implementation)} {}
+   std::shared_ptr<link_observation> observation = std::make_shared<link_observation>();
+   std::size_t routes = 1;
+   bool fail_identity = false;
+   boost::asio::awaitable<std::vector<std::string>> async_lookup(core::swarm_id, std::string,
+      std::size_t limit, std::stop_token, std::chrono::steady_clock::time_point) override {
+      auto result = std::vector<std::string>{};
+      for (auto index = std::size_t{}; index < std::min(routes, limit); ++index) result.push_back(std::to_string(index));
+      co_return result;
+   }
+   boost::asio::awaitable<std::unique_ptr<connection>> async_connect(std::string, std::stop_token,
+      std::chrono::steady_clock::time_point) override {
+      co_return std::make_unique<local_connection>(implementation, observation, fail_identity);
+   }
+   boost::asio::awaitable<std::unique_ptr<registration>> async_register(core::swarm_id, std::string,
+      std::stop_token, std::chrono::steady_clock::time_point) override { co_return nullptr; }
+ private:
+   std::shared_ptr<peer> implementation;
+};
+
+class observed_store final : public core::store {
+ public:
+   class observed_writer final : public core::store::writer {
+    public:
+      observed_writer(observed_store& owner, std::unique_ptr<core::store::writer> writer)
+         : owner{owner}, writer{std::move(writer)} { ++owner.writers; }
+      ~observed_writer() override { --owner.writers; }
+      core::piece_id piece() const noexcept override { return writer->piece(); }
+      boost::asio::awaitable<void> async_write(std::uint32_t offset, std::vector<std::uint8_t> bytes, std::stop_token stop) override {
+         ++owner.writes;
+         if (++calls == 2 && owner.fail_second_write) {
+            ++owner.write_failures;
+            throw std::system_error{ENOSPC, std::generic_category(), "injected permanent second-block failure"};
+         }
+         co_await writer->async_write(offset, std::move(bytes), stop);
+      }
+      boost::asio::awaitable<void> async_commit(std::stop_token stop) override { co_await writer->async_commit(stop); }
+      boost::asio::awaitable<void> async_discard() override { ++owner.discards; co_await writer->async_discard(); }
+    private:
+      observed_store& owner;
+      std::unique_ptr<core::store::writer> writer;
+      unsigned calls = 0;
+   };
+
+   explicit observed_store(std::shared_ptr<core::store> storage) : storage{std::move(storage)} {}
+   core::availability snapshot() const override { return storage->snapshot(); }
+   std::unique_ptr<core::store::writer> begin(core::piece_id piece) override {
+      return std::make_unique<observed_writer>(*this, storage->begin(piece));
+   }
+   void discard(core::piece_id piece) override { storage->discard(piece); }
+   core::store::lease acquire_lease() override { return storage->acquire_lease(); }
+   boost::asio::awaitable<std::vector<std::uint8_t>> async_read(
+      core::piece_id piece, std::uint32_t offset, std::uint32_t length, std::stop_token stop) override {
+      ++reads; changed.notify();
+      if (hold_reads) co_await release_reads.async_wait(0, stop);
+      co_return co_await storage->async_read(piece, offset, length, stop);
+   }
+   boost::asio::awaitable<core::availability> async_wait_change(std::uint64_t generation, std::stop_token stop) override {
+      co_return co_await storage->async_wait_change(generation, stop);
+   }
+   boost::asio::awaitable<core::resume_state> async_checkpoint(std::stop_token stop) override {
+      co_return co_await storage->async_checkpoint(stop);
+   }
+   boost::asio::awaitable<void> async_publish(std::stop_token stop) override { co_await storage->async_publish(stop); }
+   void request_stop() noexcept override { ++stops; storage->request_stop(); }
+   boost::asio::awaitable<void> async_close() override { co_await storage->async_close(); }
+   std::atomic_bool hold_reads{false};
+   std::atomic_bool fail_second_write{false};
+   std::atomic_uint reads{0};
+   std::atomic_uint writes{0};
+   std::atomic_uint writers{0};
+   std::atomic_uint write_failures{0};
+   std::atomic_uint discards{0};
+   std::atomic_uint stops{0};
+   forge::asio::notification changed;
+   forge::asio::notification release_reads;
+ private:
+   std::shared_ptr<core::store> storage;
+};
+
+class observed_registration final : public swarm::capabilities::registration {
+ public:
+   explicit observed_registration(std::shared_ptr<link_observation> observation) : observation{std::move(observation)} {
+      ++this->observation->connected;
+   }
+   ~observed_registration() override { if (!closed) ++observation->destroyed_open; }
+   void cancel() noexcept override { ++observation->canceled; }
+   boost::asio::awaitable<void> async_close() override {
+      co_await boost::asio::post(co_await boost::asio::this_coro::executor, boost::asio::use_awaitable);
+      if (!closed) { closed = true; ++observation->closed; }
+   }
+ private:
+   std::shared_ptr<link_observation> observation;
+   bool closed = false;
+};
+
+class registration_network final : public swarm::capabilities {
+ public:
+   std::shared_ptr<link_observation> observation = std::make_shared<link_observation>();
+   std::function<void()> after_start;
+   boost::asio::awaitable<std::vector<std::string>> async_lookup(core::swarm_id, std::string,
+      std::size_t, std::stop_token, std::chrono::steady_clock::time_point) override { co_return std::vector<std::string>{}; }
+   boost::asio::awaitable<std::unique_ptr<connection>> async_connect(std::string, std::stop_token,
+      std::chrono::steady_clock::time_point) override { co_return nullptr; }
+   boost::asio::awaitable<std::unique_ptr<registration>> async_register(core::swarm_id, std::string,
+      std::stop_token, std::chrono::steady_clock::time_point) override {
+      auto resource = std::make_unique<observed_registration>(observation);
+      after_start();
+      co_return std::move(resource);
+   }
+};
+
+class selection_peer final : public peer {
+ public:
+   std::atomic_uint first{std::numeric_limits<unsigned>::max()};
+   boost::asio::awaitable<void> metadata(forge::swarm::protocol::metadata_request, caller,
+      api::stream_writer<forge::swarm::protocol::metadata_chunk>) override { co_return; }
+   boost::asio::awaitable<void> exchange(forge::swarm::protocol::exchange_request request, caller,
+      api::duplex_stream<forge::swarm::protocol::peer_message, forge::swarm::protocol::peer_message> stream) override {
+      static_cast<void>(co_await stream.async_read());
+      co_await stream.async_write({forge::swarm::protocol::handshake{1, request.swarm, request.realm, 0}});
+      co_await stream.async_write({forge::swarm::protocol::inventory{{0xff, 0xff}}});
+      co_await stream.async_write({forge::swarm::protocol::choke{false}});
+      while (auto message = co_await stream.async_read()) {
+         if (auto* block = std::get_if<forge::swarm::protocol::request>(&message->body)) {
+            first = block->piece.index;
+            co_await stream.async_close();
+            co_return;
+         }
+      }
+   }
+};
+
 BOOST_AUTO_TEST_CASE(local_generated_calls_require_trusted_caller_and_explicit_policy) {
    auto fixture = swarm_test::fixture{};
    const auto manifest = swarm_test::describe({swarm_test::data(42)});
@@ -192,7 +393,8 @@ BOOST_AUTO_TEST_CASE(canceling_pending_download_does_not_wait_for_scheduler_slot
       forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
    auto runtime = forge::asio::runtime{};
    auto tasks = forge::asio::task::scheduler{runtime, {.max_awaitable_tasks = 1, .max_pending_tasks = 8}};
-   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>()};
+   auto config = swarm::engine::options{}; config.global.items = 3; config.operations = 1;
+   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), nullptr, config};
    auto release = forge::asio::notification{};
    auto body = [&]() -> boost::asio::awaitable<void> {
       auto blocker = tasks.submit(forge::asio::task::awaitable{
@@ -206,6 +408,10 @@ BOOST_AUTO_TEST_CASE(canceling_pending_download_does_not_wait_for_scheduler_slot
       co_await download.async_close();
       BOOST_CHECK(download.inspect().closed);
       BOOST_CHECK(!blocker.cancel_requested());
+      // All three slots (metadata, picker, orchestration) must be reusable even
+      // when the canceled scheduler callable is still retained internally.
+      auto next = co_await engine.async_download(manifest, store);
+      co_await next.async_close();
       release.notify(); co_await blocker.wait();
       co_await engine.async_close(); co_await store->async_close(); co_await tasks.shutdown();
       BOOST_CHECK(wait_done->load());
@@ -498,6 +704,353 @@ BOOST_AUTO_TEST_CASE(connected_peer_sees_only_verified_store_changes_without_rec
       co_await share.async_close(); co_await engine->async_close(); co_await store->async_close(); co_await tasks.shutdown();
    };
    forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(verified_resume_and_empty_content_publish_without_network) {
+   for (const auto empty : {false, true}) {
+      auto fixture = swarm_test::fixture{};
+      const auto bytes = swarm_test::data(empty ? 0 : 32);
+      const auto manifest = swarm_test::describe({bytes});
+      auto store = std::shared_ptr<core::store>{swarm_test::run(
+         forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+      swarm_test::fill(*store, manifest, {bytes});
+      auto runtime = forge::asio::runtime{};
+      auto tasks = forge::asio::task::scheduler{runtime};
+      auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>()};
+      auto body = [&]() -> boost::asio::awaitable<void> {
+         auto download = co_await engine.async_download(manifest, store);
+         auto failure = std::exception_ptr{};
+         try { co_await download.async_wait(); } catch (...) { failure = std::current_exception(); }
+         BOOST_CHECK(!failure);
+         BOOST_CHECK(download.inspect().complete);
+         BOOST_CHECK(store->snapshot().published);
+         if (!failure) BOOST_CHECK(swarm_test::read_file(fixture.root / "result") == bytes);
+         co_await download.async_close(); co_await engine.async_close();
+         co_await store->async_close(); co_await tasks.shutdown();
+      };
+      forge::asio::blocking::run(runtime, body());
+   }
+}
+
+BOOST_AUTO_TEST_CASE(rejected_scheduler_submission_rolls_back_operation_capacity) {
+   auto fixture = swarm_test::fixture{};
+   const auto manifest = swarm_test::describe({swarm_test::data(32)});
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime, {.max_awaitable_tasks = 1, .max_pending_tasks = 1}};
+   auto config = swarm::engine::options{}; config.global.items = 3; config.operations = 1;
+   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), nullptr, config};
+   auto entered = false;
+   auto changed = forge::asio::notification{};
+   auto release = forge::asio::notification{};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto blocker = tasks.submit(forge::asio::task::awaitable{
+         .name = "unrelated-running-worker", .work = [&](forge::asio::task::context&) -> boost::asio::awaitable<void> {
+            entered = true; changed.notify(); co_await release.async_wait(0);
+         }});
+      while (true) {
+         const auto epoch = changed.epoch();
+         if (entered) break;
+         co_await changed.async_wait(epoch);
+      }
+      auto pending = tasks.submit(forge::asio::task::awaitable{
+         .name = "unrelated-pending-worker", .work = [](forge::asio::task::context&) -> boost::asio::awaitable<void> { co_return; }});
+      BOOST_CHECK(pending.accepted());
+      auto rejected = false;
+      try { auto download = co_await engine.async_download(manifest, store); }
+      catch (const api::exceptions::resource_exhausted&) { rejected = true; }
+      BOOST_CHECK(rejected);
+      pending.cancel(); try { co_await pending.wait(); } catch (...) {}
+      auto download = co_await engine.async_download(manifest, store);
+      co_await download.async_close();
+      BOOST_CHECK(download.inspect().closed);
+      BOOST_CHECK(!blocker.cancel_requested());
+      release.notify(); co_await blocker.wait();
+      co_await engine.async_close(); co_await store->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(published_success_stays_success_when_first_wait_is_after_total_deadline) {
+   auto fixture = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(32);
+   const auto manifest = swarm_test::describe({bytes});
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   swarm_test::fill(*store, manifest, {bytes});
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>()};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      const auto deadline = std::chrono::steady_clock::now() + 1s;
+      auto download = co_await engine.async_download(manifest, store, {}, {}, deadline);
+      while (true) {
+         const auto state = store->snapshot();
+         if (state.published) break;
+         static_cast<void>(co_await store->async_wait_change(state.generation));
+      }
+      auto clock = forge::asio::notification{};
+      co_await clock.async_wait_until(0, deadline + 10ms);
+      auto failure = std::exception_ptr{};
+      try { co_await download.async_wait(); } catch (...) { failure = std::current_exception(); }
+      BOOST_CHECK(!failure);
+      BOOST_CHECK(download.inspect().complete);
+      co_await download.async_close();
+      co_await download.async_wait();
+      co_await engine.async_close(); co_await store->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(four_io_workers_share_picker_and_finish_streams_cleanly) {
+   auto source = swarm_test::fixture{};
+   auto target = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(128U * core::block_size + 31);
+   const auto manifest = swarm_test::describe({bytes});
+   auto seed = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(source.options(manifest)))};
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(target.options(manifest)))};
+   swarm_test::fill(*seed, manifest, {bytes});
+   auto runtime = forge::asio::runtime{{.worker_threads = 4}};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto config = swarm::engine::options{};
+   config.peers = 2; config.per_peer.items = 64; config.per_operation.items = 64;
+   config.upload.slots = 2; config.upload.optimistic = false; config.upload_round = 1ms;
+   auto server = std::make_shared<swarm::engine>(tasks, source.cpu.get_executor(),
+      std::make_shared<swarm::free_admission>(), nullptr, config);
+   auto network = std::make_shared<local_network>(server); network->routes = 2;
+   auto client = swarm::engine{tasks, target.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto share = co_await server->async_share(manifest, seed);
+      auto download = co_await client.async_download(manifest, store, {}, {}, std::chrono::steady_clock::now() + 10s);
+      auto failure = std::exception_ptr{};
+      try { co_await download.async_wait(); } catch (...) { failure = std::current_exception(); }
+      BOOST_CHECK(!failure);
+      BOOST_CHECK(download.inspect().complete);
+      BOOST_CHECK_EQUAL(download.inspect().traffic.verified, bytes.size());
+      BOOST_CHECK(store->snapshot().published);
+      if (!failure) BOOST_CHECK(swarm_test::read_file(target.root / "result") == bytes);
+      co_await download.async_close(); co_await share.async_close();
+      BOOST_CHECK_EQUAL(network->observation->connected.load(), 2U);
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 2U);
+      BOOST_CHECK_EQUAL(network->observation->succeeded.load(), 2U);
+      BOOST_CHECK_EQUAL(network->observation->failed.load(), 0U);
+      BOOST_CHECK_EQUAL(network->observation->canceled.load(), 0U);
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await client.async_close(); co_await server->async_close();
+      co_await store->async_close(); co_await seed->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(input_half_close_drains_delayed_block_and_successful_terminal) {
+   auto fixture = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(32);
+   const auto manifest = swarm_test::describe({bytes});
+   const auto id = core::calculate_swarm_id(manifest);
+   auto inner = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   swarm_test::fill(*inner, manifest, {bytes});
+   auto store = std::make_shared<observed_store>(inner); store->hold_reads = true;
+   auto policy = std::make_shared<selected_policy>();
+   policy->grant = std::make_shared<swarm::quota>(swarm::quota::options{
+      .content = id, .requester = principal(), .bytes = bytes.size()});
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto config = swarm::engine::options{}; config.upload_round = 1ms;
+   auto server = std::make_shared<swarm::engine>(tasks, fixture.cpu.get_executor(), policy, nullptr, config);
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto share = co_await server->async_share(manifest, store);
+      auto handle = api::handle<peer>{server};
+      const auto deadline = std::chrono::steady_clock::now() + 3s;
+      auto call = co_await handle.async_open<&peer::exchange>(api::call_options{
+         .max_item_bytes = 65536, .max_buffered_items = 1, .max_buffered_bytes = 65536, .deadline = deadline},
+         forge::swarm::protocol::exchange_request{id, {}}, trusted());
+      auto failure = std::exception_ptr{};
+      auto blocks = 0U;
+      auto eof = false;
+      try {
+         co_await call.async_write({forge::swarm::protocol::handshake{1, id, {}, 0}});
+         co_await call.async_write({forge::swarm::protocol::interest{true}});
+         while (auto message = co_await call.async_read()) {
+            if (const auto* choke = std::get_if<forge::swarm::protocol::choke>(&message->body); choke && !choke->choked) break;
+         }
+         co_await call.async_write({forge::swarm::protocol::request{1, {0, 0}, 0, 32}});
+         while (true) {
+            const auto epoch = store->changed.epoch();
+            if (store->reads) break;
+            co_await store->changed.async_wait_until(epoch, deadline);
+         }
+         co_await call.async_close();
+         BOOST_CHECK_EQUAL(policy->grant->inspect().held, bytes.size());
+         store->release_reads.notify();
+         while (auto message = co_await call.async_read()) {
+            if (const auto* block = std::get_if<forge::swarm::protocol::block>(&message->body)) {
+               ++blocks; BOOST_CHECK(block->data == bytes);
+            }
+         }
+         eof = true;
+         co_await call.async_finish();
+      } catch (...) { failure = std::current_exception(); call.cancel(); }
+      store->release_reads.notify();
+      try { co_await call.async_finish(); } catch (...) { if (!failure) failure = std::current_exception(); }
+      co_await share.async_close();
+      BOOST_CHECK(!failure); BOOST_CHECK(eof); BOOST_CHECK_EQUAL(blocks, 1U);
+      const auto accounting = policy->grant->inspect();
+      BOOST_CHECK_EQUAL(accounting.traffic.queued, bytes.size());
+      BOOST_CHECK_EQUAL(accounting.traffic.uncertain, 0U);
+      BOOST_CHECK_EQUAL(accounting.traffic.sent, 0U);
+      BOOST_CHECK_EQUAL(accounting.held, 0U);
+      BOOST_CHECK_EQUAL(store->stops.load(), 0U);
+      co_await server->async_close(); co_await inner->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(second_write_storage_failure_is_terminal_and_releases_resources) {
+   auto source = swarm_test::fixture{};
+   auto target = swarm_test::fixture{};
+   const auto bytes = swarm_test::data(2U * core::block_size);
+   const auto manifest = swarm_test::describe({bytes});
+   auto seed = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(source.options(manifest)))};
+   auto inner = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(target.options(manifest)))};
+   swarm_test::fill(*seed, manifest, {bytes});
+   auto store = std::make_shared<observed_store>(inner); store->fail_second_write = true;
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto config = swarm::engine::options{}; config.peers = 1; config.attempts = 3; config.operations = 1;
+   config.upload_round = 1ms;
+   auto server = std::make_shared<swarm::engine>(tasks, source.cpu.get_executor(),
+      std::make_shared<swarm::free_admission>(), nullptr, config);
+   auto network = std::make_shared<local_network>(server);
+   auto client = swarm::engine{tasks, target.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto share = co_await server->async_share(manifest, seed);
+      auto download = co_await client.async_download(manifest, store);
+      auto enospc = false;
+      try { co_await download.async_wait(); }
+      catch (const std::system_error& error) { enospc = error.code() == std::error_code{ENOSPC, std::generic_category()}; }
+      catch (...) {}
+      BOOST_CHECK(enospc);
+      co_await download.async_close();
+      BOOST_CHECK_EQUAL(store->writes.load(), 2U);
+      BOOST_CHECK_EQUAL(store->write_failures.load(), 1U);
+      BOOST_CHECK_EQUAL(store->writers.load(), 0U);
+      BOOST_CHECK_GE(store->discards.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->connected.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 1U);
+      BOOST_CHECK_EQUAL(download.inspect().active_calls, 0U);
+      BOOST_CHECK(!inner->snapshot().published);
+      BOOST_CHECK_EQUAL(store->stops.load(), 0U);
+      store->fail_second_write = false;
+      auto retry = co_await client.async_download(manifest, store, {}, {}, std::chrono::steady_clock::now() + 3s);
+      auto failure = std::exception_ptr{};
+      try { co_await retry.async_wait(); } catch (...) { failure = std::current_exception(); }
+      BOOST_CHECK(!failure); BOOST_CHECK(retry.inspect().complete);
+      if (!failure) BOOST_CHECK(swarm_test::read_file(target.root / "result") == bytes);
+      co_await retry.async_close(); co_await share.async_close();
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await client.async_close(); co_await server->async_close();
+      co_await inner->async_close(); co_await seed->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(post_connect_failure_drains_unique_capability_before_destruction) {
+   auto fixture = swarm_test::fixture{};
+   const auto manifest = swarm_test::describe({swarm_test::data(32)});
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto network = std::make_shared<local_network>(std::make_shared<stalled_peer>()); network->fail_identity = true;
+   auto config = swarm::engine::options{}; config.attempts = 1;
+   auto client = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto download = co_await client.async_download(manifest, store);
+      auto failed = false;
+      try { co_await download.async_wait(); } catch (...) { failed = true; }
+      BOOST_CHECK(failed);
+      co_await download.async_close();
+      BOOST_CHECK_EQUAL(network->observation->connected.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await client.async_close(); co_await store->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(registration_cancellation_drains_unique_capability) {
+   auto fixture = swarm_test::fixture{};
+   const auto manifest = swarm_test::describe({swarm_test::data(32)});
+   auto store = std::shared_ptr<core::store>{swarm_test::run(
+      forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+   auto runtime = forge::asio::runtime{};
+   auto tasks = forge::asio::task::scheduler{runtime};
+   auto network = std::make_shared<registration_network>();
+   auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network};
+   network->after_start = [&engine] { engine.cancel(); };
+   auto body = [&]() -> boost::asio::awaitable<void> {
+      auto failed = false;
+      try { auto share = co_await engine.async_share(manifest, store); } catch (...) { failed = true; }
+      BOOST_CHECK(failed);
+      co_await engine.async_close();
+      BOOST_CHECK_EQUAL(network->observation->connected.load(), 1U);
+      BOOST_CHECK_EQUAL(network->observation->closed.load(), 1U);
+      BOOST_CHECK_GT(network->observation->canceled.load(), 0U);
+      BOOST_CHECK_EQUAL(network->observation->destroyed_open.load(), 0U);
+      co_await store->async_close(); co_await tasks.shutdown();
+   };
+   forge::asio::blocking::run(runtime, body());
+}
+
+BOOST_AUTO_TEST_CASE(selection_seed_reproduces_ties_and_diversifies_fresh_engines) {
+   const auto manifest = swarm_test::describe({swarm_test::data(16U * core::block_size)}, core::block_size);
+   auto choices = std::vector<unsigned>{};
+   for (const auto seed : {1U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U}) {
+      auto fixture = swarm_test::fixture{};
+      auto store = std::shared_ptr<core::store>{swarm_test::run(
+         forge::swarm::storage::file_store::async_open(fixture.options(manifest)))};
+      auto runtime = forge::asio::runtime{};
+      auto tasks = forge::asio::task::scheduler{runtime};
+      auto remote = std::make_shared<selection_peer>();
+      auto network = std::make_shared<local_network>(remote);
+      auto config = swarm::engine::options{}; config.selection_seed = seed; config.peers = 1; config.attempts = 1;
+      auto engine = swarm::engine{tasks, fixture.cpu.get_executor(), std::make_shared<swarm::free_admission>(), network, config};
+      auto body = [&]() -> boost::asio::awaitable<void> {
+         auto download = co_await engine.async_download(manifest, store, {}, {}, std::chrono::steady_clock::now() + 3s);
+         try { co_await download.async_wait(); } catch (...) {}
+         choices.push_back(remote->first.load());
+         BOOST_CHECK_LT(choices.back(), 16U);
+         co_await download.async_close(); co_await engine.async_close();
+         co_await store->async_close(); co_await tasks.shutdown();
+      };
+      forge::asio::blocking::run(runtime, body());
+      const auto all = std::array<std::uint8_t, 2>{0xff, 0xff};
+      const auto common = std::array<std::uint8_t, 2>{0xfe, 0xff};
+      const auto now = core::transfer_time{1ms};
+      auto rare = core::transfer{manifest, {}, seed};
+      const auto peer = rare.add_peer(all);
+      static_cast<void>(rare.add_peer(common));
+      static_cast<void>(rare.set_choked(peer, false, now));
+      const auto rare_pick = rare.pick(peer, now, 1);
+      BOOST_REQUIRE_EQUAL(rare_pick.size(), 1U);
+      BOOST_CHECK_EQUAL(rare_pick.front().piece.index, 0U);
+      auto prioritized = core::transfer{manifest, {}, seed};
+      const auto selected = prioritized.add_peer(all);
+      static_cast<void>(prioritized.add_peer(common));
+      prioritized.set_priority({0, 1}, 2);
+      static_cast<void>(prioritized.set_choked(selected, false, now));
+      const auto priority_pick = prioritized.pick(selected, now, 1);
+      BOOST_REQUIRE_EQUAL(priority_pick.size(), 1U);
+      BOOST_CHECK_EQUAL(priority_pick.front().piece.index, 1U);
+   }
+   BOOST_CHECK_EQUAL(choices[0], choices[1]);
+   BOOST_CHECK_GT((std::set<unsigned>{choices.begin(), choices.end()}.size()), 1U);
 }
 
 } // namespace runtime_engine_test

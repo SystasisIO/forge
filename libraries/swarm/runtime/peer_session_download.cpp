@@ -44,6 +44,7 @@ boost::asio::awaitable<void> peer_session::connect_owned(std::shared_ptr<peer_se
    const auto owner = self->_owner;
    self->_scope->start();
    std::exception_ptr failure;
+   bool terminal_waited = false;
    try {
       self->_connection = co_await owner->providers->async_connect(std::move(route), self->_scope->stop.get_token(),
          std::chrono::steady_clock::now() + owner->config.callback_timeout);
@@ -55,30 +56,46 @@ boost::asio::awaitable<void> peer_session::connect_owned(std::shared_ptr<peer_se
       self->_scope->check();
       self->_scope->begin_transfer();
       auto remote = self->_connection->remote();
+      auto owned_call = std::make_shared<client_call>();
       auto call = co_await remote.async_open<&api::peer::exchange>(forge::api::core::call_options{
          .max_item_bytes = protocol::max_wire_message_size, .max_buffered_items = 1,
          .max_buffered_bytes = protocol::max_wire_message_size, .deadline = owner->total_deadline},
          protocol::exchange_request{owner->content, owner->realm}, forge::api::auth::authenticated_caller{});
-      self->_call = std::make_shared<client_call>(std::move(call));
+      *owned_call = std::move(call);
+      self->_call = std::move(owned_call);
       // Immutable after publication, and the callback is destroyed BEFORE reset.
-      std::stop_callback cancel{self->_scope->stop.get_token(), [call = self->_call, connection = self->_connection] {
-         call->cancel(); connection->cancel();
+      std::stop_callback cancel{self->_scope->stop.get_token(), [self] {
+         self->_call->cancel(); self->_connection->cancel();
       }};
       co_await paired(self, false);
+      terminal_waited = true;
+      co_await self->_call->async_finish();
    } catch (...) { failure = std::current_exception(); }
-   self->interrupt();
-   if (self->_call) {
+   if (failure) self->interrupt();
+   if (self->_call && !terminal_waited) {
       try { co_await self->_call->async_finish(); } catch (...) { if (!failure) failure = std::current_exception(); }
    }
+   bool cleanup_failed = false;
    if (self->_remote) {
-      auto lock = std::scoped_lock{owner->mutex};
-      static_cast<void>(owner->picker->remove_peer(*self->_remote,
-         std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now())));
-      owner->sessions.erase(*self->_remote);
+      try {
+         auto lock = std::scoped_lock{owner->mutex};
+         static_cast<void>(owner->picker->remove_peer(*self->_remote,
+            std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now())));
+         owner->sessions.erase(*self->_remote);
+      } catch (...) {
+         const auto cleanup_failure = std::current_exception();
+         if (!failure) failure = cleanup_failure;
+         { auto lock = std::scoped_lock{owner->mutex};
+           owner->sessions.erase(*self->_remote);
+           if (!owner->cleanup_failure) owner->cleanup_failure = cleanup_failure; }
+         cleanup_failed = true;
+      }
    }
+   if (cleanup_failed) { owner->cancel(); self->interrupt(); }
    self->_requests.clear();
+   self->_commands.clear();
    if (self->_connection) {
-      self->_connection->cancel();
+      if (failure) self->_connection->cancel();
       try { co_await self->_connection->async_close(); } catch (...) { if (!failure) failure = std::current_exception(); }
    }
    self->_call.reset(); self->_connection.reset();
@@ -110,7 +127,6 @@ boost::asio::awaitable<void> peer_session::download_read(std::shared_ptr<peer_se
             }
             self->_hello = true; continue;
          }
-         const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now());
          if (auto* inventory = std::get_if<protocol::inventory>(&message->body)) {
             auto lock = std::scoped_lock{self->_owner->mutex};
             self->_inventory = inventory->pieces;
@@ -132,11 +148,13 @@ boost::asio::awaitable<void> peer_session::download_read(std::shared_ptr<peer_se
             if (!self->_remote) {
                FORGE_THROW_EXCEPTION(protocol::exceptions::invalid_message, "Swarm choke before inventory");
             }
-            auto canceled = self->_owner->picker->set_choked(*self->_remote, choke->choked, now);
+            auto canceled = self->_owner->picker->set_choked(*self->_remote, choke->choked,
+               std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()));
             for (const auto& request : canceled) self->retract(request.id);
          } else if (auto* reject = std::get_if<protocol::reject>(&message->body)) {
             auto lock = std::scoped_lock{self->_owner->mutex};
-            if (self->_remote) static_cast<void>(self->_owner->picker->cancel(*self->_remote, reject->id, now));
+            if (self->_remote) static_cast<void>(self->_owner->picker->cancel(*self->_remote, reject->id,
+               std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now())));
             auto request_lock = std::scoped_lock{self->_mutex};
             self->_requests.erase(reject->id);
          } else if (auto* block = std::get_if<protocol::block>(&message->body)) {
@@ -146,7 +164,8 @@ boost::asio::awaitable<void> peer_session::download_read(std::shared_ptr<peer_se
          }
          self->_changed.notify(); self->_owner->changed.notify();
       }
-      self->interrupt();
+      { auto lock = std::scoped_lock{self->_mutex}; self->_output_closed = true; }
+      self->_owner->changed.notify();
    } catch (...) { self->interrupt(); throw; }
 }
 
@@ -158,6 +177,12 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
       while (true) {
          const auto epoch = self->_owner->changed.epoch();
          self->_scope->check();
+         bool output_closed;
+         { auto lock = std::scoped_lock{self->_mutex}; output_closed = self->_output_closed; }
+         if (output_closed) {
+            co_await self->_call->async_close();
+            co_return;
+         }
          std::optional<core::transfer::request> request;
          std::optional<command> cancel;
          std::shared_ptr<operation_state::piece_work> piece;
@@ -193,7 +218,6 @@ boost::asio::awaitable<void> peer_session::download_write(std::shared_ptr<peer_s
          if (cancel) { co_await self->_call->async_write(std::move(cancel->message)); continue; }
          if (complete) {
             co_await self->_call->async_close();
-            self->interrupt();
             co_return;
          }
          if (request) {
@@ -239,15 +263,29 @@ boost::asio::awaitable<void> peer_session::receive(std::shared_ptr<peer_session>
       }
    }
    std::exception_ptr write_failure;
+   bool doing_storage = false;
+   bool storage_failed = false;
    try {
       self->_scope->check();
+      doing_storage = true;
       if (!request->piece->writer) request->piece->writer = self->_owner->store->begin(block.piece);
       co_await request->piece->writer->async_write(block.offset, std::move(block.data), self->_scope->stop.get_token());
+      doing_storage = false;
       self->_scope->check();
       self->_scope->progress();
       { auto lock = std::scoped_lock{self->_owner->mutex}; ++self->_owner->useful_progress; }
-   } catch (...) { write_failure = std::current_exception(); }
+   } catch (...) {
+      write_failure = std::current_exception();
+      storage_failed = doing_storage && !self->_scope->stop.stop_requested() && !self->_owner->stop.stop_requested();
+   }
    if (write_failure) {
+      if (storage_failed) {
+         { auto lock = std::scoped_lock{self->_owner->mutex};
+           if (!self->_owner->storage_failure) self->_owner->storage_failure = write_failure; }
+         // Preserve the terminal storage error even if rollback itself cannot
+         // allocate. Stop siblings outside the picker lock before discarding.
+         self->_owner->cancel();
+      }
       if (request->piece->writer) {
          try { co_await request->piece->writer->async_discard(); } catch (...) {}
          request->piece->writer.reset();
@@ -268,9 +306,22 @@ boost::asio::awaitable<void> peer_session::receive(std::shared_ptr<peer_session>
    if (verification) {
       bool verified = true;
       std::exception_ptr commit_failure;
-      try { co_await request->piece->writer->async_commit(self->_scope->stop.get_token()); self->_scope->check(); }
+      doing_storage = true;
+      try {
+         co_await request->piece->writer->async_commit(self->_scope->stop.get_token());
+         doing_storage = false;
+         self->_scope->check();
+      }
       catch (const core::exceptions::integrity_failure&) { verified = false; }
-      catch (...) { verified = false; commit_failure = std::current_exception(); }
+      catch (...) {
+         verified = false; commit_failure = std::current_exception();
+         storage_failed = doing_storage && !self->_scope->stop.stop_requested() && !self->_owner->stop.stop_requested();
+      }
+      if (storage_failed) {
+         { auto lock = std::scoped_lock{self->_owner->mutex};
+           if (!self->_owner->storage_failure) self->_owner->storage_failure = commit_failure; }
+         self->_owner->cancel();
+      }
       request->piece->writer.reset();
       {
          auto lock = std::scoped_lock{self->_owner->mutex};

@@ -88,18 +88,18 @@ BOOST_AUTO_TEST_CASE(revocation_blocks_previously_reserved_output_and_notifies) 
    BOOST_CHECK_THROW(reserved.queue(), api::exceptions::invocation_denied);
    reserved.finalize();
    BOOST_CHECK_EQUAL(quota.inspect().available, 64U);
-   BOOST_CHECK_THROW(quota.reserve(1), api::exceptions::invocation_denied);
+   BOOST_CHECK_THROW(static_cast<void>(quota.reserve(1)), api::exceptions::invocation_denied);
 }
 
 BOOST_AUTO_TEST_CASE(expired_grants_and_saturating_rejection_diagnostics) {
    auto options = config(10);
    options.expires = std::chrono::steady_clock::now();
    auto expired = swarm::quota{options};
-   BOOST_CHECK_THROW(expired.reserve(1), api::exceptions::invocation_denied);
+   BOOST_CHECK_THROW(static_cast<void>(expired.reserve(1)), api::exceptions::invocation_denied);
    auto quota = swarm::quota{config(10)};
    const auto maximum = std::numeric_limits<std::uint64_t>::max();
-   BOOST_CHECK_THROW(quota.reserve(maximum), api::exceptions::invocation_denied);
-   BOOST_CHECK_THROW(quota.reserve(maximum), api::exceptions::invocation_denied);
+   BOOST_CHECK_THROW(static_cast<void>(quota.reserve(maximum)), api::exceptions::invocation_denied);
+   BOOST_CHECK_THROW(static_cast<void>(quota.reserve(maximum)), api::exceptions::invocation_denied);
    BOOST_CHECK_EQUAL(quota.inspect().traffic.requested, maximum);
    BOOST_CHECK_EQUAL(quota.inspect().available, 10U);
 }

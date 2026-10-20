@@ -11,7 +11,8 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
       resource_budget::ticket capacity;
       std::uint64_t generation = 0;
    };
-   operation_state(std::uint64_t, core::descriptor, std::shared_ptr<core::store>, std::string,
+   operation_state(std::uint64_t, std::uint64_t picker_seed, std::uint64_t choker_seed,
+      core::descriptor, std::shared_ptr<core::store>, std::string,
       forge::asio::task::scheduler&, forge::asio::compute::executor, std::shared_ptr<admission>,
       std::shared_ptr<capabilities>, engine::options, std::shared_ptr<resource_budget>, bool,
       std::optional<std::chrono::steady_clock::time_point>);
@@ -32,9 +33,12 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    static boost::asio::awaitable<void> wait(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> close(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> run(std::shared_ptr<operation_state>, std::vector<std::string>);
+   static boost::asio::awaitable<bool> publish_if_complete(std::shared_ptr<operation_state>);
    static boost::asio::awaitable<void> watch_deadline(std::shared_ptr<operation_state>);
 
    const std::uint64_t number;
+   const std::uint64_t picker_seed;
+   const std::uint64_t choker_seed;
    core::descriptor manifest;
    core::swarm_id content;
    std::uint32_t metadata_size = 0;
@@ -62,9 +66,13 @@ struct operation_state : std::enable_shared_from_this<operation_state> {
    resource_budget::ticket metadata_capacity;
    resource_budget::ticket algorithm_capacity;
    resource_budget::ticket timer_capacity;
-   std::shared_ptr<capabilities::registration> registration;
+   // Retained after close: cancellation may snapshot its raw address unlocked.
+   std::unique_ptr<capabilities::registration> registration;
    std::shared_ptr<forge::asio::task::handle> worker;
+   std::shared_ptr<resource_budget::ticket> orchestration_capacity;
    std::exception_ptr failure;
+   std::exception_ptr storage_failure;
+   std::exception_ptr cleanup_failure;
    std::exception_ptr timer_failure;
    std::uint64_t peer_sequence = 1;
    std::uint64_t useful_progress = 0;

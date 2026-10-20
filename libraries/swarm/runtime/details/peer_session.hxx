@@ -39,7 +39,7 @@ class peer_session : public std::enable_shared_from_this<peer_session> {
    std::shared_ptr<operation_state> _owner;
    std::uint64_t _number;
    std::shared_ptr<call_scope> _scope;
-   std::shared_ptr<capabilities::connection> _connection;
+   std::unique_ptr<capabilities::connection> _connection;
    std::shared_ptr<client_call> _call;
    std::optional<forge::api::core::duplex_stream<protocol::peer_message, protocol::peer_message>> _server;
    std::mutex _mutex;
@@ -53,6 +53,9 @@ class peer_session : public std::enable_shared_from_this<peer_session> {
    bool _hello = false;
    bool _interested = false;
    bool _choked = true;
+   bool _input_closed = false;
+   bool _output_closed = false;
+   std::stop_source _availability_stop;
    std::uint32_t _integrity_failures = 0;
    forge::asio::notification _changed;
 };

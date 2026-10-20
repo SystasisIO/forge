@@ -22,7 +22,10 @@ destruction; **await `async_close()` before stopping their shared dependencies**
 Destroying a handle cannot synchronously join a coroutine or filesystem syscall.
 
 `download::async_wait()` waits for verified content AND store atomic publication;
-it reports terminal failure. `async_close()` first cancels, then joins tasks,
+it reports terminal failure. Published success is sticky: a later wait does not
+turn success into a timeout after the total deadline. A fully verified resume or
+all-empty content publishes without needing providers or a connection capability.
+`async_close()` first cancels, then joins tasks,
 calls and runtime handlers, closes provider/connection holds, checkpoints and
 releases leases. Checkpoint/registration close failures are reported. Closing
 does not remove files. A canceled operation never stops another operation's store
@@ -92,10 +95,20 @@ queued serving work, not transport receipts. Short state locks never cover
 network, policy, CPU or disk awaits. Bounded children do not occupy additional
 scheduler slots while their parent waits.
 
+Normal input half-close drains accepted serving commands, closes response output
+and returns successful API completion. Download completion half-closes requests,
+drains response EOF and awaits the API terminal result; explicit cancellation is
+separate. Connection and provider-registration capabilities retain their unique
+ownership through awaited close, including initialization failures. Orchestration
+capacity is explicitly released before worker completion, not by eventual task
+callable destruction.
+
 Provider lookup is currently an initial bounded snapshot; reconnect attempts and
 request timeouts are bounded. `options.attempts` counts consecutive reconnect
 rounds without new owned stored-block progress; progress resets that count.
 Integrity failures have a separate per-download bound across all reconnects.
+Local writer creation/write/non-integrity commit failures are terminal after
+rollback and child drain. Discarded partial writes do not reset retries forever.
 `idle_timeout` refreshes only for useful progress, not duplicates/control input;
 owned CPU/disk/gate backpressure pauses this idle clock. Grant expiry and the
 optional final `async_download(..., providers, total_deadline)` argument remain
@@ -108,6 +121,11 @@ tuning, or transport qualification. Large descriptors/pieces may require explici
 resource-limit increases; defaults do not promise every Core maximum concurrently.
 Resume picking trusts only the store's revalidated verified bitmap; unfinished
 staging ranges can be safely fetched again rather than advertised as complete.
+
+Selection uses private Crypto Core randomness by default; RNG errors propagate
+without a constant-seed fallback. `options.selection_seed` provides reproducible
+tests. Operation, picker and choker seeds are derived separately from control IDs;
+seeds change ties, not Core priority/rarity ordering.
 
 The unit tests live in `tests/swarm_runtime`. Separate coordinator-owned integration
 tests exercise concrete TCP/file-store adapters; those dependencies are not part

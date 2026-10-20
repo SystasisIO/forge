@@ -42,6 +42,8 @@ class engine final : public api::peer {
       std::chrono::milliseconds idle_timeout{30000};
       std::chrono::milliseconds callback_timeout{5000};
       std::uint32_t integrity_failures = 3;
+      // Explicit reproducibility for tests; otherwise use private Crypto RNG.
+      std::optional<std::uint64_t> selection_seed;
       core::transfer::config transfer;
       core::choker::config upload;
       std::chrono::milliseconds upload_round{1000};

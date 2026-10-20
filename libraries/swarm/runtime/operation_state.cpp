@@ -35,18 +35,20 @@ import forge.asio.notification;
 
 namespace forge::swarm::runtime::detail {
 
-operation_state::operation_state(std::uint64_t id, core::descriptor value, std::shared_ptr<core::store> storage,
+operation_state::operation_state(std::uint64_t id, std::uint64_t picker_seed, std::uint64_t choker_seed,
+   core::descriptor value, std::shared_ptr<core::store> storage,
    std::string scope, forge::asio::task::scheduler& tasks, forge::asio::compute::executor executor,
    std::shared_ptr<admission> access, std::shared_ptr<capabilities> capabilities, engine::options limits,
    std::shared_ptr<resource_budget> resources, bool downloading,
    std::optional<std::chrono::steady_clock::time_point> deadline)
-   : number{id}, manifest{std::move(value)}, realm{std::move(scope)}, store{std::move(storage)},
+   : number{id}, picker_seed{picker_seed}, choker_seed{choker_seed},
+     manifest{std::move(value)}, realm{std::move(scope)}, store{std::move(storage)},
      scheduler{tasks}, cpu{executor}, policy{std::move(access)}, providers{std::move(capabilities)},
      config{limits}, budget{std::move(resources)}, downloading{downloading}, total_deadline{deadline} {}
 void operation_state::cancel() noexcept {
    std::shared_ptr<forge::asio::task::handle> task;
-   std::shared_ptr<capabilities::registration> advertisement;
-   { auto lock = std::scoped_lock{mutex}; state.canceled = true; task = worker; advertisement = registration; }
+   capabilities::registration* advertisement;
+   { auto lock = std::scoped_lock{mutex}; state.canceled = true; task = worker; advertisement = registration.get(); }
    stop.request_stop();
    if (advertisement) advertisement->cancel();
    if (task) task->cancel();
@@ -161,7 +163,7 @@ boost::asio::awaitable<void> operation_state::wait(std::shared_ptr<operation_sta
       catch (...) { if (!self->failure) self->failure = std::current_exception(); }
       self->joined = true;
    }
-   if (self->failure) self->cancel();
+   if (self->failure && !self->inspect().complete) self->cancel();
    while (true) {
       const auto epoch = self->changed.epoch();
       bool done;
@@ -169,6 +171,7 @@ boost::asio::awaitable<void> operation_state::wait(std::shared_ptr<operation_sta
       if (done) break;
       co_await self->changed.async_wait(epoch);
    }
+   if (self->inspect().complete) co_return;
    if (self->timer_failure) std::rethrow_exception(self->timer_failure);
    if (self->total_deadline && std::chrono::steady_clock::now() >= *self->total_deadline) self->check();
    if (self->failure) std::rethrow_exception(self->failure);
@@ -190,13 +193,15 @@ boost::asio::awaitable<void> operation_state::close(std::shared_ptr<operation_st
    if (self->registration) {
       self->registration->cancel();
       try { co_await self->registration->async_close(); } catch (...) { failure = std::current_exception(); }
-      { auto lock = std::scoped_lock{self->mutex}; self->registration.reset(); }
    }
    if (self->worker && !self->joined) {
       self->worker->cancel();
       try { co_await self->worker->wait(); } catch (...) { /* Expected operation cancellation; async_wait reports worker errors. */ }
       self->joined = true;
    }
+   // A canceled pending task may never enter its callable. Retained callable
+   // captures must not retain capacity past this explicit join/release fence.
+   if (self->orchestration_capacity) self->orchestration_capacity->release();
    while (true) {
       const auto epoch = self->changed.epoch();
       bool timer_done;
@@ -226,6 +231,7 @@ boost::asio::awaitable<void> operation_state::close(std::shared_ptr<operation_st
 }
 boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_state> self, std::vector<std::string> routes) {
    self->check();
+   if (co_await publish_if_complete(self)) co_return;
    if (!self->providers) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm download needs connection capability");
    }
@@ -281,6 +287,12 @@ boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_stat
          co_await wake->async_wait(epoch);
       }
       if (launch_failure) std::rethrow_exception(launch_failure);
+      std::exception_ptr storage_failure;
+      std::exception_ptr cleanup_failure;
+      { auto lock = std::scoped_lock{self->mutex};
+        storage_failure = self->storage_failure; cleanup_failure = self->cleanup_failure; }
+      if (storage_failure) std::rethrow_exception(storage_failure);
+      if (cleanup_failure) std::rethrow_exception(cleanup_failure);
       {
          auto lock = std::scoped_lock{self->mutex};
          if (self->integrity_failures >= self->config.integrity_failures) {
@@ -288,24 +300,30 @@ boost::asio::awaitable<void> operation_state::run(std::shared_ptr<operation_stat
          }
       }
       self->check();
-      bool complete;
-      { auto lock = std::scoped_lock{self->mutex}; complete = self->picker->inspect().complete; }
-      if (complete) {
-         co_await self->store->async_publish(self->stop.get_token());
-         { auto lock = std::scoped_lock{self->mutex}; self->state.complete = true; }
-         self->changed.notify();
-         co_return;
-      }
+      if (co_await publish_if_complete(self)) co_return;
       { auto lock = std::scoped_lock{self->mutex};
         attempts_without_progress = self->useful_progress != progress_before ? 0 : attempts_without_progress + 1; }
    }
    FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm bounded peer attempts exhausted");
 }
+boost::asio::awaitable<bool> operation_state::publish_if_complete(std::shared_ptr<operation_state> self) {
+   { auto lock = std::scoped_lock{self->mutex}; if (!self->picker->inspect().complete) co_return false; }
+   self->check();
+   co_await self->store->async_publish(self->stop.get_token());
+   { auto lock = std::scoped_lock{self->mutex}; self->check(); self->state.complete = true; }
+   self->changed.notify();
+   co_return true;
+}
 boost::asio::awaitable<void> operation_state::watch_deadline(std::shared_ptr<operation_state> self) {
    while (true) {
       const auto epoch = self->changed.epoch();
-      if (self->stop.stop_requested() || self->inspect().complete) co_return;
-      if (std::chrono::steady_clock::now() >= *self->total_deadline) { self->cancel(); co_return; }
+      bool expired;
+      {
+         auto lock = std::scoped_lock{self->mutex};
+         if (self->stop.stop_requested() || self->state.complete) co_return;
+         expired = std::chrono::steady_clock::now() >= *self->total_deadline;
+      }
+      if (expired) { self->cancel(); co_return; }
       co_await self->changed.async_wait_until(epoch, *self->total_deadline);
    }
 }

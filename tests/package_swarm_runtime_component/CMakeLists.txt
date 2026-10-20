@@ -11,4 +11,4 @@ include(${CMAKE_CURRENT_LIST_DIR}/../package_dependency_boundary.cmake)
 forge_package_assert_dependency_boundary(Forge::forge_swarm_runtime
    "Forge::forge_(swarm_(db|storage|conversion)|db|net|app|plugins|chain|api_(p2p|http|quic|websocket|transport|stream))($|_)")
 add_executable(forge_package_swarm_runtime_component main.cpp)
-target_link_libraries(forge_package_swarm_runtime_component PRIVATE Forge::forge_swarm_runtime)
+target_link_libraries(forge_package_swarm_runtime_component PRIVATE Forge::forge_swarm_runtime Forge::forge_asio)

@@ -4,6 +4,7 @@ module;
 #include <boost/asio/co_spawn.hpp>
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -25,6 +26,7 @@ module forge.swarm.runtime.engine;
 import forge.asio.gate;
 import forge.asio.notification;
 import forge.asio.runtime;
+import forge.crypto.core.random;
 
 #include "details/resource_budget.hxx"
 #include "details/operation_state.hxx"
@@ -37,11 +39,25 @@ namespace forge::swarm::runtime {
 engine::impl::impl(forge::asio::task::scheduler& tasks, forge::asio::compute::executor executor,
    std::shared_ptr<admission> access, std::shared_ptr<capabilities> capabilities, options limits)
    : scheduler{tasks}, cpu{executor}, policy{std::move(access)}, providers{std::move(capabilities)}, config{limits},
-     budget{std::make_shared<detail::resource_budget>(config.global, config.per_operation, config.per_peer)} {
+     budget{std::make_shared<detail::resource_budget>(config.global, config.per_operation, config.per_peer)},
+     selection_seed{initial_seed(config.selection_seed)} {
    if (!cpu.valid() || !config.operations || !config.peers || !config.attempts || !config.integrity_failures ||
        config.idle_timeout.count() <= 0 || config.callback_timeout.count() <= 0 || config.upload_round.count() <= 0) {
       FORGE_THROW_EXCEPTION(forge::api::core::exceptions::protocol_error, "Swarm engine needs bounded execution configuration");
    }
+}
+std::uint64_t engine::impl::initial_seed(std::optional<std::uint64_t> configured) {
+   if (configured) return *configured;
+   const auto bytes = forge::crypto::core::random_array<8>();
+   auto seed = std::uint64_t{};
+   for (auto index = 0U; index < bytes.size(); ++index) seed |= std::uint64_t{bytes[index]} << (8U * index);
+   return seed;
+}
+std::uint64_t engine::impl::mix_seed(std::uint64_t value) noexcept {
+   value += 0x9e3779b97f4a7c15ULL;
+   value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+   value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+   return value ^ (value >> 31U);
 }
 void engine::impl::cancel() noexcept {
    { auto lock = std::scoped_lock{mutex}; stopped = true; }
@@ -86,7 +102,10 @@ boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::c
             FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm store already owned by active writer");
          }
       }
-      operation = std::make_shared<detail::operation_state>(self->sequence++, std::move(manifest), std::move(store),
+      const auto operation_seed = mix_seed(self->selection_seed + self->seed_sequence++);
+      operation = std::make_shared<detail::operation_state>(self->sequence++,
+         mix_seed(operation_seed ^ 0x7069636b6572ULL), mix_seed(operation_seed ^ 0x63686f6b6572ULL),
+         std::move(manifest), std::move(store),
          std::move(realm), self->scheduler, self->cpu, self->policy, self->providers, self->config, self->budget, downloading, total_deadline);
       self->operations.push_back(operation);
    }
@@ -128,7 +147,7 @@ boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::c
             context.throw_if_stop_requested();
             core::validate_checkpoint(checkpoint, operation->manifest);
          });
-      operation->upload = std::make_unique<core::choker>(operation->config.upload, operation->number);
+      operation->upload = std::make_unique<core::choker>(operation->config.upload, operation->choker_seed);
       if (downloading) {
          // Only verified storage state resumes picking. Stale unfinished blocks
          // are overwritten through a new writer; never trust remote checkpoint.
@@ -140,22 +159,27 @@ boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::c
             [operation, local = std::move(local)](forge::asio::compute::context& context) mutable {
                context.throw_if_stop_requested();
                return std::make_unique<core::transfer>(operation->manifest, operation->config.transfer,
-                  operation->number, std::move(local));
+                  operation->picker_seed, std::move(local));
             });
          auto capacity = std::make_shared<detail::resource_budget::ticket>(self->budget->reserve(operation->number,
             "local:" + std::to_string(operation->number), {0, 1, 4096, 0}));
+         auto owned_worker = std::make_shared<forge::asio::task::handle>();
+         operation->orchestration_capacity = capacity;
          auto worker = self->scheduler.submit(forge::asio::task::awaitable{
-            .name = "swarm-download", .work = [operation, routes = std::move(routes), capacity](forge::asio::task::context& context)
+            .name = "swarm-download", .work = [operation, routes = std::move(routes), capacity](forge::asio::task::context& context) mutable
                -> boost::asio::awaitable<void> {
                std::stop_callback cancel{context.stop_token(), [operation] { operation->cancel(); }};
-               try { co_await detail::operation_state::run(operation, routes); }
+               try { co_await detail::operation_state::run(operation, std::move(routes)); }
                catch (...) { operation->failure = std::current_exception(); }
+               // Task completion may precede destruction of this callable.
+               capacity->release();
                operation->changed.notify();
             }});
          if (!worker.accepted()) {
+            capacity->release();
             FORGE_THROW_EXCEPTION(forge::api::core::exceptions::resource_exhausted, "Swarm scheduler rejected worker");
          }
-         auto owned_worker = std::make_shared<forge::asio::task::handle>(std::move(worker));
+         *owned_worker = std::move(worker);
          { auto lock = std::scoped_lock{operation->mutex}; operation->worker = owned_worker; }
          if (operation->stop.stop_requested()) owned_worker->cancel();
       } else if (operation->providers) {
@@ -163,11 +187,11 @@ boost::asio::awaitable<std::shared_ptr<detail::operation_state>> engine::impl::c
          scope->bind({}); scope->start();
          std::exception_ptr registration_failure;
          try {
-            auto advertisement = std::shared_ptr<capabilities::registration>{
-               co_await operation->providers->async_register(operation->content, operation->realm,
-                  scope->stop.get_token(), scope->deadline)};
-            { auto lock = std::scoped_lock{operation->mutex}; operation->registration = advertisement; }
-            if (operation->stop.stop_requested() && advertisement) advertisement->cancel();
+            auto advertisement = co_await operation->providers->async_register(operation->content, operation->realm,
+               scope->stop.get_token(), scope->deadline);
+            const auto resource = advertisement.get();
+            { auto lock = std::scoped_lock{operation->mutex}; operation->registration = std::move(advertisement); }
+            if (operation->stop.stop_requested() && resource) resource->cancel();
          } catch (...) { registration_failure = std::current_exception(); }
          co_await scope->finish();
          if (registration_failure) std::rethrow_exception(registration_failure);

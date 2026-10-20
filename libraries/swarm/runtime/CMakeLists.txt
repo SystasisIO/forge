@@ -18,3 +18,4 @@ target_include_directories(forge_swarm_runtime PUBLIC ${FORGE_PUBLIC_INCLUDE_DIR
 target_link_libraries(forge_swarm_runtime PUBLIC
    forge_swarm_api forge_swarm_core forge_swarm_protocol forge_api_core
    forge_api_auth forge_asio forge_exceptions Boost::asio)
+target_link_libraries(forge_swarm_runtime PRIVATE forge_crypto_core)

@@ -1243,6 +1243,28 @@ remain the owner's responsibility. No reverse `conversion<db::content>` exists.
   reservation finalization, including partial/unknown-delivery failures. Prove
   joined shutdown and no hidden unlimited or origin fallback path.
 
+PR6 contract decisions:
+
+- `forge.swarm.runtime.engine` owns the active engine and exports its sharing
+  and download handle partitions. Admission, quota and capability contracts
+  have their own modules; the family root remains empty.
+- Admission distinguishes metadata from content. A product-supplied shared
+  quota binds content and the authenticated requester; free service is explicit.
+  Requested, attempted, accepted-queue, unknown-outcome and verified bytes are
+  separate observations, not payment receipts.
+- Connection capabilities expose a transport-confirmed remote identity for
+  shared peer limits; discovery route strings never become authorization.
+- A caller may set one fixed download `total_deadline`. Otherwise only bounded
+  callback, request and useful-progress idle timeouts apply. Local disk/CPU
+  backpressure is not peer idleness; progress never extends a grant's expiry.
+- Runtime tie selection uses existing Forge random entropy by default and an
+  explicit fixed seed for reproducible tests. Core remains deterministic.
+- A verified local resume may publish without network access. Normal input
+  half-close drains accepted responses; explicit cancellation remains separate.
+  Operation close awaits actual workers/handlers and never stops caller-owned
+  stores or execution. These decisions require focused tests and exact-head
+  review before acceptance; they do not complete PR7 or integrated PR8 proof.
+
 ### PR7: Thin Swarm node plugin
 
 - **Owner/API:** `forge_plugins_swarm_node`; `plugin::descriptor()`, typed local
