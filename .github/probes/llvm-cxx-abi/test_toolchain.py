@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import Mock, patch
 
@@ -883,6 +884,151 @@ class ProvisioningTests(unittest.TestCase):
             file.write_text(json.dumps({"formulae": [{"versions": {"stable": "22.1.9"}}]}))
             with self.assertRaisesRegex(ValueError, "exactly 22.1.8"):
                 TOOLCHAIN.bottle(file, "arm64_sequoia")
+
+
+class LinuxConsumerPrerequisiteTests(unittest.TestCase):
+    def prerequisite_steps(self):
+        source = (ROOT / ".github/workflows/vm-wasm.yml").read_text()
+        marker = "      - name: Install Linux ABI preflight prerequisites\n"
+        self.assertEqual(source.count(marker), 4, "all four Linux consumer step sequences need prerequisites")
+        steps = [part.split("\n      - ", 1)[0] for part in source.split(marker)[1:]]
+        return source, steps
+
+    def bodies(self):
+        _, steps = self.prerequisite_steps()
+        return [textwrap.dedent(step.split("        run: |\n", 1)[1]) for step in steps]
+
+    def run_fixture(self, body, failure="", missing=""):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = r'''
+record() { printf '%s\n' "$*" >> "$CALLS"; }
+sudo() {
+   record "$@"
+   case "$*:$FAILURE" in
+      'apt-get update:update') return 79 ;;
+      'apt-get install -y cmake ninja-build:install') return 78 ;;
+   esac
+}
+test() {
+   if [[ "$1" == -x ]]; then
+      record "test $*"
+      [[ "$2" != "$MISSING" ]]
+   else
+      builtin test "$@"
+   fi
+}
+dpkg-query() {
+   record "dpkg-query $*"
+   [[ "$FAILURE" != packages ]] || return 77
+   printf 'cmake\t3.28.3-fixture\tamd64\nninja-build\t1.11.1-fixture\tamd64\n'
+}
+function /usr/bin/cmake() {
+   record "/usr/bin/cmake $*"
+   [[ "$FAILURE" != cmake ]] || return 77
+   printf 'cmake version 3.28.3-fixture\n'
+}
+function /usr/bin/ninja() {
+   record "/usr/bin/ninja $*"
+   [[ "$FAILURE" != ninja ]] || return 77
+   printf '1.11.1-fixture\n'
+}
+sha256sum() {
+   record "sha256sum $*"
+   [[ "$FAILURE" != hashes ]] || return 77
+   printf '%064d  %s\n' 0 /usr/bin/cmake 0 /usr/bin/ninja
+}
+'''
+            environment = dict(os.environ, CALLS=str(root / "calls"), FAILURE=failure, MISSING=missing,
+                               WAMR_BUILD_DIR="build/fixture-jit")
+            result = subprocess.run(["bash", "-c", script + body + "\nprintf '%s\\n' AFTER_PREREQUISITES\n"],
+                                    cwd=root, env=environment, capture_output=True, text=True, timeout=10)
+            calls = (root / "calls").read_text() if (root / "calls").exists() else ""
+            files = {file.name: file.read_text() for file in root.rglob("*") if file.is_file() and file.name != "calls"}
+            return result, calls, files
+
+    def test_linux_prerequisites_precede_consume_and_exclude_macos(self):
+        source, steps = self.prerequisite_steps()
+        for step in steps:
+            self.assertIn("        if: runner.os == 'Linux'\n", step)
+            self.assertIn("        shell: bash\n", step)
+        consumes = source.split("      - name: Verify and consume the qualified Linux toolchain", 4)
+        self.assertEqual(len(consumes), 5)
+        for before in consumes[:-1]:
+            self.assertEqual(before.count("      - name: Install Linux ABI preflight prerequisites\n"), 1)
+        self.assertIn("    steps: *native-steps", source)
+        self.assertIn("    steps: *wamr-steps", source)
+
+    def test_prerequisites_use_producer_tools_without_ambient_fallback(self):
+        for body in self.bodies():
+            tokens = shlex.split(body, comments=True)
+            self.assertIn("set -euo pipefail", body)
+            self.assertIn("sudo apt-get update", body)
+            self.assertIn("sudo apt-get install -y cmake ninja-build", body)
+            for tool in ("/usr/bin/cmake", "/usr/bin/ninja"):
+                self.assertIn(f"test -x {tool}", body)
+                self.assertIn(f"{tool} --version", body)
+            self.assertIn("sha256sum /usr/bin/cmake /usr/bin/ninja", body)
+            self.assertIn("--showformat=${binary:Package}\\t${Version}\\t${Architecture}\\n", tokens)
+            for forbidden in ("|| true", "command -v", "ln -s", "brew", "update-alternatives", "--force"):
+                self.assertNotIn(forbidden, body)
+
+    def test_success_records_actual_prerequisite_evidence(self):
+        for index, body in enumerate(self.bodies()):
+            with self.subTest(sequence=index):
+                result, calls, files = self.run_fixture(body)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("AFTER_PREREQUISITES", result.stdout)
+                self.assertIn("apt-get update\napt-get install -y cmake ninja-build\n", calls)
+                self.assertEqual(files["packages.txt"], "cmake\t3.28.3-fixture\tamd64\nninja-build\t1.11.1-fixture\tamd64\n")
+                self.assertEqual(files["cmake-version.txt"], "cmake version 3.28.3-fixture\n")
+                self.assertEqual(files["ninja-version.txt"], "1.11.1-fixture\n")
+                self.assertEqual(files["executables.sha256"].splitlines(),
+                                 ["0" * 64 + "  /usr/bin/cmake", "0" * 64 + "  /usr/bin/ninja"])
+                self.assertIn("apt-update.log", files)
+                self.assertIn("apt-install.log", files)
+
+    def test_apt_update_failure_is_fatal(self):
+        for body in self.bodies():
+            result, calls, files = self.run_fixture(body, failure="update")
+            self.assertEqual(result.returncode, 79, result.stderr)
+            self.assertIn("HARNESS_ERROR", result.stderr)
+            self.assertNotIn("apt-get install", calls)
+            self.assertNotIn("AFTER_PREREQUISITES", result.stdout)
+            self.assertNotIn("packages.txt", files)
+
+    def test_apt_install_failure_is_fatal(self):
+        for body in self.bodies():
+            result, calls, files = self.run_fixture(body, failure="install")
+            self.assertEqual(result.returncode, 78, result.stderr)
+            self.assertIn("HARNESS_ERROR", result.stderr)
+            self.assertNotIn("dpkg-query", calls)
+            self.assertNotIn("AFTER_PREREQUISITES", result.stdout)
+            self.assertNotIn("packages.txt", files)
+
+    def test_missing_absolute_prerequisite_is_fatal(self):
+        for body in self.bodies():
+            for tool in ("/usr/bin/cmake", "/usr/bin/ninja"):
+                with self.subTest(tool=tool):
+                    result, _, files = self.run_fixture(body, missing=tool)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("HARNESS_ERROR", result.stderr)
+                    self.assertNotIn("AFTER_PREREQUISITES", result.stdout)
+                    self.assertNotIn("packages.txt", files)
+
+    def test_prerequisite_evidence_failure_is_fatal(self):
+        for body in self.bodies():
+            for failure in ("packages", "cmake", "ninja", "hashes"):
+                with self.subTest(failure=failure):
+                    result, _, _ = self.run_fixture(body, failure=failure)
+                    self.assertEqual(result.returncode, 77, result.stderr)
+                    self.assertIn("HARNESS_ERROR", result.stderr)
+                    self.assertNotIn("AFTER_PREREQUISITES", result.stdout)
+
+    def test_prerequisite_shell_syntax(self):
+        for body in self.bodies():
+            result = subprocess.run(["bash", "-n", "-c", body], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

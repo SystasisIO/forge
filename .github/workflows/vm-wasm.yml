@@ -183,6 +183,23 @@ jobs:
           name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
           path: ${{ runner.temp }}/linux-toolchain-bundle
 
+      - name: Install Linux ABI preflight prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "HARNESS_ERROR: Linux ABI preflight prerequisite provisioning failed" >&2' ERR
+          evidence=build/vm-wasm/toolchain/linux-prerequisites
+          mkdir -p "$evidence"
+          sudo apt-get update 2>&1 | tee "$evidence/apt-update.log"
+          sudo apt-get install -y cmake ninja-build 2>&1 | tee "$evidence/apt-install.log"
+          test -x /usr/bin/cmake
+          test -x /usr/bin/ninja
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Architecture}\n' cmake ninja-build > "$evidence/packages.txt"
+          /usr/bin/cmake --version > "$evidence/cmake-version.txt"
+          /usr/bin/ninja --version > "$evidence/ninja-version.txt"
+          sha256sum /usr/bin/cmake /usr/bin/ninja > "$evidence/executables.sha256"
+
       - name: Verify and consume the qualified Linux toolchain (no source fallback)
         if: runner.os == 'Linux'
         run: >-
@@ -322,6 +339,23 @@ jobs:
         with:
           name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
           path: ${{ runner.temp }}/linux-toolchain-bundle
+
+      - name: Install Linux ABI preflight prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "HARNESS_ERROR: Linux ABI preflight prerequisite provisioning failed" >&2' ERR
+          evidence="$WAMR_BUILD_DIR/toolchain/linux-prerequisites"
+          mkdir -p "$evidence"
+          sudo apt-get update 2>&1 | tee "$evidence/apt-update.log"
+          sudo apt-get install -y cmake ninja-build 2>&1 | tee "$evidence/apt-install.log"
+          test -x /usr/bin/cmake
+          test -x /usr/bin/ninja
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Architecture}\n' cmake ninja-build > "$evidence/packages.txt"
+          /usr/bin/cmake --version > "$evidence/cmake-version.txt"
+          /usr/bin/ninja --version > "$evidence/ninja-version.txt"
+          sha256sum /usr/bin/cmake /usr/bin/ninja > "$evidence/executables.sha256"
 
       - name: Verify and consume the qualified Linux toolchain (no source fallback)
         if: runner.os == 'Linux'
@@ -498,6 +532,23 @@ jobs:
           name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
           path: ${{ runner.temp }}/linux-toolchain-bundle
 
+      - name: Install Linux ABI preflight prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "HARNESS_ERROR: Linux ABI preflight prerequisite provisioning failed" >&2' ERR
+          evidence=build/vm-wasm-sanitizer/toolchain/linux-prerequisites
+          mkdir -p "$evidence"
+          sudo apt-get update 2>&1 | tee "$evidence/apt-update.log"
+          sudo apt-get install -y cmake ninja-build 2>&1 | tee "$evidence/apt-install.log"
+          test -x /usr/bin/cmake
+          test -x /usr/bin/ninja
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Architecture}\n' cmake ninja-build > "$evidence/packages.txt"
+          /usr/bin/cmake --version > "$evidence/cmake-version.txt"
+          /usr/bin/ninja --version > "$evidence/ninja-version.txt"
+          sha256sum /usr/bin/cmake /usr/bin/ninja > "$evidence/executables.sha256"
+
       - name: Verify and consume the qualified Linux toolchain (no source fallback)
         run: >-
           bash .github/scripts/setup-vm-wasm-toolchain.sh build/vm-wasm-sanitizer/toolchain consume-linux
@@ -598,6 +649,23 @@ jobs:
         with:
           name: llvm22.1.8-linux-x86-${{ needs.linux-toolchain.outputs.key }}
           path: ${{ runner.temp }}/linux-toolchain-bundle
+
+      - name: Install Linux ABI preflight prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "HARNESS_ERROR: Linux ABI preflight prerequisite provisioning failed" >&2' ERR
+          evidence=build/vm-wasm-package/toolchain/linux-prerequisites
+          mkdir -p "$evidence"
+          sudo apt-get update 2>&1 | tee "$evidence/apt-update.log"
+          sudo apt-get install -y cmake ninja-build 2>&1 | tee "$evidence/apt-install.log"
+          test -x /usr/bin/cmake
+          test -x /usr/bin/ninja
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Architecture}\n' cmake ninja-build > "$evidence/packages.txt"
+          /usr/bin/cmake --version > "$evidence/cmake-version.txt"
+          /usr/bin/ninja --version > "$evidence/ninja-version.txt"
+          sha256sum /usr/bin/cmake /usr/bin/ninja > "$evidence/executables.sha256"
 
       - name: Verify and consume the qualified Linux toolchain (no source fallback)
         run: >-

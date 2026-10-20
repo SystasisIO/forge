@@ -121,11 +121,37 @@ TLSNotary and JOSE switches, the current leaf/package boundaries, and the shared
 The optimizing README keeps the WAMR artifact and preparation contracts while
 incorporating the shared guard's checked acquire/release lifecycle.
 
-Fresh source, build-tree JIT/AOT, real child cancellation/drain and installed
-consumer checks belong to `wamr-ci-190-20261020-r11/base-refresh-r1`; they are
-pending at this source checkpoint. Neither `a066`, earlier CI merge trees nor
-the feature-head-only CI60 qualifies this new integration context. The PR stays
-draft and must not be merged into dev under this authorization.
+Those checks were pending at the integration source checkpoint. The separately
+sealed `a66868d62999643cba4882fc4d32d1cd5d21a070` ON/JIT run now passes the full
+normal producer/dev install, **84/84** selected JIT/AOT CTests (119.36 seconds),
+all **three installed VM component gates**, including **five** nested optimizing
+checks, and the shared child-signal **one CTest/five Boost cases**. The same
+source remains frozen throughout; the installed helper carries that exact
+revision and strict HELLO equality is unchanged. Five physical link maps retain
+one provider each: 33 compiler-role C objects or 48 execution-role C objects,
+never both. Evidence: `wamr-ci-190-20261020-r11/base-refresh-r1`, postrun receipt
+SHA256 `2d83843c830779707ac47375bdf2d720e49b663c63c24c277759a74c49d002dd`.
+This is selected Darwin ARM64 ON qualification, not new OFF or product proof.
+The first XML audit parser failed on the local Homebrew Python/expat linkage;
+its partial capture is retained. The unchanged XML audit succeeded with explicit
+system Python3.9.6, without package/DYLD changes or rerunning/relabeling tests.
+
+CI60 on feature head `a4126e87` now confirms the Linux compiler-rt resource fix:
+the source-built producer passes relocation, sanitizer compile/link/run and
+publishes its qualified toolchain. Five Linux consumers then fail **before
+Forge configure**, because `/usr/bin/cmake` is absent. Their runtime gates remain
+NOT_RUN. The reviewed CI-only follow-up installs ordinary distro `cmake` and
+`ninja-build` before the four Linux consumer step sequences, records executable
+and package identities, and fails closed on installation/evidence errors.
+All original 71 metadata tests remain unchanged; eight new tests record RED
+against the original workflow and GREEN with the candidate, **79/79** total.
+LLVM pins/build mechanisms, absolute-path ABI checks, later pinned CMake3.31.6,
+macOS steps, guards and runtime selections are unchanged. The workflow hash
+normally produces a fresh recipe key; CI60 is not reused as that qualification.
+Fresh real Linux execution
+is still required; CI61 does not include this follow-up. Evidence:
+`wamr-ci-190-20261020-r11/ci60-review` and `linux-consumer-prereq-fix-r1`.
+The PR stays draft and must not be merged into dev under this authorization.
 All mandatory product, Linux, bounded-profile, performance and final delivered
 provenance requirements remain open until their own evidence closes them.
 
