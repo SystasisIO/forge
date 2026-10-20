@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Manual diagnostic only. No runtime, recipe, loader-path or mandatory-CI repair.
-set -euo pipefail
-trap 'echo "HARNESS_ERROR: Linux diagnostic phase failed: ${phase:-startup}" >&2' ERR
+set -Eeuo pipefail
+trap 'echo "HARNESS_ERROR: Linux diagnostic phase failed: ${phase:-startup} at line ${LINENO}" >&2' ERR
 phase="${1:?fixed diagnostic phase required}"
 source_root="${DIAG_SOURCE:?}"
 root="${DIAG_ROOT:?}"
@@ -30,15 +30,28 @@ mkdir -p "$evidence"
 source_check() {
    test "$(git -C "$source_root" rev-parse HEAD)" = "$head"
    test "$(git -C "$source_root" rev-parse 'HEAD^{tree}')" = "$tree"
-   test "$(git -C "$source_root" show -s --format=%P HEAD)" = "$base_parent $pr_head"
+   git --no-replace-objects -C "$source_root" cat-file commit "$head" > "$evidence/source-$phase.commit"
+   python3 - "$evidence/source-$phase.commit" "$head" "$tree" "$base_parent" "$pr_head" <<'PY'
+import hashlib, json, pathlib, sys
+file = pathlib.Path(sys.argv[1])
+data = file.read_bytes()
+actual = hashlib.sha1(b"commit " + str(len(data)).encode() + b"\0" + data).hexdigest()
+headers = data.split(b"\n\n", 1)[0].splitlines()
+trees = [line[5:].decode("ascii") for line in headers if line.startswith(b"tree ")]
+parents = [line[7:].decode("ascii") for line in headers if line.startswith(b"parent ")]
+if actual != sys.argv[2] or trees != [sys.argv[3]] or parents != sys.argv[4:]:
+    raise SystemExit("HARNESS_ERROR: raw commit identity/tree/ordered parents differ")
+file.with_suffix(".json").write_text(json.dumps({
+    "commit": actual, "tree": trees[0], "parents": parents,
+    "api_pr_head": sys.argv[5], "method": "RAW_COMMIT_OBJECT_NOT_REVISION_WALK"
+}, indent=2) + "\n")
+PY
    test -z "$(git -C "$source_root" status --porcelain --untracked-files=no)"
    test "$(git -C "$source_root/vendor/wamr" rev-parse HEAD)" = da5892640f9168df5a097d096e6a3924192d6f86
    git -C "$source_root" submodule status --recursive > "$evidence/submodules-$phase.txt"
    ! grep -qE '^[-+U]' "$evidence/submodules-$phase.txt"
    git -C "$source_root" submodule foreach --quiet --recursive \
       'test -z "$(git status --porcelain --untracked-files=no)"'
-   git -C "$source_root" show -s --format='commit=%H%ntree=%T%nparents=%P' HEAD > "$evidence/source-$phase.txt"
-   printf 'api_pr_head=%s\n' "$pr_head" >> "$evidence/source-$phase.txt"
 }
 
 clean_test_env() {

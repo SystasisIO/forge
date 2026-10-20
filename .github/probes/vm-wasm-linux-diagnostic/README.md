@@ -7,7 +7,11 @@ The branch-scoped workflow uses CI66's actual unchanged merge-context checkout
 API PR head is separately pinned to `72a9e5aeaba390389aa35bbdc0fe7fc02fc968ab`,
 tree `18d2b49b4db9e0d715bf54d8489cb99f34b1e773`. The actual checkout's ordered
 parents must be `81093bd80cdda1296776b9d5921707869f4c3ee0` and that PR head;
-both local Git and trusted API commit metadata verify the distinction.
+both the raw local Git commit object and trusted API commit metadata verify the
+distinction. The local check hashes the complete commit object and reads its
+tree/ordered parent headers, so checkout's shallow boundary cannot hide parents.
+Per-phase raw objects and parsed receipts are retained. Error traps propagate
+through functions and identify the failing phase/line without printing tokens.
 This does not claim identical whole merge/head trees or qualify unrelated merge changes.
 Only a push to `vm-wasm-linux-diagnostics-v1` affecting the diagnostic files
 triggers it; no default-branch workflow or runtime setting is changed.
