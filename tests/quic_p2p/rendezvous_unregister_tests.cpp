@@ -354,12 +354,8 @@ struct unregister_fixture {
       if (managed) {
          static_cast<void>(run(client->async_refresh_discovery()));
       } else {
-         static_cast<void>(run(client->async_connect(*coordinate)));
-         const auto record = p2p::detail::local_signed_peer_record_for_test(*client);
-         BOOST_REQUIRE(!record.empty());
-         const auto registered = run(client->async_rendezvous_register(point.local_peer(),
-             {.namespace_name = std::string{namespace_name}, .signed_peer_record = record, .ttl = 7200s}));
-         BOOST_CHECK(registered.status_value == p2p::rendezvous::status::ok);
+         BOOST_REQUIRE(run(p2p::detail::register_topology_rendezvous_for_test(
+             *client, 0, std::string{namespace_name})));
          run(wait_for_identified_registration(*client));
       }
       BOOST_REQUIRE_EQUAL(point.peers().discover_rendezvous(namespace_name, 0, 8).size(), 1U);
@@ -554,8 +550,8 @@ BOOST_AUTO_TEST_CASE(p2p_rendezvous_unregister_native_operation_preserves_exact_
    for (const auto quic : {false, true}) {
       for (const auto response : {reply::silent, reply::reset, reply::unexpected_data}) {
          BOOST_TEST_CONTEXT("quic=" << quic << " response=" << static_cast<int>(response)) {
-            // Public REGISTER populates the real point, but static topology does
-            // not own that registration and cannot issue a second UNREGISTER.
+            // Use the managed REGISTER implementation and its signed record,
+            // without giving the static manager ownership of the registration.
             auto fixture = unregister_fixture{quic, response, {}, {}, false};
             const auto started = std::chrono::steady_clock::now();
             auto operation = boost::asio::co_spawn(fixture.runtime.context(),

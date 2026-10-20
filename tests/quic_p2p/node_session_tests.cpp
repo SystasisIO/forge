@@ -29,6 +29,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <source_location>
 #include <stop_token>
 #include <span>
 #include <string>
@@ -296,9 +297,11 @@ class reachability_transport final : public forge::net::transport::detail::sessi
    std::shared_ptr<std::atomic_size_t> opens_;
 };
 
-template <typename T> T bounded_result(forge::asio::runtime& runtime, boost::asio::awaitable<T> operation) {
+template <typename T> T bounded_result(forge::asio::runtime& runtime, boost::asio::awaitable<T> operation,
+    std::source_location where = std::source_location::current()) {
    auto result = boost::asio::co_spawn(runtime.context(), std::move(operation), boost::asio::use_future);
-   BOOST_REQUIRE(result.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+   BOOST_REQUIRE_MESSAGE(result.wait_for(std::chrono::seconds{5}) == std::future_status::ready,
+       "native fixture operation did not complete at line " << where.line());
    return result.get();
 }
 
@@ -331,8 +334,14 @@ struct node_session_fixture {
    static boost::asio::awaitable<forge::asio::gate::ticket> hold_admission(node& owner) {
       return owner.impl_->session_admission_gate.acquire();
    }
-   static std::vector<std::uint8_t> local_signed_peer_record(node& owner) {
-      return owner.impl_->local_identify_document(std::nullopt).signed_peer_record;
+   static boost::asio::awaitable<bool> register_topology_rendezvous(
+       node& owner, std::size_t point_index, std::string namespace_name) {
+      const auto self = owner.impl_;
+      auto record = self->topology_rendezvous_local_record();
+      BOOST_REQUIRE(!record.signed_peer_record.empty());
+      const auto registered = co_await self->async_register_topology_rendezvous(
+          point_index, std::move(namespace_name), std::move(record.signed_peer_record), {});
+      co_return registered.accepted;
    }
    static boost::asio::awaitable<void> unregister_topology_rendezvous(
        node& owner, std::size_t point_index, std::string namespace_name) {
@@ -2495,16 +2504,27 @@ struct node_session_fixture {
       remote_options.relay_policy.auto_discovery_enabled = false;
       auto remote = node{runtime, std::move(remote_options)};
       const auto self = owner.impl_;
-      auto context = boost::asio::io_context{};
+      const auto await_ready = [](auto predicate) {
+         const auto until = std::chrono::steady_clock::now() + 2s;
+         while (!predicate() && std::chrono::steady_clock::now() < until) { std::this_thread::sleep_for(1ms); }
+         return predicate();
+      };
       auto cancellation = std::make_shared<cancellation_latch>();
       auto write_gate = std::make_shared<forge::asio::gate>();
       auto held = bounded_result(runtime, write_gate->acquire());
       auto attempt = detail::direct_attempt{};
+      auto pending = std::future<std::shared_ptr<node::impl::session_state>>{};
       auto cleanup = boost::scope::scope_exit{[&] {
          cancellation->request_stop();
          held.release();
-         context.restart();
-         context.run_for(2s);
+         if (pending.valid()) {
+            if (pending.wait_for(5s) != std::future_status::ready) {
+               BOOST_ERROR("announcement fixture failed to join its accepted operation");
+               std::terminate();
+            }
+            try { static_cast<void>(pending.get()); } catch (...) {}
+         }
+         attempt.reset();
          for (auto* current : {&owner, &remote}) { current->request_stop(); }
          for (auto* current : {&owner, &remote}) {
             try { bounded_result(runtime, current->async_stop()); }
@@ -2536,10 +2556,10 @@ struct node_session_fixture {
       }
       const auto started = std::chrono::steady_clock::now();
       const auto deadline = started + (timeout ? 400ms : 5s);
-      auto pending = boost::asio::co_spawn(context,
+      pending = boost::asio::co_spawn(runtime.context(),
           self->commit_direct_attempt(std::move(attempt), std::move(roots), deadline, cancellation),
           boost::asio::use_future);
-      BOOST_REQUIRE(drive_until(context, [&] {
+      BOOST_REQUIRE(await_ready([&] {
          const auto lock = std::scoped_lock{self->mutex};
          return self->pubsub_value.outbound_budget.total() != 0;
       }));
@@ -2555,10 +2575,13 @@ struct node_session_fixture {
          BOOST_TEST(!self->pubsub_value.outbound.at(remote.local_peer()).stream);
       }
       if (!timeout) { cancellation->request_stop(); }
-      BOOST_REQUIRE(drive_until(context, [&] { return pending.wait_for(0ms) == std::future_status::ready; }));
+      BOOST_REQUIRE(await_ready([&] { return pending.wait_for(0ms) == std::future_status::ready; }));
       BOOST_CHECK_EXCEPTION(static_cast<void>(pending.get()), forge::exceptions::base, [timeout](const auto& error) {
          return exceptions::code_of(error) == (timeout ? exceptions::code::timeout : exceptions::code::canceled);
       });
+      // Normal acquisition destroys this moved-from stack owner on return.
+      // The fixture keeps it in scope, so release its copied native lifetime.
+      attempt.reset();
       BOOST_TEST(static_cast<bool>(std::chrono::steady_clock::now() - started < 2s));
       BOOST_TEST(held.active());
       BOOST_TEST(!write_gate->closed());
@@ -2703,8 +2726,9 @@ boost::asio::awaitable<forge::asio::gate::ticket> hold_session_admission_for_tes
    return node_session_fixture::hold_admission(owner);
 }
 
-std::vector<std::uint8_t> local_signed_peer_record_for_test(node& owner) {
-   return node_session_fixture::local_signed_peer_record(owner);
+boost::asio::awaitable<bool> register_topology_rendezvous_for_test(
+    node& owner, std::size_t point_index, std::string namespace_name) {
+   return node_session_fixture::register_topology_rendezvous(owner, point_index, std::move(namespace_name));
 }
 
 boost::asio::awaitable<void> unregister_topology_rendezvous_for_test(
