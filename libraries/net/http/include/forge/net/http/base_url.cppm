@@ -17,6 +17,7 @@ struct base_url {
 
    [[nodiscard]] bool secure() const;
    [[nodiscard]] std::string origin() const;
+   [[nodiscard]] std::string host_header() const;
    [[nodiscard]] std::string make_target(std::string_view path) const;
 };
 

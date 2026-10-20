@@ -467,6 +467,16 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
    }
    auto nodes = std::size_t{};
    if (!validate_unique_object_members(lazy->root(), {}, options, 1, nodes, result.diagnostics)) return result;
+   if (options.described_records == described_record_policy::exact) {
+      // generic_json's variant reader may accept end_reached after partial
+      // container progress. Glaze's bounded syntax reader must validate the
+      // complete root independently before that value reader constructs a DOM.
+      auto skipped = glz::skip{};
+      if (const auto error = glz::read<json_complete_read_options>(skipped, input)) {
+         result.diagnostics.push_back(make_error(options.source_name, "json.parse", glz::format_error(error, input)));
+         return result;
+      }
+   }
    auto parsed = codec_value{};
    const auto error = options.described_records == described_record_policy::exact
                          ? glz::read<json_complete_read_options>(parsed, input)

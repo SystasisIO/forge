@@ -150,6 +150,8 @@ class request {
    [[nodiscard]] std::optional<std::string_view> header(std::string_view name) const;
    [[nodiscard]] std::size_t header_count(std::string_view name) const noexcept;
    [[nodiscard]] std::vector<header_entry> headers() const;
+   // The view is valid until this request is mutated, moved or destroyed.
+   [[nodiscard]] std::span<const header_entry> header_fields() const noexcept;
 
    void prepare_payload();
 
