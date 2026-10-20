@@ -13,10 +13,15 @@ struct catalog::impl {
       std::shared_ptr<impl> owner;
    };
 
-   impl(forge::db::object::store, options);
-   forge::db::object::store objects;
+   impl(std::shared_ptr<access>, options);
+   std::shared_ptr<access> objects;
    const options config;
+   static constexpr std::uint32_t closed_bit = std::uint32_t{1} << 31U;
+   static constexpr std::uint32_t retiring_bit = std::uint32_t{1} << 30U;
+   static constexpr std::uint32_t retired_bit = std::uint32_t{1} << 29U;
+   static constexpr std::uint32_t count_mask = retired_bit - 1U;
    std::atomic<std::uint32_t> inflight{0};
+   forge::asio::notification changed;
 
    static void check_token(std::stop_token);
    static boost::asio::awaitable<void> check_stop(std::stop_token);
@@ -89,7 +94,7 @@ struct catalog::impl {
    static boost::asio::awaitable<T> mutate(
       std::shared_ptr<impl> self, std::stop_token token, Work work, bool bootstrap = false) {
       co_await check_stop(token);
-      auto tx = co_await self->objects.begin_transaction();
+      auto tx = co_await self->objects->begin_transaction();
       auto* backend = &tx.db_transaction();
       using result_type = std::conditional_t<std::is_void_v<T>, bool, T>;
       auto result = std::optional<result_type>{};
@@ -126,6 +131,7 @@ struct catalog::impl {
    }
 
    static boost::asio::awaitable<std::shared_ptr<catalog>> open(std::shared_ptr<impl>, std::stop_token);
+   static boost::asio::awaitable<void> close(std::shared_ptr<impl>);
    static boost::asio::awaitable<db::content> create(
       std::shared_ptr<impl>, core::descriptor, std::string, job_settings, std::stop_token);
    static boost::asio::awaitable<std::optional<db::content>> find(

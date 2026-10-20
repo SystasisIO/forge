@@ -156,8 +156,9 @@ automatic namespace deletion or implicit schema migration occurs.
 is a caller-owned Asio executor suitable for the selected DB driver. In
 particular RocksDB commit/flush are synchronous inside awaitables: use an
 executor isolated from the application's network/event-loop threads. The catalog
-creates no pool and does not open or close the DB. Await all operations and drop
-consumers before the owner closes executors or the driver.
+creates no pool and does not open or close the DB. Close file-store consumers,
+then await `catalog::async_close()` before the owner releases the DB dependency
+or its executors.
 
 ```cpp
 catalog::register_objects(objects);
@@ -170,7 +171,25 @@ auto files = co_await file_store::async_open(
    {.manifest = entry.manifest, .destination = entry.locator,
     .disk = disk_executor, .cpu = cpu_executor, .checkpoint = resume});
 // Write/verify content, then checkpoint/publish and await files->async_close().
+co_await metadata->async_close(); // Metadata drain only; objects/driver stay open.
 ```
+
+The alternate `async_open(std::shared_ptr<catalog::access>, options, stop_token)`
+uses the same catalog algorithm. The neutral access contract supplies
+`runtime_options()`, `begin_read()`, `begin_transaction()` and `flush()`; flush
+must provide a durable synchronous fence for that same store. It exposes no raw
+driver. The concrete-store overload delegates through a private adapter whose
+flush calls that driver's `async_flush(true)`.
+
+Composition with a named DB retains the guarded Object Store handle and DB API
+in an access implementation; reads/transactions go through the handle, and flush
+uses the DB API's `flush(objects.name(), true)`. It must not extract or cache a
+raw store/driver. `register_objects(Objects&)` is constrained to the two model
+registration calls and also accepts const guarded handles. Call it explicitly
+in `after_initialize` while `open_prerequisite` setup access is valid; it borrows
+nothing beyond that synchronous call. Open the catalog in startup, after DB
+startup. Storage itself imports no DB plugin. This slice provides the bridge,
+not the plugin adapter or named-plugin integration acceptance.
 
 The locator is a bounded local opaque string, never a network path claim. Its
 normalization and filesystem aliases belong to composition; file ownership and
@@ -187,7 +206,7 @@ state/descending-priority and exclusive-expiry queries use Object Store indexes,
 without enumerating unrelated history. `INT64_MAX` expiry means no expiry.
 
 The v1 row and all its secondary indexes are updated atomically. A checkpoint ACK
-requires commit followed by `objects.driver()->async_flush(true)`. A failure after
+requires commit followed by `access::flush()`. A failure after
 commit may leave the row visible; it is not a rollback guarantee. An identical
 generation retry repeats flush; older or conflicting equal-generation values fail
 with `stale_checkpoint`. Checkpoint load validates and restores the durability
@@ -207,6 +226,22 @@ durability operation. Public calls reserve admission before DB dispatch and
 may synchronously reject overload. Destroying an unstarted awaitable releases
 its reservation; a started operation or checkpoint handle retains its own state
 independently of the original catalog facade.
+
+`async_close()` immediately closes logical admission, including admission through
+escaped checkpoint handles, then joins the existing inflight count and releases
+the access object. New CRUD/query/checkpoint calls fail with typed
+`core::exceptions::storage_closed`. Already accepted work is not canceled by
+close; its commit/flush fence still completes. Concurrent/repeated close calls
+join the same retirement fence. The DB driver is never closed by the catalog.
+Close runs cleanup in a disconnected child coroutine without changing the
+caller's cancellation history, filters or throw policy.
+The destructor does not automatically close admission: retained checkpoint
+handles keep working after facade destruction until explicit close.
+
+Accepted but unstarted awaitables hold admission too. Await or destroy them
+before awaiting close, or consume/destroy them concurrently with the drain;
+otherwise close must wait for them. Constructing a close awaitable captures its
+state immediately, so destroying the facade before awaiting it is safe.
 
 ## Evidence
 
