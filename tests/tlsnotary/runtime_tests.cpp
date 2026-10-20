@@ -38,6 +38,7 @@ struct temporary_directory {
       path = name;
       for (const auto* mode : {"hang", "crash", "oversize", "truncated", "unknown", "read", "flood", "success-queued"})
          std::filesystem::create_symlink(FORGE_TLSNOTARY_FAULT_WORKER, path / mode);
+      std::filesystem::create_symlink(FORGE_TLSNOTARY_FAULT_WORKER, path / "window-burst");
       for (const auto* mode : {"diagnostic-read-peer", "diagnostic-read-server", "diagnostic-write-peer",
                                "diagnostic-write-server", "diagnostic-close-peer", "diagnostic-close-server"})
          std::filesystem::create_symlink(FORGE_TLSNOTARY_FAULT_WORKER, path / mode);
@@ -359,6 +360,247 @@ class queued_close_stream final : public forge::net::transport::detail::stream_c
    std::vector<std::uint8_t> delivered;
    std::size_t discarded = 0;
 };
+
+class retaining_stream final : public forge::net::transport::detail::stream_concept {
+ public:
+   struct observation {
+      std::size_t writes = 0;
+      std::size_t retained = 0;
+      std::size_t peak = 0;
+      bool read_entered = false;
+      bool read_active = false;
+      bool write_closed = false;
+      bool closed = false;
+      bool cancelled = false;
+   };
+
+   bool valid() const noexcept override {
+      const auto state = snapshot();
+      return !state.closed && !state.cancelled;
+   }
+
+   std::int64_t id() const noexcept override {
+      return 22;
+   }
+
+   asio::awaitable<void> async_write(std::span<const std::uint8_t>) override {
+      throw std::runtime_error{"native producer discarded chunk ownership"};
+      co_return;
+   }
+
+   asio::awaitable<void> async_write_chunk(forge::net::transport::chunk bytes) override {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         if (_fail_write || _state.cancelled)
+            throw forge::net::transport::exceptions::closed{"secret-sentinel lower write"};
+         _state.retained += bytes.size();
+         _state.peak = std::max(_state.peak, _state.retained);
+         ++_state.writes;
+         _held.push_back(std::move(bytes));
+      }
+      _changed.notify();
+      co_return;
+   }
+
+   asio::awaitable<std::vector<std::uint8_t>> async_read() override {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _state.read_entered = true;
+         _state.read_active = true;
+      }
+      _changed.notify();
+      const auto done = boost::scope::scope_exit{[this] {
+         {
+            const auto lock = std::scoped_lock{_mutex};
+            _state.read_active = false;
+         }
+         _changed.notify();
+      }};
+      for (;;) {
+         const auto epoch = _changed.epoch();
+         {
+            const auto lock = std::scoped_lock{_mutex};
+            if (_fail_read || _state.cancelled)
+               throw forge::net::transport::exceptions::closed{"secret-sentinel lower read"};
+            if (_read_released)
+               co_return std::vector<std::uint8_t>{};
+         }
+         static_cast<void>(co_await _changed.async_wait(epoch));
+      }
+   }
+
+   asio::awaitable<void> async_close_write() override {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _state.write_closed = true;
+      }
+      _changed.notify();
+      co_return;
+   }
+
+   asio::awaitable<void> async_close() override {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _state.closed = true;
+      }
+      // A successful close need not mean peer ACKs have released every chunk.
+      // Retain tickets deliberately so the test can release after owner shutdown.
+      _changed.notify();
+      co_return;
+   }
+
+   void cancel() override {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _state.cancelled = true;
+      }
+      release_all();
+   }
+
+   observation snapshot() const noexcept {
+      const auto lock = std::scoped_lock{_mutex};
+      return _state;
+   }
+
+   void release_one() {
+      auto released = forge::net::transport::chunk{};
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         check(!_held.empty(), "test released an absent retained chunk");
+         released = std::move(_held.front());
+         _held.erase(_held.begin());
+         _state.retained -= released.size();
+      }
+      // Ticket destruction may wake the producer on another I/O thread.
+      released = {};
+      _changed.notify();
+   }
+
+   void release_all() {
+      auto released = std::vector<forge::net::transport::chunk>{};
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         released.swap(_held);
+         _state.retained = 0;
+      }
+      released.clear();
+      _changed.notify();
+   }
+
+   void finish_read(bool fail = false) {
+      {
+         const auto lock = std::scoped_lock{_mutex};
+         _fail_read = fail;
+         _read_released = true;
+      }
+      _changed.notify();
+   }
+
+   void fail_next_write() {
+      const auto lock = std::scoped_lock{_mutex};
+      _fail_write = true;
+   }
+
+   asio::awaitable<void> wait_for(std::size_t writes, bool read_entered, bool write_closed) {
+      const auto deadline = std::chrono::steady_clock::now() + 3s;
+      for (;;) {
+         const auto epoch = _changed.epoch();
+         const auto state = snapshot();
+         if (state.writes >= writes && (!read_entered || state.read_entered) && (!write_closed || state.write_closed))
+            co_return;
+         static_cast<void>(co_await _changed.async_wait_until(epoch, deadline));
+      }
+   }
+
+ private:
+   mutable std::mutex _mutex;
+   observation _state;
+   std::vector<forge::net::transport::chunk> _held;
+   forge::asio::notification _changed;
+   bool _read_released = false;
+   bool _fail_read = false;
+   bool _fail_write = false;
+};
+
+void producer_window_tests(const temporary_directory& files, const identity& identity) {
+   // This worker exercises native bridge pacing/lifetimes, not MPC authenticity.
+   constexpr auto chunk_bytes = std::size_t{16384};
+   constexpr auto window_bytes = 64 * chunk_bytes;
+   auto runtime = forge::asio::runtime{{.worker_threads = 4}};
+   auto compute = forge::asio::compute::pool{{.worker_threads = 1}};
+   enum class terminal { success, cancel, deadline, read_failure, write_failure };
+   for (const auto mode :
+        {terminal::success, terminal::cancel, terminal::deadline, terminal::read_failure, terminal::write_failure}) {
+      auto owner = tlsn::engine{runtime, compute.get_executor(), {.worker_path = files.path / "window-burst"}};
+      const auto cleanup = engine_cleanup{runtime, owner};
+      auto stream = std::make_shared<retaining_stream>();
+      auto stop = std::stop_source{};
+      auto configuration = options(200 + static_cast<unsigned>(mode));
+      configuration.reveal_sent.clear();
+      configuration.reveal_received.clear();
+      configuration.timeout = mode == terminal::deadline ? 5s : 10s;
+      configuration.stop = stop.get_token();
+      auto request = tlsn::verifier_request{.peer = forge::net::transport::detail::stream_access::make_cancelable(
+                                                stream, [stream]() noexcept { stream->cancel(); }),
+                                            .source = {.server_name = "tlsn.local", .trust_roots_der = {identity.root}},
+                                            .options = configuration};
+      auto completion = asio::co_spawn(runtime.context(), owner.verify(std::move(request)), asio::use_future);
+      const auto wait = [&](std::size_t writes, bool reading, bool fin) {
+         auto reached = asio::co_spawn(runtime.context(), stream->wait_for(writes, reading, fin), asio::use_future);
+         check(reached.wait_for(4s) == std::future_status::ready, "producer window test barrier did not complete");
+         reached.get();
+      };
+      wait(64, true, false);
+      const auto full = stream->snapshot();
+      check(full.writes == 64 && full.retained == window_bytes && full.peak == window_bytes && full.read_active,
+            "producer failed to fill exactly one bounded window before peer read barrier");
+      check(completion.wait_for(20ms) == std::future_status::timeout,
+            "producer completed while the next frame was blocked by retained chunks");
+      if (mode == terminal::success) {
+         stream->release_one();
+         wait(65, true, false);
+         const auto advanced = stream->snapshot();
+         check(advanced.writes == 65 && advanced.retained == window_bytes && advanced.peak == window_bytes,
+               "one chunk release did not admit exactly one replacement chunk");
+         stream->release_all();
+         wait(128, true, true);
+         stream->finish_read();
+      } else if (mode == terminal::cancel) {
+         stop.request_stop();
+      } else if (mode == terminal::read_failure) {
+         stream->finish_read(true);
+      } else if (mode == terminal::write_failure) {
+         stream->fail_next_write();
+         stream->release_one();
+      }
+      check(completion.wait_for(6s) == std::future_status::ready, "producer did not join its blocked native operation");
+      if (mode == terminal::success) {
+         static_cast<void>(completion.get());
+      } else if (mode == terminal::cancel) {
+         throws<tlsn::exceptions::cancelled>([&] { static_cast<void>(completion.get()); });
+      } else if (mode == terminal::deadline) {
+         throws<tlsn::exceptions::deadline_exceeded>([&] { static_cast<void>(completion.get()); });
+      } else {
+         throws<tlsn::exceptions::transport_failed>([&] { static_cast<void>(completion.get()); });
+      }
+      const auto finished = stream->snapshot();
+      check(finished.closed && !finished.read_active && finished.peak <= window_bytes,
+            "producer terminal path retained an active stream pump or exceeded its byte window");
+      check(owner.snapshot().active == 0 && owner.snapshot().queued == 0, "producer terminal path retained admission");
+      if (mode == terminal::success) {
+         check(finished.writes == 128 && !finished.cancelled && finished.retained == 63 * chunk_bytes,
+               "successful producer cancelled or lost late retained chunk lifetimes");
+      } else {
+         check(finished.writes == 64 && finished.cancelled && finished.retained == 0,
+               "failed producer performed another write or failed to release retained chunks");
+      }
+      forge::asio::blocking::run(runtime, owner.shutdown());
+      no_children();
+      stream->release_all();
+      check(stream->snapshot().retained == 0, "late chunk release failed after native owner shutdown");
+   }
+   forge::asio::blocking::run(runtime, compute.shutdown());
+}
 
 void successful_teardown_tests(const temporary_directory& files, const identity& identity) {
    // Only host ownership is exercised with this fault worker. Native MPC tests
@@ -929,6 +1171,8 @@ int main(int argc, char** argv) {
       const auto worker = std::filesystem::path{argc > 1 ? argv[1] : FORGE_TLSNOTARY_WORKER_PATH};
       const auto identity = make_identity();
       const auto files = temporary_directory{};
+      std::cout << "stage producer-window" << std::endl;
+      producer_window_tests(files, identity);
       std::cout << "stage successful-teardown" << std::endl;
       successful_teardown_tests(files, identity);
       std::cout << "stage lifecycle" << std::endl;

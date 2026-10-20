@@ -48,6 +48,7 @@ module forge.net.tlsnotary.engine;
 import forge.exceptions;
 import forge.log.logger;
 import forge.net.transport.stream;
+import forge.net.transport.buffer;
 import forge.net.transport.exceptions;
 import forge.asio.gate;
 import forge.asio.notification;
@@ -123,13 +124,43 @@ exceptions::code status(std::uint32_t code) {
    }
 }
 } // namespace
+
+struct native_exchange::peer_window {
+   // Pace one producer below the default 12.75 MiB high-priority P2P scope.
+   // This is not a reservation of shared P2P capacity or an authorization limit.
+   static constexpr auto capacity = std::size_t{1024 * 1024};
+   std::atomic<std::size_t> used{0};
+   std::atomic<bool> closed{false};
+   forge::asio::notification changed;
+
+   struct ticket {
+      ticket(std::shared_ptr<peer_window> value, std::size_t count) : window{std::move(value)}, bytes{count} {
+         window->used.fetch_add(bytes);
+      }
+      ~ticket() {
+         window->used.fetch_sub(bytes);
+         window->changed.notify();
+      }
+      ticket(const ticket&) = delete;
+      ticket& operator=(const ticket&) = delete;
+
+      std::shared_ptr<peer_window> window;
+      std::size_t bytes;
+   };
+
+   void close() noexcept {
+      closed.store(true);
+      changed.notify();
+   }
+};
+
 native_exchange::native_exchange(forge::asio::runtime& runtime, forge::asio::compute::executor compute,
                                  std::filesystem::path worker, prover_request request,
                                  std::chrono::steady_clock::time_point deadline)
     : _strand{boost::asio::make_strand(runtime.context())}, _socket{_strand}, _timer{_strand},
       _compute{std::move(compute)}, _worker{std::move(worker)}, _peer{std::move(request.peer)},
       _server{std::move(request.server)}, _source{std::move(request.source)}, _options{std::move(request.options)},
-      _request{std::move(request.request_bytes)}, _prover{true} {
+      _request{std::move(request.request_bytes)}, _prover{true}, _peer_window{std::make_shared<peer_window>()} {
    _timer.expires_at(deadline);
 }
 
@@ -138,7 +169,8 @@ native_exchange::native_exchange(forge::asio::runtime& runtime, forge::asio::com
                                  std::chrono::steady_clock::time_point deadline)
     : _strand{boost::asio::make_strand(runtime.context())}, _socket{_strand}, _timer{_strand},
       _compute{std::move(compute)}, _worker{std::move(worker)}, _peer{std::move(request.peer)},
-      _source{std::move(request.source)}, _options{std::move(request.options)} {
+      _source{std::move(request.source)}, _options{std::move(request.options)},
+      _peer_window{std::make_shared<peer_window>()} {
    _timer.expires_at(deadline);
 }
 
@@ -350,6 +382,7 @@ void native_exchange::request_stop() noexcept {
       return;
    _stopped.store(true);
    _abort.store(true);
+   _peer_window->close();
    _peer.request_cancel();
    _server.request_cancel();
    try {
@@ -370,6 +403,7 @@ void native_exchange::close_ipc_on_strand() noexcept {
 
 void native_exchange::stop_on_strand() noexcept {
    _abort.store(true);
+   _peer_window->close();
    close_ipc_on_strand();
    _peer.request_cancel();
    _server.request_cancel();
@@ -475,11 +509,42 @@ boost::asio::awaitable<void> native_exchange::write_channel(bool server, std::ve
    if (bytes.size() > _options.max_peer_bytes - _outgoing[index])
       FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "raw stream write exceeds session wire limit");
    _outgoing[index] += bytes.size();
+   auto credit = std::shared_ptr<peer_window::ticket>{};
+   if (!server && !eof && !bytes.empty()) {
+      if (bytes.size() > peer_window::capacity)
+         FORGE_THROW_EXCEPTION(exceptions::limit_exceeded, "native peer frame exceeds producer window");
+      for (;;) {
+         // Ticket releases can run on the transport's owner thread. Capture the
+         // epoch before testing capacity so a concurrent release cannot be lost.
+         const auto epoch = _peer_window->changed.epoch();
+         if (_abort.load() || _peer_window->closed.load())
+            FORGE_THROW_EXCEPTION(exceptions::cancelled, "native peer producer stopped");
+         if (std::chrono::steady_clock::now() >= deadline())
+            FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "native peer producer deadline exceeded");
+         if (bytes.size() <= peer_window::capacity - _peer_window->used.load()) {
+            // _writing[0] permits only one producer; other threads only release.
+            credit = std::make_shared<peer_window::ticket>(_peer_window, bytes.size());
+            break;
+         }
+         try {
+            static_cast<void>(co_await _peer_window->changed.async_wait_until(epoch, deadline()));
+         } catch (...) {
+            if (std::chrono::steady_clock::now() >= deadline())
+               FORGE_THROW_EXCEPTION(exceptions::deadline_exceeded, "native peer producer deadline exceeded");
+            throw;
+         }
+      }
+   }
+   if (_abort.load())
+      FORGE_THROW_EXCEPTION(exceptions::cancelled, "native channel stopped before write");
    try {
       if (eof)
          co_await stream.async_close_write();
-      else
-         co_await stream.async_write(bytes);
+      else {
+         auto owned = forge::net::transport::chunk{std::move(bytes)};
+         forge::net::transport::detail::chunk_access::attach_lifetime(owned, std::move(credit));
+         co_await stream.async_write(std::move(owned));
+      }
    } catch (...) {
       log_channel_failure(_options.id, _prover, server, eof ? "close_write" : "write");
       FORGE_THROW_EXCEPTION(exceptions::transport_failed, "TLSNotary raw stream write failed");

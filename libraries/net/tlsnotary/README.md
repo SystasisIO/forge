@@ -100,6 +100,25 @@ claim about all deferred TLS records. Native validation also bounds encrypted
 server traffic. No numeric memory-containment promise is made: upstream allocates
 additional cryptographic/multiplexer memory; see [the donor note](../../../docs/donors/forge-net-tlsnotary-v2.md).
 
+The native bridge additionally paces peer writes through a private 1 MiB sliding
+byte window. A chunk keeps its window credit until the lower transport releases
+its existing lifetime; native 16 KiB frames can therefore have up to 64 writes
+retained before the producer waits. Releasing a chunk admits further bytes
+without a per-frame peer-ACK round trip. The host moves the owned frame into the
+transport chunk instead of copying it. Only the peer direction uses this window;
+server traffic, cumulative session byte limits and the public/wire contracts are
+unchanged. A waiting frame remains under the same absolute session deadline and
+is woken by cancellation or an internal failure, with worker/pump cleanup joined
+before admission is released. Late chunk release retains only independent window
+state, not the exchange or a transport owner.
+
+This is producer pacing, not a shared resource reservation or a memory-containment
+guarantee. The window leaves headroom below the default 12.75 MiB high-priority
+P2P protocol/peer threshold (two default active sessions retain at most 2 MiB of
+peer payload under these windows). Custom or concurrently shared P2P budgets
+remain authoritative and may still reject a write. The bridge adds no retry and
+does not increase resource limits.
+
 Compute admission is reused for short process launch and setup rollback. It is
 released after the strand installs the asynchronous Boost.Process reaper, not
 held throughout MPC. The embedding process must not reap these children or enable
@@ -131,6 +150,10 @@ selects the worker, so the same checks can validate the installed executable.
 `test_forge_plugins_net_tlsnotary_session` exercises the official App plugin.
 The independent installed consumer requests only installed public package leaves.
 Rust worker tests cover strict binary parsing and native input limits.
+The fault worker's retaining-stream burst checks producer pacing, one-chunk
+resumption, peak retained bytes, late lifetime release and full-window
+cancel/deadline/transport-failure cleanup. These host ownership tests authenticate
+no TLS transcript; actual native-session tests remain the cryptographic evidence.
 
 A local technical pass does not approve this upstream research version for
 production, establish Linux compatibility or prove a commercial cost threshold.
