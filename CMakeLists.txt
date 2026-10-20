@@ -348,6 +348,7 @@ set(
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/protocol/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/conversion/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/api/include"
+   "${CMAKE_CURRENT_SOURCE_DIR}/libraries/swarm/runtime/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/core/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/protocol/include"
    "${CMAKE_CURRENT_SOURCE_DIR}/libraries/chain/transaction/include"
@@ -920,6 +921,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       forge_api_core
       forge_api_auth
       forge_swarm_api
+      forge_swarm_runtime
       forge_api_stream
       forge_api_transport
       forge_api_quic
@@ -1103,6 +1105,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       api_core
       api_auth
       swarm_api
+      swarm_runtime
       api_stream
       api_transport
       api_quic
@@ -1315,6 +1318,7 @@ if(NOT FORGE_CONTRACT_SDK_HOST_PROFILE)
       libraries/api/core/include/forge
       libraries/api/auth/include/forge
       libraries/swarm/api/include/forge
+      libraries/swarm/runtime/include/forge
       libraries/api/http/include/forge
       libraries/api/stream/include/forge
       libraries/api/transport/include/forge

@@ -233,6 +233,12 @@ class service_node {
 - `forge.core.conversion` declares only the common primary template. Domain
   conversion leaves own explicit specializations in its C++ namespace; Core
   must not acquire domain or serialization dependencies through customization.
+- `swarm.runtime` composes Core mechanisms, API calls and caller-owned Forge
+  Asio execution. Concrete storage, discovery, provider publication and product
+  permission/quota services are supplied capabilities, not runtime-owned DBs,
+  network nodes or plugins. No private worker pool or alternate framing belongs
+  there. Admission applies to metadata and content; transport identity is not
+  permission, and queued bytes are not proof of useful delivery.
 
 ## VM Library Boundary
 

@@ -27,6 +27,7 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
          "protocol": r"swarm\.(?:db|storage|runtime|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm",
          "api": r"swarm\.(?:db|storage|runtime|conversion)|chain|db|net|app|plugins|execution|vm",
          "conversion": r"swarm\.(?:storage|runtime|api)|chain|api|asio|app|net|plugins|execution|vm",
+         "runtime": r"swarm\.(?:db|storage|conversion)|chain|db|net|app|plugins|execution|vm|api\.(?:transport|stream|http|p2p|quic|websocket)",
       }
       if leaf in forbidden:
          if re.search(r"\bimport\s+forge\.(?:" + forbidden[leaf] + r")(?:[.;])", text):
@@ -71,6 +72,7 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
       "protocol": r"swarm_(?:db|storage|runtime|api|conversion)|chain|db|api|asio|app|net|plugins|execution|vm",
       "api": r"swarm_(?:db|storage|runtime|conversion)|chain|db|net|app|plugins|execution|vm",
       "conversion": r"swarm_(?:storage|runtime|api)|chain|api|asio|app|net|plugins|execution|vm",
+      "runtime": r"swarm_(?:db|storage|conversion)|chain|db|net|app|plugins|execution|vm|api_(?:transport|stream|http|p2p|quic|websocket)",
    }
    for leaf, forbidden in forbidden_targets.items():
       cmake = family / leaf / "CMakeLists.txt"
