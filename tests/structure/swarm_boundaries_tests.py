@@ -143,6 +143,21 @@ class SwarmBoundariesTests(unittest.TestCase):
       self.write("libraries/swarm/conversion/conversion.cppm", "template <class Result> class conversion;\n")
       self.assertTrue(any("Core primary" in e for e in self.errors()))
 
+   def test_swarm_plugin_delegates_execution_and_connections(self):
+      name = "plugins/swarm/node/plugin.cpp"
+      self.write(name, "import forge.swarm.runtime.engine;\nimport forge.plugins.net.p2p.node.api;\n")
+      self.assertEqual(self.errors(), [])
+      for source in ("std::thread worker;", "boost::asio::io_context hidden;",
+                     "import forge.db.rocksdb.driver;", "current.async_open_protocol_stream(peer, protocol);"):
+         with self.subTest(source=source):
+            self.write(name, source)
+            self.assertTrue(any("Swarm plugin" in e for e in self.errors()))
+
+   def test_swarm_plugin_root_is_only_a_grouping_namespace(self):
+      self.write("plugins/swarm/node/include/forge/plugins/swarm/node/types.cppm",
+                 "export namespace forge::plugins::swarm { struct job {}; }\n")
+      self.assertTrue(any("node leaf" in e for e in self.errors()))
+
 
 if __name__ == "__main__":
    unittest.main()

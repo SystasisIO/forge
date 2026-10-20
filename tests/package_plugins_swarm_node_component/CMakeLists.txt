@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.31)
+project(forge-package-plugins-swarm-node-component LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_DISABLE_FIND_PACKAGE_Notcurses ON)
+find_package(Forge CONFIG REQUIRED COMPONENTS plugins_swarm_node)
+include(${CMAKE_CURRENT_LIST_DIR}/../package_dependency_boundary.cmake)
+forge_package_assert_dependency_boundary(Forge::forge_plugins_swarm_node
+   "Forge::forge_(plugins_net_p2p_resolver|plugins_net_tlsnotary_session|plugins_chain_signer|vm|execution|tui)($|_)")
+add_executable(forge_package_plugins_swarm_node_component main.cpp)
+target_link_libraries(forge_package_plugins_swarm_node_component PRIVATE Forge::forge_plugins_swarm_node)

@@ -1335,6 +1335,11 @@ PR7 implementation contracts:
   cancellation history. Close follows engine checkpoint/drain; escaped
   checkpoint capabilities reject new calls afterward. Existing eager-admission
   obligations remain: await or destroy accepted unstarted operations.
+- Named-catalog mode requires an application-owned DB executor; never run a
+  blocking driver flush on the P2P scheduler or create a hidden plugin pool.
+  Publication retirement supplies a sticky generation stop token, including
+  replacement without RPC, to cancel the owning engine and its advertisements.
+  Provider registration stop retains the explicit withdrawal/drain barrier.
 - Additional acceptance covers discovery of an initially unknown provider,
   failed-first/successful-second address fallback, identity mismatch, scoped
   circuit carrier hints, route retries/context lifetime, native cancellation

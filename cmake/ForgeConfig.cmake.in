@@ -138,6 +138,7 @@ set(
    plugins_net_tlsnotary_session
    plugins_log_otlp
    plugins_db_store
+   plugins_swarm_node
    plugins
    tui
    all
@@ -799,6 +800,23 @@ macro(_forge_add_component component)
          if(Forge_BUILT_WITH_MDBX)
             _forge_add_component(db_mdbx)
          endif()
+      elseif("${component}" STREQUAL "plugins_swarm_node")
+         _forge_add_component(app)
+         _forge_add_component(api_core)
+         _forge_add_component(swarm_runtime)
+         _forge_add_component(swarm_storage)
+         _forge_add_component(net_p2p)
+         _forge_add_component(multiformats)
+         _forge_add_component(asio)
+         _forge_add_component(config_core)
+         _forge_add_component(schema)
+         _forge_add_component(exceptions)
+         _forge_add_component(plugins_net_p2p_node)
+         _forge_add_component(plugins_db_store)
+         _forge_add_component(api_p2p)
+         _forge_add_component(api_transport)
+         _forge_add_component(crypto_digest)
+         _forge_add_component(raw)
       elseif("${component}" STREQUAL "plugins")
          _forge_add_component(plugins_chain_signer)
          _forge_add_component(plugins_crypto_secrets)
@@ -808,6 +826,7 @@ macro(_forge_add_component component)
          _forge_add_component(plugins_net_http_server)
          _forge_add_component(plugins_log_otlp)
          _forge_add_component(plugins_db_store)
+         _forge_add_component(plugins_swarm_node)
          if("plugins_net_tlsnotary_session" IN_LIST _FORGE_ALL_COMPONENTS)
             _forge_add_component(plugins_net_tlsnotary_session)
          endif()

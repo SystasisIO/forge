@@ -553,6 +553,12 @@ implementation-library namespaces. For plugin family/role decisions, follow
 
 ## Plugins
 
+- `plugins/swarm/node` owns only Swarm application composition over the existing
+  library runtime, official P2P APIs and optional guarded named catalog. It must
+  not own a second scheduler, provider renewal/discovery loop, payload DB or
+  payment policy. Product admission or explicitly free service is required.
+  Consumer APIs expose native operation handles and indexed metadata operations,
+  not mutable node/engine/catalog objects or DB-driver ownership.
 - Network plugins live in the nested families `net.http`, `net.p2p` and `net.tlsnotary`:
   `plugins/net/http/server`, `plugins/net/p2p/{node,resolver}` and
   `plugins/net/tlsnotary/session`. The TLSNotary session leaf owns bounded

@@ -91,6 +91,7 @@ target_link_libraries(test_forge_swarm_runtime_integration PRIVATE
    Boost::included_unit_test_framework)
 add_test(NAME test_forge_swarm_runtime_integration COMMAND test_forge_swarm_runtime_integration)
 set_tests_properties(test_forge_swarm_runtime_integration PROPERTIES TIMEOUT 120)
+add_subdirectory(swarm_plugin)
 add_test(NAME test_forge_package_dependency_boundary
    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/structure/package_dependency_boundary_tests.py)
 set_tests_properties(test_forge_package_dependency_boundary PROPERTIES TIMEOUT 60)
@@ -2352,6 +2353,7 @@ add_executable(
    plugins/p2p_peer_api_tests.cpp
    plugins/p2p_peer_contribution_tests.cpp
    plugins/p2p_protocol_registry_tests.cpp
+   plugins/publication_stop_tests.cpp
    plugins/protocol_registry_fixture.cpp
    plugins/details/protocol_registry_fixture.hxx
    plugins/p2p_host_event_api_tests.cpp
@@ -5156,3 +5158,16 @@ if(TARGET forge_net_tlsnotary)
             "${FORGE_PACKAGE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBEXECDIR}/forge/forge-tlsnotary-worker")
    set_tests_properties(test_forge_package_net_tlsnotary_component PROPERTIES DEPENDS test_forge_package_install TIMEOUT 180)
 endif()
+
+set(_forge_swarm_plugin_consumer
+   ${CMAKE_CTEST_COMMAND} --build-and-test
+   ${CMAKE_CURRENT_SOURCE_DIR}/package_plugins_swarm_node_component
+   ${CMAKE_BINARY_DIR}/forge-package-plugins-swarm-node-component
+   --build-generator ${CMAKE_GENERATOR}
+   --build-options ${FORGE_PACKAGE_CONSUMER_BUILD_OPTIONS}
+   --test-command forge_package_plugins_swarm_node_component)
+add_custom_target(test_forge_package_plugins_swarm_node_component
+   COMMAND ${_forge_swarm_plugin_consumer} DEPENDS test_forge_package_install)
+add_test(NAME test_forge_package_plugins_swarm_node_component COMMAND ${_forge_swarm_plugin_consumer})
+set_tests_properties(test_forge_package_plugins_swarm_node_component PROPERTIES
+   DEPENDS test_forge_package_install TIMEOUT 900)

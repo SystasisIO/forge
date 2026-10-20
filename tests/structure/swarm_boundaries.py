@@ -79,6 +79,21 @@ def check_swarm_boundaries(root: Path, errors: list[str]) -> None:
       if cmake.is_file() and re.search(r"\bforge_(?:" + forbidden + r")(?:_|\b)", cmake.read_text()):
          errors.append(f"libraries/swarm/{leaf}: target has a reverse dependency")
 
+   plugin = root / "plugins/swarm/node"
+   for source in plugin.rglob("*"):
+      if not source.is_file() or source.suffix not in {".cpp", ".cppm", ".hxx"}:
+         continue
+      text = source.read_text()
+      name = source.relative_to(root)
+      if re.search(r"\bnamespace\s+forge::plugins::swarm\s*\{", text):
+         errors.append(f"{name}: plugin symbols must belong to the Swarm node leaf")
+      if re.search(r"\bstd::(?:async|thread|jthread)\b|\bboost::asio::(?:thread_pool|io_context)\b", text):
+         errors.append(f"{name}: Swarm plugin creates a private worker runtime")
+      if re.search(r"\bimport\s+forge\.(?:chain|execution|vm|db\.(?:rocksdb|mdbx))(?:[.;])", text):
+         errors.append(f"{name}: Swarm plugin bypasses neutral library/plugin boundaries")
+      if re.search(r"\basync_open_protocol_stream\s*\(|\bprotocol_negotiation::", text):
+         errors.append(f"{name}: Swarm plugin bypasses the official P2P/API connection path")
+
    conversion = root / "libraries/core/include/forge/core/conversion.cppm"
    if not conversion.is_file():
       errors.append("Core conversion primary-template module is missing")
