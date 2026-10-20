@@ -25,11 +25,15 @@ jobs:
       contents: read
     env:
       DIAG_SOURCE: ${{ github.workspace }}/baseline-source
-      DIAG_ROOT: ${{ runner.temp }}/vm-wasm-linux-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
       CTEST_PARALLEL_LEVEL: '1'
       CPATH: ''
     steps:
+      - name: Bind the runner-local diagnostic directory
+        run: |
+          printf 'DIAG_ROOT=%s/vm-wasm-linux-diagnostic-%s-%s\n' \
+            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+
       - name: Read diagnostic source (never its HEAD as the product baseline)
         uses: actions/checkout@v4
         with:
