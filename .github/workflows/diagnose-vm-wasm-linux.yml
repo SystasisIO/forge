@@ -1,0 +1,104 @@
+name: Diagnose pinned Linux WAMR baseline
+
+on:
+  push:
+    branches: [vm-wasm-linux-diagnostics-v1]
+    paths:
+      - .github/workflows/diagnose-vm-wasm-linux.yml
+      - .github/scripts/diagnose-vm-wasm-linux.sh
+      - .github/probes/vm-wasm-linux-diagnostic/CMakeLists.txt
+      - .github/probes/vm-wasm-linux-diagnostic/README.md
+
+permissions: {}
+
+jobs:
+  baseline:
+    if: >-
+      github.repository == 'SystasisIO/forge' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/vm-wasm-linux-diagnostics-v1' &&
+      toJSON(github.event.deleted) == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    env:
+      DIAG_SOURCE: ${{ github.workspace }}/baseline-source
+      DIAG_ROOT: ${{ runner.temp }}/vm-wasm-linux-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      CTEST_PARALLEL_LEVEL: '1'
+      CPATH: ''
+    steps:
+      - name: Read diagnostic source (never its HEAD as the product baseline)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read exact CI65 baseline and its pinned vendors
+        uses: actions/checkout@v4
+        with:
+          ref: 830b4cad6bf00dde0519cb7cd33d231a40bbeb43
+          path: baseline-source
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify trusted producer API identity and both archive digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh trust
+
+      - name: Install normal ABI preflight prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update 2>&1 | tee "$DIAG_ROOT/evidence/apt-update.log"
+          sudo apt-get install -y cmake ninja-build 2>&1 | tee "$DIAG_ROOT/evidence/apt-install.log"
+
+      - name: Consume existing qualified LLVM (no rebuild or fallback)
+        run: >-
+          GITHUB_WORKSPACE="$DIAG_SOURCE" bash "$DIAG_SOURCE/.github/scripts/setup-vm-wasm-toolchain.sh"
+          "$DIAG_ROOT/evidence/toolchain" consume-linux
+          "$DIAG_ROOT/bundle" "$DIAG_ROOT/llvm"
+          425f4cd6173b6130425419d0e608f6551c0fb4322a076b7618f850228438c9c3
+          cbd0880dd7325bae781da9da1ae851d7f7c42aa36d11fb28506b1f86f4d48583
+
+      - name: Require actual libc++220108 headers
+        run: >-
+          python3 "$DIAG_SOURCE/.github/scripts/check-vm-wasm-toolchain.py"
+          headers "$DIAG_ROOT/evidence/toolchain"
+
+      - name: Normal Linux dependencies (record actual packages, not CI65 equivalence)
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh dependencies
+
+      - name: Activate the existing qualified CMake3.31.6 after Brew
+        run: >-
+          bash "$DIAG_SOURCE/.github/scripts/setup-vm-wasm-cmake.sh"
+          "$DIAG_ROOT/evidence/toolchain/cmake"
+
+      - name: Configure unchanged CI65 JIT/AOT profile
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh configure
+
+      - name: Build only Forge, helper, public profile and normal dev install
+        id: build
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh build
+
+      - name: Baseline ELF entry and unfiltered profile10 / installed package5
+        id: baseline
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh baseline
+
+      - name: Separate binding observer and symbol-link experiment, even after a red baseline
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh observe
+
+      - name: Seal bounded evidence without hiding previous failures
+        if: always()
+        run: bash .github/scripts/diagnose-vm-wasm-linux.sh collect
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-ci65-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DIAG_ROOT }}/upload/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
