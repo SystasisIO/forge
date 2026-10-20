@@ -19,7 +19,7 @@ jobs:
       github.ref == 'refs/heads/vm-wasm-linux-diagnostics-v1' &&
       toJSON(github.event.deleted) == 'false'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       actions: read
       contents: read

@@ -89,7 +89,7 @@ or full-suite qualification; the new sibling probe does not alter the existing
 `llvm-cxx-abi` recipe inputs.
 
 The existing full Forge/helper/profile build and normal dev install retain
-build parallelism 2, serial CTests, the workflow's 60-minute infrastructure
+build parallelism 2, serial CTests, the workflow's 120-minute infrastructure
 limit and unchanged canonical runtime timeouts (profile 120s, package 900s).
 This source candidate is pending review/publication/execution; previous CI65
 diagnostic commits, failures and R15 evidence remain immutable history.
