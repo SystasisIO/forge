@@ -1691,6 +1691,49 @@ BOOST_AUTO_TEST_CASE(p2p_node_publication_closed_before_startup_does_not_reserve
    forge::asio::blocking::run(server.runtime(), server.shutdown());
 }
 
+BOOST_AUTO_TEST_CASE(p2p_api_authenticated_open_rejects_unverified_without_stopping_shared_node) {
+   const auto server_peer = test_peer(246);
+   auto server_config = test_p2p_config(server_peer);
+   server_config.set("plugins.net.p2p.node.listen", forge::config::core::value::array_type{
+      forge::config::core::value{"/ip4/127.0.0.1/udp/0/quic-v1"}});
+   auto server = p2p_only_application{};
+   server.configure(server_config);
+   forge::asio::blocking::run(server.runtime(), server.startup());
+   auto server_p2p = server.apis().get<forge::plugins::net::p2p::node::api>(
+      {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
+   const auto endpoint = server_p2p->local_endpoint();
+   BOOST_REQUIRE(endpoint.has_value());
+   auto apis = forge::api::core::registry{};
+   apis.install<node_test_api>(node_test_api::describe(), std::make_shared<node_test_api_impl>());
+   const auto protocol = forge::net::p2p::protocol_id{"/forge/api/auth-required/1"};
+   auto publication = server_p2p->publish_api(node_test_plan(apis), protocol);
+
+   auto client_config = test_p2p_config(test_peer(247));
+   client_config.set("plugins.net.p2p.node.bootstrap",
+      forge::config::core::value::array_type{forge::config::core::value{endpoint->to_string()}});
+   auto client = p2p_only_application{};
+   client.configure(client_config);
+   forge::asio::blocking::run(client.runtime(), client.startup());
+   auto client_p2p = client.apis().get<forge::plugins::net::p2p::node::api>(
+      {.id = {"forge.plugins.net.p2p.node"}, .major = 3, .min_revision = 0});
+   BOOST_CHECK(!forge::plugins::net::p2p::node::remote_options{}.require_authenticated_peer);
+   BOOST_CHECK_THROW(static_cast<void>(forge::asio::blocking::run(client.runtime(),
+      client_p2p->open_api_connection(server_peer, protocol, {.require_authenticated_peer = true}))),
+      forge::net::p2p::exceptions::peer_verification_failed);
+   const auto diagnostics = client.apis().get<forge::plugins::net::p2p::node::diagnostics_api>(
+      {.id = {"forge.plugins.net.p2p.node.diagnostics"}, .major = 1, .min_revision = 0})->snapshot();
+   BOOST_CHECK(std::ranges::any_of(diagnostics.sessions, [&](const auto& session) {
+      return session.remote_peer == server_peer && !session.closed &&
+         session.authentication == forge::net::p2p::peer_authentication::unverified;
+   }));
+   // Default source behavior still works after the rejected stream is drained.
+   auto remote = forge::asio::blocking::run(client.runtime(), client_p2p->remote<node_test_api>(server_peer, protocol));
+   BOOST_TEST(forge::asio::blocking::run(client.runtime(), remote->ping(41)) == 42);
+   forge::asio::blocking::run(client.runtime(), client.shutdown());
+   forge::asio::blocking::run(server.runtime(), publication.async_close());
+   forge::asio::blocking::run(server.runtime(), server.shutdown());
+}
+
 BOOST_AUTO_TEST_CASE(p2p_node_publication_replacement_keeps_latest_generation) {
    const auto server_peer = test_peer(236);
    auto server_config = test_p2p_config(server_peer);

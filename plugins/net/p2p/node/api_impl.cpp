@@ -2,6 +2,11 @@ module;
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_state.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <forge/exceptions/macros.hpp>
 
 #include <algorithm>
@@ -32,12 +37,14 @@ import forge.api.p2p.publication;
 import forge.exceptions;
 import forge.net.p2p.dht.record_store;
 import forge.net.p2p.endpoint;
+import forge.net.p2p.exceptions;
 import forge.net.p2p.identity;
 import forge.net.p2p.node;
 import forge.net.p2p.topology;
 import forge.multiformats.multiaddr;
 import forge.net.p2p.peer_store;
 import forge.net.p2p.protocol;
+import forge.net.p2p.stream;
 import forge.net.p2p.pubsub;
 import forge.net.p2p.scoring;
 import forge.plugins.net.p2p.node.config;
@@ -107,6 +114,30 @@ plugin::api_impl::open_owned(std::shared_ptr<plugin::impl> owner, forge::net::p2
    const auto current = owner->require_running_node();
    auto stream = co_await current->async_open_protocol_stream(std::move(peer), std::move(protocol),
                                                               owner->open_options_for(options));
+   const auto authentication = stream.authentication();
+   const auto authenticated = authentication == forge::net::p2p::peer_authentication::quic_tls ||
+      authentication == forge::net::p2p::peer_authentication::libp2p_tls ||
+      authentication == forge::net::p2p::peer_authentication::noise;
+   if (options.require_authenticated_peer && !authenticated) {
+      // Reject before erasing the stream's authentication evidence. Cancellation
+      // requests stop; the separate close coroutine is the native ownership fence.
+      stream.request_cancel();
+      const auto throwing = co_await boost::asio::this_coro::throw_if_cancelled();
+      co_await boost::asio::this_coro::throw_if_cancelled(false);
+      auto cleanup_failed = false;
+      try {
+         co_await boost::asio::co_spawn(co_await boost::asio::this_coro::executor,
+            [](forge::net::p2p::stream owned) -> boost::asio::awaitable<void> {
+               co_await boost::asio::this_coro::throw_if_cancelled(false);
+               co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation{});
+               co_await owned.async_close();
+            }(std::move(stream)),
+            boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } catch (...) { cleanup_failed = true; }
+      co_await boost::asio::this_coro::throw_if_cancelled(throwing);
+      FORGE_THROW_EXCEPTION(forge::net::p2p::exceptions::peer_verification_failed,
+         "P2P API connection requires an authenticated peer", forge::exceptions::ctx("cleanup_failed", cleanup_failed));
+   }
    co_return forge::api::transport::connection{std::move(stream).into_transport_stream(),
                                                owner->api_options_for(options)};
 }

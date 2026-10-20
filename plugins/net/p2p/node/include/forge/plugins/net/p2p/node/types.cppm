@@ -30,6 +30,8 @@ struct remote_options {
    std::optional<std::size_t> max_inflight;
    std::optional<std::chrono::milliseconds> deadline;
    std::optional<std::uint32_t> max_frame_size;
+   // Successful open then proves authentication of the requested Peer ID.
+   bool require_authenticated_peer = false;
 };
 
 struct publish_options {

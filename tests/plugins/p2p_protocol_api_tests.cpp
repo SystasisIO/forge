@@ -323,6 +323,25 @@ BOOST_AUTO_TEST_CASE(p2p_protocol_prestart_close_live_replacement_and_admitted_s
    first.request_cancel(); second.request_cancel();
 }
 
+BOOST_AUTO_TEST_CASE(p2p_api_authenticated_open_accepts_native_verified_peer) {
+   fixture server;
+   auto raw = server.raw->register_protocol({"/raw/auth-evidence/1"}, echo(1));
+   auto publication = server.publish({"/api/authenticated-open/1"});
+   server.run(server.node.startup());
+   const auto endpoint = server.api->local_endpoint();
+   BOOST_REQUIRE(endpoint.has_value());
+   fixture client{endpoint};
+   client.run(client.node.startup());
+   auto evidence = client.run(client.raw->open(server.api->local_peer(), {"/raw/auth-evidence/1"}, {.timeout = 2s}));
+   BOOST_CHECK(evidence.authentication() == p2p::peer_authentication::libp2p_tls);
+   client.run(evidence.async_close());
+   auto connection = client.run(client.api->open_api_connection(server.api->local_peer(),
+      {"/api/authenticated-open/1"}, {.require_authenticated_peer = true}));
+   BOOST_CHECK(connection.valid());
+   client.run(connection.async_close());
+   server.run(publication.async_close());
+}
+
 BOOST_AUTO_TEST_CASE(p2p_protocol_configured_dht_names_stay_reserved_and_fresh_owners_use_new_settings) {
    using value = forge::config::core::value;
    fixture f{std::nullopt, 32, false, [](auto& config) {
