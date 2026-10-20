@@ -196,6 +196,20 @@ elif [[ "$mode" == bootstrap-linux ]]; then
    log_run runtimes-build /usr/bin/cmake --build "$work/runtimes" -j 2
    log_run runtimes-install /usr/bin/cmake --install "$work/runtimes" --strip
 
+   stage_a_unwind="$prefix/lib/libunwind.so.1"
+   log_run stage-a-unwind-input python3 -c '
+import hashlib, json, pathlib, sys
+prefix = pathlib.Path(sys.argv[1]).resolve(strict=True)
+library = pathlib.Path(sys.argv[2]).resolve(strict=True)
+if not library.is_file() or not library.is_relative_to(prefix):
+    raise SystemExit("HARNESS_ERROR: Stage A libunwind outside installed prefix or not a file")
+print(json.dumps({"input": sys.argv[2], "realpath": str(library),
+                  "sha256": hashlib.sha256(library.read_bytes()).hexdigest()}, indent=2))
+' "$prefix" "$stage_a_unwind"
+   log_run stage-a-unwind-exports /usr/bin/readelf --dyn-syms --wide "$stage_a_unwind"
+   log_run stage-a-unwind-versions /usr/bin/readelf --version-info "$stage_a_unwind"
+   log_run llvm-unwind-check-inputs sha256sum "$source/llvm/cmake/config-ix.cmake" "$source/llvm/cmake/unwind.h"
+
    probe="$GITHUB_WORKSPACE/.github/probes/llvm-cxx-abi"
    abi_flags=(-std=c++23 -stdlib=libc++ -nostdinc++ -isystem "$prefix/include/c++/v1" \
       -L"$prefix/lib" -fexceptions -frtti)
@@ -211,6 +225,8 @@ elif [[ "$mode" == bootstrap-linux ]]; then
 
    # Stage B: explicitly bind both headers and link search to Stage A libc++.
    # Upstream llvm-config exports only its stdlib/ABI flags, not this staging include path.
+   # Required libraries affect all native checks; never preseed the unwind capabilities.
+   llvm_configure_status=0
    log_run llvm-configure /usr/bin/cmake -S "$source/llvm" -B "$work/llvm" -G Ninja \
       -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
@@ -220,6 +236,7 @@ elif [[ "$mode" == bootstrap-linux ]]; then
       "-DCMAKE_SHARED_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       "-DCMAKE_MODULE_LINKER_FLAGS=-L$prefix/lib -fuse-ld=/usr/bin/ld.lld-22" \
       -DCMAKE_BUILD_RPATH="$prefix/lib" -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
+      "-DCMAKE_REQUIRED_LIBRARIES:STRING=$stage_a_unwind" \
       -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF \
       '-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra' \
       -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
@@ -231,8 +248,24 @@ elif [[ "$mode" == bootstrap-linux ]]; then
       -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF \
       -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF \
       -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_ENABLE_LIBXML2=OFF \
-      -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_FFI=OFF
-   cp "$work/llvm/CMakeCache.txt" "$evidence/llvm-CMakeCache.txt"
+      -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_FFI=OFF || llvm_configure_status=$?
+   printf '%s\n' "$llvm_configure_status" > "$evidence/llvm-configure.exit"
+   if [[ -f "$work/llvm/CMakeCache.txt" ]]; then
+      cp "$work/llvm/CMakeCache.txt" "$evidence/llvm-CMakeCache.txt"
+   fi
+   if [[ -f "$work/llvm/CMakeFiles/CMakeConfigureLog.yaml" ]]; then
+      cp "$work/llvm/CMakeFiles/CMakeConfigureLog.yaml" "$evidence/llvm-CMakeConfigureLog.yaml"
+   fi
+   if [[ "$llvm_configure_status" != 0 ]]; then
+      echo 'HARNESS_ERROR: LLVM configure failed; retained its exit status and available raw checks' >&2
+      exit "$llvm_configure_status"
+   fi
+   test -s "$evidence/llvm-CMakeCache.txt"
+   test -s "$evidence/llvm-CMakeConfigureLog.yaml"
+   log_run llvm-register-frame-check grep -Fx 'HAVE_REGISTER_FRAME:INTERNAL=1' "$work/llvm/CMakeCache.txt"
+   log_run llvm-deregister-frame-check grep -Fx 'HAVE_DEREGISTER_FRAME:INTERNAL=1' "$work/llvm/CMakeCache.txt"
+   log_run llvm-dynamic-fde-check grep -Fx 'HAVE_UNW_ADD_DYNAMIC_FDE:INTERNAL=1' "$work/llvm/CMakeCache.txt"
+   log_run llvm-unwind-backtrace-check grep -Fx 'HAVE__UNWIND_BACKTRACE:INTERNAL=1' "$work/llvm/CMakeCache.txt"
    log_run llvm-c-pic-check grep -Fx 'C_SUPPORTS_FPIC:INTERNAL=1' "$work/llvm/CMakeCache.txt"
    log_run llvm-cxx-pic-check grep -Fx 'CXX_SUPPORTS_FPIC:INTERNAL=1' "$work/llvm/CMakeCache.txt"
    log_run llvm-build /usr/bin/cmake --build "$work/llvm" -j 2

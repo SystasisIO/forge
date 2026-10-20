@@ -94,6 +94,32 @@ preserves `guest_trap : interpreter`, typed memory and operational-resource
 distinctions; unknown/auxiliary-stack reasons must not become canonical guest
 results by inference or string matching.
 
+## Linux Qualification Checkpoint: 2026-10-20
+
+[CI65](https://github.com/SystasisIO/forge/actions/runs/39406169819) on
+`830b4cad6bf00dde0519cb7cd33d231a40bbeb43` produced a qualified LLVM bundle.
+The Linux JIT/AOT lane passed 80/82 outer tests, with its installed optimizing
+suite passing 4/5 nested tests. The two failures remain acceptance blockers,
+not skips or approved compatibility changes.
+
+The [separate unchanged-source diagnostic](https://github.com/SystasisIO/forge/actions/runs/39451522428)
+reproduced both failures. The installed helper exits in the loader with six
+missing Boost DSOs; its install RUNPATH lacks the external directories present
+in the build helper. Actual profile registration, deregistration and stack
+walking bind to pinned LLVM libunwind, while live guest-frame assertions fail
+with a CIE-as-FDE diagnostic. A final-toolchain C symbol-link comparison finds
+the dynamic-FDE symbol only when explicitly linking the pinned libunwind.
+That comparison is not the historical Stage A producer check or a fixed runtime.
+
+The bounded fixes use standard target-local install link paths and genuine
+upstream LLVM capability discovery against Stage A libunwind. No capability
+result is forced and no second frame registry or unwinder is introduced.
+The producer change requires a new recipe key and freshly qualified bundle;
+the original CI65 artifact must not be relabeled. Both fixes still require
+unchanged canonical Linux profiling, installed-session and complete CI gates.
+Neither this checkpoint nor source review closes overall migration, SDK,
+current-product, physical-profile, performance or provenance acceptance.
+
 ## Approved Compatibility Breaks
 
 The human maintainer explicitly approved rejecting three historical malformed

@@ -886,6 +886,135 @@ class ProvisioningTests(unittest.TestCase):
                 TOOLCHAIN.bottle(file, "arm64_sequoia")
 
 
+class LinuxUnwindProducerTests(unittest.TestCase):
+    capabilities = ("HAVE_REGISTER_FRAME", "HAVE_DEREGISTER_FRAME", "HAVE_UNW_ADD_DYNAMIC_FDE",
+                    "HAVE__UNWIND_BACKTRACE")
+
+    def source_sections(self):
+        source = (ROOT / ".github/scripts/setup-vm-wasm-toolchain.sh").read_text()
+        prologue = source.split('if [[ "$mode" == intel-runtime-off ]]; then', 1)[0]
+        checks = "   llvm_configure_status=0" + source.split("   llvm_configure_status=0", 1)[1]
+        checks = checks.split("   log_run llvm-build ", 1)[0]
+        self.assertEqual(checks.count("/usr/bin/cmake"), 1)
+        return source, prologue, checks.replace("/usr/bin/cmake", "capture_cmake", 1)
+
+    def run_checks(self, mutation=None, configure_exit=0, missing=None):
+        _, prologue, checks = self.source_sections()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            native = root / "work/llvm"
+            (native / "CMakeFiles").mkdir(parents=True)
+            values = dict.fromkeys(self.capabilities, "1")
+            values.update(C_SUPPORTS_FPIC="1", CXX_SUPPORTS_FPIC="1")
+            for name, value in (mutation or {}).items():
+                if value is None:
+                    del values[name]
+                else:
+                    values[name] = value
+            if missing != "cache":
+                (native / "CMakeCache.txt").write_text("".join(f"{name}:INTERNAL={value}\n"
+                                                               for name, value in values.items()))
+            raw = "metadata-only configure/check fixture; no compiler was executed\n"
+            if missing != "raw":
+                (native / "CMakeFiles/CMakeConfigureLog.yaml").write_text(raw)
+            script = (prologue + '\ncapture_cmake() { printf "%s\\n" "$@"; return "$CONFIGURE_EXIT"; }\n'
+                      + checks + '\nprintf "%s\\n" READY_FOR_LLVM_BUILD\n')
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix=str(root / "install"),
+                               stage_a_unwind=str(root / "install/lib/libunwind.so.1"),
+                               source=str(root / "source"), work=str(root / "work"),
+                               CONFIGURE_EXIT=str(configure_exit))
+            evidence = root / "evidence"
+            result = subprocess.run(["bash", "-c", script, "unwind-producer-test", str(evidence)],
+                                    env=environment, capture_output=True, text=True, timeout=10)
+            files = {file.name: file.read_text() for file in evidence.iterdir() if file.is_file()}
+            return result, files, environment, raw
+
+    def test_actual_stage_a_input_path_and_hash_reject_escape_missing_or_directory(self):
+        source, prologue, _ = self.source_sections()
+        guard = '   stage_a_unwind="' + source.split('   stage_a_unwind="', 1)[1]
+        guard = guard.split("   log_run stage-a-unwind-exports ", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefix = root / "install"
+            (prefix / "lib").mkdir(parents=True)
+            library = prefix / "lib/libunwind.so.1"
+            target = prefix / "lib/real-unwind.so"
+            target.write_text("metadata-only owned DSO fixture\n")
+            outside = root / "outside.so"
+            outside.write_text("metadata-only outside fixture\n")
+            for kind in ("owned", "outside", "missing", "directory"):
+                with self.subTest(kind=kind):
+                    if kind != "missing":
+                        library.symlink_to({"owned": target, "outside": outside, "directory": prefix}[kind])
+                    evidence = root / kind
+                    environment = dict(os.environ, GITHUB_WORKSPACE=str(ROOT), prefix=str(prefix))
+                    result = subprocess.run(["bash", "-c", prologue + guard, "unwind-input-test", str(evidence)],
+                                            env=environment, capture_output=True, text=True, timeout=10)
+                    if kind == "owned":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        record = json.loads((evidence / "stage-a-unwind-input.log").read_text())
+                        self.assertEqual(record["input"], str(library))
+                        self.assertEqual(record["realpath"], str(target.resolve()))
+                        self.assertEqual(record["sha256"], TOOLCHAIN.sha256(target))
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("HARNESS_ERROR", result.stderr)
+                    if library.is_symlink():
+                        library.unlink()
+
+    def test_pinned_required_library_and_real_checks_precede_expensive_build(self):
+        source, _, _ = self.source_sections()
+        result, files, environment, raw = self.run_checks()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("READY_FOR_LLVM_BUILD", result.stdout)
+        self.assertIn("-DCMAKE_REQUIRED_LIBRARIES:STRING=" + environment["stage_a_unwind"],
+                      files["llvm-configure.log"].splitlines())
+        self.assertEqual(files["llvm-configure.exit"], "0\n")
+        self.assertEqual(files["llvm-CMakeConfigureLog.yaml"], raw)
+        for name in self.capabilities:
+            self.assertIn(f"{name}:INTERNAL=1\n", files["llvm-CMakeCache.txt"])
+            self.assertLess(source.index(f"'{name}:INTERNAL=1'"), source.index("log_run llvm-build "))
+            self.assertNotIn(f"-D{name}=", source)
+        for name in ("stage-a-unwind-input", "stage-a-unwind-exports", "stage-a-unwind-versions",
+                     "llvm-unwind-check-inputs"):
+            self.assertLess(source.index(f"log_run {name} "), source.index("log_run llvm-configure "))
+
+    def test_false_or_missing_real_capability_refuses_before_build_and_retains_raw(self):
+        for name in self.capabilities:
+            for value in ("", "0", None):
+                with self.subTest(capability=name, value=value):
+                    result, files, _, raw = self.run_checks({name: value})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("READY_FOR_LLVM_BUILD", result.stdout)
+                    self.assertIn("HARNESS_ERROR", result.stderr)
+                    self.assertEqual(files["llvm-configure.exit"], "0\n")
+                    self.assertEqual(files["llvm-CMakeConfigureLog.yaml"], raw)
+                    if value is not None:
+                        self.assertIn(f"{name}:INTERNAL={value}\n", files["llvm-CMakeCache.txt"])
+
+    def test_configure_failure_preserves_status_and_available_checks_without_build(self):
+        for missing in (None, "cache", "raw"):
+            with self.subTest(missing=missing):
+                result, files, _, raw = self.run_checks(configure_exit=77, missing=missing)
+                self.assertEqual(result.returncode, 77, result.stderr)
+                self.assertNotIn("READY_FOR_LLVM_BUILD", result.stdout)
+                self.assertEqual(files["llvm-configure.exit"], "77\n")
+                self.assertNotIn("llvm-register-frame-check.command", files)
+                if missing != "raw":
+                    self.assertEqual(files["llvm-CMakeConfigureLog.yaml"], raw)
+                if missing != "cache":
+                    self.assertIn("llvm-CMakeCache.txt", files)
+
+    def test_success_without_cache_or_raw_checks_refuses_before_build(self):
+        for missing in ("cache", "raw"):
+            with self.subTest(missing=missing):
+                result, files, _, _ = self.run_checks(missing=missing)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("HARNESS_ERROR", result.stderr)
+                self.assertNotIn("READY_FOR_LLVM_BUILD", result.stdout)
+                self.assertEqual(files["llvm-configure.exit"], "0\n")
+
+
 class LinuxConsumerPrerequisiteTests(unittest.TestCase):
     def prerequisite_steps(self):
         source = (ROOT / ".github/workflows/vm-wasm.yml").read_text()
