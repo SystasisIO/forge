@@ -17,6 +17,16 @@ import tempfile
 DONOR_COMMIT = "e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f"
 FIXTURE_COMMIT = "ffbbb552e6020623d8ae148d81a152c8ef700325"
 DONOR_MANIFEST_SHA256 = "ede2eae24fe49c00c8ccfa99f8e4c8f2fbc370734e012c99bd225c38c36ca186"
+HOST_FUNCTIONS_DONOR_SHA256 = "7eeddf96ad2340bb4de11ae131a68991d3a0f9138fa4ea9c5691f9650811a69f"
+HOST_FUNCTIONS_PORT_SHA256 = "10b6d05a534c08055279a5144d3108dde96f7576779d811e1ad4e48d3687ad7d"
+HOST_FUNCTIONS_HARNESS = (
+    ("namespace {\n\ntemplate<typename Host>",
+     'namespace {\n#include "host_functions_support.hpp"\ntemplate<typename Host>', 1),
+    ("   using type_converter<Host>::type_converter;",
+     "   cnv(Host* host, execution_interface interface) : type_converter<Host>(host, host_function_test_interface(interface)) {}", 1),
+    ("bkend.get_context().linear_memory() + offset",
+     "host_function_test_memory(bkend.get_context().linear_memory()) + offset", 4),
+)
 
 CASE_PATTERN = re.compile(
     r'\b(BACKEND_TEST_CASE|TEST_CASE)\s*\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)'
@@ -464,7 +474,27 @@ def transform_text(text: str, relative: pathlib.Path) -> str:
 
 def transform_source(path: pathlib.Path, donor: pathlib.Path) -> str:
     relative = path.relative_to(donor / "tests")
-    return apply_profile_expectations(transform_text(path.read_text(), relative), relative, sha256(path))
+    prepared = apply_profile_expectations(transform_text(path.read_text(), relative), relative, sha256(path))
+    return adapt_host_function_harness(prepared, relative, sha256(path))
+
+
+def adapt_host_function_harness(text: str, relative: pathlib.Path, donor_sha256: str) -> str:
+    if relative.as_posix() != "host_functions_tests.cpp":
+        return text
+    if donor_sha256 != HOST_FUNCTIONS_DONOR_SHA256:
+        raise RuntimeError("host functions harness: pinned donor source hash differs")
+    if hashlib.sha256(text.encode()).hexdigest() != HOST_FUNCTIONS_PORT_SHA256:
+        raise RuntimeError("host functions harness: historical port hash differs")
+    before = text
+    for old, new, count in HOST_FUNCTIONS_HARNESS:
+        if text.count(old) != count:
+            raise RuntimeError(f"host functions harness: expected {count} statement anchors for {old!r}")
+        text = text.replace(old, new)
+    if (text.count("\n") != before.count("\n")
+            or case_manifest(text, relative.name) != case_manifest(before, relative.name)
+            or ported_assertions(text) != ported_assertions(before)):
+        raise RuntimeError("host functions harness: changed cases, lines or assertions")
+    return text
 
 
 def ported_assertions(text: str) -> dict[str, int]:
@@ -534,6 +564,7 @@ def build_profile_manifest(donor: pathlib.Path, fixtures: pathlib.Path) -> dict[
         original = path.read_text()
         historical = transform_text(original, relative)
         prepared = apply_profile_expectations(historical, relative, sha256(path))
+        prepared = adapt_host_function_harness(prepared, relative, sha256(path))
         cases = case_manifest(historical, relative.name)
         if cases != case_manifest(prepared, relative.name):
             raise RuntimeError(f"{relative}: changed case registrations")
@@ -578,7 +609,16 @@ def build_profile_manifest(donor: pathlib.Path, fixtures: pathlib.Path) -> dict[
         "tool_inputs": [{"path": name, "sha256": sha256(here / name)} for name in
                         ("port_donor_tests.py", "test_port_donor_tests.py", "PROFILE_ORACLE.md")],
         "harness_inputs": [{"path": name, "sha256": sha256(here / name)} for name in
-                           ("CMakeLists.txt", "test_support.hpp", "test_prelude.hpp", "donor/sources.cmake")],
+                           ("CMakeLists.txt", "test_support.hpp", "test_prelude.hpp", "host_functions_support.hpp",
+                            "donor/sources.cmake")],
+        "harness_adaptations": [{
+            "source": "host_functions_tests.cpp",
+            "donor_sha256": HOST_FUNCTIONS_DONOR_SHA256,
+            "historical_port_sha256": HOST_FUNCTIONS_PORT_SHA256,
+            "purpose": "Real host pointer/reference identity storage for the unchanged memoryless fixture",
+            "replacements": [{"old": old, "new": new, "count": count}
+                             for old, new, count in HOST_FUNCTIONS_HARNESS],
+        }],
         "support_inputs": [{"path": f"support/{name}", "sha256": sha256(donor / "tests" / name)}
                            for name in SUPPORT_FILES],
         "verification_boundary": "Source transformation only; C++ compilation/runtime NOT_RUN by this slice",

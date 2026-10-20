@@ -10,3 +10,10 @@ if(NOT "${dependencies}" STREQUAL "Forge::forge_vm_wasm_interpret;Forge::forge_c
 endif()
 add_executable(forge_package_vm_wasm_execution_component main.cpp)
 target_link_libraries(forge_package_vm_wasm_execution_component PRIVATE Forge::forge_vm_wasm_execution)
+if(APPLE)
+   target_link_options(forge_package_vm_wasm_execution_component PRIVATE
+      "LINKER:-map,${CMAKE_CURRENT_BINARY_DIR}/forge_package_vm_wasm_execution_component.linkmap")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   target_link_options(forge_package_vm_wasm_execution_component PRIVATE
+      "LINKER:-Map,${CMAKE_CURRENT_BINARY_DIR}/forge_package_vm_wasm_execution_component.linkmap")
+endif()

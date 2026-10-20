@@ -249,5 +249,53 @@ class ProfileOracleTests(unittest.TestCase):
             self.assertFalse(profile.exists())
 
 
+class HostFunctionHarnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        text = (HERE / "donor/unit/host_functions_tests.cpp").read_text()
+        if hashlib.sha256(text.encode()).hexdigest() != port.HOST_FUNCTIONS_PORT_SHA256:
+            for old, new, count in reversed(port.HOST_FUNCTIONS_HARNESS):
+                if text.count(new) != count:
+                    raise AssertionError("noncanonical host function harness")
+                text = text.replace(new, old)
+        if hashlib.sha256(text.encode()).hexdigest() != port.HOST_FUNCTIONS_PORT_SHA256:
+            raise AssertionError("host function historical port hash mismatch")
+        cls.historical = text
+
+    def apply(self, text: str | None = None, donor_hash: str = port.HOST_FUNCTIONS_DONOR_SHA256) -> str:
+        return port.adapt_host_function_harness(
+            self.historical if text is None else text, pathlib.Path("host_functions_tests.cpp"), donor_hash)
+
+    def test_preserves_all_cases_lines_assertions_and_original_fixture(self) -> None:
+        prepared = self.apply()
+        self.assertEqual(prepared, (HERE / "donor/unit/host_functions_tests.cpp").read_text())
+        self.assertEqual(port.case_manifest(self.historical, "host_functions_tests.cpp"),
+                         port.case_manifest(prepared, "host_functions_tests.cpp"))
+        self.assertEqual(port.ported_assertions(self.historical), port.ported_assertions(prepared))
+        self.assertEqual(self.historical.count("\n"), prepared.count("\n"))
+        self.assertIn('#include "host_functions_tests_1.wasm.hpp"', prepared)
+        for old, new, count in port.HOST_FUNCTIONS_HARNESS:
+            self.assertNotIn(old, prepared)
+            self.assertEqual(prepared.count(new), count)
+
+    def test_rejects_changed_donor_and_port(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "pinned donor source hash"):
+            self.apply(donor_hash="0" * 64)
+        with self.assertRaisesRegex(RuntimeError, "historical port hash"):
+            self.apply(self.historical + "\n")
+
+    def test_rejects_missing_and_duplicate_anchors(self) -> None:
+        for old, _, count in port.HOST_FUNCTIONS_HARNESS:
+            for changed in (self.historical.replace(old, "missing", 1), self.historical + old):
+                digest = hashlib.sha256(changed.encode()).hexdigest()
+                with self.subTest(anchor=old, count=count), patch.object(port, "HOST_FUNCTIONS_PORT_SHA256", digest):
+                    with self.assertRaisesRegex(RuntimeError, "statement anchors"):
+                        self.apply(changed)
+
+    def test_unrelated_sources_are_untouched(self) -> None:
+        self.assertEqual(port.adapt_host_function_harness("unchanged", pathlib.Path("other.cpp"), "unused"),
+                         "unchanged")
+
+
 if __name__ == "__main__":
     unittest.main()

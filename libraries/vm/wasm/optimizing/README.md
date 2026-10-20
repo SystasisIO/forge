@@ -276,6 +276,24 @@ Checks reject observed changes at acquire/release, not continuously monitor the
 process or prove the absence of unsynchronized external changes. If the first
 post-registration disposition cannot be captured, no later owner is admitted
 and cleanup retains unconfirmed registration rather than guessing ownership.
+
+Before creating a helper workspace or publishing a PID/endpoint, the existing
+child/job retains one slot of the injected compute pool's bounded admission
+capacity. This is an admission slot, not a CPU worker: while the existing async
+protocol/reaper runs, the retained capability owns no worker or runnable queue
+entry. Short synchronous phases reuse that SAME admission. Normal spawn honors
+linked parent/pool stop; mandatory workspace drain can run on the retained
+admission after stop, without reopening ordinary compute admission.
+
+Workspace cleanup refusal keeps the SAME capability and live job, together with
+their physical storage/accounting and cache/SIGCHLD ownership, for explicit
+shutdown retry. Successful drain and retirement of its callable captures precede
+release of the retained slot. Release occurs before ordinary preparation or cache
+work requests admission, so a single-capacity pool does not wait on its own slot.
+This additive compute capability changes no public VM API or stop/shutdown order;
+mandatory cleanup reuses existing admission rather than submitting fresh ordinary
+work. The injected pool and runtime still remain alive until cleanup succeeds.
+
 `compute::pool::request_stop()` MAY precede `session.shutdown()`: cleanup
 submits no new compute work, but waits for already submitted verification/
 spawn/cache operations to publish ownership or unwind. The Asio runtime must

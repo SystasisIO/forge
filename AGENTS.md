@@ -712,6 +712,14 @@ implementation-library namespaces. For plugin family/role decisions, follow
   `forge::api::core::interceptor(...)`.
 - Do not create `libraries/network`, legacy net-prefixed target, module, or namespace forms.
 - Runtime workers must have explicit cancellation, bounded queues where needed, and deterministic shutdown.
+- When an existing resource owner needs synchronous setup and mandatory cleanup
+  across asynchronous work after compute admission stops, use the existing
+  `compute::executor::retain` continuation. Idle ownership retains one bounded
+  admission slot, not a CPU worker; mandatory phases reuse that same admission.
+  Release it before requesting ordinary compute capacity for the next stage.
+  Do not add a private cleanup pool, parked worker, reaper or scheduler to bypass
+  the original compute owner. Drain/release retained owners before pool shutdown
+  completes, and keep physical-refusal ownership available for explicit retry.
 - Do not introduce `std::async`, ad hoc polling loops, or unmanaged background threads as core runtime behavior.
 
 ## Plugins

@@ -435,6 +435,22 @@ targets pass: prepared validation (13 cases) and execution (54 cases).
 Independent review, broad JIT/AOT and installed-product qualification remain
 required; structural loading alone is not evidence for this contract.
 
+## Host Pointers Require Memory
+
+`running_context::access()` and default `void*` argument/result conversion now
+refuse absent linear memory with typed `exceptions::memory` before pointer
+arithmetic, including offset zero. A memoryless module cannot supply a valid
+linear-memory pointer merely by supplying zero. Its scalar host calls and start
+functions remain supported. Non-null backed views, including zero-size views,
+retain their existing conversion behavior. This presence check does not claim
+complete bounds validation for custom unvalidated converters.
+
+The donor's memoryless pointer-identity fixture uses separate real test-owned
+storage in its custom converter; that harness is not production fallback memory.
+Direct conversion and real memoryless `inc0`/`inc4` calls assert the typed refusal
+before host side effects. Fresh interpreter/JIT, sanitizer and broader runtime
+qualification are required; test registration alone is not acceptance.
+
 ## Migration
 
 Before adopting the replacement, validate original WASM and caller budgets

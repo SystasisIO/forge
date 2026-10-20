@@ -28,6 +28,7 @@
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
@@ -37,6 +38,7 @@
 
 import forge.asio.blocking;
 import forge.asio.compute;
+import forge.asio.notification;
 import forge.asio.runtime;
 import forge.asio.task;
 
@@ -165,7 +167,450 @@ concept compute_work =
 
 static_assert(!compute_work<awaitable_work>);
 
+template <typename T> T continuation_run(forge::asio::runtime& runtime, boost::asio::awaitable<T> work) {
+   auto result = boost::asio::co_spawn(runtime.context(), std::move(work), boost::asio::use_future);
+   BOOST_REQUIRE(result.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   return result.get();
+}
+
+struct cleanup_refused : std::runtime_error {
+   cleanup_refused() : std::runtime_error{"owned cleanup refused"} {}
+};
+
+struct non_default_result {
+   explicit non_default_result(int value) : value{std::make_unique<int>(value)} {}
+   non_default_result(non_default_result&&) noexcept = default;
+   non_default_result(const non_default_result&) = delete;
+   std::unique_ptr<int> value;
+};
+
+boost::asio::awaitable<void> continuation_non_default_results(forge::asio::compute::continuation owner) {
+   auto normal = co_await owner.execute([] { return non_default_result{107}; });
+   auto mandatory = co_await owner.drain([] { return non_default_result{109}; });
+   BOOST_TEST(*normal.value == 107);
+   BOOST_TEST(*mandatory.value == 109);
+}
+
+boost::asio::awaitable<void> continuation_helper_like(forge::asio::compute::continuation owner,
+                                                      std::shared_ptr<forge::asio::notification> release,
+                                                      std::shared_ptr<std::atomic_size_t> ready,
+                                                      std::shared_ptr<std::atomic_bool> released) {
+   const auto observed = release->epoch();
+   co_await owner.execute([] {});
+   ready->fetch_add(1, std::memory_order_release);
+   if (!released->load(std::memory_order_acquire))
+      co_await release->async_wait(observed);
+   co_await owner.drain([] {});
+}
+
+boost::asio::awaitable<bool> continuation_drain_cancellation_scope(forge::asio::compute::continuation owner,
+                                                                   execute_gate& gate, bool fail_cleanup) {
+   const auto before = co_await boost::asio::this_coro::throw_if_cancelled();
+   auto cleanup_failed = false;
+   try {
+      co_await owner.drain([&] {
+         gate.hold();
+         if (fail_cleanup)
+            throw cleanup_refused{};
+      });
+   } catch (const cleanup_refused&) {
+      cleanup_failed = true;
+   }
+   if (cleanup_failed != fail_cleanup)
+      throw std::logic_error{"mandatory callback error was hidden or replaced"};
+   const auto after = co_await boost::asio::this_coro::throw_if_cancelled();
+   if (before != after)
+      throw std::logic_error{"mandatory drain changed caller cancellation behavior"};
+   auto refused = false;
+   auto ordinary_ran = false;
+   try {
+      co_await owner.execute([&] { ordinary_ran = true; });
+   } catch (const boost::system::system_error& error) {
+      if (error.code() != boost::asio::error::operation_aborted)
+         throw;
+      refused = true;
+   }
+   co_return refused && !ordinary_ran;
+}
+
+boost::asio::awaitable<void> continuation_drain_then_normal(forge::asio::compute::continuation owner,
+                                                            forge::asio::compute::executor executor, execute_gate& gate,
+                                                            bool fail_cleanup) {
+   auto cleanup_failed = false;
+   try {
+      co_await owner.drain([&] {
+         if (fail_cleanup)
+            throw cleanup_refused{};
+      });
+   } catch (const cleanup_refused&) {
+      cleanup_failed = true;
+   }
+   if (cleanup_failed != fail_cleanup)
+      throw std::logic_error{"nested mandatory callback error changed"};
+   co_await executor.execute({}, [&](forge::asio::compute::context& context) {
+      gate.hold();
+      context.throw_if_stop_requested();
+   });
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(compute_continuation_four_idle_owners_leave_one_worker_available) {
+   namespace compute = forge::asio::compute;
+   auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};
+   auto pool = compute::pool{compute::pool::options{.worker_threads = 1, .max_pending_tasks = 5}};
+   auto executor = pool.get_executor();
+   auto owners = std::array<compute::continuation, 4>{};
+   for (auto& owner : owners)
+      owner = continuation_run(runtime, executor.retain({.name = "external-helper"}));
+   BOOST_TEST(pool.snapshot().retained == 4U);
+   BOOST_TEST(pool.snapshot().running == 0U);
+   BOOST_TEST(pool.snapshot().pending == 0U);
+   BOOST_TEST(pool.snapshot().submitted == 0U);
+   auto release = std::make_shared<forge::asio::notification>();
+   auto ready = std::make_shared<std::atomic_size_t>(0);
+   auto released = std::make_shared<std::atomic_bool>(false);
+   auto helpers = std::array<std::future<void>, 4>{};
+   const auto unblock = boost::scope::scope_exit{[release, released] {
+      released->store(true, std::memory_order_release);
+      release->notify();
+   }};
+   for (std::size_t i = 0; i != helpers.size(); ++i)
+      helpers[i] = boost::asio::co_spawn(runtime.context(),
+                                         continuation_helper_like(std::move(owners[i]), release, ready, released),
+                                         boost::asio::use_future);
+   BOOST_REQUIRE(wait_until([&] { return ready->load(std::memory_order_acquire) == 4; }));
+   // The four external lifecycles are STILL retained during unrelated work.
+   BOOST_TEST(continuation_run(runtime, executor.execute({}, [] { return 29; })) == 29);
+   BOOST_TEST(pool.snapshot().retained == 4U);
+   const auto progress = pool.snapshot();
+   BOOST_TEST_MESSAGE("four helper-like owners: retained=" << progress.retained << " pending=" << progress.pending
+                                                           << " running=" << progress.running
+                                                           << " completed=" << progress.completed);
+   for (auto& helper : helpers)
+      BOOST_CHECK(helper.wait_for(std::chrono::milliseconds{1}) == std::future_status::timeout);
+   released->store(true, std::memory_order_release);
+   release->notify();
+   for (auto& helper : helpers) {
+      BOOST_REQUIRE(helper.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+      helper.get();
+   }
+   continuation_run(runtime, pool.shutdown());
+   BOOST_TEST(pool.snapshot().retained == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_counts_capacity_once_and_releases_to_waiting_admission) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{
+       forge::asio::compute::pool::options{.worker_threads = 1, .max_pending_tasks = 1, .max_waiting_submissions = 1}};
+   auto executor = pool.get_executor();
+   auto first = continuation_run(runtime, executor.retain({}));
+   auto second = continuation_run(runtime, executor.retain({}));
+   BOOST_TEST(!executor.try_submit({}, [] {}).has_value());
+   BOOST_TEST(continuation_run(runtime, first.execute([] { return 31; })) == 31);
+   BOOST_TEST(pool.snapshot().retained == 2U);
+   auto third = boost::asio::co_spawn(runtime.context(), executor.retain({}), boost::asio::use_future);
+   BOOST_REQUIRE(wait_until([&] { return pool.snapshot().waiting == 1; }));
+   BOOST_CHECK_THROW(continuation_run(runtime, executor.retain({})), forge::asio::exceptions::rejected);
+   BOOST_CHECK(third.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   first.release();
+   BOOST_REQUIRE(third.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   auto recovered = third.get();
+   BOOST_TEST(pool.snapshot().retained == 2U);
+   auto shutdown = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
+   BOOST_REQUIRE(wait_until([&] { return pool.snapshot().stopped; }));
+   BOOST_CHECK(shutdown.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   BOOST_TEST(continuation_run(runtime, recovered.drain([] { return 37; })) == 37);
+   BOOST_TEST(pool.snapshot().retained == 2U); // full capacity, no second phase admission
+   second.release();
+   recovered.release();
+   BOOST_REQUIRE(shutdown.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   shutdown.get();
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_repeated_cleanup_refusal_after_stop_reuses_same_admission) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto executor = pool.get_executor();
+   auto owner = continuation_run(runtime, executor.retain({.name = "owned-lifecycle"}));
+   const auto identity = owner.id();
+   pool.request_stop();
+   BOOST_REQUIRE(owner.stop_requested());
+   BOOST_CHECK_THROW(continuation_run(runtime, executor.retain({})), forge::asio::exceptions::rejected);
+   BOOST_CHECK_THROW(continuation_run(runtime, owner.execute([] {})), forge::asio::exceptions::rejected);
+   for (int attempt = 0; attempt != 3; ++attempt) {
+      BOOST_CHECK_THROW(continuation_run(runtime, owner.drain([] { throw cleanup_refused{}; })), cleanup_refused);
+      BOOST_TEST(owner.id() == identity);
+      BOOST_TEST(pool.snapshot().retained == 1U);
+      BOOST_TEST_MESSAGE("cleanup refusal attempt=" << attempt << " retained_admission=" << owner.id());
+   }
+   const auto result = continuation_run(runtime, owner.drain([](forge::asio::compute::context& context) {
+      if (!context.stop_requested())
+         throw std::logic_error{"drain lost stopped context"};
+      return 43;
+   }));
+   BOOST_TEST(result == 43);
+   BOOST_TEST(owner.id() == identity);
+   owner.release();
+   continuation_run(runtime, pool.shutdown());
+   BOOST_TEST(pool.snapshot().failed == 3U);
+   BOOST_TEST(pool.snapshot().completed == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_parent_stop_keeps_drain_capability) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto stop = std::stop_source{};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({.parent_stop_token = stop.get_token()}));
+   stop.request_stop();
+   BOOST_TEST(owner.stop_requested());
+   BOOST_CHECK_THROW(continuation_run(runtime, owner.execute([] {})), forge::asio::exceptions::canceled);
+   BOOST_TEST(continuation_run(
+       runtime, owner.drain([](forge::asio::compute::context& context) { return context.stop_requested(); })));
+   BOOST_TEST(pool.snapshot().retained == 1U);
+   owner.release();
+   BOOST_CHECK_THROW(continuation_run(runtime, pool.get_executor().retain({.parent_stop_token = stop.get_token()})),
+                     forge::asio::exceptions::canceled);
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_stop_cancels_queued_normal_but_preserves_queued_drain) {
+   auto runtime = forge::asio::runtime{};
+   auto pool =
+       forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1, .max_pending_tasks = 5}};
+   auto normal = continuation_run(runtime, pool.get_executor().retain({}));
+   auto cleanup = continuation_run(runtime, pool.get_executor().retain({}));
+   auto gate = execute_gate{};
+   const auto release = boost::scope::scope_exit{[&] { gate.release(); }};
+   auto blocker = boost::asio::co_spawn(runtime.context(), pool.get_executor().execute({}, [&] { gate.hold(); }),
+                                        boost::asio::use_future);
+   BOOST_REQUIRE(gate.wait_for_entry());
+   auto normal_ran = std::atomic_bool{false};
+   auto queued =
+       boost::asio::co_spawn(runtime.context(), normal.execute([&] { normal_ran = true; }), boost::asio::use_future);
+   auto drained = boost::asio::co_spawn(runtime.context(), cleanup.drain([](forge::asio::compute::context& context) {
+      return context.stop_requested();
+   }),
+                                        boost::asio::use_future);
+   BOOST_REQUIRE(wait_until([&] { return pool.snapshot().pending == 2; }));
+   pool.request_stop();
+   BOOST_REQUIRE(queued.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(queued.get(), forge::asio::exceptions::canceled);
+   BOOST_TEST(!normal_ran.load());
+   BOOST_CHECK(drained.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   gate.release();
+   BOOST_REQUIRE(drained.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_TEST(drained.get());
+   BOOST_REQUIRE(blocker.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(blocker.get(), forge::asio::exceptions::canceled);
+   normal.release();
+   cleanup.release();
+   continuation_run(runtime, pool.shutdown());
+   BOOST_TEST(!gate.timed_out);
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_concurrent_phase_is_rejected_and_shutdown_waits_release) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   auto gate = execute_gate{};
+   const auto release = boost::scope::scope_exit{[&] { gate.release(); }};
+   auto active = boost::asio::co_spawn(runtime.context(), owner.execute([&] { gate.hold(); }), boost::asio::use_future);
+   BOOST_REQUIRE(gate.wait_for_entry());
+   BOOST_CHECK_THROW(continuation_run(runtime, owner.drain([] {})), forge::asio::exceptions::invalid_state);
+   auto shutdown = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
+   BOOST_REQUIRE(wait_until([&] { return pool.snapshot().stopped; }));
+   gate.release();
+   BOOST_REQUIRE(active.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(active.get(), forge::asio::exceptions::canceled);
+   BOOST_CHECK(shutdown.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   continuation_run(runtime, owner.drain([] {}));
+   BOOST_CHECK(shutdown.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   owner.release();
+   BOOST_REQUIRE(shutdown.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   shutdown.get();
+   BOOST_TEST(!gate.timed_out);
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_release_and_terminal_wait_for_physical_capture_retirement) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   auto retirement = execute_gate{};
+   auto destroyed = std::atomic_bool{false};
+   const auto release = boost::scope::scope_exit{[&] { retirement.release(); }};
+   auto pin = std::make_shared<retirement_probe>(&pool, &retirement, &destroyed);
+   auto active = boost::asio::co_spawn(runtime.context(), owner.drain([pin = std::move(pin)] { return 59; }),
+                                       boost::asio::use_future);
+   BOOST_REQUIRE(retirement.wait_for_entry());
+   owner.release();
+   BOOST_TEST(!owner.valid());
+   BOOST_TEST(pool.snapshot().retained == 1U);
+   BOOST_TEST(!destroyed.load(std::memory_order_acquire));
+   BOOST_CHECK(active.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   auto shutdown = boost::asio::co_spawn(runtime.context(), pool.shutdown(), boost::asio::use_future);
+   BOOST_CHECK(shutdown.wait_for(std::chrono::milliseconds{25}) == std::future_status::timeout);
+   retirement.release();
+   BOOST_REQUIRE(active.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_TEST(active.get() == 59); // mandatory success is not hidden by stop during destruction
+   BOOST_TEST(destroyed.load(std::memory_order_acquire));
+   BOOST_REQUIRE(shutdown.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   shutdown.get();
+   BOOST_TEST(pool.snapshot().retained == 0U);
+   BOOST_TEST(!retirement.timed_out);
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_move_only_work_and_prepared_phase_pin_admission) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   auto lifetime = std::make_shared<callable_lifetime>();
+   auto phase = owner.execute(move_only_work{lifetime, 71});
+   owner.release();
+   BOOST_TEST(pool.snapshot().retained == 1U);
+   auto value = continuation_run(runtime, std::move(phase));
+   BOOST_REQUIRE(value);
+   BOOST_TEST(*value == 71);
+   BOOST_TEST(lifetime->live.load() == 0U);
+   continuation_run(runtime, pool.shutdown());
+   BOOST_TEST(pool.snapshot().retained == 0U);
+   auto empty = forge::asio::compute::continuation{};
+   BOOST_CHECK_THROW(continuation_run(runtime, empty.drain([] {})), forge::asio::exceptions::invalid_state);
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_drain_ignores_associated_cancellation_and_preserves_work_error) {
+   auto runtime = forge::asio::runtime{};
+   auto pool =
+       forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1, .max_pending_tasks = 5}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   auto gate = execute_gate{};
+   const auto release = boost::scope::scope_exit{[&] { gate.release(); }};
+   auto blocker = boost::asio::co_spawn(runtime.context(), pool.get_executor().execute({}, [&] { gate.hold(); }),
+                                        boost::asio::use_future);
+   BOOST_REQUIRE(gate.wait_for_entry());
+   auto cancel = boost::asio::cancellation_signal{};
+   auto drained = boost::asio::co_spawn(runtime.context(), owner.drain([] { return 83; }),
+                                        boost::asio::bind_cancellation_slot(cancel.slot(), boost::asio::use_future));
+   BOOST_REQUIRE(wait_until([&] { return pool.snapshot().pending == 1; }));
+   boost::asio::post(runtime.context(), [&] { cancel.emit(boost::asio::cancellation_type::all); });
+   pool.request_stop();
+   gate.release();
+   BOOST_REQUIRE(drained.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_TEST(drained.get() == 83);
+   BOOST_REQUIRE(blocker.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(blocker.get(), forge::asio::exceptions::canceled);
+   BOOST_CHECK_THROW(continuation_run(runtime, owner.drain([] { throw cleanup_refused{}; })), cleanup_refused);
+   owner.release();
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_initiated_drain_preserves_caller_cancellation_and_work_error) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   for (const auto fail_cleanup : {false, true}) {
+      auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+      auto gate = execute_gate{};
+      const auto release = boost::scope::scope_exit{[&] { gate.release(); }};
+      auto cancel = boost::asio::cancellation_signal{};
+      auto finished = boost::asio::co_spawn(
+          runtime.context(), continuation_drain_cancellation_scope(std::move(owner), gate, fail_cleanup),
+          boost::asio::bind_cancellation_slot(cancel.slot(), boost::asio::use_future));
+      BOOST_REQUIRE(gate.wait_for_entry());
+      boost::asio::post(runtime.context(), [&] {
+         cancel.emit(boost::asio::cancellation_type::all);
+         gate.release();
+      });
+      BOOST_REQUIRE(finished.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+      BOOST_TEST(finished.get());
+      BOOST_TEST(!gate.timed_out);
+   }
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_nested_success_and_error_drains_preserve_later_ordinary_cancellation) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   for (const auto fail_cleanup : {false, true}) {
+      auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+      auto gate = execute_gate{};
+      const auto release = boost::scope::scope_exit{[&] { gate.release(); }};
+      auto cancel = boost::asio::cancellation_signal{};
+      auto finished = boost::asio::co_spawn(
+          runtime.context(), continuation_drain_then_normal(std::move(owner), pool.get_executor(), gate, fail_cleanup),
+          boost::asio::bind_cancellation_slot(cancel.slot(), boost::asio::use_future));
+      BOOST_REQUIRE(gate.wait_for_entry()); // ordinary callback entered AFTER the nested drain
+      boost::asio::post(runtime.context(), [&] {
+         cancel.emit(boost::asio::cancellation_type::all);
+         gate.release();
+      });
+      BOOST_REQUIRE(finished.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+      BOOST_CHECK_THROW(finished.get(), forge::asio::exceptions::canceled);
+      BOOST_TEST(!gate.timed_out);
+   }
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_discarded_unstarted_phase_releases_its_pin_without_work) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   auto lifetime = std::make_shared<callable_lifetime>();
+   {
+      auto unstarted = owner.drain(move_only_work{lifetime, 97});
+      owner.release();
+      BOOST_TEST(pool.snapshot().retained == 1U);
+      BOOST_TEST(!lifetime->ran.load());
+   }
+   BOOST_TEST(lifetime->live.load() == 0U);
+   BOOST_TEST(pool.snapshot().retained == 0U);
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_callable_construction_failure_preserves_same_idle_admission) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   const auto identity = owner.id();
+   auto ran = std::atomic_bool{false};
+   auto refusal = cancel_parent_on_copy{[] { throw cleanup_refused{}; }, ran};
+   BOOST_CHECK_THROW(owner.drain(refusal), cleanup_refused);
+   BOOST_TEST(owner.id() == identity);
+   BOOST_TEST(pool.snapshot().retained == 1U);
+   BOOST_TEST(!ran.load());
+   BOOST_TEST(continuation_run(runtime, owner.execute([] { return 101; })) == 101);
+   owner.release();
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_drain_preserves_non_default_move_only_result_contract) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   continuation_run(runtime, continuation_non_default_results(std::move(owner)));
+   continuation_run(runtime, pool.shutdown());
+}
+
+BOOST_AUTO_TEST_CASE(compute_continuation_running_error_precedes_later_pool_stop) {
+   auto runtime = forge::asio::runtime{};
+   auto pool = forge::asio::compute::pool{forge::asio::compute::pool::options{.worker_threads = 1}};
+   auto owner = continuation_run(runtime, pool.get_executor().retain({}));
+   auto gate = execute_gate{};
+   const auto release = boost::scope::scope_exit{[&] { gate.release(); }};
+   auto phase = boost::asio::co_spawn(runtime.context(), owner.execute([&] {
+      gate.hold();
+      throw cleanup_refused{};
+   }),
+                                      boost::asio::use_future);
+   BOOST_REQUIRE(gate.wait_for_entry());
+   pool.request_stop();
+   gate.release();
+   BOOST_REQUIRE(phase.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+   BOOST_CHECK_THROW(phase.get(), cleanup_refused);
+   continuation_run(runtime, owner.drain([] {}));
+   owner.release();
+   continuation_run(runtime, pool.shutdown());
+   BOOST_TEST(!gate.timed_out);
+}
 
 BOOST_AUTO_TEST_CASE(compute_execute_returns_values_and_propagates_exceptions) {
    auto runtime = forge::asio::runtime{forge::asio::runtime_options{.worker_threads = 1}};

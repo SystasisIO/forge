@@ -48,6 +48,7 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    bool process_drained() const noexcept;
    bool is_quiescent() const noexcept;
    void remove_workspace(); // existing compute boundary, only after physical drain
+   static boost::asio::awaitable<void> cleanup_workspace(std::shared_ptr<child>);
 
    const session_options& options;
    compiler_protocol::exchange_id exchange;
@@ -60,6 +61,9 @@ struct forge::vm::wasm::optimizing::compiler_session::impl::child : std::enable_
    asio::notification changed;
    std::unique_ptr<boost::process::v2::process_handle> process;
    std::unique_ptr<std::stop_callback<std::function<void()>>> stop_registration;
+   // Exchange owns phases until its task drains; shutdown alone may then retry.
+   // Idle admission retains capacity, never a compute worker or runnable task.
+   asio::compute::continuation admission;
    // Nonthrowing one-shot ownership publication across compute completion.
    // Actor/reap/timer/IO fields below are strand-owned only.
    std::atomic<pid_t> launched_pid{-1};

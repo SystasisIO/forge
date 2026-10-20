@@ -39,6 +39,18 @@ mandatory and are not replaced by the adapted donor cases.
 
 ## Provenance And Failure Behavior
 
+The separate host-function harness adaptation supplies real test-owned host
+storage to the custom converter for `host_functions_tests_1.wasm.hpp`. That
+fixture declares no WASM memory; constructing pointers and references from
+`nullptr + offset` is undefined C++, not an engine-compatibility requirement.
+The converter and all four pointer/reference helper paths use the same real
+buffer. The original fixture bytes, cases, line numbers and assertions remain
+unchanged. This does not fabricate production WASM memory or relax default
+pointer validation: the absent-memory rejection controls still run normally.
+Exact donor/port hashes and all six replacement sites are checked separately
+from the 17 profile-expectation rules and recorded in the manifest. No
+sanitizer option, suppression or test selection changes for this repair.
+
 The source hashes and exact replacements are owned by the porter. Each adapted
 file must match both its original donor SHA-256 and historical syntax-only port
 SHA-256. Each rule must match exactly one title/tags pair and each statement

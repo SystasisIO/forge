@@ -54,6 +54,7 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
   VM_RUNTIME_TEST_TARGETS: >-
+    test_forge_asio
     test_forge_vm_wasm_interpret_unit
     test_forge_vm_wasm_interpret_internal
     test_forge_vm_wasm_interpret_spec
@@ -282,6 +283,13 @@ jobs:
           python3 .github/scripts/check-vm-wasm-test-registry.py \
             build/vm-wasm/runtime-registry.json --jit OFF --aot OFF
 
+      - name: Run existing Forge.Asio runtime regressions
+        run: >-
+          ctest --test-dir build/vm-wasm -R '^test_forge_asio$'
+          --output-on-failure --no-tests=error -j 1 --timeout 120
+          --output-log "$GITHUB_WORKSPACE/build/vm-wasm/asio-ctest.log"
+          --output-junit "$GITHUB_WORKSPACE/build/vm-wasm/asio-ctest.xml"
+
       - name: Run LLVM-free WAMR runtime suite
         run: >-
           ctest --test-dir build/vm-wasm
@@ -295,6 +303,7 @@ jobs:
         with:
           name: wamr-runtime-${{ matrix.os }}-${{ matrix.build_type }}
           path: |
+            build/vm-wasm/asio-ctest.*
             build/vm-wasm/runtime-ctest.*
             build/vm-wasm/runtime-registry.json
             build/vm-wasm/Testing/Temporary/LastTest.log
@@ -472,6 +481,13 @@ jobs:
           python3 .github/scripts/check-vm-wasm-test-registry.py \
             "$WAMR_BUILD_DIR/runtime-registry.json" --jit "$WAMR_JIT" --aot "$WAMR_AOT"
 
+      - name: Run existing Forge.Asio runtime regressions
+        run: >-
+          ctest --test-dir "$WAMR_BUILD_DIR" -R '^test_forge_asio$'
+          --output-on-failure --no-tests=error -j 1 --timeout 120
+          --output-log "$GITHUB_WORKSPACE/$WAMR_BUILD_DIR/asio-ctest.log"
+          --output-junit "$GITHUB_WORKSPACE/$WAMR_BUILD_DIR/asio-ctest.xml"
+
       - name: Run the complete selected WAMR matrix
         run: >-
           ctest --test-dir "$WAMR_BUILD_DIR"
@@ -485,6 +501,7 @@ jobs:
         with:
           name: wamr-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.backend }}-compiler-aot-${{ env.WAMR_AOT }}
           path: |
+            ${{ env.WAMR_BUILD_DIR }}/asio-ctest.*
             ${{ env.WAMR_BUILD_DIR }}/module-failure/**
             ${{ env.WAMR_BUILD_DIR }}/toolchain/**
             ${{ env.WAMR_BUILD_DIR }}/llvm-abi-preflight.log
@@ -609,6 +626,7 @@ jobs:
       - name: Build sanitizer tests
         run: >-
           cmake --build build/vm-wasm-sanitizer --target
+          test_forge_asio
           test_forge_vm_wasm_interpret_unit
           test_forge_vm_wasm_interpret_internal
           test_forge_vm_wasm_interpret_spec
@@ -620,7 +638,7 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: >-
           ctest --test-dir build/vm-wasm-sanitizer
-          -R '^test_forge_vm_wasm_interpret_(unit|internal|spec)$'
+          -R '^(test_forge_asio|test_forge_vm_wasm_interpret_(unit|internal|spec))$'
           --output-on-failure --no-tests=error -j 1
           --output-log "$GITHUB_WORKSPACE/build/vm-wasm-sanitizer/sanitizer-ctest.log"
           --output-junit "$GITHUB_WORKSPACE/build/vm-wasm-sanitizer/sanitizer-ctest.xml"
@@ -720,13 +738,18 @@ jobs:
             -DBUILD_TESTING=ON
 
       - name: Build installed package consumer
-        run: cmake --build build/vm-wasm-package --target test_forge_package_vm_wasm_interpret_component -j 4
+        run: >-
+          cmake --build build/vm-wasm-package
+          --target test_forge_package_vm_wasm_interpret_component test_forge_package_vm_wasm_execution_component -j 4
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: wamr-package-toolchain
-          path: build/vm-wasm-package/toolchain/**
+          path: |
+            build/vm-wasm-package/toolchain/**
+            build/vm-wasm-package/forge-package-vm-wasm-interpret-component/*.linkmap
+            build/vm-wasm-package/forge-package-execution-wasm-component/*.linkmap
 
   donor-oracle:
     name: ubuntu-24.04 / original Catch2 bodies

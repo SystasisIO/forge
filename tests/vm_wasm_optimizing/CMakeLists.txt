@@ -75,6 +75,11 @@ if(TARGET forge_vm_wasm_compiler)
       set_tests_properties("wamr_optimizing_guest_${_case}" PROPERTIES TIMEOUT 30 LABELS "wamr;optimizing;guest_trap")
    endforeach()
    add_executable(test_forge_vm_wasm_optimizing_session session_tests.cpp)
+   if(APPLE)
+      target_sources(test_forge_vm_wasm_optimizing_session PRIVATE session_late_spawn_tests.cpp)
+      target_compile_definitions(test_forge_vm_wasm_optimizing_session PRIVATE
+         FORGE_WAMR_SESSION_LATE_SPAWN_TEST=1)
+   endif()
    target_link_libraries(test_forge_vm_wasm_optimizing_session PRIVATE forge_vm_wasm_optimizing)
    add_dependencies(test_forge_vm_wasm_optimizing_session wamr_optimizing_fixtures wasm_compiler)
    add_executable(test_forge_vm_wasm_optimizing_session_probe session_probe_tests.cpp)
@@ -94,6 +99,20 @@ if(TARGET forge_vm_wasm_compiler)
          "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.foc" "${CMAKE_CURRENT_BINARY_DIR}"
          "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}" "${CMAKE_CURRENT_BINARY_DIR}/multi-result.wasm")
       set_tests_properties(wamr_optimizing_session_bounded PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE LABELS "wamr;optimizing;session")
+      if(APPLE)
+         add_test(NAME wamr_optimizing_session_late_spawn_cleanup
+            COMMAND test_forge_vm_wasm_optimizing_session late-spawn-cleanup
+               "$<TARGET_FILE:wasm_compiler>" "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.request"
+               "${CMAKE_CURRENT_BINARY_DIR}" "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}")
+         set_tests_properties(wamr_optimizing_session_late_spawn_cleanup PROPERTIES
+            TIMEOUT 45 RUN_SERIAL TRUE LABELS "wamr;optimizing;session;cleanup")
+         add_test(NAME wamr_optimizing_session_workspace_refusal
+            COMMAND test_forge_vm_wasm_optimizing_session workspace-refusal
+               "$<TARGET_FILE:wasm_compiler>" "${CMAKE_CURRENT_BINARY_DIR}/heavy-8192.request"
+               "${CMAKE_CURRENT_BINARY_DIR}" "${FORGE_WAMR_COMPILER_TEST_AS_BYTES}")
+         set_tests_properties(wamr_optimizing_session_workspace_refusal PROPERTIES
+            TIMEOUT 90 RUN_SERIAL TRUE LABELS "wamr;optimizing;session;cleanup")
+      endif()
       foreach(_case IN ITEMS late overlap)
          add_test(NAME "wamr_optimizing_session_probe_${_case}"
             COMMAND test_forge_vm_wasm_optimizing_session_probe "${_case}"

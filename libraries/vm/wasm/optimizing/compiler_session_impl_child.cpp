@@ -212,7 +212,7 @@ void compiler_session::impl::child::spawn(std::stop_token stop) {
 }
 
 bool compiler_session::impl::child::is_quiescent() const noexcept {
-   return process_drained() && !workspace_pending.load(std::memory_order_acquire);
+   return process_drained() && !workspace_pending.load(std::memory_order_acquire) && !admission.valid();
 }
 
 bool compiler_session::impl::child::process_drained() const noexcept {
@@ -227,9 +227,23 @@ void compiler_session::impl::child::remove_workspace() {
    auto error = std::error_code{};
    std::filesystem::remove_all(workspace, error);
    if (error)
-      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler helper workspace cleanup is incomplete");
+      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler helper workspace cleanup is incomplete",
+                            forge::exceptions::ctx("compute_admission", admission.id()));
    workspace.clear();
    workspace_pending.store(false, std::memory_order_release);
+}
+
+boost::asio::awaitable<void> compiler_session::impl::child::cleanup_workspace(std::shared_ptr<child> self) {
+   if (!self->process_drained())
+      FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler workspace still has a live child");
+   if (self->workspace_pending.load(std::memory_order_acquire)) {
+      if (!self->admission.valid())
+         FORGE_THROW_EXCEPTION(exceptions::shutdown_incomplete, "compiler workspace lost its retained admission");
+      co_await self->admission.drain([self] { self->remove_workspace(); });
+   }
+   // Phase completion has retired its callable/captures. Refusal above keeps
+   // this SAME admission for explicit retry, including after pool stop.
+   self->admission.release();
 }
 
 bool compiler_session::impl::child::drained() const noexcept {

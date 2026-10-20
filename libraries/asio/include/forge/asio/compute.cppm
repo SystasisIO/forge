@@ -2,6 +2,10 @@ module;
 
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
 #include <chrono>
 #include <concepts>
@@ -24,11 +28,13 @@ export import forge.asio.exceptions;
 namespace forge::asio::compute {
 
 export class context;
+export class continuation;
 
 namespace detail {
 
 class pool_state;
 class reservation;
+class continuation_state;
 
 class operation_state : public std::enable_shared_from_this<operation_state> {
  public:
@@ -40,7 +46,8 @@ class operation_state : public std::enable_shared_from_this<operation_state> {
    [[nodiscard]] bool stop_requested() const noexcept;
    [[nodiscard]] std::stop_token stop_token() const noexcept;
    boost::asio::awaitable<void> wait();
-   boost::asio::awaitable<void> execute(reservation reservation, std::string name, std::function<void(context&)>& work);
+   boost::asio::awaitable<void> execute(reservation reservation, std::string name, std::function<void(context&)>& work,
+                                        std::shared_ptr<continuation_state> continuation = {}, bool drain = false);
 
    void link_parent(std::stop_token parent);
    void request_stop_only() noexcept;
@@ -135,6 +142,10 @@ class pool_state : public std::enable_shared_from_this<pool_state> {
    void release_reservation(std::uint64_t id) noexcept;
    void submit(reservation reservation, std::string name, std::shared_ptr<operation_state> operation,
                std::function<void(context&)>&& work);
+   std::shared_ptr<continuation_state> retain(reservation reservation, std::string name, std::stop_token parent);
+   std::uint64_t next_operation_id() noexcept;
+   void submit_continuation(std::shared_ptr<continuation_state>, std::string name, std::shared_ptr<operation_state>,
+                            std::function<void(context&)>&& work, bool drain);
    bool cancel(std::uint64_t id) noexcept;
    void request_stop() noexcept;
    boost::asio::awaitable<void> shutdown();
@@ -142,6 +153,24 @@ class pool_state : public std::enable_shared_from_this<pool_state> {
 
    struct metrics_snapshot;
    [[nodiscard]] metrics_snapshot snapshot() const;
+
+ private:
+   struct impl;
+   std::unique_ptr<impl> impl_;
+};
+
+class continuation_state : public std::enable_shared_from_this<continuation_state> {
+ public:
+   continuation_state(std::shared_ptr<pool_state>, reservation, std::string name);
+   ~continuation_state();
+   std::shared_ptr<pool_state> owner() const noexcept;
+   std::uint64_t id() const noexcept;
+   const std::string& name() const noexcept;
+   std::stop_token stop_token() const noexcept;
+   void link_parent(std::stop_token);
+   void request_stop() noexcept;
+   bool begin_phase() noexcept;
+   void end_phase() noexcept;
 
  private:
    struct impl;
@@ -181,6 +210,7 @@ export struct metrics {
    bool stopped = false;
    std::chrono::nanoseconds total_queue_time{};
    std::chrono::nanoseconds total_execution_time{};
+   std::size_t retained = 0;
 };
 
 namespace detail {
@@ -295,6 +325,8 @@ export class executor {
       return state_ != nullptr;
    }
 
+   boost::asio::awaitable<continuation> retain(task_options options) const;
+
    template <typename Work>
       requires detail::supported_work<std::remove_cvref_t<Work>>
    boost::asio::awaitable<operation<detail::work_result_t<std::remove_cvref_t<Work>>>> submit(task_options options,
@@ -331,6 +363,7 @@ export class executor {
 
  private:
    explicit executor(std::shared_ptr<detail::pool_state> state) : state_{std::move(state)} {}
+   static boost::asio::awaitable<continuation> retain_owned(std::shared_ptr<detail::pool_state>, task_options);
 
    void require_valid() const {
       if (state_ == nullptr) {
@@ -422,6 +455,70 @@ export class executor {
    std::shared_ptr<detail::pool_state> state_;
 
    friend class pool;
+   friend class continuation;
+};
+
+export class continuation {
+ public:
+   continuation() = default;
+   continuation(const continuation&) = delete;
+   continuation& operator=(const continuation&) = delete;
+   continuation(continuation&&) noexcept = default;
+   continuation& operator=(continuation&&) noexcept = default;
+   ~continuation() = default;
+
+   [[nodiscard]] bool valid() const noexcept;
+   [[nodiscard]] std::uint64_t id() const noexcept;
+   [[nodiscard]] bool stop_requested() const noexcept;
+   [[nodiscard]] std::stop_token stop_token() const noexcept;
+   void release() noexcept;
+
+   template <typename Work>
+      requires detail::supported_work<std::remove_cvref_t<Work>>
+   boost::asio::awaitable<detail::work_result_t<std::remove_cvref_t<Work>>> execute(Work&& work) const {
+      using work_type = std::remove_cvref_t<Work>;
+      return execute_owned(state_, std::make_shared<work_type>(std::forward<Work>(work)), false);
+   }
+
+   template <typename Work>
+      requires detail::supported_work<std::remove_cvref_t<Work>>
+   boost::asio::awaitable<detail::work_result_t<std::remove_cvref_t<Work>>> drain(Work&& work) const {
+      // Protection starts on entry, not on construction of this lazy awaitable.
+      // An already canceled caller must isolate entry into mandatory cleanup.
+      using work_type = std::remove_cvref_t<Work>;
+      return execute_owned(state_, std::make_shared<work_type>(std::forward<Work>(work)), true);
+   }
+
+ private:
+   explicit continuation(std::shared_ptr<detail::continuation_state> state);
+   static boost::asio::awaitable<void> drain_phase_owned(std::shared_ptr<detail::continuation_state>,
+                                                         std::shared_ptr<detail::operation_state>,
+                                                         std::function<void(context&)> invoke);
+
+   template <typename Work>
+   static boost::asio::awaitable<detail::work_result_t<Work>>
+   execute_owned(std::shared_ptr<detail::continuation_state> state, std::shared_ptr<Work> callable, bool drain) {
+      if (!state)
+         throw exceptions::invalid_state{"compute continuation is empty"};
+      using result_type = detail::work_result_t<Work>;
+      auto pool = state->owner();
+      auto result = std::make_shared<detail::result_state<result_type>>(pool, pool->next_operation_id());
+      result->link_parent(state->stop_token());
+      auto invoke = executor::make_invocation(result, std::move(callable));
+      if (drain) {
+         const auto executor = co_await boost::asio::this_coro::executor;
+         co_await boost::asio::co_spawn(
+             executor, drain_phase_owned(state, result, std::move(invoke)),
+             boost::asio::bind_cancellation_slot(boost::asio::cancellation_slot{}, boost::asio::use_awaitable));
+      } else {
+         co_await result->execute({}, state->name(), invoke, state, false);
+      }
+      if constexpr (!std::is_void_v<result_type>)
+         co_return result->take_result();
+   }
+
+   std::shared_ptr<detail::continuation_state> state_;
+   friend class executor;
 };
 
 export class pool {

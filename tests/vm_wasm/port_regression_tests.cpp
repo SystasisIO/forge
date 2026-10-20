@@ -859,3 +859,137 @@ TEST_CASE("jit resolves an empty export name", "[execution_context]") {
    check_empty_export_name<wasm::jit>();
 }
 #endif
+
+namespace {
+#include "host_functions_support.hpp"
+}
+
+TEST_CASE("memoryless donor converter uses real host objects without changing the source interface",
+          "[host_functions]") {
+   auto operands = wasm::operand_stack{};
+   const auto source = wasm::execution_interface{nullptr, 0, &operands};
+   auto converted = host_function_test_interface(source);
+   BOOST_CHECK(source.get_memory() == nullptr);
+   BOOST_TEST(source.memory_size == 0U);
+   BOOST_CHECK(converted.get_memory() == host_function_test_memory(nullptr));
+   BOOST_CHECK(converted.os == &operands);
+   BOOST_TEST(converted.memory_size == 65536U);
+   auto* pointer = static_cast<char*>(converted.get_memory()) + 4;
+   auto& reference = *pointer;
+   reference = 'x';
+   BOOST_TEST(host_function_test_memory(nullptr)[4] == 'x');
+   BOOST_CHECK(&reference == pointer);
+   BOOST_CHECK_THROW(source.validate_pointer<char>(4U, 1U), wasm::exceptions::memory);
+}
+
+TEST_CASE("donor converter preserves real WASM memory and operand storage", "[host_functions]") {
+   auto memory = std::array<char, 16>{};
+   auto operands = wasm::operand_stack{};
+   const auto source = wasm::execution_interface{memory.data(), memory.size(), &operands};
+   const auto converted = host_function_test_interface(source);
+   BOOST_CHECK(converted.get_memory() == memory.data());
+   BOOST_CHECK(host_function_test_memory(memory.data()) == memory.data());
+   BOOST_TEST(converted.memory_size == memory.size());
+   BOOST_CHECK(converted.os == &operands);
+}
+
+namespace {
+bool is_memory_error(const wasm::exceptions::memory& error) {
+   return error.code() == wasm::exceptions::make_error_code(wasm::exceptions::code::memory);
+}
+
+struct memoryless_pointer_host {
+   void pointer(void*) {
+      ++pointer_calls;
+   }
+   void number(std::uint32_t value) {
+      ++number_calls;
+      observed = value;
+   }
+   unsigned pointer_calls = 0;
+   unsigned number_calls = 0;
+   std::uint32_t observed = 0;
+};
+
+using memoryless_pointer_functions = wasm::registered_host_functions<memoryless_pointer_host>;
+
+void register_memoryless_pointer_functions() {
+   static const auto registered = [] {
+      memoryless_pointer_functions::add<&memoryless_pointer_host::pointer>("env", "pointer");
+      memoryless_pointer_functions::add<&memoryless_pointer_host::number>("env", "number");
+      return true;
+   }();
+   static_cast<void>(registered);
+}
+
+template <typename Implementation> void check_memoryless_pointer_calls() {
+   register_memoryless_pointer_functions();
+   auto code =
+       wasm::wasm_code{
+           0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x01, 0x7f, 0x00, 0x60,
+           0x00, 0x00, // (i32)->(), ()->()
+           0x02, 0x1c, 0x02, 0x03, 0x65, 0x6e, 0x76, 0x07, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x00,
+           0x00, 0x03, 0x65, 0x6e, 0x76, 0x06, 0x6e, 0x75, 0x6d, 0x62, 0x65, 0x72, 0x00, 0x00, // imports, no memory
+           0x03, 0x04, 0x03, 0x01, 0x01, 0x01, 0x07, 0x18, 0x03, 0x04, 0x69, 0x6e, 0x63, 0x30, 0x00, 0x02, // inc0
+           0x04, 0x69, 0x6e, 0x63, 0x34, 0x00, 0x03,                                                       // inc4
+           0x06, 0x73, 0x63, 0x61, 0x6c, 0x61, 0x72, 0x00, 0x04,                                           // scalar
+           0x0a, 0x16, 0x03, 0x06, 0x00, 0x41, 0x00, 0x10, 0x00, 0x0b,                                     // pointer(0)
+           0x06, 0x00, 0x41, 0x04, 0x10, 0x00, 0x0b,                                                       // pointer(4)
+           0x06, 0x00, 0x41, 0x2a, 0x10, 0x01, 0x0b                                                        // number(42)
+       };
+   using backend = wasm::backend<memoryless_pointer_functions, Implementation>;
+   for (const auto* name : {"inc0", "inc4"}) {
+      auto host = memoryless_pointer_host{};
+      auto instance = backend{code, host, nullptr};
+      BOOST_CHECK(instance.get_context().linear_memory() == nullptr);
+      BOOST_CHECK_EXCEPTION(instance.call(host, "env", name), wasm::exceptions::memory, is_memory_error);
+      BOOST_TEST(host.pointer_calls == 0U);
+      BOOST_TEST(host.number_calls == 0U);
+   }
+   auto host = memoryless_pointer_host{};
+   auto instance = backend{code, host, nullptr};
+   BOOST_CHECK_NO_THROW(instance.call(host, "env", "scalar"));
+   BOOST_TEST(host.pointer_calls == 0U);
+   BOOST_TEST(host.number_calls == 1U);
+   BOOST_TEST(host.observed == 42U);
+   BOOST_CHECK(instance.get_context().linear_memory() == nullptr);
+}
+} // namespace
+
+TEST_CASE("default pointer conversions reject absent memory before arithmetic", "[host_functions]") {
+   auto operands = wasm::operand_stack{};
+   auto converter =
+       wasm::type_converter<wasm::standalone_function_t>{nullptr, wasm::execution_interface{nullptr, 0, &operands}};
+   for (const auto offset : {0U, 4U}) {
+      const auto value = wasm::operand_stack_elem{wasm::i32_const_t{offset}};
+      BOOST_CHECK_EXCEPTION(converter.access(offset), wasm::exceptions::memory, is_memory_error);
+      BOOST_CHECK_EXCEPTION(converter.as_value<void*>(value), wasm::exceptions::memory, is_memory_error);
+   }
+   BOOST_CHECK_EXCEPTION(converter.as_result(static_cast<void*>(nullptr)), wasm::exceptions::memory, is_memory_error);
+}
+
+TEST_CASE("default pointer conversions preserve real and zero-size backed views", "[host_functions]") {
+   auto memory = std::array<char, 8>{};
+   auto operands = wasm::operand_stack{};
+   auto converter = wasm::type_converter<wasm::standalone_function_t>{
+       nullptr, wasm::execution_interface{memory.data(), memory.size(), &operands}};
+   for (const auto offset : {0U, 4U}) {
+      const auto value = wasm::operand_stack_elem{wasm::i32_const_t{offset}};
+      BOOST_CHECK(converter.access(offset) == memory.data() + offset);
+      BOOST_CHECK(converter.as_value<void*>(value) == memory.data() + offset);
+      BOOST_TEST(converter.as_result(static_cast<void*>(memory.data() + offset)).data.ui == offset);
+   }
+   auto empty = wasm::type_converter<wasm::standalone_function_t>{
+       nullptr, wasm::execution_interface{memory.data(), 0, &operands}};
+   BOOST_CHECK(empty.access() == memory.data());
+}
+
+TEST_CASE("interpreter refuses memoryless pointer imports before host side effects", "[host_functions]") {
+   check_memoryless_pointer_calls<wasm::interpreter>();
+}
+
+#if FORGE_VM_WASM_INTERPRET_HAS_JIT && !defined(FORGE_VM_WASM_INTERPRET_TEST_INTERPRETER_ONLY)
+TEST_CASE("jit refuses memoryless pointer imports before host side effects", "[host_functions]") {
+   check_memoryless_pointer_calls<wasm::jit>();
+}
+#endif

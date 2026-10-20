@@ -3,6 +3,31 @@
   "case_results_when_interpreter_and_jit_enabled": 34,
   "donor_commit": "e5b1fc79c4b8d78f32749afa94a8d4c4d071f67f",
   "fixture_commit": "ffbbb552e6020623d8ae148d81a152c8ef700325",
+  "harness_adaptations": [
+    {
+      "donor_sha256": "7eeddf96ad2340bb4de11ae131a68991d3a0f9138fa4ea9c5691f9650811a69f",
+      "historical_port_sha256": "10b6d05a534c08055279a5144d3108dde96f7576779d811e1ad4e48d3687ad7d",
+      "purpose": "Real host pointer/reference identity storage for the unchanged memoryless fixture",
+      "replacements": [
+        {
+          "count": 1,
+          "new": "namespace {\n#include \"host_functions_support.hpp\"\ntemplate<typename Host>",
+          "old": "namespace {\n\ntemplate<typename Host>"
+        },
+        {
+          "count": 1,
+          "new": "   cnv(Host* host, execution_interface interface) : type_converter<Host>(host, host_function_test_interface(interface)) {}",
+          "old": "   using type_converter<Host>::type_converter;"
+        },
+        {
+          "count": 4,
+          "new": "host_function_test_memory(bkend.get_context().linear_memory()) + offset",
+          "old": "bkend.get_context().linear_memory() + offset"
+        }
+      ],
+      "source": "host_functions_tests.cpp"
+    }
+  ],
   "harness_inputs": [
     {
       "path": "CMakeLists.txt",
@@ -15,6 +40,10 @@
     {
       "path": "test_prelude.hpp",
       "sha256": "bcd576160030a19d63dbcf4acfd7917759ae3c187461b0c4e717e474d908596b"
+    },
+    {
+      "path": "host_functions_support.hpp",
+      "sha256": "3e3df54007da7076ca85f09a92fdda7a4ed25f6b0e2bef3e2e1457119984c7de"
     },
     {
       "path": "donor/sources.cmake",
@@ -584,7 +613,7 @@
         "BOOST_REQUIRE_NO_THROW": 0,
         "BOOST_TEST": 30
       },
-      "profile_port_sha256": "10b6d05a534c08055279a5144d3108dde96f7576779d811e1ad4e48d3687ad7d",
+      "profile_port_sha256": "d00560095da7d772c717d1d63743e346e17be6220d0bd12044400a0e3d45e333",
       "registration_sha256": "dbee9174366fd79538e240ad922873586fdf03a860e96f14ed83b1dddbf5a0c1",
       "source": "host_functions_tests.cpp"
     },
@@ -3188,15 +3217,15 @@
   "tool_inputs": [
     {
       "path": "port_donor_tests.py",
-      "sha256": "0464a86e99d0ba93918a3d04dd5dba394ccff6d40ceac3799ecb2c71eb72597f"
+      "sha256": "dfd81c54558d3ad920dd001567d140a65fef5ccb5151d71886a533d56be15011"
     },
     {
       "path": "test_port_donor_tests.py",
-      "sha256": "bf5fbdda94841ccb8566001560b33b993aa2a4ae3684937fa75d869da84136eb"
+      "sha256": "3578f143a8c704664792b89c33ded711890513ed7cfab0b5ce92b87a50ac0a10"
     },
     {
       "path": "PROFILE_ORACLE.md",
-      "sha256": "d5420e5a78a76f3a1cbfbda1c177c33b50e54ebe17c9b1e53e9a838a40588645"
+      "sha256": "520fc54496782d55923300e9c738bb1ab18b9200703c89dd186ca176d4e36dc8"
     }
   ],
   "verification_boundary": "Source transformation only; C++ compilation/runtime NOT_RUN by this slice"

@@ -36,7 +36,9 @@ struct running_context {
    inline explicit running_context(Host_Type* host, Execution_Interface&& ei) : host(host), interface(ei) {}
 
    inline void* access(wasm_ptr_t addr = 0) const {
-      return (char*)interface.get_memory() + addr;
+      auto* memory = (char*)interface.get_memory();
+      detail::check<exceptions::memory>(memory != nullptr, "linear memory is not available");
+      return memory + addr;
    }
 
    inline Execution_Interface& get_interface() {

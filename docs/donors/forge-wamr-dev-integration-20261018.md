@@ -911,3 +911,64 @@ Darwin source/build-tree qualification, not complete migration acceptance.
 - Requalify installed/relocated consumers after numeric/FP/TLS integration;
   do not reuse the pre-restoration LLVM-free PASS as that later evidence.
 - Build and run isolated current product copies with a matching Contract SDK.
+
+## Retained Session Drain Checkpoint, 2026-10-20
+
+The late-spawn/stopped-compute defect is now reproduced and repaired through
+the existing public session. Its R3 full registry executed 85 tests: 84 passed
+and the new real-child regression failed with compute rejection, retained
+workspace/accounting and unrestored SIGCHLD. Historical RED logs are preserved.
+
+The repair adds a bounded continuation to existing Forge.Asio compute. One
+admission follows child setup, asynchronous I/O/sole reap and mandatory
+workspace cleanup; no CPU worker is parked during external compilation.
+Cleanup refusal retains the same owner for explicit retry after pool stop.
+Successful cleanup releases admission before preparation/cache asks for fresh
+ordinary compute capacity. No worker-count clamp, second pool, new reaper,
+signal owner, runtime-thread filesystem work or parallel session cache is added.
+Independent source review also caught and closed a caller cancellation-state
+leak: mandatory drain uses a private value-owned coroutine on the awaiting
+executor without replacing the caller's cancellation filters or pending state.
+
+R5 is a frozen **dirty-postimage** qualification based on `f821d72c`, not a clean
+new-published-head run. Its complete selected Darwin ARM64 Release ON matrix
+passes **86/86 CTests in 129.98 seconds**, without skipped/disabled/expected-fail
+masking. All original 84 registrations remain; only the late-spawn and physical
+permission-refusal regressions are added. Both real permission refusals return
+typed `shutdown_incomplete` on the same admission/PID; restoring test-owned
+permissions permits mandatory drain, exact refund and cache/SIGCHLD reuse at
+worker/capacity 1. R4's diagnostic extraction failure is preserved separately;
+its test-only correction reads the original structured error context.
+
+The full normal workflow-target closure and package prerequisites build. The
+separate installed interpreter/execution gates pass **2/2**; the selected
+installed optimizing component includes **5/5** nested checks. Separate
+Asio/SIGCHLD gates pass **2/2**; Asio executes 101 cases, including all 37 compute
+cases. Seven physical maps, including the newly recorded installed leaf maps,
+retain one common C provider: compiler role 33 objects, execution role 48, never
+both. Actual headers, archives, helper identity and all source postimages are
+recorded; the ON runtime may link LLVM, so this is not current LLVM-free proof.
+
+CI63 reaches actual Linux interpreter execution: Debug/Release pass 27/27 each.
+Its sanitizer stops on undefined pointer arithmetic in the historical memoryless
+donor fixture. The canonical test-only converter now uses real host storage,
+preserving original bytes, assertions and case IDs. Separately, production
+default host-pointer access now refuses absent memory before arithmetic, with
+typed errors and real memoryless interpreter/JIT negative controls. All local
+tests pass, but fresh Linux ASan/UBSan qualification remains required; the old
+CI63 pass/failure mix cannot qualify these new postimages. Complete non-null
+range validation is not claimed by this presence-only repair.
+
+Evidence in the coordinated workspace: [R5 source/build/runtime receipt][drain-r5],
+[full XML][drain-xml], [full LastTest][drain-lasttest] and
+[focused physical-refusal/late-spawn proof][drain-focus]. These are workspace
+evidence links, not installed package files or remote CI artifacts. Current
+cross-platform, LLVM-free, product/process, physical-boundary, performance and
+delivered-provenance acceptance remain separate gates. No merge or license
+change is implied; consumer APIs/profile limits and strict helper identity
+checks are preserved.
+
+[drain-r5]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/postrun-freeze-r5.json
+[drain-xml]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/full-matrix-r5.xml
+[drain-lasttest]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/full-matrix-LastTest.log
+[drain-focus]: ../../../../artifacts/wamr-ci-190-20261020-r12/session-run-r5/focused-session-LastTest.log
