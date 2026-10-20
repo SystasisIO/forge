@@ -117,9 +117,12 @@ adapter is qualified on macOS only. Linux qualification remains separate.
 Obtain secrets through the existing host secret capability, build a bounded
 request in host memory and transfer it to `prove`; no key should enter diagnostics,
 configuration dumps or a guest. Request bytes are sensitive ordinary owned memory,
-not a secure-erasure guarantee. The library logs no payload, key, source path or
-native stderr. External stream failures are converted at the call boundary to
-static typed `forge.net.tlsnotary` errors, including cleanup errors.
+not a secure-erasure guarantee. The library logs no payload, key, source URI or
+native stderr. Raw channel failure diagnostics contain only the local session ID,
+role, channel, operation and underlying error kind, category, code and C++ source
+location; exception text and context are excluded. External stream failures are
+converted at the call boundary to static typed `forge.net.tlsnotary` errors,
+including cleanup errors.
 
 `test_forge_net_tlsnotary` runs actual paired native sessions against an in-process
 TLS fixture, selective disclosure, independently wrong roots/name/mask, worker IPC

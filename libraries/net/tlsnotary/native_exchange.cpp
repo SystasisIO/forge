@@ -15,6 +15,7 @@ module;
 #include <boost/asio/write.hpp>
 #include <boost/scope/scope_exit.hpp>
 #include <boost/process/v2/process_handle.hpp>
+#include <boost/system/system_error.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -33,15 +34,19 @@ module;
 #include <spawn.h>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 #include <forge/exceptions/macros.hpp>
+#include <forge/log/macros.hpp>
 
 module forge.net.tlsnotary.engine;
 
+import forge.exceptions;
+import forge.log.logger;
 import forge.net.transport.stream;
 import forge.net.transport.exceptions;
 import forge.asio.gate;
@@ -52,6 +57,37 @@ import forge.asio.notification;
 namespace forge::net::tlsnotary::detail {
 
 namespace {
+
+void log_channel_failure(std::uint64_t session, bool prover, bool server, const char* operation) noexcept {
+   auto kind = "unknown";
+   auto category = "unknown";
+   auto code = 0;
+   auto file = "";
+   auto line = std::uint_least32_t{};
+   try {
+      throw;
+   } catch (const forge::exceptions::base& error) {
+      kind = "forge";
+      category = error.code().category().name();
+      code = error.code().value();
+      file = error.location().file_name();
+      line = error.location().line();
+   } catch (const boost::system::system_error& error) {
+      kind = "boost";
+      category = error.code().category().name();
+      code = error.code().value();
+   } catch (const std::system_error& error) {
+      kind = "std";
+      category = error.code().category().name();
+      code = error.code().value();
+   } catch (...) {
+   }
+
+   wlog("forge.net.tlsnotary", "TLSNotary raw channel operation failed",
+        ("event", "tlsnotary.channel_failure")("session", session)("role", prover ? "prover" : "verifier")(
+            "channel", server ? "server" : "peer")("operation", operation)("cause_kind", kind)(
+            "cause_category", category)("cause_code", code)("cause_file", file)("cause_line", line));
+}
 
 void spawn_ok(int value) {
    if (value != 0)
@@ -409,6 +445,7 @@ boost::asio::awaitable<void> native_exchange::read_channel(bool server, std::uin
       } catch (const forge::net::transport::exceptions::end_of_stream&) {
          pending.clear();
       } catch (...) {
+         log_channel_failure(_options.id, _prover, server, "read");
          FORGE_THROW_EXCEPTION(exceptions::transport_failed, "TLSNotary raw stream read failed");
       }
 
@@ -444,6 +481,7 @@ boost::asio::awaitable<void> native_exchange::write_channel(bool server, std::ve
       else
          co_await stream.async_write(bytes);
    } catch (...) {
+      log_channel_failure(_options.id, _prover, server, eof ? "close_write" : "write");
       FORGE_THROW_EXCEPTION(exceptions::transport_failed, "TLSNotary raw stream write failed");
    }
 
